@@ -30,6 +30,9 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import {publishDashboardPinGenerationHead,assertDashboardPinGenerationBinding} from '../core/DashboardPinGeneration.js';
+import {SafeFsExecutor} from '../core/SafeFsExecutor.js';
 import { assertStageWriteAuthorized } from './stageWriteGuard.js';
 
 export interface ConfigChange {
@@ -55,6 +58,7 @@ export class LiveConfig extends EventEmitter {
   private configPath: string;
   private cache: Record<string, unknown> = {};
   private lastMtime = 0;
+  private hasObservedConfig = false;
   private lastReadAt = 0;
   private checkIntervalMs: number;
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -71,6 +75,9 @@ export class LiveConfig extends EventEmitter {
     // Initial load
     this.refresh();
   }
+
+  /** Binds first-use owner policy initialization to this actual config writer. */
+  get stateDirectory(): string { return this.stateDir; }
 
   /**
    * Start periodic config monitoring.
@@ -134,29 +141,97 @@ export class LiveConfig extends EventEmitter {
    * Write a value back to the config file.
    * Handles atomic write and immediately refreshes the cache.
    */
-  set(dotPath: string, value: unknown, opts?: { stageWriteToken?: symbol }): void {
+  set(dotPath: string, value: unknown, opts?: { stageWriteToken?: symbol; initializeDashboardPinGeneration?: boolean }): void {
     // Structural gate: the rollout stage is StageAdvancer-write-only (§Rollout).
     assertStageWriteAuthorized(dotPath, opts?.stageWriteToken);
 
-    this.refreshIfStale(); // Get latest before modifying
+    if (dotPath === 'dashboardPinGeneration' || dotPath.startsWith('dashboardPinGeneration.')) {
+      throw new Error('dashboard-pin-generation-is-managed');
+    }
+    if (dotPath.startsWith('dashboardPin.')) throw new Error('dashboard-pin-requires-atomic-update');
+    if (dotPath === 'dashboardPin') { this.setDashboardPin(value,opts?.initializeDashboardPinGeneration===true); return; }
 
-    this.setNestedValue(this.cache, dotPath, value);
-
-    // Atomic write
+    // Reads may use a cached snapshot; writes must never publish one. In
+    // particular, an unrelated setting cannot restore retired PIN authority.
     try {
+      const current = this.readCurrentForWrite();
+      this.setNestedValue(current, dotPath, value);
       const dir = path.dirname(this.configPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-      const tmpPath = `${this.configPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.cache, null, 2) + '\n');
-      fs.renameSync(tmpPath, this.configPath);
-
-      // Update mtime cache
+      const tmpPath = `${this.configPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2) + '\n');
+        fs.renameSync(tmpPath, this.configPath);
+      } finally {
+        if(fs.existsSync(tmpPath))SafeFsExecutor.safeUnlinkSync(tmpPath,{operation:'live-config:publication-scratch'});
+      }
+      this.hasObservedConfig = true;
       const stat = fs.statSync(this.configPath);
+      this.cache = current;
       this.lastMtime = stat.mtimeMs;
       this.lastReadAt = Date.now();
     } catch (err) {
       console.error(`[LiveConfig] Failed to write config:`, err);
+    }
+  }
+
+  private readCurrentForWrite(): Record<string,unknown> {
+    let stat: fs.Stats;
+    try { stat=fs.lstatSync(this.configPath); }
+    catch(error) {
+      if((error as NodeJS.ErrnoException).code==='ENOENT'&&!this.hasObservedConfig)return {};
+      throw error;
+    }
+    this.hasObservedConfig=true;
+    if(!stat.isFile()||stat.isSymbolicLink())throw new Error('live-config-file-invalid');
+    // Do not silently fall back on metadata/read/parse failure, even if mtime
+    // appears unchanged. This is the actual input to every merge.
+    fs.statSync(this.configPath);
+    const current=JSON.parse(fs.readFileSync(this.configPath,'utf8'));
+    if(!current||typeof current!=='object'||Array.isArray(current))throw new Error('live-config-object-invalid');
+    return current;
+  }
+
+  /** The PIN and its revocation generation are one durable config fact. Unlike
+   * unrelated legacy writes, a failed PIN write must never return success or
+   * leave a newly authorized value in the in-memory cache. */
+  private setDashboardPin(value: unknown, initializeOnly=false): void {
+    const reference = value !== null && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).length === 1 && (value as {secret?:unknown}).secret === true;
+    if (value !== undefined && value !== null && typeof value !== 'string' && !reference) throw new Error('dashboard-pin-value-invalid');
+    const previousCache = this.cache, previousMtime = this.lastMtime, previousReadAt = this.lastReadAt;
+    const dir = path.dirname(this.configPath);
+    let temporary: string | undefined;
+    try {
+      fs.mkdirSync(dir, {recursive:true});
+      const current=this.readCurrentForWrite();
+      if(initializeOnly){
+        assertDashboardPinGenerationBinding(this.stateDir,current.dashboardPinGeneration);
+        // Another actual writer may have installed a PIN/generation since the
+        // first-use reader's snapshot. Migration must never roll that PIN back.
+        if(current.dashboardPinGeneration!==undefined)return;
+        if(JSON.stringify(current.dashboardPin)!==JSON.stringify(value))throw new Error('dashboard-pin-initialization-raced');
+      }
+      const generation=crypto.randomUUID();
+      // Revoke the previous generation independently of whole-config writers.
+      // Any failure after this point quarantines a mismatching config pair.
+      publishDashboardPinGenerationHead(this.stateDir,generation);
+      const next={...current,dashboardPin:value,dashboardPinGeneration:generation};
+      const bytes=JSON.stringify(next,null,2)+'\n';
+      temporary=`${this.configPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      const fd=fs.openSync(temporary,'wx',0o600);
+      try{fs.writeFileSync(fd,bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+      fs.renameSync(temporary,this.configPath);temporary=undefined;
+      const file=fs.openSync(this.configPath,'r');try{fs.fsyncSync(file);}finally{fs.closeSync(file);}
+      const directory=fs.openSync(dir,'r');try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
+      if(fs.readFileSync(this.configPath,'utf8')!==bytes)throw new Error('dashboard-pin-config-outcome-uncertain');
+      const stat=fs.statSync(this.configPath);
+      this.hasObservedConfig=true;this.cache=JSON.parse(bytes);this.lastMtime=stat.mtimeMs;this.lastReadAt=Date.now();
+    } catch(error) {
+      this.cache=previousCache;this.lastMtime=previousMtime;this.lastReadAt=previousReadAt;
+      throw error;
+    } finally {
+      if(temporary&&fs.existsSync(temporary))SafeFsExecutor.safeUnlinkSync(temporary,{operation:'live-config:pin-publication-scratch'});
     }
   }
 
@@ -182,6 +257,7 @@ export class LiveConfig extends EventEmitter {
         return;
       }
 
+      this.hasObservedConfig = true;
       const content = fs.readFileSync(this.configPath, 'utf-8');
       const newConfig = JSON.parse(content) as Record<string, unknown>;
 
@@ -206,7 +282,8 @@ export class LiveConfig extends EventEmitter {
             detectedAt: new Date().toISOString(),
           };
 
-          console.log(`[LiveConfig] Change detected: ${dotPath} = ${JSON.stringify(oldValue)} → ${JSON.stringify(newValue)}`);
+          if(dotPath==='dashboardPin')console.log('[LiveConfig] Change detected: dashboardPin (redacted)');
+          else console.log(`[LiveConfig] Change detected: ${dotPath} = ${JSON.stringify(oldValue)} → ${JSON.stringify(newValue)}`);
           this.emit('change', change);
         }
       }

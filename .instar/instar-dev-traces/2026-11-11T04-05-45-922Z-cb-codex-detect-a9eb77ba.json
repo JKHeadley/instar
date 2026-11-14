@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "cb-codex-detect",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-11T04:05:45.922Z",
+  "artifactPath": "upgrades/side-effects/cb-codex-detect.md",
+  "artifactSha256": "c917cd21cc07d144ee352c35b3df120c800bea54b9e741d3beb8836509739a4e",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/CodexRolloutParser.ts",
+    "src/monitoring/compactionCanary.ts",
+    "src/monitoring/contextBudgetSentinelBoot.ts",
+    "src/providers/adapters/openai-codex/control/compactionLifecycle.ts",
+    "src/providers/primitives/control/compactionLifecycle.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "tests/e2e/context-budget-canary-alive.test.ts",
+    "tests/e2e/context-budget-codex-canary-alive.test.ts",
+    "tests/integration/context-budget-sentinel-route.test.ts",
+    "tests/unit/codex-compaction-channel.test.ts",
+    "tests/unit/migrate-context-budget-sentinel-row.test.ts",
+    "upgrades/next/cb-codex-detect.md",
+    "upgrades/side-effects/cb-codex-detect.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches compaction detection and the standing canary (a sentinel surface) plus a CLAUDE.md migration; observation-only and dev-gated under contextBudget.enabled, so Tier 2 with a Fable second pass rather than Tier 3.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "New observation-only capability (Codex compaction detection, a post-compaction event producer and a canary group); it fixes no agent-authored-artifact defect and fires no self-action (no restart, swap, spawn, notify, retry or kill)."
+  }
+}

@@ -66,6 +66,57 @@ describe('validateRecord', () => {
     }
   });
 
+  it('preserves bounded observe evidence but rejects an early red as green authority', () => {
+    const evidence = {
+      mode: 'observe' as const, outcome: 'red' as const, reason: 'stable-red-observed', elapsedMs: 1200,
+      changedFiles: 2, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 3,
+      headSha: H, baseSha: B, repeatedFailedFile: 'tests/unit/example.test.ts',
+    };
+    expect(validateRecord(rec({ preflight: evidence })).ok).toBe(true); // full lanes decide green
+    const enforced = { ...evidence, mode: 'enforce' as const, reason: 'preflight-red' };
+    expect(validateRecord(rec({ preflight: enforced })).ok).toBe(false);
+    expect(validateRecord(rec({ outcome: 'failure', lanes: [], preflight: enforced })).ok).toBe(true);
+    const malformed = validateRecord({ ...rec({ outcome: 'failure', preflight: enforced }), lanes: null });
+    expect(malformed.ok).toBe(false);
+    if (!malformed.ok) expect(malformed.errors).toContain('lanes');
+  });
+
+  it('refuses malformed or mismatched preflight evidence before peer import', () => {
+    const valid = {
+      mode: 'enforce' as const, outcome: 'red' as const, reason: 'preflight-red', elapsedMs: 1200,
+      changedFiles: 2, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 3,
+      headSha: H, baseSha: B, repeatedFailedFile: 'tests/unit/example.test.ts',
+    };
+    const base = rec({ outcome: 'failure', lanes: [] });
+    for (const bad of [
+      { ...valid, baseSha: T },
+      { ...valid, repeatedFailedFile: '../outside.test.ts' },
+      { ...valid, selectedFiles: ['/tmp/fake.test.ts'] },
+      { ...valid, selectedFiles: Array(6).fill('tests/unit/example.test.ts') },
+      { ...valid, elapsedMs: 90_001 },
+      { ...valid, selectedCases: 0 },
+    ]) {
+      const result = validateRecord({ ...base, preflight: bad });
+      expect(result.ok, JSON.stringify(bad)).toBe(false);
+      if (!result.ok) expect(result.errors).toContain('preflight');
+    }
+  });
+
+  it('accepts only a complete, bounded, sorted PR failed-file set', () => {
+    const files = ['tests/integration/b.test.ts', 'tests/unit/a.test.ts'];
+    expect(validateRecord(rec({ outcome: 'failure', failedFiles: files })).ok).toBe(true);
+    for (const bad of [
+      [], [...files].reverse(), [files[0], files[0]],
+      ['tests/unit/../fixtures/a.test.ts'], ['tests/unit/./a.test.ts'], ['src/outside.test.ts'],
+      ['tests/unit/a.test.ts', 'tests/unit/b.test.ts', 'tests/unit/c.test.ts', 'tests/unit/d.test.ts'],
+    ]) {
+      const v = validateRecord(rec({ outcome: 'failure', failedFiles: bad }));
+      expect(!v.ok && v.errors).toContain('failedFiles');
+    }
+    expect(validateRecord(rec({ failedFiles: [files[0]] })).ok).toBe(false);
+    expect(validateRecord(rec({ kind: 'main', pr: 0, headSha: B, outcome: 'failure', failedFiles: [files[0]] })).ok).toBe(false);
+  });
+
   it('rejects non-objects', () => {
     expect(validateRecord(null)).toEqual({ ok: false, errors: ['not-an-object'] });
   });

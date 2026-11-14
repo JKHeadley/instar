@@ -227,4 +227,51 @@ describe('JobScheduler agentmd dispatch (Phase 1b)', () => {
       consoleSpy.mockRestore();
     }
   });
+
+  const pinnedJob = (): JobDefinition => ({
+    slug: 'route-fixture', name: 'Route fixture', description: 'd',
+    schedule: '0 * * * *', priority: 'low', expectedDurationMinutes: 1,
+    model: 'haiku', enabled: true, execute: { type: 'agentmd' },
+    origin: 'user', body: 'Check fixture.',
+    frontmatter: { toolAllowlist: '*' }, unrestrictedTools: true,
+    framework: 'codex-cli', frameworkModel: 'gpt-6-luna',
+  });
+
+  it('keeps a pinned job on its default when route evidence is not wired', async () => {
+    await fireAndCapturePrompt(pinnedJob());
+    expect(spawnSpy.mock.calls[0]?.[0]).toMatchObject({ model: 'haiku', framework: undefined });
+    const run = scheduler.getRunHistory().query({ slug: 'route-fixture', limit: 1 }).runs[0];
+    expect(run).toMatchObject({ routeBasis: 'fallback', reason: 'routing-disabled' });
+  });
+
+  it('keeps the code-owned audit gate shut even when a provider claims a pin is ready', async () => {
+    scheduler.setJobRouteEvidenceProvider(() => ({
+      enabled: true, auditReady: true, enabledFrameworks: new Set(['claude-code', 'codex-cli']),
+      binaryAvailable: true, doorwayReachable: true, poolUsable: true,
+      routeBreakerClosed: true, benchmarkCurrent: true,
+      codexHooksArmed: true, codexDenyCanaryCurrent: true,
+    }));
+    expect(scheduler.hasJobRouteEvidenceProvider()).toBe(true);
+    await fireAndCapturePrompt(pinnedJob());
+    expect(spawnSpy.mock.calls[0]?.[0]).toMatchObject({ model: 'haiku', framework: undefined });
+    expect(scheduler.getRunHistory().query({ slug: 'route-fixture', limit: 1 }).runs[0])
+      .toMatchObject({ model: 'haiku', routeBasis: 'fallback', reason: 'audit-not-ready' });
+  });
+
+  it('continues on the default route when the evidence cache throws', async () => {
+    scheduler.setJobRouteEvidenceProvider(() => { throw new Error('cache unavailable'); });
+    await fireAndCapturePrompt(pinnedJob());
+    expect(spawnSpy.mock.calls[0]?.[0]).toMatchObject({ model: 'haiku', framework: undefined });
+  });
+
+  it('does not read route evidence for jobs without a pin', async () => {
+    const evidence = vi.fn(() => { throw new Error('should not be called'); });
+    scheduler.setJobRouteEvidenceProvider(evidence);
+    const job = pinnedJob();
+    delete job.framework;
+    delete job.frameworkModel;
+    await fireAndCapturePrompt(job);
+    expect(evidence).not.toHaveBeenCalled();
+    expect(spawnSpy.mock.calls[0]?.[0]).toMatchObject({ model: 'haiku', framework: undefined });
+  });
 });

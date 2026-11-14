@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-06T01:58:18.070Z",
+  "slug": "measurement-coverage-view",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 309,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/monitoring/MeasurementCoverage.ts",
+      "src/server/maturationBoardRoutes.ts",
+      "src/server/measurementCoverageRead.ts"
+    ],
+    "addedLines": 309,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

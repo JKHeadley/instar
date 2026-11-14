@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-store-retention",
+  "sessionId": "17ba3668-0c63-4920-b323-dbbbf9265948",
+  "timestamp": "2026-11-01T20:33:11.200Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-store-retention.md",
+  "artifactSha256": "f9e672797a5ab590221e96c55f04a7fa7137df6dbc31c5379af026ec3731871c",
+  "specPath": "docs/specs/telegram-origin-store-retention.md",
+  "coveredFiles": [
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/telegram-origin/OriginPoolAudit.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "src/messaging/telegram-origin/OriginStore.worker.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/OriginUnrecordedReceipts.ts",
+    "src/messaging/telegram-origin/StoreTypes.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/e2e/telegram-origin-production-boot.test.ts",
+    "tests/integration/telegram-origin-routes.test.ts",
+    "tests/unit/telegram-origin/origin-pool-audit.test.ts",
+    "tests/unit/telegram-origin/store-retention.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide state migration that moves data one way on every agent; a revert leaves data readable but does not undo the move.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

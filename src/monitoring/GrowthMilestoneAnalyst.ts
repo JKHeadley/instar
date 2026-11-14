@@ -36,6 +36,7 @@
 // their own review (they are the flood-sensitive part).
 
 import fs from 'node:fs';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import path from 'node:path';
 import type { InitiativeTracker, Initiative, RolloutStage } from '../core/InitiativeTracker.js';
 import type { ApprovalLedger, ClassSummary, DivergenceCategory } from '../core/ApprovalLedger.js';
@@ -373,9 +374,23 @@ export class GrowthMilestoneAnalyst {
   private readonly journalPath: string;
   private readonly deps: GrowthMilestoneAnalystDeps;
   private settings: GrowthAnalystSettings;
+  /** Evidence is written when the result changes, since a read route can recompute at will. */
+  private lastDigestEvidence: string | null = null;
+  private lastDarkFlagEvidence: string | null = null;
 
   constructor(deps: GrowthMilestoneAnalystDeps) {
-    this.deps = deps;
+    this.deps = {
+      ...deps,
+      onError: (where, err) => {
+        featureEvidence.recordAtMostEvery(
+          where.startsWith('darkFlag') ? 'monitoring.growthAnalyst.darkFlagInventory' : 'monitoring.growthAnalyst',
+          where,
+          3_600_000,
+          { kind: 'error', reason: `analysis-failed:${where}`, context: { where, errorName: err instanceof Error ? err.name : 'unknown' } },
+        );
+        deps.onError?.(where, err);
+      },
+    };
     this.settings = deps.settings;
     this.stateDir = path.join(deps.stateDir, 'state', 'growth-milestone-analyst');
     this.journalPath = path.join(this.stateDir, 'stage-journal.json');
@@ -739,6 +754,22 @@ export class GrowthMilestoneAnalyst {
       return empty;
     }
 
+    const darkFlagCount = (state: DarkFlagState): number => entries.filter((e) => e.state === state).length;
+    const darkFlagContext = {
+      total: entries.length,
+      incubating: darkFlagCount('incubating'),
+      windowElapsed: darkFlagCount('window-elapsed'),
+      expiredUnproven: darkFlagCount('expired-unproven'),
+      legacyUnproven: darkFlagCount('legacy-unproven'),
+      unowned: entries.filter((e) => e.owner === null).length,
+      dryRun: this.settings.darkFlagInventory.dryRun,
+    };
+    const darkFlagEvidence = JSON.stringify(darkFlagContext);
+    if (darkFlagEvidence !== this.lastDarkFlagEvidence) {
+      this.lastDarkFlagEvidence = darkFlagEvidence;
+      featureEvidence.record('monitoring.growthAnalyst.darkFlagInventory', { kind: 'fired', reason: 'inventory-changed', context: darkFlagContext });
+    }
+
     // dryRun: the registry IS written (so the soak accrues durable evidence
     // from day one) but the engine's voice does not change yet.
     if (this.settings.darkFlagInventory.dryRun) return { findings: [], entries };
@@ -860,6 +891,26 @@ export class GrowthMilestoneAnalyst {
     const summary = calm
       ? this.calmSummary(counts, nextWindowClosesInDays)
       : this.activeSummary(counts);
+
+    const digestContext = {
+      findings: findings.length,
+      calm,
+      incubating: counts.incubating,
+      promotionReady: counts.promotionReady,
+      expiredUnproven: counts.expiredUnproven,
+      stalling: counts.stalling,
+      specPatterns: counts.specPatterns,
+      correctionPatterns: counts.correctionPatterns,
+    };
+    const digestEvidence = JSON.stringify(digestContext);
+    if (digestEvidence !== this.lastDigestEvidence) {
+      this.lastDigestEvidence = digestEvidence;
+      featureEvidence.record('monitoring.growthAnalyst', {
+        kind: calm ? 'held' : 'fired',
+        reason: calm ? 'digest-changed-calm' : 'digest-changed-findings',
+        context: digestContext,
+      });
+    }
 
     return {
       generatedAt: now.toISOString(),

@@ -41,6 +41,7 @@ const ARGUED_FALSE_BASELINE = [
   'IntegrationGate',
   'CoherenceGate',
   'InputDetector',
+  'MachineWedgeJudge', // machine-self-maintenance Part E: structured probe readings this agent measured itself
 ].sort();
 
 // ── Pinned REVIEWED-false sentinel/gate allowlist. A sentinel or gate marked
@@ -54,6 +55,7 @@ const REVIEWED_FALSE_SENTINEL_GATE = [
   'IntegrationGate', // gate — delegates, no own callsite
   'CoherenceGate', // gate — flows through CoherenceReviewer
   'InputDetector', // sentinel — attribution alias, live matcher is PromptGate
+  'MachineWedgeJudge', // sentinel — prompt is fixed reason codes and numbers from its own probes; no external text
 ].sort();
 
 describe('untrustedInput classification ratchet', () => {

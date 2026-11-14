@@ -1,0 +1,69 @@
+{
+  "ts": "2026-11-07T04:31:08.408Z",
+  "slug": "app-conversations-in-the-pool",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 35,
+  "loc": 2160,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/CoherenceJournalReader.ts",
+      "src/core/DeliverMessageHandler.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/LocalSessionOwnershipStore.ts",
+      "src/core/MachinePoolRegistry.ts",
+      "src/core/MobileChatRequests.ts",
+      "src/core/OverloadShedPlanner.ts",
+      "src/core/OwnershipApplier.ts",
+      "src/core/OwnershipReconciler.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionDrainRunner.ts",
+      "src/core/SessionOwnership.ts",
+      "src/core/SessionOwnershipRegistry.ts",
+      "src/core/SessionRouter.ts",
+      "src/core/StaleOwnerReleaseEngine.ts",
+      "src/core/TopicPinMutation.ts",
+      "src/core/appConversationMove.ts",
+      "src/core/appConversationPool.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/conversationPorts.ts",
+      "src/core/types.ts",
+      "src/monitoring/DuplicateSessionReconciler.ts",
+      "src/monitoring/StrandedTopicSentinel.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobileSessionControlsRoutes.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 2034,
+    "deletedLines": 126
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner: one force-claim per record, one notice per episode, each refused drain home waits five minutes. The close-on-loss retry is a local refusable close that starts nothing."
+    }
+  },
+  "verdict": "blocked"
+}

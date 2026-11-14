@@ -286,6 +286,12 @@ export interface PeerPresencePullerDeps {
    */
   localAdvertFor?: (machineId: string) => Record<string, { incarnation: string; lastSeq: number }>;
   /**
+   * Fired after one peer's journal advert was received and its deltas applied (work-board-asks §6,
+   * "Previous owner caught up"): the consumer records WHEN this exchange completed and what the
+   * peer advertised, which the journal reader's own `current` label cannot say. MUST NOT throw.
+   */
+  onJournalExchange?: (machineId: string, peerAdvert: Record<string, { incarnation: string; lastSeq: number }>) => void;
+  /**
    * Fired once per peer recorded online this pass (WORKING-SET-HANDOFF-SPEC
    * §3.4 — the pending-pull re-arm rides the same cadence journal-sync does).
    * MUST NOT throw into the puller; consumers dedupe/stagger themselves.
@@ -379,6 +385,34 @@ export class PeerPresencePuller {
     return { recorded };
   }
 
+  /**
+   * ownership-nudge: pull one kind from one peer now, walking pages to the head the peer
+   * advertises. Records no heartbeat and no presence: this is not a sighting pass. Resolves
+   * true only if this machine has reached that head. Never throws.
+   */
+  async pullKindFrom(machineId: string, url: string, kind: string, maxPages = 3): Promise<boolean> {
+    if (!this.d.requestJournalDelta || !this.d.applyDelta || !this.d.localAdvertFor) return false;
+    let advert: { incarnation: string; lastSeq: number } | undefined;
+    try {
+      advert = (await this.d.fetchPeerCapacity(machineId, url))?.journalAdvert?.[kind];
+    } catch { /* @silent-fallback-ok: an unreachable peer reads as not reached, and the 30 s pull retries */
+      return false;
+    }
+    if (!advert) return false;
+    const reached = (): boolean => {
+      try {
+        const held = this.d.localAdvertFor?.(machineId)?.[kind];
+        return !!held && held.incarnation === advert!.incarnation && held.lastSeq >= advert!.lastSeq;
+      } catch { /* @silent-fallback-ok: an unreadable view reads as not reached */
+        return false;
+      }
+    };
+    for (let page = 0; page < maxPages && !reached(); page++) {
+      await this.driveJournalDelta(machineId, url, { [kind]: advert });
+    }
+    return reached();
+  }
+
   private noteFailure(machineId: string, shape: PullFailureShape): void {
     try { this.d.recordPullFailure?.(machineId, shape); } catch { /* @silent-fallback-ok: display-only failure evidence must never break the presence pass (the puller's never-throw contract) */ }
   }
@@ -435,5 +469,6 @@ export class PeerPresencePuller {
         } catch { /* @silent-fallback-ok: apply() is itself fully tolerant + observable via its own counters; this guard only preserves the puller's never-throw contract */ }
       } catch { /* @silent-fallback-ok: per-kind drive is best-effort; one bad kind must never poison the rest of the presence pass (the puller's never-throw contract) */ }
     }
+    try { this.d.onJournalExchange?.(machineId, peerAdvert); } catch { /* @silent-fallback-ok: an observer must never break the presence pass (the puller's never-throw contract) */ }
   }
 }

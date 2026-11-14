@@ -1,0 +1,48 @@
+{
+  "ts": "2026-10-31T20:33:43.940Z",
+  "slug": "native-hook-events",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "migration / fleet-rollout surface: src/data/http-hook-templates.ts touches http-hook-templates (settings/hook migration source)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 1972,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/server.ts",
+      "src/core/MachineIdentity.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/UpdateChecker.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/nativeHookEventsGate.ts",
+      "src/core/types.ts",
+      "src/data/http-hook-templates.ts",
+      "src/monitoring/HookEventReceiver.ts",
+      "src/monitoring/NativeHookEvents.ts",
+      "src/monitoring/SubagentTracker.ts",
+      "src/monitoring/hookEventConsumers.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/hookEventDispatch.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1783,
+    "deletedLines": 189
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-development-stopped-lead",
+  "sessionId": "f26d1653-4ab7-4368-9dd3-0d9760a2c9cc",
+  "timestamp": "2026-11-04T01:02:17.354Z",
+  "artifactPath": "upgrades/side-effects/console-development-stopped-lead.md",
+  "artifactSha256": "0a6d40619cf1f579f2c6171c9e3d9c6be3de519ac0783cfc19c6fe0d768f31a6",
+  "coveredFiles": [
+    "dashboard/console/development-model.js",
+    "dashboard/console/development.js",
+    "dashboard/console/ui.js",
+    "tests/unit/console-development.test.ts",
+    "upgrades/next/console-development-stopped-lead.md",
+    "upgrades/side-effects/console-development-stopped-lead.eli16.md",
+    "upgrades/side-effects/console-development-stopped-lead.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Browser-side console page display only; no route, state or authority change; a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/console-development-stopped-lead.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-development-stopped-lead.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

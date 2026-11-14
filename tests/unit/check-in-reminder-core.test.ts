@@ -202,3 +202,35 @@ describe('the reminder text is a fixed template over quoted data', () => {
     expect(formatCheckInDate('2026-07-31T09:00:00.000Z')).toContain('Friday');
   });
 });
+
+describe('other-machine (check-in-reminder-server-tick)', () => {
+  const base = { status: 'pending', topicId: 1, checkInAt: '2026-01-01T00:00:00Z' } as const;
+  const nowMs = Date.parse('2026-01-02T00:00:00Z');
+
+  it('a row owned by another machine is not due here', () => {
+    expect(isCheckInReminderDue({ commitment: { ...base, ownerMachineId: 'm_b' }, nowMs, selfMachineId: 'm_a' }))
+      .toEqual({ due: false, reason: 'other-machine' });
+  });
+
+  it('own, unstamped and unknown-self rows stay due', () => {
+    expect(isCheckInReminderDue({ commitment: { ...base, ownerMachineId: 'm_a' }, nowMs, selfMachineId: 'm_a' }).due).toBe(true);
+    expect(isCheckInReminderDue({ commitment: { ...base }, nowMs, selfMachineId: 'm_a' }).due).toBe(true);
+    expect(isCheckInReminderDue({ commitment: { ...base, ownerMachineId: 'm_b' }, nowMs, selfMachineId: null }).due).toBe(true);
+  });
+});
+
+describe('other-machine (check-in-reminder-server-tick)', () => {
+  const base = { status: 'pending', topicId: 1, checkInAt: '2026-01-01T00:00:00Z' } as const;
+  const nowMs = Date.parse('2026-01-02T00:00:00Z');
+
+  it('a row owned by another machine is not due here', () => {
+    expect(isCheckInReminderDue({ commitment: { ...base, ownerMachineId: 'm_b' }, nowMs, selfMachineId: 'm_a' }))
+      .toEqual({ due: false, reason: 'other-machine' });
+  });
+
+  it('own, unstamped and unknown-self rows stay due', () => {
+    expect(isCheckInReminderDue({ commitment: { ...base, ownerMachineId: 'm_a' }, nowMs, selfMachineId: 'm_a' }).due).toBe(true);
+    expect(isCheckInReminderDue({ commitment: { ...base }, nowMs, selfMachineId: 'm_a' }).due).toBe(true);
+    expect(isCheckInReminderDue({ commitment: { ...base, ownerMachineId: 'm_b' }, nowMs, selfMachineId: null }).due).toBe(true);
+  });
+});

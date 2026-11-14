@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "standby-telegram-replies",
+  "sessionId": "83d9b67c-18de-46f9-bf1f-4b807376c18b",
+  "timestamp": "2026-11-04T17:32:15.812Z",
+  "artifactPath": "upgrades/side-effects/standby-telegram-replies.md",
+  "artifactSha256": "d8b185fc658e1fe1131ef8d9472e9b4e4dfac1355b58bfe81ed2c5ca6a1331c8",
+  "coveredFiles": [
+    "tests/integration/telegram-origin-mesh.test.ts",
+    "tests/unit/telegram-origin/origin-delivery-resolution.test.ts",
+    "upgrades/side-effects/standby-telegram-replies.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tests and review text only; runtime behavior is unchanged after the main merge.",
+  "eli16Path": "docs/specs/telegram-message-origin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standby-telegram-replies.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

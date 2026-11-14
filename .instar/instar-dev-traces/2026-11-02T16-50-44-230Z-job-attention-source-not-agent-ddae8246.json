@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "job-attention-source-not-agent",
+  "sessionId": "340be27c-d1d8-440a-945b-2863446b9a75",
+  "timestamp": "2026-11-02T16:50:44.230Z",
+  "artifactPath": "upgrades/side-effects/job-attention-source-not-agent.md",
+  "artifactSha256": "805e4382d2801a58bf6a2ba9c5fcca91af12954d4cdfdc0e7c3b52afd8a82022",
+  "coveredFiles": [
+    "docs/specs/job-attention-source-not-agent.eli16.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/attentionHubPolicy.ts",
+    "src/scaffold/templates.ts",
+    "src/scaffold/templates/jobs/instar/bench-refresh.md",
+    "src/scaffold/templates/jobs/instar/evolution-overdue-check.md",
+    "tests/unit/PostUpdateMigrator-attentionHubFilter.test.ts",
+    "tests/unit/attention-single-topic-routing.test.ts",
+    "tests/unit/attentionHubPolicy.test.ts",
+    "tests/unit/job-attention-source-lint.test.ts",
+    "upgrades/next/job-attention-source-not-agent.md",
+    "upgrades/side-effects/job-attention-source-not-agent.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow bug fix; a revert fully undoes it",
+  "eli16Path": "docs/specs/job-attention-source-not-agent.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-attention-source-not-agent.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

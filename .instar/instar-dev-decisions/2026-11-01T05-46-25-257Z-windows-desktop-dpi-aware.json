@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-01T05:46:25.257Z",
+  "slug": "windows-desktop-dpi-aware",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs"
+    ],
+    "addedLines": 13,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

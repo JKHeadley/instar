@@ -450,4 +450,24 @@ describe('geminiReviewer registry entry', () => {
     expect(r.reason).toBe('model-resolution-canary');
     expect(providerInvoked).toBe(false);
   });
+
+  it('pins the feedback secondary read to Sol and records the model actually invoked', async () => {
+    const codexEntry = SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === 'codex-cli')!;
+    let invokedModel: unknown;
+    let strictPin: unknown;
+    const r = await codexEntry.review({
+      promptText: 'PROMPT', timeoutMs: 1000,
+      detectionOverride: { available: true, framework: 'codex-cli', model: 'gpt-6-astra' },
+      codexModelOverride: 'sol',
+      providerOverride: { evaluate: async (_prompt, options) => {
+        invokedModel = options?.model;
+        strictPin = options?.strictModelPin;
+        return 'Verdict: CLEAN';
+      } },
+    });
+    expect(invokedModel).toBe('balanced');
+    expect(strictPin).toBe(true);
+    expect(r.model).toBe('gpt-6-sol');
+    expect(r.status).toBe('ok');
+  });
 });

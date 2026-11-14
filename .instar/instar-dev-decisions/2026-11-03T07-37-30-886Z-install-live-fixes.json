@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-03T07:37:30.886Z",
+  "slug": "install-live-fixes",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/install.ts",
+      "src/core/Config.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

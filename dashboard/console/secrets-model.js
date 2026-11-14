@@ -8,6 +8,8 @@
 // server's answer in words. Every route here is adapter (a): the bearer token is enough,
 // so no PIN is ever asked.
 
+import { verifiedDisplayName } from './display-identity.js';
+
 export const SOON_MS = 5 * 60_000;
 
 /** "Valid for" choices in the Ask sheet (the route accepts 1 min … 1 h). */
@@ -46,19 +48,25 @@ export function agoWords(ms, now = Date.now()) {
 export function topicNameMap(res) {
   const list = res && res.ok && res.data && Array.isArray(res.data.topics) ? res.data.topics : [];
   const map = {};
-  for (const t of list) if (t && Number.isFinite(Number(t.topicId)) && typeof t.topicName === 'string' && t.topicName.trim()) map[String(t.topicId)] = t.topicName.trim();
+  for (const t of list) if (t && Number.isFinite(Number(t.topicId))) {
+    const name = verifiedDisplayName(t.topicName, t.topicId);
+    if (name) map[String(t.topicId)] = name;
+  }
   return map;
 }
 
 /** The conversation picker's options, named ones first by name; "" = tell no conversation. */
 export function conversationChoices(names = {}) {
-  return Object.entries(names).map(([id, name]) => ({ value: id, label: name })).sort((a, b) => a.label.localeCompare(b.label));
+  const entries = Object.entries(names).map(([id, name]) => ({ value: id, label: verifiedDisplayName(name, id) })).filter((entry) => entry.label);
+  const counts = new Map();
+  for (const entry of entries) counts.set(entry.label.toLocaleLowerCase(), (counts.get(entry.label.toLocaleLowerCase()) || 0) + 1);
+  return entries.filter((entry) => counts.get(entry.label.toLocaleLowerCase()) === 1).sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /** A conversation in words: its name, else "conversation 123", else "" (none named). */
 export function conversationWords(topicId, names = {}) {
   if (topicId === undefined || topicId === null || topicId === '') return '';
-  return names[String(topicId)] || `conversation ${topicId}`;
+  return verifiedDisplayName(names[String(topicId)], topicId) || 'conversation name unavailable';
 }
 
 /**
@@ -116,8 +124,18 @@ export function buildRequests(res, opts = {}) {
  * (names only); falls back to the secret-sync key list when that is switched off. Lengths
  * and values are never read into the model.
  */
+// A saved Secret Drop is stored under `secretDrops.<64-hex token>` (often with
+// "(+N nested)"): a token, not a name. Show them as one counted line instead.
+const DROP_KEY = /^secretDrops\.[0-9a-f]{16,}\b/;
+function groupDrops(names) {
+  const drops = names.filter((n) => DROP_KEY.test(n)).length;
+  if (!drops) return names;
+  const rest = names.filter((n) => !DROP_KEY.test(n));
+  return [...rest, drops === 1 ? 'Saved Secret Drop submission (1)' : `Saved Secret Drop submissions (${drops})`].sort((a, b) => a.localeCompare(b));
+}
+
 export function buildKeys(ctxRes, syncRes) {
-  const clean = (arr) => [...new Set(arr.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim()))].sort((a, b) => a.localeCompare(b));
+  const clean = (arr) => groupDrops([...new Set(arr.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim()))]).sort((a, b) => a.localeCompare(b));
   if (ctxRes && ctxRes.ok && ctxRes.data && Array.isArray(ctxRes.data.names)) {
     const vaultState = ctxRes.data.vaultState;
     if (vaultState === 'decrypt-failed') return { ok: false, decryptFailed: true, names: [], reason: 'Can’t open the saved keys on this machine.' };
@@ -141,11 +159,11 @@ export function buildSync(res, poolRes) {
   }
   const d = res.data || {};
   const targets = Array.isArray(d.syncTargets) ? d.syncTargets.filter((t) => t && t.machineId) : [];
-  const nameOf = (t) => t.nickname || t.machineId;
+  const nameOf = (t) => verifiedDisplayName(t.nickname, t.machineId) || 'another machine';
   const targetIds = new Set(targets.map((t) => t.machineId));
   const pool = poolRes && poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) ? poolRes.data : null;
   const selfId = pool ? pool.selfMachineId : null;
-  const unreachable = pool ? pool.machines.filter((m) => m && m.machineId && m.machineId !== selfId && !m.isSelf && !targetIds.has(m.machineId)).map((m) => m.nickname || m.machineId) : [];
+  const unreachable = pool ? pool.machines.filter((m) => m && m.machineId && m.machineId !== selfId && !m.isSelf && !targetIds.has(m.machineId)).map((m) => verifiedDisplayName(m.nickname, m.machineId) || 'another machine') : [];
   const push = d.mode === 'full' || d.pushEnabled === true;
   const list = targets.map(nameOf);
   const joined = list.length <= 2 ? list.join(' and ') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
@@ -166,20 +184,25 @@ export function vaultBroken(keys, sync) {
 export const VAULT_BROKEN_WORDS = 'I can’t open my saved keys on this machine — don’t change anything; tell me.';
 
 export function secretsHeadline({ requests, keys, sync }) {
+  // warning-path: pageHead
   if (vaultBroken(keys, sync)) return { text: VAULT_BROKEN_WORDS, tone: 'bad' };
   if (!requests || !requests.ok) return { text: 'Can’t tell whether the agent is waiting on a password.', tone: 'muted' };
   const n = requests.counts.waiting;
   if (n === 0) return { text: 'Nothing is waiting.', tone: 'ok' };
+  // warning-path: pageHead
   return { text: `The agent is waiting on ${n === 1 ? '1 password' : `${n} passwords`}.`, tone: 'attn' };
 }
 
 export function secretsFacts({ requests, keys, sync }) {
   const facts = [];
   if (requests && requests.ok) {
+    // warning-path: pageHead
     facts.push({ n: requests.counts.waiting, label: 'waiting', tone: requests.counts.waiting ? 'attn' : null });
+    // warning-path: pageHead
     if (requests.counts.soon) facts.push({ n: requests.counts.soon, label: 'expiring within 5 min', tone: 'attn' });
   } else facts.push({ n: '?', label: 'waiting' });
   if (keys && keys.ok) facts.push({ n: keys.names.length, label: keys.names.length === 1 ? 'key held' : 'keys held' });
+  // warning-path: pageHead
   else facts.push({ n: '?', label: 'keys held', tone: keys && keys.decryptFailed ? 'bad' : null });
   if (sync && sync.on) facts.push({ n: sync.count, label: sync.push ? (sync.count === 1 ? 'machine synced to' : 'machines synced to') : 'receiving from others' });
   return facts.slice(0, 4);

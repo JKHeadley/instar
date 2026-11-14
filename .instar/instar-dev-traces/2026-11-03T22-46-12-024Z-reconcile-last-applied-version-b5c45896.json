@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "reconcile-last-applied-version",
+  "sessionId": "d15eff6b-af2a-4465-b809-d710912311d3",
+  "timestamp": "2026-11-03T22:46:12.024Z",
+  "artifactPath": "upgrades/side-effects/reconcile-last-applied-version.md",
+  "artifactSha256": "7ed25324258200a2c41c48e756ebd0406ef614d18f0a6b2a674e5a68a1934c86",
+  "coveredFiles": [
+    "src/core/AutoUpdater.ts",
+    "upgrades/side-effects/reconcile-last-applied-version.eli16.md",
+    "upgrades/side-effects/reconcile-last-applied-version.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only follow-up so the whole #2282 fix carries a decision record; the fix is a narrow state-record change that a revert fully undoes.",
+  "eli16Path": "upgrades/side-effects/reconcile-last-applied-version.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reconcile-last-applied-version.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "lastAppliedVersion only ever had one writer, the apply success branch; any other landing route left it stale."
+  }
+}

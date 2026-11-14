@@ -170,6 +170,19 @@ describe('spawnCodexExecJson — stream mechanics', () => {
     ).rejects.toThrow(/ENOENT/);
   });
 
+  it('cancels a launched child within the bounded termination period', async () => {
+    const script = writeScript('cancel.sh', 'exec sleep 10');
+    const controller = new AbortController();
+    const started = Date.now();
+    const call = spawnCodexExecJson(SH, [script], {
+      timeoutMs: 10_000, postExitGraceMs: 200, sigkillGraceMs: 200,
+      env: process.env, prompt: 'p', onLine: () => {}, signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 50);
+    await expect(call).rejects.toThrow(/aborted/);
+    expect(Date.now() - started).toBeLessThan(3_000);
+  }, 5_000);
+
   it('flushes a newline-less final carry as a line at settlement', async () => {
     const script = writeScript('nonewline.sh', `printf '%s' '{"tail":"no-newline"}'\nexit 0`);
     const lines: string[] = [];

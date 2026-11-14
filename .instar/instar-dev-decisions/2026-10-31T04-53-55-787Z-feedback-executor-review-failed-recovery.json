@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-31T04:53:55.787Z",
+  "slug": "feedback-executor-review-failed-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 461,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecuteStore.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/changeSet.ts",
+      "src/feedback-factory/execute/executePolicy.ts",
+      "src/feedback-factory/execute/executorPorts.ts",
+      "src/feedback-factory/execute/executorSession.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/feedback-factory/triage/FeedbackTriageStore.ts"
+    ],
+    "addedLines": 437,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

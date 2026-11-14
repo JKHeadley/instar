@@ -16,6 +16,7 @@
  * the RealChannelDriver's injected placement reader, not this sender.
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import type { SurfaceSender } from './RealChannelDriver.js';
 import { AbsenceUnverifiableError } from './LiveTestHarness.js';
 import type { SendResult, ReplyResult } from './LiveTestHarness.js';
@@ -78,7 +79,7 @@ export class TelegramLiveSender implements SurfaceSender {
       if (this.now() >= deadline) break;
       await this.sleep(pollMs);
     }
-    this.log(`no agent reply in topic ${topic} within ${opts.timeoutMs}ms`);
+    this.log(`no agent reply in ${topicRef(topic)} within ${opts.timeoutMs}ms`);
     return null;
   }
 
@@ -116,7 +117,7 @@ export class TelegramLiveSender implements SurfaceSender {
         const ids = entries.map(e => e.messageId).filter(n => Number.isFinite(n));
         const oldestInPage = ids.length ? Math.min(...ids) : -Infinity;
         if (oldestInPage > afterId) {
-          throw new AbsenceUnverifiableError(`topic ${topic} full ${HISTORY_LIMIT}-entry page is entirely after the marker — the marker scrolled off, post-marker messages may be unread (cannot prove completeness)`);
+          throw new AbsenceUnverifiableError(`${topicRef(topic)} full ${HISTORY_LIMIT}-entry page is entirely after the marker — the marker scrolled off, post-marker messages may be unread (cannot prove completeness)`);
         }
       }
       for (const e of entries) {

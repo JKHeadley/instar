@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "slug": "feedback-ci-floor-merge",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T10:14:53.105Z",
+  "artifactPath": "upgrades/side-effects/feedback-ci-floor-merge.md",
+  "artifactSha256": "906910be8c55cb0827aed9519bf195d878c73d8b38cebee26b8e95c07727f16b",
+  "specPath": "docs/specs/green-pr-automerge-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-03T08-30-08-421Z-feedback-ci-floor-merge.json",
+    ".instar/instar-dev-traces/2026-11-03T08-29-47-335Z-feedback-ci-floor-merge-175c0947.json",
+    ".instar/instar-dev-traces/2026-11-03T08-55-44-936Z-feedback-ci-floor-merge-1f3c9601.json",
+    ".instar/instar-dev-traces/2026-11-03T09-49-30-674Z-feedback-ci-floor-merge-6a50af5a.json",
+    ".instar/instar-dev-traces/2026-11-03T10-07-51-112Z-feedback-ci-floor-merge-4b31d89c.json",
+    "scripts/safe-merge.mjs",
+    "site/src/content/docs/features/feedback-delivery-checks.md",
+    "site/src/content/docs/features/feedback-factory-processing.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/reviewGate.ts",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/MergeRunner.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/feedback-execute-lifecycle.test.ts",
+    "tests/integration/feedback-execute-routes.test.ts",
+    "tests/integration/safe-merge-no-checks-ran.test.ts",
+    "tests/integration/safe-merge-non-main-base.test.ts",
+    "tests/unit/PostUpdateMigrator-feedbackExecutor.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/green-pr-automerger.test.ts",
+    "tests/unit/safe-merge-hardening.test.ts",
+    "upgrades/next/feedback-ci-floor-merge.md",
+    "upgrades/side-effects/feedback-ci-floor-merge.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Autonomous merge safety and protected merge tooling require an independently reviewed, head-bound trace and three-tier tests; this commit repairs a release fragment gate on the exact GitHub merge tree.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-gate-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 5
+      }
+    ]
+  }
+}

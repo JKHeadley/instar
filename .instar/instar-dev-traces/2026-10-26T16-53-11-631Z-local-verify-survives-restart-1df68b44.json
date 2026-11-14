@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "local-verify-survives-restart",
+  "sessionId": "3fc28b4d-c94e-440c-9adb-6bb2bfebe236",
+  "timestamp": "2026-10-26T16:53:11.631Z",
+  "artifactPath": "upgrades/side-effects/local-verify-survives-restart.md",
+  "artifactSha256": "fa879138ecbd471ddb850f95c30b6f5403cf60758be2bf9f7ec03ed1cf302ac2",
+  "coveredFiles": [
+    "src/testing/selfActionRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Merge of origin/main into the PR branch: one conflict in the self-action registry where main added attention-lifecycle-pass beside this PR's local-verify-interrupted-resume; both kept, no behavior change.",
+  "eli16Path": "docs/specs/local-verify-survives-restart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-survives-restart.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

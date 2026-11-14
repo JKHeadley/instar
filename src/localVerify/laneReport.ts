@@ -19,8 +19,14 @@ export interface FileCounts {
   failed: number;
   skipped: number;
   todo: number;
+  /** Proven failed assertions; collection/import errors do not count. */
+  assertionFailures?: number;
+  /** A pending/unknown assertion or file-level failure makes comparison unsafe. */
+  nonAssertionFailure?: boolean;
   /** Vitest's file-level message (an import/collect error); '' when none. */
   message?: string;
+  /** Wall time of the file in ms (vitest's start/end), when the report carried both. */
+  ms?: number;
 }
 
 export interface ParsedLaneReport {
@@ -61,12 +67,12 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
   const files = new Map<string, FileCounts>();
   for (const tr of (doc as { testResults: unknown[] }).testResults) {
     if (!tr || typeof tr !== 'object') throw new LaneReportParseError('testResults entry is not an object');
-    const r = tr as { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown };
+    const r = tr as { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown; startTime?: unknown; endTime?: unknown };
     if (typeof r.name !== 'string' || !Array.isArray(r.assertionResults)) {
       throw new LaneReportParseError('testResults entry lacks name or assertionResults');
     }
     const path = relativize(r.name, rootDir);
-    const c: FileCounts = files.get(path) ?? { passed: 0, failed: 0, skipped: 0, todo: 0, message: '' };
+    const c: FileCounts = files.get(path) ?? { passed: 0, failed: 0, skipped: 0, todo: 0, message: '', assertionFailures: 0, nonAssertionFailure: false };
     let assertionFailures = 0;
     for (const a of r.assertionResults) {
       const s = a && typeof a === 'object' ? (a as { status?: unknown }).status : undefined;
@@ -76,6 +82,8 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
       else {
         c.failed++;
         assertionFailures++;
+        if (s === 'failed') c.assertionFailures = (c.assertionFailures ?? 0) + 1;
+        else c.nonAssertionFailure = true;
         // Keep the first failing test's title and message (bounded) so a red record says why.
         if (!c.message) {
           const t = (a as { title?: unknown }).title;
@@ -87,8 +95,12 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
     }
     if (r.status !== 'passed' && assertionFailures === 0) {
       c.failed++;
+      c.nonAssertionFailure = true;
     }
     if (typeof r.message === 'string' && r.message && !c.message) c.message = r.message.slice(0, FAILURE_MESSAGE_MAX);
+    if (typeof r.startTime === 'number' && typeof r.endTime === 'number' && r.endTime >= r.startTime) {
+      c.ms = (c.ms ?? 0) + Math.round(r.endTime - r.startTime);
+    }
     files.set(path, c);
   }
   return { files };
@@ -101,6 +113,8 @@ export interface LaneRunInput {
   seconds: number;
   /** vitest's exit code; a non-zero exit with no failed test (an unhandled error) fails a gating lane. */
   exitCode?: number | null;
+  /** Stopped by fail-fast after another lane failed: no report, and its files are not "not run" failures. */
+  stoppedEarly?: boolean;
 }
 
 export interface LaneTotals {
@@ -129,6 +143,9 @@ export function evaluateRun(
   lanes: readonly LaneDefinition[] = LANES,
 ): RunEvaluation {
   const reasons: string[] = [];
+  /** Appended last, so the run's first reason is always a real failure, never a stopped lane. */
+  const stopped: string[] = [];
+  const stoppedLanes = new Set<LaneName>();
   const gatingOf = new Map(lanes.map((l) => [l.name, l.gating]));
   const runs = new Map<LaneName, LaneRunInput>();
   for (const r of laneRuns) {
@@ -161,6 +178,12 @@ export function evaluateRun(
       name: def.name, gating: def.gating, files: 0, tests: 0, passed: 0, failed: 0, skipped: 0, todo: 0,
       seconds: run?.seconds ?? 0,
     };
+    if (run?.stoppedEarly && !run.report) {
+      stoppedLanes.add(def.name);
+      if (def.gating) stopped.push(`lane-stopped-early:${def.name}`);
+      totals.push(t);
+      continue;
+    }
     if (!run || !run.report) {
       if (def.gating) reasons.push(`lane-report-missing:${def.name}`);
       totals.push(t);
@@ -188,6 +211,7 @@ export function evaluateRun(
   for (const f of inventory.files) {
     const where = appearances.get(f.path) ?? [];
     if (where.length === 0) {
+      if (stoppedLanes.has(f.lane)) continue; // its lane was stopped after another lane failed
       reasons.push(`file-not-run:${f.path}`);
       continue;
     }
@@ -202,6 +226,9 @@ export function evaluateRun(
     else if (c.passed + c.skipped + c.todo === 0) reasons.push(`no-tests-collected:${f.path}`);
   }
 
+  // A stopped lane only exists because another lane failed; it is never the run's only reason.
+  if (stopped.length > 0 && reasons.length === 0) reasons.push('lane-stopped-without-failure');
+  reasons.push(...stopped);
   return { outcome: reasons.length === 0 ? 'success' : 'failure', reasons, lanes: totals, perFile };
 }
 

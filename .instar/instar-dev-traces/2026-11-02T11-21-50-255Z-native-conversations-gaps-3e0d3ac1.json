@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "native-conversations-gaps",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T11:21:50.255Z",
+  "artifactPath": "upgrades/side-effects/native-conversations-gaps.md",
+  "artifactSha256": "6181cfe1d1f3fddd517d8424339dd7b48a533d947fcf18a6189d6492959359d3",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "src/core/AppConversationService.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/appConversationText.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "tests/unit/PostUpdateMigrator-appConversationsGaps.test.ts",
+    "tests/unit/mobileConversationListPaging.test.ts",
+    "upgrades/next/native-conversations-gaps.md",
+    "upgrades/side-effects/native-conversations-gaps.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven fixes to device routes: list paging, pool reads, Telegram send preflight alignment, approval-method display field.",
+  "secondPass": "false",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the Telegram send route runs once per device request (already rate-limited and idempotent through MobileChatRequestStore); this change only replaces its content refusals with token removal, and the pool reads are request-driven read-only fan-outs"
+  }
+}

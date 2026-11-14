@@ -19,6 +19,14 @@ import { OriginSourcePoller } from './OriginSourcePoller.js';
 export interface OriginConfigObservation {
   config: Record<string, any>; observedAt: number; version: string; revision: number;
 }
+// Nothing waits on a read: sends consult the last snapshot and its 30 s bound.
+// 2 s was too short for a saturated host, where 46 reads timed out in 3 hours on
+// the Studio (2026-11-05) and each one refused every send for about 6 s.
+const CONFIG_READ_BUDGET_MS = 10_000;
+/** The read ran out of time. It says nothing about what the config now holds. */
+export function isOriginConfigReadTimeout(error: unknown): boolean {
+  return error instanceof Error && error.message === 'origin-config-reader-timeout';
+}
 interface ConfigReadAttempt { cancelled: boolean; deadline: number; abort: AbortController; worker: Worker | null; cancel: (() => void) | null; }
 
 /** Real config plus the existing SecretMigrator authority, read afresh. No
@@ -34,7 +42,8 @@ export class OriginConfigReader {
   #attemptedAt: number | null = null;
   #succeededAt: number | null = null;
   #reason = 'source-not-read';
-  constructor(readonly stateDir: string, readonly workerUrl = new URL('./OriginConfigReader.worker.js', import.meta.url)) {
+  constructor(readonly stateDir: string, readonly workerUrl = new URL('./OriginConfigReader.worker.js', import.meta.url),
+    readonly readBudgetMs = CONFIG_READ_BUDGET_MS) {
     this.#sourcePoller = new OriginSourcePoller([
       path.join(stateDir, 'config.json'),
       path.join(stateDir, 'secrets', 'config.secrets.enc'),
@@ -57,11 +66,17 @@ export class OriginConfigReader {
     if (this.#closed) return Promise.reject(new Error('origin-config-reader-closed'));
     if (this.#pending) return this.#pending;
     this.#attemptedAt = Date.now();
-    const attempt: ConfigReadAttempt = { cancelled: false, deadline: Date.now() + 2000,
+    const attempt: ConfigReadAttempt = { cancelled: false, deadline: Date.now() + this.readBudgetMs,
       abort: new AbortController(), worker: null, cancel: null };
     this.#active = attempt;
     this.#pending = this.#read(attempt).then(result => { this.#healthy = true; this.#succeededAt = result.observedAt; this.#reason = 'source-observed'; return result; })
-      .catch(error => { if (this.#healthy) this.#invalidate(); this.#reason = 'source-read-unavailable'; throw error; });
+      .catch(error => {
+        // A real refusal revokes at once. A timeout leaves the last observation
+        // to age out under the consumers' freshness bound; a change on disk still
+        // revokes through the source poller, which does not depend on this read.
+        if (this.#healthy && !isOriginConfigReadTimeout(error)) this.#invalidate();
+        this.#reason = 'source-read-unavailable'; throw error;
+      });
     return this.#pending;
   }
   #assertCurrent(attempt: ConfigReadAttempt): void {
@@ -84,7 +99,7 @@ export class OriginConfigReader {
         timeout = setTimeout(() => {
           attempt.cancelled = true; attempt.abort.abort(); attempt.cancel?.();
           reject(new Error('origin-config-reader-timeout'));
-        }, 2000);
+        }, this.readBudgetMs);
       })]);
       this.#assertCurrent(attempt);
       if (revision !== this.#revision) throw new Error('origin-config-source-changed');
@@ -101,6 +116,8 @@ export class OriginConfigReader {
     }
   }
   async #readSources(revision: number, attempt: ConfigReadAttempt): Promise<OriginConfigObservation> {
+    // Freshness counts from before the bytes were read, not from when the read finished.
+    const observedAt = Date.now();
     await this.#watch(); this.#assertCurrent(attempt);
     const configPath = path.join(this.stateDir, 'config.json');
     if ((await stat(configPath)).size > 1024 * 1024) throw new Error('origin-config-size');
@@ -119,7 +136,7 @@ export class OriginConfigReader {
     this.#assertCurrent(attempt);
     if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('origin-config-shape');
     const version = createHash('sha256').update(JSON.stringify(config)).digest('hex');
-    return { config, observedAt: Date.now(), version: `${this.#boot}:${++this.#sequence}:${version}`, revision };
+    return { config, observedAt, version: `${this.#boot}:${++this.#sequence}:${version}`, revision };
   }
   #merge(config: Record<string, unknown>, attempt: ConfigReadAttempt): Promise<Record<string, unknown>> {
     const env: NodeJS.ProcessEnv = {};
@@ -137,7 +154,7 @@ export class OriginConfigReader {
         const complete = (terminated: boolean) => {
           attempt.cancel = null; attempt.worker = null;
           if (terminated && value && !attempt.cancelled && this.#active === attempt && !this.#closed && Date.now() < attempt.deadline) resolve(value);
-          else reject(new Error('origin-config-secret-source-unavailable'));
+          else reject(new Error(attempt.cancelled || Date.now() >= attempt.deadline ? 'origin-config-reader-timeout' : 'origin-config-secret-source-unavailable'));
         };
         // Source ownership includes worker termination; another read cannot
         // accumulate a second worker while the old one is still winding down.

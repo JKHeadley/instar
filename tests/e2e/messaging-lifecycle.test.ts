@@ -237,17 +237,8 @@ describe('E2E: Messaging lifecycle', () => {
     expect(stored).not.toBeNull();
     expect(stored!.message.type).toBe('request');
     expect(stored!.message.priority).toBe('high');
-    expect(stored!.delivery.phase).toBe('sent');
-
-    // Simulate delivery
-    await messageStore.updateDelivery(messageId, {
-      phase: 'delivered',
-      transitions: [
-        { from: 'created', to: 'sent', at: new Date().toISOString() },
-        { from: 'sent', to: 'delivered', at: new Date().toISOString() },
-      ],
-      attempts: 1,
-    });
+    // Same agent, named session → the router typed it into that session.
+    expect(stored!.delivery.phase).toBe('delivered');
 
     // Ack
     const ackRes = await request(app)

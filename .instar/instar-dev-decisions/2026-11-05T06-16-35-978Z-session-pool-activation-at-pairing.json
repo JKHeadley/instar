@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-05T06:16:35.978Z",
+  "slug": "session-pool-activation-at-pairing",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/sessionPoolPairActivation.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

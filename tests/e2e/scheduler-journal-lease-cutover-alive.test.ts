@@ -9,13 +9,11 @@
  * built EXACTLY as src/commands/server.ts builds it — reading the flags from a
  * real config object, the lease epoch from a REAL MultiMachineCoordinator, and
  * the peers' advertised capability from a REAL MachinePoolRegistry fed by a real
- * heartbeat — drives a REAL JobScheduler.triggerJob to take a journal lease
- * (coherent pool) or fall back to the bus (mixed pool / flag off), proving the
- * gate is wired and acting, not a no-op stub.
+ * heartbeat — drives a REAL JobScheduler.triggerJob. The production readiness
+ * floor keeps journal claiming dark until peer receive and arbitration exist.
  *
- * The load-bearing invariant verified end-to-end: never-both — a coherent pool
- * takes the durable journal lease and NEVER the bus broadcast; a mixed pool
- * takes the bus and NEVER the journal lease.
+ * The load-bearing invariant verified end-to-end: a coherent flag alone cannot
+ * select a local-only journal lease, which could double-run across peers.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -24,7 +22,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { JobClaimManager } from '../../src/scheduler/JobClaimManager.js';
-import { JobLeaseClaimStore } from '../../src/scheduler/JobLeaseClaimStore.js';
+import { JobLeaseClaimStore, JOB_LEASE_POOL_AUTHORITY_READY } from '../../src/scheduler/JobLeaseClaimStore.js';
 import { MultiMachineCoordinator } from '../../src/core/MultiMachineCoordinator.js';
 import { MachinePoolRegistry } from '../../src/core/MachinePoolRegistry.js';
 import { GuardPostureStore } from '../../src/core/GuardPostureStore.js';
@@ -115,7 +113,7 @@ function setup(opts: { enabled: boolean; dryRun: boolean; peerAdvertises: boolea
   sched.setJournalLeaseCutover(
     leaseStore,
     () => ({
-      enabled: config.multiMachine?.seamlessness?.ws43JournalLease === true,
+      enabled: JOB_LEASE_POOL_AUTHORITY_READY && config.multiMachine?.seamlessness?.ws43JournalLease === true,
       dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== false,
       epoch: coordinator.getLeaseEpoch(),
       peers: registry.getCapacities().filter((c) => c.machineId !== poolSelfId).map((c) => ({
@@ -128,16 +126,16 @@ function setup(opts: { enabled: boolean; dryRun: boolean; peerAdvertises: boolea
   return { sched, spawn, leaseStore, busClaim: busClaim! };
 }
 
-describe('E2E: WS4.3 journal-lease cutover is ALIVE through the real production wiring', () => {
-  it('flag ON + coherent pool → takes the durable JOURNAL lease (never the bus)', async () => {
-    // dryRun:false means the live provider must report dryRun:false; we pass it.
+describe('E2E: WS4.3 journal-lease readiness through production wiring', () => {
+  it('flag ON + coherent pool stays on BUS until peer claim authority is ready', async () => {
     const { sched, spawn, leaseStore, busClaim: bc } = setup({ enabled: true, dryRun: false, peerAdvertises: true });
     const busSpy = vi.spyOn(bc, 'tryClaim');
     const result = await sched.triggerJob(job.slug, 'scheduled');
     expect(result).toBe('triggered');
     expect(spawn).toHaveBeenCalledTimes(1);
-    expect(leaseStore.getClaim(job.slug)?.machineId).toBe('m1');
-    expect(busSpy).not.toHaveBeenCalled(); // never-both
+    expect(JOB_LEASE_POOL_AUTHORITY_READY).toBe(false);
+    expect(leaseStore.getClaim(job.slug)).toBeUndefined();
+    expect(busSpy).toHaveBeenCalled();
   });
 
   it('flag ON + mixed pool (peer does not advertise) → BUS broadcast (never the journal)', async () => {

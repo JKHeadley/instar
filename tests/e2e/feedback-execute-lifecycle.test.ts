@@ -64,6 +64,8 @@ function executorEdge(root: string, clock: { now: number }) {
     pr: null as null | { number: number; headRefOid: string; mergedAt: string | null; mergeCommit: string | null; labels: string[] },
     reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
     merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
+    confinedGuardChecks: 0,
+    mergeChecksPending: false,
     release: 'none' as { tag: string; taggedAt: number } | 'none',
   };
   const source = path.join(root, 'source');
@@ -87,16 +89,28 @@ function executorEdge(root: string, clock: { now: number }) {
       reviews: async () => state.reviews,
       removeLabel: async () => { state.pr!.labels = []; return true; },
       disableAuto: async () => true,
-      safeMerge: async (_slug: string, pr: number, sha: string) => { state.merges.push({ pr, sha }); return { exitCode: 5, stdout: 'safe-merge-result: {"result":"armed"}' }; },
+      safeMerge: async (_slug: string, pr: number, sha: string) => {
+        state.merges.push({ pr, sha });
+        if (state.mergeChecksPending) return { exitCode: 1, stdout: 'safe-merge-result: {"result":"deferred:checks-pending"}' };
+        state.pr!.mergedAt = new Date(clock.now).toISOString();
+        state.pr!.mergeCommit = 'c'.repeat(40);
+        return { exitCode: 0, stdout: 'safe-merge-result: {"result":"merged"}' };
+      },
     },
     runner: {
       available: () => ({ ok: true as const, version: '0.0.77' }),
-      run: async (cmd: { command: string; cwd: string }) => {
+      run: async (cmd: { command: string; cwd: string; settings: { filesystem: { denyWrite: string[] }; network: { allowedDomains: string[]; allowMachLookup?: string[] } } }) => {
+        expect(cmd.settings.filesystem.denyWrite).toContain(path.join(cmd.cwd, '.instar'));
+        expect(cmd.settings.network.allowedDomains).toEqual([]);
+        expect(cmd.settings.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
+        state.confinedGuardChecks++;
         const c = cmd.command;
         // The (a) base-check clone still has the crashing source; every other tree has the fix.
         const atBase = /-base$/.test(cmd.cwd) && fs.readFileSync(path.join(cmd.cwd, 'src', 'scheduler.ts'), 'utf8').includes('crash');
         const ok = /better-sqlite3/.test(c) || /^git /.test(c) || c === 'npm run lint' || (/vitest/.test(c) && !atBase);
-        const out = /vitest/.test(c) && atBase ? 'FAIL tests/scheduler.test.ts\nAssertionError: expected crash not to be thrown' : '';
+        const out = /vitest/.test(c)
+          ? atBase ? 'FAIL tests/scheduler.test.ts\nAssertionError: expected crash not to be thrown' : ' Tests  1 passed (1)'
+          : '';
         return { exitCode: ok ? 0 : 1, signal: null, stdout: out, stderr: '', timedOut: false, outputCapped: false };
       },
     },
@@ -105,7 +119,16 @@ function executorEdge(root: string, clock: { now: number }) {
       evict: () => 0, sizeBytes: () => 0,
     },
     sessions: {
-      spawnConfined: async (input: { name: string; prompt: string; cwd: string }) => {
+      spawnConfined: async (input: { name: string; prompt: string; cwd: string; settingsPath: string }) => {
+        const settings = JSON.parse(fs.readFileSync(input.settingsPath, 'utf8')) as {
+          sandbox: { filesystem: { denyWrite: string[] }; network: { allowedDomains: string[]; allowMachLookup?: string[] } };
+          permissions: { deny: string[] };
+        };
+        expect(settings.sandbox.filesystem.denyWrite).toContain(path.join(input.cwd, '.instar'));
+        expect(settings.sandbox.network.allowedDomains).toEqual([]);
+        expect(settings.sandbox.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
+        expect(settings.permissions.deny).toContain(`Edit(/${path.resolve(input.cwd, '.instar')}/**)`);
+        state.confinedGuardChecks++;
         state.spawned.push(input.name);
         if (input.name.startsWith('feedback-canary-')) {
           fs.writeFileSync(/create (\S+\.feedback-canary-ok-[0-9a-f]+)/.exec(input.prompt)![1], 'ok');
@@ -174,10 +197,11 @@ describe('feedback executor — production lifecycle (live on a development agen
     tracker = new InitiativeTracker(stateDir);
     const intelligence: IntelligenceProvider = {
       evaluate: async (prompt: string, options?: IntelligenceOptions) => {
-        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
         if (prompt.includes('registered Feedback Factory triage authority')) {
+          options?.onModel?.({ model: 'gpt-6-astra', framework: 'codex-cli' });
           return JSON.stringify({ decisions: packetsFrom(prompt).map((p) => decisionRow(p.clusterId, { severity: 'high', priority: 85, userFacing: false })) });
         }
+        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
         const ids = [...prompt.matchAll(/"clusterId"\s*:\s*"([^"]+)"/g)].map((m) => m[1]).filter((id) => id !== '...');
         return JSON.stringify({ decisions: [...new Set(ids)].map((clusterId) => ({ clusterId, outcome: 'ready', confidence: 0.97, reasonCodes: ['coherent-recurrence'], evidenceIds: [`cluster:${clusterId}`] })) });
       },
@@ -230,7 +254,7 @@ describe('feedback executor — production lifecycle (live on a development agen
 
     expect((await request(app).post('/feedback-factory/triage/authority').set(HX).send({
       pin: PIN, action: 'create', operatorDecisionRef: 'operator-triage', agentId: 'e2e', ownerMachineId: 'e2e', ownerEpoch: 1,
-      provider: 'claude-code', modelFamily: 'fable-5', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5,
+      provider: 'codex-cli', modelFamily: 'gpt-6-astra', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5,
     })).status).toBe(200);
     clock.now += 60_000;
     const triageTick = await request(app).post('/feedback-factory/triage/tick').set(HX);
@@ -247,6 +271,7 @@ describe('feedback executor — production lifecycle (live on a development agen
     expect(status.counts).toMatchObject({ running: 1 });
     expect(edge.state.spawned[0]).toMatch(/^feedback-canary-/);
     expect(edge.state.spawned[1]).toMatch(/^feedback-.*-a1$/);
+    expect(edge.state.confinedGuardChecks).toBeGreaterThan(1);
     expect((await request(app).get('/feedback-factory/triage/queue').set(H)).body.items[0].executionState).toBe('running');
 
     // The session ended → confined verification → publication with the hold label.
@@ -258,13 +283,18 @@ describe('feedback executor — production lifecycle (live on a development agen
     expect(edge.state.prHeads[0]).toMatch(/^echo-bot:feedback\//);
     expect(edge.state.pr!.labels).toEqual(['hold']);
 
-    // The repository owner approves the exact head → safe-merge --auto pinned to it → merged.
+    // The owner approves the exact head. Queued CI defers without consuming
+    // the one refusal retry; the next tick after CI clears merges that head.
     edge.state.reviews = [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: new Date(clock.now).toISOString() }];
+    edge.state.mergeChecksPending = true;
     status = await executeTick(app, clock);
     expect(edge.state.merges).toEqual([{ pr: 7, sha: HEAD_SHA }]);
-    edge.state.pr!.mergedAt = new Date(clock.now).toISOString();
-    edge.state.pr!.mergeCommit = 'c'.repeat(40);
+    expect(status.counts).toMatchObject({ 'pr-open': 1 });
+    expect((await request(app).get('/feedback-factory/execute/status').set(H)).body.counts).toMatchObject({ 'pr-open': 1 });
+    edge.state.mergeChecksPending = false;
+    clock.now += 5 * 60_000 + 1;
     status = await executeTick(app, clock);
+    expect(edge.state.merges).toEqual([{ pr: 7, sha: HEAD_SHA }, { pr: 7, sha: HEAD_SHA }]);
     expect(status.counts).toMatchObject({ merged: 1 });
     expect(tracker.get(initiative.id)!.phases.find((p) => p.id === 'build')!.status).toBe('done');
     expect(tracker.get(initiative.id)!.status).not.toBe('completed');

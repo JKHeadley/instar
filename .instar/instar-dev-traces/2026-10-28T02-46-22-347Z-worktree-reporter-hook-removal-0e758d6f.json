@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "worktree-reporter-hook-removal",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-28T02:46:22.347Z",
+  "artifactPath": "upgrades/side-effects/worktree-reporter-hook-removal.md",
+  "artifactSha256": "e3c3304e615041b04107160f9dd696eaef1f0c68315a8a6f507d2e937d19caf6",
+  "coveredFiles": [
+    "docs/specs/worktree-reporter-hook-removal.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/http-hook-templates.ts",
+    "tests/unit/PostUpdateMigrator-worktreeReporterHooks.test.ts",
+    "tests/unit/hook-installation.test.ts",
+    "tests/unit/http-hook-templates.test.ts",
+    "upgrades/next/worktree-reporter-hook-removal.md",
+    "upgrades/side-effects/worktree-reporter-hook-removal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes the reporter from two Claude Code hook events where it broke worktree creation; settings migration is idempotent and removes reporter entries only; revert-safe.",
+  "eli16Path": "docs/specs/worktree-reporter-hook-removal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-reporter-hook-removal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

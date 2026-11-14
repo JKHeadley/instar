@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T09:21:13.915Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "96c83399fc355c8f281a2518e9ae55fe7c1b05d1e0f37c5039ac95bd4bbe8bd5",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.eli16.md",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "upgrades/side-effects/native-remote-desktop-first-mac.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

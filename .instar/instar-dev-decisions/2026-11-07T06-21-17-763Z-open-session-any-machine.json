@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-07T06:21:17.763Z",
+  "slug": "open-session-any-machine",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 88,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/mobileSessionRoutes.ts"
+    ],
+    "addedLines": 79,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a read on the person's tap, nothing self-triggered"
+  },
+  "verdict": "pass"
+}

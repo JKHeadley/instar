@@ -24,6 +24,7 @@
  */
 
 import path from 'node:path';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { ConversationStore } from './ConversationStore.js';
 import {
   resolveSingleNegotiatorConfig,
@@ -80,6 +81,11 @@ export interface SendGateDeps {
   now?: () => number;
 }
 
+/** A gate verdict is per send: one row per thread and verdict per hour, carrying what it stands for. */
+function recordNegotiatorVerdict(threadId: string, kind: 'fired' | 'error', reason: string, context: Record<string, string | number | boolean | null>): void {
+  featureEvidence.recordAtMostEvery('threadline.singleNegotiator', `${threadId}|${reason}`, 60 * 60 * 1000, { kind, reason, context: { threadId, ...context } });
+}
+
 /**
  * Evaluate the send gate for one outbound send. Returns the verdict the route
  * acts on. Performs the lease CAS + holding-notice stamp + observability log
@@ -105,6 +111,7 @@ export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Pr
       dryRun: cfg.dryRun,
       detail: 'no-conversation-store',
     });
+    recordNegotiatorVerdict(threadId, 'error', 'fail-open: no-conversation-store', { dryRun: cfg.dryRun });
     return { decision: 'allow', reason: 'fail-open' };
   }
 
@@ -121,6 +128,7 @@ export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Pr
       dryRun: cfg.dryRun,
       detail: 'no-owner-session-identity',
     });
+    recordNegotiatorVerdict(threadId, 'error', 'fail-open: no-owner-session-identity', { dryRun: cfg.dryRun });
     return { decision: 'allow', reason: 'fail-open' };
   }
 
@@ -144,6 +152,7 @@ export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Pr
       dryRun: cfg.dryRun,
       detail: reason,
     });
+    recordNegotiatorVerdict(threadId, 'error', /CAS retry budget/.test(reason) ? 'fail-open: cas-exhausted' : 'fail-open: store-error', { dryRun: cfg.dryRun, sessionName: ownerSessionName });
     return { decision: 'allow', reason: 'fail-open' };
   }
 
@@ -156,6 +165,7 @@ export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Pr
       epoch: lease.lease.epoch,
       dryRun: cfg.dryRun,
     });
+    recordNegotiatorVerdict(threadId, 'fired', 'allow-own', { dryRun: cfg.dryRun, sessionName: ownerSessionName, epoch: lease.lease.epoch });
     return { decision: 'allow', reason: 'own' };
   }
 
@@ -171,6 +181,7 @@ export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Pr
       epoch: lease.lease.epoch,
       dryRun: true,
     });
+    recordNegotiatorVerdict(threadId, 'fired', 'would-hold', { dryRun: true, sessionName: ownerSessionName, ownerSessionName: lease.lease.ownerSessionName, epoch: lease.lease.epoch });
     return { decision: 'allow', reason: 'would-hold' };
   }
 
@@ -204,6 +215,7 @@ export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Pr
     dryRun: false,
     detail: emit ? 'notice-emitted' : 'notice-rate-limited',
   });
+  recordNegotiatorVerdict(threadId, 'fired', 'hold', { dryRun: false, sessionName: ownerSessionName, ownerSessionName: lease.lease.ownerSessionName, epoch: lease.lease.epoch, noticeEmitted: emit });
   return { decision: 'hold', notice, ownerSessionName: lease.lease.ownerSessionName, epoch: lease.lease.epoch };
 }
 

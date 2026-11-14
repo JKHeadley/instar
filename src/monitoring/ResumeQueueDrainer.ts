@@ -126,6 +126,12 @@ export interface ResumeQueueDrainerDeps {
    */
   autonomousRunFinished?: (topicId: number, reason: string) => boolean;
   /**
+   * Chief of Staff (docs/specs/chief-of-staff-topic.md §2.4) — OPTIONAL drain-time check: an
+   * open CoS action intent owns this topic's slot ⇒ the entry is invalidated (`cos-intent-open`),
+   * never a spawn. Absent ⇒ today's behaviour; a throwing dep resolves to the SAFE side.
+   */
+  cosStandDown?: (topicId: number) => string | null;
+  /**
    * GAP-B D9 (spec: autonomous-registration-guarantee.md) — OPTIONAL drain-time
    * re-validation for an entry admitted via the COMMITMENT_ACTIVE_RUN_REASON
    * backstop (an UNregistered run kept alive by a fresh open commitment). Returns
@@ -663,6 +669,11 @@ export class ResumeQueueDrainer {
       if (this.safeBool(() => this.deps.topicOwnerElsewhere(topicId), true)) return 'topic-owner-elsewhere';
       if (!this.safeBool(() => this.deps.topicBindingMatches(topicId, entry.cwd), false)) return 'binding-mismatch';
       if (this.safeBool(() => this.deps.operatorStopSince(topicId, sinceIso), true)) return 'operator-stop';
+      if (this.deps.cosStandDown) {
+        let cos: string | null = 'cos-dep-threw';
+        try { cos = this.deps.cosStandDown(topicId); } catch { /* @silent-fallback-ok: a throwing Chief of Staff dep invalidates the entry (safe side), never a spawn */ cos = 'cos-dep-threw'; }
+        if (cos) return 'cos-intent-open';
+      }
       // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md): for an
       // entry admitted via the age-limit-active-run path, re-verify the run is STILL
       // live immediately before the spawn. If it completed or its window elapsed since

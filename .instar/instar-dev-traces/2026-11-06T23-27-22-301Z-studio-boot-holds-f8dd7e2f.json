@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "studio-boot-holds",
+  "sessionId": "e77d956c-6715-4b47-be1d-da5a96e02065",
+  "timestamp": "2026-11-06T23:27:22.301Z",
+  "artifactPath": "upgrades/side-effects/studio-boot-holds.md",
+  "artifactSha256": "67f6c426f79dfd795509d0e5be38992e150599a562fb9ef290cb94bc1ddccf3c",
+  "coveredFiles": [
+    "docs/specs/studio-boot-holds.eli16.md",
+    "src/core/ProjectMapper.ts",
+    "src/core/UpdateChecker.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/ProjectMapper-related-worktrees-no-git.test.ts",
+    "tests/unit/UpdateChecker-event-loop.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/serviceSeams-listOpenPrs.test.ts",
+    "tests/unit/update-provenance-xattr.test.ts",
+    "upgrades/next/studio-boot-holds.md",
+    "upgrades/side-effects/studio-boot-holds.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three independent internal timing fixes, about 120 source lines, no state format or config change; a revert fully undoes them.",
+  "eli16Path": "docs/specs/studio-boot-holds.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-boot-holds.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot per update attempt: two xattr passes, each time-limited, with no retry or loop. The update itself is unchanged."
+  }
+}

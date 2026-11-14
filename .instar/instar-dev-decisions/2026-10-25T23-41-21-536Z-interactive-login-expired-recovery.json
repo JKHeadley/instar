@@ -1,0 +1,42 @@
+{
+  "ts": "2026-10-25T23:41:21.536Z",
+  "slug": "interactive-login-expired-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 540,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/InteractiveLoginExpiredRecovery.ts",
+      "src/core/LoginExpiredSignature.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SubscriptionLoginLedger.ts",
+      "src/scaffold/templates.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 519,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered controller interactive-login-expired-swap drives the real decideLoginExpiredSwap brake: at most one swap per session per 10 min and 3 per session, so under a permanently refused swap the count settles at 3 (horizon-independent); successes are bounded by the pool size because each dead source account is marked needs-reauth and excluded."
+    }
+  },
+  "verdict": "pass"
+}

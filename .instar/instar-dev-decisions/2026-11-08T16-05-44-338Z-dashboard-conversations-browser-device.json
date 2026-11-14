@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-08T16:05:44.338Z",
+  "slug": "dashboard-conversations-browser-device",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "browser-activation-effect-retry: control-loop edge = an activation effect fails -> nextAt moves out; steady-state bound = one attempt in flight per record, nextEffectAttemptAt 30 s doubling to a 1 h ceiling (<= 728 attempts per record over 30 days), records bounded by maxBrowsers and maxSetupsPerHour; settling brake = the 1 h ceiling, one report after 24 attempts, one local fallback notice (fallbackRaisedAt), and the in-memory work flag that stops all reads when nothing is pending. Registered in src/testing/selfActionRegistry.ts."
+    }
+  },
+  "verdict": "pass"
+}

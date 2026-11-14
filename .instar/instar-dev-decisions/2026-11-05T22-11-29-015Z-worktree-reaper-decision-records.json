@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-05T22:11:29.015Z",
+  "slug": "worktree-reaper-decision-records",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 126,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/InstarWorktreeManager.ts",
+      "src/monitoring/agentWorktreeGit.ts"
+    ],
+    "addedLines": 115,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

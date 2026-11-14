@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-07T19:36:24.922Z",
+  "slug": "conversation-graph-removal-at-size",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphIntake.ts",
+      "src/core/ConversationGraphReplication.ts",
+      "src/core/GraphDurableFileMemo.ts",
+      "src/server/ConversationGraphMemberLossSurface.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new trigger or loop; existing work yields more often."
+  },
+  "verdict": "blocked"
+}

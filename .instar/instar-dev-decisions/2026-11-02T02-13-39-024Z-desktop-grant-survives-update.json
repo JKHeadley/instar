@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-02T02:13:39.024Z",
+  "slug": "desktop-grant-survives-update",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/check-native-desktop-release.mjs touches release script (fleet publish path)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 10,
+  "loc": 540,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/check-native-desktop-release.mjs",
+      "src/core/DesktopHelperPermissionNotice.ts",
+      "src/core/DesktopHelperRetention.ts",
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 523,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Not an unbounded loop: a 15-minute reader that raises at most one Attention item per helper source per Mac, held by an atomic marker and a stable conditionKey. A failed send retries at the next tick and lands on the same row. It restarts, kills and respawns nothing."
+  },
+  "verdict": "blocked"
+}

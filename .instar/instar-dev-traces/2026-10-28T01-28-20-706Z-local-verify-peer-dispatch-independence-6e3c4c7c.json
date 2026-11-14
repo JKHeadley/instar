@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-dispatch-independence",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-28T01:28:20.706Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-dispatch-independence.md",
+  "artifactSha256": "f788edc06162829c34b87a2acf0cd7c377a2efd6493d73f9b7284c3be28fe778",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-peer-dispatch-independence.md",
+    "upgrades/side-effects/local-verify-peer-dispatch-independence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Coordinator dispatch and suite priority affect merge verification scheduling across machines; use the approved spec and three test tiers.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

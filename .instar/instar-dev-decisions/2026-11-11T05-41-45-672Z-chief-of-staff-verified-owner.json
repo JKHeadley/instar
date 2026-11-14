@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-11T05:41:45.672Z",
+  "slug": "chief-of-staff-verified-owner",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 326,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/plain-user-notices-baseline.json",
+      "src/commands/server.ts",
+      "src/core/chiefOfStaffOwner.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/ChiefOfStaffTopic.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 287,
+    "deletedLines": 39
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Bounded one-shot re-check, not a loop: a held Chief of Staff topic is re-checked at most 3 times, 60 s apart, by a single chain (_cosTopicRetryPending), and each check only reads state; no restart/spawn/notify cascade. The only notice (ownerless degradation report) fires once per episode."
+  },
+  "verdict": "blocked"
+}

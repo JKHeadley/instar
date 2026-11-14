@@ -54,7 +54,8 @@ function makeSlack(stateDir: string, configOverrides: Partial<SlackConfig> = {})
 
 function appWith(slack: SlackAdapter, stateDir: string): express.Express {
   const ctx = {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir, port: 0, users: [], sessions: {} as unknown, scheduler: {} as unknown },
+    // The origin footer is covered by its own tests; this suite checks only the mrkdwn conversion.
+    config: { projectName: 'test', projectDir: '/tmp', stateDir, port: 0, users: [], sessions: {} as unknown, scheduler: {} as unknown, messageOrigin: { display: { enabled: false } } },
     sessionManager: { listRunningSessions: () => [] },
     state: { getJobState: () => null, getSession: () => null },
     scheduler: null, telegram: null, slack, relationships: null, feedback: null, dispatches: null,

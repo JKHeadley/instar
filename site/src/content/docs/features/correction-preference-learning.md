@@ -7,7 +7,7 @@ The **Correction & Preference Learning Sentinel** is the conversational twin of 
 
 Today those corrections help only the conversation they happen in. This feature captures the recurring ones, distills the lesson, and routes it — so a correction you make three times across a week becomes one durable change instead of three unrelated one-offs.
 
-It is **signal-only** and **ships dark** (off by default behind `monitoring.correctionLearning.enabled`). It never blocks or rewrites an outbound message — surfacing a wrongly-suppressed message is worse than missing a preference, so the loop only observes, distills, records, and routes.
+Preference learning is **signal-only** and **ships dark** (off by default behind `monitoring.correctionLearning.enabled`). It never blocks or rewrites an outbound message — surfacing a wrongly-suppressed message is worse than missing a preference, so the loop only observes, distills, records, and routes.
 
 ## The two kinds of lesson
 
@@ -23,7 +23,7 @@ The pipeline runs off the message-delivery hot path (fire-and-forget — a disti
 1. **Detect (Layer 0).** `HumanAsDetectorLog` is extended with `preference` and `frustration` categories — deterministic, metadata-only, and excluded from the guardian-failure heat map. This layer is always-on and free.
 2. **Capture.** `CorrectionCaptureLoop` holds a short, per-topic look-back ring (LRU/TTL-evicted, never serialized into health output). Captured turns are deterministically scrubbed of secrets *before* anything leaves the process.
 3. **Distill (Tier-1).** `CorrectionCaptureLoop` enqueues a Haiku-class distillation in its own rate-limited queue. The captured turns are framed as untrusted data — the model is instructed never to follow instructions inside them and to derive the lesson only from *your* turns. The output is a strict, enum-validated JSON envelope; the model's confidence is advisory only. The distilled lesson is scrubbed again before it is ever persisted. When that distillation call is rate-limited (the shared LLM circuit breaker is open, or the daily spend cap is reached), the already-scrubbed capture is not dropped — it is persisted to the durable backlog (`CorrectionCaptureBacklog`) and distilled later in a headroom window, so a sustained throttle can no longer silently lose every correction.
-4. **Record.** `CorrectionLedger` is a SQLite store (mirroring the failure ledger) of distilled, scrubbed lessons — deduplicated by a stable hash so the same lesson phrased two different ways collapses to one row. It never stores raw conversation text.
+4. **Record.** `CorrectionLedger` is a SQLite store (mirroring the failure ledger) of distilled, scrubbed lessons — deduplicated by a stable hash so the same lesson phrased two different ways collapses to one row. Ordinary preference rows store the distilled lesson rather than conversation text; serious failure cases also retain bounded, scrubbed context as described below.
 5. **Analyze.** `CorrectionAnalyzer` applies a three-pronged, restart-proof recurrence gate (minimum support **and** distinct calendar days **and** a second orthogonal prong) so one bad day is never mistaken for a pattern. Only code-determined signals count toward the gate; the LLM's confidence can never admit a record on its own.
 6. **Route.** `CorrectionLoopDriver` is the authority-guarded router. By construction it cannot mint an evolution proposal or write to a memory file — it can only open a tracked action, post to the agent's own `/feedback` route, write a preference, or route a candidate to the attention queue for you to confirm. A this-user preference is written via the `recordPreference` primitive (see [Conversational Memory](/features/memory/)); an infra-gap becomes a `/feedback` proposal; anything that looks like a policy change is routed to you, never auto-applied.
 
@@ -78,13 +78,13 @@ It ships dark behind both `monitoring.correctionLearning.enabled` and a separate
 
 ## The Preferences dashboard tab
 
-The **Preferences tab** in the dashboard is the calm, human read surface for everything above. It shows, in plain language, the preferences the agent has picked up about you (the same block the session-start hook injects) and the recent corrections it has noticed, each with a short scrubbed summary and its status. The exact words you used are never stored or shown — only the neutral summary. When the feature is off, the tab shows a friendly "not turned on yet" state rather than an error. It is read-only and never blocks or changes a message.
+The **Preferences tab** in the dashboard is the calm, human read surface for everything above. It shows, in plain language, the preferences the agent has picked up about you (the same block the session-start hook injects) and the recent corrections it has noticed, each with a short scrubbed summary and its status. Ordinary preference rows show the neutral summary. Serious failure cases retain bounded, scrubbed evidence in their authenticated detail view, as described below. When the feature is off, the tab shows a friendly "not turned on yet" state rather than an error. It is read-only and never blocks or changes a message.
 
 ## API
 
 - `GET /preferences/session-context` — the structured block of active preferences (byte-bounded, priority-ordered); `503` when the feature is off.
 - `GET /corrections` — the deduplicated, scrubbed ledger view (metadata + the neutral summary only; raw text is never served). Paginates with `?limit` (default 100), a `?before=<ISO>` keyset cursor (pass the prior page's `nextBefore`), and a `?since=<ISO>` lower-bound; filter with `?kind` and `?status`.
-- `GET /corrections/:id` — a single ledger record.
+- `GET /corrections/:id` — a single ledger record, including bounded scrubbed forensic detail for a failure case.
 - `POST /corrections/analyze` — run the recurrence analysis on demand (the weekly `correction-analyzer` job does this on a schedule). The response includes `routed.overflow` (gate-crossing records left for the next run by the per-tick ceiling or a rate-limited feedback batch) and `routed.rateLimited`.
 
 ## Scalability bounds
@@ -102,4 +102,33 @@ The loop is bounded at every step so it can never run away under load:
 - **Both-sided scrub.** Secrets are removed before the capture leaves the process *and* before the distilled lesson is persisted — the deterministic regex pass is the guarantee, not the LLM.
 - **Authority-guarded.** `CorrectionLoopDriver` is given a narrow capability set; it physically cannot auto-implement a policy change. Policy-relaxing phrasings are routed to you to confirm.
 - **Primary-user-gated.** Only the topic's primary user's corrections shape the agent's behavior.
-- **Ships dark.** Everything except the free Layer-0 classification is gated off until you enable `monitoring.correctionLearning.enabled`.
+- **Preference learning ships dark.** Preference analysis and promotion require `monitoring.correctionLearning.enabled`. Serious failure capture is independently on by default; see below.
+
+## Serious failure callouts
+
+Serious failure callouts are captured by default independently of preference
+learning. Set `monitoring.failureCallouts.enabled: false` to disable that capture;
+disabling preference learning alone does not disable the failure ledger. The
+`failure-callout-investigator` job runs twice an hour and uses the existing
+correction ledger and class-review process. It retains bounded, scrubbed evidence
+of the failing reply, instructions, approvals and decisions, then investigates
+whether the constitution needs a change or an existing rule needs enforcement.
+Evidence is untrusted data, never instructions to the investigator.
+
+The job reserves at most three cases per run and permits at most three automatic
+attempts per unchanged occurrence, with backoff and a durable pause. Capacity
+queuing preserves the reservation instead of spending another attempt. A case
+stays open until diagnosis, a class repair reference, a failing-case replay and
+a legitimate-behavior control all have current evidence. Missing evidence and
+stale versions cannot close it; recurrence reopens the case. Constitution changes
+still use the existing ratification process.
+
+`GET /corrections?severity=failure-callout&unresolved=true` lists open cases.
+`PATCH /corrections/:id/failure-case` records context, diagnosis and verification.
+The investigation check, claim and resume routes live under
+`/corrections/:id/failure-investigation/`; authenticated writes use the origin
+machine and version checks. Pool summaries omit forensic detail. Complete offline
+replicas provide history but remain stale and read-only. See the
+[scheduled-job reference](/reference/default-jobs/) for the investigator and the
+separate promise-review job, which checks tracked commitments rather than
+certifying a failure repair.

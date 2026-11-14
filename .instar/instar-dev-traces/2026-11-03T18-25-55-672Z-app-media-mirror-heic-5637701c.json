@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "app-media-mirror-heic",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T18:25:55.672Z",
+  "artifactPath": "upgrades/side-effects/app-media-mirror-heic.md",
+  "artifactSha256": "9c08f84f80d38cd16c7c37f92b1a8950669fa2d8f3b75acdf49de1acb6e3aa67",
+  "coveredFiles": [
+    "upgrades/next/app-media-mirror-heic.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "release-notes sections",
+  "eli16Path": "upgrades/side-effects/app-media-mirror-heic.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-media-mirror-heic.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

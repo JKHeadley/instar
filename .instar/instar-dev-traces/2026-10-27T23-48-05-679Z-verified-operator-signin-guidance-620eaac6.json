@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "verified-operator-signin-guidance",
+  "sessionId": "8827b117-0209-4bc2-9898-d74ce9301729",
+  "timestamp": "2026-10-27T23:48:05.679Z",
+  "artifactPath": "upgrades/side-effects/verified-operator-signin-guidance.md",
+  "artifactSha256": "79f680686f156735e2bc3e378a907050a380099ac206c167af430c855d272d08",
+  "coveredFiles": [
+    "docs/specs/verified-operator-cross-agent-signin.eli16.md",
+    "docs/specs/verified-operator-cross-agent-signin.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtinSkillContent.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-assistedRelogin.test.ts",
+    "tests/unit/PostUpdateMigrator-subscriptionSigninApproval.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/verified-operator-signin-guidance.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Guidance and idempotent text migration only; no runtime authorization, credentials, API, or durable user state changes. A source revert fully restores behavior.",
+  "eli16Path": "docs/specs/verified-operator-cross-agent-signin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verified-operator-signin-guidance.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

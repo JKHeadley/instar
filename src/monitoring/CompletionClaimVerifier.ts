@@ -7,6 +7,7 @@ import { scrubSecrets } from './scrubSecrets.js';
 import type { EvidenceActionKind, TurnEvidence } from './TurnEvidence.js';
 import { ClaimClauseArbiter, CLAIM_ARBITER_COMPONENT, type ClaimClauseArbitration } from './ClaimClauseArbiter.js';
 import { ClaimObservationAdmissionQueue } from './ClaimObservationAdmissionQueue.js';
+import { CompletionClaimFailureLedger, type CompletionFailureGate } from './CompletionClaimFailureLedger.js';
 import {
   applyClaimCriticalityFloor, assessClaim, extractionGapSignals, prepareClaimObservation,
   ClaimObservationRecorder, newMessageAttemptId, type ClaimAssessment, type ClaimCriticality,
@@ -123,8 +124,10 @@ export class CompletionClaimVerifier {
   private readonly admissionQueue: ClaimObservationAdmissionQueue;
   private readonly authoritativeMessages = new Map<string, { at: number; arbitration: ClaimClauseArbitration }>();
   private counters: CompletionClaimStats;
+  private readonly failureLedger: CompletionClaimFailureLedger;
 
   constructor(private readonly opts: CompletionClaimVerifierOptions) {
+    this.failureLedger = new CompletionClaimFailureLedger({ stateDir: opts.stateDir });
     this.arbiter = opts.arbiter ?? new ClaimClauseArbiter({
       intelligence: opts.intelligence,
       // Explicit resolver wins; the duck-typed fallback covers callers that pass a real
@@ -134,6 +137,8 @@ export class CompletionClaimVerifier {
     this.admissionQueue = opts.admissionQueue ?? new ClaimObservationAdmissionQueue({ maxQueued: opts.maxQueued,
       maxQueuedPerTopic: opts.maxQueuedPerTopic, maxConcurrent: opts.maxConcurrent, queueTtlMs: opts.queueTtlMs });
     this.admissionQueue.setWorker((item) => this.processQueuedObservation(item.message, item.evidence, item.onArbitrated, item.context));
+    // Expired items never reach observe(), so without this they vanish from every counter.
+    this.admissionQueue.setExpiryHandler(() => this.failureLedger.recordFailure({ reason: 'queue-expired', branch: 'admission' }));
     this.counters = this.readStats();
   }
 
@@ -203,19 +208,21 @@ export class CompletionClaimVerifier {
     this.bump('candidateTurns');
     if (evidence.unavailable || !evidence.canaryOk || (!this.opts.intelligence && !this.opts.arbiter)) {
       this.bump('providerUnavailableTurns');
+      this.failureLedger.recordFailure({ reason: 'evidence-unavailable', branch: 'precondition' });
       return { flagged: false, reason: 'evidence-or-provider-unavailable' };
     }
     try {
       const prepared = prepareClaimObservation(message, evidence);
       if (prepared.policy !== 'standard-scrubbed') {
         this.bump('coverageIncompleteTurns');
+        this.failureLedger.recordSuccess();
         this.appendAudit({ ts: new Date().toISOString(), evaluated: false, event: 'coverage-incomplete', reason: 'privacy-boundary' });
         return { flagged: false, reason: 'privacy-boundary' };
       }
       if (this.opts.generalObservation) this.bump('generalAdmittedTurns');
       const arbitration = await this.arbiter.arbitrate(prepared.message, prepared.evidence);
       if (!arbitration.authoritative && !arbitration.general) {
-        this.bump('invalidOutputTurns');
+        this.recordInvalidTurn(arbitration);
         return { flagged: false, reason: 'invalid-output', arbitration };
       }
       if (arbitration.authoritative) this.bump('classifiedTurns');
@@ -243,9 +250,10 @@ export class CompletionClaimVerifier {
           event: 'protected-cue-unextracted', gapKinds: gaps, gapSignals, dryRun: this.opts.dryRun });
       }
       if (!arbitration.authoritative) {
-        this.bump('invalidOutputTurns');
+        this.recordInvalidTurn(arbitration);
         return { flagged: false, reason: 'invalid-legacy-output', arbitration };
       }
+      this.failureLedger.recordSuccess();
       const completionClauses = arbitration.clauses.filter((clause) => clause.label === 'completed-or-in-progress-assertion');
       if (completionClauses.length === 0) {
         this.bump('noClaimTurns');
@@ -274,9 +282,20 @@ export class CompletionClaimVerifier {
       return { flagged, verdict, claim, arbitration, ...(verdict === 'not-eligible' ? { reason: 'not-eligible' } : {}) };
     } catch { /* @silent-fallback-ok — content-free provider-unavailable metric records conservative fallback */
       this.bump('providerUnavailableTurns');
+      this.failureLedger.recordFailure({ reason: 'observe-exception', branch: 'verifier' });
       return { flagged: false, reason: 'provider-failure' };
     }
   }
+
+  /**
+   * True while this verifier's classifications must not replace the Action-Claim path:
+   * the operator has not lifted dry-run, OR failures have not stayed under 5% for 7 days.
+   * A verifier that cannot classify its turns has no business deciding what they mean.
+   */
+  isObserveOnly(): boolean { return this.opts.dryRun || !this.failureGate().met; }
+  failureGate(): CompletionFailureGate { return this.failureLedger.gate(); }
+  readFailures(limit = 100): Array<Record<string, unknown>> { return this.failureLedger.read(limit); }
+  failureDailyRollup(): ReturnType<CompletionClaimFailureLedger['dailyRollup']> { return this.failureLedger.dailyRollup(); }
 
   /** Content-free aggregate metrics safe for /metrics/features. */
   stats(): CompletionClaimStats { return JSON.parse(JSON.stringify(this.counters)) as CompletionClaimStats; }
@@ -300,6 +319,11 @@ export class CompletionClaimVerifier {
   readPoolAggregates(limit = 100): Array<Record<string, unknown>> { return this.opts.recorder?.readPoolAggregates(limit) ?? []; }
   readPoolPage(limit = 100, cursor?: string): { records: Array<Record<string, unknown>>; nextCursor?: string } {
     return this.opts.recorder?.readPoolPage(limit, cursor) ?? { records: [] };
+  }
+
+  private recordInvalidTurn(arbitration: ClaimClauseArbitration): void {
+    this.bump('invalidOutputTurns');
+    this.failureLedger.recordFailure(arbitration.failure ?? { reason: 'invalid-output', branch: 'unattributed' });
   }
 
   private appendAudit(row: Record<string, unknown>): void {

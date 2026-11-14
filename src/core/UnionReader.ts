@@ -28,6 +28,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { stableJson } from './stableJson.js';
 
 import {
   HybridLogicalClock,
@@ -121,7 +122,9 @@ export function classifyPair(w1: ReplicatedEnvelope, w2: ReplicatedEnvelope): Wi
  */
 export function classifyOriginSet(
   records: OriginRecord[],
-): { concurrent: false; winner: OriginRecord } | { concurrent: true; versions: OriginRecord[] } {
+):
+  | { concurrent: false; winner: OriginRecord; collapsedIdentical?: true }
+  | { concurrent: true; versions: OriginRecord[] } {
   if (records.length === 1) return { concurrent: false, winner: records[0] };
 
   // The HLC-max record is the ONLY candidate that could be the clean winner (a
@@ -140,12 +143,28 @@ export function classifyOriginSet(
     if (other.origin === candidate.origin) continue;
     if (classifyPair(other.envelope, candidate.envelope) !== 'sequential-after') {
       // The candidate did NOT provably see `other` ⇒ they are concurrent ⇒ the
-      // WHOLE set is a conflict (all versions preserved, §9). Sorting the version
-      // set deterministically keeps conflictId stable.
+      // WHOLE set is a conflict (all versions preserved, §9) — UNLESS every version
+      // is identical (same op, byte-identical store fields): then there is nothing
+      // for anyone to resolve, and the HLC-max version is the value. A set with ANY
+      // differing version stays a conflict. Sorting the version set
+      // deterministically keeps conflictId stable.
+      if (allVersionsIdentical(records)) {
+        return { concurrent: false, winner: candidate, collapsedIdentical: true };
+      }
       return { concurrent: true, versions: sortVersions(records) };
     }
   }
   return { concurrent: false, winner: candidate };
+}
+
+/** Every record has the same op and byte-identical store fields (`stableJson`). */
+function allVersionsIdentical(records: OriginRecord[]): boolean {
+  const op = records[0].envelope.op;
+  const body = stableJson(records[0].data);
+  for (let i = 1; i < records.length; i++) {
+    if (records[i].envelope.op !== op || stableJson(records[i].data) !== body) return false;
+  }
+  return true;
 }
 
 /** Deterministic version ordering (by HLC key) for a stable conflictId + display. */
@@ -197,6 +216,13 @@ export interface UnionResult {
   value: OriginRecord | null;
   conflict: ConflictDescriptor | null;
   divergenceFlag: boolean;
+  /**
+   * Set when the origin set was concurrent but every version was identical (same
+   * op, byte-identical store fields), so it collapsed to one value instead of a
+   * conflict. Carries the id the conflict WOULD have had, so a caller can close an
+   * identical-content conflict recorded before collapsing existed.
+   */
+  collapsedIdentical?: { conflictId: string; versions: { origin: string; hlcKey: string }[] };
 }
 
 /**
@@ -256,6 +282,14 @@ export function readUnion(recordKey: string, perOrigin: OriginRecord[], tier: Im
       value: winner.envelope.op === 'delete' ? null : winner,
       conflict: null,
       divergenceFlag: false,
+      ...(verdict.collapsedIdentical
+        ? {
+            collapsedIdentical: {
+              conflictId: conflictId(recordKey, sortVersions(perOrigin).map((v) => v.envelope.hlc)),
+              versions: perOrigin.map((v) => ({ origin: v.origin, hlcKey: serializeHlcKey(v.envelope.hlc) })),
+            },
+          }
+        : {}),
     };
   }
 

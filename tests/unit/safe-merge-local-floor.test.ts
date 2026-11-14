@@ -19,7 +19,7 @@ import {
   LOCAL_FLOOR_BODY_CHECKS,
   verifyRequestOutcome,
 } from '../../scripts/safe-merge.mjs';
-import { selectMergeFloor, isMergeEligible, approvedAtHead, MERGE_FLOOR_MODES, reviewPrecheckPasses } from '../../scripts/local-verify-floor.mjs';
+import { selectMergeFloor, isMergeEligible, approvedAtHead, codeOwnerApprovedAtHead, parseCodeowners, MERGE_FLOOR_MODES, reviewPrecheckPasses } from '../../scripts/local-verify-floor.mjs';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -271,6 +271,21 @@ describe('runLocalBodyChecks — eli16, decision-audit, release-fragment from th
     expect(r.every((c: { ok: boolean }) => c.ok)).toBe(true);
   });
 
+  it('reads a removed file as a deletion: an older record excuses it, a current one does not (#2821)', () => {
+    const files = [
+      { filename: 'src/x.ts', status: 'modified' },
+      { filename: 'scripts/run-migration.js', status: 'removed' },
+      { filename: '.instar/instar-dev-decisions/a.json', status: 'added' },
+      { filename: 'upgrades/next/x.md', status: 'added' },
+    ];
+    const audit = (basis: string) => runLocalBodyChecks({ ...pr, files, decisionRecords: [{ scope: { basis, files: ['src/x.ts'] } }] })
+      .find((c: { name: string }) => c.name === 'decision-audit');
+    expect(audit('staged-in-scope-additions-plus-deletions').ok).toBe(true);
+    const current = audit('staged-in-scope-paths-including-deleted');
+    expect(current.ok).toBe(false);
+    expect(current.detail).toContain('scripts/run-migration.js');
+  });
+
   it('fails eli16 without the section', () => {
     const r = runLocalBodyChecks({ ...pr, body: 'short', files: [], decisionRecords: [] });
     expect(r.find((c: { name: string }) => c.name === 'eli16').ok).toBe(false);
@@ -331,5 +346,41 @@ describe('reviewPrecheckPasses — the shared review precheck', () => {
     expect(reviewPrecheckPasses({ policy: co, reviewDecision: 'APPROVED', codeOwnedTouched: true })).toBe(true);
     expect(reviewPrecheckPasses({ policy: co, reviewDecision: 'REVIEW_REQUIRED', codeOwnedTouched: false })).toBe(true);
     expect(reviewPrecheckPasses({ policy: co, reviewDecision: '' })).toBe(true); // ownership not known here: GitHub's rule is consulted by safe-merge
+  });
+});
+
+describe('codeOwnerApprovedAtHead: an empty reviewDecision under a ruleset (PR #2812)', () => {
+  const rules = parseCodeowners('docs/STANDARDS-REGISTRY.md @JKHeadley\ndocs/team.md @org/team\n');
+  const files = ['docs/STANDARDS-REGISTRY.md', 'src/x.ts'];
+  const rev = (login: string, state: string, commitId: string, submittedAt: string) => ({ login, state, commitId, submittedAt });
+  const approved = rev('JKHeadley', 'APPROVED', 'head', '2026-11-06T07:46:00Z');
+
+  it('passes on the owner approval at the head, after an older dismissed review', () => {
+    const reviews = [rev('JKHeadley', 'DISMISSED', 'old', '2026-11-05T20:25:00Z'), approved];
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files, rules, reviews, headSha: 'head' })).toBe(true);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: '', files, rules, reviews, headSha: 'head' })).toBe(true);
+  });
+
+  it('refuses: approval on an older head, by a non-owner, or later withdrawn', () => {
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files, rules, reviews: [rev('JKHeadley', 'APPROVED', 'old', '2026-11-06T07:46:00Z')], headSha: 'head' })).toBe(false);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files, rules, reviews: [rev('someone', 'APPROVED', 'head', '2026-11-06T07:46:00Z')], headSha: 'head' })).toBe(false);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files, rules, reviews: [approved, rev('JKHeadley', 'DISMISSED', 'head', '2026-11-06T08:00:00Z')], headSha: 'head' })).toBe(false);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files, rules, reviews: [], headSha: 'head' })).toBe(false);
+  });
+
+  it('a stated GitHub decision stands, whatever the reviews say', () => {
+    expect(codeOwnerApprovedAtHead({ reviewDecision: 'REVIEW_REQUIRED', files, rules, reviews: [approved], headSha: 'head' })).toBe(false);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: 'CHANGES_REQUESTED', files, rules, reviews: [approved], headSha: 'head' })).toBe(false);
+  });
+
+  it('a team owner never counts, no owned file is no answer, no head is no answer', () => {
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files: ['docs/team.md'], rules, reviews: [approved], headSha: 'head' })).toBe(false);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files: ['src/x.ts'], rules, reviews: [approved], headSha: 'head' })).toBe(false);
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files, rules, reviews: [approved], headSha: '' })).toBe(false);
+  });
+
+  it('every owned file needs its own owner', () => {
+    const two = parseCodeowners('a.md @JKHeadley\nb.md @other\n');
+    expect(codeOwnerApprovedAtHead({ reviewDecision: null, files: ['a.md', 'b.md'], rules: two, reviews: [approved], headSha: 'head' })).toBe(false);
   });
 });

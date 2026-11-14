@@ -14,8 +14,10 @@ import { JSDOM } from 'jsdom';
 import {
   spanWords, modelWords, sessionKey, sessionTitle, activity, mergeSessions, buildSessions, sessionsHeadline, sessionsFacts,
   partialWords, titleLine, closeRequest, closeConfirmWords, closeResultWords, doorChoices, modelChoices, doorModelWords,
-  regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor,
+  regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor, profileKeyOf,
   KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, HISTORY_MAX,
+  isInternalSession, attachmentMessage, OPERATOR_CREATED, PLATFORMS, platformAllowsDoor, platformAllowsMachine,
+  historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry,
 } from '../../dashboard/console/sessions-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
 
@@ -47,6 +49,9 @@ describe('words', () => {
   it('the title is the topic name when there is one; keys never collide across machines', () => {
     expect(sessionTitle(sess())).toBe('Bug: login loop');
     expect(sessionTitle({ name: '[job] digest' })).toBe('digest');
+    expect(sessionTitle({ name: 'topic-127504', platform: 'telegram', platformId: 127504 }, { '127504': 'Instar dashboard makeover' })).toBe('Instar dashboard makeover');
+    expect(sessionTitle({ name: 'topic-127504', platform: 'telegram', platformId: 127504 })).toBe('Conversation name unavailable');
+    expect(sessionTitle({ name: 'C123456', platform: 'slack', platformId: 'C123456' })).toBe('Channel name unavailable');
     expect(sessionKey(sess())).toBe('echo-fix');
     expect(sessionKey(sess({ remote: true, machineId: 'm-mini' }))).toBe('remote:m-mini:echo-fix');
   });
@@ -77,11 +82,11 @@ describe('the list', () => {
   });
   it('quiet and duplicate sessions need a look; the rest are working; rows name their machine', () => {
     const quiet = sess({ tmuxSession: 'drain', name: 'drain', platformName: 'Feedback drain', platformId: 1, startedAt: iso(NOW - 3 * 3600_000), telemetry: { lastActivity: iso(NOW - 25 * 60_000) } });
-    const dup = sess({ tmuxSession: 'dup', name: 'dup', platformName: 'Topic 9', platformId: 9, remote: true, machineId: 'm-mini', machineNickname: 'Mac Mini' });
-    const m = buildSessions(poolOf([sess(), quiet, dup, sess({ tmuxSession: 'old', status: 'completed' })], { duplicateTopics: [{ sessions: ['dup'] }] }), { now: NOW });
+    const dup = sess({ tmuxSession: 'dup', name: 'dup', platformName: 'Release plan', platformId: 9, remote: true, machineId: 'm-mini', machineNickname: 'Mac Mini' });
+    const m = buildSessions(poolOf([sess(), quiet, dup, sess({ tmuxSession: 'old', status: 'completed' })], { duplicateTopics: [{ platform: 'telegram', platformId: 9, sessions: ['dup'] }] }), { now: NOW });
     if (!m.ok) throw new Error('model failed');
-    expect(m.rows.map((r) => r.title)).toEqual(['Bug: login loop', 'Topic 9', 'Feedback drain']);
-    expect(m.needsLook.map((r) => r.title)).toEqual(['Topic 9', 'Feedback drain']);
+    expect(m.rows.map((r) => r.title)).toEqual(['Bug: login loop', 'Release plan', 'Feedback drain']);
+    expect(m.needsLook.map((r) => r.title)).toEqual(['Release plan', 'Feedback drain']);
     expect(m.working.map((r) => r.title)).toEqual(['Bug: login loop']);
     expect(m.rows[0].sub).toBe('Mac Studio · 40 min · active 1 min ago');
     expect(m.needsLook[0].sub).toBe('Mac Mini · 40 min · running on two machines at once');
@@ -90,6 +95,14 @@ describe('the list', () => {
     const noDup = buildSessions(poolOf([sess(), quiet]), { now: NOW });
     expect(sessionsHeadline(noDup)).toEqual({ text: '2 sessions running. One has been quiet for 25 minutes.', tone: 'attn' });
     expect(sessionsFacts(noDup)[1]).toEqual({ n: 1, label: 'quiet 10+ min', tone: 'attn' });
+  });
+  it('matches duplicate warnings by conversation even when session keys collide', () => {
+    const local = sess({ tmuxSession: 'shared-key', platformId: 10, platformName: 'Different conversation' });
+    const remote = sess({ tmuxSession: 'shared-key', platformId: 9, platformName: 'Repeated conversation', remote: true, machineId: 'm-mini' });
+    const m = buildSessions(poolOf([local, remote], { duplicateTopics: [{ platform: 'telegram', platformId: 9, sessions: ['shared-key'] }] }), { now: NOW });
+    if (!m.ok) throw new Error('model failed');
+    expect(m.rows.find((r) => r.title === 'Different conversation')?.duplicate).toBe(false);
+    expect(m.rows.find((r) => r.title === 'Repeated conversation')?.duplicate).toBe(true);
   });
   it('the live socket list wins for this machine but keeps the pool read’s protected flag', () => {
     const merged = mergeSessions({ sessions: [sess({ protected: true }), sess({ tmuxSession: 'r', remote: true })] }, [{ tmuxSession: 'echo-fix', name: 'live name', status: 'running', startedAt: iso(NOW) }, { tmuxSession: 'new', status: 'running' }]);
@@ -101,12 +114,13 @@ describe('the list', () => {
   it('multi-machine: a machine that did not answer is named; idle machines get one line each', () => {
     const machines = [
       { machineId: 'm-studio', nickname: 'Mac Studio', isSelf: true, sessionCount: 1 },
-      { machineId: 'm-mini', nickname: 'Mac Mini', sessionCount: 0, emptyState: { kind: 'unreachable', text: 'unreachable (last seen 6 min ago)', lastSeen: iso(NOW - 6 * 60_000) } },
+      { machineId: 'm-mini', nickname: 'Mac Mini', sessionCount: 0, emptyState: { kind: 'unreachable', text: 'unreachable (last seen 6 min ago)', lastSeen: iso(NOW - 6 * 60_000) },
+        reach: { liveness: { state: 'unreachable', source: 'direct', evidenceAt: iso(NOW - 6 * 60_000) }, reconnect: { state: 'retrying' } } },
       { machineId: 'm-laptop', nickname: 'Laptop', sessionCount: 0, emptyState: { kind: 'online', text: 'online — no active sessions', lastSeen: null } },
     ];
     const m = buildSessions(poolOf([sess()], { enabled: true, machines, failed: [{ machineId: 'm-mini', error: 'timeout' }] }), { now: NOW });
     if (!m.ok) throw new Error('model failed');
-    expect(m.unanswered).toEqual([{ machineId: 'm-mini', name: 'Mac Mini', words: 'not answering (last seen 6 min ago)' }]);
+    expect(m.unanswered).toEqual([{ machineId: 'm-mini', name: 'Mac Mini', words: 'not answering for 6 min; reconnecting by itself' }]);
     expect(m.idleMachines).toEqual([{ machineId: 'm-laptop', name: 'Laptop', words: 'answering, nothing running', ok: true }]);
     expect(partialWords(m)).toBe('Mac Mini did not answer; its sessions are not shown.');
     expect(sessionsFacts(m).at(-1)).toEqual({ n: '2 of 3', label: 'machines answering', tone: 'attn' });
@@ -116,6 +130,53 @@ describe('the list', () => {
     expect(titleLine({ machineNickname: 'Mac Studio', model: 'claude-opus-5-5' })).toBe('Mac Studio · Opus 5.5');
     expect(titleLine({ machineNickname: 'Mac Studio', model: 'opus', type: 'job' })).toBe('Mac Studio · Opus, version not recorded · scheduled job');
     expect(titleLine({ machineNickname: 'Laptop', model: null })).toBe('Laptop · model not recorded');
+  });
+});
+
+describe('internal sessions and attachments', () => {
+  it('jobs and agent-spawned helpers are internal; conversations and operator-created sessions are not', () => {
+    expect(isInternalSession(sess({ jobSlug: 'health-check' }))).toBe(true);
+    expect(isInternalSession(sess({ platform: 'headless', platformId: null }))).toBe(true);
+    expect(isInternalSession(sess({ platform: 'headless', platformId: null, triggeredBy: OPERATOR_CREATED }))).toBe(false);
+    expect(isInternalSession(sess())).toBe(false);
+    expect(isInternalSession(sess({ platform: 'slack' }))).toBe(false);
+  });
+  it('the list hides internal sessions by default, counts them, and shows them on request; an open internal row is still found', () => {
+    const res = poolOf([sess(), sess({ id: 'j', name: 'job', tmuxSession: 'echo-job', jobSlug: 'reflection' }), sess({ id: 'h', name: 'helper', tmuxSession: 'echo-helper', platform: 'headless', platformId: null })]);
+    const hidden = buildSessions(res, { now: NOW });
+    expect(hidden.ok && hidden.rows.length).toBe(1);
+    expect(hidden.ok && hidden.internalCount).toBe(2);
+    expect(hidden.ok && hidden.allRows.length).toBe(3);
+    const shown = buildSessions(res, { now: NOW, showInternal: true });
+    expect(shown.ok && shown.rows.length).toBe(3);
+  });
+  it('an attachment message keeps the text and names each saved file', () => {
+    expect(attachmentMessage('look at this', ['/a/x.png'])).toBe('look at this\n[Attached file from the dashboard: /a/x.png (read it to see what I sent)]');
+    expect(attachmentMessage('  ', ['/a/x.png', '/a/y.txt']).split('\n')).toHaveLength(2);
+  });
+});
+
+describe('history', () => {
+  it('reads this machine directly and another machine through it, a page at a time', () => {
+    expect(historyUrl({ tmuxSession: 'echo-fix' })).toBe('/sessions/echo-fix/transcript?limit=150');
+    expect(historyUrl({ tmuxSession: 'echo-fix', remote: true, machineId: 'm-mama' }, 1234)).toBe('/sessions/echo-fix/transcript?limit=150&before=1234&machineId=m-mama');
+  });
+  it('a failed read is never "no history", and a chat prefix is dropped from what was said', () => {
+    expect(historyErrorWords({ ok: false, status: 404, data: { reason: 'no-transcript' } })).toBe('This session has no conversation record yet.');
+    expect(historyErrorWords({ ok: false, status: 500, data: {} })).toBe('Can’t tell: the server answered 500.');
+    expect(historyErrorWords({ ok: false, status: 0, data: {} })).toBe('Can’t tell: the server could not be reached.');
+    expect(historyText({ role: 'user', text: '[telegram:127504 "x" from Justin (uid:1)] hello' })).toBe('hello');
+    expect(historyText({ role: 'assistant', text: '[telegram:1] kept' })).toBe('[telegram:1] kept');
+  });
+  it("past the session's own record, History continues into its topic's earlier messages", () => {
+    expect(topicOf({ platform: 'telegram', platformId: '127504' })).toBe(127504);
+    expect(topicOf({ platform: 'telegram', platformId: '1' })).toBeNull(); // General is not a conversation topic
+    expect(topicOf({ platform: 'slack', platformId: 'C123' })).toBeNull();
+    expect(topicOf({ platform: 'headless' })).toBeNull();
+    expect(topicHistoryUrl(127504, Date.parse('2026-10-31T00:00:00Z'))).toBe(`/telegram/topics/127504/messages?limit=50&scope=pool&before=${Date.parse('2026-10-31T00:00:00Z')}`);
+    expect(topicHistoryEntry({ text: 'hi', fromUser: true, timestamp: '2026-10-20T17:35:57.000Z' })).toMatchObject({ role: 'user', text: 'hi', atMs: Date.parse('2026-10-20T17:35:57.000Z') });
+    expect(topicHistoryEntry({ text: 'reply', fromUser: false, timestamp: '2026-10-20T17:36:00.000Z' })?.role).toBe('assistant');
+    expect(topicHistoryEntry({ text: '   ', fromUser: true, timestamp: 'x' })).toBeNull();
   });
 });
 
@@ -185,30 +246,72 @@ describe('doors, models, machines, create', () => {
     expect(mc.choices.map((c) => [c.label, c.disabled])).toEqual([
       ['Automatic', false], ['Mac Studio (this machine)', false], ['Mac Mini (not answering)', true], ['Laptop (clock out of step)', true], ['PC (no recent contact)', true],
     ]);
+    const duplicates = machineChoices(ok({ selfMachineId: 'a', machines: [
+      { machineId: 'a', nickname: 'Scout', online: true },
+      { machineId: 'b', nickname: 'scout', online: true },
+      { machineId: 'c', nickname: 'Echo', online: true },
+    ] }))!;
+    expect(duplicates.choices.map((c) => c.disabled)).toEqual([false, true, true, false]);
   });
   it('create: a name is required; an unchanged pick sends nothing; door and machine only for Telegram', () => {
     expect(createBody({ name: '  ' }, options)).toEqual({ ok: false, problems: ['Give it a name.'] });
-    expect(createBody({ name: ' Bug ', platform: 'auto' }, options)).toEqual({ ok: true, body: { name: 'Bug', headless: false } });
+    expect(createBody({ name: ' Bug ', platform: 'auto' }, options)).toEqual({ ok: true, body: { name: 'Bug', headless: false, requestId: expect.any(String) } });
     expect(createBody({ name: 'B', platform: 'telegram', framework: 'claude-code', model: 'claude-opus-5-5', machine: 'b' }, options)).toEqual({ ok: true, body: { name: 'B', headless: false, platform: 'telegram', framework: 'claude-code', model: 'claude-opus-5-5', machine: 'b' } });
-    expect(createBody({ name: 'B', framework: 'claude-code', model: 'claude-opus-5-5' }, { ...options, newTopicDefault: { framework: 'claude-code', model: 'claude-opus-5-5' } })).toEqual({ ok: true, body: { name: 'B', headless: false } });
+    expect(createBody({ name: 'B', framework: 'claude-code', model: 'claude-opus-5-5' }, { ...options, newTopicDefault: { framework: 'claude-code', model: 'claude-opus-5-5' } })).toEqual({ ok: true, body: { name: 'B', headless: false, requestId: expect.any(String) } });
     expect(createBody({ name: 'B', platform: 'headless', framework: 'claude-code', machine: 'b' }, options)).toEqual({ ok: true, body: { name: 'B', headless: true, platform: 'headless' } });
+  });
+  it('an Instar app conversation: engine and model yes, machine no; each create carries its own request id', () => {
+    // session-conversation-for-every-session §2.1–2.3
+    expect(PLATFORMS.map((p) => p.value)).toEqual(['auto', 'telegram', 'slack', 'app', 'headless']);
+    expect(PLATFORMS.find((p) => p.value === 'headless')?.label).toBe('No conversation (terminal only)');
+    expect(platformAllowsDoor('app')).toBe(true);
+    expect(platformAllowsMachine('app')).toBe(false);
+    expect(platformAllowsMachine('telegram')).toBe(true);
+    expect(platformAllowsMachine('auto')).toBe(true);
+    const a = createBody({ name: 'Plans', platform: 'app', framework: 'codex-cli', model: '', machine: 'b' }, options);
+    expect(a).toEqual({ ok: true, body: { name: 'Plans', headless: false, platform: 'app', framework: 'codex-cli', model: null, requestId: expect.any(String) } });
+    // The sheet's own id is kept across retries; without one, each body gets a fresh one.
+    expect((createBody({ name: 'Plans', platform: 'app', requestId: 'sheet-0001' }, options) as { body: { requestId: string } }).body.requestId).toBe('sheet-0001');
+    const b = createBody({ name: 'Plans', platform: 'app' }, options);
+    expect((b as { body: { requestId: string } }).body.requestId).not.toBe((a as { body: { requestId: string } }).body.requestId);
+  });
+  it('an app create answers in words: started, or created but not started yet', () => {
+    expect(createResultWords(201, { platform: 'app', started: true, session: 's' }, 'Plans')).toEqual({ ok: true, text: 'Started “Plans”. Open it in the app’s conversations to talk to it.' });
+    expect(createResultWords(201, { platform: 'app', started: false, message: 'x' }, 'Plans')).toMatchObject({ ok: true, warn: true });
+    expect(createResultWords(201, { platform: 'app', started: false }, 'Plans').text).not.toContain('no chat');
+  });
+  it('a session with a conversation is never hidden as internal', () => {
+    expect(isInternalSession({ platform: 'headless', conversationRef: 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f' })).toBe(false);
+    expect(isInternalSession({ platform: 'headless' })).toBe(true);
+    expect(isInternalSession({ jobSlug: 'x', conversationRef: 'telegram:5' })).toBe(true);
   });
   it('create answers in words, the server’s own sentence when it is unsettled', () => {
     expect(createResultWords(201, { topicId: 5, profile: { label: 'Claude Code', model: 'claude-opus-5-5' } }, 'B')).toEqual({ ok: true, text: 'Started “B” with a Telegram topic on Claude Code · Opus 5.5.' });
-    expect(createResultWords(200, {}, 'B').text).toBe('Started “B” with no chat.');
+    expect(createResultWords(200, {}, 'B').text).toBe('Started “B” with no conversation.');
     expect(createResultWords(200, { started: 'requested', machine: { nickname: 'Mac Mini' } }, 'B').text).toBe('Starting “B” on Mac Mini.');
     expect(createResultWords(200, { ownership: 'not-confirmed', error: 'Ownership unsettled.' }, 'B')).toEqual({ ok: true, warn: true, text: 'Ownership unsettled.' });
     expect(createResultWords(400, { error: 'Name taken' }, 'B')).toEqual({ ok: false, text: 'Name taken' });
     expect(createResultWords(0, {}, 'B').text).toBe('Not created: the server could not be reached.');
   });
-  it('door switch: only a local Telegram session; landed only when the launched model shows', () => {
+  it('door switch: any local session with a conversation; landed only when the launched model shows', () => {
+    const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
     expect(canSwitchDoor({ platform: 'telegram', platformId: 5, remote: false })).toBe(true);
     expect(canSwitchDoor({ platform: 'telegram', platformId: 5, remote: true })).toBe(false);
+    // session-swap-any-conversation: app and Slack conversations switch too; no conversation, no switch.
+    expect(canSwitchDoor({ platform: 'headless', conversationRef: app })).toBe(true);
+    expect(canSwitchDoor({ platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC:1730000000.000100' })).toBe(true);
     expect(canSwitchDoor({ platform: 'slack', platformId: 5 })).toBe(false);
+    expect(canSwitchDoor({ platform: 'headless' })).toBe(false);
+    expect(profileKeyOf({ conversationRef: 'telegram:5' })).toBe('5');
+    expect(profileKeyOf({ conversationRef: app })).toBe(app);
+    expect(profileKeyOf({ conversationRef: 'slack:T0XYZ:C0ABC:1730000000.000100' })).toBe('slack:C0ABC:1730000000.000100');
+    expect(profileKeyOf({ conversationRef: 'slack:_:D0ABC' })).toBe('slack:D0ABC');
+    expect(profileKeyOf({ conversationRef: 'app:nope' })).toBeNull();
     const job = { topicId: '5', model: 'claude-fable-5', since: NOW };
-    expect(switchLanded([{ platformId: 5, startedAt: iso(NOW - 60_000), model: 'claude-fable-5' }], job)).toBeNull();
-    expect(switchLanded([{ platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-opus-5-5' }], job)).toBeNull();
-    expect(switchLanded([{ platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-fable-5' }], job)).toMatchObject({ model: 'claude-fable-5' });
+    expect(switchLanded([{ platform: 'telegram', platformId: 5, startedAt: iso(NOW - 60_000), model: 'claude-fable-5' }], job)).toBeNull();
+    expect(switchLanded([{ platform: 'telegram', platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-opus-5-5' }], job)).toBeNull();
+    expect(switchLanded([{ platform: 'telegram', platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-fable-5' }], job)).toMatchObject({ model: 'claude-fable-5' });
+    expect(switchLanded([{ conversationRef: app, startedAt: iso(NOW + 1000), model: null }], { topicId: app, model: null, since: NOW })).toMatchObject({ conversationRef: app });
     expect(profileSourceWords({ resolved: { sources: { framework: 'profile-pin' } }, pin: { updatedBy: 'api-token' } })).toBe('pinned by you');
     expect(profileSourceWords({ resolved: { sources: { framework: 'profile-pin' } }, pin: { updatedBy: 'system:dashboard-create' } })).toBe('set when it was created');
     expect(profileSourceWords({ resolved: { sources: { framework: 'config' } } })).toBe('the default');
@@ -317,24 +420,39 @@ describe('sessions in a DOM', () => {
     ws.push({ type: 'output', session: 'echo-fix', data: 'hello from the pane' });
     expect(written).toContain('hello from the pane');
 
-    // Composer → an input frame; an empty message sends nothing.
+    // Until the machine says what it can do, the composer waits (§3e item 1).
     const input = doc.querySelector('.sess-input') as HTMLTextAreaElement;
-    (doc.querySelector('button[data-send]') as HTMLButtonElement).click();
+    const sendBtn = doc.querySelector('button[data-send]') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    expect(input.placeholder).toBe('Connecting to that machine…');
+    ws.push({ type: 'input_caps', session: 'echo-fix', inputAck: 2, remoteInput: true });
+    expect(sendBtn.disabled).toBe(false);
+
+    // Composer → an input frame with its id; an empty message sends nothing.
+    sendBtn.click();
     expect(ws.sent.filter((m) => m.type === 'input')).toHaveLength(0);
     input.value = 'line one\nline two';
-    (doc.querySelector('button[data-send]') as HTMLButtonElement).click();
-    expect(ws.sent).toContainEqual({ type: 'input', session: 'echo-fix', text: 'line one\nline two' });
+    sendBtn.click();
+    const sentInput = ws.sent.find((m) => m.type === 'input')!;
+    expect(sentInput).toEqual({ type: 'input', session: 'echo-fix', text: 'line one\nline two', clientInputId: expect.stringMatching(/^[A-Za-z0-9_-]{16,64}$/) });
+    // The text stays, marked as sending, until its own acknowledgement; an id-less one clears nothing.
+    expect(input.value).toBe('line one\nline two');
+    expect(input.readOnly).toBe(true);
+    ws.push({ type: 'input_ack', session: 'echo-fix', success: true });
+    expect(input.value).toBe('line one\nline two');
+    ws.push({ type: 'input_ack', session: 'echo-fix', success: true, clientInputId: sentInput.clientInputId });
     expect(input.value).toBe('');
+    expect(input.readOnly).toBe(false);
 
     // Keys tray: Enter goes at once; Stop asks once, then sends C-c.
     (doc.querySelector('button[data-keys]') as HTMLButtonElement).click();
     (doc.querySelector('button[data-key="Enter"]') as HTMLButtonElement).click();
-    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'Enter' });
+    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'Enter', clientInputId: expect.any(String) });
     (doc.querySelector('button[data-stop]') as HTMLButtonElement).click();
     expect(ws.sent.some((m) => m.key === 'C-c')).toBe(false);
     expect(doc.querySelector('.keys-stop .confirm-text')!.textContent).toBe('Interrupt what it is doing?');
     (doc.querySelector('button[data-stop-confirm]') as HTMLButtonElement).click();
-    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'C-c' });
+    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'C-c', clientInputId: expect.any(String) });
 
     // A refresh never rebuilds the open terminal.
     const canvas = doc.querySelector('.sess-term canvas');
@@ -365,7 +483,7 @@ describe('sessions in a DOM', () => {
     expect(doc.querySelector('.sheet .action-status')!.textContent).toBe('Give it a name.');
     (doc.querySelector('.sheet input[aria-label="Name"]') as HTMLInputElement).value = 'Bug: cache';
     (doc.querySelector('.sheet select[aria-label="Where to talk to it"]') as HTMLSelectElement).value = 'telegram';
-    const doorSel = doc.querySelector('.sheet select[aria-label="Door"]') as HTMLSelectElement;
+    const doorSel = doc.querySelector('.sheet select[aria-label="Engine"]') as HTMLSelectElement;
     expect(doorSel.value).toBe(''); // no default set: "Agent default", so an untouched create sends no pick
     doorSel.value = 'claude-code';
     doorSel.dispatchEvent(new dom.window.Event('change'));
@@ -393,8 +511,81 @@ describe('sessions in a DOM', () => {
     for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 20));
     const doc = dom.window.document;
     expect(doc.querySelector('.page-title')!.textContent).toBe('Can’t tell what is running.');
-    expect(doc.body.textContent).toContain('Couldn’t list sessions: the server answered 500.');
+    expect(doc.body.textContent).toContain('Couldn’t list sessions: the server answered 500, twice.');
     expect(doc.body.textContent).not.toContain('Nothing is running');
     expect(doc.querySelector('.stale-banner')!.textContent).toBe('Live updates paused, reconnecting.');
+  });
+});
+
+describe('Session settings (Justin, 2026-11-05: a clear button for the defaults)', () => {
+  let dom: JSDOM;
+  afterEach(() => dom?.window.close());
+
+  it('the word for a door lives in one place, and every label reads it', async () => {
+    const { DOOR } = await import('../../dashboard/console/sessions-model.js');
+    expect(DOOR).toEqual({ word: 'engine', Word: 'Engine', words: 'engines' });
+    expect(regimeWords({ regime: 'dry-run' })).toContain(`the ${DOOR.word} still switches`);
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../../dashboard/console/sessions.js', import.meta.url), 'utf8');
+    // No text a person reads spells the word out on its own: a rename is one edit. (Attribute names
+    // such as data-door and code between two string literals are not text a person reads.)
+    const shown = [...src.matchAll(/text: (['`])([^'`\n]*)\1|aria-label': (['`])([^'`\n]*)\3|field\((['`])([^'`\n]*)\5/g)].map((m) => m[2] ?? m[4] ?? m[6]);
+    expect(shown.length).toBeGreaterThan(20);
+    expect(shown.filter((t) => /\b[Dd]oors?\b/.test(t))).toEqual([]);
+  });
+
+  it('opens just the defaults from the Sessions page, and saves them with no PIN', async () => {
+    const writes: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/work/sessions' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    g.WebSocket = class { readyState = 0; constructor() { /* never opens */ } send() {} close() {} };
+    let def: { framework: string | null; model: string | null } = { framework: 'claude-code', model: 'claude-opus-5-5' };
+    const options = () => ({ regime: 'live', doors: [
+      { framework: 'claude-code', label: 'Claude Code', selectable: true, models: ['claude-opus-5-5'], defaultModel: null },
+      { framework: 'codex', label: 'Codex', selectable: true, models: ['gpt-6-astra'], defaultModel: 'gpt-6-astra' },
+    ], newTopicDefault: { ...def, replication: 'local-only' } });
+    g.fetch = async (url: string, opts?: { method?: string; body?: string; headers?: Record<string, string> }) => {
+      if (opts && opts.method === 'POST') {
+        const body = JSON.parse(opts.body || '{}');
+        writes.push({ url, body, headers: opts.headers || {} });
+        def = body.clear ? { framework: null, model: null } : { framework: body.framework, model: body.model };
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      const table: Record<string, unknown> = {
+        '/sessions?scope=pool': { sessions: [sess()], pool: { enabled: false, selfMachineId: 'm-studio', selfMachineNickname: 'Mac Studio', machines: [], failed: [], duplicateTopics: [] } },
+        '/sessions': [sess()],
+        '/topic-profile/options': options(),
+        '/health': { project: { name: 'echo' } },
+      };
+      const body = table[url];
+      return { ok: body !== undefined, status: body !== undefined ? 200 : 404, json: async () => body ?? { error: 'no such route in the test' } };
+    };
+    const flush = async (n = 25) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 20)); };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    await flush();
+    const doc = dom.window.document;
+    const button = doc.querySelector('button[data-settings]') as HTMLButtonElement;
+    expect(button.textContent).toBe('Session settings');
+    button.click();
+    await flush(10);
+    expect(doc.querySelector('.sheet .sheet-title')!.textContent).toBe('Session settings');
+    const door = doc.querySelector('.sheet select[aria-label="Default engine"]') as HTMLSelectElement;
+    const model = doc.querySelector('.sheet select[aria-label="Default model"]') as HTMLSelectElement;
+    expect(door.value).toBe('claude-code');
+    expect(model.value).toBe('claude-opus-5-5');
+    door.value = 'codex';
+    door.dispatchEvent(new dom.window.Event('change'));
+    (doc.querySelector('.sheet button[data-default-save]') as HTMLButtonElement).click();
+    await flush(10);
+    expect(writes).toEqual([{ url: '/topic-profile/new-topic-default', body: { framework: 'codex', model: 'gpt-6-astra' }, headers: expect.objectContaining({ 'X-Instar-Request': '1' }) }]);
+    expect(doc.querySelector('.sheet .action-status')!.textContent).toBe('Saved: Codex · GPT-6 Astra.');
+    (doc.querySelector('.sheet button[data-default-clear]') as HTMLButtonElement).click();
+    await flush(10);
+    expect(writes[1]).toMatchObject({ body: { clear: true } });
+    expect(doc.querySelector('.sheet .action-status')!.textContent).toBe('Cleared. Topics created here start on the agent defaults.');
+    expect(doc.querySelector('.pin-input')).toBeNull();
   });
 });

@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "feedback-verifying-epoch-adoption",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T06:21:50.645Z",
+  "artifactPath": "upgrades/side-effects/feedback-verifying-epoch-adoption.md",
+  "artifactSha256": "75b548e8de20dfc737224b766ca57a83b6759921e06f1f5dd507400545eb3fa8",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/feedback-factory-processing.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/feedback-verifying-epoch-adoption.md",
+    "upgrades/side-effects/feedback-verifying-epoch-adoption.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable external publication and owner-epoch recovery require a reviewed, approved design and three-tier verification.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "feedback_gate_review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

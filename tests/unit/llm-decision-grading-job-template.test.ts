@@ -34,10 +34,9 @@ describe('llm-decision-grading job template', () => {
     expect(frontmatter.description).toContain('operator-directed goal-4 Tier-1 activation');
   });
 
-  it('is tier-1 supervised on haiku (wraps the deterministic grade-pass endpoint)', () => {
+  it('uses the deterministic script runner with the layered supervision plan', () => {
     const { frontmatter } = parse();
-    expect(frontmatter.supervision).toBe('tier1');
-    expect(frontmatter.model).toBe('haiku');
+    expect(frontmatter).toMatchObject({ runner: 'script', script: 'llm-decision-grading.mjs', supervision: 'tier0', scriptSupervision: 'deterministic' });
   });
 
   it('runs on the hourly cron the §5.3 grading slack derives from', () => {

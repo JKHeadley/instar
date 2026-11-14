@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-context-name-collision",
+  "sessionId": "d0af9c77-56cb-467e-897f-a7ace8bfa5ea",
+  "timestamp": "2026-11-07T19:09:15.552Z",
+  "artifactPath": "upgrades/side-effects/app-context-name-collision.md",
+  "artifactSha256": "f4319df9123afc2e17aac0c8c961305f9bce25a500b800446350dc547d700947",
+  "coveredFiles": [
+    "src/core/appInboundDispatch.ts",
+    "tests/unit/app-dispatch-engine.test.ts",
+    "upgrades/eli16/app-context-name-collision.md",
+    "upgrades/next/app-context-name-collision.md",
+    "upgrades/side-effects/app-context-name-collision.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line name fix that repairs main; a revert fully undoes it.",
+  "eli16Path": "upgrades/eli16/app-context-name-collision.md",
+  "sideEffectsPath": "upgrades/side-effects/app-context-name-collision.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

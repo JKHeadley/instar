@@ -144,3 +144,51 @@ export function readJobTranscriptEvidence(transcriptPath: string | null): string
     return ''; // @silent-fallback-ok — evidence is best-effort; the pane capture remains the fallback.
   }
 }
+
+/** The owner's report body is bounded to this (docs/specs/backup-email-sending.md). */
+export const OWNER_REPORT_MAX_BYTES = 16 * 1024;
+
+/** The job's final assistant message from a Claude Code transcript, uncut up to the 16 KB bound. '' when none. */
+export function finalAssistantText(jsonl: string): string {
+  let finalText = '';
+  for (const raw of jsonl.split('\n')) {
+    if (!raw.trim()) continue;
+    let rec: { type?: string; message?: { content?: unknown } };
+    try { rec = JSON.parse(raw); } catch { continue; } // @silent-fallback-ok — a torn first line from the tail read is expected.
+    if (rec.type !== 'assistant') continue;
+    const content = rec.message?.content;
+    if (!Array.isArray(content)) continue;
+    const texts = (content as Array<Record<string, unknown>>).filter((b) => b?.type === 'text' && typeof b.text === 'string' && (b.text as string).trim()).map((b) => b.text as string);
+    if (texts.length) finalText = texts.join('\n\n');
+  }
+  if (Buffer.byteLength(finalText, 'utf8') <= OWNER_REPORT_MAX_BYTES) return finalText;
+  let cut = Buffer.from(finalText, 'utf8').subarray(0, OWNER_REPORT_MAX_BYTES).toString('utf8');
+  while (cut.endsWith('�')) cut = cut.slice(0, -1);
+  return cut;
+}
+
+/**
+ * The report a job sends its owner by email (docs/specs/backup-email-sending.md, Hook point and body): the job's final
+ * assistant message, not the pane tail. Framework-neutral interface, per-framework readers: only claude-code has a
+ * readable transcript today, so any other framework (and a missing transcript) returns '' and the caller uses the
+ * status line. Adding a reader for another framework does not change this signature.
+ */
+export function renderJobReportForOwner(input: { framework?: string | null; claudeSessionId?: string | null; projectDir: string; homeDir?: string }): string {
+  if ((input.framework ?? 'claude-code') !== 'claude-code' || !input.claudeSessionId) return '';
+  const transcriptPath = findClaudeJobTranscript(input.claudeSessionId, input.projectDir, input.homeDir);
+  if (!transcriptPath) return '';
+  try {
+    const size = fs.statSync(transcriptPath).size;
+    const start = Math.max(0, size - TRANSCRIPT_READ_CAP_BYTES);
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return finalAssistantText(buf.toString('utf8'));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return ''; // @silent-fallback-ok — no transcript text: the email carries the status line, nothing is skipped
+  }
+}

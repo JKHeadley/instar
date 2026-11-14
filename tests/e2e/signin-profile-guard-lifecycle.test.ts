@@ -1,0 +1,34 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { PostUpdateMigrator, type MigrationResult } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+let root: string;
+afterEach(() => { if (root) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'test:signin-guard-lifecycle-cleanup' }); });
+describe('sign-in profile protection installed on existing agents', () => {
+  it.each(['claude-code', 'codex-cli'])('updates %s then refuses a destructive browser launch before execution', framework => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'signin-guard-lifecycle-'));
+    const stateDir = path.join(root, '.instar'); fs.mkdirSync(stateDir);
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ enabledFrameworks: [framework], port: 4042 }));
+    fs.mkdirSync(path.join(root, '.claude'));
+    fs.writeFileSync(path.join(root, '.claude/settings.json'), JSON.stringify({ hooks: {} }));
+    const migrator = new PostUpdateMigrator({ projectDir: root, stateDir, port: 4042, hasTelegram: false, projectName: 'fixture' });
+    const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    (migrator as unknown as { migrateHooks(r: MigrationResult): void }).migrateHooks(result);
+    (migrator as unknown as { migrateSettings(r: MigrationResult): void }).migrateSettings(result);
+    expect(result.errors).toEqual([]);
+    const hook = path.join(stateDir, 'hooks/instar/signin-profile-guard.js');
+    expect(fs.existsSync(hook)).toBe(true);
+    const config = JSON.parse(fs.readFileSync(path.join(root, framework === 'codex-cli' ? '.codex/hooks.json' : '.claude/settings.json'), 'utf8'));
+    expect(config.hooks.PreToolUse.some((group: any) => group.hooks.some((entry: any) => entry.command.includes('signin-profile-guard.js')))).toBe(true);
+    fs.mkdirSync(path.join(stateDir, 'state'), { recursive: true });
+    const profile = path.join(stateDir, 'state/playwright-profiles/login');
+    fs.writeFileSync(path.join(stateDir, 'state/playwright-profiles.json'), JSON.stringify({ profiles: [{ id: 'login', userDataDir: profile, accounts: [{ service: 'google' }] }] }));
+    const event = { tool_name: framework === 'codex-cli' ? 'functions.exec_command' : 'Bash', tool_input: { cmd: `chrome --remote-debugging-pipe --user-data-dir=${profile}`, command: `chrome --remote-debugging-pipe --user-data-dir=${profile}` } };
+    const refused = spawnSync(process.execPath, [hook], { input: JSON.stringify(event), encoding: 'utf8', env: { ...process.env, INSTAR_AGENT_HOME: root }, timeout: 3000 });
+    expect(refused.status).toBe(2); expect(refused.stderr).toContain('registered-signin-profile-automation-refused');
+    expect(fs.existsSync(profile)).toBe(false);
+  });
+});

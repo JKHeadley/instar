@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "dashboard-chats-phone-layout",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T17:50:50.234Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "artifactSha256": "ac9ae8a36e51b0222af27ea9029a93069cb18f473046328c9d09709224d1abc8",
+  "coveredFiles": [
+    "upgrades/next/dashboard-chats-phone-layout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note fragment for the client fixes.",
+  "eli16Path": "docs/specs/dashboard-chats-phone-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -27,6 +27,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { makeTwoNodeHarness, HARNESS_AUTH } from '../support/twoNodeOwnershipHarness.js';
 import type { TwoNodeHarness } from '../support/twoNodeOwnershipHarness.js';
+import { MessageProcessingLedger } from '../../src/messaging/MessageProcessingLedger.js';
+import { recoverStuckMessages } from '../../src/messaging/stuckMessageRecovery.js';
+import { commitInboundReply } from '../../src/messaging/ingressDedup.js';
+import { crossMachineReplyEvidence } from '../../src/core/ForwardedTopicContext.js';
 
 async function authedJson<T>(url: string): Promise<T> {
   const r = await fetch(url, { headers: { Authorization: `Bearer ${HARNESS_AUTH}` } });
@@ -85,8 +89,39 @@ describe('sessionPool failover — two-node (owner offline → standby takes ove
     expect(bViewBefore.owner).toBe(h.a.machineId);
     expect(h.b.registry.ownerOf(sk)).toBe(h.a.machineId);
 
+    // An inbound was claimed by B before forwarding. A (the owner) answered
+    // under the same key. The reply marker is deliberately withheld to model a
+    // link failure at precisely the bad window from the incident.
+    const key = `telegram:${TOPIC}:5000`;
+    const routerLedger = MessageProcessingLedger.open('router-e2e', h.b.stateDir);
+    const ownerLedger = MessageProcessingLedger.open('owner-e2e', h.a.stateDir);
+    routerLedger.record(key, { platform: 'telegram', topic: sk, input: 'question' });
+    routerLedger.beginProcessing(key, 1);
+    expect(ownerLedger.claimForwardedInbound(key, sk, 'question', 1)).toBe(true);
+    commitInboundReply(ownerLedger, key, 1);
+    expect(ownerLedger.get(key)?.state).toBe('cursor_advanced');
+    h.b.addTopicHistory(TOPIC, { messageId: 5000, timestamp: '2026-11-04T18:00:00Z', fromUser: true, text: 'question' });
+    h.a.addTopicHistory(TOPIC, { messageId: 5001, timestamp: '2026-11-04T18:01:00Z', fromUser: false, text: 'answer', authorship: 'agent-outbound' });
+
     // ── 3. Node A goes OFFLINE — the "machine slept": server + journal closed.
     await h.a.stop();
+    const pool = await authedJson<{ messages: Array<{ messageId: number; fromUser: boolean; timestamp: string }>; pool: { queried: string[]; failed: Array<{ machineId: string }> } }>(
+      `${h.b.url}/telegram/topics/${TOPIC}/messages?limit=100&scope=pool`);
+    const placements = h.b.reader.query({ topic: TOPIC, kind: 'topic-placement', limit: 100 });
+    const priorOwners = placements.entries.map(e => (e.data as { owner?: string }).owner)
+      .filter((owner): owner is string => !!owner && owner !== h.b.machineId);
+    const evidence = crossMachineReplyEvidence(pool.messages, 5000, priorOwners,
+      pool.pool.queried, pool.pool.failed.map(f => f.machineId), !placements.truncated);
+    expect(evidence).toBe('unknown');
+    const duplicateAnswers: string[] = [];
+    const held = recoverStuckMessages({ ledger: routerLedger, holdsLease: () => true,
+      epoch: 2, maxProcessingMs: -1, remoteReplyEvidence: () => evidence,
+      reinject: () => duplicateAnswers.push('second answer') });
+    expect(held.skipped).toBe(1);
+    expect(duplicateAnswers).toEqual([]);
+    expect(routerLedger.get(key)?.state).toBe('processing');
+    ownerLedger.close();
+    routerLedger.close();
     // Death evidence: A's HTTP surface is now unreachable (the caller-validated
     // precondition the force-claim FSM path requires).
     let aReachable = true;

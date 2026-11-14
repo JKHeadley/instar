@@ -30,10 +30,9 @@ describe('doorway-scan job template', () => {
     expect(parse().frontmatter.enabled).toBe(false);
   });
 
-  it('is tier-1 supervised on haiku (wraps the deterministic prober)', () => {
+  it('uses the deterministic script runner with the layered supervision plan', () => {
     const { frontmatter } = parse();
-    expect(frontmatter.supervision).toBe('tier1');
-    expect(frontmatter.model).toBe('haiku');
+    expect(frontmatter).toMatchObject({ runner: 'script', script: 'doorway-scan.mjs', supervision: 'tier0', scriptSupervision: 'deterministic' });
   });
 
   it('is perMachineIndependent (each machine scans its own disk — §2.8)', () => {

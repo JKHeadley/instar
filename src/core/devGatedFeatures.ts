@@ -44,10 +44,65 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'usageLedger',
+    configPath: 'usage.ledger.enabled',
+    description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
+  },
+  {
+    name: 'contextBudgetLayers',
+    configPath: 'contextBudget.enabled',
+    description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
+  },
+  {
+    name: 'chiefOfStaff',
+    configPath: 'chiefOfStaff.enabled',
+    description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every side effect goes through the §2.4 action protocol (signed intent, ownership-machine lock, durable executing record, idempotency key) and the existing quota, spawn-cap and pressure gates; it acts only on owner-confirmed bindings while the operator check-in lease is live, with P19 brakes (park, breaker, backoff). PR 2 wires the protocol only; no loop runs until PR 3.',
+  },
+  { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
+  {
+    name: 'scriptRunners',
+    configPath: 'jobs.scriptRunners.enabled',
+    description: 'Script runners (job-cost-reduction §5.1): the converted built-in jobs run their shipped Node script instead of opening a model session; omitted ⇒ live on a development agent, every converted job runs its body as a session on the fleet.',
+    justification: 'Each script calls the same local endpoint its session body called, under the same claim and lock-file trust; an untrusted script records failed and starts nothing. Setting enabled:false or listing a slug in disabledSlugs restores the session path live at the next trigger. No credential or state mutation beyond what the session already did; it removes spend.',
+  },
+  {
+    name: 'jobToolAllowlistEnforcement',
+    configPath: 'jobs.toolAllowlistEnforcement.enabled',
+    description: 'Job tool limits are applied (EVO-008, docs/specs/job-tool-allowlist-real-enforcement.md): a Claude job with a declared or clamped tool list starts in the confined launch form (no permission bypass; only the listed tools exist); omitted ⇒ live on a development agent, dark on the fleet, where the list is recorded but not applied.',
+    justification: 'It can only REMOVE tools from the development agent\'s own jobs that declare a list (or ask for "*" without authorization); it adds no capability, spend, credential or state change. A user job\'s bare ["Read"] default is never applied, a list naming tools the launch cannot honour is left as today and reported, and a non-Claude launch runs as today except a tamper-clamped instar job, which is refused. Read live at every launch: enabled:false restores today\'s launch at the next spawn.',
+  },
+  {
+    name: 'scriptTriageJev',
+    configPath: 'jobs.scriptTriage.jev.enabled',
+    description: 'Jev triage of script-job results (job-cost-reduction §5.6.2): a scrubbed, clamped summary of a non-bare script run is sent to TypeSafe for routine / needs-session; omitted ⇒ live on a development agent, dark on the fleet (F12).',
+    justification: 'Advisory only: the deterministic floor (critical anomaly or a second consecutive failure) still starts a session whatever Jev answers, and every Jev failure falls to that floor. Inert without the vault typesafe_api_key; daily call cap; sessions are bounded by the triage caps and cooldown.',
+  },
+  {
+    name: 'machineMaintenance',
+    configPath: 'machineMaintenance.enabled',
+    description: 'Machine self-maintenance, watch-only (docs/specs/machine-self-maintenance.md): a nightly paper drain records what a scheduled restart would have done and how long work takes to yield.',
+    justification: 'Cannot act: it holds no restart path and no yield method, its OS commands are an allowlist of fixed probes, and a source lint fails the build if that changes. It writes its own audit logs and host-level rehearsal and wedge records. The wedge sampler (Part E, dry-run) adds one bounded judge call per wedge condition (at most 6 per 24 h, host maintainer only) and an operator notice that is OFF unless machineMaintenance.wedgeRestart.dryRunNotice is true.',
+  },
+  {
     name: 'workAdmission',
     configPath: 'monitoring.workAdmission.enabled',
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
     justification: 'Ships dryRun:true: the state machine, audit and advert run on the real verdict feed but nothing is refused and peers keep placing work here until a deliberate dryRun:false. Even live it only DEFERS automatic work (jobs retry, inbound messages stay in the durable queue) and always leaves an operator session a slot; no LLM, no spend, no kills, no credential or state mutation.',
+  },
+  {
+    name: 'appConversationsPool',
+    configPath: 'multiMachine.sessionPool.appConversations.enabled',
+    description: 'App conversations move between machines (docs/specs/app-conversations-in-the-pool.md): per-conversation ownership, forwards to the owner, Move and Bring it back here. Off means the lease holder serves every app conversation, exactly as before.',
+    justification: 'Live on a development agent so the first real two-machine move proves it. Held from the fleet until then: a duplicate is still possible when an attempt reached another machine before its delivery event replicates, and nothing has run across two real machines yet.',
+  },
+  {
+    name: 'overloadShed',
+    configPath: 'monitoring.overloadShed.enabled',
+    description: 'Overload shed (trustworthy-machine-load Part D): once this machine has refused new work for 3 minutes, proposes moving one existing Telegram conversation at a time to a healthy machine through the ownership reconciler, and drives started transfers to claim or abort independently of pins.',
+    justification: 'Ships dryRun:true: it logs each move it WOULD make and proposes nothing, and it also proposes nothing while overload admission itself is in dry-run. Even live, a move is a cooperative ownership transfer (the reconciler in its own dry-run performs no CAS), pinned topics and topics with a live autonomous run are never moved, and a breaker caps it at 2 moves per hour with 2 tries per topic per episode; no LLM, no spend, no kills.',
   },
   {
     name: 'identityReannounce',
@@ -112,6 +167,11 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
   },
   {
+    name:'serverDownRecovery',configPath:'multiMachine.serverDownRecovery.enabled',
+    description:'Independent SSH and relay recovery with source-verified server-down route proofs.',
+    justification:'The setup page, missing-enrollment attention and truthful pool/channel status are visible across the fleet. Active source probing remains development-agent gated until explicit setup enables it. No host grant or listener can activate without a release-certified per-agent authority, a current owner-phone grant, current MachineAuth-signed peer inventory and a target-bound checkpoint. Missing enrollment is degraded, never ready.',
+  },
+  {
     name: 'mutualSsh',
     configPath: 'multiMachine.mutualSsh.enabled',
     description: 'Mutual SSH-subsystem bootstrap and continuous proof: dedicated Instar-only keys, restricted subsystem admissions, and source-local A→B/B→A evidence.',
@@ -172,28 +232,22 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (the dry-run canary): a recorded green PROMOTES the agent\'s sessionPool stage (real authority), so while dryRun holds the runner points at a SIDE result store the promotion path NEVER reads — the check runs live and the would-record verdict is captured for the soak, but nothing StageAdvancer promotes on is written until a deliberate dryRun:false. A throwing check still records NOTHING in either mode (an infra/availability error is not a failover verdict — never a fabricated green promotion or red demotion). Doubly inert on the fleet: enabled OMITTED → resolveDevAgentGate resolves it dark, and the whole session-pool layer is itself dark unless the stage advances past "dark". The heavy two-server E2E runs on a slow cadence (default 1h, floored at 60s — never a hot loop) behind an in-flight re-entrancy guard, and a deployed agent with no source/vitest yields ranToCompletion:false → the check throws → the runner records nothing (honest degrade). Bounded subprocess timeout; no LLM call, no spend, no egress beyond the local vitest run.',
   },
   {
-    name: 'sessionPoolMoveIntent',
-    configPath: 'multiMachine.sessionPool.moveIntent.enabled',
-    description: 'LLM-with-context move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md) — replaces the keyword verb-list that hijacked "keep the work on the laptop" (2026-07-03). Decides "move/run/pin this on <nickname>?" via MoveIntentClassifier over the message + recent conversation, guardrailed by structured enum output; the downstream TransferByNickname planner is unchanged.',
-    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-hijack vs would-pass to logs/move-intent.jsonl, but _tryNicknameRelocation ALWAYS returns handled:false (the message passes through, never hijacked) while dryRun holds — real hijacking needs a deliberate dryRun:false. The whole session-pool layer is itself dark unless stage advances past "dark", so this is doubly inert on the fleet. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable output, target not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate message (gated behind a cheap no-nickname pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles.',
-  },
-  {
     name: 'hubIntent',
     configPath: 'threadline.hubIntent.enabled',
     description: 'LLM-with-context hub-intent recognizer (docs/specs/keyword-intent-conversions-1-and-3.md, Conversion #3) — replaces the anchored "open this"/"tie this to <topic>" regexes that SWALLOWED the message before the agent saw it (a misread silently EATS a real message — the highest-care conversion). Decides "is this hub message a bind command?" via HubIntentClassifier over the message + recent conversation, guardrailed by a structured topic-id enum for the tie target; the downstream bindHubConversation binder is unchanged.',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-swallow vs would-pass to logs/hub-intent.jsonl, but the onTopicMessage hub intercept ALWAYS falls through (the message passes to the agent, never swallowed) while dryRun holds — real swallowing needs a deliberate dryRun:false. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable/schema-violating output, tie target not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate hub message (gated behind a cheap no-hub-signal pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles / the move-intent exemplar (PR #1367).',
   },
   {
-    name: 'topicProfileIntentClassifier',
-    configPath: 'topicProfiles.intentClassifier.enabled',
-    description: 'LLM-with-context framework/model/thinking intent recognizer (docs/specs/keyword-intent-conversions-1-and-3.md, conversion #1) — replaces the keyword/regex write decision removed from parseProfileTrigger (the 2026-07-03 keyword-intent audit\'s offender #1). Decides "change this topic\'s framework/model/thinking?" via ProfileIntentClassifier over the message + recent conversation, guardrailed by structured-enum output; the downstream TopicProfileWriteSurface is unchanged. Enforces "Intelligence Infers, Keywords Only Guard".',
-    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-actuate vs would-pass to logs/profile-intent.jsonl, but handleTopicProfileIngress ALWAYS returns pass-through (the message reaches the agent, never actuates a respawn) while dryRun holds — real actuation needs a deliberate dryRun:false. The whole topic-profile WRITE layer is itself dev-gated + dryRun (topicProfiles.enabled/dryRun), so this is doubly inert on the fleet. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable output, value not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate message (gated behind a cheap no-signal pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles.',
-  },
-  {
     name: 'agentOwnedFollowthrough',
     configPath: 'commitments.agentOwnedFollowthrough.enabled',
     description: 'The Agent Carries the Loop (C1+C2) — owner-gated beacon suppression + external-block staleness governor + evidence-gated graveyard reconciler; the user is never status-pinged for an agent-owned commitment.',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the owner-gate + governor + reconciler run the full decision loop and AUDIT/log every suppression/dead-letter/close they WOULD make, but PromiseBeacon.emitUserSend STILL sends and the governor/reconciler mutate nothing while dryRun holds (verified at emitUserSend §4.2 + reconcileGraveyard/maybeReconcileGraveyard dryRun branches). No spend, no destructive action, no egress while the canary holds; real suppression/closes need a deliberate dryRun:false. Same dogfooding posture as topicProfiles / credential-repointing.',
+  },
+  {
+    name: 'promiseReview',
+    configPath: 'commitments.promiseReview.enabled',
+    description: 'Promise review (docs/specs/promise-review-and-priority.md): the promise-review job reviews the agent\'s own open promises every 6 h and keeps / prioritizes / delivers / archives each through POST /commitments/review/apply.',
+    justification: 'Ships closureDryRun:true: on a dev agent keep/prioritize stamp live (they close nothing), while deliver/archive are validated and audited as would-apply and close nothing until a deliberate closureDryRun:false. Even live, every closure needs a written reason plus server-checked evidence, is capped (15/run, 60/day), audited to logs/promise-review.jsonl and reopenable for 30 days; nothing is ever deleted and the job never messages anyone. Spend: one sonnet session per 6 h only when enough rows are due (gate). Kill switch read live.',
   },
   {
     name: 'biasToAction',
@@ -296,6 +350,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.blockerLedger.durableVaultSession.enabled',
     description: 'Durable org-Bitwarden session (self-unblock-before-escalating spec §5.3) — a TTL+idle-bounded, in-flight-only warm session the org-vault probe uses so an in-vault credential is actually reachable.',
     justification: 'The session value lives in PROCESS MEMORY ONLY — never written to any log/config/temp file, never passed as a CLI argv (handed to bw only via the child BW_SESSION env), and NEVER placed on the multiMachine.secretSync path (machine-local). It is held warm only while a checklist run is in flight and carries a TTL + idle-expiry, so the standing-privilege window is minimal. The master password stays operator-held; no new on-disk secret is introduced. The dev agent is the controlled blast radius where this matures before any fleet flip.',
+  },
+  {
+    name: 'attributionPaperTrail',
+    configPath: 'attribution.enabled',
+    description: 'Attribution paper trail — statements credited to a person resolve to the logged message, in notes, messages and a daily report (attribution-paper-trail).',
+    justification: 'Ships in mode record: on a dev agent it writes its own ledger and report, refuses nothing, holds nothing and never edits a note. Spend is the agent\'s own subscription inside fixed budgets of 200 and 300 model calls a day plus 40 a run.',
   },
   {
     name: 'topicProfiles',
@@ -408,8 +468,8 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'ws43JournalLease',
     configPath: 'multiMachine.seamlessness.ws43JournalLease',
-    description: 'WS4.3 journal-lease cutover — job claims upgrade from the best-effort AgentBus broadcast to a durable, epoch-fenced lease over the replicated journal (the JobLeaseCutoverGate guarantees the two mechanisms are NEVER both live for a job set).',
-    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) is ALSO omitted from ConfigDefaults and resolves COHERENTLY with this flag at the consumer (dev → live, fleet → dry-run) so live-on-dev actually exercises the lease path. A genuine live cutover engages ONLY when the flag resolves live AND the pool is flag-coherent (≥2 machines all advertising not-dry-run), so a single-machine dev agent never half-migrates (strict no-op). Job-claim coordination on durable local/replicated state — no destructive/irreversible write, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+    description: 'WS4.3 planned journal-lease cutover — currently held on the legacy AgentBus path by a code-owned readiness floor until peer claim receive and pool-authoritative acquisition are implemented.',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) remains omitted from ConfigDefaults and resolves coherently with the development-agent flag, but neither value can bypass the code-owned readiness floor. A local lease file and flag-coherent peers cannot arbitrate concurrent claims. The pool continues using the legacy path until a shared authority and receive wiring are proven. Operator directive 2026-06-13 topic 13481.',
   },
   {
     name: 'ws44PoolLinks',
@@ -680,6 +740,18 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setAuthenticatedOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'jevFirstCommitment',
+    configPath: 'intelligence.jevFirstCommitment.enabled',
+    description: 'Shared Jev-first yes/no path for CommitmentSentinel (jev-first-decision-path.md): shadow by default on a development agent, off on the fleet; only a separately validated confident negative may later skip the detailed incumbent extraction.',
+    justification: 'Shadow changes no commitment verdict or tracker write. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure all reach the incumbent; the same feature works with one provider. Jev receives only bounded secret-scrubbed text, the model is pinned, and the kill switch is read live. Fleet use requires an explicit enable and stage promotion after a held-out replay.',
+  },
+  {
+    name: 'jevFirstPrompt',
+    configPath: 'intelligence.jevFirstPrompt.enabled',
+    description: 'Shared Jev-first yes/no path for PromptGate\'s blocking-prompt check (jev-first-decision-path.md): shadow only — Jev is asked beside the incumbent and the scrubbed terminal tail is logged for later grading; the incumbent decides every case.',
+    justification: 'Shadow changes no PromptGate verdict, relay, or auto-approval: the incumbent call starts first, PromptGate acts only on its response, and the Jev comparison is never awaited by detection. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure are all recorded and ignored; the feature works with one provider. Jev receives only the bounded secret-scrubbed 20-line tail, the model is pinned, the stage is clamped to shadow in code, and the kill switch is read live.',
+  },
+  {
     name: 'jevSignalLive',
     configPath: 'intelligence.jevSignalLive.enabled',
     description: 'Jev as a live advisory input to the tone gate\'s B1–B7 artefact signals (jev-signal-live.md): confident Jev answers decide a kind, unsure/missing answers and every failure fall back to the deterministic detectors.',
@@ -704,16 +776,22 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Signal into an existing authority-bounded pipeline: the sentinel\'s own distill can still call it noise, and the unchanged recurrence gate (4 occurrences, 2 days, 2 sessions) decides whether anything becomes a preference — which is itself an advisory, enveloped hint. Delivers nothing, blocks nothing. Inert unless the shadow is on and the sentinel is constructed; rides the sentinel\'s own LlmQueue daily cap, per-topic rate ceiling and load-shedding; kill switch read live. No destructive action.',
   },
   {
+    name: 'correctionMeaningGrouping',
+    configPath: 'monitoring.correctionLearning.meaningGrouping.enabled',
+    description: 'Correction meaning grouping (correction-meaning-grouping.md): before the recurrence gate, the correction analyzer asks Jev whether two same-kind records that share some words state the same core rule (GPT-6 Luna decides unsure pairs), and uses those answers as complete-link grouping edges beside word overlap.',
+    justification: 'Signal into an existing authority-bounded pipeline: complete-link grouping (every pair inside a group must match) and the unchanged recurrence gate (4 occurrences, 2 days, 2 sessions) decide; a learned preference is itself an advisory, enveloped hint. Runs only inside the off-by-default correction-analyzer job. Inert without the vault typesafe_api_key; learning text is secret-scrubbed before egress; each pair is asked once (cached), bounded by per-run call caps, a run time budget and fetch timeouts, metered in feature metrics; every failure falls back to word overlap. Kill switch read live. No destructive action.',
+  },
+  {
     name: 'jevCirclesShadow',
     configPath: 'intelligence.jevCirclesShadow.enabled',
     description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',
     justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
   },
   {
-    name: 'jevReviewFlagShadow',
-    configPath: 'intelligence.jevReviewFlagShadow.enabled',
-    description: 'Jev review-flag shadow (jev-review-flag-shadow.md): once a minute, asks Jev whether each new agent Telegram reply needs the operator\'s review and logs a content-free would-flag row.',
-    justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the agent\'s own Telegram history tail (512 KB), secret-scrubs reply and request before egress, one call at a time under a fetch timeout and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+    name: 'jevLoadAssessment',
+    configPath: 'intelligence.jevLoadAssessment.enabled',
+    description: 'Model assessment of machine load (trustworthy-machine-load B4): when a machine\'s own load verdict and the outside view disagree, or its readings contradict, Jev (Luna referee when unsure) labels it; the label is graded 15 min later against what happened.',
+    justification: 'Advisory and log-only — no placement, admission, shed, attention or message path reads its output. Asks only on the serving-lease holder, once per machine per 10-30 min, one call at a time under a fetch timeout and a daily cap of 200, metered; inert without the vault typesafe_api_key. Sends only load numbers, a machine nickname and fixed words, secret-scrubbed. Kill switch read live. No destructive action.',
   },
   {
     name: 'degradationLadderBackoff',
@@ -839,6 +917,77 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
     justification: 'Observe-only and machine-local: records already-persisted commitment lifecycle events into a bounded SQLite ledger; no LLM spend, outbound messages, autonomous action, scalar score, or gating authority. Routes are reads and pool scope only proxies bounded per-origin results.',
+  },  {
+    name: 'maturationLadder',
+    configPath: 'maturation.ladder.enabled',
+    description: 'The measured path to default-on: per-rung thresholds for every switched-off feature, evidence reads, D7 scoring and raising to the review (GET /maturation/ladder).',
+    justification: 'Measures and raises only: it reads logs off the event loop, adds in-memory subjects to the existing scorer, and records commitments with no beacon. It never moves a feature by itself; POST /maturation/moves applies only a decision the review model made, behind floors that can only refuse. No LLM spend, no outbound messages. Raising needs maturation.ladder.reviewTopic, unset by default.',
+  },
+  {
+    name: 'maturationBoard',
+    configPath: 'maturationBoard.enabled',
+    description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',
+    justification: 'Read-only and advisory (authority none): joins review files and existing owners at request time; stores nothing, writes nothing, no LLM spend, no outbound messages, no gating. Pool scope only proxies bounded per-machine projections.',
+  },
+  {
+    name: 'queuePace',
+    configPath: 'queuePace.enabled',
+    description: 'Queue pace: an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items), with a plain verdict and the reason a queue is behind (GET /queue-pace, the console Pace card).',
+    justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
+  },
+  {
+    name: 'ecosystemIdeas',
+    configPath: 'ecosystemIdeas.enabled',
+    description: 'Ecosystem idea pipeline: a weekly review of similar projects that checks each idea against our own source and goals and ranks it. Advice only; it builds nothing and contacts no one. Reads outside text only through frameworks that pass a must-fail file-read probe.',
+    justification: 'Signal only: it gates no running agent and writes only its own ledger. Spend is capped per run and paused at the quota threshold. The one blocking piece, the adoption lint, runs on a development step.',
+  },
+  {
+    name: 'mobilePairing',
+    configPath: 'mobilePairing.enabled',
+    description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',
+    justification: 'Phones never receive the API token or an operator session and may only make a fixed allowlist of signed requests (the one non-idempotent entry, chat, is made idempotent by requestId and never binds the topic operator); a phone becomes active only with a code sent privately to the owner. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'desktopGuidedSetup',
+    configPath: 'remoteDesktop.guidedSetup.enabled',
+    description: 'Guided Remote Desktop setup (docs/specs/desktop-guided-setup.md): a per-machine Set up flow on the Desktop page and in the app, driven by each machine\'s live check.',
+    justification: 'Every action needs a press behind the dashboard PIN session; nothing runs by itself. A paired machine can claim a machine with no front, so it stays dark on the fleet until proven on the development agent.',
+  },
+  {
+    name: 'mobilePairingNative',
+    configPath: 'mobilePairing.native.enabled',
+    description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device signature and this machine\'s signed receipt, checked against a replicated, machine-signed device-key ledger (originVerified in history). The store and the ledger replicate to every machine whenever this is on.',
+    justification: 'Device-signed only, behind the existing device allowlist; every mutation is idempotent by requestId; messages are persisted before dispatch and delivery is never claimed without a recorded outcome. Off ⇒ the new routes answer 503 and the Telegram chat route is unchanged. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'mobilePairingNativeMedia',
+    configPath: 'mobilePairing.native.media.enabled',
+    description: 'Media in app conversations (docs/specs/mobile-native-chat-media.md): the iPhone app uploads photos, videos, voice notes and files in signed chunks and sends them into a native conversation, the session receives local paths, the agent replies with files through app-reply.sh --file, and the phone\'s signature covers each file\'s hash.',
+    justification: 'Device-signed only, behind the existing allowlist; the server decides a file\'s type from its bytes and serves everything non-executable; reply files are confined to three roots and scanned by the existing credential wall; every admission is capped and a free-disk floor protects the machine. Off ⇒ the media routes answer 503, nothing is copied, and what is stored stays. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'mobilePairingBrowser',
+    configPath: 'mobilePairing.browser.enabled',
+    description: 'Dashboard conversations with the browser as its own signed device (docs/specs/dashboard-conversations-browser-device.md): a browser holds its own non-extractable key, is approved through the same channel a new phone would be (never the PIN alone on an agent with a Telegram owner), may call only the conversation and media routes and revoke itself, and every message it signs is marked as browser-signed from the signed ledger row.',
+    justification: 'a new signing client identity; proven live on the development agent before any fleet exposure',
+  },
+  {
+    name: 'mobilePairingMultiRoute',
+    configPath: 'mobilePairing.multiRoute.enabled',
+    description: 'Several routes per agent for the Instar iPhone app (docs/specs/mobile-multi-route.md): a paired phone\'s signature is accepted on any of this machine\'s proven own names (Cloudflare tunnel hostname, Tailscale HTTPS name), GET /mobile/routes lists them, and a boot step maps tailscale serve HTTPS 443 to the agent port when 443 has no serve config.',
+    justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
+  },
+  {
+    name: 'mobilePairingOwnerPresence',
+    configPath: 'mobilePairing.ownerPresence.enabled',
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page on the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): a fresh presence-key signature over a single-use, purpose-bound challenge mints a desktop-only, phone-bound 15-minute session (POST /mobile/desktop-unlock) or reveals the dashboard PIN this server compares against (POST /mobile/dashboard-pin/reveal).',
+    justification: 'The desktop session is narrower than the PIN unlock: accepted only by the desktop routes, re-checked against the phone on every use, cleared on a PIN change, and the phone never holds the API token. The reveal is owner-phone only, never returns a placeholder, and needs the owner\'s private chat, which is told (without the PIN) at most once per phone per 10 minutes while every reveal is audited. Bearer, MSP and shared phones are refused; every use and refusal is audited. Dark on the fleet until the development-agent live proof and a physical-phone check pass.',
+  },
+  {
+    name: 'mobilePairingPermissionActions',
+    configPath: 'mobilePairing.permissionActions.enabled',
+    description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
+    justification: 'No authority beyond the PIN-confirmed console: the action runs the console\'s own approve, deny and operator-switch code; the bearer is refused; it needs an active owner phone, a configured dashboard PIN, local TLS or loopback, the phone\'s Secure Enclave presence key and a 60-second single-use challenge naming the exact action (an approve also names the proposal\'s hash). Every write and refusal is audited. Switching it off stops the writes at once (re-checked live); the read-only lists stay. Dark on the fleet until the development-agent live proof passes.',
   },
 ];
 
@@ -883,6 +1032,7 @@ export interface DarkGateExclusion {
 }
 
 export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
+  { configPath: 'notifications.selectivity.digest.enabled', category: 'optional-integration', reason: 'A daily digest is an explicit operator notification preference, never an automatic development-agent opt-in.' },
   // ── destructive — kills/deletes on a heuristic; off + dry-run for EVERYONE ──
   {
     configPath: 'monitoring.sessionReaper.enabled',
@@ -893,6 +1043,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
   //    operator enable (routing-control-room-spend-alerts FD-16: Increments B and D
   //    are the documented action-bearing exclusion cases). Even when enabled, every
   //    door stays deny-by-default until a per-door operator PIN go-live. ──
+  {
+    configPath: 'remoteDesktop.enabled',
+    category: 'action-bearing',
+    reason: 'full human display and input access to the logged-in host requires an explicit local operator enable even on development agents',
+  },
   {
     configPath: 'routingSpend.money.enabled',
     category: 'action-bearing',
@@ -917,6 +1072,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'monitoring.agentWorktreeReaper.enabled',
     category: 'destructive',
     reason: 'deletes git worktrees; off+dry-run for everyone',
+  },
+  {
+    configPath: 'monitoring.diskSteward.prune.enabled',
+    category: 'destructive',
+    reason: 'deletes npm cache and Xcode build files; off for everyone, the update migration writes an explicit true on development agents only (docs/specs/disk-steward.md)',
   },
   {
     configPath: 'monitoring.mcpProcessReaper.enabled',
@@ -949,16 +1109,6 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'authors summaries via off-Claude codex; ongoing third-party spend; explicit opt-in even on dev',
   },
   // ── structural-stub — no runtime consumer wired; a gate would assert dead behavior ──
-  {
-    configPath: 'cartographer.conformanceAudit.llmEnrichment.enabled',
-    category: 'structural-stub',
-    reason: 'no LLM pipeline wired; dark stub',
-  },
-  {
-    configPath: 'cartographer.subtreeNav.llmRerank.enabled',
-    category: 'structural-stub',
-    reason: 'no LLM pipeline wired; dark stub',
-  },
   {
     configPath: 'monitoring.agentSleep.enabled',
     category: 'structural-stub',

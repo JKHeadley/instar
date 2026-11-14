@@ -55,7 +55,7 @@ if [ ! -x "$PS" ]; then
   if command -v powershell.exe >/dev/null 2>&1; then
     PS=powershell.exe
   else
-    refuse 2 "ERR windows-only: ndrive.sh runs native-drive.ps1 through powershell.exe from WSL (or set ND_POWERSHELL=<path to powershell.exe>). On macOS use chrome-launch.sh / chrome-js.sh / chrome-mainworld.sh instead."
+    refuse 2 "ERR windows-only: ndrive.sh runs native-drive.ps1 through powershell.exe from WSL (or set ND_POWERSHELL=<path to powershell.exe>). On macOS use chrome-launch.sh / chrome-js.sh / chrome-mainworld.sh instead. On Linux use xdrive.sh in this same folder."
   fi
 fi
 # WSL only: every Windows path this wrapper hands to PowerShell, and every Windows path it reads back

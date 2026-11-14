@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "desktop-guided-setup",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T04:05:03.903Z",
+  "artifactPath": "upgrades/side-effects/desktop-guided-setup.md",
+  "artifactSha256": "b5fbb1f5ea732faa0e40fa2c2446b3e7cb9dcf708d848930a2ff9bd416616f8f",
+  "specPath": "docs/specs/desktop-guided-setup.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/desktop-setup-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive: a new way to enable full-control remote desktop across machines.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: every restart needs a person's press behind the PIN session"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-slice1",
+  "sessionId": "a6d9daf8-bba9-4530-8639-9714fa4abb04",
+  "timestamp": "2026-11-09T22:33:19.827Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-slice1.md",
+  "artifactSha256": "a99486b36c7f49e4d58da2ec63ef50a429e1a9ea49f0c30e67c015ffc4a7ba9c",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/monitoring/UsageLedger.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/UsageLedger.test.ts",
+    "upgrades/next/unified-usage-ledger-slice1.md",
+    "upgrades/side-effects/unified-usage-ledger-slice1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New durable store (Tier 2 per spec); dev-gated, observational only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

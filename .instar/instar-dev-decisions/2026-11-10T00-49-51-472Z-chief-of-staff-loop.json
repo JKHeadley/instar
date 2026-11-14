@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-10T00:49:51.472Z",
+  "slug": "chief-of-staff-loop",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/llmBenchCoverage.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Registration rows only; no controller, send or retry path changes."
+  },
+  "verdict": "pass"
+}

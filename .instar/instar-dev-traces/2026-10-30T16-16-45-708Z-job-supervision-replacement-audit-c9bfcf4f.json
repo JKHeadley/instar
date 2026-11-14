@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "job-supervision-replacement-audit",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-30T16:16:45.708Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-replacement-audit.md",
+  "artifactSha256": "cf9fc9a174f7b732ba91ccfbb250a6248def74075c9eb3d4a3ce06e9990fa968",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/core/ClaudeCliIntelligenceProvider.ts",
+    "src/scheduler/JobSupervisionWorker.ts",
+    "upgrades/side-effects/job-supervision-replacement-audit.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "Audited model calls and fail-closed verdict boundaries affect scheduled-result decisions.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

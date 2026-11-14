@@ -39,6 +39,9 @@ describe('computeGreenPrBlock', () => {
   it('emits the do-not-merge (disarmed) variant when the watcher is not armed', () => {
     const b = computeGreenPrBlock({ ...base, armed: false, snapshot: snap(), sessionBranch: 'echo/feature' });
     expect(b?.variant).toBe('disarmed');
+    // An agent's own stop must not send the session straight to the operator.
+    expect(b?.message).toMatch(/agent's own/);
+    expect(b?.message).not.toMatch(/operator rollback/);
     expect(b?.message).toMatch(/do NOT merge/i);
   });
 

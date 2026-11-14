@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-28T18:55:39.358Z",
+  "slug": "job-supervision-offline-trial",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 130,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/job-supervision-offline-trial.mjs"
+    ],
+    "addedLines": 130,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

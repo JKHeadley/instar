@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "job-grade-pass-receipt",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T11:30:08.126Z",
+  "artifactPath": "upgrades/side-effects/job-grade-pass-receipt.md",
+  "artifactSha256": "ac3ff119ae0b6be15240d9a1c125ddc26545d819a88dadb7656b41a0e2160101",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "tests/unit/handoff-manager.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "upgrades/side-effects/job-grade-pass-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This follow-up fixes two full-suite test failures on a security-sensitive, durable receipt feature; it preserves its approved spec and second-pass review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "grade_receipt_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 4
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-result-supervision-v2-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

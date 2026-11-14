@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-08T00:13:57.737Z",
+  "slug": "usage-limit-key-pickup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/monitoring/sessionUsageLimitEvidence.ts"
+    ],
+    "addedLines": 48,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

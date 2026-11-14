@@ -58,9 +58,10 @@ const EFFORT_WORDS = ['low', 'medium', 'high', 'xhigh', 'max'];
  * deciding "does this message mean change this topic's framework/model/thinking?"
  * A regex cannot tell "use codex here" (a command) from "should we use codex
  * here?" (a question). Per the constitutional standard "Intelligence Infers,
- * Keywords Only Guard", that judgment is now inferred by the
- * `ProfileIntentClassifier` (LLM over the message + recent conversation,
- * structured-enum output, fail-open). This parser retains only the NON-inference
+ * Keywords Only Guard", that judgment belongs to the AGENT reading the
+ * conversation, which then drives the explicit propose/write routes
+ * (`POST /topic-profile/:id/propose` + the operator's confirm). A message that
+ * is not a trigger simply passes through. This parser retains only the NON-inference
  * grammar: `effort` + `escalationOverride` (explicit CLI-flag / mandate forms
  * out of the framework/model/thinking scope) and the command kinds (readout /
  * undo / clear / reapply / switch-now / confirm), whose meaning is structural,

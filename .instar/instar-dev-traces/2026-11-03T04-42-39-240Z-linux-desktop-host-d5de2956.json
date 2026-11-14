@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "linux-desktop-host",
+  "sessionId": "cbaa6613-87c0-4eb5-9324-fa4a4f7dff8d",
+  "timestamp": "2026-11-03T04:42:39.240Z",
+  "artifactPath": "upgrades/side-effects/linux-desktop-host.md",
+  "artifactSha256": "70ead9c403ce55ea338a2d10f7b3a107196f0ebf440df3b778c421f154d177ad",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-03T04-41-48-860Z-linux-desktop-host-9d58b572.json",
+    "src/core/DesktopHost.ts",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/core/DesktopSetupGuide.ts",
+    "src/core/DesktopSetupTarget.ts",
+    "src/core/LinuxDesktopHost.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/desktop-setup-boot-lifecycle.test.ts",
+    "tests/unit/desktop-setup-guide.test.ts",
+    "tests/unit/desktop-setup-target.test.ts",
+    "tests/unit/linux-desktop-host.test.ts",
+    "upgrades/side-effects/linux-desktop-host.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New Linux host adapter for remote control behind the existing remoteDesktop opt-in; approved blocker-handoff spec Linux requirement",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

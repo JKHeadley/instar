@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
+import { projectMaturationOutcome } from '../../src/monitoring/MaturationOutcome.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 
 const AUTH = 'throughput-pool-test';
@@ -58,6 +59,140 @@ function app(peerBody: Record<string, unknown>) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('blocker throughput pool schema honesty', () => {
+  const latestStates = { ready: 1, hold: 0, 'stale-evidence': 0, 'insufficient-evidence': 0,
+    'missing-contract': 0, 'invalid-contract': 0, 'missed-cadence': 0 };
+  const maturationPoint = { day: '2026-07-20', dueAt: '2026-07-20T06:00:00.000Z',
+    evaluatedAt: '2026-07-20T06:00:01.000Z', newestEvidenceAt: '2026-07-20T05:59:00.000Z',
+    rung: 'live', status: 'ready', passingMetrics: 1, totalMetrics: 1,
+    minNormalizedMargin: 0.5, contractHash: 'v1', additionalMissedSlots: 0, sameEvaluationSeries: false };
+  const maturationHistory = { totalFeatures: 3, omittedFeatures: 2, featureLimit: 512, evaluationLimit: 90,
+    cadenceContinuity: 'unknown', historyByteLimit: 384 * 1024, features: [{ featureId: 'one', totalEvaluations: 4, omittedEvaluations: 3,
+      evaluations: [maturationPoint] }] };
+
+  it('preserves latest feature counts separately from historical counts across the pool', async () => {
+    const peer = { machineId: 'peer-a', factors: [latencySummary('request-to-persist', 'best-effort'),
+      latencySummary('clear-latency', 'reconcilable'), countSummary], counters,
+    maturation: { eligible: 1, evaluated: 1, missedDue: 0,
+      byStatus: { ...latestStates, hold: 4 }, latestByStatus: latestStates,
+      features: [{ featureId: 'one', rung: 'live', status: 'ready', passingMetrics: 1, totalMetrics: 1,
+        minNormalizedMargin: 0.5, evaluatedAt: maturationPoint.evaluatedAt }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] }))
+      .get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body.poolComplete).toBe(true);
+    expect(response.body.origins[1].maturation).toMatchObject({
+      byStatus: { ready: 1, hold: 4 }, latestByStatus: { ready: 1, hold: 0 } });
+  });
+
+  it('rejects latest counts that contradict the evaluated cohort size', async () => {
+    const peer = { machineId: 'peer-a', factors: [latencySummary('request-to-persist', 'best-effort'), latencySummary('clear-latency', 'reconcilable'), countSummary], counters,
+      maturation: { eligible: 1, evaluated: 999, missedDue: 0, byStatus: latestStates, latestByStatus: latestStates,
+        features: [{ featureId: 'one', rung: 'live', status: 'ready', passingMetrics: 1, totalMetrics: 1, minNormalizedMargin: 0.5, evaluatedAt: maturationPoint.evaluatedAt }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] })).get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false, failures: [{ reason: 'unsupported-maturation' }] });
+  });
+
+  it('preserves compatible adjacent points without claiming cadence continuity', async () => {
+    const second = { ...maturationPoint, dueAt: '2026-07-20T12:00:00.000Z', evaluatedAt: '2026-07-20T12:00:01.000Z', sameEvaluationSeries: true };
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'), emptyTrend('clear-latency'), countTrend],
+      maturation: { ...maturationHistory, features: [{ featureId: 'one', totalEvaluations: 2, omittedEvaluations: 0, evaluations: [maturationPoint, second] }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] })).get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body.poolComplete).toBe(true);
+    expect(response.body.origins[1].maturation).toMatchObject({ cadenceContinuity: 'unknown', features: [{ evaluations: [{ sameEvaluationSeries: false }, { sameEvaluationSeries: true }] }] });
+  });
+
+  it.each(['status', 'contractHash', 'rung', 'contract-boundary', 'rung-boundary', 'first-continuous'])('rejects contradictory new-format point metadata: %s', async change => {
+    const first: Record<string, unknown> = { ...maturationPoint };
+    const second: Record<string, unknown> = { ...maturationPoint, dueAt: '2026-07-20T12:00:00.000Z', evaluatedAt: '2026-07-20T12:00:01.000Z', sameEvaluationSeries: true };
+    if (change === 'status') second.status = 'invented';
+    if (change === 'contractHash') delete second.contractHash;
+    if (change === 'rung') delete second.rung;
+    if (change === 'contract-boundary') second.contractHash = 'v2';
+    if (change === 'rung-boundary') second.rung = 'fleet';
+    if (change === 'first-continuous') first.sameEvaluationSeries = true;
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'), emptyTrend('clear-latency'), countTrend],
+      maturation: { ...maturationHistory, features: [{ featureId: 'one', totalEvaluations: 2, omittedEvaluations: 0, evaluations: [first, second] }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] })).get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false, failures: [{ reason: 'unsupported-maturation' }] });
+  });
+
+  it('preserves exact times and disclosed history omissions across the pool', async () => {
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'),
+      emptyTrend('clear-latency'), countTrend], maturation: maturationHistory };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] }))
+      .get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body.poolComplete).toBe(true);
+    expect(response.body.origins[1].maturation).toEqual(maturationHistory);
+  });
+
+  it('rejects inconsistent claimed omission counts instead of hiding the missing history', async () => {
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'),
+      emptyTrend('clear-latency'), countTrend], maturation: { ...maturationHistory, omittedFeatures: 0 } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] }))
+      .get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false,
+      failures: [{ machineId: 'peer-a', reason: 'unsupported-maturation' }] });
+  });
+
+  it('rejects invalid exact evaluation times from a peer', async () => {
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'),
+      emptyTrend('clear-latency'), countTrend], maturation: { ...maturationHistory,
+      features: [{ featureId: 'one', totalEvaluations: 4, omittedEvaluations: 3,
+        evaluations: [{ ...maturationPoint, evaluatedAt: 'not-a-time' }] }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] }))
+      .get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false,
+      failures: [{ machineId: 'peer-a', reason: 'unsupported-maturation' }] });
+  });
+
+  it('rejects a peer history that exceeds its declared byte budget', async () => {
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'),
+      emptyTrend('clear-latency'), countTrend], maturation: { ...maturationHistory, historyByteLimit: 32 } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] }))
+      .get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false,
+      failures: [{ machineId: 'peer-a', reason: 'unsupported-maturation' }] });
+  });
+
+  const outcomePeer = () => {
+    const now = Date.now(); const at = now - 60_000;
+    const metric = { id: 'quality', source: 'feature-summary' as const, sourceRef: 'ladder.quality.abc', direction: 'at-most' as const, threshold: 0.05, minSamples: 20 };
+    const contract = { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [metric], outcome: {
+      statement: 'Fewer wrong decisions', owner: 'decision-owner', method: 'Recorded outcomes', version: 'v1', outcomeMetricIds: ['quality'], qualityMetricIds: ['quality'],
+      baseline: { origin: 'peer-a', points: [{ id: 'quality', observedAtMs: at, descriptorVersion: 1, value: 0.2, samples: 40 }] },
+    } };
+    const evidence = projectMaturationOutcome(contract, 'peer-a', 'one', now, (_id, time) => ({ origin: 'peer-a', featureId: 'one', metricId: 'quality', source: metric.source, sourceRef: metric.sourceRef,
+      observedAtMs: time ?? now, descriptorVersion: 1, value: time === undefined ? 0.1 : 0.2, samples: 40 }));
+    return { schemaVersion: 2, origins: [{ machineId: 'peer-a', factors: [latencySummary('request-to-persist', 'best-effort'), latencySummary('clear-latency', 'reconcilable'), countSummary], counters,
+      maturation: { eligible: 1, evaluated: 0, missedDue: 1, byStatus: { ready: 0, hold: 0, 'stale-evidence': 0, 'insufficient-evidence': 0, 'missing-contract': 0, 'invalid-contract': 0, 'missed-cadence': 0 }, features: [],
+        outcomeContracts: { scope: 'current-d7-subjects', subjects: 1, declared: 1, missing: 0, invalid: 0 }, outcomeDetail: { featureId: 'one', subjectKnown: true, evidence } } }] };
+  };
+
+  it('preserves scoped baseline evidence and declared-contract counts through the existing pool read', async () => {
+    const res = await request(app(outcomePeer())).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.body.poolComplete).toBe(true);
+    expect(res.body.origins[1].maturation).toMatchObject({ outcomeContracts: { declared: 1 }, outcomeDetail: { featureId: 'one', evidence: { state: 'verified', metrics: [{ delta: -0.1, criterion: { met: false } }] } } });
+  });
+
+  it('reports old-peer detail as unavailable on explicit requests without breaking the default read', async () => {
+    const peer = outcomePeer(); delete (peer.origins[0].maturation as Record<string, unknown>).outcomeDetail;
+    const server = app(peer);
+    expect((await request(server).get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`)).body.poolComplete).toBe(true);
+    const res = await request(server).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.body.poolComplete).toBe(false);
+    expect(res.body.failures[0].reason).toBe('unsupported-outcome-detail');
+  });
+
+  it('rejects contradictory peer arithmetic and never serves detail from the ordinary pool cache', async () => {
+    const peer = outcomePeer(); const server = app(peer);
+    const first = await request(server).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(first.body.poolComplete).toBe(true);
+    const bad = structuredClone(peer); bad.origins[0].maturation.outcomeDetail.evidence.metrics[0].delta = 0.99;
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(bad), { status: 200 }));
+    const second = await request(server).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(second.body.poolComplete).toBe(false);
+    expect(second.body.failures[0].reason).toBe('unsupported-maturation');
+  });
+
   it('reports a schema-v1 peer unsupported without coercing a zero origin', async () => {
     const response = await request(app({ schemaVersion: 1, origins: [] }))
       .get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`);

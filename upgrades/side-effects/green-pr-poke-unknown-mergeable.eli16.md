@@ -1,0 +1,5 @@
+# Ready changes are no longer invisible to the automatic merger
+
+To decide what to merge, the automatic merger asks GitHub for the list of open changes and whether each one can be merged cleanly. GitHub works that out lazily: in a list it often answers "unknown" until someone opens the change itself, and every time something merges, it forgets the answer for all the others. The merger treated "unknown" as "can't merge" and moved on without a word, so a change that had passed all its tests could sit there unseen, round after round. Today that happened to one of the fixes until it was opened by hand, after which it merged on the very next round.
+
+Now, when a change has passed its tests and GitHub says "unknown", the merger looks at that one change directly. That makes GitHub work out the answer, so on the next round the change is seen as mergeable and goes in. It also writes a short note in its log saying it is waiting for that answer. Changes that genuinely conflict are left alone, and nothing that could not be merged before can be merged now.

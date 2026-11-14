@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "legacy-default-job-reconciliation",
+  "sessionId": "42912913-074b-480a-9565-222edcd29edc",
+  "timestamp": "2026-11-05T05:08:43.463Z",
+  "artifactPath": "upgrades/side-effects/legacy-default-job-reconciliation.md",
+  "artifactSha256": "00672bc963383672a60feeea94863c3096850cbe8f138bc7b2ae4de6fe12a737",
+  "coveredFiles": [
+    "docs/specs/legacy-default-job-reconciliation.eli16.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/refresh-jobs.test.ts",
+    "upgrades/next/legacy-default-job-reconciliation.md",
+    "upgrades/side-effects/legacy-default-job-reconciliation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible add-only reconciliation of shipped legacy defaults, with git-sync remaining operator-disabled; no existing job body is changed.",
+  "eli16Path": "docs/specs/legacy-default-job-reconciliation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/legacy-default-job-reconciliation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

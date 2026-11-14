@@ -85,7 +85,9 @@ export function neutralizePoolShapingArgv(argv: string[]): { argv: string[]; rem
 
 const SUBCOMMANDS = new Set(['run', 'watch', 'list', 'related', 'bench', 'dev', 'typecheck', 'init']);
 /** Flags that do NOT disqualify a targeted classification (value-taking noted). */
-const SAFE_FLAGS_WITH_VALUE = new Set(['--config', '--reporter', '--root', '--dir']);
+// `--outputFile` only says where a reporter writes; it never changes which tests run
+// (CMT-1117: the session-pool failover runner reads a JSON report per run).
+const SAFE_FLAGS_WITH_VALUE = new Set(['--config', '--reporter', '--root', '--dir', '--outputFile', '--outputFile.json']);
 const SAFE_BOOLEAN_FLAGS = new Set(['--run', '--silent', '--no-color', '--color', '--globals', '--passWithNoTests', '--pass-with-no-tests', '--allowOnly', '--allow-only']);
 
 export interface ArgvAnalysis {
@@ -388,6 +390,12 @@ export interface NestedCheckResult {
   shelteringSlotId: string | null;
   /** True when an ancestor holds ANY-lane slot (drives the unconditional clamp). */
   anyLaneAncestorHolder: boolean;
+  /**
+   * True when EVERY held ancestor row is the declared own-suite holder (a Local Verify run
+   * holding the `suite` slot for the lanes it launched): the clamp guards against a nested
+   * intruder, and the holder's own suite is not one.
+   */
+  ownSuiteOnly: boolean;
 }
 
 /**
@@ -403,6 +411,8 @@ export function checkNestedUnderHolder(
     ancestors?: number[];
     envMarker?: string | undefined;
     pidAlive?: (pid: number) => boolean;
+    /** INSTAR_HOST_TEST_OWN_SUITE_HOLDER: the pid of the holder whose own suite this is. */
+    ownSuiteHolder?: string | undefined;
   } = {},
 ): NestedCheckResult {
   const ancestors = opts.ancestors ?? ancestryPids();
@@ -414,6 +424,8 @@ export function checkNestedUnderHolder(
   }
   let sameLane: TestRunnerHolderRow | null = null;
   let anyLane = false;
+  const ownPid = opts.ownSuiteHolder && /^\d+$/.test(opts.ownSuiteHolder) ? Number(opts.ownSuiteHolder) : null;
+  let foreignAncestorRow = false;
   for (const r of holdersRows) {
     if (classifyRow(r) !== 'held') continue;
     const row = r as TestRunnerHolderRow;
@@ -424,6 +436,7 @@ export function checkNestedUnderHolder(
       // the ancestry facts still count this ancestor row.
     }
     anyLane = true;
+    if (!(ownPid !== null && row.pid === ownPid && row.lane === 'suite')) foreignAncestorRow = true;
     if (row.lane === laneChildWouldAcquire && !sameLane) sameLane = row;
   }
   return {
@@ -431,5 +444,6 @@ export function checkNestedUnderHolder(
     shelteringPid: sameLane?.pid ?? null,
     shelteringSlotId: sameLane?.id ?? null,
     anyLaneAncestorHolder: anyLane,
+    ownSuiteOnly: anyLane && !foreignAncestorRow,
   };
 }

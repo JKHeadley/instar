@@ -55,7 +55,7 @@ describe('SessionManager.injectTelegramMessage', () => {
     const files = fs.readdirSync(inboundDir).filter(f => f.startsWith('msg-42-'));
     expect(files).toHaveLength(1);
     const content = fs.readFileSync(path.join(inboundDir, files[0]), 'utf-8');
-    expect(content).toContain('[telegram:42]');
+    expect(content).toContain('[telegram:42 (name unresolved)]');
     expect(content).toContain(longText);
   });
 
@@ -63,7 +63,7 @@ describe('SessionManager.injectTelegramMessage', () => {
     // The tagged text is `[telegram:${topicId}] ${text}`
     // For topicId=42, that's "[telegram:42] " = 14 chars prefix
     // So text needs to be 500 - 14 = 486 chars to exceed threshold
-    const prefix = '[telegram:42] ';
+    const prefix = '[telegram:42 (name unresolved)] ';
     const text = 'X'.repeat(500 - prefix.length); // Exactly 500 tagged = below threshold
     const taggedLength = prefix.length + text.length;
     expect(taggedLength).toBe(500); // Should NOT go to file

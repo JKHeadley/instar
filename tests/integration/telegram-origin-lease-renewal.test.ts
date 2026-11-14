@@ -41,7 +41,7 @@ describe('HTTP origin sends depend on the real renewed lease', () => {
     const telegram = new TelegramAdapter(telegramConfig, lease.stateDir, { suppressLifelineAutoCreate: true });
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-auth') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
+    app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
     // Observe actual configuration readiness before advancing the lease clock;
     // a startup invalidation must not mask the lease boundary under test.
     await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });

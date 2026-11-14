@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-06T16:50:02.407Z",
+  "slug": "notification-job-opt-in",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 14,
+  "loc": 311,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-notification-selectivity.mjs",
+      "skills/instar-scheduler/SKILL.md",
+      "src/commands/job.ts",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/NotificationPreferences.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/scaffold/templates.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/notificationPoolRead.ts",
+      "src/server/notificationRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 265,
+    "deletedLines": 46
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action: reports were already sent and only their routing changes; the preference write is operator-driven; its replication retry is bounded at 38 attempts, 16 rows per tick, not a self-triggered loop"
+  },
+  "verdict": "blocked"
+}

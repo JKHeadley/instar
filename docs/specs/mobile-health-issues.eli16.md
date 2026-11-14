@@ -1,0 +1,5 @@
+The agent has a health check that says "degraded" if any single thing is off, even something small it already fixed by itself. That word is useful for scripts, but it was also being shown to people. On Justin's phone every agent said "Degraded" and the details screen said only "The agent says something is degraded." There was nothing to tap and nothing to do.
+
+This change adds one new owner-only answer that explains the word. Each reason is looked up in a table we wrote down, which says whether it affects the person or is internal, gives plain words, and names where to go to fix it. If a reason isn't in the table, it is shown as "not sorted yet" so we never claim things are fine when we don't know.
+
+The health check itself does not change, so nothing that depends on it can break. The new answer reads the health check and adds meaning on top. The phone and the web console both use the same answer, so they can't disagree. "Degraded" now only appears when something really affects you, and every problem gets a button to the fix and a way to ask the agent about it.

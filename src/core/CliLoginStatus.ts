@@ -47,6 +47,27 @@ export interface CodexLoginStatusCheckerOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+/** Cap on the carried status text (spec codex-device-limit-tripwire §2, source A′: 2 KiB). */
+export const CLI_LOGIN_STATUS_TEXT_MAX_BYTES = 2048;
+
+/** A login-status verdict plus the CLI's own status lines (stdout then stderr), capped at 2 KiB. */
+export interface CliLoginStatusWithText { verdict: CliLoginVerdict; text: string }
+
+/** The CLI's status lines: stdout then stderr, blank lines dropped, capped at 2 KiB of UTF-8. */
+function statusText(result: CliRunResult): string {
+  const lines = `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.trim());
+  const joined = lines.join('\n');
+  if (Buffer.byteLength(joined, 'utf8') <= CLI_LOGIN_STATUS_TEXT_MAX_BYTES) return joined;
+  let out = '';
+  let bytes = 0;
+  for (const ch of joined) {
+    const n = Buffer.byteLength(ch, 'utf8');
+    if (bytes + n > CLI_LOGIN_STATUS_TEXT_MAX_BYTES) break;
+    out += ch;
+    bytes += n;
+  }
+  return out;
+}
 
 /** Classify one `codex login status` result. Exported for tests. */
 export function classifyCodexLoginStatus(result: CliRunResult): CliLoginVerdict {
@@ -104,12 +125,22 @@ export class CodexLoginStatusChecker {
   }
 
   async check(codexHome: string): Promise<CliLoginVerdict> {
-    if (!codexHome || !path.isAbsolute(codexHome)) return 'unavailable';
-    if (!(await this.proven())) return 'unavailable';
+    return (await this.checkWithText(codexHome)).verdict;
+  }
+
+  /**
+   * As {@link check}, but also returns the CLI's own status lines (source A′ of spec
+   * codex-device-limit-tripwire), from the SAME single process run. Same canary gating: an
+   * unproven check, a bad home or an unrunnable CLI yields `unavailable` with empty text.
+   */
+  async checkWithText(codexHome: string): Promise<CliLoginStatusWithText> {
+    if (!codexHome || !path.isAbsolute(codexHome)) return { verdict: 'unavailable', text: '' };
+    if (!(await this.proven())) return { verdict: 'unavailable', text: '' };
     try {
-      return classifyCodexLoginStatus(await this.run({ CODEX_HOME: codexHome }, this.timeoutMs));
+      const result = await this.run({ CODEX_HOME: codexHome }, this.timeoutMs);
+      return { verdict: classifyCodexLoginStatus(result), text: statusText(result) };
     } catch {
-      return 'unavailable'; // @silent-fallback-ok — unrunnable check = no signal; caller keeps the prior status
+      return { verdict: 'unavailable', text: '' }; // @silent-fallback-ok — unrunnable check = no signal; caller keeps the prior status
     }
   }
 

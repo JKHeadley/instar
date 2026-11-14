@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hook-reporter-early-exit",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-27T19:16:19.226Z",
+  "artifactPath": "upgrades/side-effects/hook-reporter-early-exit.md",
+  "artifactSha256": "4c4ad4d8874248fbbd9c492ca2b2c8fcdc225a08998a38593881da9c63fd4889",
+  "coveredFiles": [
+    "docs/specs/hook-reporter-early-exit.eli16.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/hook-event-reporter-early-exit.test.ts",
+    "tests/unit/hook-installation.test.ts",
+    "upgrades/next/hook-reporter-early-exit.md",
+    "upgrades/side-effects/hook-reporter-early-exit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reporting hook exits on the server reply instead of a fixed 50 ms wait; same payload, same upper bound; revert fully undoes it.",
+  "eli16Path": "docs/specs/hook-reporter-early-exit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/hook-reporter-early-exit.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

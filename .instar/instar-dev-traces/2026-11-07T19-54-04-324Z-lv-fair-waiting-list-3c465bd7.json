@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "lv-fair-waiting-list",
+  "sessionId": "b41d6699-1ce2-4327-8a2c-c5d44ff089b6",
+  "timestamp": "2026-11-07T19:54:04.324Z",
+  "artifactPath": "upgrades/side-effects/lv-fair-waiting-list.md",
+  "artifactSha256": "0ebc2f7840309382d1304a99d1967d0e9876510fd554a6989713b03fc6bca359",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/waitingList.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/waitingList.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/lv-fair-waiting-list.eli16.md",
+    "upgrades/next/lv-fair-waiting-list.md",
+    "upgrades/side-effects/lv-fair-waiting-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Queue-ordering change inside Local Verify admission; a revert fully undoes it (the new waiting.json is ignored by older code), no fleet migration beyond an idempotent CLAUDE.md awareness line.",
+  "eli16Path": "upgrades/lv-fair-waiting-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-fair-waiting-list.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

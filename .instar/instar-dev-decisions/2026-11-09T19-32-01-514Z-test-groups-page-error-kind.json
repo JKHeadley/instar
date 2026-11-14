@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-09T19:32:01.514Z",
+  "slug": "test-groups-page-error-kind",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/TelegramTestGroups.ts",
+      "src/messaging/telegram-origin/TelegramWebKDriver.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

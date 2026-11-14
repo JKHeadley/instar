@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-03T21:27:03.733Z",
+  "slug": "presence-follows-replacement-session",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/PresenceProxy.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

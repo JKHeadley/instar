@@ -34,6 +34,14 @@ export interface SubagentRecord {
   lastMessage: string | null;
   /** Path to the subagent's transcript file (captured on stop) */
   transcriptPath: string | null;
+  /**
+   * The parent session's incarnation (INSTAR_SESSION_ID) when the start was
+   * recorded. A SessionEnd clears only the subagents of ITS incarnation.
+   * Absent on records written before native hook events.
+   */
+  instarSessionId?: string | null;
+  /** Set when the record was closed by its incarnation's SessionEnd, not a SubagentStop. */
+  endedBy?: 'session-end';
 }
 
 export interface SubagentTrackerConfig {
@@ -41,6 +49,23 @@ export interface SubagentTrackerConfig {
   stateDir: string;
   /** Max completed subagents to retain per session (default: 100) */
   maxPerSession?: number;
+  /** A subagent with no stop for longer than this no longer counts as active (default 60 min). */
+  staleAfterMs?: number;
+  /** Injectable clock. */
+  now?: () => number;
+}
+
+/**
+ * The staleness cap: a subagent older than this without a SubagentStop no
+ * longer counts as active (matches the zombie-kill checker's cap). Without it,
+ * one missed SubagentStop would mute the silence sentinel for that session
+ * forever (docs/specs/native-hook-events.md D2).
+ */
+export const SUBAGENT_STALE_AFTER_MS = 60 * 60_000;
+
+interface ActiveEntry {
+  startedAtMs: number;
+  instarSessionId: string | null;
 }
 
 // ── Implementation ─────────────────────────────────────────────────
@@ -50,12 +75,16 @@ const DEFAULT_MAX_PER_SESSION = 100;
 export class SubagentTracker extends EventEmitter {
   private config: SubagentTrackerConfig;
   private dataDir: string;
-  /** In-memory index: sessionId -> active agentIds */
-  private activeAgents: Map<string, Set<string>> = new Map();
+  /** In-memory index: sessionId -> active agentId -> start time + incarnation */
+  private activeAgents: Map<string, Map<string, ActiveEntry>> = new Map();
+  private readonly staleAfterMs: number;
+  private readonly now: () => number;
 
   constructor(config: SubagentTrackerConfig) {
     super();
     this.config = config;
+    this.staleAfterMs = config.staleAfterMs ?? SUBAGENT_STALE_AFTER_MS;
+    this.now = config.now ?? Date.now;
     this.dataDir = path.join(config.stateDir, 'subagent-tracking');
     if (!fs.existsSync(this.dataDir)) {
       fs.mkdirSync(this.dataDir, { recursive: true });
@@ -67,24 +96,26 @@ export class SubagentTracker extends EventEmitter {
    * Record a subagent start event.
    * Called from SubagentStart command hook or when processing HookEventReceiver events.
    */
-  onStart(agentId: string, agentType: string, sessionId: string): void {
+  onStart(agentId: string, agentType: string, sessionId: string, opts: { instarSessionId?: string | null } = {}): void {
+    const startedAtMs = this.now();
     const record: SubagentRecord = {
       agentId,
       agentType,
       sessionId,
-      startedAt: new Date().toISOString(),
+      startedAt: new Date(startedAtMs).toISOString(),
       stoppedAt: null,
       lastMessage: null,
       transcriptPath: null,
+      instarSessionId: opts.instarSessionId || null,
     };
 
     this.appendRecord(sessionId, record);
 
     // Track as active
     if (!this.activeAgents.has(sessionId)) {
-      this.activeAgents.set(sessionId, new Set());
+      this.activeAgents.set(sessionId, new Map());
     }
-    this.activeAgents.get(sessionId)!.add(agentId);
+    this.activeAgents.get(sessionId)!.set(agentId, { startedAtMs, instarSessionId: record.instarSessionId ?? null });
 
     this.emit('start', record);
   }
@@ -103,7 +134,7 @@ export class SubagentTracker extends EventEmitter {
     const record = records.find(r => r.agentId === agentId && !r.stoppedAt);
 
     if (record) {
-      record.stoppedAt = new Date().toISOString();
+      record.stoppedAt = new Date(this.now()).toISOString();
       record.lastMessage = lastMessage ?? null;
       record.transcriptPath = transcriptPath ?? null;
       this.rewriteSession(sessionId, records);
@@ -161,7 +192,47 @@ export class SubagentTracker extends EventEmitter {
    * sub-agent suppresses a false "stuck" escalation).
    */
   hasActiveSubagents(sessionId: string): boolean {
-    return (this.activeAgents.get(sessionId)?.size ?? 0) > 0;
+    const active = this.activeAgents.get(sessionId);
+    if (!active || active.size === 0) return false;
+    // Staleness cap applied at read time: a scan of this session's own live
+    // entries (single digits in practice).
+    const cutoff = this.now() - this.staleAfterMs;
+    for (const entry of active.values()) {
+      if (entry.startedAtMs > cutoff) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A parent session ended (SessionEnd). Clears ONLY the active subagents
+   * recorded under that event's incarnation, so a delayed SessionEnd from an
+   * earlier incarnation of a resumed Claude session cannot clear a newer
+   * incarnation's subagents. No incarnation id ⇒ nothing is cleared.
+   * Returns the number cleared.
+   */
+  onSessionEnd(sessionId: string, instarSessionId: string | null | undefined): number {
+    if (!instarSessionId) return 0;
+    const active = this.activeAgents.get(sessionId);
+    if (!active || active.size === 0) return 0;
+    const cleared: string[] = [];
+    for (const [agentId, entry] of active) {
+      if (entry.instarSessionId === instarSessionId) cleared.push(agentId);
+    }
+    if (cleared.length === 0) return 0;
+    const records = this.getSessionRecords(sessionId);
+    const stoppedAt = new Date(this.now()).toISOString();
+    for (const r of records) {
+      if (!r.stoppedAt && cleared.includes(r.agentId) && r.instarSessionId === instarSessionId) {
+        r.stoppedAt = stoppedAt;
+        r.endedBy = 'session-end';
+      }
+    }
+    this.rewriteSession(sessionId, records);
+    for (const agentId of cleared) {
+      active.delete(agentId);
+      this.emit('stop', { agentId, sessionId, lastMessage: undefined, transcriptPath: undefined });
+    }
+    return cleared.length;
   }
 
   /**
@@ -260,11 +331,16 @@ export class SubagentTracker extends EventEmitter {
   }
 
   private loadActiveIndex(): void {
+    // The boot rebuild applies the same staleness cap as the read.
+    const cutoff = this.now() - this.staleAfterMs;
     for (const sessionId of this.listSessions()) {
-      const active = this.getActiveSubagents(sessionId);
-      if (active.length > 0) {
-        this.activeAgents.set(sessionId, new Set(active.map(r => r.agentId)));
+      const map = new Map<string, ActiveEntry>();
+      for (const r of this.getActiveSubagents(sessionId)) {
+        const startedAtMs = Date.parse(r.startedAt);
+        if (!Number.isFinite(startedAtMs) || startedAtMs <= cutoff) continue;
+        map.set(r.agentId, { startedAtMs, instarSessionId: r.instarSessionId ?? null });
       }
+      if (map.size > 0) this.activeAgents.set(sessionId, map);
     }
   }
 }

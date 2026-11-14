@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "cb-sentinel",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T13:30:42.963Z",
+  "artifactPath": "upgrades/side-effects/cb-sentinel.md",
+  "artifactSha256": "72d711fc1deb8f7b7025d8fe22f0791021b10600f06d32a70d2b24d032de4c8e",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "tests/integration/fold-coordinator-boot-wiring.test.ts",
+    "upgrades/side-effects/cb-sentinel.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test expectation and lint marker for the reviewed sentinel slice; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "no change to the registered context-budget-quarantine-reconcile controller; a lint marker and a test expectation only"
+    }
+  }
+}

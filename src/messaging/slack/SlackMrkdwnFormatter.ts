@@ -217,6 +217,59 @@ function extractInlineCode(text: string, code: string[]): string {
   });
 }
 
+/** The body of a Slack person mention (`@U…` or `@W…`), as Slack writes it between `<` and `>`. */
+const SLACK_USER_MENTION_BODY_RE = /^@[UW][A-Z0-9]{8,12}$/;
+
+/**
+ * The distinct person ids written as `<@U…>` / `<@W…>` in a message, at most
+ * `limit` of them. A sender uses this to decide which ids are worth resolving
+ * against the conversation's participants; the formatter still ignores any
+ * occurrence inside code. Pure.
+ */
+export function candidateUserMentionIds(text: string, limit = 16): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/<@([UW][A-Z0-9]{8,12})>/g)) {
+    out.add(m[1]);
+    if (out.size >= limit) break;
+  }
+  return [...out];
+}
+
+/** Preserve only the native references an agent can deliberately author.
+ * Broadcast tokens are deliberately absent: they can notify a whole workspace.
+ * Code is extracted first, so quoted examples never become live references.
+ * A person mention is active when it is explicitly listed (`allowed`) or when
+ * the sender resolved that id as a human participant of the target
+ * conversation (`participants`). Channel references and links need `allowed`.
+ */
+function extractNativeReferences(
+  text: string,
+  raw: string[],
+  allowed: ReadonlySet<string>,
+  participants: ReadonlySet<string>,
+): string {
+  return text.replace(/<([^<>\n]{1,2048})>/g, (whole, body: string) => {
+    let reference: string | null = null;
+    if (SLACK_USER_MENTION_BODY_RE.test(body) && (allowed.has(body.slice(1)) || participants.has(body.slice(1)))) {
+      reference = whole;
+    } else if (/^#[CG][A-Z0-9]{3,12}$/.test(body) && allowed.has(body.slice(1))) {
+      reference = whole;
+    } else {
+      const separator = body.indexOf('|');
+      const url = separator < 0 ? body : body.slice(0, separator);
+      const label = separator < 0 ? null : body.slice(separator + 1);
+      const safe = isSafeUrl(url);
+      if (safe && allowed.has(url) && !url.includes('|') && (!label || !label.includes('|'))) {
+        reference = `<${escapeMrkdwn(safe)}${label === null ? '' : `|${escapeMrkdwn(label)}`}>`;
+      }
+    }
+    if (reference === null) return whole;
+    const index = raw.length;
+    raw.push(reference);
+    return makeSentinel(KIND_RAW, index);
+  });
+}
+
 // ─── Blockquotes ────────────────────────────────────────────────────────────
 
 /**
@@ -424,13 +477,20 @@ function splicePlaceholders(text: string, seg: Segments): string {
 
 // ─── Main entry ─────────────────────────────────────────────────────────────
 
-function convertMarkdownToMrkdwn(text: string): string {
+function convertMarkdownToMrkdwn(
+  text: string,
+  nativeReferences: readonly string[],
+  participantUserIds: readonly string[] = [],
+): string {
   const seg: Segments = { pre: [], table: [], code: [], raw: [] };
 
   // 1. Extract literal segments (never re-processed → no double-escaping).
   text = extractFencedCode(text, seg.pre);
   text = extractTables(text, seg.table);
   text = extractInlineCode(text, seg.code);
+  if (nativeReferences.length || participantUserIds.length) {
+    text = extractNativeReferences(text, seg.raw, new Set(nativeReferences), new Set(participantUserIds));
+  }
   // 2. Escape remaining prose ONCE (&, <, > — Slack's three specials).
   text = escapeMrkdwn(text);
   // 3. Restore blockquote markers the escape consumed.
@@ -459,6 +519,8 @@ function convertMarkdownToMrkdwn(text: string): string {
 export function formatForSlack(
   text: string,
   mode: SlackFormatMode = 'mrkdwn',
+  nativeReferences: readonly string[] = [],
+  participantUserIds: readonly string[] = [],
 ): SlackFormatResult {
   if (mode === 'legacy-passthrough') {
     return {
@@ -477,7 +539,7 @@ export function formatForSlack(
   // exactly today's pre-formatter behavior).
   if (working.length > MAX_INPUT_LENGTH) {
     return {
-      text,
+      text: escapeMrkdwn(working),
       modeApplied: 'mrkdwn',
       conversionSkipped: true,
       legacyPassthrough: false,
@@ -485,7 +547,7 @@ export function formatForSlack(
   }
 
   return {
-    text: convertMarkdownToMrkdwn(working),
+    text: convertMarkdownToMrkdwn(working, nativeReferences, participantUserIds),
     modeApplied: 'mrkdwn',
     conversionSkipped: false,
     legacyPassthrough: false,
@@ -495,7 +557,7 @@ export function formatForSlack(
 // ─── Wire-up helper (the single outbound chokepoint contract) ───────────────
 
 /** Slack Web API methods whose `text` is a user-visible message body. */
-const SEND_METHODS = new Set(['chat.postMessage', 'chat.update', 'chat.postEphemeral']);
+export const SLACK_SEND_METHODS: ReadonlySet<string> = new Set(['chat.postMessage', 'chat.update', 'chat.postEphemeral']);
 
 /**
  * Shared formatter wire-up used by SlackAdapter.formattedApiCall — the Slack
@@ -521,14 +583,22 @@ export function applySlackFormatter(
   didFormat: boolean;
 } {
   const callerMode = (params as { _formatMode?: SlackFormatMode })._formatMode;
+  const nativeReferences = Array.isArray(params._nativeReferences)
+    ? params._nativeReferences.filter((v): v is string => typeof v === 'string') : [];
+  // Person ids the sender verified as human participants of the target
+  // conversation (SlackAdapter participant lookup); their mentions stay active.
+  const participantUserIds = Array.isArray(params._participantUserIds)
+    ? params._participantUserIds.filter((v): v is string => typeof v === 'string') : [];
   // Strip internal flags before sending to the Slack API.
   const stripped: Record<string, unknown> = { ...params };
   delete (stripped as { _formatMode?: SlackFormatMode })._formatMode;
+  delete stripped._nativeReferences;
+  delete stripped._participantUserIds;
 
   const mode: SlackFormatMode = callerMode ?? configMode ?? 'mrkdwn';
 
   if (
-    !SEND_METHODS.has(method) ||
+    !SLACK_SEND_METHODS.has(method) ||
     mode === 'legacy-passthrough' ||
     typeof stripped.text !== 'string' ||
     stripped.blocks !== undefined ||
@@ -537,7 +607,7 @@ export function applySlackFormatter(
     return { outgoingParams: stripped, didFormat: false };
   }
 
-  const result = formatForSlack(stripped.text, mode);
+  const result = formatForSlack(stripped.text, mode, nativeReferences, participantUserIds);
   return {
     outgoingParams: { ...stripped, text: result.text },
     didFormat: !result.legacyPassthrough && !result.conversionSkipped,

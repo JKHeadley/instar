@@ -32,7 +32,8 @@ export type NotDueReason =
   | 'already-reminded'
   | 'retries-exhausted'
   | 'not-open'
-  | 'no-topic';
+  | 'no-topic'
+  | 'other-machine';
 
 /**
  * Delivery attempts before giving up LOUDLY (recording
@@ -54,8 +55,15 @@ export interface DuePredicateInput {
     | 'checkInReminderSentAt'
     | 'checkInReminderAttempts'
     | 'topicId'
+    | 'ownerMachineId'
   >;
   nowMs: number;
+  /**
+   * This machine's id. A row stamped with a DIFFERENT owner is not ours to
+   * remind. Unknown self or an unstamped row stays eligible, so a
+   * single-machine agent behaves exactly as it did.
+   */
+  selfMachineId?: string | null;
 }
 
 /**
@@ -73,6 +81,10 @@ export function isCheckInReminderDue(input: DuePredicateInput): DueVerdict {
   // so a dated-but-unrouted commitment reports the real problem.
   if (typeof c.topicId !== 'number' || !Number.isFinite(c.topicId)) {
     return { due: false, reason: 'no-topic' };
+  }
+
+  if (input.selfMachineId && c.ownerMachineId && c.ownerMachineId !== input.selfMachineId) {
+    return { due: false, reason: 'other-machine' };
   }
 
   // Terminal statuses end the obligation. THIS is the teardown: delivering or
@@ -106,11 +118,12 @@ export function isCheckInReminderDue(input: DuePredicateInput): DueVerdict {
 export function selectDueCommitments<T extends DuePredicateInput['commitment'] & { id: string }>(
   commitments: readonly T[],
   nowMs: number,
+  selfMachineId?: string | null,
 ): { due: T[]; skipped: Array<{ id: string; reason: NotDueReason }> } {
   const due: T[] = [];
   const skipped: Array<{ id: string; reason: NotDueReason }> = [];
   for (const c of commitments) {
-    const v = isCheckInReminderDue({ commitment: c, nowMs });
+    const v = isCheckInReminderDue({ commitment: c, nowMs, selfMachineId });
     if (v.due) due.push(c);
     else skipped.push({ id: c.id, reason: v.reason });
   }
@@ -141,6 +154,27 @@ export function buildCheckInReminderText(opts: {
     `“${promise}”\n\n` +
     `That's the date arriving — not a status update. Nothing here says the work happened. ` +
     `Tell me if it's still wanted and I'll pick it up.`
+  );
+}
+
+/**
+ * The reminder for a PROMISED UPDATE (docs/specs/promised-update-capture.md):
+ * "next update by 7 PM" and nothing came. Same fixed-template rules as above —
+ * a fact, no model prose. `resuming` is true only when the caller will hand the
+ * promise back to the topic's session right after this send, so the line never
+ * claims a pickup nothing performs.
+ */
+export function buildPromisedUpdateOverdueText(opts: {
+  userRequest: string;
+  agentResponse: string;
+  resuming: boolean;
+}): string {
+  const said = (opts.agentResponse ?? '').trim().replace(/\s+/g, ' ').slice(0, CHECK_IN_TEXT_MAX);
+  const when = (opts.userRequest ?? '').match(/promised for (.+)$/)?.[1]?.trim();
+  return (
+    `I said you'd have my next update${when ? ` by ${when}` : ''}, and I haven't sent it.` +
+    (opts.resuming ? ` I'm picking it back up now and will send it next.` : '') +
+    (said ? `\n\nWhat I said: “${said}”` : '')
   );
 }
 

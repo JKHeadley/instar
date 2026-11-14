@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-10T07:31:09.597Z",
+  "slug": "cb-keyed-fold-lease",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 453,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/FencedLease.ts",
+      "src/core/KeyedLease.ts",
+      "src/core/foldLeaseFactory.ts"
+    ],
+    "addedLines": 453,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

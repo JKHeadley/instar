@@ -139,10 +139,12 @@ function getSourceFiles(): string[] {
 // from) the inbound message path. These are the baseline; the number only DECREASES as
 // each is converted to LLM-with-context (the CoherenceGate / cheap-prefilter→LLM template).
 // #2 core/NicknameCommand.ts (recognizeNicknameCommand — TRANSFER_VERBS/PIN_VERBS,
-// the hijack) was CONVERTED to LLM-with-context (MoveIntentClassifier) on 2026-07-04
-// — the exemplar under this very standard (docs/specs/nickname-move-intent-llm-rebuild.md).
-// It no longer keyword-decides intent, so the detector no longer flags it: it is
-// removed from the baseline and BASELINE dropped 6→5 (this ratchet only ever DECREASES).
+// the hijack) was CONVERTED to LLM-with-context on 2026-07-04 (the exemplar under
+// this very standard, docs/specs/nickname-move-intent-llm-rebuild.md); that LLM
+// recognizer was itself retired on 2026-10-25 (docs/specs/retire-staged-features-2026-10-25.md)
+// — the agent now drives the explicit POST /pool/transfer lever. Either way it no
+// longer keyword-decides intent, so the detector no longer flags it: it is removed
+// from the baseline and BASELINE dropped 6→5 (this ratchet only ever DECREASES).
 // #3 threadline/hubCommands.ts (parseHubCommand — open/tie NL regexes that SWALLOWED
 // the message) was CONVERTED to LLM-with-context (HubIntentClassifier) on 2026-07-04
 // — Conversion #3 under this standard (docs/specs/keyword-intent-conversions-1-and-3.md).
@@ -174,7 +176,9 @@ const ALLOWLIST: Record<string, string> = {
   // Agent's OWN outbound classified (not a user message) — signal-only, high-precision.
   'core/action-claim.ts': 'VERB_LEMMAS/FUTURE_LEAD — classifies the agent\'s own outbound "did I promise a future action"; audit "Related", not user-intent gating.',
   // Process / error-message signature matchers (classify a thrown error, not user text).
+  'core/storageMachineName.ts': 'isStorageError/isStorageFailure — recognizes local OS/SQLite error signatures only to name the originating machine; cosmetic diagnostic formatting, no user-intent or admission decision.',
   'core/crossModelReviewer.ts': 'classifyReviewFailure — classifies an error message (rate-limited/timeout); TIER_WORDS is a structured-output enum (survivor #3).',
+  'threadline/requiredAck.ts': 'refusalReason — maps this server\'s own spawn-refusal error text to a closed display reason, like classifyReviewFailure; decides nothing and never reads user or peer text (spec a2a-required-acknowledgment).',
   'core/CliLoginStatus.ts': 'classifyCodexLoginStatus — classifies the `codex login status` CLI process output ("Logged in" / "Not logged in"), a process-signature matcher like classifyReviewFailure; never reads user text (spec skill-driven-signin-repair).',
   // Structured LLM-output field parsing (parses the model\'s own response, never gates prose).
   'core/LLMConflictResolver.ts': 'content.match(/^Machine A intent:/m) — parses structured LLM output fields, not keyword-gating user intent.',
@@ -200,7 +204,8 @@ const ALLOWLIST: Record<string, string> = {
 // RATCHET BASELINE — only DECREASE, never increase. The count of genuine offenders
 // (per file). Landed at 6 (the audit's six findings). When an offender is converted to
 // LLM-with-context (and thus stops matching), lower this number. 6→5 NicknameCommand
-// (MoveIntentClassifier, #1367); 5→4 hubCommands (HubIntentClassifier, Conversion #3);
+// (LLM move-intent conversion, #1367; the recognizer later retired, 2026-10-25); 5→4
+// hubCommands (HubIntentClassifier, Conversion #3);
 // 4→1 the three LATENT offenders resolved (CMT-1907): #4 TopicClassifier + #5 AutonomySkill
 // REMOVED as dead code, #6 AgentReadinessScorer ALLOWLISTED as a task-nature survivor. Only
 // #1 topicProfileIngress remains (its LLM conversion lands separately).

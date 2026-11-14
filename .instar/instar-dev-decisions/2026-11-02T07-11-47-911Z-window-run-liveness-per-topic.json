@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-02T07:11:47.911Z",
+  "slug": "window-run-liveness-per-topic",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 439,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutonomousStartAdmission.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WindowRunCadenceExecutor.ts",
+      "src/core/WindowRunLivenessAuthority.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 355,
+    "deletedLines": 84
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

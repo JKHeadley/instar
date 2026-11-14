@@ -1,3 +1,6 @@
+import { isQuietReceipt, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/core/ScopeAccretionRatifier.ts');
 /**
  * ScopeAccretionRatifier — the conversational ratification path
  * (proposal → server-authored enumeration → confirmation), consumed ONLY at
@@ -152,7 +155,7 @@ export interface RatifierDeps {
   /** Verified operator uid for a topic (TopicOperatorStore) — null = unbound. */
   getOperatorUid: (topicId: number) => string | null;
   /** Server-credentialed send (TelegramAdapter.sendToTopic shape, R37). */
-  sendToTopic: (topicId: number, text: string) => Promise<{ messageId: number }>;
+  sendToTopic: (topicId: number, text: string, inboundMessageId?: number) => Promise<{ messageId: number } | QuietReceipt>;
   /** Dashboard deep link to the PIN-gated ratify surface (one-tap path). */
   dashboardLink?: (topicId: string) => string | null;
   recordMetric?: (outcome: 'fired' | 'noop') => void;
@@ -208,10 +211,10 @@ export class ScopeAccretionRatifier {
           });
         });
         this.deps.recordMetric?.('fired');
-        await this.deps.sendToTopic(
+        await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(
           evt.topicId,
-          `Deferral ratified for ${enumRec.artifacts.length} artifact${enumRec.artifacts.length === 1 ? '' : 's'} — the completion gate no longer holds on them.`,
-        ).catch(() => { /* best-effort ack */ });
+          `Deferral ratified for ${enumRec.artifacts.length} artifact${enumRec.artifacts.length === 1 ? '' : 's'} — the completion gate no longer holds on them.`, evt.messageId
+        )).catch(() => { /* best-effort ack */ });
         return;
       }
     }
@@ -261,7 +264,8 @@ export class ScopeAccretionRatifier {
       'Reply to THIS message with yes/approve, or use the dashboard.',
       ...(link ? [link] : []),
     ];
-    const sent = await this.deps.sendToTopic(evt.topicId, lines.join('\n'));
+    const sent = await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(evt.topicId, lines.join('\n'), evt.messageId));
+    if (isQuietReceipt(sent)) { this.deps.recordMetric?.('noop'); return; }
     this.deps.store.update(topicId, rec.runId, (r) => {
       r.enumerations.push({ setHash, messageId: sent.messageId, at: new Date().toISOString(), artifacts: paths });
       if (r.enumerations.length > 20) r.enumerations = r.enumerations.slice(-20);

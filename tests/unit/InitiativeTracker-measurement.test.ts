@@ -1,0 +1,18 @@
+import { afterEach,describe,expect,it } from 'vitest';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { measurementSourceRef,type GenericMeasurementContract } from '../../src/monitoring/MeasurementSubject.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+const roots:string[]=[];afterEach(()=>{for(const r of roots.splice(0))SafeFsExecutor.safeRmSync(r,{recursive:true,force:true,operation:'InitiativeTracker-measurement.test'});});
+function contract(id='whole'):GenericMeasurementContract{const c:GenericMeasurementContract={subject:{kind:'effort',key:id},cadenceHours:6,evidenceMaxAgeHours:12,metrics:[{id:'outcome',source:'feature-summary',sourceRef:'',direction:'at-least',threshold:.9,minSamples:10},{id:'quality',source:'feature-summary',sourceRef:'',direction:'at-most',threshold:.1,minSamples:10}],outcome:{statement:'Better checked outcomes',owner:'Echo',method:'Independent settled outcomes',version:'v1',outcomeMetricIds:['outcome'],qualityMetricIds:['quality'],baseline:{origin:'m1',points:[{id:'outcome',observedAtMs:1,descriptorVersion:1,value:.7,samples:10},{id:'quality',observedAtMs:1,descriptorVersion:1,value:.1,samples:10}]}}};for(const m of c.metrics)m.sourceRef=measurementSourceRef(c,m.id);return c;}
+function setup(){const root=fs.mkdtempSync(path.join(os.tmpdir(),'initiative-measurement-'));roots.push(root);return{root,t:new InitiativeTracker(root)};}
+const input={id:'whole',title:'Whole effort',description:'Measured whole effort',phases:[{id:'p1',name:'Deliver',summary:'Check outcomes'}]};
+describe('single initiative measurement owner',()=>{
+ it('persists an exact optional contract and supports explicit clearing',async()=>{const{root,t}=setup(),measurement=contract();await t.create({...input,measurement});expect(new InitiativeTracker(root).get('whole')!.measurement).toEqual(measurement);await t.update('whole',{measurement:null});expect(new InitiativeTracker(root).get('whole')!.measurement).toBeUndefined();});
+ it('validates the complete new state before create/update and preserves old state on refusal',async()=>{const{t}=setup();await expect(t.create({...input,measurement:contract('other')})).rejects.toThrow('valid target-scoped');expect(t.get('whole')).toBeUndefined();await t.create({...input,measurement:contract()});const before=structuredClone(t.get('whole'));
+  await expect(t.update('whole',{rollout:{flagPath:'one.enabled',stage:'live'}})).rejects.toThrow('choose measurement or rollout');expect(t.get('whole')).toEqual(before);
+  const invalid=contract();(invalid as unknown as Record<string,unknown>).context='private';await expect(t.update('whole',{measurement:invalid})).rejects.toThrow('valid target-scoped');expect(t.get('whole')).toEqual(before);
+ });
+ it('cannot smuggle a generic binding through a feature rollout contract',async()=>{const{t}=setup();await expect(t.create({...input,rollout:{flagPath:'one.enabled',stage:'live',maturationEvaluation:contract()}})).rejects.toThrow('belong in measurement');expect(t.get('whole')).toBeUndefined();});
+ it('allows an explicit atomic owner transition in both directions',async()=>{const{t}=setup();await t.create({...input,rollout:{flagPath:'one.enabled',stage:'live'}});await t.update('whole',{rollout:null,measurement:contract()});expect(t.get('whole')).toMatchObject({measurement:{subject:{kind:'effort',key:'whole'}}});expect(t.get('whole')!.rollout).toBeUndefined();await t.update('whole',{measurement:null,rollout:{flagPath:'one.enabled',stage:'live'}});expect(t.get('whole')!.measurement).toBeUndefined();});
+});

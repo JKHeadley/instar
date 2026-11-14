@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-10T16:42:15.888Z",
+  "slug": "usage-wall-current-layout",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "refactor of a read-only transcript lookup; no self-triggered action added or changed"
+  },
+  "verdict": "blocked"
+}

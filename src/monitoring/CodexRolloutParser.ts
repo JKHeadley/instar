@@ -129,3 +129,52 @@ export function parseCodexRollout(content: string): ParsedCodexSession | null {
     tokenCountEvents,
   };
 }
+
+/**
+ * One rollout entry, classified for the context-budget transcript detection
+ * channel (context-budget-layered-summaries §9.1, §9.6 Codex column).
+ *
+ * Measured 2026-11-10 on this machine's rollouts (Codex CLI 0.156.1, 0.166.0,
+ * 0.167.0; 173 `compacted` entries across a 606-file sample): Codex WRITES an
+ * engine-native compaction entry, `{"type":"compacted","payload":{...}}`, with
+ * a `window_id` on every one, an empty `message` (no summary) and the
+ * replacement history. A forked (subagent) rollout copies its parent's
+ * `compacted` entries into an inherited prefix BEFORE its own first
+ * `token_count` (11 of 11 pre-usage entries were in forked rollouts; 0 in root
+ * rollouts), so a compaction counts only after the rollout's first usage
+ * reading — the caller tracks that per transcript.
+ */
+export type CodexRolloutEntry =
+  | { kind: 'meta'; version: string | null; forkedFrom: string | null }
+  | { kind: 'usage'; contextUsed: number | null; contextWindow: number | null }
+  | { kind: 'compacted'; windowId: string; at: number | null; tokensBefore: number | null };
+
+/** Cheap pre-filter: only these lines are parsed by the channel. */
+export function codexRolloutLineMayMatter(line: string): boolean {
+  return line.includes('"compacted"') || line.includes('"token_count"') || line.includes('"session_meta"');
+}
+
+export function classifyCodexRolloutEntry(d: Record<string, unknown>): CodexRolloutEntry | null {
+  const type = d['type'];
+  const payload = (d['payload'] && typeof d['payload'] === 'object' ? d['payload'] : {}) as Record<string, unknown>;
+  if (type === 'session_meta') {
+    return { kind: 'meta', version: typeof payload['cli_version'] === 'string' ? payload['cli_version'] as string : null, forkedFrom: typeof payload['forked_from_id'] === 'string' ? payload['forked_from_id'] as string : null };
+  }
+  if (type === 'event_msg' && payload['type'] === 'token_count') {
+    const info = (payload['info'] && typeof payload['info'] === 'object' ? payload['info'] : {}) as Record<string, unknown>;
+    const last = (info['last_token_usage'] && typeof info['last_token_usage'] === 'object' ? info['last_token_usage'] : {}) as Record<string, unknown>;
+    const used = Number(last['input_tokens']);
+    const win = Number(info['model_context_window']);
+    return { kind: 'usage', contextUsed: Number.isFinite(used) && used > 0 ? used : null, contextWindow: Number.isFinite(win) && win > 0 ? win : null };
+  }
+  if (type === 'compacted') {
+    const windowId = payload['window_id'];
+    if (typeof windowId !== 'string' || windowId.length === 0 || windowId.length > 200) return null;
+    const ts = typeof d['timestamp'] === 'string' ? Date.parse(d['timestamp'] as string) : NaN;
+    const rec = (payload['latest_token_usage_record'] && typeof payload['latest_token_usage_record'] === 'object' ? payload['latest_token_usage_record'] : null) as Record<string, unknown> | null;
+    const usage = (rec?.['usage'] && typeof rec['usage'] === 'object' ? rec['usage'] : null) as Record<string, unknown> | null;
+    const before = Number(usage?.['input_tokens']);
+    return { kind: 'compacted', windowId, at: Number.isFinite(ts) ? ts : null, tokensBefore: Number.isFinite(before) && before > 0 ? before : null };
+  }
+  return null;
+}

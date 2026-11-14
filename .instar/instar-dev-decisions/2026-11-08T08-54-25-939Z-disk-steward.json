@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-08T08:54:25.939Z",
+  "slug": "disk-steward",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 179,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/localVerify/runVerifyMain.ts",
+      "src/monitoring/DiskSteward.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/diskStewardMain.ts"
+    ],
+    "addedLines": 144,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "disk-steward stays registered as an eternal sentinel: post send attempts never closer than 15 min (rate floor asserted by the ratchet), retries back off 15m to 6h, an unsent post is dropped after 24 h and the next waits a full repeat window; cleanup runs once per 6 h and stops after three runs freeing under 1% (breaker); brakes persist across restart. This follow-up adds no new self-triggered loop: the orphan sweep runs once per verify run, driven by the queue, and the boot degradation reports fire once per boot."
+    }
+  },
+  "verdict": "pass"
+}

@@ -59,6 +59,12 @@ export interface InboxEntry {
   threadId: string;
   /** Message text content */
   text: string;
+  /**
+   * Memory privacy: true when `from` is the transport-authenticated sender (written by the
+   * relay path). Recovery replays only flagged rows into a peer's place
+   * (memory-privacy-agent-places §1). Absent on older rows.
+   */
+  senderAuthenticated?: boolean;
   /** HMAC-SHA256 signature */
   hmac: string;
 }
@@ -202,6 +208,7 @@ export class ListenerSessionManager {
     threadId: string;
     text: string;
     messageId?: string;
+    senderAuthenticated?: boolean;
   }): InboxEntry {
     const entryData: Omit<InboxEntry, 'hmac'> = {
       id: opts.messageId || crypto.randomUUID(),
@@ -211,6 +218,7 @@ export class ListenerSessionManager {
       trustLevel: opts.trustLevel,
       threadId: opts.threadId,
       text: opts.text,
+      ...(opts.senderAuthenticated ? { senderAuthenticated: true } : {}),
     };
     const hmac = this.computeHMAC(entryData);
     const fullEntry: InboxEntry = { ...entryData, hmac };

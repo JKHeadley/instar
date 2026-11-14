@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "console-name-invariant",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T09:40:23.188Z",
+  "artifactPath": "upgrades/side-effects/console-name-invariant.md",
+  "artifactSha256": "bde63cb30195c4cb810737e570092ce56d8e06433711b489c9d3587e71c50f33",
+  "coveredFiles": [
+    "dashboard/console/files.js",
+    "dashboard/subscriptions.js",
+    "src/commands/server.ts",
+    "src/monitoring/MaturationBoard.ts",
+    "src/server/maturationBoardRoutes.ts",
+    "src/server/queuePaceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/maturation-board-route.test.ts",
+    "tests/integration/queue-pace-route.test.ts",
+    "tests/unit/dashboard-refresh-interaction-hold.test.ts",
+    "tests/unit/follow-me-approve-card.test.ts",
+    "tests/unit/subscriptions-render.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing display-name invariant applied to remaining dashboard and read-only diagnostic consumers; no new authority, persistence, routes, or configuration. The second pass independently reviewed action disambiguation.",
+  "eli16Path": "upgrades/console-name-invariant.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-name-invariant.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

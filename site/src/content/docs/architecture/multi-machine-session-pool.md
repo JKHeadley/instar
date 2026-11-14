@@ -17,6 +17,8 @@ Machines talk over a thin, signed request/response layer. `MeshRpc` carries a sm
 
 Exactly one machine holds the **router** role at a time, decided by a fenced lease (the same monotonic-self-fence discipline the cross-machine lease already uses). The router is the single writer of placement decisions in steady state; if it goes silent, another machine re-elects and resumes.
 
+`LocalLeaseStore` provides the local lease record when git-backed lease storage is unavailable. A local record alone cannot prove a peer has yielded, so the coordinator treats contested ownership as a conflict instead of using the local tie-break as permission to run two routers.
+
 ### L2 — Machine pool registry (`MachinePoolRegistry`, `NicknameAssigner`)
 
 The `MachinePoolRegistry` tracks every machine's live capacity — load average, active session count, memory pressure, capabilities, hardware — plus a clock-skew quarantine state machine that pulls a machine with a bad clock out of placement. Each machine gets a friendly, editable nickname (auto-assigned by `NicknameAssigner`, deduplicated against the pool) so you never have to type a raw machine id. The registry and `NicknameAssigner` together back the dashboard's **Machines** tab and the nickname you use in a transfer command.
@@ -42,6 +44,18 @@ When you say "move this to the mini" or "run this on the workstation", the `Nick
 ### L6 — Multiple agents per machine (`MachineLoadBroker`)
 
 When several agents share one machine, each agent's router must see the *true* machine load, not just its own. `MachineLoadBroker` accounts for every resident agent's sessions and — crucially — does not trust agent self-reports for the authoritative number: it cross-checks each agent's claimed footprint against the OS-measured footprint. An agent that reports itself idle while actually saturating the box is flagged `suspect-overloaded`, so a lying agent can never attract sessions onto an already-busy machine. `MachineLoadBroker` also verifies the isolation invariant — distinct ports, identities, and non-nested home directories.
+
+### Size-aware placement and heavy work (`PlacementExecutor`, `JobLoader`, `JobScheduler`, `LocalVerifyService`)
+
+Load is compared per core, so a big machine and a small one at the same raw load are not treated as equally busy: `PlacementExecutor` divides each machine's load by its core count before picking the least-loaded one. Work also has a weight — light, standard or heavy. A machine counts as big enough for heavy work when it has at least 12 cores and 32 GB of memory (fixed in code); a machine whose size is unknown never counts. Each machine can override this with its own `heavyWork` setting: `allow` makes it eligible regardless of size, `deny` keeps heavy work off it. Among eligible machines, heavy work goes only to one with room right now; when none has room it is not piled onto a full machine (each path below says what happens instead).
+
+- **Jobs.** A job can declare `workWeight` (`light`, `standard` or `heavy`); `JobLoader` refuses any other value. `JobScheduler` skips a heavy job on a machine that is not eligible (below the floor, size unknown, or set to `deny`) and records why — but only while another online machine is eligible, so a machine on its own still runs its heavy jobs. A job whose `machines` list names this machine always runs here.
+- **Test runs.** When `LocalVerifyService` hands a full verify to another machine, it drops peers that are too small, too busy or unmeasurable and tries the rest least-loaded first; when every peer is dropped, the verify runs in this machine's own slot. Repeated skips of the same peer for the same reason are recorded at most once every ten minutes.
+- **Helper work.** `GET /pool/placement/preview` answers "where would this heavy work go?" without changing anything, and `POST /pool/heavy-work/spawn` starts a background helper session on the machine the preview picks, or refuses with a reason when no machine fits.
+
+Two neighbouring readers stay out of the decision. `MachineLoadAssessor` is an advisory, shadow-first check: when a machine's own load verdict and the outside view of it disagree, a fast model labels the snapshot and grades that label fifteen minutes later, but nothing in placement reads its output. `PlacementResponderReader` answers the opposite question after the fact — which machine actually served a reply — by reading the topic's current `owner` from `GET /pool/placement`, so live cross-machine proofs can check that work landed where placement said it would.
+
+Spec: `docs/specs/resource-aware-placement.md`.
 
 ## Rollout and rebalance (`StageAdvancer`, `SessionPoolE2EResultStore`, `RebalancePlanner`)
 

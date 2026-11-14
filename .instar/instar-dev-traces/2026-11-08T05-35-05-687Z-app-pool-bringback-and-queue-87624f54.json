@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-pool-bringback-and-queue",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-08T05:35:05.687Z",
+  "artifactPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "artifactSha256": "f2fb9a12c99fe4a244ff048a29f2daa7edcf0ff2c5917e988f2a4d1480247b09",
+  "coveredFiles": [
+    "docs/specs/app-pool-bringback-and-queue.eli16.md",
+    "src/commands/server.ts",
+    "src/core/MachinePoolRegistry.ts",
+    "src/core/appConversationMove.ts",
+    "tests/unit/app-pool-bringback-queue.test.ts",
+    "upgrades/side-effects/app-pool-bringback-and-queue.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Re-review finding on the Tier 1 fix: a never-reached owner reads stopped only after two failures spread over 2 minutes",
+  "eli16Path": "docs/specs/app-pool-bringback-and-queue.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

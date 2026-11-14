@@ -22,6 +22,7 @@
  * never reaches the real filesystem in tests.
  */
 import { realpathSync } from 'node:fs';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /** Read-only git invocation — array args only (SafeGitExecutor.readSync shape). */
 export type ReadGit = (args: string[], cwd: string) => string;
@@ -135,6 +136,7 @@ export function makeWorktreeDirtyCheck(deps: WorktreeDirtyCheckDeps): (worktreeP
       // never spuriously revive). Cached briefly so a shed burst doesn't re-spawn;
       // self-heals on the next window. This is the safe direction by design.
       dirty = false;
+      featureEvidence.record('monitoring.yieldSafety', { kind: 'error', reason: 'dirty-check-git-failed-or-timed-out', context: { worktree: resolved.split('/').pop() ?? '' } });
     }
     cache.set(resolved, { dirty, at: t });
     return dirty;

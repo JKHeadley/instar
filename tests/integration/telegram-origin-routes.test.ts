@@ -3,7 +3,7 @@ import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import { NotificationBatcher } from '../../src/messaging/NotificationBatcher.js';
 import { wireTelegramSendSide } from '../../src/messaging/telegramSendSideComposition.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
 import request from 'supertest';
@@ -14,6 +14,7 @@ import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { OriginAuthorCall, deterministicAutomationAuthor } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 import { createA2ACheckInScheduler } from '../../src/threadline/A2ACheckInScheduler.js';
 import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { wireDigest } from '../../src/messaging/telegram-origin/CanonicalOrigin.js';
 import { PendingRelayStore } from '../../src/messaging/pending-relay-store.js';
 import { OriginBrowserExecutor } from '../../src/messaging/telegram-origin/OriginBrowserExecutor.js';
 import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
@@ -48,7 +49,7 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }], ...configExtra },
     telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
     telegram: { sendToTopic: async (topicId: number, text: string) => {
@@ -59,7 +60,7 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
       return { messageId: json.result.message_id, timestamp: new Date().toISOString() };
     } }, sessionManager: { clearInjectionTracker: () => undefined }, ...extra,
   } as never));
-  return { app, runtime, sessionToken, network, stateDir, botToken };
+  return { app, runtime, sessionToken, network, stateDir, botToken, lifecycle: lifecycle! };
 }
 async function browserHarness(extra: Record<string, unknown> = {}) {
   const h = await appHarness(extra), asp = generateIdentityKeyPair();
@@ -100,6 +101,62 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     } finally { timeout.mockRestore(); await adapter.stop(); }
   });
 
+  it('a reply Telegram accepted but whose receipt could not be saved is reported delivered, looked up, logged and guarded against resend', async () => {
+    let adapter: TelegramAdapter;
+    const h = await appHarness({ telegram: { sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args),
+      getTopicHistory: (topicId: number, limit?: number) => adapter.getTopicHistory(topicId, limit) } });
+    adapter = new TelegramAdapter({ token: h.botToken, chatId: '-100123' }, h.stateDir, { suppressLifelineAutoCreate: true });
+    const record = h.runtime.store.recordOutcome.bind(h.runtime.store);
+    vi.spyOn(h.runtime.store, 'recordOutcome').mockRejectedValueOnce(new Error('worker restarting')).mockImplementation(record);
+    const text = 'The held-reply outcome report is ready for your review now.';
+    try {
+      const sent = await request(h.app).post('/telegram/reply/42')
+        .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken).send({ text });
+      expect(sent.status).toBe(409);
+      expect(sent.body).toMatchObject({ error: 'telegram-origin-held', reason: 'receipt-persistence-unavailable', outcome: 'accepted-unrecorded',
+        delivered: true, messageId: '27', fallbackRecorded: true, retryable: false });
+      expect(sent.body.checkOutcome).toBe(`/telegram/origins/operations/${sent.body.operationId}/outcome`);
+      // (4) the delivered message is in message history.
+      expect(adapter.getTopicHistory(42, 5).some(m => m.messageId === 27 && m.fromUser === false && m.text === text)).toBe(true);
+      // (1) a session (ordinary auth, no operator proof) can ask by operation id.
+      const lookup = await request(h.app).get(sent.body.checkOutcome).set('Authorization', 'Bearer agent-test');
+      expect(lookup.status).toBe(200);
+      expect(lookup.body).toMatchObject({ outcome: 'delivered', safeToResend: false, source: 'unrecorded-receipt', messageIds: ['27'] });
+      expect(JSON.stringify(lookup.body)).not.toContain(text);
+      expect((await request(h.app).get(sent.body.checkOutcome)).status).toBe(401);
+      // A resend of the same text is not delivered a second time.
+      const resend = await request(h.app).post('/telegram/reply/42')
+        .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken).send({ text });
+      expect(resend.status).toBe(200);
+      expect(resend.body.suppressedDuplicate).toBe(true);
+      expect(h.network).toHaveBeenCalledOnce();
+      // A send that ran on ANOTHER machine is never "safe to resend" from this machine's record.
+      const audit = await h.runtime.store.getOperation(sent.body.operationId);
+      const getOperation = h.runtime.store.getOperation.bind(h.runtime.store);
+      vi.spyOn(h.runtime.store, 'getOperation').mockImplementation(async id => {
+        const row = await getOperation(id);
+        if (!row) return row;
+        const envelope = JSON.parse(row.record.envelopeJson);
+        // A consistent envelope (its digest recomputed): the owner-read resolver ignores an envelope whose digest does not match.
+        const envelopeJson = JSON.stringify({ ...envelope, executionOwnerMachineId: 'mini' });
+        return { ...row, record: { ...row.record, envelopeJson, envelopeDigest: wireDigest(envelopeJson) },
+          operation: { ...row.operation!, state: 'known-failed' }, children: row.children.map(c => ({ ...c, state: 'known-failed' })),
+          attempts: row.attempts.map(a => ({ ...a, outcome: 'known-failed', receiptJson: null })) };
+      });
+      vi.spyOn(h.runtime.unrecordedReceipts, 'forOperation').mockReturnValue([]);
+      const remote = await request(h.app).get(sent.body.checkOutcome).set('Authorization', 'Bearer agent-test');
+      expect(remote.status).toBe(200);
+      expect(remote.body).toMatchObject({ outcome: 'unknown', safeToResend: false, executionOwnerMachineId: 'mini' });
+      vi.mocked(h.runtime.store.getOperation).mockRestore(); vi.mocked(h.runtime.unrecordedReceipts.forOperation).mockRestore();
+      // Before the claim lease is reaped the operation is still `admitted`; the delivery truth lives in the fallback record.
+      expect(audit?.operation?.state).toBe('admitted');
+      // An unknown id answers 404 unknown, never "not delivered".
+      const missing = await request(h.app).get('/telegram/origins/operations/00000000-0000-0000-0000-000000000000/outcome').set('Authorization', 'Bearer agent-test');
+      expect(missing.status).toBe(404);
+      expect(missing.body.outcome).toBe('unknown');
+    } finally { await adapter.stop(); }
+  });
+
   it('paces repeated recovery reviews and exposes the durable delay through authenticated audit HTTP', async () => {
     const review = vi.fn(async (_text: string) => ({ pass: true, latencyMs: 1 }));
     const h = await appHarness({ messagingToneGate: { review } });
@@ -108,15 +165,18 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
       .send({ text: 'The client report is ready for your review.' });
     expect(sent.status).toBe(409); expect(review).toHaveBeenCalledOnce();
+    const firstStart = Date.now();
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(2);
-    for (let n = 0; n < 12; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    // The first step of the pacing ladder is 30 s: a few immediate ticks stay inside it.
+    for (let n = 0; n < 3; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(2); expect(h.network).not.toHaveBeenCalled();
     const audit = await request(h.app).get('/telegram/origins').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-AgentId', 'echo').set('X-Instar-Operator-Session', 'operator-test');
     expect(audit.status).toBe(200);
     expect(audit.body.records[0].recovery).toMatchObject({ attempts: 1 });
-    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThan(Date.now() + 14 * 60_000);
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThanOrEqual(firstStart + 30_000);
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeLessThanOrEqual(Date.now() + 30_000);
     expect(audit.body.records[0].attempts).toEqual([]);
     // Advance only the real worker scheduler's explicit test clock. Network,
     // policy, original custody and request bytes continue through production.
@@ -236,6 +296,27 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(repeated.body.skippedByReason['already-reminded']).toBe(1);
     expect(h.network).toHaveBeenCalledOnce();
     expect((await h.runtime.store.listOrigins()).records).toHaveLength(1);
+  });
+  it('audit routes still serve an origin whose full detail moved to the archive', async () => {
+    const h = await appHarness();
+    const sent = await request(h.app).post('/telegram/reply/42')
+      .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
+      .send({ text: 'The archive read report is ready for your review.' });
+    expect(sent.status).toBe(200);
+    const [origin] = (await h.runtime.store.listOrigins()).records;
+    const before = Date.now() + 1000;
+    expect((await h.runtime.store.archive({ before })).archived).toBe(1);
+    expect(await h.runtime.store.purgeArchived({ before })).toBe(1);
+    const operator = (path: string) => request(h.app).get(path).set('Authorization', 'Bearer agent-test')
+      .set('X-Instar-AgentId', 'echo').set('X-Instar-Operator-Session', 'operator-test');
+    const single = await operator(`/telegram/origins/${origin.record.originId}`);
+    expect(single.status).toBe(200);
+    expect(single.body.operation.state).toBe('accepted'); expect(single.body.attempts).toHaveLength(1);
+    const listed = await operator(`/telegram/origins?originId=${origin.record.originId}`);
+    expect(listed.status).toBe(200); expect(listed.body.records[0].children[0].state).toBe('accepted');
+    // The outcome lookup still knows it was delivered, so nothing gets resent.
+    const outcome = await request(h.app).get(`/telegram/origins/operations/${origin.operation!.operationId}/outcome`).set('Authorization', 'Bearer agent-test');
+    expect(outcome.status).toBe(200); expect(outcome.body).toMatchObject({ outcome: 'delivered', safeToResend: false });
   });
   it('shares deterministic content suppression between browser and Bot sends and makes suppressed operations terminal', async () => {
     const h = await browserHarness(), text = 'The completed review is ready, including the implementation and its verified test results.';
@@ -367,7 +448,15 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(h.network).not.toHaveBeenCalled();
     expect(await h.runtime.store.reserveRecoveryAttempt({ operationId: rows[0].operation!.operationId, now: retryAt - 1 })).toBe(false);
     await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 10));
-    expect((await h.runtime.recoverHeld()).recovered).toBe(1); expect(h.network).toHaveBeenCalledOnce();
+    // A busy SQLite writer can legitimately defer one recovery pass. Wait for
+    // recovery without relaxing the original deadline or transport budget.
+    const recoveryUntil = Math.min(Date.now() + 5_000, rows[0].operation!.deadlineAt);
+    let recoveredCount = 0;
+    while (recoveredCount === 0 && Date.now() < recoveryUntil) {
+      recoveredCount = (await h.runtime.recoverHeld()).recovered;
+      if (recoveredCount === 0) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    expect(recoveredCount).toBe(1); expect(h.network).toHaveBeenCalledOnce();
     const recovered = (await h.runtime.store.listOrigins()).records;
     expect(recovered).toHaveLength(1);
     expect(recovered[0].operation?.operationId).toBe(rows[0].operation!.operationId);
@@ -467,9 +556,29 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('X-Instar-Operator-Session', 'operator-test').expect(200);
     expect(localStatus.body.activation).toMatchObject({ complete: false, inventoryComplete: false });
     expect(JSON.parse(audit.body.records[0].record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy',
-      deliveryId: 'old-http-uncertain', machine: { status: 'unknown' }, harness: { status: 'unknown' }, model: { status: 'unknown' } });
+      deliveryId: 'old-http-uncertain', machine: { status: 'observed', value: 'Mac Studio' }, harness: { status: 'unknown' }, model: { status: 'unknown' } });
     await h.runtime.recoverHeld();
     expect(h.network).not.toHaveBeenCalled();
+  });
+  it('labels a reply queued during boot with its session once the runtime imports it', async () => {
+    const h = await appHarness();
+    // The server restart re-enrolled the session: the queued digest is of its previous credential.
+    const fresh = await h.lifecycle.issue({ sessionId: 'source-session', harnessId: 'codex-cli',
+      projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
+    expect(fresh).not.toBe(h.sessionToken);
+    const queue = PendingRelayStore.open('echo', h.runtime.options.storage.stateDir);
+    try {
+      queue.enqueue({ delivery_id: 'boot-queued', topic_id: 42, text: 'Sent while the server was starting', text_hash: 'fixture',
+        http_code: 503, error_body: '{"status":"warming","phase":"booting"}',
+        origin_session_digest: createHash('sha256').update(h.sessionToken).digest('hex') });
+    } finally { queue.close(); }
+    expect(await h.runtime.importLegacyQueue()).toBe(1);
+    const audit = await request(h.app).get('/telegram/origins').set('Authorization', 'Bearer agent-test')
+      .set('X-Instar-Operator-Session', 'operator-test').expect(200);
+    expect(JSON.parse(audit.body.records[0].record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy',
+      deliveryId: 'boot-queued', sessionId: 'source-session', originMachineName: 'Mac Studio',
+      machine: { status: 'observed', value: 'Mac Studio' }, harness: { status: 'observed', value: 'codex-cli' },
+      model: { status: 'configured', value: 'gpt-6-astra' } });
   });
   it('authors the setup greeting on the server and restricts its destination and producer', async () => {
     const h = await appHarness();

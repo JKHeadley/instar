@@ -24,7 +24,7 @@ import { assertMcpDoesNotExposeManagedTelegram, readManagedTelegramUserDataDirs 
 /** Provider registration guard for agent-local managed profiles. Launch applies this again
  * across inherited user/project configs, so changing providers cannot restore a capability. */
 export function assertManagedTelegramMcpRegistration(spec: McpServerSpec, projectDir = process.cwd()): void {
-  assertMcpDoesNotExposeManagedTelegram(spec, readManagedTelegramUserDataDirs(projectDir));
+  assertMcpDoesNotExposeManagedTelegram(spec, readManagedTelegramUserDataDirs(projectDir), projectDir);
 }
 
 export interface McpToolRegistry {

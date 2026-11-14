@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dashboard-assets-no-store",
+  "sessionId": "abbd2c0b-8fe5-4204-a8e2-47f3e8dceba1",
+  "timestamp": "2026-10-31T00:09:29.641Z",
+  "artifactPath": "upgrades/side-effects/dashboard-assets-no-store.md",
+  "artifactSha256": "d29508e2c1cdcf82864bee48ed95963138d57b2bcad55498b8a338d4964a542f",
+  "coveredFiles": [
+    "docs/specs/dashboard-assets-no-store.eli16.md",
+    "src/server/middleware.ts",
+    "tests/integration/console-static-serving.test.ts",
+    "tests/integration/dashboard-static-cache.test.ts",
+    "tests/unit/dashboard-cache-headers.test.ts",
+    "upgrades/next/dashboard-assets-no-store.md",
+    "upgrades/side-effects/dashboard-assets-no-store.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-helper HTTP header change for dashboard static files; revert fully undoes it.",
+  "eli16Path": "docs/specs/dashboard-assets-no-store.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-assets-no-store.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

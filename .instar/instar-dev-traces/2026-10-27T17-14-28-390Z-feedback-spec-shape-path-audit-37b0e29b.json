@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "feedback-spec-shape-path-audit",
+  "sessionId": "8368d07f-d296-4460-a6d6-11c492360ff9",
+  "timestamp": "2026-10-27T17:14:28.390Z",
+  "artifactPath": "upgrades/side-effects/feedback-spec-shape-path-audit.md",
+  "artifactSha256": "2ad330a7c4a72f529936ee6bf091922a7b5dafe5203bdf5041c7af57f7f00d7a",
+  "coveredFiles": [
+    "docs/specs/feedback-spec-shape-path-audit.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/integration/account-follow-me-submit-code-route.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/telegram-origin/detector-canary-cleanup.test.ts",
+    "upgrades/next/feedback-spec-shape-path-audit.md",
+    "upgrades/side-effects/feedback-spec-shape-path-audit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A small diagnostic audit event without a publication or admission decision change; all substantive paths have focused and full-suite checks.",
+  "eli16Path": "docs/specs/feedback-spec-shape-path-audit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-spec-shape-path-audit.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -23,14 +23,23 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
-import type { ComponentHealth } from '../core/types.js';
+import type { AutoExpiryHold, ComponentHealth } from '../core/types.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { AutoExpiryLedger } from '../core/AutoExpiryLedger.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
 export type CommitmentType = 'config-change' | 'behavioral' | 'one-time-action';
 export type CommitmentStatus = 'pending' | 'verified' | 'violated' | 'expired' | 'withdrawn' | 'delivered';
+export type CommitmentPriority = 'high' | 'normal' | 'low';
+export const COMMITMENT_PRIORITIES: readonly CommitmentPriority[] = ['high', 'normal', 'low'];
+export type PromiseEvidenceKind = 'commitment' | 'file' | 'commit' | 'pr' | 'message' | 'other';
+export const PROMISE_EVIDENCE_KINDS: readonly PromiseEvidenceKind[] = ['commitment', 'file', 'commit', 'pr', 'message', 'other'];
+/** Sort rank: high first, then normal, then not-assessed, then low. */
+export function priorityRank(p: unknown): number {
+  return p === 'high' ? 0 : p === 'normal' ? 1 : p === 'low' ? 3 : 2;
+}
 
 export class CommitmentPersistenceError extends Error {
   readonly code = 'COMMITMENT_PERSISTENCE_FAILED';
@@ -150,6 +159,43 @@ export interface Commitment {
    * record() or via the guarded transition route.
    */
   supersededBy?: string;
+  /** CMT-1132: exempts this row from both auto-expiry branches until cleared. */
+  autoExpiryHold?: AutoExpiryHold;
+
+  // ── Promise review + priority (docs/specs/promise-review-and-priority.md) ──
+  /** How much this promise matters. Absent = not assessed yet (never back-filled). */
+  priority?: CommitmentPriority;
+  /** One line on why it has that priority (≤ 200 chars). */
+  priorityReason?: string;
+  prioritySetAt?: string;
+  /** Who set the priority: a session through POST/PATCH ('agent') or the review job. */
+  prioritySetBy?: 'agent' | 'promise-review';
+  /** Stamped by every promise-review decision, including "keep". */
+  lastReviewedAt?: string;
+  reviewCount?: number;
+  /** Set ONLY when the promise review closed this row (the reopen route's precondition). */
+  closedBy?: 'promise-review';
+  /** The review run that last touched this row. */
+  reviewRunId?: string;
+  /** The proof a review-closed row cited, and whether the server could check it. */
+  evidenceRef?: { kind: PromiseEvidenceKind; ref: string };
+  reopenedAt?: string;
+  reopenReason?: string;
+  reopenCount?: number;
+  /** A sentinel capture whose request + promise text matched this open row in the same topic within 24 h (a signal for the review, never a merge). */
+  duplicateCandidateOf?: string;
+  /** True when the promise review wrote `supersededBy` (reopen then clears it). */
+  reviewSetSupersededBy?: boolean;
+  /** Every closure the review made on this row (kept through reopen; the caps count these). */
+  reviewClosures?: Array<{ at: string; runId: string }>;
+  /** Would-apply (shadow) closures, so shadow mode counts the same caps durably. */
+  shadowClosures?: Array<{ at: string; runId: string }>;
+  /** Set once a row has been `high`; a later downgrade does not clear it. */
+  everHigh?: boolean;
+  /** The last decision the review made in closure-shadow mode (would-apply). */
+  shadowDecision?: string;
+  /** Whether the server could resolve evidenceRef (it exists and post-dates the promise) — NOT proof the promise was kept. */
+  evidenceRefResolved?: boolean;
 
   // ── Type-specific fields ────────────────────────────────
 
@@ -487,7 +533,7 @@ export interface CommitmentAutoExpirySweepReport {
   /** §3.5 operator-wait branch: its own switches and counts. */
   operatorWait: { enabled: boolean; dryRun: boolean; maxAgeDays: number; eligible: number; expired: number };
   /** Per-row disposition for every row the sweep touched (or would touch). */
-  dispositions: Array<{ id: string; branch: 'agent' | 'operator-wait'; waitedDays: number; reason: string; applied: boolean }>;
+  dispositions: Array<{ id: string; branch: 'agent' | 'operator-wait'; waitedDays: number; reason: string; applied: boolean; class?: 'opted-out' | 'no-activity' }>;
 }
 
 // ── Implementation ────────────────────────────────────────────────
@@ -516,6 +562,8 @@ export class CommitmentTracker extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private autoExpiryInterval: ReturnType<typeof setInterval> | null = null;
   private autoExpiryInitialTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** CMT-1118: durable per-sweep record of would-expire / expired ids. */
+  private readonly autoExpiryLedger: AutoExpiryLedger;
   private nextId: number;
   /**
    * Coalesce the per-mutation full-store writes of a synchronous sweep into ONE
@@ -557,6 +605,7 @@ export class CommitmentTracker extends EventEmitter {
     this.config = config;
     this.storePath = path.join(config.stateDir, 'state', 'commitments.json');
     this.rulesPath = path.join(config.stateDir, 'state', 'commitment-rules.md');
+    this.autoExpiryLedger = new AutoExpiryLedger({ stateDir: config.stateDir, feature: 'commitments' });
     this.store = this.loadStore();
     this.nextId = this.computeNextId();
     this.backfillUnverifiableOneTimeActions();
@@ -578,6 +627,9 @@ export class CommitmentTracker extends EventEmitter {
       if (c.type !== 'one-time-action') continue;
       if (c.status === 'delivered' || c.status === 'withdrawn' || c.status === 'expired') continue;
       if (!CommitmentTracker.isUnverifiableOneTime(c)) continue;
+      // An unsupported legacy method can never have verified the promise.
+      // Stop its tick storm in verifyOne(), but never mark it delivered here.
+      if (c.verificationMethod != null && c.verificationMethod !== 'manual') continue;
       // Scope to what the docstring above always claimed: ONLY the historical
       // noisy rows (stuck violated, violations accumulated, never verified).
       // Without this check, every BOOT retro-terminalized every pending
@@ -713,6 +765,9 @@ export class CommitmentTracker extends EventEmitter {
     supersededBy?: string;
     correctionId?: string;
     classReviewRef?: string;
+    /** promise-review-and-priority §2.1 — optional; validated enum. */
+    priority?: CommitmentPriority;
+    priorityReason?: string;
     /** §7: the verified bind principal (`session:<name>` from the verified
      *  token payload, or `server:<component>` for in-process callers) —
      *  recorded by the GATE, never trusted from a request body. */
@@ -729,11 +784,41 @@ export class CommitmentTracker extends EventEmitter {
       const existing = this.getActive().find((c) => c.externalKey === input.externalKey);
       if (existing) return existing;
     }
+    // promise-review-and-priority §2.9 (the producer): the sentinel captured one
+    // reply as two or three identical rows (live: CMT-113/114/115). Text equality
+    // is a SIGNAL, never authority to merge (Intelligence Infers, Keywords Only
+    // Guard): the new row is recorded and marked `duplicateCandidateOf`, and the
+    // review's judgment decides (its `duplicate` archive needs a live target).
+    // Only for captures WITHOUT an externalKey (keyed producers dedupe on their key,
+    // and may legitimately share wording), and only when BOTH the request and the
+    // promise text match — the same words for the same ask is one promise.
+    let duplicateCandidateOf: string | undefined;
+    if (input.source === 'sentinel' && input.topicId !== undefined && !input.externalKey) {
+      const norm = CommitmentTracker.normalizePromiseText(input.agentResponse);
+      const normReq = CommitmentTracker.normalizePromiseText(input.userRequest);
+      const since = Date.now() - 24 * 60 * 60 * 1000;
+      const dup = norm ? this.store.commitments.find((c) => c.status === 'pending'
+        && !c.externalKey
+        && c.topicId === input.topicId
+        && Date.parse(c.createdAt) >= since
+        && CommitmentTracker.normalizePromiseText(c.agentResponse) === norm
+        && CommitmentTracker.normalizePromiseText(c.userRequest) === normReq) : undefined;
+      if (dup) duplicateCandidateOf = dup.id;
+    }
+    if (!CommitmentTracker.supportsVerificationMethod(input.verificationMethod)) {
+      throw new Error('verificationMethod must be manual, config-value, file-exists, or threadline-reply');
+    }
+    if (input.type === 'config-change' && (!input.configPath || input.configExpectedValue === undefined)) {
+      throw new Error('config-change requires configPath and configExpectedValue');
+    }
     // ── C1+C2 well-formedness gates (spec §4.1) — STRUCTURAL only (Signal-vs-
     // Authority): validate the agent's own declaration; do NOT classify prose;
     // hold NO side-effect authority (that stays with the tool-call gate).
     // Shared with transitionState() so a guarded transition re-runs the SAME gate.
     const { owner, blockedOn, actionClass } = CommitmentTracker.normalizeState(input);
+    if (input.priority !== undefined && !COMMITMENT_PRIORITIES.includes(input.priority)) {
+      throw new Error('priority must be high, normal, or low');
+    }
 
     // ── durable-conversation-identity §6.1 step 2: a durable bind on a MINTED
     // (negative) conversation id registers the conversation durably + records
@@ -750,6 +835,27 @@ export class CommitmentTracker extends EventEmitter {
         throw new Error(bindResult.error);
       }
       boundTuple = bindResult.boundTuple;
+    }
+
+    // A per-topic request is NOT a watch on a global setting. Live 2026-10-28
+    // (Echo Bugs 10000001049): "swap this topic to Opus 5.5" (topic 95267) and
+    // "swap this topic to gpt-6-sol" (topic 18330) were both recorded as
+    // config-change on the invented key `topic.model`. One key holds one value,
+    // so every sweep auto-corrected one and "reverted" the other — 1001
+    // violation alerts each. Per-topic pins live in topic profiles, which this
+    // tracker does not verify, so such a request becomes an unverifiable
+    // one-time-action (stays pending, closed explicitly or by expiry) rather
+    // than a config-watch that can only fight its siblings.
+    let type = input.type;
+    let configPath = input.configPath;
+    let configExpectedValue = input.configExpectedValue;
+    let verificationMethod = input.verificationMethod;
+    if (type === 'config-change' && CommitmentTracker.isTopicScopedConfigPath(configPath)) {
+      console.warn(`[CommitmentTracker] "${configPath}" is topic-scoped, not a global setting — recording as one-time-action, no config-watch`);
+      type = 'one-time-action';
+      configPath = undefined;
+      configExpectedValue = undefined;
+      verificationMethod = 'manual';
     }
 
     const id = `CMT-${String(this.nextId++).padStart(3, '0')}`;
@@ -779,7 +885,7 @@ export class CommitmentTracker extends EventEmitter {
       id,
       userRequest: input.userRequest,
       agentResponse: input.agentResponse,
-      type: input.type,
+      type,
       status: 'pending',
       createdAt: new Date().toISOString(),
       verificationCount: 0,
@@ -795,11 +901,19 @@ export class CommitmentTracker extends EventEmitter {
       blockedOn,
       ...(actionClass ? { actionClass } : {}),
       ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
-      configPath: input.configPath,
-      configExpectedValue: input.configExpectedValue,
+      ...(duplicateCandidateOf ? { duplicateCandidateOf } : {}),
+      ...(input.priority ? {
+        priority: input.priority,
+        ...(input.priorityReason ? { priorityReason: String(input.priorityReason).trim().slice(0, 200) } : {}),
+        prioritySetAt: new Date().toISOString(),
+        prioritySetBy: 'agent' as const,
+        ...(input.priority === 'high' ? { everHigh: true } : {}),
+      } : {}),
+      configPath,
+      configExpectedValue,
       behavioralRule: input.behavioralRule,
       expiresAt: input.expiresAt,
-      verificationMethod: input.verificationMethod,
+      verificationMethod,
       verificationPath: input.verificationPath,
       relatedThreadId: input.relatedThreadId,
       relatedAgent: input.relatedAgent,
@@ -840,21 +954,43 @@ export class CommitmentTracker extends EventEmitter {
     // writer surface, initial version is 0 and future mutations CAS from there.
     this.insertNew(commitment);
 
+    // Two open config-watches expecting DIFFERENT values for the same key can
+    // never both hold — they flap forever. The newest request is the user's
+    // current word on that key, so it supersedes the older watch. Runs AFTER
+    // insertNew: a failed save must not leave the older promise withdrawn and
+    // pointing at a row that was never stored.
+    if (type === 'config-change' && configPath !== undefined) {
+      for (const older of this.getActive()) {
+        if (older.id === id || older.type !== 'config-change' || older.configPath !== configPath) continue;
+        if (this.deepEqual(older.configExpectedValue, configExpectedValue)) continue;
+        const superseded = this.mutateSync(older.id, c => ({
+          ...c,
+          status: 'withdrawn',
+          resolvedAt: new Date().toISOString(),
+          resolution: `superseded-by-${id}: newer request expects ${configPath} = ${JSON.stringify(configExpectedValue)}`,
+          supersededBy: id,
+        }));
+        this.refreshThreadIdIndex(superseded);
+        console.log(`[CommitmentTracker] Withdrawn ${older.id}: superseded by ${id}`);
+        this.emit('withdrawn', superseded);
+      }
+    }
+
     // Regenerate behavioral rules file if this is a behavioral commitment
-    if (input.type === 'behavioral') {
+    if (type === 'behavioral') {
       this.writeBehavioralRules();
     }
 
     this.refreshThreadIdIndex(commitment);
 
-    console.log(`[CommitmentTracker] Recorded ${id}: "${input.userRequest}" (${input.type})`);
+    console.log(`[CommitmentTracker] Recorded ${id}: "${input.userRequest}" (${type})`);
     this.emit('recorded', commitment);
 
     // Run immediate verification for config-change commitments.
     // verifyOne goes through mutateSync, which replaces the store entry
     // with a new object — return the freshest snapshot so callers see
     // the post-verification status.
-    if (input.type === 'config-change') {
+    if (type === 'config-change') {
       this.verifyOne(id);
     }
 
@@ -875,6 +1011,7 @@ export class CommitmentTracker extends EventEmitter {
       status: 'withdrawn',
       resolvedAt: new Date().toISOString(),
       resolution: reason,
+      closedBy: undefined,
     }));
 
     if (updated.type === 'behavioral') {
@@ -922,7 +1059,7 @@ export class CommitmentTracker extends EventEmitter {
    * Per PROMISE-BEACON-SPEC.md Round 3 #18: `delivered` is terminal; no more
    * heartbeats, no more verify attempts.
    */
-  deliver(id: string, deliveryMessageId?: string): Commitment | null {
+  deliver(id: string, deliveryMessageId?: string, evidence?: string): Commitment | null {
     const existing = this.store.commitments.find(c => c.id === id);
     if (!existing) return null;
     // Terminal statuses reject.
@@ -934,6 +1071,10 @@ export class CommitmentTracker extends EventEmitter {
       status: 'delivered' as CommitmentStatus,
       resolvedAt: new Date().toISOString(),
       deliveryMessageId: deliveryMessageId ?? c.deliveryMessageId,
+      // promise-review-and-priority §2.1: a close can say why.
+      ...(typeof evidence === 'string' && evidence.trim() ? { resolution: evidence.trim().slice(0, 500) } : {}),
+      // A close the review did not make is not the review's to undo.
+      closedBy: undefined,
     }));
     this.refreshThreadIdIndex(updated);
 
@@ -1051,12 +1192,179 @@ export class CommitmentTracker extends EventEmitter {
     return { closed, wouldClose, scanned };
   }
 
+  // ── Promise review + priority (docs/specs/promise-review-and-priority.md) ──
+
+  /**
+   * Set (or change) a pending row's priority. Refuses terminal rows. A row that
+   * was ever `high` keeps `everHigh` so the review floor can tell that a person
+   * was once recorded as waiting (a later downgrade does not erase that).
+   */
+  setPriority(
+    id: string,
+    priority: CommitmentPriority,
+    reason: string | undefined,
+    by: 'agent' | 'promise-review',
+  ): Commitment | null {
+    if (!COMMITMENT_PRIORITIES.includes(priority)) throw new Error('priority must be high, normal, or low');
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing || ['expired', 'withdrawn', 'delivered'].includes(existing.status)) return null;
+    return this.mutateSync(id, c => ({
+      ...c,
+      priority,
+      priorityReason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 200) : c.priorityReason,
+      prioritySetAt: new Date().toISOString(),
+      prioritySetBy: by,
+      ...(priority === 'high' || c.everHigh ? { everHigh: true } : {}),
+    }));
+  }
+
+  /**
+   * Stamp a review decision that closes nothing (keep / prioritize / shadow /
+   * refused). Synchronous: Node runs it without interleaving, so it can never
+   * race a concurrent close. Returns null when the row is no longer pending.
+   */
+  stampReview(id: string, stamp: {
+    runId: string;
+    at: string;
+    priority?: CommitmentPriority;
+    priorityReason?: string;
+    shadowDecision?: string;
+    /** A would-apply closure: recorded in shadowClosures so shadow mode counts the same caps, durably. */
+    shadowClosure?: boolean;
+    /** Re-validates against the row as it is NOW before a priority write. */
+    guard?: (current: Commitment) => boolean;
+  }): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing || existing.status !== 'pending') return null;
+    if (stamp.guard && !stamp.guard(existing)) return null;
+    return this.mutateSync(id, c => ({
+      ...c,
+      ...(stamp.shadowClosure ? { shadowClosures: [...(c.shadowClosures ?? []), { at: stamp.at, runId: stamp.runId }].slice(-10) } : {}),
+      lastReviewedAt: stamp.at,
+      reviewCount: (c.reviewCount ?? 0) + 1,
+      reviewRunId: stamp.runId,
+      ...(stamp.priority ? {
+        priority: stamp.priority,
+        priorityReason: stamp.priorityReason ? stamp.priorityReason.slice(0, 200) : c.priorityReason,
+        prioritySetAt: stamp.at,
+        prioritySetBy: 'promise-review' as const,
+        ...(stamp.priority === 'high' || c.everHigh ? { everHigh: true } : {}),
+      } : {}),
+      ...(stamp.shadowDecision !== undefined ? { shadowDecision: stamp.shadowDecision.slice(0, 300) } : {}),
+    }));
+  }
+
+  /**
+   * Close a row on the promise review's decision. Re-checks `pending` INSIDE the
+   * synchronous mutation, so a row someone else closed while the review was
+   * gathering evidence is never overwritten (returns null → `changed-under-review`).
+   */
+  closeByReview(id: string, close: {
+    status: 'delivered' | 'withdrawn';
+    resolution: string;
+    runId: string;
+    at: string;
+    priority?: CommitmentPriority;
+    priorityReason?: string;
+    evidenceRef?: { kind: PromiseEvidenceKind; ref: string };
+    evidenceRefResolved?: boolean;
+    supersededBy?: string;
+    /** Re-validates the decision against the row as it is NOW (inside the synchronous close). */
+    guard?: (current: Commitment) => boolean;
+  }): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing || existing.status !== 'pending') return null;
+    if (close.guard && !close.guard(existing)) return null;
+    const updated = this.mutateSync(id, c => ({
+      ...c,
+      status: close.status as CommitmentStatus,
+      resolvedAt: close.at,
+      resolution: close.resolution.slice(0, 600),
+      closedBy: 'promise-review' as const,
+      reviewRunId: close.runId,
+      // Kept through reopen, so the per-run / per-day caps cannot be refilled by reopening.
+      reviewClosures: [...(c.reviewClosures ?? []), { at: close.at, runId: close.runId }].slice(-10),
+      lastReviewedAt: close.at,
+      reviewCount: (c.reviewCount ?? 0) + 1,
+      ...(close.priority ? {
+        priority: close.priority,
+        priorityReason: close.priorityReason ? close.priorityReason.slice(0, 200) : c.priorityReason,
+        prioritySetAt: close.at,
+        prioritySetBy: 'promise-review' as const,
+        ...(close.priority === 'high' || c.everHigh ? { everHigh: true } : {}),
+      } : {}),
+      ...(close.evidenceRef ? { evidenceRef: close.evidenceRef, evidenceRefResolved: close.evidenceRefResolved === true } : {}),
+      ...(close.supersededBy ? { supersededBy: close.supersededBy, reviewSetSupersededBy: true } : {}),
+    }));
+    if (updated.type === 'behavioral') this.writeBehavioralRules();
+    this.refreshThreadIdIndex(updated);
+    this.emit(close.status === 'delivered' ? 'delivered' : 'withdrawn', updated);
+    return updated;
+  }
+
+  /**
+   * Undo a closure the promise review made (§2.4). Only `closedBy:
+   * 'promise-review'` rows inside the window; anything else is not this route's
+   * decision to undo.
+   */
+  reopenFromReview(id: string, reason: string, windowDays: number, now = new Date()):
+    | { ok: true; commitment: Commitment }
+    | { ok: false; error: 'not-found' | 'not-review-closed' | 'reopen-window-passed' | 'reopen-unsupported-minted-topic' } {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) return { ok: false, error: 'not-found' };
+    // A minted (negative) conversation id's binding was released on close;
+    // re-acquiring it is the binder's job, not this route's. Refuse honestly.
+    if (typeof existing.topicId === 'number' && existing.topicId < 0) return { ok: false, error: 'reopen-unsupported-minted-topic' };
+    if (existing.closedBy !== 'promise-review' || !['delivered', 'withdrawn'].includes(existing.status)) {
+      return { ok: false, error: 'not-review-closed' };
+    }
+    const resolvedMs = Date.parse(existing.resolvedAt ?? '');
+    if (!Number.isFinite(resolvedMs) || now.getTime() - resolvedMs > windowDays * 86_400_000) {
+      return { ok: false, error: 'reopen-window-passed' };
+    }
+    const at = now.toISOString();
+    const updated = this.mutateSync(id, c => ({
+      ...c,
+      status: 'pending' as CommitmentStatus,
+      resolvedAt: undefined,
+      resolution: undefined,
+      closedBy: undefined,
+      reopenedAt: at,
+      reopenReason: String(reason).trim().slice(0, 500),
+      reopenCount: (c.reopenCount ?? 0) + 1,
+      lastReviewedAt: at,
+      // The review wrote supersededBy; left in place the graveyard reconciler
+      // would silently re-close the reopened row. Undo means undo.
+      ...(c.reviewSetSupersededBy ? { supersededBy: undefined, reviewSetSupersededBy: undefined } : {}),
+      evidenceRef: undefined,
+      evidenceRefResolved: undefined,
+      shadowDecision: undefined,
+    }));
+    if (updated.type === 'behavioral') this.writeBehavioralRules();
+    this.refreshThreadIdIndex(updated);
+    this.emit('reopened', updated);
+    // PromiseBeacon re-arms a pending beacon row on 'resumed' (the close stopped it).
+    this.emit('resumed', updated);
+    return { ok: true, commitment: updated };
+  }
+
+  /** Batch several review writes into one store save (see beginSaveBatch). */
+  withSaveBatch<T>(fn: () => T): T {
+    this.beginSaveBatch();
+    try { return fn(); } finally { this.finishSaveBatch(); }
+  }
+
   /**
    * C1+C2 §4.1 — STRUCTURAL well-formedness validator for the owner⟂blockedOn
    * state. Shared by record() and transitionState() so a guarded transition
    * re-runs the SAME gate. Throws on an invalid enum or a blank
    * user-authorization. Never classifies prose; holds no side-effect authority.
    */
+  /** Lower-cased, whitespace-collapsed, punctuation-trimmed promise text (dedupe key). */
+  static normalizePromiseText(text: unknown): string {
+    return String(text ?? '').toLowerCase().replace(/\s+/g, ' ').replace(/[\s.!…]+$/u, '').trim();
+  }
+
   static normalizeState(input: { owner?: string; blockedOn?: string; actionClass?: string }): {
     owner: 'agent' | 'user';
     blockedOn: 'none' | 'external' | 'user-input' | 'user-authorization';
@@ -1244,6 +1552,17 @@ export class CommitmentTracker extends EventEmitter {
     return this.getActive().filter((c) => c.topicId === topicId);
   }
 
+  /** Config roots that name a topic/session, not a global setting (see record()). */
+  private static readonly TOPIC_SCOPED_CONFIG_ROOTS = new Set([
+    'topic', 'topics', 'thistopic', 'topicprofile', 'topicprofiles', 'session', 'conversation',
+  ]);
+
+  static isTopicScopedConfigPath(configPath: string | undefined): boolean {
+    if (!configPath) return false;
+    const root = configPath.split('.')[0].replace(/[-_\s]/g, '').toLowerCase();
+    return CommitmentTracker.TOPIC_SCOPED_CONFIG_ROOTS.has(root);
+  }
+
   /**
    * True if a one-time-action commitment has no way to be verified
    * automatically — no verificationMethod at all, or the `manual` method
@@ -1259,7 +1578,15 @@ export class CommitmentTracker extends EventEmitter {
   private static isUnverifiableOneTime(c: Commitment): boolean {
     if (c.type !== 'one-time-action') return false;
     const m = c.verificationMethod;
-    return m === undefined || m === null || m === 'manual';
+    // Old HTTP callers could persist arbitrary prose here. An unsupported
+    // method is not evidence of a broken promise; do not add a violation on
+    // every sweep. Preserve the raw value for diagnosis.
+    return m !== 'config-value' && m !== 'file-exists' && m !== 'threadline-reply';
+  }
+
+  static supportsVerificationMethod(value: unknown): boolean {
+    return value === undefined || value === null || value === 'manual' ||
+      value === 'config-value' || value === 'file-exists' || value === 'threadline-reply';
   }
 
   /**
@@ -1493,6 +1820,17 @@ export class CommitmentTracker extends EventEmitter {
       return null;
     }
 
+    // Legacy sentinel records sometimes called prose about a configuration
+    // change a verifiable config-change without naming any setting. Every
+    // sweep then reported the missing field as another violation (CMT-806
+    // accumulated 23,161). An absent check target is missing evidence, not a
+    // failed check. Leave the record open for agent follow-up without another
+    // false violation tick.
+    if (commitment.type === 'config-change' &&
+        (!commitment.configPath || commitment.configExpectedValue === undefined)) {
+      return null;
+    }
+
     let result: { passed: boolean; detail: string };
 
     switch (commitment.type) {
@@ -1544,7 +1882,9 @@ export class CommitmentTracker extends EventEmitter {
     } else if (wasVerified) {
       // Regression — was verified, now violated
       console.warn(`[CommitmentTracker] VIOLATION ${id}: "${updated.userRequest}" — ${result.detail}`);
-      if (this.config.onViolation) {
+      // Once escalated ("keeps reverting — looks like a bug"), the user has been
+      // told once; a per-flap repeat is noise (live: 1001 alerts per commitment).
+      if (this.config.onViolation && !updated.escalated) {
         this.config.onViolation(updated, result.detail);
       }
     }
@@ -1816,7 +2156,6 @@ export class CommitmentTracker extends EventEmitter {
     if (!config.enabled && !ow.enabled) return report;
 
     const targets: Array<{ id: string; reason: string; apply: boolean; branch: 'agent' | 'operator-wait' }> = [];
-    const agentReason = `auto-expired: aged out >${config.maxAgeDays}d, presumed completed-but-unclosed`;
     for (const commitment of this.store.commitments) {
       report.scanned++;
       // §3.5 — the operator-wait branch is judged FIRST so a user-owned row
@@ -1829,12 +2168,12 @@ export class CommitmentTracker extends EventEmitter {
         else report.capped = true;
         continue;
       }
-      if (!config.enabled || !this.isAutoExpiryEligible(commitment, now, config.maxAgeDays)) continue;
+      const agent = config.enabled ? this.autoExpiryDisposition(commitment, now, config.maxAgeDays) : null;
+      if (!agent) continue;
       report.eligible++;
-      const waitedDays = Math.floor((now.getTime() - Date.parse(commitment.createdAt)) / 86_400_000);
-      report.dispositions.push({ id: commitment.id, branch: 'agent', waitedDays, reason: agentReason, applied: !config.dryRun });
+      report.dispositions.push({ id: commitment.id, branch: 'agent', waitedDays: agent.waitedDays, reason: agent.reason, applied: !config.dryRun, class: agent.class });
       if (targets.length < AUTO_EXPIRY_SWEEP_CAP) {
-        targets.push({ id: commitment.id, reason: agentReason, apply: !config.dryRun, branch: 'agent' });
+        targets.push({ id: commitment.id, reason: agent.reason, apply: !config.dryRun, branch: 'agent' });
       } else {
         report.capped = true;
       }
@@ -1856,6 +2195,25 @@ export class CommitmentTracker extends EventEmitter {
       }
     }
 
+    // CMT-1118: persist the would-expire (or expired) ids so the dry-run flip
+    // rule — review what it would expire — can actually be met.
+    this.autoExpiryLedger.record({
+      dryRun: report.dryRun,
+      extra: { held: this.store.commitments.filter((c) => c.autoExpiryHold && c.status === 'pending').length, agentEnabled: config.enabled, operatorWaitEnabled: ow.enabled, operatorWaitDryRun: ow.dryRun, operatorWaitMaxAgeDays: ow.maxAgeDays },
+      maxAgeDays: report.maxAgeDays,
+      scanned: report.scanned,
+      eligible: report.eligible + report.operatorWait.eligible,
+      expired: report.expired + report.operatorWait.expired,
+      capped: report.capped,
+      items: report.dispositions.map((d) => ({
+        id: d.id,
+        ageDays: d.waitedDays,
+        class: d.branch === 'operator-wait' ? 'operator-wait' : (d.class ?? 'no-activity'),
+        reason: d.reason,
+        applied: d.applied,
+      })),
+    });
+
     console.log(
       `[CommitmentTracker] Auto-expiry sweep: scanned=${report.scanned} eligible=${report.eligible} expired=${report.expired} dryRun=${report.dryRun} maxAgeDays=${report.maxAgeDays} capped=${report.capped}` +
       ` operatorWait(eligible=${report.operatorWait.eligible} expired=${report.operatorWait.expired} dryRun=${ow.dryRun} maxAgeDays=${ow.maxAgeDays})`,
@@ -1869,13 +2227,15 @@ export class CommitmentTracker extends EventEmitter {
    * user-authorization, qualify; the wait starts at the later of creation and
    * the current blocker episode's start. Replicas (another machine's rows) are
    * the origin machine's to expire. Never expires a row with a future hard
-   * deadline. Returns the per-row reason, or null.
+   * deadline. A standing behavioral rule is never "waiting", and a held row is
+   * exempt (CMT-1132). Returns the per-row reason, or null.
    */
   private operatorWaitDisposition(commitment: Commitment, now: Date, maxAgeDays: number): { waitedDays: number; reason: string } | null {
     const owner = commitment.owner ?? 'agent';
     const blockedOn = commitment.blockedOn ?? 'none';
     const waitsOnOperator = owner === 'user' || blockedOn === 'user-input' || blockedOn === 'user-authorization';
     if (!waitsOnOperator) return null;
+    if (commitment.type === 'behavioral' || commitment.autoExpiryHold) return null;
     if (commitment.status !== 'pending' && commitment.status !== 'violated') return null;
     if (this.config.originMachineId && commitment.originMachineId && commitment.originMachineId !== this.config.originMachineId) return null;
     const createdMs = Date.parse(commitment.createdAt);
@@ -1934,6 +2294,7 @@ export class CommitmentTracker extends EventEmitter {
       status: 'expired',
       resolvedAt,
       resolution: reason,
+      closedBy: undefined,
     }));
   }
 
@@ -1956,18 +2317,65 @@ export class CommitmentTracker extends EventEmitter {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
   }
 
-  private isAutoExpiryEligible(commitment: Commitment, now: Date, maxAgeDays: number): boolean {
-    if (commitment.owner !== 'agent') return false;
-    if (commitment.status !== 'pending' && commitment.status !== 'violated') return false;
+  /**
+   * The agent-branch auto-expiry rule (CMT-1118). Only an UNBLOCKED, agent-owned,
+   * pending, locally-originated row past the age bound qualifies (CMT-1132):
+   *   - `behavioral` is out: a standing rule produces no activity, so "no
+   *     activity" says nothing about it.
+   *   - `violated` is out: it is a live defect, not a stale promise.
+   *   - a row with an `autoExpiryHold` is out until the hold is cleared.
+   *   - `blockedOn: 'external'` is owned by the external-block dead-letter path;
+   *     `user-input` / `user-authorization` belong to the operator-wait branch
+   *     (and stay open when that branch is off) — neither is "aged out".
+   *   - age runs from the later of creation and the last dependency probe, so a
+   *     row the agent is still actively checking is not aged out.
+   *   - the resolution never claims completion from age alone: a row created
+   *     with a `followThroughOptOutReason` cites that reason; any other row says
+   *     plainly that its outcome is unknown.
+   */
+  private autoExpiryDisposition(
+    commitment: Commitment,
+    now: Date,
+    maxAgeDays: number,
+  ): { waitedDays: number; reason: string; class: 'opted-out' | 'no-activity' } | null {
+    if (commitment.owner !== 'agent') return null;
+    if (commitment.type === 'behavioral' || commitment.autoExpiryHold) return null;
+    if ((commitment.blockedOn ?? 'none') !== 'none') return null;
+    if (commitment.status !== 'pending') return null;
+    if (this.config.originMachineId && commitment.originMachineId && commitment.originMachineId !== this.config.originMachineId) return null;
     const createdAtMs = Date.parse(commitment.createdAt);
-    if (!Number.isFinite(createdAtMs)) return false;
-    const ageMs = now.getTime() - createdAtMs;
-    if (ageMs <= maxAgeDays * 24 * 60 * 60 * 1000) return false;
+    if (!Number.isFinite(createdAtMs)) return null;
+    let activityMs = createdAtMs;
+    const probeMs = commitment.lastProbe ? Date.parse(commitment.lastProbe.at) : NaN;
+    if (Number.isFinite(probeMs) && probeMs > activityMs) activityMs = probeMs;
+    // promise-review-and-priority: a reopen or a review that kept the row is
+    // activity — age-based expiry must not undo a deliberate keep/reopen, and a
+    // row recorded high (a person waiting) is never aged out.
+    if (commitment.priority === 'high') return null;
+    for (const t of [commitment.reopenedAt, commitment.lastReviewedAt]) {
+      const ms = t ? Date.parse(t) : NaN;
+      if (Number.isFinite(ms) && ms > activityMs) activityMs = ms;
+    }
+    const ageMs = now.getTime() - activityMs;
+    if (ageMs <= maxAgeDays * 24 * 60 * 60 * 1000) return null;
     if (commitment.hardDeadlineAt) {
       const hardDeadlineMs = Date.parse(commitment.hardDeadlineAt);
-      if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return false;
+      if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return null;
     }
-    return true;
+    const waitedDays = Math.floor(ageMs / 86_400_000);
+    const optOut = typeof commitment.followThroughOptOutReason === 'string' ? commitment.followThroughOptOutReason.trim() : '';
+    if (optOut) {
+      return {
+        waitedDays,
+        class: 'opted-out',
+        reason: `auto-expired after ${waitedDays} days: created with no follow-through needed ("${optOut.slice(0, 200)}")`,
+      };
+    }
+    return {
+      waitedDays,
+      class: 'no-activity',
+      reason: `auto-expired after ${waitedDays} days with no recorded activity; outcome unknown (not confirmed completed). Re-open it if it still matters.`,
+    };
   }
 
   // ── Single-writer mutation ─────────────────────────────────────

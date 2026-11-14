@@ -1,0 +1,9 @@
+# Why a manual update should wait for a merge check
+
+Instar runs a full set of tests before it calls a code change safe to merge. On the Studio Mac, that check takes roughly ten to fifteen minutes and uses the one full-test slot. If the Instar server restarts halfway through, it stops the check. The same change is put back in line and all of those test minutes must be spent again. This is safe for the code, but slow for everyone waiting behind it.
+
+Instar already has a restart hold that tells its automatic updater when a verification run is active. Automatic updates can install a new version and wait to restart until the run finishes. A manual request to apply an update skipped that hold. At 10:23 a.m. on October 31, such a request stopped a PR check after it had already run for 11.6 minutes. The request was legitimate; the missing protection was in the update path.
+
+The change makes an ordinary manual update use the same active-work hold. It still installs the new version immediately. It skips the preferred clock-time window, because the operator asked for the update now, but the actual server restart waits for the current verification run to end or for the existing bounded deadline. The update response shows why the restart is waiting. An explicit `forceRestart:true` bypasses that hold even after installation; the normal session and restart-cooldown gates still apply. Forcing can interrupt the check, so agents should use it only when the restart cannot wait for the check.
+
+The full test remains the only authority that can mark a change green. The restart hold cannot make an untested change pass, and a forced interruption still requeues the change for a fresh check. This is a narrow, reversible repair to one update route. It does not add a machine, change the merge gate, or alter stored PR records. Unit, HTTP, and server-lifecycle tests cover the default and forced paths; the complete test suite remains the release gate.

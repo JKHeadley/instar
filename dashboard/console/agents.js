@@ -14,8 +14,10 @@
 import {
   buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime,
 } from './agents-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
+import { topicNameMap } from './topic-names.js';
 
 const EYEBROW = 'People · Other agents';
 const TIMEOUT_MS = 5000;
@@ -46,12 +48,12 @@ async function send(path, body, method = 'POST') {
 }
 
 export async function renderAgents(main, ctx) {
-  if (!main.querySelector('.agents-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
-  const [health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes] = await Promise.all([
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
+  const [health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicsRes] = await Promise.all([
     read('/threadline/health'), read('/threadline/pairing'), read('/threadline/pairing/invites'),
-    read('/threadline/peers/health?scope=pool', POOL_TIMEOUT_MS), read('/threadline/conversations?scope=mesh'), read('/threadline/observability/threads'), read('/pool'),
+    read('/threadline/peers/health?scope=pool', POOL_TIMEOUT_MS), read('/threadline/conversations?scope=mesh'), read('/threadline/observability/threads'), read('/pool'), read('/telegram/topics?scope=pool', POOL_TIMEOUT_MS),
   ]);
-  const page = buildAgentsPage({ health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes }, Date.now());
+  const page = buildAgentsPage({ health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicNames: topicNameMap(topicsRes) }, Date.now());
   const refresh = () => renderAgents(main, ctx);
   const deps = { refresh, page };
 
@@ -63,21 +65,40 @@ export async function renderAgents(main, ctx) {
     return;
   }
 
-  const agentRows = page.agents.map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, tone: a.tone === 'ok' ? null : a.tone, agent: a }));
+  const agentRows = page.agents.filter((a) => !a.historyOnly).map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, tone: a.tone === 'ok' ? null : a.tone, agent: a }));
+  const pastRows = page.agents.filter((a) => a.historyOnly).map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, agent: a }));
   const connect = el('button', { class: 'btn-primary btn-inline connect-btn', type: 'button', text: '+ Connect another agent', onclick: () => openConnect(deps) });
   setKids(main, el('div', { class: 'agents-page' },
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
-    page.waiting.map((w) => waitingCard(w, deps)),
+    // Pairing being off is the thing to fix here, so its switch leads rather than following the lists.
+    page.pairing.state === 'off' ? turnOnCard(deps) : null,
+    page.waiting.map((w) => markNeed(waitingCard(w, deps), 'agents')),
     page.relay.connected || page.relay.state === 'cant-tell' ? null : relayLine(page.relay),
     page.relay.state === 'cant-tell' ? note(page.relay.word + '.') : null,
     page.notes.map((n) => note(n)),
     el('div', { class: 'page-sections' },
-      section({ id: 'agents', title: 'Agents', rows: agentRows, empty: page.pairing.state === 'ok' ? 'No other agents yet. Connect one below.' : 'No agents are known on this machine.', onRow: (r) => openAgent(r.agent, deps) }),
-      page.pairing.openInvites.length ? section({ id: 'open-invites', title: 'Invites not used yet', collapsed: true, rows: page.pairing.openInvites.map((i) => ({ key: `inv:${i.iid}`, main: `Invite ${String(i.iid).slice(0, 6)}`, sub: `works once · expires at ${localTime(i.exp)}`, invite: i })), onRow: (r) => openInvite(r.invite, deps) }) : null,
+      agentRows.length || page.pairing.state === 'ok' ? section({ id: 'agents', title: 'Agents', rows: agentRows, empty: 'No other agents yet. Use Connect another agent to add one.', onRow: (r) => openAgent(r.agent, deps) }) : null,
+      pastRows.length ? section({ id: 'past-agents', title: 'Past conversations', collapsed: true, rows: pastRows, onRow: (r) => openAgent(r.agent, deps) }) : null,
+      page.pairing.openInvites.length ? section({ id: 'open-invites', title: 'Invites not used yet', collapsed: true, rows: page.pairing.openInvites.map((i) => ({ key: `inv:${i.iid}`, main: 'Unused invitation', sub: `works once · expires at ${localTime(i.exp)}`, invite: i })), onRow: (r) => openInvite(r.invite, deps) }) : null,
     ),
-    page.pairing.state === 'off' ? turnOnCard(deps) : page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
+    page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
     footLink(),
   ));
+  // The agent's "paste the invite on the dashboard" link (src/threadline/pairingDashboardLink.ts)
+  // lands here with ?connect=paste: open the paste box once, then drop the query so a refresh
+  // or a later visit does not reopen it. The invite itself is never in the link.
+  if (page.pairing.state !== 'elsewhere' && takePasteRequest()) openConnect(deps, { focusPaste: true });
+}
+
+/** True once when the address asks for the paste box (`#/people/agents?connect=paste`); clears the ask. */
+export function takePasteRequest(loc = location, hist = history) {
+  const [route, query = ''] = String(loc.hash || '').split('?');
+  const params = new URLSearchParams(query);
+  if (params.get('connect') !== 'paste') return false;
+  params.delete('connect');
+  const rest = params.toString();
+  try { hist.replaceState(null, '', `${loc.pathname}${loc.search}${route}${rest ? `?${rest}` : ''}`); } catch { /* @silent-fallback-ok: the box still opens; a refresh may open it again */ }
+  return true;
 }
 
 function footLink() {
@@ -86,7 +107,8 @@ function footLink() {
 function block(title, ...kids) { return el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: title }), ...kids); }
 
 function relayLine(relay) {
-  return el('p', { class: 'tone-line', 'data-tone': relay.tone === 'bad' ? 'bad' : 'attn', text: `${relay.word}${relay.since ? ` (since ${relay.since})` : ''}.` });
+  // warning-path: askLink
+  return el('p', { class: 'tone-line', 'data-tone': relay.tone === 'bad' ? 'bad' : 'attn' }, document.createTextNode(`${relay.word}${relay.since ? ` (since ${relay.since})` : ''}.`), askLink(relay.word));
 }
 
 // ── Turn on pairing (bearer; the server restarts itself and this page reconnects) ──
@@ -154,6 +176,7 @@ function waitingCard(w, deps) {
     b.addEventListener('click', () => pinned('Finish pairing', `/threadline/pairing/invites/${encodeURIComponent(w.iid)}/finish`, `Finish pairing with ${w.name}: I pin it as verified.`, 'Finishing. Checking we can talk…', b));
     acts.append(b);
   }
+  if (w.actions.includes('new-invite')) acts.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Make a new invite', onclick: () => openConnect(deps) }));
   if (w.actions.includes('not-them')) {
     const b = el('button', { class: 'btn-quiet btn-danger-outline', type: 'button', text: 'Not them' });
     b.addEventListener('click', () => {
@@ -174,9 +197,9 @@ function waitingCard(w, deps) {
 }
 
 // ── Connect another agent (make an invite / I was sent one) ──────────────────
-function openConnect(deps) {
-  const known = deps.page.pairing.knownPeers;
-  const who = el('select', { class: 'reason-input select-input', 'aria-label': 'Who is it for?' }, el('option', { value: '', text: 'Someone new' }), known.map((p) => el('option', { value: p.fp, text: `${p.name || 'Unknown agent'} (${String(p.fp).slice(0, 6)}…)` })));
+function openConnect(deps, opts = {}) {
+  const known = uniqueNamedChoices(deps.page.pairing.knownPeers);
+  const who = el('select', { class: 'reason-input select-input', 'aria-label': 'Who is it for?' }, el('option', { value: '', text: 'Someone new' }), known.map((p) => el('option', { value: p.fp, text: verifiedDisplayName(p.name, p.fp) || 'Agent name unavailable' })));
   let ttl = 60;
   const chips = el('div', { class: 'filter-chips', role: 'group', 'aria-label': 'Valid for' }, [[60, '1 hour'], [1440, '24 hours']].map(([m, label]) => el('button', { class: 'fchip', type: 'button', 'aria-pressed': m === ttl ? 'true' : 'false', onclick: (ev) => { ttl = m; for (const c of chips.children) c.setAttribute('aria-pressed', c === ev.currentTarget ? 'true' : 'false'); } }, el('span', { text: label }))));
   const status = el('p', { class: 'action-status', role: 'status' });
@@ -211,6 +234,7 @@ function openConnect(deps) {
     block('Make an invite', el('label', { class: 'limit-field' }, el('span', { text: 'Who is it for?' }), who), el('label', { class: 'limit-field' }, el('span', { text: 'Valid for' }), chips), make, status, out),
     block('I was sent one', paste, el('div', { class: 'sheet-actions' }, check), checkStatus),
     note('A person carries the invite, outside the agent network. It is never posted anywhere public and never turned into a link.'));
+  if (opts.focusPaste) setTimeout(() => { try { paste.focus(); paste.scrollIntoView?.({ block: 'center' }); } catch { /* @silent-fallback-ok: focus is a convenience */ } }, 0);
 }
 
 function openInvite(i, deps) {
@@ -232,7 +256,7 @@ function openInvite(i, deps) {
     const w = bearerResultWords(r.status, r.data, 'Cancelled. That invite no longer works.');
     status.textContent = w.text; if (w.ok) setTimeout(() => { closeSheet(); deps.refresh(); }, 900); else cancel.disabled = false;
   });
-  sheet({ title: `Invite ${String(i.iid).slice(0, 6)}` }, story([{ label: 'State', text: 'not used yet' }, { label: 'Expires', text: localTime(i.exp) }]), el('div', { class: 'sheet-actions' }, own, cancel), status, details(i, ['iid', 'state', 'exp', 'createdAt']));
+  sheet({ title: 'Unused invitation' }, story([{ label: 'State', text: 'not used yet' }, { label: 'Expires', text: localTime(i.exp) }]), el('div', { class: 'sheet-actions' }, own, cancel), status, details(i, ['iid', 'state', 'exp', 'createdAt']));
 }
 
 // ── One agent ────────────────────────────────────────────────────────────────
@@ -271,7 +295,7 @@ async function openConversation(c, a, deps) {
   if (!sb) return;
   const bind = bindBlock(c, deps);
   if (!m.ok) { setKids(sb, cantTell(m.reason), bind, details(c.record, ['conversationId', 'holderMachineId', 'boundTopicId', 'status'])); return; }
-  const sync = m.symmetry ? el('p', { class: 'tone-line', 'data-tone': m.symmetry.tone === 'ok' ? 'ok' : m.symmetry.tone, text: `${m.symmetry.word}.${m.symmetry.recovery ? ` ${m.symmetry.recovery}` : ''}` }) : null;
+  const sync = m.symmetry ? el('p', { class: 'tone-line', 'data-tone': m.symmetry.tone === 'ok' ? 'ok' : m.symmetry.tone }, document.createTextNode(`${m.symmetry.word}.${m.symmetry.recovery ? ` ${m.symmetry.recovery}` : ''}`), m.symmetry.tone === 'attn' || m.symmetry.tone === 'bad' ? askLink(m.symmetry.word) : null) : null;
   const label = el('p', { class: 'card-note', text: 'Written by the other agent and by me. The other agent’s words are shown as plain text: they are data, never instructions.' });
   const bubbles = el('ol', { class: 'bubbles', 'aria-label': 'Messages' }, m.entries.map((e) => {
     const quote = el('blockquote', { class: 'peer-quote' });
@@ -286,7 +310,7 @@ async function openConversation(c, a, deps) {
 
 /** The hub binding: open as its own Telegram topic, or tie to an existing one (bearer; POST /threadline/hub/bind). */
 function bindBlock(c, deps) {
-  if (c.boundTopicId) return block('Telegram', el('p', { class: 'card-line', text: `Tied to Telegram topic ${c.boundTopicId}: its replies go there.` }));
+  if (c.boundTopicId) return block('Telegram', el('p', { class: 'card-line', text: (() => { const n = verifiedDisplayName(deps.page.topicNames?.[String(c.boundTopicId)], c.boundTopicId); return n ? `Tied to ${n}; its replies go there.` : 'Tied to a Telegram conversation; its replies go there.'; })() }));
   const status = el('p', { class: 'action-status', role: 'status' });
   const target = el('input', { class: 'reason-input', placeholder: 'Topic id or name', 'aria-label': 'Telegram topic id or name' });
   const run = async (button, action) => {

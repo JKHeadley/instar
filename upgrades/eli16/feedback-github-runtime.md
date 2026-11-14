@@ -1,0 +1,7 @@
+# Feedback workers use the agent’s GitHub sign-in
+
+Reports are already reaching Echo and being sorted into useful work. The next step needs GitHub: a worker must read a repository, publish its proposed fix, have it independently reviewed, and follow it through merge and release. A stale saved GitHub login on the machine stopped that step even though Echo’s current credential was valid.
+
+Instar already has a way for server components to use an explicit credential from the agent’s own encrypted vault and locate the GitHub program without depending on an interactive terminal. This repair connects the feedback components to that existing mechanism. It covers the reads used for availability, the publish and merge steps, cancelling a pending automatic merge, and checking which release contains a fix. Sorting uses the same mechanism when checking whether a problem was already fixed.
+
+There is no new account or permission to approve. The change does not widen a token’s scope. Without an explicit credential the operation stops and reports unavailable instead of borrowing a machine-wide login. A refreshed vault credential is picked up within the existing five-minute cache. Worker sandboxes still receive no credentials, and the independent review, protected-file, secret-scan and exact-commit merge requirements remain. Tests exercise both missing and working credentials and reconstruct the real server after a credential change.

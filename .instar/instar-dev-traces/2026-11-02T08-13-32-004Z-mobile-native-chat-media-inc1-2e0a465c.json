@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-inc1",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T08:13:32.004Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-inc1.md",
+  "artifactSha256": "50577cc3a855380f935bc3a4d66c548bef4045ec66109c00d8ccffc9da52cf68",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/templates/scripts/app-reply.sh",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/mobile-native-media.test.ts",
+    "tests/unit/PostUpdateMigrator-appMedia.test.ts",
+    "tests/unit/app-media-reply-files.test.ts",
+    "tests/unit/app-media-store.test.ts",
+    "tests/unit/app-media-types.test.ts",
+    "tests/unit/app-reply-script-files.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/mobile-native-chat-media-inc1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Confirming-pass follow-up on the media increment: app-reply.sh --file reads a piped caption with a bounded wait. Same Tier-2 surface as the feature.",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "held-reply-outcome-lookup",
+  "sessionId": "cc172e56-ba01-4e56-818b-481f5b739b3b",
+  "timestamp": "2026-10-28T05:30:38.534Z",
+  "artifactPath": "upgrades/side-effects/held-reply-outcome-lookup.md",
+  "artifactSha256": "3475dd648ecaf53611b6403845475496a1efc04e648ad7fd3f390e68c746af36",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/telegram-origin/OriginAwareness.ts",
+    "src/server/telegramOriginRoutes.ts",
+    "src/templates/scripts/telegram-reply.sh",
+    "tests/e2e/telegram-origin-held-outcome-lifecycle.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/telegram-origin-held-outcome-migration.test.ts",
+    "upgrades/held-reply-outcome-lookup.eli16.md",
+    "upgrades/side-effects/held-reply-outcome-lookup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Gate-test follow-ups for the held-reply fix plus the Tier-3 alive test for the new lookup route; no behavior change",
+  "eli16Path": "upgrades/held-reply-outcome-lookup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/held-reply-outcome-lookup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

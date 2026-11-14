@@ -50,8 +50,15 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // ORIGIN_LOCAL_PREFIXES for gitignore + backup; listed here so the file
   // routes refuse it by the same list.
   'origin-sessions-',
+  // Telegram test-group marker key (32-byte HMAC key, 0600): it decides which groups on
+  // the operator's account this agent may delete (docs/specs/telegram-test-groups.md).
+  'state/telegram-test-groups.key',
   // Conversation-bind token secret (32-byte HMAC key).
   'state/conversation-bind-token.secret',
+  // Fold locks (context-budget-layered-summaries §14 "Fold lock"): the
+  // single-machine fold signing key (`.local-key.pem`) and the lock and
+  // monotonic floor files a bearer edit could lower or forge.
+  'state/fold-leases/',
   // Manifest-integrity signing secret (`.instar/state/.manifest-key`,
   // generated at init, 0600). Found by the §5.4 walk: a key the parent lists
   // never named.
@@ -86,6 +93,11 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // request are on a persisted budget; a file-editor write would step around
   // it and spend the lifeline's shared daily restart cap.
   'state/lifeline-restart-requested.json',
+  // Threadline MCP local secret (32 random bytes, hex, 0600): the credential the
+  // agent's own sessions present on POST /mcp/threadline. Covers the creator's
+  // temp names (`local-mcp-secret.<pid>.<rand>.tmp`) too.
+  // docs/specs/threadline-mcp-local-http.md D2
+  'state/local-mcp-secret',
 ]);
 
 /**
@@ -114,6 +126,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'remediation-keys.age',
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
+  'state/local-mcp-secret',
   'config.json',
 ]);
 

@@ -7,6 +7,8 @@
 // it re-reads the server's validTransitions before every step.
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
+import { unreachableClause, poolMachine } from './unreachable-model.js';
 
 // ── Profile ───────────────────────────────────────────────────────────────
 export const PROFILES = ['cautious', 'supervised', 'collaborative', 'autonomous'];
@@ -146,6 +148,7 @@ function guardRow(g, machine, local) {
     main: g.criticalPath ? `${g.criticalPath}` : humanKey(g.key),
     sub: [guardWord(g), machine.name].filter(Boolean).join(' · '),
     end: '',
+    // warning-path: row
     tone: look ? 'attn' : g.loadBearingAccepted ? 'unknown' : undefined,
     local, machine: machine.name, where: machine.name || machine.here || 'this machine', needsLook: look, record: g, actions: guardActions(g, local),
   };
@@ -155,7 +158,7 @@ function guardRow(g, machine, local) {
  * Every guard row, this machine first. `res` is GET /guards (optionally ?scope=pool).
  * Returns { ok, look, others, failed, multi, selfName, counts }.
  */
-export function buildGuards(res) {
+export function buildGuards(res, { pool: poolRows = null, now = Date.now() } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read the safety checks: ${res.reason}.` };
   const d = res.data || {};
   if (!Array.isArray(d.guards)) return { ok: false, reason: 'The safety checks answered without their list.' };
@@ -163,10 +166,10 @@ export function buildGuards(res) {
   const peers = pool && Array.isArray(pool.machines) ? pool.machines : [];
   const failed = pool && Array.isArray(pool.failed) ? [...pool.failed] : [];
   const multi = peers.length + failed.length > 0;
-  const selfName = d.nickname || (multi ? 'this machine' : null);
-  const rows = d.guards.filter((g) => g && g.key).map((g) => guardRow(g, { id: d.machineId || 'self', name: multi ? selfName : null, here: d.nickname }, true));
+  const selfName = verifiedDisplayName(d.nickname, d.machineId) || (multi ? 'this machine' : null);
+  const rows = d.guards.filter((g) => g && g.key).map((g) => guardRow(g, { id: d.machineId || 'self', name: multi ? selfName : null, here: selfName }, true));
   for (const m of peers) {
-    const name = m.nickname || m.machineId || 'another machine';
+    const name = verifiedDisplayName(m.nickname, m.machineId) || 'another machine';
     if (!Array.isArray(m.guards)) { failed.push({ machineId: m.machineId, nickname: name, reason: 'no list' }); continue; }
     for (const g of m.guards) if (g && g.key) rows.push(guardRow(g, { id: m.machineId, name }, false));
   }
@@ -175,10 +178,12 @@ export function buildGuards(res) {
   const accepted = rows.filter((r) => r.record.loadBearingAccepted);
   return {
     ok: true, look, others, multi, selfName,
-    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: f.nickname || f.machineId || 'A machine', sub: `Can’t tell: ${FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
+    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${GUARD_UNREACHED.has(f.reason) ? unreachableClause(poolMachine(poolRows, f.machineId), f, now) : FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
     counts: { look: look.length, others: others.length, accepted: accepted.length, total: rows.length },
   };
 }
+// Out of reach: say for how long and whether anything is fixing it (CMT-1541).
+const GUARD_UNREACHED = new Set(['offline', 'timeout', 'unreachable']);
 const FAILED_WORDS = {
   'no-known-url': 'no address known for it', offline: 'it is offline', 'url-rejected': 'its address was refused',
   'route-missing': 'it needs an update to report', unauthorized: 'it refused the request', timeout: 'no answer in time',
@@ -250,7 +255,7 @@ export function flattenFeature(f) {
   // The short word: the server's honest status when it sent one; the discovery state only from an older server.
   const word = effective ? (EFFECTIVE_WORD[effective.status] || effective.status.replace(/-/g, ' ')) : (STATE_WORD[state] || state);
   return {
-    id: def.id, name: def.name || def.id, oneLiner: def.oneLiner || '', fullDescription: def.fullDescription || '',
+    id: def.id, name: verifiedDisplayName(def.name, def.id) || 'Unnamed feature', oneLiner: def.oneLiner || '', fullDescription: def.fullDescription || '',
     category: def.category || 'other', tier: def.consentTier || 'informational',
     dataImplications: Array.isArray(def.dataImplications) ? def.dataImplications : [],
     reversibilityNote: def.reversibilityNote || '',
@@ -385,7 +390,7 @@ export async function walkToEnabled(feature, deps, maxSteps = 6) {
     steps.push(next);
     if (deps.onStep) deps.onStep(next);
     if (next === 'enabled') {
-      const a = applyText(feature.name || feature.id, 'enable', r.data);
+      const a = applyText(verifiedDisplayName(feature.name, feature.id) || 'the feature', 'enable', r.data);
       return { ok: a.applied !== false, state: 'enabled', steps, message: a.text, apply: (r.data && r.data.apply) || null };
     }
   }
@@ -402,6 +407,7 @@ export function canUndoOff(f) { return !needsConsent(f.tier); }
 export function facts({ profile, guards, features, suggestions }) {
   const out = [];
   if (profile && profile.ok) out.push({ n: PROFILE_LABEL[profile.profile], label: 'profile' });
+  // warning-path: inline
   if (guards && guards.ok && guards.counts.look) out.push({ n: guards.counts.look, label: guards.counts.look === 1 ? 'check needs a look' : 'checks need a look', tone: 'attn', href: '#/settings/allowed?s=guards' });
   if (features && features.ok) out.push({ n: `${features.on} of ${features.total}`, label: 'features on', href: '#/settings/allowed?s=features' });
   if (suggestions && suggestions.ok && suggestions.items.length) out.push({ n: suggestions.items.length, label: suggestions.items.length === 1 ? 'suggestion' : 'suggestions' });

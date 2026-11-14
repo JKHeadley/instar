@@ -35,6 +35,7 @@ import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 // process boundary, so the supervisor reads the file the server's SessionManager
 // mirrors on every depth transition.
 import { defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { markPlannedRestartDeferred, plannedRestartVerifyState, recentlyRequestedPlannedRestart } from '../core/PlannedRestartVerifyGuard.js';
 
 /** Size cap for the appended server stderr crash log (see start()). */
 const SERVER_STDERR_MAX_BYTES = 4 * 1024 * 1024;
@@ -299,6 +300,7 @@ export class ServerSupervisor extends EventEmitter {
   private maintenanceWaitStartedAt = 0;
   private maintenanceWaitMs = 5 * 60_000; // 5 minutes default (configurable via maintenanceWaitMinutes)
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
+  private deferredRestartRequestedAt: string | null = null;
 
   // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
   // When `slept` is true the server was INTENTIONALLY stopped to save resources —
@@ -418,10 +420,22 @@ export class ServerSupervisor extends EventEmitter {
     // cleanly. Verify the server actually answers /health before trusting the
     // session; a stale/dying session short-circuits and falls through to a
     // fresh spawn (spawnServer kills the lingering session first).
-    if (this.isServerSessionAlive() && (await this.verifyServerResponding())) {
-      console.log(`[Supervisor] Server already running and healthy in tmux session: ${this.serverSessionName}`);
+    //
+    // Two outcomes of the probes, told apart by whether the SESSION outlived them:
+    //   - session gone by the end of the probes → it was dying (the P1 race) → spawn.
+    //   - session still alive but not answering → a live server that is busy (event loop
+    //     stalled under load; a lifeline-only restart left it running mid-work) → ADOPT it
+    //     and let the health loop's process-alive rules decide. start() never kills a live
+    //     session itself: on 2026-10-26 that would have killed the 23-minute local verify
+    //     the keep-server restart had just preserved.
+    const sessionAlive = this.isServerSessionAlive();
+    const responding = sessionAlive && (await this.verifyServerResponding());
+    if (this.detached) { console.log('[Supervisor] detached while start() was probing — not re-arming supervision'); return true; }
+    if (sessionAlive && (responding || this.isServerSessionAlive())) {
+      if (responding) console.log(`[Supervisor] Server already running and healthy in tmux session: ${this.serverSessionName}`);
+      else console.log(`[Supervisor] Server session ${this.serverSessionName} is alive but not answering /health yet — adopting it; the health loop decides (never killed from start)`);
       this.isRunning = true;
-      this.lastHealthy = Date.now();
+      if (responding) this.lastHealthy = Date.now();
       // Set spawnedAt so the startup grace period applies. Without this, a fresh
       // Supervisor (e.g., after Lifeline self-restart for an update) has spawnedAt=0,
       // which disables the grace check and can cause false serverDown alerts if the
@@ -477,7 +491,30 @@ export class ServerSupervisor extends EventEmitter {
     }
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Stop watching the server WITHOUT stopping it: the lifeline is about to exit and its
+   * successor adopts the running server (start() trusts a session that answers /health).
+   * Used by a lifeline-only restart, where the server is already current and bouncing it
+   * would only kill its in-flight work (a running local verify, 2026-10-26).
+   */
+  detach(): void {
+    this.detached = true;
+    this.stopHealthChecks();
+    this.isRunning = false;
+  }
+
+  /**
+   * Set by detach(): a probe or restart timer still in flight when the lifeline let go
+   * of the server must not act on it afterwards.
+   */
+  private detached = false;
+
+  /**
+   * `evenIfDetached`: a competing stop request won over a keep-server quiesce (see
+   * RestartOrchestrator.stopServer) — the server must be stopped after all.
+   */
+  async stop(opts: { evenIfDetached?: boolean } = {}): Promise<void> {
+    if (this.detached && !opts.evenIfDetached) { console.log('[Supervisor] stop() after detach — the server was left to the next lifeline; not stopping it'); return; }
     this.stopHealthChecks();
 
     if (this.tmuxPath && this.isServerSessionAlive()) {
@@ -489,6 +526,8 @@ export class ServerSupervisor extends EventEmitter {
 
         // Wait briefly for graceful shutdown
         await new Promise(r => setTimeout(r, 3000));
+        // A lifeline-only restart detached during the wait: the server is the next lifeline's now.
+        if (this.detached && !opts.evenIfDetached) { console.log('[Supervisor] detached during stop() — not force-killing the server'); this.isRunning = false; return; }
 
         // Force kill if still alive
         if (this.isServerSessionAlive()) {
@@ -589,6 +628,7 @@ export class ServerSupervisor extends EventEmitter {
    * Used by: restart-request handling (auto-update), /lifeline restart command.
    */
   async performGracefulRestart(reason: string): Promise<boolean> {
+    if (this.detached) { console.log('[Supervisor] graceful restart after detach — the server was left to the next lifeline; not touching it'); return false; }
     console.log(`[Supervisor] Graceful restart initiated: ${reason}`);
     this.emit('serverRestarting', 0);
 
@@ -601,6 +641,7 @@ export class ServerSupervisor extends EventEmitter {
           stdio: 'ignore', timeout: 5000,
         });
         await new Promise(r => setTimeout(r, 3000));
+        if (this.detached) { console.log('[Supervisor] detached during graceful restart — leaving the server to the next lifeline'); return false; }
 
         // Force kill if still alive
         if (this.isServerSessionAlive()) {
@@ -613,6 +654,7 @@ export class ServerSupervisor extends EventEmitter {
 
     // Wait for port release
     await new Promise(r => setTimeout(r, 2000));
+    if (this.detached) return false; // the successor spawns if the session is gone
 
     // Spawn fresh server — uses the updated binary since spawnServer resolves
     // cli.js relative to import.meta.url (the globally installed package)
@@ -1082,7 +1124,19 @@ export class ServerSupervisor extends EventEmitter {
   }
 
   private spawnServer(): boolean {
+    if (this.detached) { console.log('[Supervisor] spawnServer() after detach — refusing to touch the server session'); return false; }
     if (!this.tmuxPath) return false;
+
+    // An interrupted two-rename update can leave the validated candidate
+    // unpromoted. Restore the previous runnable install before any heal/spawn.
+    if (this.stateDir) {
+      const active = path.join(this.stateDir, 'shadow-install');
+      const previous = path.join(this.stateDir, 'shadow-install.previous');
+      if (!fs.existsSync(active) && fs.existsSync(previous)) {
+        try { fs.renameSync(previous, active); }
+        catch (err) { console.error(`[Supervisor] Could not restore previous shadow install: ${err instanceof Error ? err.message : String(err)}`); }
+      }
+    }
 
     // Run preflight self-heal before every spawn attempt
     this.preflightSelfHeal();
@@ -1181,15 +1235,30 @@ export class ServerSupervisor extends EventEmitter {
     }
   }
 
+  /**
+   * False only when tmux itself says the session is missing. A probe that could
+   * not get an answer (spawn EAGAIN, timeout, tmux socket busy) says nothing about
+   * the server, so it counts as alive and the /health checks decide, on their slower
+   * clocks (about 60s, longer under load or in startup grace). One clean tmux answer
+   * ends the wait. Reading a failed probe as death is what the 2026-11-06 restarts
+   * of healthy servers point to.
+   */
   private isServerSessionAlive(): boolean {
     if (!this.tmuxPath) return false;
     try {
       execFileSync(this.tmuxPath, ['has-session', '-t', `=${this.serverSessionName}`], {
-        stdio: 'ignore', timeout: 5000,
+        stdio: ['ignore', 'ignore', 'pipe'], timeout: 5000,
       });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (tmuxReportedSessionMissing(err)) {
+        // Keep tmux's own words: the 2026-11-06 false restarts left no record of what the probe said.
+        console.log(`[Supervisor] tmux says the session is missing: ${String((err as { stderr?: unknown }).stderr).trim()}`);
+        return false;
+      }
+      const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      console.warn(`[Supervisor] tmux session check got no answer (${reason}) — not treating the server as gone`);
+      return true;
     }
   }
 
@@ -1247,6 +1316,7 @@ export class ServerSupervisor extends EventEmitter {
    * isServerSessionAlive() before honoring any startup-grace early-return.
    */
   private async runHealthTick(): Promise<void> {
+      if (this.detached) return; // the lifeline let go of the server (a lifeline-only restart)
       const now = Date.now();
 
       // Sleep/wake detection: if the gap between health checks is much larger than
@@ -1346,6 +1416,7 @@ export class ServerSupervisor extends EventEmitter {
         // Optimistic health probe — update lastHealthy on success, ignore failures
         try {
           const alive = await this.checkHealth();
+      if (this.detached) return; // detached while the probe was in flight: nothing below may act
           if (alive) {
             this.lastHealthy = Date.now();
             this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
@@ -1360,6 +1431,7 @@ export class ServerSupervisor extends EventEmitter {
 
       try {
         const healthy = await this.checkHealth();
+      if (this.detached) return; // detached while the probe was in flight: nothing below may act
         if (healthy) {
           if (!this.isRunning) {
             if (this.maintenanceWaitStartedAt > 0) {
@@ -1481,6 +1553,7 @@ export class ServerSupervisor extends EventEmitter {
 
   /** Stop the server tmux session and enter `slept`. Honors sleep-requested.json. */
   private checkSleepRequest(): void {
+    if (this.detached) return; // the lifeline let go of the server
     if (!this.stateDir || this.slept) return;
     const flagPath = path.join(this.stateDir, 'state', 'sleep-requested.json');
     try {
@@ -1559,15 +1632,33 @@ export class ServerSupervisor extends EventEmitter {
    * initiate a graceful restart of the server tmux session.
    */
   private checkRestartRequest(): void {
+    if (this.detached) return; // the lifeline let go of the server
     if (!this.stateDir) return;
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
 
     try {
-      if (!fs.existsSync(flagPath)) return;
+      if (!fs.existsSync(flagPath)) {
+        this.deferredRestartRequestedAt = null;
+        return;
+      }
       const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
 
+      // Every planned restart writer uses this file, while only AutoUpdater
+      // consults its in-process Local Verify hold. The verifier's durable
+      // in-flight marker closes that gap for this separate supervisor process.
+      const verify = plannedRestartVerifyState(this.stateDir, data);
+      if (verify.hold && markPlannedRestartDeferred(this.stateDir, data)) {
+        if (this.deferredRestartRequestedAt !== data.requestedAt) {
+          this.deferredRestartRequestedAt = data.requestedAt ?? null;
+          console.log('[Supervisor] Planned restart deferred for active local verification');
+        }
+        return; // leave the flag intact; the next health tick rechecks it
+      }
+      this.deferredRestartRequestedAt = null;
+
       // Check TTL
-      if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
+      if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()
+        && !recentlyRequestedPlannedRestart(this.stateDir, data)) {
         try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:827' }); } catch { /* ignore */ }
         console.log('[Supervisor] Expired restart request — ignoring');
         return;
@@ -1954,6 +2045,7 @@ export class ServerSupervisor extends EventEmitter {
    *   - Process alive, threshold reached, not starved → restart.
    */
   private evaluateUnhealthyServer(): void {
+    if (this.detached) return; // the lifeline let go of the server
     if (!this.isServerSessionAlive()) {
       // Process is genuinely gone — restart immediately.
       this.handleUnhealthy();
@@ -2070,6 +2162,7 @@ export class ServerSupervisor extends EventEmitter {
   }
 
   private handleUnhealthy(): void {
+    if (this.detached) return; // a probe that was in flight when the lifeline let go of the server
     // Circuit breaker — periodic retry instead of permanent death
     if (this.circuitBroken) {
       // Phase 1: Fast retries (every 30 min, 3x)
@@ -2235,6 +2328,7 @@ export class ServerSupervisor extends EventEmitter {
     this.emit('serverRestarting', this.restartAttempts);
 
     setTimeout(() => {
+      if (this.detached) return; // the lifeline let go of the server while this restart waited
       // Capture crash output BEFORE killing the tmux session
       if (this.tmuxPath && this.isServerSessionAlive()) {
         this.captureCrashOutput();
@@ -2336,6 +2430,7 @@ export class ServerSupervisor extends EventEmitter {
           try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
         }
         setTimeout(() => {
+          if (this.detached) return; // the lifeline let go of the server (and its children) meanwhile
           for (const pid of unique) {
             try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch { /* dead */ }
           }
@@ -2455,6 +2550,17 @@ export interface BetterSqlite3Copy {
   binaryPath: string;
   /** Absolute path to use as `--prefix` when invoking npm rebuild. */
   prefixDir: string;
+}
+
+/**
+ * True when a failed `tmux has-session` is tmux answering "no such session" or
+ * "no server". tmux also exits 1 when it cannot reach its server, so the exit
+ * code alone cannot tell the two apart; the message can.
+ */
+export function tmuxReportedSessionMissing(err: unknown): boolean {
+  const { status, stderr } = (err ?? {}) as { status?: unknown; stderr?: unknown };
+  if (typeof status !== 'number') return false; // never ran to an answer
+  return /can't find session|no server running|error connecting to .*\(No such file or directory\)/.test(String(stderr ?? ''));
 }
 
 /**

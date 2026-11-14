@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "slug": "false-stopped-session-self-recovery",
+  "sessionId": "4a8f59a4-f2e6-4539-afd4-21ad5a331e88",
+  "timestamp": "2026-11-04T23:24:58.956Z",
+  "artifactPath": "upgrades/side-effects/false-stopped-session-self-recovery.md",
+  "artifactSha256": "84d2584a26001d38190d2bbda921cf80fd6b0d6dc8dfecde6ed10da1e3cf8517",
+  "specPath": "docs/specs/resume-follows-account.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/monitoring/SessionMonitor.ts",
+    "src/monitoring/StallTriageNurse.ts",
+    "src/monitoring/SystemReviewer.ts",
+    "src/monitoring/TriageOrchestrator.ts",
+    "tests/unit/SessionMonitor.test.ts",
+    "tests/unit/StallTriageNurse.test.ts",
+    "tests/unit/TriageOrchestrator.test.ts",
+    "tests/unit/promise-tracking.test.ts",
+    "tests/unit/session-monitor-dead-notice-once.test.ts",
+    "tests/unit/slack-dead-stall-silence.test.ts",
+    "upgrades/next/false-stopped-session-self-recovery.md",
+    "upgrades/side-effects/false-stopped-session-self-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Session recovery and user-facing notices affect fleet behavior; approved resume spec and Quiet by Default govern the change.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/resume-follows-account-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/SessionMonitor.test.ts",
+      "howCaught": "A fresh restart is bounded to one attempt per user message within the process; failed recovery sends one persisted failure notice, and the regression test proves the second death does not restart again."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2601,
+      2672
+    ],
+    "notes": "Prior fixes covered only individual senders and did not preserve the channel registration across resume fallback. Indra logs show a live fallback under a different name while both watchers followed the dead registered name."
+  }
+}

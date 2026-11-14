@@ -1,4 +1,5 @@
 /**
+ * The focused preflight switch is resolved live for each child and defaults off.
  * Builds the LocalVerifyService for the agent server (spec
  * docs/specs/local-verify-merge-authority.md §2).
  *
@@ -16,7 +17,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
-import { LocalVerifyService, appendLocalVerifyAudit, type UpdatePendingState } from './LocalVerifyService.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
+import type { PeerClient, PeerResult, PeerRunAnswer, PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
@@ -37,9 +40,45 @@ export interface LocalVerifyConfigBlock {
   operatorGhLogin?: string;
   /** Post `instar/local-verify` statuses for real (default false: dry-run, the posts are only audited). */
   postStatuses?: boolean;
+  /** This machine may run verifies a coordinator hands it (spec local-verify-capacity.md Part D). Default off. */
+  peer?: { enabled?: boolean };
+  /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
+  peers?: Array<{ machineId: string; url: string }>;
+  /** macOS: run each verify as an Interactive launchd job so it uses the performance cores (default true). */
+  performanceCores?: boolean;
 }
 
 /** Late-bound hooks: the service is built before the reconciler that consumes these. */
+/**
+ * The attention item for a local-verify signal. A starved PR is `upsert`: `createAttentionItem`
+ * returns an existing row unchanged (a RESOLVED one too), which would hide a later queue
+ * episode of the same PR; `upsertAttentionItem` reopens it. Within one stay in the queue
+ * `starvedRaised` already limits the signal to once.
+ */
+export function localVerifyAttentionItem(key: string, detail: Record<string, unknown>): {
+  id: string; title: string; summary: string; priority: 'HIGH' | 'MEDIUM'; mode: 'upsert' | 'create';
+} {
+  const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
+  if (key.startsWith('local-verify:starved:')) {
+    const n = String(detail.interruptions ?? 0);
+    const waited = String(detail.waitedMinutes ?? '?');
+    return {
+      id, mode: 'upsert', priority: 'MEDIUM',
+      title: `Local Verify: PR #${String(detail.pr)} cannot finish its check`,
+      summary: detail.reason === 'interrupted'
+        ? `Server restarts killed this PR's check ${n} times before it could finish (waiting ${waited} min). The merge line is stuck behind it.`
+        : `This PR has waited ${waited} min for its check without finishing (killed by restarts ${n} times). The merge line is stuck behind it.`,
+    };
+  }
+  return {
+    id, mode: 'create',
+    title: `local-verify: ${key.replace(/^local-verify:/, '')}`,
+    // A signal that carries a plain-words `note` (the main-red hold item) reads as that note.
+    summary: (typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
+    priority: ['local-verify:no-required-checks', 'local-verify:main-red', 'local-verify:required-but-not-posting'].includes(key) ? 'HIGH' : 'MEDIUM',
+  };
+}
+
 export interface LocalVerifyHooks {
   onRecord?(record: LocalVerifyRecord): void;
   onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
@@ -60,7 +99,8 @@ export interface LocalVerifyWiringOpts {
   /** The agent home (`.worktrees/.verify/` lives under it). */
   agentHome: string;
   machineId: string;
-  onStarved?: (info: { pr: number; headSha: string; waitedMs: number }) => void;
+  /** Absent ⇒ the starved signal goes to `hooks.signal` as `local-verify:starved:<pr>` (one attention item per PR). */
+  onStarved?: LocalVerifyServiceSeams['onStarved'];
   /** Override the child entry (tests running from source point at the built dist). */
   mainEntry?: string;
   hooks?: LocalVerifyHooks;
@@ -77,7 +117,11 @@ export function installedMainEntry(): string {
 
 export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerifyWiringResult {
   if (opts.config?.enabled !== true) return { service: null, reason: 'disabled' };
-  if (!fs.existsSync(path.join(opts.repoPath, '.git')) || !fs.existsSync(path.join(opts.repoPath, 'scripts', 'safe-merge.mjs'))) {
+  // A coordinator merges, so it must run from an instar source checkout. A machine without
+  // one may still run as a PEER (it never merges): a peer-only service (Part D).
+  const sourceCheckout = fs.existsSync(path.join(opts.repoPath, '.git')) && fs.existsSync(path.join(opts.repoPath, 'scripts', 'safe-merge.mjs'));
+  const peerOnly = !sourceCheckout && opts.config.peer?.enabled === true;
+  if (!sourceCheckout && !peerOnly) {
     return { service: null, reason: 'no-source-checkout' };
   }
   const expected = (opts.expectedGhLogin ?? '').trim();
@@ -88,6 +132,18 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
   const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir });
   const seams = buildDefaultServiceSeams({
     repo: opts.repo,
+    priorityKey: `${opts.stateDir}:${opts.machineId}`,
+    // Default on (macOS only); `localVerify.performanceCores: false` turns it off.
+    ...(opts.config.performanceCores !== false ? {
+      performanceCores: {
+        stateDir: opts.stateDir,
+        onFallback: (reason: string) => DegradationReporter.getInstance().report({
+          feature: 'LocalVerify.performanceCores', primary: 'run on the performance cores (launchd Interactive job)',
+          fallback: 'plain detached spawn (efficiency cores under a session-started server)', reason,
+          impact: 'verify lanes may run several times slower and hit their deadlines while sessions are busy',
+        }),
+      },
+    } : {}),
     resolveGitHubEnv: () => {
       try { return githubRuntime().env; } catch { return null; } // @silent-fallback-ok — no explicit GitHub identity makes every request refuse as pr-unreadable
     },
@@ -109,11 +165,21 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       nodeVersion: process.version,
       protectedList: PROTECTED_PATH_PREFIXES,
       baseEnv: scrubbedEnv(),
+      ...(peerOnly ? { peerOnly: true } : {}),
     },
     {
       ...seams,
-      onStarved: opts.onStarved,
+      // The starved signal used to reach only the audit log (nothing was wired to it), so a
+      // queue whose head could never finish stayed invisible. It is an attention signal now.
+      // one item per PR (`starvedRaised` is kept across a push, so the PR alarms once per stay in the queue).
+      onStarved: opts.onStarved ?? ((i) => opts.hooks?.signal?.(`local-verify:starved:${i.pr}`, {
+        pr: i.pr, headSha: i.headSha, waitedMinutes: Math.round(i.waitedMs / 60_000),
+        reason: i.reason ?? 'waited', interruptions: i.interruptions ?? 0,
+      })),
       onRecord: (r) => opts.hooks?.onRecord?.(r),
+      // A degradation the run child noticed rides its result here; this server's reporter is the
+      // one /health reads, so the record is made here, never by the child.
+      onDegradation: (e) => DegradationReporter.getInstance().report(e),
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
       clearSignal: (k, r) => opts.hooks?.clearSignal?.(k, r),
@@ -195,18 +261,22 @@ export interface LocalVerifyAutoUpdaterView {
     pendingUpdate?: string | null;
     coalescingUntil?: string | null;
     pendingUpdateDetectedAt?: string | null;
+    /** This process is installing an update or has installed bytes awaiting its restart. */
+    updateActivationPendingSince?: string | null;
     /** The applied-but-not-restarted state: the restart is waiting (holds, sessions, window). */
-    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null } | null;
+    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null; currentBlockers?: string[] } | null;
   };
   /** What would hold a restart right now (sessions, then `hold:<name>` entries). */
   getRestartBlockers?(): string[];
+  /** A local-verify hold just ended: retry a restart deferred on it now. */
+  recheckRestartHolds?(): void;
 }
 
 /**
  * Spec §2 Restarts rule (b), read from the AutoUpdater: "update pending" means autoApply is
  * on and `pendingUpdate` is set or `coalescingUntil` holds a time (not the `'notified'`
- * placeholder), OR the update is applied and its restart is deferred (`restartDeferral.active`),
- * timed from the earlier of `pendingUpdateDetectedAt` and `restartDeferral.firstDeferredAt`. `otherBlockers`: anything other than
+ * placeholder), OR the update is installing/awaiting this process's restart, OR its restart
+ * is deferred (`restartDeferral.active`). `otherBlockers`: anything other than
  * this verifier's own hold would delay the restart anyway. Pure.
  */
 export function updatePendingFromAutoUpdater(
@@ -216,30 +286,39 @@ export function updatePendingFromAutoUpdater(
   const coalescingIsTime = typeof status.coalescingUntil === 'string' && status.coalescingUntil !== 'notified'
     && Number.isFinite(Date.parse(status.coalescingUntil));
   const beforeApply = status.config?.autoApply === true && (status.pendingUpdate != null || coalescingIsTime);
-  // After the apply the AutoUpdater clears pendingUpdate and only its durable restart
-  // deferral says an update is waiting. That waiting restart is pending too: without it a
+  // After the apply the AutoUpdater clears pendingUpdate. The process-local marker
+  // spans the request-to-restart gap even when no durable deferral exists; the durable
+  // deferral also says an update is waiting. Without these signals a
   // busy queue starts the next verify seconds after each one ends and the restart, retried
   // every 5 minutes, waits for the queue to drain (2026-10-25: v1.3.1429 held for hours).
   const deferral = status.restartDeferral;
   const restartWaiting = deferral?.active === true;
-  const pending = beforeApply || restartWaiting;
+  const activationSince = status.updateActivationPendingSince ? Date.parse(status.updateActivationPendingSince) : Number.NaN;
+  const activationPending = Number.isFinite(activationSince);
+  const pending = beforeApply || restartWaiting || activationPending;
   const detected = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : Number.NaN;
   const deferred = restartWaiting && deferral?.firstDeferredAt ? Date.parse(deferral.firstDeferredAt) : Number.NaN;
-  const candidates = [detected, deferred].filter((x) => Number.isFinite(x));
+  // Installation starts a fresh bounded pause. An old detection must not let a
+  // verifier begin in the narrow interval before the restart request takes effect.
+  const candidates = (activationPending ? [activationSince] : [detected, deferred]).filter((x) => Number.isFinite(x));
   return {
     pending,
-    // The earliest known start, so the 120-minute cap counts the whole wait.
+    // A bounded 120-minute pause, from install start when this process needs activation.
     pendingSinceMs: candidates.length > 0 ? Math.min(...candidates) : null,
-    // Unknown blockers count as "something else is delaying": never pause on a guess.
-    otherBlockers: blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
+    // During the short install/restart decision, the fence wins even if another
+    // blocker is present: that blocker can disappear before the restart request.
+    // Once deferred, the marker clears and the original blocker exception applies.
+    otherBlockers: activationPending ? false : blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
+    ...(restartWaiting && deferral?.currentBlockers?.some((b) => b.startsWith('local-verify:peer-')) ? { restartHeldForPeer: true } : {}),
   };
 }
 
 /**
  * Register the local-verify restart hold with the AutoUpdater, and give the service the
  * rule (b) view of it. While a verify runs, an automatic update restart waits for it
- * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply is
- * not held. While an update is pending and only this hold delays it, no NEW verify starts,
+ * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply
+ * also waits unless it explicitly forces a restart. While an update is pending and
+ * only this hold delays it, no NEW verify starts,
  * so a busy queue cannot hold updates indefinitely. `extraHolds` is the seam for the spec's
  * later "hold heads whose projected status is success" rule (merges, not live yet).
  */
@@ -253,6 +332,7 @@ export function registerLocalVerifyRestartHold(
     const maxDeferralMs = (typeof hours === 'number' && Number.isFinite(hours) ? hours : 4) * 3_600_000;
     return [...service.restartHolds(maxDeferralMs), ...(extraHolds?.() ?? [])];
   });
+  service.setRunEndedListener(autoUpdater.recheckRestartHolds ? () => autoUpdater.recheckRestartHolds!() : null);
   service.setUpdatePendingProvider(() => {
     let blockers: string[] | null = null;
     try { blockers = autoUpdater.getRestartBlockers ? autoUpdater.getRestartBlockers() : null; } catch { blockers = null; }
@@ -367,4 +447,108 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
     actionsFloor: floor.actionsFloor, evaluate: floor.evaluate,
   }, seams, floorGate, opts.service);
   return { reconciler, floorGate, reason: null };
+}
+
+// ── Peer verifiers (spec local-verify-capacity.md Part D) ────────────────
+
+/**
+ * The coordinator's HTTP client to its peers: the agent's Bearer token over the pool's own
+ * addresses, a short timeout per call, and every failure reported as null (the caller's
+ * bounded recovery decides). `fetchImpl` is the test seam.
+ */
+export function makePeerClient(authToken: string, agentId: string, fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): PeerClient {
+  const call = async (url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const r = await fetchImpl(url, { ...init, signal: ac.signal, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${authToken}`, 'X-Instar-AgentId': agentId, 'Content-Type': 'application/json' } });
+      const text = await r.text();
+      let body: unknown = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = null; } // @silent-fallback-ok — an unparseable body reads as no answer
+      return { status: r.status, body };
+    } catch {
+      return null; // @silent-fallback-ok — unreachable / timed out: the coordinator's bounded recovery handles it
+    } finally {
+      clearTimeout(t);
+    }
+  };
+  return {
+    async status(peer) {
+      const r = await call(`${peer.url}/local-verify/peer-status`, { method: 'GET' });
+      if (!r || r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
+      const b = r.body as PeerStatus & { enabled?: boolean };
+      if (b.enabled === false) return null;
+      if (typeof b.verifierVersion !== 'string' || typeof b.policyHash !== 'string' || typeof b.slotBusy !== 'boolean') return null;
+      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy };
+    },
+    async run(peer, req) {
+      const r = await call(`${peer.url}/local-verify/peer-run`, { method: 'POST', body: JSON.stringify(req) });
+      if (!r || !r.body || typeof r.body !== 'object') return null;
+      const b = r.body as PeerRunAnswer;
+      if (b.ok === true && b.attemptId === req.attemptId) return b;
+      if (b.ok === false && typeof b.reason === 'string') return b;
+      return null;
+    },
+    async result(peer, attemptId) {
+      const r = await call(`${peer.url}/local-verify/peer-result?attemptId=${encodeURIComponent(attemptId)}`, { method: 'GET' });
+      if (!r || r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
+      const b = r.body as PeerResult;
+      if (b.state === 'unknown' || b.state === 'running') return { state: b.state };
+      if (b.state === 'done' && 'record' in b && b.record) return { state: 'done', record: b.record };
+      return null;
+    },
+    async cancel(peer, attemptId) {
+      await call(`${peer.url}/local-verify/peer-cancel`, { method: 'POST', body: JSON.stringify({ attemptId }) });
+    },
+  };
+}
+
+/** Wire the peer settings (read live), the client and the lease view onto a built service. */
+export function wireLocalVerifyPeers(
+  svc: Pick<LocalVerifyService, 'setPeerWiring'>,
+  o: {
+    liveConfig: { get<T>(key: string, fallback: T): T };
+    authToken: string;
+    agentId: string;
+    lease: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
+    fetchImpl?: typeof fetch;
+    /** Resource-aware placement §4: a peer's fit for a full verify; absent ⇒ no filter. */
+    peerFit?: (machineId: string) => import('./LocalVerifyService.js').PeerFit;
+  },
+): void {
+  svc.setPeerWiring({
+    ...(o.peerFit ? { peerFit: o.peerFit } : {}),
+    peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
+    peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),
+    client: makePeerClient(o.authToken, o.agentId, o.fetchImpl),
+    lease: o.lease,
+  });
+}
+/**
+ * The live switches the server reads at each decision (absent ⇒ on):
+ * `monitoring.localVerify.mainRedHold` (CMT-1033), `monitoring.localVerify.failFast` and
+ * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
+ */
+export function wireLocalVerifySwitches(
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode'>,
+  liveConfig: { get<T>(key: string, fallback: T): T },
+): void {
+  svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
+  svc.setFailFastEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.failFast', true) !== false);
+  // Processes per slow lane, e.g. { "integration": 1, "e2e": 2 } to return to the pre-2026-10-27 split.
+  svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
+  svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
+}
+
+/**
+ * Whether the merge watcher may treat a PR head as verified: a PASSING record
+ * only. A failed record used to count, so a PR whose verify failed was picked
+ * as the oldest eligible, refused by safe-merge, backed off and finally given
+ * up, holding the front of the merge line the whole time (2026-11-02).
+ */
+export function hasPassingRecord(
+  svc: { getRecord(pr: number, head: string, base: string): { outcome?: string } | null | undefined },
+  pr: number, head: string, base: string,
+): boolean {
+  return svc.getRecord(pr, head, base)?.outcome === 'success';
 }

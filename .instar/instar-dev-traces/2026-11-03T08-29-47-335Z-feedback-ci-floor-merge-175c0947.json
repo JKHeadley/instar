@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "feedback-ci-floor-merge",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T08:29:47.335Z",
+  "artifactPath": "upgrades/side-effects/feedback-ci-floor-merge.md",
+  "artifactSha256": "209375733d9fb2c8172eb680dbe4ae4acbc1064cef9dfecf047b30be3a91fc35",
+  "specPath": "docs/specs/green-pr-automerge-enforcement.md",
+  "coveredFiles": [
+    "scripts/safe-merge.mjs",
+    "src/core/PostUpdateMigrator.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/reviewGate.ts",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/MergeRunner.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/feedback-execute-lifecycle.test.ts",
+    "tests/integration/feedback-execute-routes.test.ts",
+    "tests/integration/safe-merge-no-checks-ran.test.ts",
+    "tests/unit/PostUpdateMigrator-feedbackExecutor.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/green-pr-automerger.test.ts",
+    "tests/unit/safe-merge-hardening.test.ts",
+    "upgrades/next/feedback-ci-floor-merge.md",
+    "upgrades/side-effects/feedback-ci-floor-merge.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This changes the irreversible merge safety floor and fleet migration behavior, so it requires approved-spec review and all three test tiers.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-gate-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}

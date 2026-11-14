@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "slack-session-stopped-once",
+  "sessionId": "8a3defea-ae14-4c6f-90ad-46b7704df2ce",
+  "timestamp": "2026-11-02T20:15:45.394Z",
+  "artifactPath": "upgrades/side-effects/slack-session-stopped-once.md",
+  "artifactSha256": "45c3892d8af7e3db13e81ef21075c587dc3e98b9c2bcbeb6aaa9f310808a77cd",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/data/state-coherence-registry.json",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/messaging/slack/types.ts",
+    "src/monitoring/SessionMonitor.ts",
+    "tests/unit/session-monitor-dead-notice-once.test.ts",
+    "upgrades/next/slack-session-stopped-once.md",
+    "upgrades/side-effects/slack-session-stopped-once.eli16.md",
+    "upgrades/side-effects/slack-session-stopped-once.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in one notifier plus Slack history classification; a revert fully undoes it and the leftover state file is ignored by older code.",
+  "eli16Path": "upgrades/side-effects/slack-session-stopped-once.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-session-stopped-once.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

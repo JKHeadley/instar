@@ -231,6 +231,16 @@ Each job automatically gets its own Telegram topic when Telegram is configured. 
 
 ---
 
+## Who sees this job's reports
+
+Job reports are quiet by default: they go to the dashboard Notifications feed, not to chat. Adding a job needs no permission, and this question is only about who sees its reports: when you create a job that reports to the user, ask them whether they want to see them. Do not hold up the job for the answer; no answer means quiet.
+
+On a yes, record it with `POST /notifications/jobs/<slug>/push`, sending `{"enabled": true, "confirmedBy": "operator-conversational-confirm", "topicId": <topic>, "confirmingMessageId": "<their message id>"}`. Find the id with `GET /telegram/topics/<topic>/messages`; it must be their message from the last 15 minutes. Reports the job sends to that topic then arrive there, so make sure the job's prompt names it. Everything else from the job, including the scheduler's own summary and failure notices, arrives in the Attention topic. The user can also tick the job on the dashboard Notifications page, and all its reports then arrive in the Attention topic. Never turn this on without their yes: their word is the permission, and the server only checks that they spoke recently. While Quiet by Default is only observing, nothing changes yet: every report still arrives where it was addressed. Other jobs stay quiet. `GET /notifications/selectivity` lists each job's choice, and `decided: false` means nobody has asked yet.
+
+Check that the job really sends a report. A job on the default `on-alert` notify mode says nothing after a good run unless its own prompt sends one.
+
+---
+
 ## Default Jobs (Ships with Instar)
 
 Instar includes these coherence jobs out of the box:

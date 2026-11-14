@@ -26,7 +26,7 @@
  * resident MCP subtree — the server AND everything under it — and nothing else.
  */
 
-import { MCP_STACK_ROOT_PATTERNS, isToolShellCommand } from './baselineProcessPatterns.js';
+import { MCP_STACK_ROOT_PATTERNS, isMcpLauncherShell, isToolShellCommand } from './baselineProcessPatterns.js';
 
 /** One row of `ps -eo pid,ppid,command`. */
 interface ProcRow { ppid: string; command: string }
@@ -73,6 +73,7 @@ export function drainProcessShape(panePid: string, psOutput: string): { working:
   }
 
   const working = descendants.some((d) => {
+    if (isMcpLauncherShell(d.command, processes.get(d.ppid)?.command)) return false; // an MCP's launcher — not work
     if (isToolShellCommand(d.command)) return true;                    // the agent's own command — work
     if (d.inMcpStack) return false;                                    // resident stack — not work
     if (DRAIN_BASELINE_PATTERNS.some((p) => p.test(d.command))) return false;

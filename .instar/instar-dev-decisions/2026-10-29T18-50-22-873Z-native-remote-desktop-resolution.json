@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-29T18:50:22.873Z",
+  "slug": "native-remote-desktop-resolution",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 184,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/desktop-public-browser-smoke.mjs",
+      "src/core/DesktopVideo.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/server/DesktopStreamManager.ts"
+    ],
+    "addedLines": 161,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

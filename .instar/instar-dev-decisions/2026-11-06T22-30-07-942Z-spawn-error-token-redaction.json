@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-06T22:30:07.942Z",
+  "slug": "spawn-error-token-redaction",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/redactSpawnError.ts",
+      "src/providers/adapters/anthropic-headless/transport/agenticSessionHeadless.ts",
+      "src/providers/adapters/openai-codex/transport/agenticSessionHeadless.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 67,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,9 @@
+# Lease job coverage and catch-up — ELI16
+
+When an agent moves from one computer to another, the new computer may have a running scheduler but a different list of jobs. Today the old computer can go offline before anyone compares those lists. The current combined job view then loses sight of it. The new computer can look healthy while a weekly client job never runs.
+
+Each computer will keep a small, dated record of the jobs it saw on its peers while they were online. It asks each peer directly for a signed, metadata-only answer and checks that signature against the machine registry. That record includes job names, schedules, machine restrictions, and declared path needs. It excludes the job instructions, shell commands, config files, and tokens. On a lease change, the new holder compares its own jobs with those dated records and tells the operator what is missing, disabled, pinned elsewhere, or lacking a path dependency. If it never saw a peer's jobs, it says coverage is unknown. An old record is clearly marked stale.
+
+Missed jobs need a separate choice. A Monday review should not automatically run on Wednesday if someone already handled it, while another job may need one catch-up run. Each job can declare skip, run once, or ask. After a lease takeover, ask is the default. The operator can run an asked job using the existing manual control. A saved decision prevents a restart on that lease holder from repeating the same catch-up. If the lease moves again and the prior attempt cannot be proven, the next holder asks the operator instead of guessing. The lease still decides which computer can execute jobs.
+
+The promoted holder repairs missing built-in definitions and reports custom job or dependency gaps with the prior machine and observation age. The operator can restore those exact files deliberately. This keeps the agent from silently losing work without turning on git-sync or copying token-bearing config.

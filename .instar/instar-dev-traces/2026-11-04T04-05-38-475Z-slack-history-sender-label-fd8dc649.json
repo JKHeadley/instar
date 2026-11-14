@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "slack-history-sender-label",
+  "sessionId": "69e02116-7a51-4709-aee8-ec7bcc7ed7b9",
+  "timestamp": "2026-11-04T04:05:38.475Z",
+  "artifactPath": "upgrades/side-effects/slack-history-sender-label.md",
+  "artifactSha256": "5f12d618fca8d659e5a35fc10d3426aa6e99b17738261341b3969dc163a560d1",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/slack/threadHistoryLabel.ts",
+    "tests/unit/slack-thread-history-label.test.ts",
+    "upgrades/side-effects/slack-history-sender-label.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line label fix in injected Slack context via a pure helper; no authority; a revert fully undoes it",
+  "eli16Path": "docs/specs/slack-history-sender-label.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-history-sender-label.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

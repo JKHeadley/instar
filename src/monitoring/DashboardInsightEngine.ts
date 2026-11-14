@@ -234,10 +234,10 @@ export class DashboardInsightEngine {
   }
 
   /** Every page's Insight Strip (the cross-page digest surface, spec §3/§5.3). */
-  async getAll(): Promise<{ pages: PageInsight[]; asOf: string }> {
+  async getAll(opts: { cachedOnly?: boolean } = {}): Promise<{ pages: PageInsight[]; asOf: string }> {
     const pages: PageInsight[] = [];
     for (const id of this.pages.keys()) {
-      const one = await this.getInsight(id);
+      const one = await this.getInsight(id, opts);
       if (one) pages.push(one);
     }
     return { pages, asOf: new Date(this.now()).toISOString() };
@@ -247,7 +247,7 @@ export class DashboardInsightEngine {
    * One page's Insight Strip. NEVER throws — every failure degrades honestly
    * (empty / paused / deterministic). Returns null only for an unknown page id.
    */
-  async getInsight(pageId: string): Promise<PageInsight | null> {
+  async getInsight(pageId: string, opts: { cachedOnly?: boolean } = {}): Promise<PageInsight | null> {
     const page = this.pages.get(pageId);
     if (!page) return null;
 
@@ -281,6 +281,10 @@ export class DashboardInsightEngine {
     if (cached && cached.fingerprint === fingerprint && this.now() - cached.generatedAt < this.ttlMs) {
       return { ...cached.insight, cacheHit: true };
     }
+
+    // cachedOnly (the phone's reads, docs/specs/mobile-native-phones-messages.md): never start a model
+    // call; a fresh cached AI summary was served above, otherwise the deterministic floor.
+    if (opts.cachedOnly) return floor;
 
     const llm = await this.generateLlmInsight(page, snapshot, floor);
     if (llm) {

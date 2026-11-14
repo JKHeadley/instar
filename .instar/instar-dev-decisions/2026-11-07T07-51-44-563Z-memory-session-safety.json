@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-07T07:51:44.563Z",
+  "slug": "memory-session-safety",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicResumeMap.ts",
+      "src/core/claudeResumeTranscript.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/core/memorySessionPolicy.ts",
+      "src/server/routes.ts",
+      "src/users/MemoryPrivacy.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

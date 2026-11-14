@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T11:48:11.167Z",
+  "slug": "mobile-slack-holder-proxy",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 169,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/mobileSlackHolderProxy.ts",
+      "src/server/mobileSlackRoutes.ts"
+    ],
+    "addedLines": 162,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

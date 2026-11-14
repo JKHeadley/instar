@@ -1,3 +1,4 @@
+import type { QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 /**
  * TelegramRelay — the tokenless-standby outbound relay (bug #7), extracted as a
  * pure, testable unit.
@@ -25,7 +26,8 @@
 
 import type { MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 
-export interface RelayResult {
+export type RelayResult = QuietReceipt | {
+  recorded?: false;
   messageId: number;
   topicId: number;
   destinationStoreConfirmed?: boolean;
@@ -147,7 +149,8 @@ export async function relayOutbound(
       log(`[telegram-relay] holder ${url} returned ${resp.status} for topic ${topicId} (${Date.now() - started}ms) — reply not delivered`);
       return null;
     }
-    const j = (await resp.json().catch(() => ({}))) as { messageId?: number; destinationStoreConfirmed?: boolean };
+    const j = (await resp.json().catch(() => ({}))) as { messageId?: number; destinationStoreConfirmed?: boolean; delivered?: boolean; recorded?: boolean; quietId?: string };
+    if (j.recorded === true && j.delivered === false && typeof j.quietId === 'string' && j.quietId.length > 0 && j.quietId.length <= 200) return { delivered: false, recorded: true, quietId: j.quietId, topicId };
     // Truthful success: the holder must report a REAL positive Telegram
     // messageId. A 2xx with a missing/0 messageId means the holder accepted the
     // request but did NOT confirm a Telegram delivery — treat that as FAILURE,

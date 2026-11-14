@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "mobile-operator-chat",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T02:20:38.189Z",
+  "artifactPath": "upgrades/side-effects/mobile-operator-chat.md",
+  "artifactSha256": "b4dcdaa4769e8791ca79f2d1de61c9ac780654b1ba91ef03bf18232a210f4655",
+  "specPath": "docs/specs/mobile-operator-chat.md",
+  "coveredFiles": [
+    "tests/unit/signed-inbound-label.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up test anchor for the chat change",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

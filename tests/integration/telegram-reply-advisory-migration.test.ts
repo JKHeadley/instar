@@ -113,7 +113,7 @@ function buildApp(opts: {
     telegram: {
       sendToTopic: async (topicId: number, text: string) => {
         opts.sent.push({ topicId, text });
-      },
+       return { messageId: 1, topicId: Number(topicId) }; },
     },
     sessionManager: { clearInjectionTracker: () => {} },
   };

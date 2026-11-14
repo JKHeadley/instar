@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "local-verify-next-slot-priority",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-28T00:26:06.254Z",
+  "artifactPath": "upgrades/side-effects/local-verify-next-slot-priority.md",
+  "artifactSha256": "318894a73271ad754655b80da37c9adaebdeadc015df11bc545e949610d79ff0",
+  "coveredFiles": [
+    "docs/specs/test-runner-concurrency-bound.eli16.md",
+    "docs/specs/test-runner-concurrency-bound.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/local-verify-next-slot-priority.md",
+    "upgrades/side-effects/local-verify-next-slot-priority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible queue-priority handoff repair using the existing semaphore claim; no persistent schema or public API change.",
+  "eli16Path": "docs/specs/test-runner-concurrency-bound.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-next-slot-priority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

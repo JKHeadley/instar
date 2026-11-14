@@ -1,0 +1,16 @@
+{
+  "purpose": "disposable-fixture-only; never production authority",
+  "agentId": "throwaway-recovery-1106",
+  "machines": {
+    "m5": {
+      "machineId": "m5",
+      "sshPublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAWR/8/hUjtO6J03UM8ImYvZO0IAfvS9ilDBHcaDT91tI=\n-----END PUBLIC KEY-----\n",
+      "relayPublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAfus7+VJRu2Og9GchBws5RroNlJGtXKH2g9B8EBAKxRk=\n-----END PUBLIC KEY-----\n"
+    },
+    "mini": {
+      "machineId": "mini",
+      "sshPublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/atQDAjXNU9GiW9Nqgc10ERffl/kbhyBz1xKPiqqqPg=\n-----END PUBLIC KEY-----\n",
+      "relayPublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAP6hDz/VyG+KkuJsfasEe/TfhRZBL0YAxF31Ib8Xdk4c=\n-----END PUBLIC KEY-----\n"
+    }
+  }
+}

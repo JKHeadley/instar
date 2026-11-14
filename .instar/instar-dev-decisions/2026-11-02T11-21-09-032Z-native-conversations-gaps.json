@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-02T11:21:09.032Z",
+  "slug": "native-conversations-gaps",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 339,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AppConversationService.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/appConversationText.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 306,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the Telegram send route runs once per device request (already rate-limited and idempotent through MobileChatRequestStore); this change only replaces its content refusals with token removal, and the pool reads are request-driven read-only fan-outs"
+  },
+  "verdict": "blocked"
+}

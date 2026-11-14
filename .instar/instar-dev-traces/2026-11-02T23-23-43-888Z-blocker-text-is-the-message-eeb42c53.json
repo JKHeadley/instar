@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "blocker-text-is-the-message",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T23:23:43.888Z",
+  "artifactPath": "upgrades/side-effects/blocker-text-is-the-message.md",
+  "artifactSha256": "9e28bd2f461fb557788d5f6770b1960008a3b9924405a657228dffb7a7833b86",
+  "coveredFiles": [
+    "dashboard/console/plans-model.js",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/deferral-detector-blocker-text.test.ts",
+    "upgrades/next/blocker-text-is-the-message.md",
+    "upgrades/side-effects/blocker-text-is-the-message.eli16.md",
+    "upgrades/side-effects/blocker-text-is-the-message.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "signal-only hook: narrower message check and display text; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/blocker-text-is-the-message.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/blocker-text-is-the-message.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

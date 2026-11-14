@@ -1,0 +1,69 @@
+{
+  "ts": "2026-10-29T01:13:24.838Z",
+  "slug": "native-remote-desktop-first-mac",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: scripts/check-native-desktop-release.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/release-local.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 32,
+  "loc": 2964,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/check-native-desktop-release.mjs",
+      "scripts/release-local.mjs",
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/DesktopAccessAudit.ts",
+      "src/core/DesktopAead.ts",
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopVideo.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/PinAttemptStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RemoteStepUpLockouts.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/desktopTransport.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/lifeline/MessageQueue.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/ephemeralCredentialCommand.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/DesktopStreamManager.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/tunnel/TunnelManager.ts",
+      "src/tunnel/probeCurrentTunnelIdentity.ts"
+    ],
+    "addedLines": 2889,
+    "deletedLines": 75
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DesktopStreamManager.test.ts",
+      "howCaught": "Capture retries stop after three consecutive failures; the stream grant expires or revokes and the test asserts bounded cleanup."
+    }
+  },
+  "verdict": "pass"
+}

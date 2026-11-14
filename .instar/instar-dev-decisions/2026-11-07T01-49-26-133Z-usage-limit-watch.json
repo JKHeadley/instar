@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-07T01:49:26.133Z",
+  "slug": "usage-limit-watch",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/claudeChildAuth.ts",
+      "src/core/claudeKeyProbe.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

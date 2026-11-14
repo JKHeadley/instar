@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "maturation-board-readability",
+  "sessionId": "abbd2c0b-8fe5-4204-a8e2-47f3e8dceba1",
+  "timestamp": "2026-10-30T18:16:19.928Z",
+  "artifactPath": "upgrades/side-effects/maturation-board-readability.md",
+  "artifactSha256": "6046eec13e7fe48f72d48ccf5415853f51e3385a4b5a3e7d7e90504ba553e783",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/maturation-board-model.js",
+    "dashboard/console/maturation-board.js",
+    "docs/specs/maturation-board.md",
+    "src/monitoring/MaturationBoard.ts",
+    "src/server/maturationBoardRoutes.ts",
+    "tests/unit/console-maturation-board.test.ts",
+    "tests/unit/maturation-board.test.ts",
+    "upgrades/next/maturation-board-readability.md",
+    "upgrades/side-effects/maturation-board-readability.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only redesign of a read-only page plus three optional, capped pass-through fields; a revert restores the previous layout.",
+  "eli16Path": "docs/specs/maturation-board.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-board-readability.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

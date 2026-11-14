@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-07T07:49:04.343Z",
+  "slug": "conversation-graph-read-flush-memo",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 54,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplication.ts",
+      "src/core/GraphCustodyProfileAuthority.ts",
+      "src/core/GraphDurableFileMemo.ts",
+      "src/core/GraphNativeMemberLossStore.ts"
+    ],
+    "addedLines": 31,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

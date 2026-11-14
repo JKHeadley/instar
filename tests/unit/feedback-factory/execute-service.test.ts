@@ -5,10 +5,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BASE_SHA, HEAD_SHA, createExecHarness, defaultRun, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
-import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, EVIDENCE_FILE, RESULT_FILE, SANDBOX_RUNTIME_VERSION, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { PROBE_TAIL_CHARS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 
 const DAY = 24 * 60 * 60_000;
@@ -88,10 +89,10 @@ describe('availability and refusal', () => {
     expect((await h.exec.refreshAvailability()).reason).toBe('approver-not-independent');
   });
 
-  it('auto-merge disabled, organization without an approver, no source repo, disabled, sandbox missing', async () => {
+  it('native auto-merge setting is irrelevant to the CI-floor merge; other availability gates remain', async () => {
     h = await createExecHarness();
     h.repo.info = { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: false };
-    expect((await h.exec.refreshAvailability()).reason).toBe('auto-merge-disabled');
+    expect((await h.exec.refreshAvailability()).available).toBe(true);
     h.repo.info = { ownerLogin: 'org', ownerType: 'Organization', allowAutoMerge: true };
     expect((await h.exec.refreshAvailability()).reason).toBe('approver-unset');
     h.repo.info = { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true };
@@ -294,10 +295,26 @@ describe('workspaces and the confined spawn', () => {
     // confinement had already installed. The fix ships with a new canary version, so it clears itself.
     h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 24 * 60 * 60_000, episode: 1, failures: 8, canaryVersion: 'feedback-canary-v1', failed: ['session-bash-write-in-workspace'] }));
     expect((await h.exec.refreshAvailability()).reason).toBe('ok');
-    h.runScript.fn = (cmd) => (/^npx vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: '', stderr: 'x' } : defaultRun(cmd));
+    h.runScript.fn = (cmd) => (/^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: '', stderr: 'x' } : defaultRun(cmd));
     await h.exec.tick();
     expect(h.exec.summary().profileUnenforceable).toMatchObject({ canaryVersion: CANARY_VERSION, failures: 9 });
     expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
+  });
+
+  it('an old npx-era full-gate stamp reruns the smoke with the direct local executable', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    const oldStamp = createHash('sha256').update(JSON.stringify({
+      v: 'feedback-canary-v3', framework: 'claude-code',
+      frameworkVersion: '2.1.295 (Claude Code)', sandboxRuntimeVersion: SANDBOX_RUNTIME_VERSION,
+      depsHash: 'abcdefabcdefabcdefab',
+    })).digest('hex').slice(0, 24);
+    h.store.setMeta('exec:canary_full_gate', JSON.stringify({ stamp: oldStamp, at: h.now.value }));
+
+    await h.exec.tick();
+
+    expect(h.runs.some((r) => r.command.startsWith('./node_modules/.bin/vitest run --no-cache ')
+      && r.command.includes('tests/unit/smoke.test.ts'))).toBe(true);
   });
 
   it('a failing base-unit-smoke probe stores its own output: the real latch write keeps the whole tail', async () => {
@@ -305,7 +322,7 @@ describe('workspaces and the confined spawn', () => {
     await h.workItem('c1');
     // Padding first, the error last — a test runner and a shell both put the error at the END, which
     // is why the tail is kept rather than the head.
-    const err = `${'E'.repeat(900)}\nEPERM: operation not permitted, mkdir '/home/agent/.npm'`;
+    const err = `${'E'.repeat(900)}\nEPERM: operation not permitted, mkdir '/home/agent/.vite'`;
     const out = `${'O'.repeat(900)}\nTest Files  1 failed (1)`;
     // The probe fails through the REAL canary, so profileUnenforceable's scrub + clamp is on the path.
     // Also: a clear DURING an in-flight tick would be overwritten by that tick's own latch write
@@ -313,7 +330,7 @@ describe('workspaces and the confined spawn', () => {
     let duringTick: unknown = null;
     h.runScript.fn = (cmd) => {
       duringTick ??= h.exec.retryCanaryNow('test');
-      return /^npx vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: out, stderr: err } : defaultRun(cmd);
+      return /^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: out, stderr: err } : defaultRun(cmd);
     };
     await h.exec.tick();
     expect(duringTick).toEqual({ cleared: false, reason: 'tick-in-flight' });
@@ -342,7 +359,7 @@ describe('workspaces and the confined spawn', () => {
     const unit = 'pwd:abcdefghijkl ';
     const err = `${unit.repeat(60)}EPERM-AT-THE-END`;
     const out = `${unit.repeat(60)}FAILED-AT-THE-END`;
-    h.runScript.fn = (cmd) => (/^npx vitest run --no-cache/.test(cmd.command)
+    h.runScript.fn = (cmd) => (/^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command)
       ? { exitCode: 1, stdout: out, stderr: err }
       : defaultRun(cmd));
     await h.exec.tick();
@@ -425,7 +442,7 @@ describe('verification and publication', () => {
     expect(push.branch).toMatch(/^feedback\/feedback-c1-[0-9a-f]{8}-a1$/);
     // Pushed to the configured FORK, never the canonical repository; the PR is cross-repository.
     expect(push.remoteUrl).toBe('https://github.com/agent-bot/repo.git');
-    expect(h.prs.get(100)!.headRefName).toBe(`agent-bot:${push.branch}`);
+    expect(h.prs.get(100)!.createHead).toBe(`agent-bot:${push.branch}`);
     expect(push.files['src/thing.ts']).toBe('export const thing = 2;\n');
     expect(push.files[RESULT_FILE]).toBeUndefined();
     expect(push.files[EVIDENCE_FILE]).toBeUndefined();
@@ -449,11 +466,33 @@ describe('verification and publication', () => {
 
   it('a test that passes at base fails the check (the fix proved nothing)', async () => {
     h = await createExecHarness();
-    h.runScript.fn = (cmd) => (/vitest run/.test(cmd.command) ? { exitCode: 0 } : null);
+    h.runScript.fn = (cmd) => (isBaseState(cmd.cwd) && /vitest run/.test(cmd.command) ? { exitCode: 0, stdout: ' Tests  1 passed (1)' } : null);
     const { initiativeId } = await startOne();
     finishSessions(h);
     await h.exec.tick();
     expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'base-check:test-passes-at-base' });
+  });
+
+  it('all-skipped named tests fail closed at base', async () => {
+    h = await createExecHarness();
+    h.runScript.fn = (cmd) => (isBaseState(cmd.cwd) && /vitest run/.test(cmd.command)
+      ? { exitCode: 0, stdout: ' Test Files  1 skipped (1)\n      Tests  33 skipped (33)' }
+      : null);
+    const { initiativeId } = await startOne();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'base-check:test-not-found-at-base' });
+  });
+
+  it('all-skipped named tests fail closed at head', async () => {
+    h = await createExecHarness();
+    h.runScript.fn = (cmd) => (/-head$/.test(cmd.cwd) && /^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command)
+      ? { exitCode: 0, stdout: ' Test Files  1 skipped (1)\n      Tests  33 skipped (33)', stderr: ' Tests  1 passed (1)' }
+      : null);
+    const { initiativeId } = await startOne();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'head-check:test-not-run-at-head' });
   });
 
   it('an import error of an unchanged module at base fails the check; a missing NEW module is allowed', async () => {
@@ -472,6 +511,192 @@ describe('verification and publication', () => {
     finishSessions(h);
     await h.exec.tick();
     expect(h.execStore.latestFor(id2)!.state).toBe('pr-open');
+  });
+
+  it('a lease the same machine re-acquires during preparation does not stop the attempt', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.epoch.value = 2; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(1);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'running', ownerEpoch: 2 });
+    expect((h.exec.summary().lastTick as { started: number }).started).toBe(1);
+    h.runScript.fn = scripted;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('running');
+  });
+
+  it('a lease lost during preparation with no epoch change still stops the attempt before its session', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.canonical.value = false; h.runScript.fn = scripted; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(0);
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.state).not.toBe('running');
+    expect(row.sessionName ?? null).toBeNull();
+  });
+
+  it('after a carried epoch the tick keeps its started count and leaves other items for the next tick', async () => {
+    h = await createExecHarness();
+    const first = await h.workItem('c1');
+    const second = await h.workItem('c2');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.epoch.value = 2; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(1);
+    expect(t.result).toBe('succeeded');
+    const started = [first, second].map((id) => h.execStore.latestFor(id)?.state).filter((state) => state === 'running');
+    expect(started).toHaveLength(1);
+  });
+
+  it('losing ownership during preparation still stops the attempt before any session starts', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => {
+      // A new owner has written at a newer epoch and this machine no longer owns the queue.
+      h.execStore.fenced(5, () => undefined);
+      h.epoch.value = 5;
+      h.canonical.value = false;
+      h.runScript.fn = scripted;
+      return scripted(cmd);
+    };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(0);
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.ownerEpoch).toBe(1);
+    expect(row.state).not.toBe('running');
+    expect(row.sessionName ?? null).toBeNull();
+  });
+
+  it('a lasting GitHub outage is reported once per outage, and a short one stays quiet', async () => {
+    h = await createExecHarness();
+    const notices = () => h.attentionExec.filter((a) => a.id.startsWith('feedback-execute:github-unavailable'));
+    const info = h.repo.info;
+    h.repo.info = null;
+    await h.exec.tick();
+    h.now.value += 2 * 60 * 60_000 - 1;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(0);
+    h.now.value += 1;
+    expect((await h.exec.tick()).reason).toBe('github-unavailable');
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].summary).toContain('no new fixes are starting');
+    // Access returns: a later outage is a new one with its own full wait.
+    h.repo.info = info;
+    await h.exec.tick();
+    h.repo.info = null;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    h.now.value += 2 * 60 * 60_000;
+    await h.exec.tick();
+    expect(new Set(notices().map((a) => a.id)).size).toBe(2);
+  });
+
+  it('a check stopped by its time limit keeps its reason and records which check it was', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd)
+      ? { exitCode: 124, stdout: 'still linting', stderr: '', timedOut: true }
+      : null);
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'limit:command-wall-clock' });
+    const last = h.exec.summary().lastCheckFailure as { reason: string; detail: string };
+    expect(last.reason).toBe('limit:command-wall-clock');
+    expect(last.detail).toContain('during the lint check');
+    expect(last.detail).toContain('still linting');
+  });
+
+  it('holds update restarts only while setup or verification is running in this process', async () => {
+    h = await createExecHarness();
+    expect(h.exec.restartHolds()).toEqual([]);
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n', 'tests/fix.test.ts': "import { it } from 'vitest';\nit('fixes it', () => {});\n" });
+    const scripted = h.runScript.fn;
+    let duringSetup: ReturnType<typeof h.exec.restartHolds> = [];
+    let duringVerify: ReturnType<typeof h.exec.restartHolds> = [];
+    h.runScript.fn = (cmd) => { duringSetup = h.exec.restartHolds(); return scripted(cmd); };
+    await h.exec.tick();
+    expect(duringSetup).toHaveLength(1);
+    expect(duringSetup[0].name).toContain(initiativeId);
+    expect(duringSetup[0].until).toBe(h.execStore.latestFor(initiativeId)!.updatedAt + 2 * 60 * 60_000);
+    // A running session survives a restart, so nothing holds between ticks.
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('running');
+    expect(h.exec.restartHolds()).toEqual([]);
+    h.runScript.fn = (cmd) => { duringVerify = h.exec.restartHolds(); return scripted(cmd); };
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(duringVerify).toHaveLength(1);
+    expect(h.exec.restartHolds()).toEqual([]);
+  });
+
+  it('the attempt hold yields while Local Verify holds queued work for a restart, and says so once per attempt', async () => {
+    // fb-7459b8b6-a7f: with a verifier hold and work queued, no verify can start until the server
+    // restarts; the attempt hold deferring that restart (up to 2 h) idled the test slot.
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n', 'tests/fix.test.ts': "import { it } from 'vitest';\nit('fixes it', () => {});\n" });
+    const scripted = h.runScript.fn;
+    const seen: Array<{ needs: boolean; holds: number }> = [];
+    let needs = false;
+    h.localVerifyNeedsRestart.fn = () => needs;
+    h.runScript.fn = (cmd) => {
+      // Both sides of the decision, read during setup of the same attempt: the hold stands while
+      // Local Verify needs no restart, and yields the moment it does.
+      for (const n of [false, true, false]) { needs = n; seen.push({ needs: n, holds: h.exec.restartHolds().length }); }
+      return scripted(cmd);
+    };
+    await h.exec.tick();
+    expect(seen.slice(0, 3)).toEqual([{ needs: false, holds: 1 }, { needs: true, holds: 0 }, { needs: false, holds: 1 }]);
+    const rows = fs.readFileSync(h.audit.path(), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const yielded = rows.filter((r) => r.event === 'execute:restart-hold-withdrawn');
+    expect(yielded).toHaveLength(1); // once per attempt, however often the updater re-reads the hold
+    expect(yielded[0]).toMatchObject({ attemptId: h.execStore.latestFor(initiativeId)!.attemptId, state: 'claimed', for: 'local-verify:verifier-hold' });
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('running'); // the yield itself changes nothing about the attempt
+  });
+
+  it('the publish window keeps its hold even while Local Verify needs the restart (a restart there escalates to the operator)', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.localVerifyNeedsRestart.fn = () => true;
+    const scripted = h.runScript.fn;
+    let duringVerify: ReturnType<typeof h.exec.restartHolds> | null = null;
+    let duringPublish: ReturnType<typeof h.exec.restartHolds> = [];
+    h.runScript.fn = (cmd) => { duringVerify = h.exec.restartHolds(); return scripted(cmd); };
+    h.onPush.fn = () => { duringPublish = h.exec.restartHolds(); };
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.pushes).toHaveLength(1);
+    expect(duringVerify).toEqual([]); // the checks before the push stood aside
+    expect(duringPublish).toHaveLength(1);
+    expect(duringPublish[0].name).toContain(initiativeId);
+    const rows = fs.readFileSync(h.audit.path(), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    // The verification stage before the push did withdraw its hold; the publish window never did.
+    expect(rows.filter((r) => r.event === 'execute:restart-hold-withdrawn').map((r) => r.state)).toEqual(['verifying']);
+  });
+
+  it('an unreadable Local Verify answer keeps the attempt hold (a fault can only delay a restart, never lose an attempt)', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n', 'tests/fix.test.ts': "import { it } from 'vitest';\nit('fixes it', () => {});\n" });
+    const scripted = h.runScript.fn;
+    h.localVerifyNeedsRestart.fn = () => { throw new Error('local verify not built'); };
+    let duringSetup = -1;
+    h.runScript.fn = (cmd) => { duringSetup = h.exec.restartHolds().length; return scripted(cmd); };
+    await h.exec.tick();
+    expect(duringSetup).toBe(1);
+    expect(h.exec.restartHoldYields()).toBe(false);
   });
 
   it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
@@ -555,6 +780,36 @@ describe('verification and publication', () => {
     expect(h.exec.actionItems().some((i) => /touched build tooling/.test(i.line))).toBe(true);
   });
 
+  it('offers no action items while the dashboard link would not open on a phone (tunnel starting)', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({ 'package.json': '{"name":"fixture","scripts":{"postinstall":"evil"}}\n', 'tests/fix.test.ts': 'x' });
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    const opts = (h.exec as any).opts;
+    const real = opts.dashboardLink;
+    opts.dashboardLink = () => null;
+    expect(h.exec.actionItems()).toEqual([]);
+    opts.dashboardLink = real;
+    expect(h.exec.actionItems().some((i) => /touched build tooling/.test(i.line))).toBe(true);
+  });
+
+  it('holds an automated fix that supplies its own decision record before the publish clone is committed', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    h.fixWith({
+      'src/thing.ts': 'export const thing = 2;\n',
+      'tests/fix.test.ts': 'x',
+      '.instar/instar-dev-decisions/worker.json': '{"scope":{"files":["src/thing.ts"]}}',
+    });
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.latestFor(id)).toMatchObject({ state: 'held', reason: 'needs-review-tooling' });
+    expect(h.pushes).toHaveLength(0);
+  });
+
   it('secret-shaped content is held (names only), and published only through the PIN-bound path', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');
@@ -591,6 +846,8 @@ describe('verification and publication', () => {
     h = await createExecHarness();
     const id = await h.workItem('c1', { needsSpec: true });
     const draft = 'docs/specs/feedback-feedback-c1.md';
+    h.prFiles.value = [draft];
+    h.prDiff.value = `diff --git a/${draft} b/${draft}\nnew file mode 100644\n--- /dev/null\n+++ b/${draft}\n+draft\n`;
     h.sessions.behavior.fn = (ws) => {
       fs.mkdirSync(path.join(ws, 'docs', 'specs'), { recursive: true });
       fs.writeFileSync(path.join(ws, draft), '---\ntitle: x\n---\n# Draft\n');
@@ -602,6 +859,18 @@ describe('verification and publication', () => {
     await h.exec.tick();
     expect(h.execStore.latestFor(id)).toMatchObject({ state: 'spec-pr-open' });
     expect(Object.keys(h.pushes[0].files)).toContain(draft);
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.review.leads).toEqual(['astra']);
+    expect(h.review.calls[0]).toContain('automated spec draft');
+    expect(h.review.calls[0]).toContain('not expected to implement the fix or add executable regression tests yet');
+    h.prs.get(100)!.headRefOid = 'e'.repeat(40);
+    h.prFiles.value = [draft, 'src/thing.ts'];
+    h.prDiff.value += 'diff --git a/src/thing.ts b/src/thing.ts\n+code\n';
+    h.now.value += DAY + 1;
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.execStore.latestFor(id)).toMatchObject({ reviewSha: 'e'.repeat(40), reviewVerdict: 'fail', reviewReason: 'spec-head-shape' });
+    expect(h.comments.at(-1)?.body).toContain('spec-head-shape');
   });
 
   it('a spec draft carrying an approval tag is refused', async () => {
@@ -618,6 +887,29 @@ describe('verification and publication', () => {
     expect(h.execStore.attemptsFor(id)[0].reason).toMatch(/^spec-shape/);
   });
 
+  it('records changed paths when extra files cause a spec draft rejection', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1', { needsSpec: true });
+    h.sessions.behavior.fn = (ws) => {
+      const draft = path.join(ws, 'docs/specs/feedback-feedback-c1.md');
+      fs.mkdirSync(path.dirname(draft), { recursive: true });
+      fs.writeFileSync(draft, '# Draft\n');
+      fs.writeFileSync(path.join(ws, 'src/extra.ts'), 'export const extra = 1;\n');
+      fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'spec-drafted' }));
+    };
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(id)[0].reason).toBe('spec-shape: expected exactly one new file, found 2 changes');
+    const rows = fs.readFileSync(h.audit.path(), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows.find((row) => row.event === 'execute:spec-shape-rejected')).toMatchObject({
+      changes: [
+        { path: 'docs/specs/feedback-feedback-c1.md', kind: 'added' },
+        { path: 'src/extra.ts', kind: 'added' },
+      ],
+    });
+  });
+
   it('not-reproducible twice → hold not-reproducible and a weak wrong grade on the work decision', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');
@@ -628,6 +920,42 @@ describe('verification and publication', () => {
     await h.exec.tick(); finishSessions(h); h.now.value += 60_000; await h.exec.tick();
     expect(h.store.get(id)).toMatchObject({ state: 'hold', reason: 'not-reproducible' });
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'wrong', strength: 'weak', disposition: 'work' })]));
+  });
+
+  it('a verified already-fixed claim holds the item after one attempt; an unverified one counts as plain not-reproducible', async () => {
+    const FULL = 'c825f2075'.padEnd(40, '0');
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    const asked: Array<[string, string]> = [];
+    h.commitInBase.fn = (commit, baseSha) => { asked.push([commit, baseSha]); return { sha: FULL, committedAt: Date.parse('2099-01-01T00:00:00Z') }; };
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'C825F2075' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(asked).toEqual([['c825f2075', BASE_SHA]]);
+    expect(h.store.get(id)).toMatchObject({ state: 'hold', reason: 'already-fixed' });
+    expect(h.execStore.attemptsFor(id)).toHaveLength(1);
+    expect(h.execStore.attemptsFor(id)[0]).toMatchObject({ state: 'not-reproducible', reason: 'already-fixed' });
+    const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+    expect(audit).toContain(`"verified":"${FULL}"`);
+    h.cleanup();
+
+    h = await createExecHarness();
+    const id2 = await h.workItem('c1');
+    h.commitInBase.fn = () => null;
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'deadbeef' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.store.get(id2)!.state).toBe('work');
+    expect(h.execStore.attemptsFor(id2)[0]).toMatchObject({ state: 'not-reproducible', reason: 'session-claim' });
+    h.cleanup();
+
+    // A commit in the base but older than the item's first report cannot be its fix.
+    h = await createExecHarness();
+    const id3 = await h.workItem('c1');
+    h.commitInBase.fn = () => ({ sha: FULL, committedAt: Date.parse('2000-01-01T00:00:00Z') });
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'c825f2075' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.store.get(id3)!.state).toBe('work');
+    expect(h.execStore.attemptsFor(id3)[0]).toMatchObject({ state: 'not-reproducible', reason: 'session-claim' });
+    expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('"afterFirstReport":false');
   });
 
   it('after a second failure episode the executor no longer takes the item automatically; release lets it', async () => {
@@ -672,8 +1000,8 @@ describe('review gate and merge', () => {
   });
 
   const PASS = () => [
-    { family: 'codex-cli', model: 'gpt-5.5', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
-    { family: 'claude-code', model: 'claude-fable-5', status: 'ok' as const, verdict: 'MINOR ISSUES' as const, crossFamily: false, reason: null, body: 'Verdict: MINOR ISSUES\n- a nit' },
+    { family: 'codex-cli', model: 'gpt-6-sol', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
+    { family: 'claude-code', model: 'claude-opus-5-5', status: 'ok' as const, verdict: 'MINOR ISSUES' as const, crossFamily: false, reason: null, body: 'Verdict: MINOR ISSUES\n- a nit' },
   ];
   const HOUR = 60 * 60_000;
   // The review runs in the same tick that publishes the PR, so a test sets the reviewers' answers before `toPrOpen`.
@@ -683,16 +1011,43 @@ describe('review gate and merge', () => {
     h.review.outcomes = PASS();
     const { initiativeId } = await toPrOpen();
     expect(h.review.calls).toHaveLength(1);
+    expect(h.review.leads).toEqual(['opus']);
     expect(h.review.calls[0]).toContain('--- DIFF (data) ---');
     expect(h.review.calls[0]).toContain('+++ b/src/thing.ts');
     expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
     expect(h.prs.get(100)!.labels).not.toContain('hold');
-    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', approvedSha: HEAD_SHA, reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:codex-cli+claude-code' });
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', approvedSha: HEAD_SHA, reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5' });
     expect(h.comments).toHaveLength(0);
     // Judged once per head: a later tick asks no reviewer again.
     await h.exec.tick();
     expect(h.review.calls).toHaveLength(1);
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'weak' })]));
+  });
+
+  it('re-reviews a same-head pass recorded before the feedback model policy', async () => {
+    h = await createExecHarness();
+    const { initiativeId, row } = await toPrOpen();
+    expect(h.review.calls).toHaveLength(1);
+    h.execStore.patch(1, row.attemptId, { reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:codex-cli+claude-code', mergeRetryAt: null });
+    h.review.outcomes = PASS();
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+    expect(h.execStore.latestFor(initiativeId)?.reviewReason).toBe('pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5');
+  });
+
+  it('disarms a merge armed under an old review pass before applying the new model policy', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    const { initiativeId, row } = await toPrOpen();
+    expect(h.execStore.latestFor(initiativeId)?.state).toBe('merge-armed');
+    h.execStore.patch(1, row.attemptId, { reviewReason: 'pass:codex-cli+claude-code' });
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'disarmed:review-policy-changed', approvedSha: null });
+    expect(h.review.calls).toHaveLength(1);
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', reviewReason: 'pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5' });
   });
 
   it('independent review: SERIOUS ISSUES from either reviewer refuses — a comment on the PR, the row stays open as review-failed, listed once, no merge; the owner\'s approval still merges it', async () => {
@@ -706,7 +1061,8 @@ describe('review gate and merge', () => {
     expect(h.comments[0].body).toContain('deletes a test');
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'review-failed:serious:claude-code', reviewSha: HEAD_SHA, reviewVerdict: 'fail' });
     expect(h.store.get(initiativeId)!.state).toBe('work');
-    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review \(serious:claude-code\)/);
+    // Close-eligible: the line names the automatic close and the rework (docs/specs/feedback-executor-review-failed-recovery.md §6).
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review; it closes on its own at /);
     // Judged once per head: later ticks ask nothing and comment nothing.
     await h.exec.tick();
     expect(h.review.calls).toHaveLength(1);
@@ -884,6 +1240,27 @@ describe('review gate and merge', () => {
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'held', reason: 'merge-refused:red-checks' });
     expect(h.store.get(initiativeId)).toMatchObject({ state: 'hold', reason: 'merge-unavailable' });
     expect(h.disarmed.filter((n) => n === 100).length).toBe(2);
+  });
+
+  it('queued CI defers auto-merge without spending the merge-refusal retry', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await toPrOpen();
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    h.safeMergeExit = { code: 1, stdout: 'safe-merge-result: {"result":"deferred:checks-pending"}' };
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-deferred:checks-pending', mergeRetries: 0 });
+    expect(h.disarmed).not.toContain(100);
+    expect(h.merges).toHaveLength(1);
+    h.now.value += 4 * 60_000;
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(1);
+    h.now.value += 60_001;
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)?.mergeRetries).toBe(0);
+    h.now.value += 3 * 60 * 60_000 + 1;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-refused:checks-timeout', mergeRetries: 1 });
   });
 
   it('a merge-armed PR past its 24 h deadline is disarmed and refused (deadline)', async () => {
@@ -1231,6 +1608,130 @@ describe('second-pass review regressions', () => {
     expect(h.store.get(b.initiativeId)!.state).toBe('work');
   });
 
+  it('an epoch change while a finished fix waits for its re-verify does not discard it', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'verifying' });
+    finishSessions(h);
+    fs.renameSync(row.workspace!, h.exec.attemptPaths(row).reviewDir);
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'running', reason: 'reverify-after-restart', ownerEpoch: 2 });
+    h.epoch.value = 3;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'pr-open', ownerEpoch: 3 });
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
+  it('a same-machine owner epoch change adopts an intact verifying fix and re-verifies it', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.publishClone && fs.existsSync(row.publishClone)).toBe(true);
+    h.execStore.patch(1, row.attemptId, { state: 'verifying' });
+    finishSessions(h);
+    const reviewDir = h.exec.attemptPaths(row).reviewDir;
+    fs.renameSync(row.workspace!, reviewDir); // the normal verification path moves the worker tree first
+    expect(fs.existsSync(row.workspace!)).toBe(false);
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'running', reason: 'reverify-after-restart', ownerEpoch: 2 });
+    expect(h.sessions.stopped).toHaveLength(0);
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'pr-open', ownerEpoch: 2 });
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+
+    h.cleanup();
+    h = await createExecHarness();
+    const missing = await startOne();
+    const bad = h.execStore.latestFor(missing.initiativeId)!;
+    h.execStore.patch(1, bad.attemptId, { state: 'verifying', publishClone: path.join(h.agentHome, 'missing-publish-clone') });
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(bad.attemptId)).toMatchObject({ state: 'stopped', reason: 'stale-epoch' });
+  });
+
+  it('parks an uncertain publication across owner changes without repeating the push or PR create', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'verifying', reason: 'publishing' });
+    finishSessions(h);
+    const reviewDir = h.exec.attemptPaths(row).reviewDir;
+    fs.renameSync(row.workspace!, reviewDir);
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.store.get(initiativeId)).toMatchObject({ state: 'hold', reason: 'publish-outcome-unknown' });
+    expect(fs.existsSync(reviewDir)).toBe(true);
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+    expect(h.attentionExec.some((a) => a.id.includes('publish-outcome-unknown'))).toBe(true);
+  });
+
+  it('a same-epoch restart also parks a publication marker without replaying it', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'verifying', reason: 'publishing' });
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
+  it('parking uncertain publication preserves a newer operator hold or ignore decision', async () => {
+    for (const state of ['hold', 'ignored'] as const) {
+      h = await createExecHarness();
+      const { initiativeId } = await startOne();
+      const row = h.execStore.latestFor(initiativeId)!;
+      h.execStore.patch(1, row.attemptId, { state: 'verifying', reason: 'publishing' });
+      h.drain.sharedDatabase().prepare('UPDATE triage SET state=?, reason=? WHERE initiative_id=?')
+        .run(state, `operator-${state}`, initiativeId);
+      h.epoch.value = 2;
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+      expect(h.store.get(initiativeId)).toMatchObject({ state, reason: `operator-${state}` });
+      h.cleanup();
+    }
+  });
+
+  it('a crash between execution hold and triage hold cannot start another publication', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.store.get(initiativeId)).toMatchObject({ state: 'work' });
+    expect(h.exec.candidates().map((item) => item.initiativeId)).not.toContain(initiativeId);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.store.get(initiativeId)).toMatchObject({ state: 'hold', reason: 'publish-outcome-unknown' });
+    expect(h.attentionExec.some((a) => a.id === `feedback-execute:publish-outcome-unknown:${row.attemptId}`)).toBe(true);
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
+  it('a lost PR-create response after GitHub accepted the PR parks the attempt without a second PR', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const gateway = (h.exec as unknown as { opts: { github: { createPr: (input: unknown) => Promise<unknown> } } }).opts.github;
+    const createPr = gateway.createPr.bind(gateway);
+    gateway.createPr = async (input) => { await createPr(input); throw new Error('response lost after PR creation'); };
+    finishSessions(h);
+    await h.exec.tick();
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.prs.size).toBe(1);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.prs.size).toBe(1);
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
   it('the operator\'s stop and PIN publication never race a running tick', async () => {
     h = await createExecHarness();
     await h.workItem('c1');
@@ -1286,7 +1787,7 @@ describe('focused review round regressions', () => {
   it('A: an existing cross-repository PR still goes through the review gate and merges at the approved head', async () => {
     h = await createExecHarness();
     const { initiativeId, row } = await toPrOpen();
-    expect(h.prs.get(row.prNumber!)!.headRefName).toMatch(/^agent-bot:feedback\//);
+    expect(h.prs.get(row.prNumber!)!.createHead).toMatch(/^agent-bot:feedback\//);
     approveHead();
     await h.exec.tick();
     expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
@@ -1377,14 +1878,145 @@ describe('focused review round regressions', () => {
     expect(h.execStore.latestFor(c.initiativeId)).toMatchObject({ state: 'merge-armed', disarmFailed: true });
   });
 
+  it('a related-tests run that hits its time limit is inconclusive and the fix still reaches a PR', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: null, signal: 'SIGKILL', timedOut: true } : scripted(cmd));
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('pr-open');
+    const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+    expect(audit).toContain('execute:related-tests-inconclusive');
+    expect(h.repo.createdBodies.at(-1)).toContain('ran out of time');
+  });
+
+  it('a failure printed before the related-tests time limit still stops the fix', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: null, signal: 'SIGKILL', timedOut: true, stdout: ' FAIL  tests/x.test.ts > breaks' } : scripted(cmd));
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+  });
+
+  it('a related-tests run that fails or floods its output still stops the fix', async () => {
+    for (const [result, reason] of [
+      [{ exitCode: 1, stdout: 'FAIL tests/x.test.ts' }, 'gate:related-tests'],
+      [{ exitCode: null, signal: 'SIGKILL', outputCapped: true }, 'limit:output'],
+    ] as const) {
+      h = await createExecHarness();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? result : scripted(cmd));
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason });
+      h.cleanup();
+    }
+  });
+
+  describe('a related-tests failure the unchanged base also reports', () => {
+    const EPERM = `Serialized Error: { code: 'EPERM', errno: -1, syscall: 'listen', address: '127.0.0.1' }\nThis error originated in "tests/unit/routes.test.ts" test file.`;
+    const withRouteTest = () => {
+      fs.mkdirSync(path.join(h.sourceRepo, 'tests', 'unit'), { recursive: true });
+      fs.writeFileSync(path.join(h.sourceRepo, 'tests', 'unit', 'routes.test.ts'), "it('serves', () => {});\n");
+    };
+    it('is inconclusive when every failure also happens at base, and the fix still reaches a PR', async () => {
+      h = await createExecHarness();
+      withRouteTest();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      const baselineRuns: string[] = [];
+      h.runScript.fn = (cmd) => {
+        if (/vitest related/.test(cmd.command)) return { exitCode: 1, stderr: EPERM };
+        if (/-reports\/baseline\//.test(cmd.command)) { baselineRuns.push(cmd.cwd); return { exitCode: 1, stderr: EPERM }; }
+        return scripted(cmd);
+      };
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(baselineRuns).toHaveLength(1);
+      expect(baselineRuns[0]).toMatch(/-reference$/);
+      // Each report folder is writable only by its own run and lies outside the attempt's temp directory.
+      for (const [label, re] of [['baseline', /-reports\/baseline\//], ['related', /vitest related/]] as const) {
+        const r = h.runs.find((x) => re.test(x.command))!;
+        const dir = r.settings.filesystem.allowWrite.find((w: string) => w.endsWith(`-reports/${label}`));
+        expect(dir).toBeTruthy();
+        expect(dir!.startsWith(r.env.TMPDIR!)).toBe(false);
+        expect(h.runs.filter((x) => x !== r && x.settings.filesystem.allowWrite.includes(dir!))).toEqual([]);
+      }
+      expect(h.execStore.latestFor(initiativeId)!.state).toBe('pr-open');
+      const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+      expect(audit).toContain('execute:related-tests-preexisting');
+      expect(h.repo.createdBodies.at(-1)).toContain('also happens on the unchanged code');
+    });
+    it('still stops the fix when the base run does not share a failure', async () => {
+      h = await createExecHarness();
+      withRouteTest();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      h.runScript.fn = (cmd) => {
+        if (/vitest related/.test(cmd.command)) return { exitCode: 1, stderr: EPERM };
+        if (/-reports\/baseline\//.test(cmd.command)) return { exitCode: 0, stdout: ' Tests  1 passed (1)' };
+        return scripted(cmd);
+      };
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+      expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('execute:related-tests-failed');
+    });
+    it('still stops the fix when the failing file does not exist at base, or no failure can be named', async () => {
+      for (const stderr of ['This error originated in "tests/unit/only-in-fix.test.ts" test file.', 'something broke']) {
+        h = await createExecHarness();
+        const { initiativeId } = await startOne();
+        const scripted = h.runScript.fn;
+        h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: 1, stderr } : /-reports\/baseline\//.test(cmd.command) ? { exitCode: 1, stderr } : scripted(cmd));
+        finishSessions(h);
+        h.now.value += 60_000;
+        await h.exec.tick();
+        expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+        h.cleanup();
+      }
+    });
+    it('still stops the fix when the base run hits its time limit', async () => {
+      h = await createExecHarness();
+      withRouteTest();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: 1, stderr: EPERM } : /-reports\/baseline\//.test(cmd.command) ? { exitCode: null, signal: 'SIGKILL', timedOut: true } : scripted(cmd));
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+    });
+  });
+
+  it('other checks that hit their time limit still stop the fix', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd) ? { exitCode: null, signal: 'SIGKILL', timedOut: true } : null);
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'limit:command-wall-clock' });
+  });
+
   it('8: lint and the related tests run in a fresh third clone, never the clone the head run\'s test code could rewrite; each run has its own temp directory', async () => {
     h = await createExecHarness();
     await toPrOpen('c1');
     const verify = h.runs.filter((r) => /-(base|head|gate)$/.test(r.cwd));
     const where = (re: RegExp) => verify.filter((r) => re.test(r.command)).map((r) => r.cwd.split('-').pop());
-    expect(where(/^npx vitest run/)).toEqual(['base', 'head']);
+    expect(where(/^\.\/node_modules\/\.bin\/vitest run/)).toEqual(['base', 'head']);
     expect(where(/^npm run lint$/)).toEqual(['gate']);
     expect(where(/vitest related/)).toEqual(['gate']);
+    expect(verify.filter((r) => /vitest related/.test(r.command)).map((r) => r.timeoutMs)).toEqual([CONFINED_RELATED_TIMEOUT_MS]);
+    expect(verify.filter((r) => !/vitest related/.test(r.command)).every((r) => r.timeoutMs === CONFINED_COMMAND_TIMEOUT_MS)).toBe(true);
     const tmps = new Set(verify.map((r) => r.env.TMPDIR));
     expect(tmps.size).toBe(verify.length);
     const clones = [...new Set(verify.map((r) => r.cwd))];

@@ -10,6 +10,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const OLD = '- A `git push` run under an OUTER command timeout needs that timeout ≥ the pre-push acquire budget (default 10 min interactive) — a correctly-WAITING push must not be killed by its own caller.';
 const NEW_MARKER = 'A full suite waits up to 45 min for its slot by default';
+const PRIORITY_MARKER = 'mergeGatePriority.active';
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 function run(projectDir: string): MigrationResult {
   const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'test' });
@@ -30,6 +31,7 @@ describe('test-runner wait-budget CLAUDE.md line', () => {
   it('new agents get the current budget line, never the stale one', () => {
     const md = generateClaudeMd('test', 'Test', 4042, false);
     expect(md).toContain(NEW_MARKER);
+    expect(md).toContain(PRIORITY_MARKER);
     expect(md).not.toContain(OLD);
   });
 
@@ -41,8 +43,10 @@ describe('test-runner wait-budget CLAUDE.md line', () => {
     expect(once).not.toContain(OLD);
     expect(once.split(NEW_MARKER).length - 1).toBe(1);
     expect(once).toContain(NEW_MARKER);
+    expect(once.split(PRIORITY_MARKER).length - 1).toBe(1);
     const r2 = run(projectDir);
     expect(fs.readFileSync(claudeMd, 'utf8')).toBe(once);
     expect(r2.upgraded).not.toContain('CLAUDE.md: updated Test-Runner Concurrency Bound wait-budget line');
+    expect(r2.upgraded).not.toContain('CLAUDE.md: added merge-gate suite-slot priority');
   });
 });

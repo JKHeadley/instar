@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { codexSupportsHookTrustBypass, __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
+import { codexSupportsHookTrustBypass, codexSupportsGpt61Sol, __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const made: string[] = [];
@@ -52,5 +52,14 @@ describe('codexSupportsHookTrustBypass', () => {
     // Delete the binary; a cached "true" must persist (no re-probe).
     SafeFsExecutor.safeRmSync(bin, { force: true, operation: 'tests/unit/codexCapabilities.test.ts:memoization-probe' });
     expect(codexSupportsHookTrustBypass(bin)).toBe(true);
+  });
+});
+
+describe('codexSupportsGpt61Sol', () => {
+  it('accepts 0.166 and rejects 0.156, unknown output and missing binaries', () => {
+    expect(codexSupportsGpt61Sol(fakeCodex('codex-cli 0.166.0'))).toBe(true);
+    expect(codexSupportsGpt61Sol(fakeCodex('codex-cli 0.156.1'))).toBe(false);
+    expect(codexSupportsGpt61Sol(fakeCodex('unknown'))).toBe(false);
+    expect(codexSupportsGpt61Sol('/nonexistent/codex')).toBe(false);
   });
 });

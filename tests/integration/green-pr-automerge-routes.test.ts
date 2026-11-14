@@ -16,6 +16,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { GuardLatchStore } from '../../src/monitoring/GuardLatchStore.js';
+import { AgentStopSurfacer, type AgentStopFacts } from '../../src/monitoring/agentStopRelease.js';
 import { GreenPrAutoMerger, freshState, type GreenPrAutoMergerDeps } from '../../src/monitoring/GreenPrAutoMerger.js';
 import type { PrSummary } from '../../src/monitoring/greenPrLogic.js';
 
@@ -250,5 +251,210 @@ describe('green-pr-automerge routes (integration)', () => {
     expect(rb.status).toBe(200);
     expect(rb.body.rolledBack).toBe(true);
     expect(rb.body.disarmed).toEqual([]);
+  });
+
+  describe('agent stop release (green-pr-agent-stop-release)', () => {
+    const claim = { topicId: 18330, sessionId: 's1', cause: 'The old watcher merged PR 2648 before hosted CI finished.', release: { kind: 'fix-pr-released' } };
+    const by = { latchId: '', releasedBy: { topicId: 136706, sessionId: 's2' }, note: 'the fix is in the running release' };
+    let commits: Array<{ id: string; externalKey?: string }>;
+    let delivered: string[];
+    let withdrawn: string[];
+    let readerFacts: AgentStopFacts;
+
+    function app(over: { surfacer?: AgentStopSurfacer | null; commitments?: unknown } = {}) {
+      const surfacer = over.surfacer !== undefined ? over.surfacer : new AgentStopSurfacer({
+        stateDir,
+        listRollbackStops: () => latches.rollbackStops(),
+        facts: { mergedPrsCiting: (m) => readerFacts.mergedPrsCiting(m), commitInReleaseTag: (c, v) => readerFacts.commitInReleaseTag(c, v) },
+        runningVersion: () => '1.3.1640',
+        commitments: (over.commitments ?? {
+          record: (input: { externalKey: string }) => {
+            const hit = commits.find((c) => c.externalKey === input.externalKey);
+            if (hit) return hit;
+            const c = { id: `CMT-${commits.length + 1}`, externalKey: input.externalKey };
+            commits.push(c);
+            return c;
+          },
+          getActive: () => commits,
+          deliver: (id: string) => { delivered.push(id); commits = commits.filter((c) => c.id !== id); },
+          withdraw: (id: string) => { withdrawn.push(id); commits = commits.filter((c) => c.id !== id); },
+        }) as never,
+      });
+      return appWith(baseCtx(stateDir, { greenPrAutoMerger: fakeWatcher(stateDir, latches), guardLatchStore: latches, agentStopSurfacer: surfacer }));
+    }
+    const merged = (marker: string, tag: 'contained' | 'not-contained' | 'unreadable' = 'contained'): AgentStopFacts => ({
+      mergedPrsCiting: async () => [{ number: 2700, body: `Resolves ${marker}`, state: 'MERGED', mergedAt: new Date(Date.now() + 60_000).toISOString(), baseRefName: 'main', mergeCommitOid: 'abc1234' }],
+      commitInReleaseTag: async () => tag,
+    });
+    const stop = async (a: express.Express, body: object) => (await request(a).post('/green-pr-automerge/rollback').send(body)).body;
+
+    beforeEach(() => {
+      commits = []; delivered = []; withdrawn = [];
+      readerFacts = { mergedPrsCiting: async () => [], commitInReleaseTag: async () => 'not-contained' };
+    });
+
+    it('a stop with no claim is operator-class and a release is refused 403', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'stopped from the console' });
+      expect(r).toMatchObject({ ok: true, rolledBack: true, originClass: 'operator' });
+      expect(r.marker).toBeUndefined();
+      const rel = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId });
+      expect(rel.status).toBe(403);
+      expect(rel.body.error).toBe('operator-stop');
+      expect(latches.activeLatchIds('rollback')).toEqual([r.latchId]);
+    });
+
+    it('an invalid claim still stops, 200, operator-class, and says why', async () => {
+      const a = app();
+      const res = await request(a).post('/green-pr-automerge/rollback').send({ reason: 'x', agentStop: { topicId: 'nope' } });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ rolledBack: true, originClass: 'operator' });
+      expect(res.body.agentClaimRejected.join(' ')).toMatch(/topicId/);
+      expect(latches.isMergeAllowed().allowed).toBe(false);
+      expect(commits).toHaveLength(0);
+    });
+
+    it('a latch in an older file, with no origin, is refused 403', async () => {
+      const file = path.join(stateDir, 'state', 'green-pr-automerge-latches.json');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ machineId: 'm1', ownSeq: 212, transitions: { rollback: { 'm1:212': { action: 'set', epoch: 1, seq: 212, reason: 'older stop', ts: new Date().toISOString() } } } }));
+      latches = new GuardLatchStore({ stateDir, machineId: 'm1', leaseEpoch: () => 1 });
+      const rel = await request(app()).post('/green-pr-automerge/release').send({ ...by, latchId: 'm1:212' });
+      expect(rel.status).toBe(403);
+      expect(latches.activeLatchIds('rollback')).toEqual(['m1:212']);
+    });
+
+    it('a pin in a release body does nothing', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'x' });
+      const rel = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId, pin: PIN });
+      expect(rel.status).toBe(403);
+    });
+
+    it('a claim sent at release time cannot change a stop\'s class', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'x' });
+      const rel = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId, class: 'agent', origin: { class: 'agent' }, agentStop: claim });
+      expect(rel.status).toBe(403);
+    });
+
+    it.each([
+      ['no id', { releasedBy: { topicId: 1 }, note: 'n' }],
+      ['a list of ids', { latchId: ['m1:1'], releasedBy: { topicId: 1 }, note: 'n' }],
+      ['no releaser', { latchId: 'm1:1', note: 'n' }],
+      ['no note', { latchId: 'm1:1', releasedBy: { topicId: 1 } }],
+      ['an empty note', { latchId: 'm1:1', releasedBy: { topicId: 1 }, note: '  ' }],
+    ])('400 for %s', async (_n, body) => {
+      expect((await request(app()).post('/green-pr-automerge/release').send(body)).status).toBe(400);
+    });
+
+    it('404 for an unknown id', async () => {
+      const rel = await request(app()).post('/green-pr-automerge/release').send({ ...by, latchId: 'm1:999' });
+      expect(rel.status).toBe(404);
+    });
+
+    it('refuses while the condition is unmet, 503 when unreadable, and the stop stands', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'x', agentStop: claim });
+      expect(r).toMatchObject({ originClass: 'agent', marker: `agent-stop-${r.latchId.replace(':', '-')}`, commitmentId: 'CMT-1' });
+      const none = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId });
+      expect(none.status).toBe(409);
+      expect(none.body.error).toBe('condition-not-met');
+      readerFacts = merged(r.marker, 'not-contained');
+      const notRunning = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId });
+      expect(notRunning.status).toBe(409);
+      readerFacts = merged(r.marker, 'unreadable');
+      const unread = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId });
+      expect(unread.status).toBe(503);
+      expect(unread.body.error).toBe('condition-unverifiable');
+      readerFacts = { mergedPrsCiting: async () => { throw new Error('gh hung up'); }, commitInReleaseTag: async () => 'contained' };
+      expect((await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId })).status).toBe(503);
+      expect(latches.activeLatchIds('rollback')).toEqual([r.latchId]);
+    });
+
+    it('with no condition reader the release is refused', async () => {
+      const a = app({ surfacer: null });
+      const r = await stop(a, { reason: 'x', agentStop: claim });
+      expect((await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId })).status).toBe(503);
+      expect(latches.activeLatchIds('rollback')).toEqual([r.latchId]);
+    });
+
+    it('releases once the fix is running, delivers the commitment; a second release is 409', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'x', agentStop: claim });
+      readerFacts = merged(r.marker);
+      const rel = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId });
+      expect(rel.status).toBe(200);
+      expect(rel.body).toMatchObject({ ok: true, released: r.latchId, stillStopped: [], mergeAllowed: true, evidence: { pr: 2700 } });
+      expect(latches.isMergeAllowed().allowed).toBe(true);
+      expect(delivered).toEqual(['CMT-1']);
+      expect((await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId })).status).toBe(409);
+    });
+
+    it('a stop that clears during the condition read is not cleared twice', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'x', agentStop: claim });
+      const real = merged(r.marker);
+      readerFacts = { ...real, mergedPrsCiting: async (m) => { latches.clear('rollback', [r.latchId], 're-arm'); return real.mergedPrsCiting(m); } };
+      expect((await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: r.latchId })).status).toBe(409);
+    });
+
+    it('an operator stop keeps the gate shut after an agent release, and the caller is told', async () => {
+      const a = app();
+      const op = await stop(a, { reason: 'operator-rollback' });
+      const mine = await stop(a, { reason: 'x', agentStop: claim });
+      readerFacts = merged(mine.marker);
+      const rel = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: mine.latchId });
+      expect(rel.body).toMatchObject({ released: mine.latchId, stillStopped: [op.latchId], mergeAllowed: false });
+    });
+
+    it('two agent stops keep each other\'s gate shut', async () => {
+      const a = app();
+      const one = await stop(a, { reason: 'one', agentStop: claim });
+      const two = await stop(a, { reason: 'two', agentStop: claim });
+      readerFacts = merged(one.marker);
+      const rel = await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: one.latchId });
+      expect(rel.body).toMatchObject({ stillStopped: [two.latchId], mergeAllowed: false });
+      expect((await request(a).post('/green-pr-automerge/release').send({ ...by, latchId: two.latchId })).status).toBe(409);
+    });
+
+    it('the release route cannot reach the emergency stop', async () => {
+      const id = latches.set('emergency-pause', 'stop everything');
+      const rel = await request(app()).post('/green-pr-automerge/release').send({ ...by, latchId: id });
+      expect(rel.status).toBe(404);
+      expect(latches.activeLatchIds('emergency-pause')).toEqual([id]);
+    });
+
+    it('the PIN still clears an agent stop and withdraws its commitment; without it, 403', async () => {
+      const a = app();
+      const r = await stop(a, { reason: 'x', agentStop: claim });
+      expect((await request(a).post('/green-pr-automerge/enable').send({})).status).toBe(403);
+      expect(latches.activeLatchIds('rollback')).toEqual([r.latchId]);
+      expect((await request(a).post('/green-pr-automerge/enable').send({ pin: PIN })).status).toBe(200);
+      expect(withdrawn).toEqual(['CMT-1']);
+      expect(latches.isMergeAllowed().allowed).toBe(true);
+    });
+
+    it('a failing commitment store does not block the stop', async () => {
+      const a = app({ commitments: { record: () => { throw new Error('disk'); }, getActive: () => [], deliver: () => {}, withdraw: () => {} } });
+      const res = await request(a).post('/green-pr-automerge/rollback').send({ reason: 'x', agentStop: claim });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ rolledBack: true, originClass: 'agent', commitmentId: null });
+      expect(latches.isMergeAllowed().allowed).toBe(false);
+    });
+
+    it('GET shows each stop\'s class; operator rows carry nothing extra', async () => {
+      const a = app();
+      const op = await stop(a, { reason: 'operator-rollback' });
+      const mine = await stop(a, { reason: 'short', agentStop: { ...claim, cause: 'c'.repeat(300) } });
+      const res = await request(a).get('/green-pr-automerge');
+      expect(res.body.gate.rollback).toEqual([op.latchId, mine.latchId]);
+      const [opRow, mineRow] = res.body.gate.rollbackStops;
+      expect(opRow).toMatchObject({ latchId: op.latchId, class: 'operator' });
+      expect(opRow.cause).toBeUndefined();
+      expect(opRow.origin).toBeUndefined();
+      expect(mineRow).toMatchObject({ latchId: mine.latchId, class: 'agent', topicId: 18330, sessionId: 's1', marker: mine.marker, conditionMet: null, release: { kind: 'fix-pr-released' } });
+      expect(mineRow.cause).toHaveLength(300);
+    });
   });
 });

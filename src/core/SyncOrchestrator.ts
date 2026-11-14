@@ -82,6 +82,14 @@ export interface SyncOrchestratorConfig extends GitSyncConfig {
   userId?: string;
   /** Session ID for audit trail context. */
   sessionId?: string;
+  /**
+   * Called after a sync that pulled commits (skill-learning-sentinel §3.2:
+   * renderings live outside stateDir, so a pulled canonical skill must be
+   * re-rendered on THIS machine). GitSync has no post-pull hook; this is the
+   * orchestrator's call-site seam. Errors are swallowed — a listener never
+   * fails the sync.
+   */
+  onPulled?: (result: SyncResult) => void;
 }
 
 export interface OrchestratedSyncResult extends SyncResult {
@@ -186,6 +194,7 @@ export class SyncOrchestrator extends EventEmitter {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private activeLedgerEntryId?: string;
   private syncInProgress = false;
+  private readonly onPulled?: (result: SyncResult) => void;
 
   constructor(config: SyncOrchestratorConfig) {
     super();
@@ -197,6 +206,7 @@ export class SyncOrchestrator extends EventEmitter {
     this.syncIntervalMs = config.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL;
     this.userId = config.userId;
     this.sessionId = config.sessionId;
+    this.onPulled = config.onPulled;
 
     // Initialize core GitSync
     this.gitSync = new GitSyncManager({
@@ -518,6 +528,13 @@ export class SyncOrchestrator extends EventEmitter {
       // Step 5: Fetch + rebase from remote
       this.setPhase('fetching');
       const syncResult = await this.gitSync.sync();
+      if (syncResult.pulled && this.onPulled) {
+        try {
+          this.onPulled(syncResult);
+        } catch {
+          /* @silent-fallback-ok — a post-pull listener never fails the sync */
+        }
+      }
       result.pulled = syncResult.pulled;
       result.pushed = syncResult.pushed;
       result.commitsPulled = syncResult.commitsPulled;

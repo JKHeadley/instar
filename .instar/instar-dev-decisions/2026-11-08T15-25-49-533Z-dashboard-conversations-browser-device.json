@@ -1,0 +1,63 @@
+{
+  "ts": "2026-11-08T15:25:49.533Z",
+  "slug": "dashboard-conversations-browser-device",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 27,
+  "loc": 1685,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/AppRecordSignatures.ts",
+      "src/core/MobileDeviceKeyLedger.ts",
+      "src/core/MobileDeviceKeyLedgerReplicatedStore.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/appConversationPool.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/deviceClientWording.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/messaging/TelegramAdapter.ts",
+      "src/publishing/PrivateViewer.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobileConsoleTicket.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaSend.ts",
+      "src/server/mobileOwnerDeviceAdmission.ts",
+      "src/server/mobilePairingApproval.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1493,
+    "deletedLines": 192
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "browser-activation-effect-retry: control-loop edge = an activation effect fails -> nextAt moves out; steady-state bound = one attempt in flight per record, nextEffectAttemptAt 30 s doubling to a 1 h ceiling (<= 728 attempts per record over 30 days), records bounded by maxBrowsers and maxSetupsPerHour; settling brake = the 1 h ceiling, one report after 24 attempts, one local fallback notice (fallbackRaisedAt), and the in-memory work flag that stops all reads when nothing is pending. Registered in src/testing/selfActionRegistry.ts."
+    }
+  },
+  "verdict": "blocked"
+}

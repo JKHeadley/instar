@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "operator-needs-first-screen",
+  "sessionId": "30f90ccf-9e3c-4f41-80a4-df8508194972",
+  "timestamp": "2026-11-04T05:51:03.345Z",
+  "artifactPath": "upgrades/side-effects/operator-needs-first-screen.md",
+  "artifactSha256": "bf23a8784a58acfc33406e8e05aba9d5c8b34600103502f849cd9438f06a3e73",
+  "specPath": "docs/specs/operator-needs-first-screen.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-04T05-50-50-503Z-operator-needs-first-screen.json",
+    ".instar/instar-dev-traces/2026-11-04T05-50-30-725Z-operator-needs-first-screen-40548b21.json",
+    "docs/specs/operator-needs-first-screen.eli16.md",
+    "docs/specs/operator-needs-first-screen.md",
+    "src/core/MessagingToneGate.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/operator-surface-referral.test.ts",
+    "upgrades/side-effects/operator-needs-first-screen.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on: moves B22's rule text out of the benchmarked template",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

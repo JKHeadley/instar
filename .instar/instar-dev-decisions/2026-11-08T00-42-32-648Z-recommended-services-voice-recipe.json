@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-08T00:42:32.648Z",
+  "slug": "recommended-services-voice-recipe",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 123,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/VoiceTranscription.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/backends/BaileysBackend.ts",
+      "src/recommended/catalog.ts",
+      "src/recommended/recipes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 119,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered action: the check runs on the existing bounded setup schedule, and transcription runs once per voice note the person sends"
+  },
+  "verdict": "pass"
+}

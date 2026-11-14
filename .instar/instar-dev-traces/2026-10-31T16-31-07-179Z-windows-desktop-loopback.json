@@ -1,0 +1,39 @@
+{
+  "phase": "complete",
+  "slug": "windows-desktop-loopback",
+  "tier": 3,
+  "tierReasoning": "Windows desktop input and update migration boundary; live firewall dialog on Mama PC and independent security review.",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-echo-mesh.md",
+    "docs/specs/native-remote-desktop-echo-mesh.eli16.md",
+    "scripts/install-windows-desktop-companion.mjs",
+    "src/core/WindowsDesktopBridgeAddress.ts",
+    "src/core/WindowsDesktopCompanionDiscovery.ts",
+    "tests/unit/windows-desktop-bridge-address.test.ts",
+    "upgrades/next/windows-desktop-loopback.md",
+    "upgrades/side-effects/windows-desktop-loopback.md"
+  ],
+  "artifactPath": "upgrades/side-effects/windows-desktop-loopback.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-loopback.md",
+  "artifactSha256": "98284067018d0727628e31718f08bc3a181fd2a8ba29567e460f39c35215a9d1",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "scripts/install-windows-desktop-companion.mjs",
+      "howCaught": "Installer binds the companion only to Windows loopback; the signed local transport connects there. The live browser test must show the Firewall dialog is gone before normal control is called ready."
+    }
+  },
+  "createdAt": "2026-10-31T16:31:07.179Z",
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2498
+    ],
+    "notes": "The prior transport repair proved a live Windows frame and Stop but exposed a Windows Firewall permission dialog from the legacy gateway listener. The first review found a repeat-install loopback handshake regression, fixed before this trace."
+  }
+}

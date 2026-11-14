@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-31T02:54:44.337Z",
+  "slug": "native-remote-desktop-target-bootstrap",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 173,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/install-windows-desktop-companion.mjs",
+      "scripts/install-windows-desktop-companion.ps1",
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/WindowsDesktopBridgeAddress.ts",
+      "src/core/WindowsDesktopCompanionDiscovery.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 154,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

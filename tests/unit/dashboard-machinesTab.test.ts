@@ -64,8 +64,8 @@ describe('dashboard: Machines tab', () => {
   });
 
   it('renders machine values XSS-safely via the glance sanitizer (no innerHTML)', () => {
-    // The glance component displays nicknames / free text through sanitizeForDisplay.
-    expect(GLANCE).toMatch(/sanitizeForDisplay\(m\.nickname/);
+    // Verify a nickname before passing it to the existing text sanitizer.
+    expect(GLANCE).toMatch(/sanitizeForDisplay\(verifiedDisplayName\(m\.nickname, m\.machineId\)/);
     expect(GLANCE).toContain('export function machineRowText');
   });
 

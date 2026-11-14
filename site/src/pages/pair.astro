@@ -1,0 +1,83 @@
+---
+// One-time agent pairing link fallback (docs/specs/mobile-pairing-link.md §2.3).
+// The link's secret part is in the URL fragment, which browsers never send to this
+// server; this page reads it client-side only, never inserts it as HTML, and makes no
+// network requests (connect-src 'none').
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+    <title>Pair with Instar</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; min-height: 100vh; background: #0a0e17; color: #e2e8f0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; align-items: center; justify-content: center; }
+      main { max-width: 420px; padding: 32px 20px; text-align: center; }
+      img.logo { width: 72px; height: 72px; }
+      h1 { font-size: 22px; margin: 16px 0 4px; }
+      .host { font-size: 20px; font-weight: 600; color: #2dd4bf; word-break: break-all; margin: 8px 0 20px; }
+      .qr { background: #fff; border-radius: 12px; padding: 12px; display: inline-block; }
+      .qr img { display: block; width: 220px; height: 220px; }
+      button { margin-top: 20px; background: #2dd4bf; color: #0a0e17; border: 0; border-radius: 10px; font-weight: 600; font-size: 16px; padding: 12px 20px; }
+      p.small { color: #94a3b8; font-size: 14px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="logo" src="/logo.png" alt="Instar" />
+      <div id="ok" hidden>
+        <h1>Add this agent to Instar</h1>
+        <div class="host" id="host"></div>
+        <div class="qr"><img id="qr" alt="Pairing QR code" /></div>
+        <p class="small">On your iPhone with the Instar app, scan this code with the camera.</p>
+        <button id="copy" type="button">Copy link</button>
+        <p class="small" id="copied" hidden>Copied. In the Instar app, tap + and choose “Paste pairing link”.</p>
+        <p class="small">This link works once and expires after a few minutes. Only add agents you run.</p>
+      </div>
+      <div id="bad" hidden>
+        <h1>This link is not valid</h1>
+        <p class="small">Ask your agent for a new pairing link.</p>
+      </div>
+    </main>
+    <script>
+      import QRCode from 'qrcode';
+
+      // Link format v1 (frozen): https://instar.sh/pair#v=1&o=<urlencoded https origin>&c=<22-char code>
+      function parse(hash: string): { origin: URL } | null {
+        const q = new Map<string, string>();
+        for (const kv of hash.replace(/^#/, '').split('&')) {
+          const i = kv.indexOf('=');
+          if (i > 0 && !q.has(kv.slice(0, i))) {
+            try { q.set(kv.slice(0, i), decodeURIComponent(kv.slice(i + 1))); } catch { return null; }
+          }
+        }
+        if (q.get('v') !== '1') return null;
+        if (!/^[A-Za-z0-9_-]{22}$/.test(q.get('c') ?? '')) return null;
+        let origin: URL;
+        try { origin = new URL(q.get('o') ?? ''); } catch { return null; }
+        if (origin.protocol !== 'https:' || !origin.hostname) return null;
+        return { origin };
+      }
+
+      const parsed = parse(location.hash);
+      const show = (id: string) => { const el = document.getElementById(id); if (el) el.hidden = false; };
+      if (!parsed) {
+        show('bad');
+      } else {
+        const link = location.href;
+        (document.getElementById('host') as HTMLElement).textContent = parsed.origin.host;
+        QRCode.toDataURL(link, { errorCorrectionLevel: 'M', margin: 0, width: 440 })
+          .then((url: string) => { (document.getElementById('qr') as HTMLImageElement).src = url; })
+          .catch(() => { /* the copy button still works */ });
+        document.getElementById('copy')?.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(link); show('copied'); } catch { /* clipboard unavailable */ }
+        });
+        show('ok');
+      }
+    </script>
+  </body>
+</html>

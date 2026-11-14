@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "executor-restart-hold",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T03:24:07.066Z",
+  "artifactPath": "upgrades/side-effects/executor-restart-hold.md",
+  "artifactSha256": "30bf4ca5278ea0b792182d4fa476da5881eb9d8bf07d49ac0ced48c6794dec3c",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "src/server/AgentServer.ts",
+    "tests/fixtures/feedbackGitHubRuntimeHarness.ts",
+    "tests/integration/feedback-github-runtime-routes.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-wiring.test.ts",
+    "upgrades/eli16/executor-restart-hold.md",
+    "upgrades/next/executor-restart-hold.md",
+    "upgrades/side-effects/executor-restart-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow correction to an adoption check, plus a bounded provider on an existing hold path; a revert fully undoes it. Independent second pass raised concerns that are addressed.",
+  "eli16Path": "upgrades/eli16/executor-restart-hold.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-restart-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

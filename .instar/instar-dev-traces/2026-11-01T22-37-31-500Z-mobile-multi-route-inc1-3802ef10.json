@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "mobile-multi-route-inc1",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-01T22:37:31.500Z",
+  "artifactPath": "upgrades/side-effects/mobile-multi-route-inc1.md",
+  "artifactSha256": "ba2dc249d346cbcd33e7921576deb9f3af9dc564925eb565a35e00b557f1f9dd",
+  "coveredFiles": [
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/mobile-multi-route-inc1.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test fixture config only; no runtime change.",
+  "eli16Path": "docs/specs/mobile-multi-route.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-multi-route-inc1.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

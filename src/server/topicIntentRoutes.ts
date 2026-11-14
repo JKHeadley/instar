@@ -45,6 +45,34 @@ function sanitizeMetaForDiagnostics(meta: Record<string, unknown> | undefined): 
   return out;
 }
 
+/**
+ * Render a topic's briefing exactly as `GET /topic-intent/:id/briefing` serves
+ * it, with the same surface-side metering (spec §10: a prompt/compaction
+ * briefing fetch = the captured set actually reached agent context). Shared by
+ * the briefing route and the per-prompt hook's single request
+ * (`GET /topic/:id/prompt-context`), so both meter identically.
+ */
+export function serveTopicIntentBriefing(
+  store: TopicIntentStore,
+  topicId: number,
+  layerFreshness: ((topicId: number) => { line: string; stale: boolean | 'unknown' } | null) | null,
+): string {
+  let freshness: { line: string; stale: boolean | 'unknown' } | null = null;
+  try { freshness = layerFreshness?.(topicId) ?? null; } catch { freshness = null; /* @silent-fallback-ok — the briefing renders without the stamp */ }
+  const result = renderTopicIntentBriefing(store, topicId, { freshness });
+  try {
+    const settled = store.getRefsAtOrAbove(topicId, 'authoritative').length;
+    const tentativePlus = store.getRefsAtOrAbove(topicId, 'tentative').length;
+    store.bumpCaptureCounters(topicId, {
+      briefing_served: 1,
+      briefing_refs_settled: settled,
+      briefing_refs_tentative: Math.max(0, tentativePlus - settled),
+      awareness_briefing_served: result.counts.awareness ? 1 : 0,
+    });
+  } catch { /* metering best-effort — never block a briefing fetch */ }
+  return result.text;
+}
+
 export function createTopicIntentRoutes(deps: {
   topicIntentStore: TopicIntentStore | null;
   /** Layer 3 ArcCheck instance. Null/undefined → arccheck route returns
@@ -57,6 +85,10 @@ export function createTopicIntentRoutes(deps: {
    *  pre-existing tests and out-of-process integrations keep working
    *  unchanged. Production passes `arcCheck` directly. */
   arcCheckClassify?: ArcCheckClassifyFn | null;
+  /** The current-work layer's freshness stamp (context-budget §6); absent ⇒ not rendered. */
+  layerFreshness?: ((topicId: number) => { line: string; stale: boolean | 'unknown' } | null) | null;
+  /** Told of every briefing served (context-budget §7.7: the delta hook recognises the seed's own fetch). */
+  onBriefingServed?: ((topicId: number, text: string) => void) | null;
 }): Router {
   const router = Router();
   const { topicIntentStore: store } = deps;
@@ -174,21 +206,9 @@ export function createTopicIntentRoutes(deps: {
   router.get('/topic-intent/:topicId/briefing', (req: Request, res: Response) => {
     const parsed = TopicIdParam.safeParse(req.params.topicId);
     if (!parsed.success) return res.status(400).type('text/plain').send('');
-    const topicId = parsed.data;
-    const result = renderTopicIntentBriefing(store, topicId);
-    // Surface-side metering (spec §10): a prompt/compaction briefing fetch =
-    // the captured set actually reached agent context. Record it + contents.
-    try {
-      const settled = store.getRefsAtOrAbove(topicId, 'authoritative').length;
-      const tentativePlus = store.getRefsAtOrAbove(topicId, 'tentative').length;
-      store.bumpCaptureCounters(topicId, {
-        briefing_served: 1,
-        briefing_refs_settled: settled,
-        briefing_refs_tentative: Math.max(0, tentativePlus - settled),
-        awareness_briefing_served: result.counts.awareness ? 1 : 0,
-      });
-    } catch { /* metering best-effort — never block a briefing fetch */ }
-    res.type('text/plain').send(result.text);
+    const text = serveTopicIntentBriefing(store, parsed.data, deps.layerFreshness ?? null);
+    try { deps.onBriefingServed?.(parsed.data, text); } catch { /* @silent-fallback-ok — an observer never changes the briefing */ }
+    res.type('text/plain').send(text);
   });
 
   /**

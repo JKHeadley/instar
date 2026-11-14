@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-05T02:04:21.080Z",
+  "slug": "recommended-services-stop-holds",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/recommended/catalog.ts",
+      "src/recommended/recipes.ts",
+      "src/recommended/setupState.ts",
+      "src/server/AgentServer.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 75,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "closure": "n/a",
+    "reason": "A recorded fact that stops an automatic restart, with no loop, no retry and no new way to act."
+  },
+  "verdict": "pass"
+}

@@ -19,6 +19,10 @@ interface AttemptEntry {
   resetAt: number;
 }
 
+/** One cap across every source address, shared by every route that takes a PIN with no bearer token. */
+export const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+export const GLOBAL_PIN_MAX_ATTEMPTS = 20;
+
 export class PinAttemptStore {
   private readonly filePath: string;
   private entries = new Map<string, AttemptEntry>();
@@ -37,13 +41,13 @@ export class PinAttemptStore {
   }
 
   /** True when the IP is currently locked out. */
-  blocked(ip: string): boolean {
+  blocked(ip: string, maxAttempts = this.maxAttempts): boolean {
     const e = this.current(ip);
-    return e !== undefined && e.count >= this.maxAttempts;
+    return e !== undefined && e.count >= maxAttempts;
   }
 
   /** Record a FAILED attempt; returns attempts remaining (≥ 0). */
-  recordFailure(ip: string): number {
+  recordFailure(ip: string, maxAttempts = this.maxAttempts): number {
     let e = this.current(ip);
     if (!e) {
       e = { count: 0, resetAt: this.now() + this.windowMs };
@@ -51,7 +55,7 @@ export class PinAttemptStore {
     }
     e.count++;
     this.persist();
-    return Math.max(0, this.maxAttempts - e.count);
+    return Math.max(0, maxAttempts - e.count);
   }
 
   /** Clear an IP's counter on a successful PIN entry. */

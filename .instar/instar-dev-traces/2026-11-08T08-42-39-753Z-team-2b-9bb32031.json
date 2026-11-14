@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "team-2b",
+  "sessionId": "64bbdc16-c1ff-4cb1-ba12-94162e667c48",
+  "timestamp": "2026-11-08T08:42:39.753Z",
+  "artifactPath": "upgrades/side-effects/team-2b.md",
+  "artifactSha256": "75886cfb1403aadfd596f993678d689838b547c424abaa19843a0d90b6e24292",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/appInboundDispatch.ts",
+    "tests/unit/app-dispatch-engine.test.ts",
+    "tests/unit/team-guards.test.ts",
+    "upgrades/side-effects/team-2b.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

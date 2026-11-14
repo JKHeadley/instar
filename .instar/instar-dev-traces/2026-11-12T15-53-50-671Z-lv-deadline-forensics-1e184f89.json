@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "lv-deadline-forensics",
+  "sessionId": "7b94e0ef-44cd-400d-9bb3-977c21954026",
+  "timestamp": "2026-11-12T15:53:50.671Z",
+  "artifactPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "artifactSha256": "9cba0b4795ee5574c2aa5b2d51564a6c031c34c5df4c0fce0f927d106e5dccb1",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-12T15-53-00-244Z-lv-deadline-forensics-27b3a189.json",
+    "docs/specs/lv-deadline-forensics.eli16.md",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/unhandledErrorsReporter.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/unhandledErrorsReporter-progress.test.ts",
+    "upgrades/next/lv-deadline-forensics.md",
+    "upgrades/side-effects/lv-deadline-forensics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Verifier diagnostics (a forensics log line) plus ending sibling lanes after a deadline that already made the run an error; no verdict rule changes.",
+  "eli16Path": "docs/specs/lv-deadline-forensics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -51,6 +51,7 @@
 
 import type { RoutingSpendCapsStore } from './RoutingSpendCapsStore.js';
 import { MoneyGateRefusal, type AdmitRequest, type AdmitResult } from './MeteredSpendGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface MeteredCallEntryDeps {
   /** Read DIRECTLY, ahead of the money layer — never through it. */
@@ -89,6 +90,26 @@ export function frozenKeyForDoor(capsStore: RoutingSpendCapsStore | null, door: 
  * `MoneyGateRefusal`, so callers handle one error type.
  */
 export async function admitMeteredCall(deps: MeteredCallEntryDeps, req: AdmitRequest): Promise<AdmitResult> {
+  try {
+    const admitted = await admitThroughEntryPath(deps, req);
+    featureEvidence.record('routingSpend.money', {
+      kind: 'fired',
+      reason: 'metered-call-admitted',
+      context: { door: req.door, modelId: req.modelId, keyRef: admitted.keyRef, reserveUsd: admitted.reserveUsd, committedDayUsd: admitted.committedDayUsd },
+    });
+    return admitted;
+  } catch (err) {
+    const refusal = err instanceof MoneyGateRefusal ? err : null;
+    featureEvidence.record('routingSpend.money', {
+      kind: 'error',
+      reason: refusal ? `refused: ${refusal.reason}` : 'admission-failed',
+      context: { door: req.door, modelId: req.modelId, keyRef: refusal?.keyRef ?? null },
+    });
+    throw err;
+  }
+}
+
+async function admitThroughEntryPath(deps: MeteredCallEntryDeps, req: AdmitRequest): Promise<AdmitResult> {
   // 1) FREEZE — before anything else, and independent of the money layer.
   const freeze = frozenKeyForDoor(deps.capsStore, req.door);
   if (freeze.unreadable) {

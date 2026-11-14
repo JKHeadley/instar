@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-07T16:34:20.224Z",
+  "slug": "event-loop-freeze-changeset-sessions-probe",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/execute/ConfinedRunner.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/changeSet.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

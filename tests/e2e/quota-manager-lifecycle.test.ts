@@ -360,7 +360,9 @@ describe('QuotaManager E2E Lifecycle', () => {
       return { ok: false, status: 401, headers: new Map(), json: async () => ({}) } as unknown as Response;
     });
 
-    const collector = new QuotaCollector(provider, tracker, { fetchFn: mockFetch });
+    // The JSONL fallback must read this test's own folder. Without this it parses the real home's transcripts:
+    // 20 s and 5.69 GB on the Mac Mini, and the run time depends on whoever runs the test.
+    const collector = new QuotaCollector(provider, tracker, { fetchFn: mockFetch, jsonlFallback: { enabled: true, claudeProjectsDir: path.join(tmpDir, 'no-transcripts') } });
     const migrator = new SessionMigrator({ stateDir: tmpDir });
     const notifier = new QuotaNotifier(tmpDir);
     notifier.configure(vi.fn(async () => {}), null);

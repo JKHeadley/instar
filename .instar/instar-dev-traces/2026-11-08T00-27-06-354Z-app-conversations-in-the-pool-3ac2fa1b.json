@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "app-conversations-in-the-pool",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-08T00:27:06.354Z",
+  "artifactPath": "upgrades/side-effects/app-conversations-in-the-pool.md",
+  "artifactSha256": "eae95da1dd57e81dbcf890bf74adb68570d1f2239672a28a527394f2d84d0d5a",
+  "specPath": "docs/specs/app-conversations-in-the-pool.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/app-conversations-in-the-pool.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the approved Tier 2 change: the pool wiring block runs as a named function so startServer stays under tsc's flow-depth limit once merged with main",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

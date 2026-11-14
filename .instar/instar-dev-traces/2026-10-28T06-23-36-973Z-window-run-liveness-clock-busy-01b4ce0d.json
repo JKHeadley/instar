@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "window-run-liveness-clock-busy",
+  "sessionId": "4bbb4294-4921-4d74-a256-7046f5c098ca",
+  "timestamp": "2026-10-28T06:23:36.973Z",
+  "artifactPath": "upgrades/side-effects/window-run-liveness-clock-busy.md",
+  "artifactSha256": "17dd8d4af096dba4c48d05494349847ea58e8933902e2c2fe3a075a822e98395",
+  "coveredFiles": [
+    "docs/specs/window-run-liveness-clock-busy.eli16.md",
+    "src/core/WindowRunLivenessAuthority.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/window-run-liveness-authority.test.ts",
+    "upgrades/next/window-run-liveness-clock-busy.md",
+    "upgrades/side-effects/window-run-liveness-clock-busy.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in one authority plus its refresh-result mapping; ~90 LOC, fully undone by revert; no new blocking authority, no migration, no credentials.",
+  "eli16Path": "docs/specs/window-run-liveness-clock-busy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-run-liveness-clock-busy.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

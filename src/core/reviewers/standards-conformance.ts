@@ -110,6 +110,8 @@ Output ONLY a JSON array of findings (possibly empty). Each finding:
 
 Examples of real violations to catch: a design that requires the user or agent to REMEMBER to do something (violates "No Manual Work"); a brittle low-context check given blocking authority (violates "Signal vs. Authority"); a feature with no metrics (violates "Observability"); a change to agent-installed files with no migration path (violates "Migration Parity").
 
+Judgment Within Floors — independently CONTEST every fixed limit on agent behavior: rates, counts, sizes, growth ceilings, retirement thresholds and qualitative quotas, anywhere in the spec, not just the decision table. Treat each as a judgment-candidate by default. An invariant label, "deterministic counts", "fixed cap" or "bounded by design" merely restates the rule; none proves it necessary. Require evidence of a specific irreversible consequence, a genuinely enumerable domain, or an external constraint, and explain why this exact boundary follows from that evidence. Name a legitimate counterexample the limit would reject (or explicitly say "no legitimate counterexample found" for a genuine floor) and assess whether intelligent judgment inside a deterministic floor would serve it. A declaration of basis/evidence is not proof: contest its substance. Flag unsupported limits against the applicable listed standard even if the spec claims conformance or passed earlier rounds. Preserve genuine protocol/type constraints and evidenced safety floors; examples, measurements and advisory defaults are not behavioral caps unless they actually gate actions.
+
 If the spec conforms to all standards, return [].
 
 The draft spec to review:

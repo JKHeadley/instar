@@ -50,6 +50,7 @@
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { MergedClaimAnnotation } from './TopicClaimAnnotationStore.js';
 import type { AttentionConditionIdentity, AttentionConditionObservation } from './AttentionConditionStore.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 /** Config subtree: multiMachine.sessionPool.staleOwnerRelease (§5). */
 export interface StaleOwnerReleaseConfig {
@@ -220,6 +221,13 @@ export interface StaleOwnerReleaseDeps {
   trace: (entry: StaleOwnerTraceEntry) => void;
   /** Raise ONE deduped attention item (episode-keyed; P17-coalesced pool-wide). */
   raiseAttention: (item: StaleOwnerAttentionItem) => void;
+  /**
+   * trustworthy-machine-load D5: the owner's honest liveness (live / unreachable with a
+   * shape / stale / unknown), so a notice says "struggling" or "refusing" when that is the
+   * evidence instead of describing a machine that still answers as gone. Display only:
+   * it never changes the evidence bar or any claim decision. Absent ⇒ today's wording.
+   */
+  ownerLiveness?: (machineId: string) => import('./machineLiveness.js').MachineLiveness | undefined;
   /** Durable condition lifecycle. Wiring owns ids; this producer owns semantic
    *  identity and positive-evidence clears. */
   observeAttentionCondition?: (identity: AttentionConditionIdentity) => AttentionConditionObservation;
@@ -367,7 +375,9 @@ export class StaleOwnerReleaseEngine {
 
     // ── Candidate owners: peers that own at least one live topic record.
     const records = this.d.listOwnershipRecords().filter(
-      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self,
+      // app-conversations-in-the-pool §2.2: never automatic for an app conversation. Its only takeover is
+      // the operator's "bring it back here".
+      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self && !r.sessionKey.startsWith('app:'),
     );
     const topicsByOwner = new Map<string, SessionOwnershipRecord[]>();
     for (const r of records) {
@@ -783,7 +793,7 @@ export class StaleOwnerReleaseEngine {
             id: condition?.itemId ?? `stale-owner:${ep.episodeId}`,
             title: `Topic(s) look stranded on ${owner} — I can't prove the owner's state`,
             body:
-              `Machine ${owner} has been offline past the evidence window but the death evidence stays ambiguous ` +
+              `Machine ${owner} ${this.describeOwner(owner)} past the evidence window but the death evidence stays ambiguous ` +
               `(fail-closed). Topics it owns are not being served. Your call: demote it (I take its topics over) or wait. ` +
               `Episode ${ep.episodeId}.`,
             priority: 'high',
@@ -808,12 +818,25 @@ export class StaleOwnerReleaseEngine {
     try {
       this.d.raiseAttention({
         id: key,
-        title: `Stale-owner release gave up${topic ? ` on topic ${topic}` : ''} (${owner})`,
+        title: `Stale-owner release gave up${topic ? ` on ${topicRef(topic)}` : ''} (${owner})`,
         body: `${detail}. No further automatic attempts this episode — manual demote or investigation needed.`,
         priority: 'high',
         sourceContext: `stale-owner-release:${owner}`,
       });
     } catch { /* best-effort */ }
+  }
+
+  /**
+   * D5 wording: what the evidence says about the owner. A machine that answers slowly or
+   * refuses connections is described as such, never as gone.
+   */
+  describeOwner(owner: string): string {
+    let l: import('./machineLiveness.js').MachineLiveness | undefined;
+    try { l = this.d.ownerLiveness?.(owner); } catch { l = undefined; /* @silent-fallback-ok — no liveness view keeps the neutral wording */ }
+    if (l?.state === 'unreachable' && l.shape === 'struggling') return 'is struggling (it answers slowly or only partly, so it looks overloaded rather than gone) and has not served its topics';
+    if (l?.state === 'unreachable' && l.shape === 'refusing') return 'is refusing connections (it is running but turning requests away) and has not served its topics';
+    if (l?.state === 'live') return 'still answers direct contact but has not served its topics';
+    return 'has been unreachable';
   }
 
   private observeCondition(conditionType: 'ambiguity' | 'giveup', owner: string, scope = 'owner'): AttentionConditionObservation | undefined {

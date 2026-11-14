@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-08T02:19:04.427Z",
+  "slug": "conversation-graph-read-session-recheck",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplication.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes how often existing checks run; no new trigger or loop"
+  },
+  "verdict": "pass"
+}

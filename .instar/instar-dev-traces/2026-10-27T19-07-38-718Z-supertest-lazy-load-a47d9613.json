@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "supertest-lazy-load",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-27T19:07:38.718Z",
+  "artifactPath": "upgrades/side-effects/supertest-lazy-load.md",
+  "artifactSha256": "1f2370384c7b2b49b1dc0c08877dbfba28c0bbcc54dfd7ecbd029b0bc8b13d3b",
+  "coveredFiles": [
+    "docs/specs/supertest-lazy-load.eli16.md",
+    "tests/setup/supertest-alias.ts",
+    "tests/setup/supertest-with-retry.ts",
+    "tests/unit/supertest-retry-alias.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/supertest-lazy-load.md",
+    "upgrades/side-effects/supertest-lazy-load.md",
+    "vitest.config.ts",
+    "vitest.e2e.config.ts",
+    "vitest.integration.config.ts",
+    "vitest.push.config.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-harness wiring only: Supertest is loaded where it is imported instead of in every test file, with the same retry patch; a revert fully undoes it.",
+  "eli16Path": "docs/specs/supertest-lazy-load.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/supertest-lazy-load.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

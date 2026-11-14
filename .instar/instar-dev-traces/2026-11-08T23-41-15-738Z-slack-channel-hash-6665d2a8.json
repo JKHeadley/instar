@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "slack-channel-hash",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T23:41:15.738Z",
+  "artifactPath": "upgrades/side-effects/slack-channel-hash.md",
+  "artifactSha256": "53ac4b04c6efec94ee6cae203e80348b1df1365719fdb8a02b9fe8dd1ff38c77",
+  "coveredFiles": [
+    "docs/specs/slack-channel-hash.eli16.md",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/messaging/slack/types.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "tests/e2e/mobile-slack-from-app-alive.test.ts",
+    "tests/unit/mobile-slack-from-app.test.ts",
+    "tests/unit/slack-names.test.ts",
+    "upgrades/next/slack-channel-hash.md",
+    "upgrades/side-effects/slack-channel-hash.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only title text for Slack conversations; a revert fully undoes it; no stored state",
+  "eli16Path": "docs/specs/slack-channel-hash.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-channel-hash.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

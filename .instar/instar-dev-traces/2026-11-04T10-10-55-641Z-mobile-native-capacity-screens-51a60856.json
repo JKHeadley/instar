@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "mobile-native-capacity-screens",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T10:10:55.641Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-capacity-screens.md",
+  "artifactSha256": "da147a2754ef2ae49913998d50760a5441a3890be0c6f51702339a2c9d653a17",
+  "specPath": "docs/specs/mobile-native-capacity-screens.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-capacity-screens.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "spec ladder line names the real mobilePairing entry (feature-ladder ratchet)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "read-only routes, no loop"
+  }
+}

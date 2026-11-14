@@ -1,0 +1,51 @@
+{
+  "ts": "2026-10-27T00:19:17.772Z",
+  "slug": "trustworthy-machine-load-p3",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 975,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/OverloadShedPlanner.ts",
+      "src/core/OwnershipReconciler.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RebalancePlanner.ts",
+      "src/core/StaleOwnerReleaseEngine.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/sessionPriority.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/monitoring/guardManifest.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 963,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under the pinned worst case (admission closed+enforced forever, peer never claims, transfer never started) the real OverloadShedPlanner settles at 2 tries + 2 refunds per topic per durable episode (5 topics -> 20 proposals), horizon-independent; the reconciler initiates at most one overload transfer per topic per episode."
+    },
+    "component": "OverloadShedPlanner"
+  },
+  "verdict": "pass"
+}

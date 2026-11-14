@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-echo-mesh",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T22:21:47.654Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-echo-mesh.md",
+  "artifactSha256": "b3257ac253ba10aa564a5e7d5b85cffc2d9f6f1a3d535ae9e6f8c9c126c067cf",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "upgrades/side-effects/native-remote-desktop-echo-mesh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI packaging verification for the security-sensitive Windows desktop companion; no runtime authority change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

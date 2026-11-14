@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-05T04:39:12.822Z",
+  "slug": "job-silence-alert",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 118,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/SkipLedger.ts"
+    ],
+    "addedLines": 118,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

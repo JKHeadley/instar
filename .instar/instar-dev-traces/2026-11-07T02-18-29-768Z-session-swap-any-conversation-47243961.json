@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "session-swap-any-conversation",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T02:18:29.768Z",
+  "artifactPath": "upgrades/side-effects/session-swap-any-conversation.md",
+  "artifactSha256": "b51140dadf1b8fd8e3004c6c51bef5b24d1b8e65de5bccce6bb3110d56c5b8ca",
+  "specPath": "docs/specs/session-swap-any-conversation.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-07T02-18-18-783Z-session-swap-any-conversation.json",
+    ".instar/instar-dev-traces/2026-11-07T02-17-50-156Z-session-swap-any-conversation-7c225b09.json",
+    "src/commands/server.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/core/conversationPorts.ts",
+    "tests/unit/app-conversation-service.test.ts",
+    "tests/unit/slack-thread-session-wiring.test.ts",
+    "upgrades/side-effects/session-swap-any-conversation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on the same Tier 2 change: silent-fallback markers and two source-scan test anchors, found by the full unit run.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

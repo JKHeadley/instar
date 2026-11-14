@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "slug": "agent-health-quiet-default",
+  "sessionId": "d2f49863-ab85-4a22-969b-eb173110d3f6",
+  "timestamp": "2026-11-04T17:35:17.873Z",
+  "artifactPath": "upgrades/side-effects/agent-health-quiet-default.md",
+  "artifactSha256": "92104532cd60db90572dbc11ea8b60c959cf58d7465306486ac3352cefe15c61",
+  "specPath": "docs/specs/notification-selectivity.md",
+  "coveredFiles": [
+    "docs/eli16/agent-health-quiet-default.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/attention-single-topic-routing.test.ts",
+    "tests/unit/system-topic-single-creator.test.ts",
+    "tests/unit/telegram-tokenless-relay.test.ts",
+    "upgrades/next/agent-health-quiet-default.md",
+    "upgrades/side-effects/agent-health-quiet-default.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Outbound attention routing and multi-machine format propagation are high-risk; use the existing approved spec and full review chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

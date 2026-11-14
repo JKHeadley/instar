@@ -175,6 +175,23 @@ describe('convergence-check operator-reachable links', () => {
     });
   });
 
+  // The Tailscale setup recipe's one step for the person is a tap on Tailscale's own sign-in
+  // link. A live run on 2026-11-06 was refused here and the session edited its guard to pass.
+  describe('Tailscale sign-in link', () => {
+    it('allows the link "tailscale up" prints', () => {
+      const { code } = runCheck(dir, 'One tap on this link signs it in: https://login.tailscale.com/a/1d6342f60178c6\n');
+      expect(code).toBe(0);
+    });
+
+    it('trusts only that exact host, not other tailscale.com pages or look-alikes', () => {
+      for (const url of ['https://tailscale.com/pricing', 'https://login.tailscale.com.evil.xyz/a/1', 'https://notlogin.tailscale.com/a/1']) {
+        const { code, out } = runCheck(dir, `See ${url}\n`);
+        expect(code, url).not.toBe(0);
+        expect(out, url).toContain('URL_PROVENANCE');
+      }
+    });
+  });
+
   // Over-block caught by CI, 2026-10-22. An existing regression test in
   // convergence-check.test.ts pins that the Claude subscription OAuth login link
   // (which lives on claude.com) must PASS — the agent hands it to the operator

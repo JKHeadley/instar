@@ -23,6 +23,7 @@ import {
   type FollowMeMechanism,
 } from './AccountFollowMeOrchestrator.js';
 import { acceptDeliveredMandate, type PortableMandate } from '../coordination/AccountFollowMeMandateBridge.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type crypto from 'node:crypto';
 
 export interface AggregatedConsent {
@@ -67,11 +68,54 @@ export class AccountFollowMeService {
    */
   scanAndOffer(): { offered: FollowMeConsentRequest[] } {
     const { machines, accounts } = this.deps.readPoolDepth();
-    const candidates = detectEnrollmentOffers({
-      machines,
-      accounts,
+    const machineIdsByName = new Map<string, Set<string>>();
+    for (const m of machines) {
+      const name = verifiedEntityName(m.machineId, m.nickname);
+      if (!name) continue;
+      const key = name.toLocaleLowerCase();
+      if (!machineIdsByName.has(key)) machineIdsByName.set(key, new Set());
+      machineIdsByName.get(key)!.add(m.machineId);
+    }
+    const accountIdsByName = new Map<string, Set<string>>();
+    for (const a of accounts) {
+      const name = verifiedEntityName(a.accountId, a.email);
+      if (!name) continue;
+      const key = name.toLocaleLowerCase();
+      if (!accountIdsByName.has(key)) accountIdsByName.set(key, new Set());
+      accountIdsByName.get(key)!.add(a.accountId);
+    }
+    // Remove unapprovable targets before the detector spends a follow slot on them.
+    // Keep existing holders in the roster; their account depth still matters.
+    const eligibleMachines = machines.filter((m) => {
+      if (m.usableAccountCount > 0) return true;
+      const name = verifiedEntityName(m.machineId, m.nickname);
+      return Boolean(name && machineIdsByName.get(name.toLocaleLowerCase())?.size === 1);
+    });
+    const eligibleAccounts = accounts.filter((a) => {
+      const name = verifiedEntityName(a.accountId, a.email);
+      return Boolean(name && accountIdsByName.get(name.toLocaleLowerCase())?.size === 1);
+    });
+    const detected = detectEnrollmentOffers({
+      machines: eligibleMachines,
+      accounts: eligibleAccounts,
       maxFollowMachines: this.deps.maxFollowMachines(),
       inFlight: this.deps.inFlight(),
+    });
+    const offerIdsByLabel = new Map<string, Set<string>>();
+    for (const c of detected) {
+      const name = verifiedEntityName(c.targetMachineId, c.targetMachineNickname);
+      const account = verifiedEntityName(c.accountId, c.accountEmail);
+      if (!name || !account) continue;
+      const labelKey = `${name.toLocaleLowerCase()}\u0000${account.toLocaleLowerCase()}`;
+      if (!offerIdsByLabel.has(labelKey)) offerIdsByLabel.set(labelKey, new Set());
+      offerIdsByLabel.get(labelKey)!.add(`${c.targetMachineId}\u0000${c.accountId}`);
+    }
+    // Only surface offers the dashboard can explain and approve unambiguously.
+    const candidates = detected.filter((c) => {
+      const machine = verifiedEntityName(c.targetMachineId, c.targetMachineNickname);
+      const account = verifiedEntityName(c.accountId, c.accountEmail);
+      return Boolean(machine && account && machineIdsByName.get(machine.toLocaleLowerCase())?.size === 1
+        && offerIdsByLabel.get(`${machine.toLocaleLowerCase()}\u0000${account.toLocaleLowerCase()}`)?.size === 1);
     });
     if (candidates.length === 0) return { offered: [] };
 

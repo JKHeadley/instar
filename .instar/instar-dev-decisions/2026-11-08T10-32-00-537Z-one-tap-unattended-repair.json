@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-08T10:32:00.537Z",
+  "slug": "one-tap-unattended-repair",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 620,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/coordination/AccountFollowMeMandateDelivery.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/core/SubscriptionReloginRemoteConfigure.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 586,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

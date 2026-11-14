@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-09T18:06:02.780Z",
+  "slug": "conversation-graph-writer-not-joined",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphDefaultSurface.ts",
+      "src/server/ConversationGraphOwnerChanges.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

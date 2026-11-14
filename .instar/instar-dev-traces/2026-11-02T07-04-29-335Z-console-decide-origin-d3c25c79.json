@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "console-decide-origin",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T07:04:29.335Z",
+  "artifactPath": "upgrades/side-effects/console-decide-origin.md",
+  "artifactSha256": "6ddcb27fcb3e8c8f62342b8eaf7397ebe5efbdf2a5b3fc8756f1b0597643925f",
+  "coveredFiles": [
+    "dashboard/console/promises.js",
+    "tests/unit/console-promises.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line client fix",
+  "eli16Path": "upgrades/side-effects/console-decide-origin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-decide-origin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

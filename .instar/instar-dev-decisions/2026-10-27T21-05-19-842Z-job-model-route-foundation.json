@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-27T21:05:19.842Z",
+  "slug": "job-model-route-foundation",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobRunHistory.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

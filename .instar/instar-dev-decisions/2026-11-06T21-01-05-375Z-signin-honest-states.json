@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T21:01:05.375Z",
+  "slug": "signin-honest-states",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileCapacityRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

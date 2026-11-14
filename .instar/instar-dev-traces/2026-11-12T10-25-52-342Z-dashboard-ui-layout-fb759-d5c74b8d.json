@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "dashboard-ui-layout-fb759",
+  "sessionId": "ab57d296-febe-4bb5-8538-261a09fbb136",
+  "timestamp": "2026-11-12T10:25:52.342Z",
+  "artifactPath": "upgrades/side-effects/dashboard-ui-layout-fb759.md",
+  "artifactSha256": "d1c0c50f9bf701377cb34581348f36bec3dff6c99a69310afd6b1e88c44d44f3",
+  "coveredFiles": [
+    "dashboard-pair/pair-model.js",
+    "dashboard-pair/pair.css",
+    "dashboard-pair/pair.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/auto-repair-model.js",
+    "dashboard/console/console.css",
+    "dashboard/index.html",
+    "dashboard/phones.js",
+    "docs/specs/dashboard-ui-layout-fb759.eli16.md",
+    "docs/specs/dashboard-ui-quality-standard.md",
+    "tests/unit/console-auto-repair-model.test.ts",
+    "tests/unit/dashboard-pair-page.test.ts",
+    "tests/unit/dashboard-phones-browser.test.ts",
+    "upgrades/next/dashboard-ui-layout-fb759.md",
+    "upgrades/side-effects/dashboard-ui-layout-fb759.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard layout only (no src/), no decision logic, a plain revert undoes it.",
+  "eli16Path": "docs/specs/dashboard-ui-layout-fb759.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-ui-layout-fb759.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -47,6 +47,7 @@ import {
   walkDisplacement,
   WORKSPACE_PLACEHOLDER,
 } from './conversationIdentity.js';
+import { isAppConversationKey } from './appConversationText.js';
 
 /** Entry origins (§3.4). `deliverToConversation` resolves ONLY the three local
  *  origins; a pure `replicated` entry is read-context (KYP, §3.5). */
@@ -69,8 +70,34 @@ export interface ConversationEntry {
   label?: string;
 }
 
+/**
+ * A native app conversation (mobile-native-conversations §4.1). The conversation store is its
+ * source of truth; the registry only holds this machine's local negative ALIAS for it (for session
+ * environments and durable consumers). The alias is never signed or replicated.
+ */
+export interface AppConversationTuple {
+  platform: 'app';
+  /** The bare lowercase RFC 4122 UUID. */
+  conversationKey: string;
+}
+
+/** The 'app' key parser: `app:<uuid>` → the tuple, else null. */
+export function parseAppRegistryKey(key: string): AppConversationTuple | null {
+  if (!key.startsWith('app:')) return null;
+  const k = key.slice(4);
+  return isAppConversationKey(k) ? { platform: 'app', conversationKey: k } : null;
+}
+
+interface AppAliasEntry {
+  id: number;
+  conversationKey: string;
+  mintedAt: string;
+  mintedBy: string;
+}
+
 export type ConversationDescriptor =
   | { platform: 'telegram'; topicId: number; passThrough: true }
+  | { platform: 'app'; id: number; key: string; conversationKey: string; bound: boolean }
   | {
       platform: 'slack';
       id: number;
@@ -125,6 +152,12 @@ export const JOURNAL_OPS = [
   'send-retire',
   'send-intent',
   'send-intent-resolved',
+  // mobile-native-conversations §4.1/§4.8 — app aliases + per-machine ownership bindings. A
+  // separate op (never 'mint') so a previous version SKIPS it (unknown-op tolerance) instead of
+  // loading a fake Slack entry.
+  'mint-app',
+  'bind-app',
+  'unbind-app',
 ] as const;
 export type JournalOp = (typeof JOURNAL_OPS)[number];
 
@@ -194,6 +227,9 @@ interface SnapshotShape {
   bindPins: Record<string, { tuple: [string, string, string | null]; refcount: number }>;
   ambiguousSends: Record<string, { recordedAt: string; lane?: 'logical' | 'content-hash' }>;
   sendIntents: Record<string, { lane: 'logical' | 'content-hash'; seq: number }>;
+  /** mobile-native-conversations: app aliases (uuid → entry) + live bind-app ids. Absent in older snapshots. */
+  appConversations?: Record<string, AppAliasEntry>;
+  appBindings?: number[];
 }
 
 /** §5.0(a) pinned E1 constants (R3-M1/R7-M2). Exported for the §10 tests. */
@@ -225,6 +261,10 @@ export class ConversationRegistry {
   private byId = new Map<number, ConversationEntry>(); // id→entry reverse index
   private byTuple = new Map<string, ConversationEntry>(); // tupleKey → entry
   private aliases = new Map<number, number>(); // loserId → winnerId (one hop)
+  // ── App conversation aliases (mobile-native-conversations §4.1/§4.8) — a disjoint id range ──
+  private appByKey = new Map<string, AppAliasEntry>(); // uuid → alias
+  private appById = new Map<number, AppAliasEntry>();
+  private appBindings = new Set<number>(); // aliases this machine currently owns (bind-app)
 
   // ── Derived indexes (§3.4 3–5) — rebuilt at boot, maintained at assign time ──
   private reservedCanonicals = new Map<number, string>(); // cand → owning tupleKey
@@ -391,6 +431,12 @@ export class ConversationRegistry {
       }
       for (const [k, v] of Object.entries(raw.sendIntents ?? {})) {
         if (v && (v.lane === 'logical' || v.lane === 'content-hash') && typeof v.seq === 'number') this.sendIntents.set(k, v);
+      }
+      for (const [k, v] of Object.entries(raw.appConversations ?? {})) {
+        if (isAppConversationKey(k) && v && Number.isSafeInteger(v.id) && v.id < 0) this.indexApp({ id: v.id, conversationKey: k, mintedAt: String(v.mintedAt ?? ''), mintedBy: String(v.mintedBy ?? 'unknown') });
+      }
+      for (const id of Array.isArray(raw.appBindings) ? raw.appBindings : []) {
+        if (Number.isSafeInteger(id) && this.appById.has(id)) this.appBindings.add(id);
       }
       this.lastSnapshotBytes = fs.statSync(this.snapshotPath).size;
     } catch (err) {
@@ -616,7 +662,27 @@ export class ConversationRegistry {
         this.sendIntents.delete(`${rec.conversationId}|${rec.logicalSendId}`);
         return;
       }
+      case 'mint-app': {
+        const t = typeof rec.key === 'string' ? parseAppRegistryKey(rec.key) : null;
+        if (!t || typeof rec.id !== 'number' || !(rec.id < 0) || !Number.isSafeInteger(rec.id)) return;
+        if (this.appByKey.has(t.conversationKey)) return; // idempotent
+        this.indexApp({ id: rec.id, conversationKey: t.conversationKey, mintedAt: rec.ts, mintedBy: rec.hlc?.node ?? 'unknown' });
+        return;
+      }
+      case 'bind-app': {
+        if (typeof rec.id === 'number' && this.appById.has(rec.id)) this.appBindings.add(rec.id);
+        return;
+      }
+      case 'unbind-app': {
+        if (typeof rec.id === 'number') this.appBindings.delete(rec.id);
+        return;
+      }
     }
+  }
+
+  private indexApp(entry: AppAliasEntry): void {
+    this.appByKey.set(entry.conversationKey, entry);
+    this.appById.set(entry.id, entry);
   }
 
   private indexEntry(key: string, entry: ConversationEntry): void {
@@ -811,6 +877,8 @@ export class ConversationRegistry {
         bindPins: Object.fromEntries([...this.bindPins].map(([k, v]) => [String(k), v])),
         ambiguousSends: Object.fromEntries(this.ambiguousSends),
         sendIntents: Object.fromEntries(this.sendIntents),
+        appConversations: Object.fromEntries(this.appByKey),
+        appBindings: [...this.appBindings],
       };
       const serialized = JSON.stringify(shape, null, 2);
       const tmp = `${this.snapshotPath}.tmp`;
@@ -1185,6 +1253,8 @@ export class ConversationRegistry {
     this.load();
     if (!Number.isSafeInteger(id) || id === 0) return null;
     if (id > 0) return { platform: 'telegram', topicId: id, passThrough: true };
+    const app = this.appById.get(id);
+    if (app) return { platform: 'app', id, key: `app:${app.conversationKey}`, conversationKey: app.conversationKey, bound: this.appBindings.has(id) };
     const aliasTarget = this.aliases.get(id);
     const entry = this.byId.get(aliasTarget ?? id);
     if (!entry) return null;
@@ -1207,6 +1277,11 @@ export class ConversationRegistry {
     this.load();
     if (/^\d+$/.test(keyOrSessionKey)) {
       return { platform: 'telegram', topicId: Number(keyOrSessionKey), passThrough: true };
+    }
+    const appTuple = parseAppRegistryKey(keyOrSessionKey);
+    if (appTuple) {
+      const app = this.appByKey.get(appTuple.conversationKey);
+      return app ? this.resolve(app.id) : null;
     }
     const parsed = parseCanonicalKey(keyOrSessionKey);
     const tuple = parsed?.tuple ?? tupleForRoutingKey(keyOrSessionKey);
@@ -1251,6 +1326,89 @@ export class ConversationRegistry {
       if (out.length >= limit) break;
     }
     return out;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // App conversation aliases + ownership bindings (mobile-native-conversations §4.1/§4.8)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * The local negative alias for an app conversation (`mint-app`, fsynced BEFORE the id returns —
+   * the WAL rule of a durable binding). Idempotent per UUID. The id comes from a range disjoint
+   * from every Slack candidate (Slack candidates lie in [-(2^31+1), -1]; app aliases below -2^33),
+   * derived from the UUID and probed downward on a collision, and replays exactly from the journal.
+   */
+  mintAppAlias(conversationKey: string): DurableMintResult {
+    this.load();
+    if (!isAppConversationKey(conversationKey)) return { ok: false, error: 'unparseable-key' };
+    const existing = this.appByKey.get(conversationKey);
+    if (existing) return { ok: true, id: existing.id, created: false };
+    if (!this.recordingEnabled()) {
+      this.attention(
+        'conversation-registry:recording-disabled-bind',
+        'Durable bind on a minted conversation refused — recording is disabled',
+        'conversationIdentity.recording.enabled is false (the emergency kill-switch). An app conversation cannot get its local id while recording is off, so creating one is refused (conversation-recording-disabled). Re-enable recording to restore it.',
+      );
+      return { ok: false, error: 'conversation-recording-disabled' };
+    }
+    const hash = Number.parseInt(conversationKey.replace(/-/g, '').slice(0, 10), 16);
+    let id = -(2 ** 33 + (hash % 2 ** 40));
+    for (let probes = 0; this.appById.has(id) || this.byId.has(id); probes++) {
+      if (probes > MAX_PROBE_DISTANCE) return { ok: false, error: 'mint-failure' };
+      id -= 1;
+    }
+    const entry: AppAliasEntry = { id, conversationKey, mintedAt: this.now().toISOString(), mintedBy: this.safeMachineId() };
+    try {
+      this.appendJournal({ op: 'mint-app', key: `app:${conversationKey}`, id, hlc: { physical: Date.now(), logical: 0, node: entry.mintedBy } }, { fsync: true });
+    } catch {
+      return { ok: false, error: 'mint-failure' };
+    }
+    this.indexApp(entry);
+    this.lastMintAt = entry.mintedAt;
+    this.scheduleSnapshot();
+    return { ok: true, id, created: true };
+  }
+
+  /** The alias of an app conversation on this machine, or null (mints nothing). */
+  appAliasFor(conversationKey: string): number | null {
+    this.load();
+    return this.appByKey.get(conversationKey)?.id ?? null;
+  }
+
+  /** The app conversation behind a local alias, or null. */
+  appConversationFor(id: number): string | null {
+    this.load();
+    return this.appById.get(id)?.conversationKey ?? null;
+  }
+
+  /** Record that this machine owns the conversation (`bind-app`, fsynced). Idempotent. */
+  bindApp(id: number): boolean {
+    this.load();
+    if (!this.appById.has(id)) return false;
+    if (this.appBindings.has(id)) return true;
+    this.appendJournal({ op: 'bind-app', id }, { fsync: true });
+    this.appBindings.add(id);
+    this.scheduleSnapshot();
+    return true;
+  }
+
+  /** Record that this machine no longer owns the conversation (`unbind-app`, fsynced). Idempotent. */
+  unbindApp(id: number): void {
+    this.load();
+    if (!this.appBindings.has(id)) return;
+    this.appendJournal({ op: 'unbind-app', id }, { fsync: true });
+    this.appBindings.delete(id);
+    this.scheduleSnapshot();
+  }
+
+  isAppBound(id: number): boolean {
+    this.load();
+    return this.appBindings.has(id);
+  }
+
+  appBoundIds(): number[] {
+    this.load();
+    return [...this.appBindings];
   }
 
   aliasTable(): Record<string, number> {
@@ -1557,6 +1715,7 @@ export class ConversationRegistry {
       byPlatform,
       byOrigin,
       aliasCount: this.aliases.size,
+      appAliases: { count: this.appByKey.size, bound: this.appBindings.size },
       lastMintAt: this.lastMintAt,
       adoptionPass: this.adoptionState,
       recordingEnabled: this.recordingEnabled(),

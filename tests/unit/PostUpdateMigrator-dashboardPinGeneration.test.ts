@@ -1,0 +1,20 @@
+import {afterEach,it,expect} from 'vitest';
+import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
+import {PostUpdateMigrator,type MigrationResult} from '../../src/core/PostUpdateMigrator.js';
+import {SecretStore} from '../../src/core/SecretStore.js';
+import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
+import {readConversationGraphOwnerPolicy} from '../../src/core/ConversationGraphOwnerPolicy.js';
+const directories:string[]=[];
+afterEach(()=>{for(const directory of directories.splice(0))SafeFsExecutor.safeRmSync(directory,{recursive:true,force:true,operation:'pin-generation-migration-test:teardown'});});
+it('preserves the durably reserved generation and raw vault reference in the later migration config save',()=>{
+ const projectDir=fs.mkdtempSync(path.join(os.tmpdir(),'pin-generation-migration-'));directories.push(projectDir);const stateDir=path.join(projectDir,'.instar');fs.mkdirSync(stateDir);
+ fs.writeFileSync(path.join(stateDir,'config.json'),JSON.stringify({authToken:'synthetic-auth',customOperatorSetting:'keep'}));
+ const secrets=new SecretStore({stateDir,forceFileKey:true});secrets.set('unrelated','existing vault');
+ const migrator=new PostUpdateMigrator({projectDir,stateDir,port:4042,hasTelegram:false,projectName:'test'}),result:MigrationResult={upgraded:[],skipped:[],errors:[]};
+ (migrator as unknown as{migrateConfig(result:MigrationResult):void}).migrateConfig(result);
+ const config=JSON.parse(fs.readFileSync(path.join(stateDir,'config.json'),'utf8')),policy=readConversationGraphOwnerPolicy({stateDir,secrets})!;
+ expect(config.dashboardPin).toEqual({secret:true});expect(config.dashboardPinGeneration).toBe(policy.generation);expect(policy.pin).toMatch(/^\d{6}$/);expect(config.customOperatorSetting).toBe('keep');
+ expect(result.upgraded).toContain('config.json: generated dashboard PIN');expect(result.errors).toEqual([]);
+ const first=config.dashboardPinGeneration;(migrator as unknown as{migrateConfig(result:MigrationResult):void}).migrateConfig({upgraded:[],skipped:[],errors:[]});
+ expect(JSON.parse(fs.readFileSync(path.join(stateDir,'config.json'),'utf8')).dashboardPinGeneration).toBe(first);
+});

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-10T13:31:51.391Z",
+  "slug": "cb-sentinel",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/ContextBudgetSentinel.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "no change to the registered context-budget-quarantine-reconcile controller; a lint marker and a test expectation only"
+    }
+  },
+  "verdict": "pass"
+}

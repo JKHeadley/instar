@@ -1,14 +1,30 @@
 // Global vitest setup. Runs once before any test file loads.
 
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import supertest from 'supertest';
-import { installSupertestConnectRetry } from './setup/supertest-connect-retry.js';
+import { setOriginStageDeadlineProcessDefaults, setOriginStoreRequestTimeoutProcessDefault } from '../src/messaging/telegram-origin/OriginStageDeadlines.js';
 
-installSupertestConnectRetry((supertest as unknown as {
-  Test: { prototype: Parameters<typeof installSupertestConnectRetry>[0] };
-}).Test.prototype);
+// Telegram-origin recording budgets: lifted for every test file.
+//
+// TelegramOriginService gives each recording stage a sub-second budget (250 ms store, 500 ms
+// spool, ...). They are real waits on fsync-ing disk commits, and beside a full suite on a
+// saturated disk a healthy commit outlasts them: the send is held as a recording outage and
+// a test that never meant to test timing fails an unrelated change (29 times in nine files
+// across 17 PRs, 2026-11-07 to 11-13; then two more files the morning eleven were fixed one
+// by one). 46 test files open a real origin service, so the allowance is set here, once.
+//
+// The store's own per-request deadline (2 s in production) is lifted to 20 s below for the
+// same reason: it is the layer under the stage budgets, and a loaded worker outlasting it
+// failed three unrelated changes on 2026-11-13. A store opened with an explicit
+// requestTimeoutMs keeps it (the worker-recovery tests pin 200 to 2000 ms). A store in a child
+// process a test spawns keeps 2 s. A sink that REJECTS fails at once whatever the budget. A test that wants the
+// production budgets sets them explicitly or calls
+// setOriginStageDeadlineProcessDefaults(null) (see origin-stage-deadlines.test.ts).
+setOriginStageDeadlineProcessDefaults({ storeEvidenceMs: 20_000, spoolEvidenceMs: 20_000, peerEvidenceMs: 20_000, verifiedEvidenceMs: 20_000, admitMs: 20_000 });
+setOriginStoreRequestTimeoutProcessDefault(20_000);
+
 //
 // Strip git environment overrides inherited from the parent process FIRST.
 // When git invokes a hook (e.g. .husky/pre-push runs `npm run test:smoke`),
@@ -61,11 +77,49 @@ const INSTAR_ENV_ALLOWLIST = new Set([
   // true no matter where the read moves to.
   'INSTAR_HOST_TEST_SEMAPHORE',
   'INSTAR_HOST_TEST_MAX',
+  // Opt-in for the real desktop helper's state-op tests (desktop-helper-state-op.test.ts).
+  // It chooses which tests run, never what the code under test does; stripped, the
+  // opt-in could never be honoured and those tests were always skipped.
+  'INSTAR_REAL_DESKTOP_HELPER_TESTS',
+  // The same kind of opt-in, also stripped until now: the live hub-intent tier
+  // (hub-intent-discrimination.test.ts) and the real wedge-canary tests.
+  'INSTAR_LIVE_HUB_INTENT',
+  'INSTAR_REAL_WEDGE_CANARY_TESTS',
 ]);
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('INSTAR_') && !INSTAR_ENV_ALLOWLIST.has(key)) {
     delete process.env[key];
   }
+}
+
+// Bind every test's ephemeral server to loopback only.
+//
+// `server.listen(0)` with no host binds the wildcard address, but test clients
+// connect to 127.0.0.1. On macOS and BSD, Node's SO_REUSEADDR lets a wildcard
+// socket share a port number with another process's 127.0.0.1 socket, and the
+// kernel hands connections to the MORE SPECIFIC socket. So with suites running
+// side by side, a test could ask its own fixture a question and get the answer
+// from a stranger's server: "expected 401 to be 201", "expected 404 to be 201",
+// on files that pass alone. Measured on macOS with 4000 ports held on 127.0.0.1
+// by a second process: 2313 of 25000 wildcard servers had their request answered
+// by that process; bound to 127.0.0.1, 0 of 6000 were. Two sockets cannot share
+// one specific address, so an explicit bind closes the class for every test,
+// present or future. An explicit host or a fixed port is left alone.
+// Guard: tests/unit/test-setup-loopback-bind.test.ts.
+//
+// The patch sits on `_listen2`, the step after address resolution, not on
+// `listen`: passing a host to `listen` defers the bind by a tick, and many
+// callers read `server.address()` straight after `listen(0)`. No address plus
+// port 0 reaches here only for an ephemeral bind with no host.
+{
+  type Listen2 = (address: string | null, port: number, addressType: number, ...rest: unknown[]) => unknown;
+  const proto = net.Server.prototype as unknown as { _listen2: Listen2 };
+  const realListen2 = proto._listen2;
+  proto._listen2 = function bindEphemeralToLoopback(this: net.Server, address, port, addressType, ...rest) {
+    return address === null && port === 0
+      ? realListen2.call(this, '127.0.0.1', 0, 4, ...rest)
+      : realListen2.call(this, address, port, addressType, ...rest);
+  };
 }
 
 // Force the Codex user-config home onto a per-process temp dir. Every test

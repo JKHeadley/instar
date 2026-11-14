@@ -37,6 +37,13 @@ describe('CollaborationSurfacer', () => {
 
   const base = { threadId: 't1', senderName: 'codey', text: 'Can you verify the build?', hasParentTopic: false, warrants: true };
 
+  it('records quiet outcomes without surfacing state or blocking a future real post', async () => {
+    const tg = fakeTelegram(); const send = vi.fn().mockResolvedValue({ delivered: false, recorded: true, quietId: 'surface-q' }); tg.sendToTopic = send;
+    const s = new CollaborationSurfacer({ telegram: tg, stateDir });
+    expect(await s.surface(base)).toMatchObject({ surfaced: false, recorded: true, quietId: 'surface-q' });
+    send.mockResolvedValue({ messageId: 7 }); expect(await s.surface(base)).toMatchObject({ surfaced: true });
+  });
+
   it('posts a parentless warranted first contact to the dedicated topic', async () => {
     const tg = fakeTelegram();
     const s = new CollaborationSurfacer({ telegram: tg, stateDir });

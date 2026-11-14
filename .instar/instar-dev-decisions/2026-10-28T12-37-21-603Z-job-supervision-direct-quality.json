@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-28T12:37:21.603Z",
+  "slug": "job-supervision-direct-quality",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 204,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/scheduler/JobSupervisionStore.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/directJobSupervisionQuality.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 197,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

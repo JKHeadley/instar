@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "recommended-services-proof-fixes",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T23:31:08.082Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-proof-fixes.md",
+  "artifactSha256": "60eff588e5b1a670cc5e3c554866e2e46026fd0ee06db28031bf4ec77a41cdc4",
+  "coveredFiles": [
+    "docs/specs/recommended-services-proof-fixes.eli16.md",
+    "docs/specs/recommended-services.md",
+    "src/recommended/recipes.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "upgrades/next/recommended-services-proof-fixes.md",
+    "upgrades/side-effects/recommended-services-proof-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One state field and brief wording on a dark path, fully undone by a revert.",
+  "eli16Path": "docs/specs/recommended-services-proof-fixes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/recommended-services-proof-fixes.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "closure": "n/a",
+    "reason": "A single state field and prompt wording, with no loop or new surface."
+  }
+}

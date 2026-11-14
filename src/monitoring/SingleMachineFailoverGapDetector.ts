@@ -27,6 +27,8 @@
  * tests with zero real managers and no I/O.
  */
 
+import { featureEvidence } from './FeatureEvidenceLog.js';
+
 export type FailoverGapMode = 'not-configured' | 'peer-offline';
 
 /** A snapshot of this agent's mesh membership, as this machine sees it. */
@@ -146,6 +148,8 @@ export class SingleMachineFailoverGapDetector {
   private lastSingleMachine = false;
   private lastActiveRunCount = 0;
   private openGapMode: FailoverGapMode | null = null;
+  /** Rides a 30s tick, so evidence is written only when the outcome changes. */
+  private lastEvidenceKey: string | null = null;
 
   constructor(
     private readonly deps: SingleMachineFailoverGapDetectorDeps,
@@ -173,6 +177,18 @@ export class SingleMachineFailoverGapDetector {
       const hasWorkNeedingFailover = atRiskRunCount > 0;
       const gapDetected = this.lastSingleMachine && hasWorkNeedingFailover;
 
+      const evidenceMode: FailoverGapMode | null = gapDetected ? (membership.multiMachineEnabled ? 'peer-offline' : 'not-configured') : null;
+      const evidenceDryRun = this.deps.dryRun();
+      const evidenceKey = gapDetected ? `gap:${evidenceMode}:${atRiskRunCount}:${evidenceDryRun}` : this.lastSingleMachine ? 'single-no-work' : 'peers-online';
+      if (evidenceKey !== this.lastEvidenceKey) {
+        this.lastEvidenceKey = evidenceKey;
+        featureEvidence.record('monitoring.singleMachineFailoverGap', {
+          kind: gapDetected ? 'fired' : 'held',
+          reason: gapDetected ? (evidenceDryRun ? 'would-raise' : 'raised') : this.lastSingleMachine ? 'single-machine-no-autonomous-work' : 'failover-target-online',
+          context: { mode: evidenceMode, onlinePeerCount: membership.onlinePeerCount, multiMachineEnabled: membership.multiMachineEnabled, atRiskRunCount, dryRun: evidenceDryRun },
+        });
+      }
+
       if (!gapDetected) {
         this.openGapMode = null;
         this.audit('no-gap', {
@@ -198,6 +214,12 @@ export class SingleMachineFailoverGapDetector {
       return { ran: true, gapDetected: true, mode, atRiskRunCount, raised: true };
     } catch (err) {
       this.errors += 1;
+      this.lastEvidenceKey = 'tick-error';
+      featureEvidence.recordAtMostEvery('monitoring.singleMachineFailoverGap', 'tick-error', 3_600_000, {
+        kind: 'error',
+        reason: 'check-failed',
+        context: { errorName: err instanceof Error ? err.name : 'unknown', errors: this.errors },
+      });
       this.audit('tick-error', { error: err instanceof Error ? err.message : String(err) });
       return { ran: true, gapDetected: false, mode: null, atRiskRunCount: 0, raised: false };
     }

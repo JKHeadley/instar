@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-10T16:29:40.708Z",
+  "slug": "usage-wall-current-layout",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 415,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ProactiveSwapMonitor.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SwapAntiThrash.ts",
+      "src/core/SwapLedger.ts",
+      "src/core/types.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/monitoring/rateLimitDetection.ts",
+      "src/monitoring/sessionUsageLimitEvidence.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 373,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

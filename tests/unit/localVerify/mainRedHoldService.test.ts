@@ -203,6 +203,22 @@ describe('main-red hold — the queue while main fails a known check', () => {
     expect(String(holdSignals().at(-1)?.detail.note)).toContain('Already fixing it: PR #2363, PR #2373');
   });
 
+  it('a labelled repair past a full queue keeps its repair audit (the throughput overflow does not claim it)', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 10; i++) views[i] = view((i.toString(16).padStart(2, '0')).repeat(20));
+    views[12] = view(sha('c'), { files: [{ path: FILE }], labels: [{ name: 'merge-throughput' }] });
+    views[14] = view(sha('d'), { labels: [{ name: 'merge-throughput' }] }); // labelled, not a repair
+    const s = setup({ views });
+    await s.goRed(sha('e'), true);
+    for (let i = 1; i <= 10; i++) expect((await s.svc.request(i)).ok).toBe(true);
+    expect(await s.svc.request(12)).toMatchObject({ ok: true, status: 'queued' });
+    expect(s.auditLines().filter((l) => l.event === 'queue-full-repair-admitted').map((l) => l.pr)).toEqual([12]);
+    // A labelled non-repair uses the overflow but is still held by the main-red hold like any other PR.
+    expect(await s.svc.request(14)).toMatchObject({ ok: true, status: 'queued' });
+    expect(s.auditLines().filter((l) => l.event === 'queue-full-throughput-admitted').map((l) => l.pr)).toEqual([14]);
+    expect(s.svc.snapshot().queue.find((e) => e.pr === 14)?.held).toBeTruthy();
+  });
+
   it('a repair is admitted past a full queue of held PRs; green releases the hold in queue order and clears the episode', async () => {
     const views: Record<number, PrView> = {};
     for (let i = 1; i <= 10; i++) views[i] = view((i.toString(16).padStart(2, '0')).repeat(20));

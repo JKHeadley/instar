@@ -1,0 +1,46 @@
+# stacked-pr-guard — a PR into a feature branch is never shown as ready to merge (ACT-053).
+#
+# ci.yml runs the test suite only for PRs into main, and the required checks
+# are scoped to main. So a stacked PR (base = another PR's branch) ran NO suite
+# on GitHub yet showed mergeStateStatus CLEAN — it looked reviewed, green and
+# ready while its code had never been tested in CI. PR #2202 was merged
+# branch-to-branch that way on 2026-10-19.
+#
+# The fix is "retarget before merge", not "run the suite on every stack":
+#   - this one-step job turns a stacked PR's badge red with the reason, so it
+#     no longer reads as CLEAN (seconds of runner time, no checkout);
+#   - scripts/safe-merge.mjs refuses any base other than main, which is the
+#     path every agent merge takes (refused:non-main-base).
+# Stacks still do their work: review them in place, merge the bottom PR into
+# main, retarget the next one to main (`gh pr edit <PR#> --base main`), then
+# push (or close/reopen) so ci.yml runs; it is verified there exactly once.
+# ci.yml does not fire on a base change (`edited`), and this guard skips main
+# bases, so its old red run stays on that head until a new push. Running all
+# 13 CI jobs on every stacked push as well would double load on an Actions
+# allowance that is already saturated (see the concurrency notes in ci.yml).
+#
+# `edited` is included so moving a PR from one feature base to another
+# re-evaluates it.
+
+name: stacked-pr-guard
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches-ignore:
+      - main
+
+permissions: {}
+
+jobs:
+  stacked-pr-guard:
+    name: Stacked PR — retarget to main before merging
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Refuse a feature-branch base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          echo "::error title=Stacked PR::This PR's base is '${BASE_REF}', not main. No test suite runs on GitHub for a PR into a feature branch, so it must not be merged there. Merge the PR below it into main first, then retarget this one (gh pr edit ${{ github.event.pull_request.number }} --base main) and push a commit or close and reopen it, because retargeting alone starts no CI run."
+          exit 1

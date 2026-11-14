@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "native-conversations-gaps",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T12:21:42.104Z",
+  "artifactPath": "upgrades/side-effects/native-conversations-gaps.md",
+  "artifactSha256": "8f7b48142e19cada08ed7b596ca2389ec81a8f7734e11d23a1c8ecdf13efe2b2",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "src/core/appConversationText.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "tests/unit/mobileConversationListPaging.test.ts",
+    "upgrades/side-effects/native-conversations-gaps.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Review follow-ups on PR 2579: mirror credential hiding, desktop-line whitespace class, peer row validation, pool browse of unreplicated conversations.",
+  "secondPass": "false",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: request-driven token removal and read-only pool fan-outs; no loop, retry or timer is added"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "recommended-services-telegram-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T01:46:52.915Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-telegram-recipe.md",
+  "artifactSha256": "3f010a2fdfef71d20954cc45b7e12aa34e7d3f25e716e77e8f7db572064732d8",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-telegram-recipe.eli16.md",
+    "src/recommended/recipes.ts",
+    "src/recommended/telegramSetup.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-telegram.test.ts",
+    "tests/unit/recommended-services-telegram-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-telegram-recipe.md",
+    "upgrades/side-effects/recommended-services-telegram-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A bot token written into the agent's messaging config, a new channel the agent reads and writes, the person's own Telegram login driven by the agent, and a planned restart; dark until its live proof; second-pass concern resolved.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

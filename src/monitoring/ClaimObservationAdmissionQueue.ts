@@ -13,6 +13,7 @@ interface AdmissionItem {
 /** The single feature-ingress owner for dedupe, fairness, caps, and expiry. */
 export class ClaimObservationAdmissionQueue {
   private worker?: (item: AdmissionItem) => Promise<void>;
+  private onExpired?: () => void;
   private queued = 0;
   private active = 0;
   private cursor = 0;
@@ -27,6 +28,7 @@ export class ClaimObservationAdmissionQueue {
     queueTtlMs?: number; now?: () => number } = {}) {}
 
   setWorker(worker: (item: AdmissionItem) => Promise<void>): void { this.worker = worker; }
+  setExpiryHandler(handler: () => void): void { this.onExpired = handler; }
 
   enqueue(item: Omit<AdmissionItem, 'enqueuedAt'>, fingerprint: string): CompletionEnqueueResult {
     if (!this.worker) return { accepted: false, reason: 'queue-unwired' };
@@ -68,7 +70,7 @@ export class ClaimObservationAdmissionQueue {
       const queue = this.pending.get(topic)!;
       let item = queue.shift();
       while (item && (this.opts.now?.() ?? Date.now()) - item.enqueuedAt > (this.opts.queueTtlMs ?? 120_000)) {
-        this.release(topic); item = queue.shift();
+        this.onExpired?.(); this.release(topic); item = queue.shift();
       }
       if (!queue.length) this.pending.delete(topic);
       if (!item) continue;

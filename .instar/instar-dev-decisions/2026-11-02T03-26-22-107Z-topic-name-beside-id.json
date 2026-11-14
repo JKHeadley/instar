@@ -1,0 +1,49 @@
+{
+  "ts": "2026-11-02T03:26:22.107Z",
+  "slug": "topic-name-beside-id",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 25,
+  "loc": 282,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/OwnershipReconciler.ts",
+      "src/core/PrHandLease.ts",
+      "src/core/ScopeVerifier.ts",
+      "src/core/SeamlessOrchestratorEngine.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StaleOwnerReleaseEngine.ts",
+      "src/core/TelegramSpendTopicChannel.ts",
+      "src/messaging/ColdStartFallbackReply.ts",
+      "src/messaging/OutboundAdvisory.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/topicRef.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/monitoring/AutonomousLivenessReconciler.ts",
+      "src/monitoring/ReapNoticeDrain.ts",
+      "src/monitoring/ReapNotifier.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/monitoring/TopicReachabilityVerifier.ts",
+      "src/scheduler/MentorAutonomousGuardian.ts",
+      "src/server/routes.ts",
+      "src/threadline/HubIntentClassifier.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/hubCommands.ts",
+      "src/types/pipeline.ts"
+    ],
+    "addedLines": 202,
+    "deletedLines": 80
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

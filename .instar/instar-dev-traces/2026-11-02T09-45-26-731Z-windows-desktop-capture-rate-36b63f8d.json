@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-capture-rate",
+  "sessionId": "b4eb0141-35cd-41ba-a713-da8371775ee5",
+  "timestamp": "2026-11-02T09:45:26.731Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-capture-rate.md",
+  "artifactSha256": "f8e25e28459387338c300df2a83b12a0ea46d9dde31ce19e9671f8fa577133c5",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-windows-input.eli16.md",
+    "scripts/windows-desktop-local-transport.ps1",
+    "src/core/DesktopHost.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/WindowsDesktopHost.ts",
+    "src/core/WindowsDesktopLocalTransport.ts",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "src/server/DesktopStreamManager.ts",
+    "tests/unit/windows-desktop-capture-rate.test.ts",
+    "upgrades/next/windows-desktop-capture-rate.md",
+    "upgrades/side-effects/windows-desktop-capture-rate.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "encode path, pacing and a timing field; revert restores",
+  "eli16Path": "docs/specs/native-remote-desktop-windows-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-capture-rate.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

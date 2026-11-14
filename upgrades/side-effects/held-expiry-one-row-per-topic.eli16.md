@@ -1,0 +1,5 @@
+# A topic's lost replies show as one alert, not one per message
+
+When one of the agent's machines writes a reply but is not the machine allowed to send to Telegram right then, the reply is held and handed to the machine that is. If that hand-over does not happen within six hours, the reply expires and the agent raises an alert saying a reply to that topic could not be delivered. Each expired reply raised its own alert. Over two weeks the machines piled up about 750 of these open alerts, 109 for a single topic. They are kept out of the operator's alert topic, but every time the dashboard asks all the machines for open alerts, it downloads all of them, about three quarters of a megabyte, which is why the first load after a restart took 25 seconds.
+
+Now all expiries for the same topic share one alert. The first one opens it; later ones add to its count and refresh its text, so a topic shows one row saying how many replies were lost instead of a wall of identical rows. Every expiry is still recorded in the delivery log with its own identifier, so nothing is hidden. Alerts created before this change are not merged, but they close on their own within two weeks.

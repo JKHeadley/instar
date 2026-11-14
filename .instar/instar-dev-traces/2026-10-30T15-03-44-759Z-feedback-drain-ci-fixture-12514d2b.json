@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "feedback-drain-ci-fixture",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-30T15:03:44.759Z",
+  "artifactPath": "upgrades/side-effects/feedback-drain-ci-fixture.md",
+  "artifactSha256": "5e817df5490fcc50755a49632965d1a93c52c1e6e725dc406a07493027b67d41",
+  "coveredFiles": [
+    "docs/eli16/feedback-drain-ci-fixture.eli16.md",
+    "site/src/content/docs/reference/api.md",
+    "upgrades/next/feedback-drain-ci-fixture.md",
+    "upgrades/side-effects/feedback-drain-ci-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation of existing read and bounded continuation routes; no runtime behavior or stored state changes.",
+  "eli16Path": "docs/eli16/feedback-drain-ci-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-drain-ci-fixture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

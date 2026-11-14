@@ -15,7 +15,53 @@ import type {
   ThreadHistoryMessage,
   RequestSecretParams,
   RequestSecretResult,
+  RelayDiscoverer,
 } from './ThreadlineMCPServer.js';
+import { Agent } from 'undici';
+import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+
+/**
+ * The inner relay-send call holds its request open for up to the reply wait
+ * (≤300 s) plus send time. Node's built-in fetch waits at most 300 s for
+ * headers, so the inner call gets its own undici agent at 325 s (spec
+ * threadline-mcp-local-http "Bounds", deadline 3) — after the route's own
+ * 320 s answer and before the 340 s middleware override.
+ */
+let relaySendAgent: Agent | null = null;
+function relaySendDispatcher(): Agent {
+  if (!relaySendAgent) {
+    relaySendAgent = new Agent({
+      headersTimeout: THREADLINE_MCP_DEADLINES.innerFetchMs,
+      bodyTimeout: THREADLINE_MCP_DEADLINES.innerFetchMs,
+    });
+  }
+  return relaySendAgent;
+}
+
+/** The fixed text for a send whose outcome cannot be known (timeout, abort, 408). */
+export const OUTCOME_UNKNOWN_ERROR =
+  'Outcome unknown: the send did not answer in time, and the message may already have been sent. ' +
+  'Check threadline_history for this thread before sending it again.';
+
+const OUTCOME_UNKNOWN_CODES = new Set(['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_ABORTED', 'ABORT_ERR']);
+
+/**
+ * True for a fetch failure after which the request MAY have reached the server
+ * (an undici header/body timeout, an abort): such a send is reported as
+ * outcome-unknown, never as "failed to reach the server".
+ */
+export function isOutcomeUnknownFetchError(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur && typeof cur === 'object' && !seen.has(cur)) {
+    seen.add(cur);
+    const e = cur as { name?: unknown; code?: unknown; cause?: unknown };
+    if (e.name === 'AbortError' || e.name === 'TimeoutError' || e.name === 'HeadersTimeoutError' || e.name === 'BodyTimeoutError') return true;
+    if (typeof e.code === 'string' && OUTCOME_UNKNOWN_CODES.has(e.code)) return true;
+    cur = e.cause;
+  }
+  return false;
+}
 
 /**
  * Send a message via the agent server's `/threadline/relay-send` endpoint.
@@ -40,9 +86,18 @@ export async function sendMessageViaHttp(
   params: SendMessageParams,
   serverPort: number,
   agentToken: string,
+  /**
+   * The calling session's name. Explicit (spec D1): inside the server,
+   * `process.env.INSTAR_SESSION_NAME` is the SERVER's own environment, so the
+   * stdio helper passes its env value and the HTTP route passes the request's
+   * session header.
+   */
+  originSessionName?: string,
 ): Promise<SendMessageResult> {
   try {
     const response = await fetch(`http://localhost:${serverPort}/threadline/relay-send`, {
+      // Deadline 3 of the chain: 325 s for headers and body (Node's default is 300 s).
+      ...({ dispatcher: relaySendDispatcher() } as Record<string, unknown>),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -63,7 +118,7 @@ export async function sendMessageViaHttp(
         // the caller did not stamp originTopicId by hand, relay-send resolves
         // this session name → owning topic so the binding is captured WITHOUT
         // any caller discipline (kills fragmentation structurally).
-        originSessionName: process.env.INSTAR_SESSION_NAME || undefined,
+        originSessionName: originSessionName || undefined,
         // Forward the caller's intent string; relay-send stamps it onto the
         // local commitment record so context is available when the reply lands.
         purpose: params.purpose,
@@ -76,6 +131,11 @@ export async function sendMessageViaHttp(
     // Read the body exactly once. relay-send returns JSON on both the success
     // and error paths; tolerate an empty or non-JSON body defensively.
     const raw = await response.text();
+    // A 408 from the generic request timeout: the send ran (or is running) — the
+    // message may already have left. Never reported as "not sent".
+    if (response.status === 408) {
+      return { success: false, threadId: params.threadId ?? '', messageId: '', error: OUTCOME_UNKNOWN_ERROR, outcomeUnknown: true };
+    }
     let parsed: {
       success?: boolean;
       messageId?: string;
@@ -97,6 +157,7 @@ export async function sendMessageViaHttp(
       forwardedTo?: string;
       replyArrivesIn?: string;
       peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
+      receipt?: SendMessageResult['receipt'];
     } = {};
     if (raw) {
       try {
@@ -130,6 +191,8 @@ export async function sendMessageViaHttp(
         ...(parsed.replyArrivesIn !== undefined ? { replyArrivesIn: parsed.replyArrivesIn } : {}),
         // §3.2: a send to a dark peer carries the evidence object, additively.
         ...(parsed.peerDark && typeof parsed.peerDark === 'object' ? { peerDark: parsed.peerDark } : {}),
+        // a2a-required-acknowledgment D6: what the peer's side said, on a wait timeout.
+        ...(parsed.receipt && typeof parsed.receipt === 'object' ? { receipt: parsed.receipt } : {}),
       };
     }
 
@@ -153,6 +216,10 @@ export async function sendMessageViaHttp(
       ...(parsed.forwardedTo !== undefined ? { forwardedTo: parsed.forwardedTo } : {}),
     };
   } catch (err) {
+    // A timeout or abort after the request went out: the outcome is unknown.
+    if (isOutcomeUnknownFetchError(err)) {
+      return { success: false, threadId: params.threadId ?? '', messageId: '', error: OUTCOME_UNKNOWN_ERROR, outcomeUnknown: true };
+    }
     // The agent server itself is unreachable (not running / wrong port).
     return {
       success: false,
@@ -233,13 +300,49 @@ export async function getThreadHistoryViaHttp(
 }
 
 /**
+ * a2a-required-acknowledgment D4: `threadline_ack` on both transports. Stdio tools run
+ * in a subprocess with no tracker, so the watch and pending rows live behind this route.
+ */
+export async function acknowledgeViaHttp(
+  params: { threadId?: string; ackRefs: string[]; summary: string },
+  serverPort: number,
+  agentToken: string,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`http://localhost:${serverPort}/threadline/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify(params),
+  });
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status >= 400 && typeof body.error === 'string') throw new Error(body.error);
+  if (response.status >= 400) throw new Error(`The agent server answered ${response.status}`);
+  return body;
+}
+
+/** a2a-required-acknowledgment D6: receipts on a thread. An unreadable answer is no receipts. */
+export async function getThreadReceiptsViaHttp(threadId: string, serverPort: number, agentToken: string): Promise<Array<Record<string, unknown>>> {
+  try {
+    const response = await fetch(`http://localhost:${serverPort}/threadline/threads/${encodeURIComponent(threadId)}/receipts`, {
+      headers: { Authorization: `Bearer ${agentToken}` },
+    });
+    if (!response.ok) return [];
+    const body = (await response.json()) as { receipts?: Array<Record<string, unknown>> };
+    return Array.isArray(body.receipts) ? body.receipts : [];
+  } catch {
+    return []; // @silent-fallback-ok — history still answers without receipts
+  }
+}
+
+/**
  * Sealed-handoff keystone — self-mint a Secret Drop request via the agent
  * server's loopback `/threadline/secrets/request` route.
  *
- * Deliberately sends NO Authorization header: this route lives under the
- * `/threadline/*` auth-bypass umbrella and enforces localhost itself. The MCP
- * stdio process cannot present a valid bearer anyway — the on-disk authToken is
- * vault-externalized (`{secret:true}`), which is the exact gap this route closes.
+ * Deliberately sends NO Authorization header: this route is one of the few
+ * exact `/threadline/*` routes the bearer gate leaves public (middleware.ts
+ * THREADLINE_PUBLIC_ROUTES) and it enforces loopback-only itself. It predates
+ * the stdio helper's vault-aware token resolution (mcpAuthToken.ts) and stays
+ * token-free so a helper with NO resolvable token can still mint a sealed
+ * handoff — which is the exact gap this route closes.
  * The mint goes through the server's durable SecretDrop store, so the request
  * survives session churn.
  */
@@ -355,4 +458,59 @@ export async function createPairingInviteViaHttp(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * RelayDiscoverer implementation that proxies through the agent server's
+ * /threadline/relay-discover endpoint (shared by the stdio helper and the
+ * in-server HTTP route, so the calls behind `threadline_discover` are the same
+ * on both transports).
+ *
+ * connectionState is cached briefly from the last /threadline/status read.
+ * On every discover() call we re-check status first so cache fallback in
+ * the MCP server's discover handler reflects the live relay state.
+ */
+export function createHttpRelayDiscoverer(serverPort: number, agentToken: string | (() => string)): RelayDiscoverer {
+  const token = (): string => (typeof agentToken === 'function' ? agentToken() : agentToken);
+  let lastState = 'unknown';
+  const refreshState = async (): Promise<string> => {
+    try {
+      // Bearer-gated like every other own-control-surface route under
+      // /threadline/* (fb-829a7161-942); only peer-protocol routes are public.
+      const res = await fetch(`http://localhost:${serverPort}/threadline/status`, {
+        headers: { 'Authorization': `Bearer ${token()}` },
+      });
+      if (!res.ok) return (lastState = 'unavailable');
+      const body = await res.json() as { agent?: { state?: string } };
+      lastState = body.agent?.state === 'reachable' ? 'connected' : body.agent?.state === 'unreachable' ? 'disconnected' : 'unavailable';
+      return lastState;
+    } catch {
+      return (lastState = 'unavailable');
+    }
+  };
+  return {
+    get connectionState(): string { return lastState; },
+    async discover(filter) {
+      const state = await refreshState();
+      if (state !== 'connected') throw new Error(`agent relay ${state}`);
+      const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token()}`,
+          },
+          body: JSON.stringify({ filter }),
+        });
+      if (!res.ok) throw new Error(`relay discover HTTP ${res.status}`);
+      const body = await res.json() as {
+          success?: boolean;
+          agents?: Array<{
+            agentId: string; name: string; publicKey?: string;
+            framework?: string; capabilities?: string[]; lastSeen?: string;
+          }>;
+        };
+      if (!body.success || !Array.isArray(body.agents)) throw new Error('relay discover failed');
+      return body.agents;
+    },
+  };
 }

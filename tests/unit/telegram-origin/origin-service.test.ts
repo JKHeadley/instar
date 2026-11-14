@@ -1,5 +1,7 @@
+import { withNotificationEnvelope } from '../../../src/messaging/notificationStampers.js';
+import { NotificationSelectivityGate, QuietRecordedError, isVerifiedJobEnvelope, verifiedInboundMirrorEnvelope, verifiedJobEnvelope, verifiedReplyEnvelope } from '../../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
 import { OriginSessionRegistry } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/RuntimeOriginObserver.js';
@@ -9,6 +11,7 @@ import { compileOriginWorker, temporaryState } from '../../helpers/telegramOrigi
 import { PendingRelayStore } from '../../../src/messaging/pending-relay-store.js';
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
+import { isBootBeaconBody } from '../../../src/messaging/telegram-origin/OriginLegacy.js';
 
 const key = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 let worker: URL;
@@ -36,6 +39,166 @@ async function harness(hidden = false) {
   return { stateDir, store, service, input, network, send, authorize, onHold, spoolEvidence };
 }
 describe('origin service durable delivery', () => {
+  it('preserves waiting state across a signed human media mirror and completes it for the actual answer', async () => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate; gate.observeInbound(42, 'human-input');
+    const presence = { origin: 'automated' as const, category: 'presence-standby' as const, sourceContext: 'presence', inboundMessageId: 'human-input' };
+    try {
+      await withNotificationEnvelope(verifiedInboundMirrorEnvelope('test-admitted-human'), () => h.service.runAsAutomation('telegram-server',
+        () => h.service.sendBot({ method: 'sendPhoto', accountId: 'bot-1', params: { chat_id: '-100123', message_thread_id: 42, photo: 'file-id', caption: 'Human photo' } }, h.network)));
+      expect(h.network).toHaveBeenCalledOnce();
+      const rows = (await h.store.listOrigins()).records;
+      const record = JSON.parse(rows[0].record.envelopeJson);
+      expect(record.notification).toMatchObject({ origin: 'verified-reply', inboundMirror: true });
+      h.service.completeNotification(record);
+      expect(gate.decide(42, presence).decision).toBe('deliver');
+      await withNotificationEnvelope(verifiedReplyEnvelope('test-real-answer'), () => h.service.runAsAutomation('telegram-server',
+        () => h.service.sendBot({ ...h.input, params: { ...h.input.params, text: 'The actual answer resolves the waiting turn.' } }, h.network)));
+      expect(gate.decide(42, presence).decision).toBe('record');
+    } finally { await gate.close(); }
+  });
+  describe('per-job opt-in provenance', () => {
+    async function jobHarness(push: { jobs: Record<string, boolean>; jobTopics?: Record<string, number> }, sessionSlug?: string) {
+      const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false, push }));
+      gate.pushDestination = () => ({ chatId: String(h.input.params.chat_id), topicId: 7000 });
+      h.service.notificationGate = gate;
+      h.service.notificationJobSession = id => id === 'job-session' && !!sessionSlug;
+      h.service.notificationJobSlug = id => id === 'job-session' ? sessionSlug : undefined;
+      const token = await h.service.options.sessions.issue({ sessionId: 'job-session', harnessId: 'codex-cli', projectDir: h.stateDir });
+      h.service.options.observer.track(h.service.options.sessions.getBinding('job-session')!);
+      return { h, gate, token };
+    }
+    const sealed = async (h: Awaited<ReturnType<typeof harness>>) => JSON.parse((await h.store.listOrigins()).records[0].record.envelopeJson);
+    const claim = (slug: string) => ({ origin: 'automated' as const, category: 'job-status' as const, sourceContext: slug });
+    it('delivers an opted-in job session through the sealed record, in the topic the operator chose', async () => {
+      const topic = Number(((await harness()).input.params as { message_thread_id?: number }).message_thread_id ?? 1);
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true }, jobTopics: { 'instar2-checkin': topic } }, 'instar2-checkin');
+      try {
+        await h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network)));
+        expect(h.network).toHaveBeenCalledOnce();
+        const record = await sealed(h);
+        expect(record.notification).toMatchObject({ category: 'job-status', sourceContext: 'instar2-checkin', verifiedJobSlug: 'instar2-checkin' });
+        expect(record.destination.topicId).toBe(String(topic));
+      } finally { await gate.close(); }
+    });
+    it('an opted-in job addressing any other topic is sent to the hub', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true }, jobTopics: { 'instar2-checkin': 999 } }, 'instar2-checkin');
+      try {
+        // The fixture's canned receipt names the original topic, so a retargeted send is held after dispatch.
+        await h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network))).catch(() => undefined);
+        expect(h.network).toHaveBeenCalledOnce();
+        expect((await sealed(h)).destination.topicId).toBe('7000');
+      } finally { await gate.close(); }
+    });
+    it('a job session claiming another job is named by its own session and stays quiet', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true } }, 'bugs-overseer');
+      try {
+        await expect(h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network)))).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect((await sealed(h)).notification).toMatchObject({ sourceContext: 'bugs-overseer', verifiedJobSlug: 'bugs-overseer' });
+      } finally { await gate.close(); }
+    });
+    it('a claimed sealed field from a session with no scheduler job is stripped and stays quiet', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true } });
+      try {
+        await expect(h.service.runWithSessionToken(token, () => withNotificationEnvelope({ ...claim('instar2-checkin'), verifiedJobSlug: 'instar2-checkin' }, () => h.service.sendBot(h.input, h.network)))).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect((await sealed(h)).notification).not.toHaveProperty('verifiedJobSlug');
+      } finally { await gate.close(); }
+    });
+    it('a scheduler notice keeps its identity through the seal with no session', async () => {
+      const topic = Number(((await harness()).input.params as { message_thread_id?: number }).message_thread_id ?? 1);
+      const { h, gate } = await jobHarness({ jobs: { 'nightly': true }, jobTopics: { 'nightly': topic } });
+      try {
+        await withNotificationEnvelope(verifiedJobEnvelope('nightly'), () => h.service.runAsAutomation('telegram-server', () => h.service.sendBot(h.input, h.network)));
+        expect(h.network).toHaveBeenCalledOnce();
+      } finally { await gate.close(); }
+    });
+    it('restores a peer record from its sealed field, and only a job-status envelope', async () => {
+      const { h, gate } = await jobHarness({ jobs: {} });
+      try {
+        const peer = { sessionId: 'job-session', producerKind: 'session', originMachineId: 'other-machine' } as never;
+        h.service.notificationJobSlug = () => 'same-id-local-job'; // a coincident local session id must not rename a peer's job
+        const restored = h.service.restoreJobEnvelope(peer, { ...claim('a'), verifiedJobSlug: 'a', relayedOrigin: true, contextTopicId: 5 });
+        expect(isVerifiedJobEnvelope(restored)).toBe(true);
+        expect(restored?.sourceContext).toBe('a');
+        expect(restored).toMatchObject({ relayedOrigin: true, contextTopicId: 5 });
+        expect(isVerifiedJobEnvelope(h.service.restoreJobEnvelope(peer, claim('a')))).toBe(false);
+        const other = { origin: 'automated' as const, category: 'spend-alert' as const, sourceContext: 'a', verifiedJobSlug: 'a' };
+        expect(h.service.restoreJobEnvelope(peer, other)).toBe(other);
+      } finally { await gate.close(); }
+    });
+  });
+  it('preserves the existing release promotion only for a trusted upgrade session', async () => {
+    const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate; h.service.notificationJobSession = () => true;
+    h.service.notificationPromotedUpgradeSession = id => id === 'approved-upgrade';
+    const token = await h.service.options.sessions.issue({ sessionId: 'approved-upgrade', harnessId: 'codex-cli', projectDir: h.stateDir });
+    h.service.options.observer.track(h.service.options.sessions.getBinding('approved-upgrade')!);
+    try {
+      await h.service.runWithSessionToken(token, () => h.service.sendBot(h.input, h.network));
+      expect(h.network).toHaveBeenCalledOnce();
+      const rows = (await h.store.listOrigins()).records;
+      expect(JSON.parse(rows[0].record.envelopeJson).notification).toMatchObject({ category: 'update-announcement', releaseAudiencePromoted: true });
+      expect(h.service.runAsAutomation('telegram-server', () => h.service.notificationForCurrentProducer())).not.toHaveProperty('releaseAudiencePromoted');
+    } finally { await gate.close(); }
+  });
+
+  it.each([
+    { enabled: true, dryRun: false, quiet: true },
+    { enabled: true, dryRun: true, quiet: false },
+    { enabled: false, dryRun: false, quiet: false },
+  ])('characterizes PR 2819 delivery-notice gating: %j', async ({ enabled, dryRun, quiet }) => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled, dryRun }));
+    h.service.notificationGate = gate;
+    h.service.registerAutomationProducer('reply-delivery-notice');
+    const body = { text: 'A reply I wrote is delayed by a delivery interruption.' };
+    const token = h.service.issueAutomationReply('reply-delivery-notice', 42, body, undefined, 'reply-delivery-notice:original:delayed');
+    try {
+      const send = h.service.runWithAutomationReply(token, 42, body, () => h.service.sendBot({ ...h.input,
+        params: { ...h.input.params, text: body.text } }, h.network));
+      if (quiet) {
+        await expect(send).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect(await h.store.recoverableAdmissions()).toEqual([]);
+      } else {
+        await send;
+        expect(h.network).toHaveBeenCalledOnce();
+      }
+    } finally { await gate.close(); }
+  });
+
+  it('terminally records quiet automation and replays its receipt after worker restart', async () => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate;
+    const prepared = vi.spyOn(h.service, 'prepareBot');
+    const send = (service: TelegramOriginService) => {
+      const token = service.issueAutomationReply('telegram-server', 42, { text: h.input.params.text }, undefined, 'quiet:one');
+      return service.runWithAutomationReply(token, 42, { text: h.input.params.text }, () => service.sendBot(h.input, h.network));
+    };
+    let quietId: string | undefined;
+    try { await send(h.service); throw new Error('Expected a quiet receipt'); }
+    catch (error) { expect(error).toBeInstanceOf(QuietRecordedError); quietId = (error as QuietRecordedError).receipt.quietId; }
+    expect(h.network).not.toHaveBeenCalled();
+    const rows = (await h.store.listOrigins()).records;
+    const row = await h.store.getOrigin(rows[0].record.originId);
+    expect(row?.operation).toMatchObject({ state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId } });
+    expect(await h.store.recoverableAdmissions()).toEqual([]);
+    const route = vi.spyOn(gate, 'route').mockRejectedValueOnce(new Error('Must not reclassify terminal quiet receipt'));
+    await expect(h.service.executePreparedBot(prepared.mock.results[0].value, h.network)).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(route).not.toHaveBeenCalled(); route.mockRestore();
+    await h.store.close();
+    const store = await OriginStore.open({ stateDir: h.stateDir, agentId: 'echo' }, worker); stores.push(store);
+    const restarted = new TelegramOriginService({ ...h.service.options, store, ownerBootId: 'boot-2' });
+    restarted.notificationGate = gate;
+    await expect(send(restarted)).rejects.toMatchObject({ receipt: { recorded: true, quietId } });
+    expect(h.network).not.toHaveBeenCalled();
+    await gate.close();
+  });
+
   it('replays an accepted logical automation send after worker restart without preparing new delivery custody', async () => {
     const h = await harness();
     const send = (service: TelegramOriginService, logicalId: string, input = h.input) => {
@@ -43,9 +206,12 @@ describe('origin service durable delivery', () => {
       return service.runWithAutomationReply(token, 42, { text: input.params.text }, () => service.sendBot(input, h.network));
     };
     expect((await send(h.service, 'beacon:0')).ok).toBe(true);
+    const stableOperation=h.service.automationOperationId('telegram-server',42,'beacon:0');
+    expect((await h.store.getOperation(stableOperation))?.operation?.operationId).toBe(stableOperation);
     await h.store.close();
     const store = await OriginStore.open({ stateDir: h.stateDir, agentId: 'echo' }, worker); stores.push(store);
     const restarted = new TelegramOriginService({ ...h.service.options, store, ownerBootId: 'boot-2' });
+    expect(restarted.automationOperationId('telegram-server',42,'beacon:0')).toBe(stableOperation);
     expect((await send(restarted, 'beacon:0')).ok).toBe(true);
     expect(h.network).toHaveBeenCalledOnce();
     expect((await store.listOrigins()).records).toHaveLength(1);
@@ -217,6 +383,212 @@ describe('origin service durable delivery', () => {
       expect(queue.selectClaimable(new Date().toISOString())).toEqual([]);
     } finally { queue.close(); }
   });
+  it('a reply refused by the boot beacon (server still starting) is replayable; any other 503 stays uncertain', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const beacon = '{"status":"warming","phase":"booting"}';
+      queue.enqueue({ delivery_id: 'boot-refused', topic_id: 42, text_hash: 'h1', text: 'Sent while starting', http_code: 503, error_body: beacon });
+      queue.enqueue({ delivery_id: 'real-503', topic_id: 42, text_hash: 'h2', text: 'Handler failed', http_code: 503, error_body: '{"error":"origin-unavailable"}' });
+      queue.enqueue({ delivery_id: 'beacon-lookalike', topic_id: 42, text_hash: 'h3', text: 'Extra field', http_code: 503,
+        error_body: '{"status":"warming","phase":"booting","sent":true}' });
+      queue.enqueue({ delivery_id: 'beacon-body-wrong-code', topic_id: 42, text_hash: 'h4', text: 'Odd code', http_code: 502, error_body: beacon });
+      const byId = new Map((await h.store.legacyCandidates()).map(row => [row.deliveryId, row]));
+      expect(byId.get('boot-refused')?.replaySafe).toBe(true);
+      expect(byId.get('real-503')?.replaySafe).toBe(false);
+      expect(byId.get('beacon-lookalike')?.replaySafe).toBe(false);
+      expect(byId.get('beacon-body-wrong-code')?.replaySafe).toBe(false);
+      const safe = byId.get('boot-refused')!;
+      const operation = h.service.prepareImportedLegacy(safe, 'bot-1', '-100123');
+      expect(await h.store.importLegacy({ snapshot: safe, admission: operation.admission })).toBe(true);
+      expect((await h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('outcome-unknown');
+      h.service.options.reviewLegacyRecovery = async () => true;
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
+  it('replays a row refused while being prepared (config unreadable / issues routing) exactly once', async () => {
+    const h = await harness();
+    const queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const at = new Date(Date.now() - 60_000).toISOString();
+      // The exact bodies the reply route returns for these pre-dispatch refusals.
+      queue.enqueue({ delivery_id: 'refused-unknown', topic_id: 42, text_hash: 'h1', text: 'Backlog note', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'origin-config-reader-timeout', retryable: true,
+          message: 'This machine could not read its current messaging config, so nothing was sent. It will be retried.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues', topic_id: 42, text_hash: 'h2', text: 'Issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues-named', topic_id: 42, text_hash: 'h7', text: 'Named issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 "Issues" belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues-unresolved', topic_id: 42, text_hash: 'h8', text: 'Unresolved issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 (name unresolved) belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      queue.enqueue({ delivery_id: 'refused-display', topic_id: 42, text_hash: 'h5', text: 'Display note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'origin-display-authority-unavailable' }) });
+      queue.enqueue({ delivery_id: 'display-503', topic_id: 42, text_hash: 'h6', text: 'Wrong code', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-display-authority-unavailable' }) });
+      // Lookalikes stay uncertain: a generic 500, a relayed body, an extra key.
+      queue.enqueue({ delivery_id: 'generic-500', topic_id: 42, text_hash: 'h3', text: 'Maybe sent', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'telegram send failed' }) });
+      queue.enqueue({ delivery_id: 'relayed-503', topic_id: 42, text_hash: 'h4', text: 'Relayed', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'x', retryable: true, message: 'm', relayedFromHolder: true }) });
+      const snapshots = await h.store.legacyCandidates();
+      const safe = Object.fromEntries(snapshots.map(row => [row.deliveryId, row.replaySafe]));
+      expect(safe).toEqual({ 'refused-unknown': true, 'refused-issues': true, 'refused-issues-named': true, 'refused-issues-unresolved': true, 'refused-display': true, 'display-503': false,
+        'generic-500': false, 'relayed-503': false });
+      const row = snapshots.find(item => item.deliveryId === 'refused-unknown')!;
+      const operation = h.service.prepareImportedLegacy(row, 'bot-1', '-100123');
+      expect(await h.store.importLegacy({ snapshot: row, admission: operation.admission })).toBe(true);
+      expect((await h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('outcome-unknown');
+      expect(queue.findByDeliveryId('refused-unknown')?.state).not.toBe('delivered-ambiguous');
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
+  it('a reply queued during boot recovers with its real session label, even after the restart re-issued the credential', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const launch = { sessionId: 'instar-app', harnessId: 'claude-code' as const, projectDir: h.stateDir, configuredModel: 'claude-opus-5-5' };
+      const before = await h.service.options.sessions.issue(launch);
+      // The server restart re-enrolls the surviving session with a NEW credential.
+      await h.service.options.sessions.issue(launch);
+      h.service.options.observer.track(h.service.options.sessions.getBinding('instar-app')!);
+      const digest = createHash('sha256').update(before).digest('hex');
+      const beacon = '{"status":"warming","phase":"booting"}';
+      queue.enqueue({ delivery_id: 'boot-session', topic_id: 42, text_hash: 'h1', text: 'Sent while starting', http_code: 503,
+        error_body: beacon, origin_session_digest: digest });
+      queue.enqueue({ delivery_id: 'boot-no-session', topic_id: 42, text_hash: 'h2', text: 'Old script row', http_code: 503, error_body: beacon });
+      queue.enqueue({ delivery_id: 'boot-foreign', topic_id: 42, text_hash: 'h3', text: 'Unknown credential', http_code: 503,
+        error_body: beacon, origin_session_digest: 'f'.repeat(64) });
+      const byId = new Map((await h.store.legacyCandidates()).map(row => [row.deliveryId, row]));
+      expect(byId.get('boot-session')?.originSessionDigest).toBe(digest);
+
+      const attributed = await h.service.attributeLegacy(byId.get('boot-session')!);
+      const operation = h.service.prepareImportedLegacy(byId.get('boot-session')!, 'bot-1', '-100123', attributed);
+      expect(operation.record).toMatchObject({ producerKind: 'imported-legacy', originMachineId: 'legacy-unattributed', sessionId: 'instar-app',
+        originMachineName: 'Mac Studio', machine: { status: 'observed', value: 'Mac Studio' },
+        harness: { status: 'observed', value: 'claude-code' }, model: { status: 'configured', value: 'claude-opus-5-5' } });
+      expect(operation.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · Claude Code · claude-opus-5-5 (configured)');
+      expect(await h.store.importLegacy({ snapshot: byId.get('boot-session')!, admission: operation.admission })).toBe(true);
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+
+      // No digest (older script) and an unmatched digest: the machine is still known.
+      for (const id of ['boot-no-session', 'boot-foreign']) {
+        const snapshot = byId.get(id)!;
+        const machineOnly = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
+        expect(machineOnly.record).toMatchObject({ sessionId: null, machine: { status: 'observed', value: 'Mac Studio' },
+          harness: { status: 'unknown' }, model: { status: 'unknown' } });
+        // Unknown harness and model are left out of the footer, never printed as "unknown".
+        const requestJson = machineOnly.admission.children[0].materializations[0].requestJson;
+        expect(requestJson).toContain('Echo · Mac Studio');
+        expect(requestJson).not.toContain('unknown');
+        expect(await h.store.importLegacy({ snapshot, admission: machineOnly.admission })).toBe(true);
+      }
+    } finally { queue.close(); }
+  });
+  it('an ended session no longer attributes, and harness/model are never claimed without a session', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const token = await h.service.options.sessions.issue({ sessionId: 'gone', harnessId: 'codex-cli', projectDir: h.stateDir });
+      await h.service.options.sessions.revoke('gone');
+      queue.enqueue({ delivery_id: 'ended', topic_id: 42, text_hash: 'h1', text: 'After the session ended', http_code: 401,
+        origin_session_digest: createHash('sha256').update(token).digest('hex') });
+      const snapshot = (await h.store.legacyCandidates())[0];
+      expect((await h.service.attributeLegacy(snapshot)).session).toBeNull();
+      // A forged record claiming a harness without a session is refused by the import fence.
+      const forged = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', { machine: (await h.service.attributeLegacy(snapshot)).machine,
+        session: null });
+      const record = JSON.parse(forged.admission.record.envelopeJson);
+      record.harness = { value: 'codex-cli', status: 'observed', sourceEventRef: null, observedAt: null, reason: null };
+      const envelopeJson = JSON.stringify(record);
+      await expect(h.store.importLegacy({ snapshot, admission: { ...forged.admission, record: { ...forged.admission.record, envelopeJson } } }))
+        .rejects.toThrow(/legacy-origin-required/);
+    } finally { queue.close(); }
+  });
+  describe('an imported queue row under the notification gate', () => {
+    const beacon = '{"status":"warming","phase":"booting"}';
+    async function gated() {
+      const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+      const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+      // An automated notice is moved to this hub topic when it is prepared.
+      gate.pushDestination = () => ({ chatId: '-100123', topicId: 7000 });
+      h.service.notificationGate = gate;
+      h.service.notificationJobSession = id => id === 'job-session';
+      const enroll = async (sessionId: string) => {
+        const token = await h.service.options.sessions.issue({ sessionId, harnessId: 'claude-code', projectDir: h.stateDir });
+        h.service.options.observer.track(h.service.options.sessions.getBinding(sessionId)!);
+        return createHash('sha256').update(token).digest('hex');
+      };
+      const snapshotOf = async (deliveryId: string) => (await h.store.legacyCandidates()).find(row => row.deliveryId === deliveryId)!;
+      const imported = async (deliveryId: string) => {
+        const snapshot = await snapshotOf(deliveryId);
+        const operation = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
+        expect(await h.store.importLegacy({ snapshot, admission: operation.admission })).toBe(true);
+        return operation;
+      };
+      const entryState = (deliveryId: string) => queue.findByDeliveryId(deliveryId)?.state;
+      const close = async () => { queue.close(); await gate.close(); };
+      return { h, queue, gate, enroll, snapshotOf, imported, entryState, close };
+    }
+    it('a reply queued by a live session is retried as a reply, in its own topic', async () => {
+      const t = await gated();
+      try {
+        const digest = await t.enroll('instar-app');
+        t.queue.enqueue({ delivery_id: 'session-reply', topic_id: 42, text_hash: 'h1', text: 'Here is your answer', http_code: 503,
+          error_body: beacon, origin_session_digest: digest });
+        // The scope recovery happens to run in never decides a row's standing.
+        const operation = await withNotificationEnvelope({ origin: 'automated', category: 'job-status', sourceContext: 'ambient' }, () => t.imported('session-reply'));
+        expect(operation.record).toMatchObject({ producerKind: 'imported-legacy', sessionId: 'instar-app',
+          notification: { origin: 'verified-reply', sourceContext: 'imported-origin-session' }, destination: { topicId: '42' } });
+        await t.h.service.executePreparedBot(operation, t.h.network);
+        expect(t.h.network).toHaveBeenCalledOnce();
+        expect((await t.h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('suppressed');
+      } finally { await t.close(); }
+    });
+    it("a job session's row and an unattributed row stay quiet, and the entry is not labelled delivered", async () => {
+      const t = await gated();
+      try {
+        const digest = await t.enroll('job-session');
+        t.queue.enqueue({ delivery_id: 'job-row', topic_id: 42, text_hash: 'h1', text: 'Nightly report', http_code: 503,
+          error_body: beacon, origin_session_digest: digest });
+        t.queue.enqueue({ delivery_id: 'no-session-row', topic_id: 42, text_hash: 'h2', text: 'Old script row', http_code: 503, error_body: beacon });
+        t.queue.enqueue({ delivery_id: 'foreign-row', topic_id: 42, text_hash: 'h3', text: 'Unknown credential', http_code: 503,
+          error_body: beacon, origin_session_digest: 'f'.repeat(64) });
+        for (const id of ['job-row', 'no-session-row', 'foreign-row']) {
+          const operation = await t.imported(id);
+          expect(operation.record.sessionId).toBe(id === 'job-row' ? 'job-session' : null);
+          expect(operation.record.notification?.origin).toBe('automated');
+          await expect(t.h.service.executePreparedBot(operation, t.h.network)).rejects.toBeInstanceOf(QuietRecordedError);
+          expect((await t.h.store.getOrigin(operation.record.originId))?.operation).toMatchObject({ state: 'suppressed', holdReason: 'quiet-notification-recorded' });
+          expect(t.entryState(id)).toBe('quiet-recorded');
+        }
+        expect(t.h.network).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+    it('a reply claim on an imported row that names no session is not a reply at the last hop', async () => {
+      const t = await gated();
+      try {
+        t.queue.enqueue({ delivery_id: 'claimed-reply', topic_id: 42, text_hash: 'h1', text: 'Claims to be a reply', http_code: 503, error_body: beacon });
+        const operation = await t.imported('claimed-reply');
+        // The store refuses a changed seal (origin-store:digest-mismatch), so the
+        // claim can only be tried in memory against the last-hop classifier.
+        operation.record.notification = { origin: 'verified-reply', category: 'command-response', sourceContext: 'imported-origin-session' };
+        const stored = (await t.h.store.getOrigin(operation.record.originId))!;
+        await expect(t.h.service.classifyPreparedNotification(operation, stored)).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(t.h.network).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+  });
+  it('isBootBeaconBody accepts only the beacon body', () => {
+    expect(isBootBeaconBody('{"status":"warming","phase":"booting"}')).toBe(true);
+    expect(isBootBeaconBody('{"phase":"booting","status":"warming"}')).toBe(true);
+    expect(isBootBeaconBody('{"status":"ok","phase":"booting"}')).toBe(false);
+    // A standby relaying the lease holder's booting answer adds a key: the send may
+    // have reached the holder path, so it stays uncertain.
+    expect(isBootBeaconBody('{"status":"warming","phase":"booting","relayedFromHolder":true}')).toBe(false);
+    expect(isBootBeaconBody(null)).toBe(false);
+    expect(isBootBeaconBody('not json')).toBe(false);
+    expect(isBootBeaconBody('[]')).toBe(false);
+  });
   it('imports a claimed legacy row as uncertain and fences the old worker without granting a new attempt', async () => {
     const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
     try {
@@ -376,10 +748,11 @@ describe('origin service durable delivery', () => {
     const audit = await h.store.getOrigin(page.records[0].record.originId);
     expect(audit?.children[0].state).toBe('outcome-unknown');
   });
-  it('receipt persistence failure remains outcome-unknown after successful network acceptance', async () => {
+  it('receipt persistence failure after Telegram acceptance reports accepted-unrecorded with the message id', async () => {
     const h = await harness();
     vi.spyOn(h.store, 'recordOutcome').mockRejectedValue(new Error('disk failed'));
-    await expect(h.send()).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'receipt-persistence-unavailable' });
+    await expect(h.send()).rejects.toMatchObject({ outcome: 'accepted-unrecorded', reason: 'receipt-persistence-unavailable',
+      delivered: { messageId: '7', fallbackRecorded: false } });
     expect(h.network).toHaveBeenCalledOnce();
   });
   it('refuses changed caller materialization against the actual outbox claim', async () => {
@@ -413,7 +786,7 @@ describe('origin service durable delivery', () => {
       const h = await harness();
       const record = h.store.recordOutcome.bind(h.store);
       vi.spyOn(h.store, 'recordOutcome').mockRejectedValueOnce(new Error('disk failed')).mockImplementation(record);
-      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'receipt-persistence-unavailable' });
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'accepted-unrecorded', reason: 'receipt-persistence-unavailable' });
       await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
       expect(h.network).toHaveBeenCalledOnce();
     });
@@ -490,5 +863,33 @@ describe('origin service durable delivery', () => {
     vi.spyOn(h.service.options.observer, 'refresh').mockImplementation(async () => { await h.service.options.sessions.revoke('session'); });
     await expect(h.service.runWithSessionToken(token, h.send)).rejects.toMatchObject({ reason: 'session-no-longer-authorized' });
     expect(h.network).not.toHaveBeenCalled();
+  });
+});
+
+describe('origin service binds the native session at send time', () => {
+  // Live 2026-11-12: a session's first reply (13 s after spawn) read "native-session-unbound"
+  // because no hook had reported the Claude session id yet. The send path now asks the server's
+  // session records (Claude Code's own per-process record) for it before reading the model.
+  it('a reply before any hook reported the id still gets the observed model', async () => {
+    const h = await harness();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const pathMod = await import('node:path');
+    const native = '33333333-3333-4333-8333-333333333333';
+    const configHome = pathMod.join(h.stateDir, 'claude-home');
+    const folder = pathMod.join(configHome, 'projects', h.stateDir.replace(/[\\/.]/g, '-'));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(pathMod.join(folder, `${native}.jsonl`),
+      JSON.stringify({ type: 'user', sessionId: native, uuid: 'u1', message: { role: 'user', content: 'Hello' } }) + '\n' +
+      JSON.stringify({ type: 'assistant', sessionId: native, uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-5-5', content: [] } }) + '\n');
+    const token = await h.service.options.sessions.issue({ sessionId: 'first-reply', harnessId: 'claude-code', projectDir: h.stateDir, configHome });
+    h.service.options.observer.track(h.service.options.sessions.getBinding('first-reply')!);
+    expect((await h.service.sessionProducer(token)).model).toMatchObject({ status: 'unknown', reason: 'native-session-unbound' });
+    const asked: string[] = [];
+    h.service.resolveNativeSession = id => { asked.push(id); h.service.options.observer.bindNative(id, native); return native; };
+    expect((await h.service.sessionProducer(token)).model).toMatchObject({ status: 'observed', value: 'claude-opus-5-5' });
+    expect(asked).toEqual(['first-reply']);
+    // Once bound, the resolver is not asked again.
+    await h.service.sessionProducer(token);
+    expect(asked).toEqual(['first-reply']);
   });
 });

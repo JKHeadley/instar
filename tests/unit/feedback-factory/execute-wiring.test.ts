@@ -15,7 +15,7 @@ import { FeedbackDrainStore, DrainConflictError } from '../../../src/feedback-fa
 import { InitiativeTracker } from '../../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { buildFeedbackTriage } from '../../../src/feedback-factory/triage/buildFeedbackTriage.js';
-import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, UPDATE_PENDING_BRAKE_MAX_MS, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
+import { installedSafeMergeScript, disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, UPDATE_PENDING_BRAKE_MAX_MS, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
 import { SafeAttemptGit, GhGateway } from '../../../src/feedback-factory/execute/executorPorts.js';
 import { SandboxRuntimeRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -26,7 +26,7 @@ import type { SessionManager } from '../../../src/core/SessionManager.js';
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-wiring.test.ts' }); });
 
-function build(opts: { sessionManager?: SessionManager | null; execute?: Record<string, unknown> } = {}) {
+function build(opts: { sessionManager?: SessionManager | null; execute?: Record<string, unknown>; localVerifyNeedsRestart?: () => boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'execute-wiring-'));
   dirs.push(dir);
   const drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: 'k'.repeat(32) });
@@ -42,6 +42,7 @@ function build(opts: { sessionManager?: SessionManager | null; execute?: Record<
     config, drainStore: drain, triage, processing, initiativeTracker: tracker, sessionManager: opts.sessionManager ?? null, selfMachineId: 'm1',
     ownerMachineId: () => 'm1', ownerEpoch: () => 3, isCanonicalOwner: () => true, enabled: () => true, quotaShedding: () => false, updatePending: () => false,
     raiseAttention: async () => {}, tunnelUrl: () => null,
+    ...(opts.localVerifyNeedsRestart ? { localVerifyNeedsRestart: opts.localVerifyNeedsRestart } : {}),
   });
   triage.service.attachExecutor({ status: () => ctx.service.status(), executionStateFor: (id) => ctx.service.executionStateFor(id), actionItems: () => ctx.service.actionItems(), holdsItem: (id) => ctx.service.holdsItem(id) });
   return { ctx, drain, triage, dir };
@@ -66,6 +67,15 @@ describe('buildFeedbackExecutor wiring', () => {
     expect((await ctx.service.refreshAvailability()).reason).toBe('no-source-repo');
     expect(triage.service.summary().executor).toEqual({ available: false, reason: 'no-source-repo' });
     expect(isInstarSourceCheckout(os.tmpdir())).toBe(false);
+  });
+
+  it('passes Local Verify\'s restart need through to the attempt hold; absent, the hold never yields', () => {
+    expect(build().ctx.service.restartHoldYields()).toBe(false);
+    let needs = true;
+    const { ctx } = build({ localVerifyNeedsRestart: () => needs });
+    expect(ctx.service.restartHoldYields()).toBe(true);
+    needs = false;
+    expect(ctx.service.restartHoldYields()).toBe(false);
   });
 
   it('dry-run is the default: config without dryRun:false never starts work', () => {
@@ -147,6 +157,9 @@ describe('the update-pending admission brake', () => {
     expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: '1.3.2' })).toBe(true);
     // The live failure (2026-10-23): auto-apply paused by an operator, a newer version detected,
     // and every executor tick refused as update-pending although no restart would ever come.
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null, restartDeferral: { active: true } })).toBe(true);
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null, restartDeferral: { active: false } })).toBe(false);
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null, updateActivationPendingSince: '2026-11-06T00:00:00.000Z' })).toBe(true);
     expect(executorUpdatePending({ config: { autoApply: false }, pendingUpdate: '1.3.2' })).toBe(false);
     expect(executorUpdatePending({ config: {}, pendingUpdate: '1.3.2' })).toBe(false);
     expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null })).toBe(false);
@@ -164,5 +177,18 @@ describe('the update-pending admission brake', () => {
     // No (or an unparseable) detection time keeps the brake: the safe direction.
     expect(executorUpdatePending(pending(null), now)).toBe(true);
     expect(executorUpdatePending(pending('not a date'), now)).toBe(true);
+  });
+});
+
+describe('the executor merges with the running package\'s script', () => {
+  it('resolves from both src and dist to the package scripts folder, never a checkout', () => {
+    expect(installedSafeMergeScript('file:///pkg/dist/feedback-factory/execute/buildFeedbackExecutor.js')).toBe('/pkg/scripts/safe-merge.mjs');
+    expect(installedSafeMergeScript('file:///pkg/src/feedback-factory/execute/buildFeedbackExecutor.ts')).toBe('/pkg/scripts/safe-merge.mjs');
+    expect(fs.existsSync(installedSafeMergeScript())).toBe(true);
+  });
+  it('the production gateway is built with it, and the source path no longer picks the script', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/feedback-factory/execute/buildFeedbackExecutor.ts'), 'utf-8');
+    expect(source).toContain('safeMergeScript: installedSafeMergeScript()');
+    expect(source).not.toMatch(/safeMergeScript: path\.join/);
   });
 });

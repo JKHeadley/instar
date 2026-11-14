@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-suite-fixes",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-11T00:07:26.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-suite-fixes.md",
+  "artifactSha256": "180525f7391b376d36461d9fff12507bd9769c5d9feb91bff126a60782a7bcde",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/side-effects/unified-usage-ledger-suite-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test catalogue entry for the Tier-2 usage ledger store",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

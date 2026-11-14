@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-03T13:27:04.299Z",
+  "slug": "mobile-pairing-word-code",
+  "carriers": {
+    "CMT-1252": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Write the pairing redesign up as a spec (decision recorded in .instar/vm-test/README.md), converge it, and build it"
+    }
+  }
+}

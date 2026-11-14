@@ -40,7 +40,7 @@ describe('Telegram message injection logic', () => {
       'utf-8'
     );
     expect(source).toContain('buildInjectionTag(');
-    expect(buildInjectionTag(42)).toBe('[telegram:42]');
+    expect(buildInjectionTag(42)).toBe('[telegram:42 (name unresolved)]');
     expect(buildInjectionTag(42, 'Agent Updates', 'Justin', 12345))
       .toBe('[telegram:42 "Agent Updates" from Justin (uid:12345)]');
   });

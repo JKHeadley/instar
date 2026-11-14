@@ -64,6 +64,28 @@ describe('POST /commitments — checkInAt (integration)', () => {
     expect(tracker.getAll().find((c) => c.id === created.id)?.checkInAt).toBe(INSTANT);
   });
 
+  it('rejects a prose verification method instead of creating a promise that fails every sweep', async () => {
+    const before = tracker.getAll().length;
+    const res = await auth(request(app).post('/commitments').send(body({
+      verificationMethod: 'Review the research evidence',
+      followThroughOptOutReason: 'Research still in progress.',
+    })));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('verificationMethod');
+    expect(tracker.getAll()).toHaveLength(before);
+  });
+
+  it('rejects a config check without a concrete setting and expected value', async () => {
+    const before = tracker.getAll().length;
+    const res = await auth(request(app).post('/commitments').send({
+      type: 'config-change', userRequest: 'Remove the daily delay', agentResponse: 'I will remove it',
+      followThroughOptOutReason: 'legacy test record without a deadline',
+    }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('configPath');
+    expect(tracker.getAll()).toHaveLength(before);
+  });
+
   it('REFUSES a bare date, naming why rather than resolving it to an hour nobody chose', async () => {
     const res = await auth(request(app).post('/commitments').send(body({
       checkInAt: '2026-10-24',

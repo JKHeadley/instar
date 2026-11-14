@@ -24,6 +24,7 @@
  */
 import crypto from 'node:crypto';
 import { encryptForSync, decryptFromSync, type Secrets, type EncryptedSecretPayload } from './SecretStore.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /**
  * Vault namespaces whose contents are deliberately machine-local.  In
@@ -32,14 +33,32 @@ import { encryptForSync, decryptFromSync, type Secrets, type EncryptedSecretPayl
  * the same credential/channel it is meant to survive.
  */
 export const LOCAL_ONLY_SECRET_PREFIXES = ['machineIdentityRecovery'] as const;
+/** Reserved graph control material uses a dedicated, recipient-verified
+ * recovery/bootstrap protocol. Ordinary vault provisioning must never copy a
+ * custody role private key, owner root, local grant key or rollback marker. */
+export const GRAPH_LOCAL_SECRET_KEY_PREFIX = 'conversation_graph_';
 
 function isLocalOnlySecretPath(keyPath: string): boolean {
-  return LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
+  return keyPath.split('.').some(segment => segment.startsWith(GRAPH_LOCAL_SECRET_KEY_PREFIX))
+    || LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
     keyPath === prefix
     || keyPath.startsWith(`${prefix}.`)
     || keyPath.endsWith(`.${prefix}`)
     || keyPath.includes(`.${prefix}.`)
   ));
+}
+
+function firstLocalOnlySecretPath(secrets: Secrets, prefix = ''): string | null {
+  for (const [key, value] of Object.entries(secrets)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    // Check containers too: an empty object must not overwrite a local root.
+    if (isLocalOnlySecretPath(keyPath)) return keyPath;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const child = firstLocalOnlySecretPath(value as Secrets, keyPath);
+      if (child) return child;
+    }
+  }
+  return null;
 }
 
 /**
@@ -196,6 +215,21 @@ export class SecretShareHandler {
    * Throws only on a malformed/foreign payload or a machine-local recovery namespace.
    */
   handle(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
+    try {
+      const result = this.handleInner(command, sender);
+      // Counts only: never a secret name or value.
+      featureEvidence.record('multiMachine.secretSync', { kind: 'fired', reason: 'secret sync received and applied', context: { sender, stored: result.stored.length, dropped: result.dropped.length } });
+      return result;
+    } catch (err) {
+      // A classified code, never err.message: the refusal message names a secret path.
+      const message = err instanceof Error ? err.message : '';
+      const code = message.includes('non-secret-share') ? 'wrong-command' : message.includes('machine-local') ? 'local-only-namespace' : 'open-or-apply-failed';
+      featureEvidence.record('multiMachine.secretSync', { kind: 'error', reason: `secret sync refused: ${code}`, context: { sender, code } });
+      throw err;
+    }
+  }
+
+  private handleInner(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
     // The legacy permissive path must be structurally unreachable for credential-class data
     // (WS5.2 R3a / §6.5): a credential rides the distinct `account-credential-share` verb +
     // `decryptAccountCredential`, never this one. Reject anything that is not a secret-share.
@@ -204,7 +238,7 @@ export class SecretShareHandler {
     }
     const payload = JSON.parse(command.encrypted) as EncryptedSecretPayload;
     const secrets = decryptFromSync(payload, this.deps.ownEncryptionPrivateKey());
-    const forbidden = secretKeyPaths(secrets).find(isLocalOnlySecretPath);
+    const forbidden = firstLocalOnlySecretPath(secrets);
     if (forbidden) {
       throw new Error(`SecretShareHandler refuses machine-local secret namespace: ${forbidden}`);
     }

@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-01T01:39:14.349Z",
+  "slug": "mobile-operator-chat",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 506,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MobileChatRequests.ts",
+      "src/core/PendingInboundStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionRouter.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/MessageLogger.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 479,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered loop. Each chat request causes at most one delivery and one mirror send, triggered by an operator tap, bounded by 20 per minute per phone and 2,000 live records per phone; nothing retries on its own."
+  },
+  "verdict": "pass"
+}

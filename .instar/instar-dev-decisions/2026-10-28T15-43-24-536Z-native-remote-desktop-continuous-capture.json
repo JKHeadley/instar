@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-28T15:43:24.536Z",
+  "slug": "native-remote-desktop-continuous-capture",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 188,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/tunnel/TunnelManager.ts",
+      "src/tunnel/probeCurrentTunnelIdentity.ts"
+    ],
+    "addedLines": 138,
+    "deletedLines": 50
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/wake-handler-amplifier-guard.test.ts",
+      "howCaught": "Wake recovery probes one authenticated current tunnel, drops stale generation results, serializes overlapping wakes, and keeps the lock through a delayed restart task; tests exercise both reachability outcomes and delayed overlap."
+    }
+  },
+  "verdict": "pass"
+}

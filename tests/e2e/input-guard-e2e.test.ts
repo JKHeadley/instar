@@ -803,7 +803,7 @@ describe('Group 9: Full injectTelegramMessage integration', () => {
 
     // Should create a file reference injection
     expect(injections.length).toBe(1);
-    expect(injections[0]).toContain('[telegram:116]');
+    expect(injections[0]).toContain('[telegram:116 "Coherence Gate"]');
     expect(injections[0]).toContain('Long message saved to');
 
     // Verify the temp file exists and has correct content

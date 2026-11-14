@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-28T07:58:23.603Z",
+  "slug": "feedback-executor-changeset-cap",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/changeSet.ts",
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

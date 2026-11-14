@@ -20,6 +20,26 @@
 
 import type { LeaseRecord } from './types.js';
 
+/**
+ * A keyed fenced lease (context-budget-layered-summaries §9.3): one lock per
+ * `key` (a topic's fold lock), fenced by a monotonic `generation`. `role`
+ * names which hand on the holder machine owns it (`coordinator` for a fold in
+ * progress, `sentinel` after a quarantine handover), so a handover is a new
+ * generation, never a re-acquire. Every field is inside the signature.
+ */
+export interface KeyedLeaseRecord {
+  key: string;
+  holder: string;
+  role: string;
+  generation: number;
+  acquiredAt: string;
+  expiresAt: string;
+  nonce: number;
+  /** A released (tombstone) record: generation N released, not held. */
+  released?: true;
+  signature: string;
+}
+
 /** Crypto seam — injected so the logic is testable without real key files. */
 export interface LeaseCrypto {
   /** This machine's id (the only id we may name as `holder` when signing). */
@@ -175,6 +195,43 @@ export class FencedLease {
     };
     const signature = this.crypto.sign(FencedLease.canonicalize(base));
     return { ...base, signature };
+  }
+
+  // ── Keyed lease (context-budget-layered-summaries §9.3, §14 "Fold lock") ──
+
+  /**
+   * Canonical form of a KEYED lease: a per-key lock (e.g. one topic's fold
+   * lock) with the key inside the signature, so a lock for one key never
+   * verifies for another. The leading discriminator keeps it from ever
+   * verifying as a machine lease or a hand-back consent token, and vice versa;
+   * the machine lease's own canonical form is untouched.
+   */
+  static canonicalizeKeyed(
+    l: Pick<KeyedLeaseRecord, 'key' | 'holder' | 'role' | 'generation' | 'acquiredAt' | 'expiresAt' | 'nonce'> & { released?: boolean },
+  ): string {
+    return JSON.stringify(['keyed-lease', l.key, l.holder, l.role, l.generation, l.acquiredAt, l.expiresAt, l.nonce, l.released === true]);
+  }
+
+  /** Mint a keyed lease naming THIS machine as holder. */
+  signKeyedLease(
+    fields: Omit<KeyedLeaseRecord, 'holder' | 'signature'>,
+  ): KeyedLeaseRecord {
+    // Only the signed fields are carried: nothing unsigned can ride along.
+    const base = {
+      key: fields.key, holder: this.crypto.selfMachineId, role: fields.role, generation: fields.generation,
+      acquiredAt: fields.acquiredAt, expiresAt: fields.expiresAt, nonce: fields.nonce,
+      ...(fields.released === true ? { released: true as const } : {}),
+    };
+    return { ...base, signature: this.crypto.sign(FencedLease.canonicalizeKeyed(base)) };
+  }
+
+  /** Verify a keyed lease's signature against its claimed holder's registered key. */
+  verifyKeyedLease(l: KeyedLeaseRecord | null | undefined): boolean {
+    if (!l || typeof l.key !== 'string' || typeof l.holder !== 'string' || typeof l.generation !== 'number') return false;
+    if (typeof l.role !== 'string' || typeof l.signature !== 'string' || typeof l.nonce !== 'number') return false;
+    if (l.released !== undefined && l.released !== true) return false; // only a signed boolean true means released
+    if (!Number.isSafeInteger(l.generation) || l.generation < 1) return false;
+    return this.crypto.verify(FencedLease.canonicalizeKeyed(l), l.signature, l.holder);
   }
 
   // ── U4.4 hand-back consent token (mint + verify) ──────────────────

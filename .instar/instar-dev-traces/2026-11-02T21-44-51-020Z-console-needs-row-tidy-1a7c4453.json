@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "console-needs-row-tidy",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T21:44:51.020Z",
+  "artifactPath": "upgrades/side-effects/console-needs-row-tidy.md",
+  "artifactSha256": "0e79105f0c1e2d50fbbdfb9d3c023b04c22124e25e74debede5b9db777568806",
+  "coveredFiles": [
+    "dashboard/console/pace-model.js",
+    "tests/unit/console-pace.test.ts",
+    "upgrades/next/console-needs-row-tidy.md",
+    "upgrades/side-effects/console-needs-row-tidy.eli16.md",
+    "upgrades/side-effects/console-needs-row-tidy.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console wording only; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-needs-row-tidy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-needs-row-tidy.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

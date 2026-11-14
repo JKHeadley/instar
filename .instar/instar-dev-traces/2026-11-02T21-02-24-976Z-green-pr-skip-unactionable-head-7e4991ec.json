@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "green-pr-skip-unactionable-head",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T21:02:24.976Z",
+  "artifactPath": "upgrades/side-effects/green-pr-skip-unactionable-head.md",
+  "artifactSha256": "603f22ed87b394fb13211878c98b0cf184d5dffee1460bd14e87f208ea7fa638",
+  "coveredFiles": [
+    "upgrades/next/green-pr-skip-unactionable-head.md",
+    "upgrades/side-effects/green-pr-skip-unactionable-head.eli16.md",
+    "upgrades/side-effects/green-pr-skip-unactionable-head.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "evidence correction in the write-up only",
+  "eli16Path": "upgrades/side-effects/green-pr-skip-unactionable-head.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/green-pr-skip-unactionable-head.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

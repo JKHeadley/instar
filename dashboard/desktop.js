@@ -1,0 +1,1699 @@
+// Remote-desktop viewer. Secrets and frames stay in memory only.
+const $ = id => document.getElementById(id);
+let token = '';
+let operatorSession = '';
+let keyPair;
+let ecdhKeyPair;
+let aesKey;
+let inputSequence = 0n;
+let frameSequence = 0n;
+let sendChain = Promise.resolve();
+let receiveChain = Promise.resolve();
+let requestId = '';
+let machineId = '';
+const trustedTargetKeys = new Map();
+let trustedTargetSigningPublicKey = '';
+let connectionNonce = '';
+let socket;
+let frameUrl = '';
+let videoCodec = 'jpeg';
+let activeVideoCodec = 'jpeg';
+let decoder = null;
+let decoderGeneration = 0;
+let decoderStartupTimer = 0;
+let decoderWidth = 0;
+let decoderHeight = 0;
+let needsVideoKeyframe = true;
+let lastKeyframeRequestAt = 0;
+let videoFallbackCount = 0;
+const H264_CODEC = 'avc1.420028';
+const H264_CONFIG = { codec: H264_CODEC, codedWidth: 1920, codedHeight: 1080,
+  optimizeForLatency: true };
+function videoContract(codec) {
+  return codec === 'h264' ? 'desktop-video-v1:annexb:avc1.420028:1920x1080:g1'
+    : 'desktop-video-v1:jpeg:g1';
+}
+let lastMoveAt = 0;
+let pendingMove = null;
+let moveFrame = 0;
+let heartbeat = 0;
+let inputEnabled = false;
+let streamEpoch = 0;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+let reconnectTimer = 0;
+let resumeGeneration = 0;
+let resumeAttempt = null;
+let resumeSetupFailures = 0;
+let resumeTransportFailures = 0;
+const resumeControllers = new Set();
+let stopping = false;
+// Phone taps should click the point touched. Relative trackpad remains optional.
+let trackpad = false;
+let touchCapable = matchMedia('(any-pointer: coarse)').matches;
+let cursor = { x: 0.5, y: 0.5 };
+const pointers = new Map();
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+let edgePanFrame = 0;
+let edgePointerId = null;
+let twoFinger = null;
+let wheelFrame = 0;
+let pendingWheel = null;
+let composingText = false;
+let skipCompositionCommitKey = false;
+let recentlyCommittedText = '';
+let heldButton = null;
+let heldPhase = 'none';
+let holdHeartbeat = 0;
+let buttonOperationId = 0;
+let buttonReleaseRequested = false;
+let nextKeyOperationId = 0;
+const heldKeys = new Map();
+const keyOperationIds = new Map();
+const keyReleaseRequested = new Set();
+const keyReleaseQueue = [];
+const pendingKeyTaps = new Set();
+// Same names the host helpers map (src/core/DesktopHost.ts DESKTOP_KEYS).
+const remoteKeys = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
+  'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
+  'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Insert',
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  ...'abcdefghijklmnopqrstuvwxyz0123456789'.split('')]);
+const modifierKeys = ['Meta', 'Control', 'Alt'];
+// A press shorter than this, with no drag, goes out as one click so the host
+// never sees a press and release a network round trip apart.
+const MOUSE_CLICK_MS = 250;
+const LONG_PRESS_MS = 550;
+const DOUBLE_TAP_MS = 300;
+let mousePress = null;
+let lastTap = null;
+// A lone tap's click waits this long. A click followed at once by a press reads on
+// the host as a double-click, which maximizes a window being dragged by its title.
+let pendingTapClick = 0;
+let dragPointerId = null;
+let multiTap = null;
+// What the connected machine says about its screens. Until it answers
+// supported, selectDisplay is never sent: an older host ends the session on a
+// command it does not know.
+let displayInfo = null;
+let overviewOpen = null;
+let threeFinger = null;
+const THREE_FINGER_TRAVEL = 60;
+// While a switch settles the picture still shows the old screen, and a tap would
+// land on the new one at the wrong place. Hold pointer presses until a new frame.
+let screenSwitch = null;
+const SCREEN_SWITCH_SETTLE_MS = 400;
+const SCREEN_SWITCH_LIMIT_MS = 3_000;
+// Standard shortcuts, sent as ordinary keys. Spaces follow the fingers as on a
+// Mac trackpad: swiping left brings in the Space on the right.
+const DESKTOP_SHORTCUTS = {
+  macos: {
+    overview: { label: 'Mission Control', hint: 'Control+Up', modifiers: ['Control'], key: 'ArrowUp' },
+    appWindows: { label: 'App windows', hint: 'Control+Down', modifiers: ['Control'], key: 'ArrowDown' },
+    nextSpace: { label: 'Next Space', hint: 'Control+Right', modifiers: ['Control'], key: 'ArrowRight' },
+    previousSpace: { label: 'Previous Space', hint: 'Control+Left', modifiers: ['Control'], key: 'ArrowLeft' },
+  },
+  windows: {
+    overview: { label: 'Task View', hint: 'Win+Tab', modifiers: ['Meta'], key: 'Tab' },
+    nextSpace: { label: 'Next desktop', hint: 'Ctrl+Win+Right', modifiers: ['Control', 'Meta'], key: 'ArrowRight' },
+    previousSpace: { label: 'Previous desktop', hint: 'Ctrl+Win+Left', modifiers: ['Control', 'Meta'], key: 'ArrowLeft' },
+  },
+};
+
+// Watching counts as using the session: while the viewer is visible a light
+// ping keeps the two-minute idle limit from ending it.
+setInterval(() => {
+  if (inputEnabled && !document.hidden && !heldButton && !heldKeys.size) void sendCommand({ type: 'ping' });
+}, 30_000);
+function syncHoldHeartbeat() {
+  if (holdHeartbeat) { clearInterval(holdHeartbeat); holdHeartbeat = 0; }
+  if (heldButton || heldKeys.size) {
+    holdHeartbeat = setInterval(() => { if (inputEnabled) void sendCommand({ type: 'ping' }); }, 1_000);
+  }
+}
+
+function setHeldButton(button, phase = button ? 'sent' : 'none') {
+  if (!button) { buttonOperationId++; buttonReleaseRequested = false; }
+  heldButton = button;
+  heldPhase = phase;
+  syncHoldHeartbeat();
+  $('dragButton').textContent = button ? 'Release' : 'Drag';
+  $('dragButton').setAttribute('aria-pressed', String(!!button));
+}
+function flushPendingMove() {
+  if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
+  if (pendingMove) { send({ kind: 'move', ...pendingMove }); pendingMove = null; }
+}
+function releaseButton() {
+  if (!heldButton || heldPhase === 'releasing' || heldPhase === 'unknown') return;
+  if (heldPhase === 'pending') { buttonReleaseRequested = true; return; }
+  flushPendingMove();
+  const button = heldButton;
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++buttonOperationId;
+  heldPhase = 'releasing';
+  void send({ kind: 'buttonUp', ...cursor, button }).then(sent => {
+    if (epoch !== streamEpoch || operation !== buttonOperationId
+      || heldButton !== button || heldPhase !== 'releasing') return;
+    if (sent) setHeldButton(null);
+    else { heldPhase = 'unknown'; unexpectedDisconnect(streamSocket); }
+  });
+}
+function beginHold(button) {
+  if (heldButton) return;
+  overviewOpen = null; // This press may close it.
+  flushPendingMove();
+  buttonReleaseRequested = false;
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++buttonOperationId;
+  setHeldButton(button, 'pending');
+  void send({ kind: 'buttonDown', ...cursor, button }).then(sent => {
+    if (epoch !== streamEpoch || operation !== buttonOperationId
+      || heldButton !== button || heldPhase !== 'pending') return;
+    if (sent) { heldPhase = 'sent'; if (buttonReleaseRequested) releaseButton(); }
+    else { heldPhase = 'unknown'; unexpectedDisconnect(streamSocket); }
+  });
+}
+function updateKeyButton(key) {
+  for (const button of document.querySelectorAll('[data-remote-key]')) {
+    if (button.dataset.remoteKey === key && button.dataset.modifier) {
+      button.setAttribute('aria-pressed', String(heldKeys.has(key)));
+    }
+  }
+}
+function drainKeyReleases() {
+  while (keyReleaseQueue.length) {
+    const key = keyReleaseQueue[0];
+    if (heldKeys.get(key) === 'pending') return;
+    keyReleaseQueue.shift();
+    keyReleaseRequested.delete(key);
+    if (heldKeys.get(key) === 'sent') void releaseKey(key, true);
+  }
+}
+function beginKey(key) {
+  if (!inputEnabled || !remoteKeys.has(key) || heldKeys.has(key)) return Promise.resolve(false);
+  heldKeys.set(key, 'pending');
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++nextKeyOperationId;
+  keyOperationIds.set(key, operation);
+  updateKeyButton(key);
+  syncHoldHeartbeat();
+  return send({ kind: 'keyDown', key }).then(sent => {
+    if (epoch !== streamEpoch || keyOperationIds.get(key) !== operation
+      || heldKeys.get(key) !== 'pending') return false;
+    if (sent) {
+      heldKeys.set(key, 'sent');
+      drainKeyReleases();
+    }
+    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(streamSocket); }
+    return sent;
+  });
+}
+async function tapKey(key) {
+  const epoch = streamEpoch;
+  if (await beginKey(key) && epoch === streamEpoch) await releaseKey(key);
+}
+function releaseKey(key, fromQueue = false) {
+  const phase = heldKeys.get(key);
+  if (!phase || phase === 'releasing' || phase === 'unknown') return Promise.resolve(false);
+  if (!fromQueue && (phase === 'pending' || keyReleaseQueue.length)) {
+    if (!keyReleaseRequested.has(key)) { keyReleaseRequested.add(key); keyReleaseQueue.push(key); }
+    drainKeyReleases();
+    return Promise.resolve(false);
+  }
+  heldKeys.set(key, 'releasing');
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++nextKeyOperationId;
+  keyOperationIds.set(key, operation);
+  return send({ kind: 'keyUp', key }).then(sent => {
+    if (epoch !== streamEpoch || keyOperationIds.get(key) !== operation
+      || heldKeys.get(key) !== 'releasing') return false;
+    if (sent) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); syncHoldHeartbeat(); }
+    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(streamSocket); }
+    return sent;
+  });
+}
+function releaseControls() {
+  releaseButton();
+  for (const key of heldKeys.keys()) releaseKey(key);
+}
+
+function status(message) { $('status').textContent = message; $('liveStatus').textContent = message; }
+const encoder = new TextEncoder();
+const bytesToBase64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)));
+const base64ToBytes = text => Uint8Array.from(atob(text), character => character.charCodeAt(0));
+function recordIv(direction, sequence) {
+  const iv = new Uint8Array(12);
+  const view = new DataView(iv.buffer);
+  view.setUint32(0, { frame: 1, input: 2, control: 3 }[direction]);
+  view.setBigUint64(4, sequence);
+  return iv;
+}
+function recordAad(direction) {
+  return encoder.encode(JSON.stringify(['instar-desktop-aead-v1', requestId, direction]));
+}
+async function deriveAesKey(targetPublic, salt) {
+  const target = await crypto.subtle.importKey('raw', base64ToBytes(targetPublic),
+    { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: target }, ecdhKeyPair.privateKey, 256);
+  const material = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: base64ToBytes(salt),
+    info: encoder.encode(`instar-desktop-aead-v1:${requestId}:${machineId}`) }, material,
+  { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function verifyTarget(result) {
+  const expectedVideoCodec = resumeAttempt?.body.videoCodec ?? videoCodec;
+  if (result.videoCodec !== expectedVideoCodec) throw new Error('Remote video configuration changed.');
+  if (result.machineId !== machineId || !Number.isSafeInteger(result.expiresAt)
+    || result.expiresAt <= Date.now() || result.expiresAt > Date.now() + 10 * 60_000 + 2000) {
+    throw new Error('Remote target identity or lease changed.');
+  }
+  const publicBytes = base64ToBytes(result.targetSigningPublicKey);
+  if (!trustedTargetSigningPublicKey
+    || bytesToBase64(publicBytes) !== trustedTargetSigningPublicKey) {
+    throw new Error('Remote target key does not match the registered machine.');
+  }
+  const publicKey = await crypto.subtle.importKey('spki', publicBytes, 'Ed25519', false, ['verify']);
+  const payload = encoder.encode(JSON.stringify(['desktop-target-key-v1', requestId, machineId,
+    bytesToBase64(await crypto.subtle.exportKey('spki', keyPair.publicKey)),
+    bytesToBase64(await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey)),
+    result.targetEcdhPublicKey, result.salt, result.videoCodec,
+    videoContract(result.videoCodec), result.connectionNonce, result.expiresAt]));
+  const valid = await crypto.subtle.verify('Ed25519', publicKey,
+    base64ToBytes(result.targetSignature), payload);
+  if (!valid) throw new Error('Remote target signature did not verify.');
+}
+function sendCommand(command) {
+  const epoch = streamEpoch;
+  sendChain = sendChain.then(async () => {
+    if (epoch !== streamEpoch) return false;
+    if (!inputEnabled && command.type === 'input') return false;
+    if (socket?.readyState !== WebSocket.OPEN || !aesKey) return false;
+    const sequence = ++inputSequence;
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM',
+      iv: recordIv('input', sequence), additionalData: recordAad('input') }, aesKey,
+    encoder.encode(JSON.stringify(command))));
+    const record = new Uint8Array(8 + ciphertext.length);
+    new DataView(record.buffer).setBigUint64(0, sequence);
+    record.set(ciphertext, 8);
+    if (epoch !== streamEpoch || socket?.readyState !== WebSocket.OPEN) return false;
+    socket.send(record);
+    return true;
+  }).catch(() => { if (epoch === streamEpoch) leave('Encrypted remote input failed.'); return false; });
+  return sendChain;
+}
+function resetVideoDecoder() {
+  decoderGeneration++;
+  if (decoderStartupTimer) { clearTimeout(decoderStartupTimer); decoderStartupTimer = 0; }
+  try { decoder?.close(); } catch { /* It may already have failed. */ }
+  decoder = null;
+  decoderWidth = 0;
+  decoderHeight = 0;
+  needsVideoKeyframe = true;
+  $('videoCanvas').hidden = true;
+}
+function requestVideoKeyframe() {
+  const now = Date.now();
+  if (now - lastKeyframeRequestAt < 500) return;
+  lastKeyframeRequestAt = now;
+  if (inputEnabled) void sendCommand({ type: 'keyframe' });
+}
+function fallbackVideo(epoch) {
+  if (epoch !== streamEpoch || activeVideoCodec !== 'h264') return;
+  resetVideoDecoder();
+  activeVideoCodec = 'jpeg';
+  if (++videoFallbackCount > 1) { leave('Remote video decoder unavailable.'); return; }
+  void sendCommand({ type: 'video-fallback' });
+  status('Video switched to compatibility mode.');
+}
+function nalTypes(bytes) {
+  const types = new Set();
+  for (let i = 0; i + 4 < bytes.length; i++) {
+    if (bytes[i] === 0 && bytes[i + 1] === 0 && bytes[i + 2] === 0 && bytes[i + 3] === 1) {
+      types.add(bytes[i + 4] & 31);
+      i += 4;
+    }
+  }
+  return types;
+}
+function receiveH264(bytes, epoch) {
+  if (activeVideoCodec !== 'h264' || bytes.length < 23 || bytes.length > 1_250_018
+    || String.fromCharCode(...bytes.subarray(0, 4)) !== 'IDV1' || bytes[4] !== 1
+    || (bytes[5] !== 0 && bytes[5] !== 1)) throw new Error('H.264 packet invalid.');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint16(6);
+  const height = view.getUint16(8);
+  if (width < 2 || width > 1920 || width % 2 || height < 2 || height > 1080 || height % 2) {
+    throw new Error('H.264 geometry invalid.');
+  }
+  const data = bytes.subarray(18);
+  if (data[0] !== 0 || data[1] !== 0 || data[2] !== 0 || data[3] !== 1) {
+    throw new Error('H.264 Annex B invalid.');
+  }
+  const keyframe = bytes[5] === 1;
+  const types = nalTypes(data);
+  if (keyframe ? !(types.has(7) && types.has(8) && types.has(5)) : !types.has(1)) {
+    throw new Error('H.264 access unit invalid.');
+  }
+  if (decoder && (decoderWidth !== width || decoderHeight !== height)) resetVideoDecoder();
+  if (needsVideoKeyframe && !keyframe) { requestVideoKeyframe(); return; }
+  if (!decoder) {
+    if (!keyframe) { requestVideoKeyframe(); return; }
+    const generation = ++decoderGeneration;
+    decoderWidth = width;
+    decoderHeight = height;
+    decoder = new VideoDecoder({
+      output: frame => {
+        try {
+          if (epoch !== streamEpoch || generation !== decoderGeneration || !inputEnabled) return;
+          if (frame.displayWidth !== decoderWidth || frame.displayHeight !== decoderHeight
+            || frame.displayWidth > 1920 || frame.displayHeight > 1080) {
+            throw new Error('Decoded video geometry invalid.');
+          }
+          const canvas = $('videoCanvas');
+          if (canvas.width !== frame.displayWidth) canvas.width = frame.displayWidth;
+          if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('Canvas unavailable.');
+          context.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          if (decoderStartupTimer) { clearTimeout(decoderStartupTimer); decoderStartupTimer = 0; }
+          canvas.hidden = false;
+          $('screen').hidden = true;
+          updateCursor();
+        } catch { fallbackVideo(epoch); }
+        finally { frame.close(); }
+      },
+      error: () => { if (generation === decoderGeneration) fallbackVideo(epoch); },
+    });
+    decoder.configure({ codec: H264_CODEC, codedWidth: width, codedHeight: height,
+      optimizeForLatency: true });
+    decoderStartupTimer = setTimeout(() => {
+      if (generation === decoderGeneration && inputEnabled && activeVideoCodec === 'h264') {
+        fallbackVideo(epoch);
+      }
+    }, 2_500);
+  }
+  if (decoder.decodeQueueSize >= 3) {
+    resetVideoDecoder();
+    requestVideoKeyframe();
+    return;
+  }
+  const timestamp = Number(view.getBigUint64(10)) * 1000;
+  if (!Number.isSafeInteger(timestamp)) throw new Error('H.264 timestamp invalid.');
+  decoder.decode(new EncodedVideoChunk({ type: keyframe ? 'key' : 'delta',
+    timestamp, data }));
+  needsVideoKeyframe = false;
+}
+const CONTROL_MARKER = 0xc7;
+let controlSequence = 0n;
+let lockedSealKey = '';
+let lockedScreenState = '';
+let lockedBoxAllowed = false;
+let lockedBoxRefusal = '';
+let secretSequence = 0;
+function syncLockedPassword() {
+  const locked = lockedScreenState === 'locked-in-session';
+  const show = lockedBoxAllowed && !lockedBoxRefusal && locked && !!lockedSealKey;
+  $('lockedPassword').hidden = !show;
+  if (!show) $('lockedPasswordInput').value = '';
+  // A locked Mac whose box cannot work says why, rather than showing nothing.
+  const reason = $('lockedPasswordReason');
+  if (reason) {
+    reason.hidden = !(locked && lockedBoxRefusal);
+    reason.textContent = locked && lockedBoxRefusal ? lockedMessage(lockedBoxRefusal) : '';
+  }
+}
+function lockedMessage(reason) {
+  return { 'relock-pending': 'This Mac is finishing a relock. Try again in a couple of minutes.',
+    'attempts-per-request': 'Too many tries in this session.', 'attempts-per-day': 'Too many tries today.',
+    'seal-stale': 'The connection changed. Type your password again.',
+    aborted: 'Stopped before the password finished. Type it again.',
+    'field-dirty': 'Clearing the password field. Try again in a moment.',
+    'browser-box-off': 'Password entry from a browser is off for this Mac.',
+    'tunnel-not-first-tier': 'Password entry is off while the backup connection is in use.',
+    'tunnel-not-active': 'Password entry from a browser is off until this Mac\'s secure tunnel is up. This page updates when it is.',
+    'retained-helper-required': 'Password entry needs Instar\'s kept desktop helper on this Mac, and this install does not have one.',
+    'own-input-grant-required': 'Password entry needs macOS Accessibility permission for Instar\'s own desktop helper on this Mac.',
+    'unsupported-macos': 'Password entry is not available on this Mac\'s macOS version.',
+    'helper-unprobed': 'This Mac\'s desktop helper has not answered yet, so password entry is not ready.',
+    'shield-not-confirmed': 'This Mac\'s lock screen is not ready for a password right now. Wake the screen and try again.',
+    'not-at-the-lock-screen': 'This Mac is not at its lock screen, so the password was not typed.',
+    'not-locked': 'This Mac is not locked, so there is nothing to unlock.',
+    'not-available': 'Password entry is not available in this session.',
+    'grant-ended': 'This remote session has ended. Start a new one to try again.',
+    'repeat': 'That password was already sent. Type it again to retry.',
+    'too-long': 'That password is too long to type here.',
+    'character-not-typable': 'That password has a character this Mac\'s keyboard layout cannot type from here.',
+    'state-unavailable': 'This Mac could not read its relock record. Try again in a moment.',
+    'relock-not-owed': 'This Mac is not ready for a password in this session. Start a new session.',
+    relocking: 'This Mac is relocking now. Try again in a couple of minutes.',
+    'relock-pending-unconfirmed': 'This Mac is finishing a relock. Try again in a couple of minutes.',
+    'relock-failed': 'This Mac could not confirm its last relock. Check it before trying again.',
+    'relock-failed-producer-alive': 'This Mac could not confirm its last relock. Check it before trying again.',
+    'guard-not-alive': 'This Mac\'s relock guard is not running, so password entry is paused. Try again shortly.',
+    disabled: 'Locked-screen access is turned off on this Mac.',
+    busy: 'This Mac is busy with another password. Try again in a moment.',
+    'state-unknown': 'This Mac\'s lock state is unclear right now. Try again in a moment.' }[reason]
+    ?? 'This Mac did not accept that. Try again.';
+}
+async function receiveControl(record) {
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  const sequence = view.getBigUint64(0) & 0x00ff_ffff_ffff_ffffn;
+  if (sequence <= controlSequence) throw new Error('Remote control record invalid.');
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: recordIv('control', sequence),
+    additionalData: recordAad('control') }, aesKey, record.subarray(8));
+  controlSequence = sequence;
+  const value = JSON.parse(new TextDecoder().decode(plain));
+  if (value.type === 'seal') lockedSealKey = value.key;
+  if (value.type === 'state') {
+    lockedScreenState = value.state;
+    lockedBoxAllowed = value.box === true;
+    lockedBoxRefusal = typeof value.boxRefusal === 'string' ? value.boxRefusal : '';
+  }
+  if (value.type === 'secret-result' && value.refused) status(lockedMessage(value.refused));
+  if (value.type === 'secret-result' && value.sent) { $('leaveUnlockedButton').hidden = false; }
+  if (value.type === 'relock') status(value.phase === 'left-unlocked' ? 'This Mac will stay unlocked.' : 'Relocking has begun.');
+  syncLockedPassword();
+}
+/** Sealed for the helper alone: Node and the front carry bytes they cannot read. */
+async function sendLockedPassword(text) {
+  const helperKey = lockedSealKey;
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const helper = await crypto.subtle.importKey('raw', base64ToBytes(helperKey), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const bits = await crypto.subtle.deriveBits({ name: 'ECDH', public: helper }, pair.privateKey, 256);
+  const hkdf = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0),
+    info: encoder.encode(`instar-desktop-secret-v1:${requestId}:${helperKey}`) }, hkdf,
+  { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const seq = ++secretSequence;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv,
+    additionalData: encoder.encode(JSON.stringify(['instar-desktop-secret-v1', requestId, seq])) }, key, encoder.encode(text));
+  const ephemeral = await crypto.subtle.exportKey('raw', pair.publicKey);
+  return sendCommand({ type: 'secret', secret: { ephemeral: bytesToBase64(ephemeral), iv: bytesToBase64(iv), ct: bytesToBase64(ct), seq } });
+}
+async function receiveFrame(recordBuffer, epoch) {
+  if (!inputEnabled || epoch !== streamEpoch) return;
+  if (!aesKey || !(recordBuffer instanceof ArrayBuffer) || recordBuffer.byteLength < 28
+    || recordBuffer.byteLength > 1_600_000) throw new Error('Encrypted frame invalid.');
+  const record = new Uint8Array(recordBuffer);
+  if (record[0] === CONTROL_MARKER) { await receiveControl(record); return; }
+  const sequence = new DataView(recordBuffer).getBigUint64(0);
+  // The target may drop an already-encrypted frame under backpressure. A
+  // strictly increasing nonce still rejects replay/reordering without treating
+  // an intentional video drop as a broken session.
+  if (sequence <= frameSequence) throw new Error('Remote frame sequence invalid.');
+  const frame = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: recordIv('frame', sequence),
+    additionalData: recordAad('frame') }, aesKey, record.subarray(8));
+  if (!inputEnabled || epoch !== streamEpoch) return;
+  frameSequence = sequence;
+  if (screenSwitch && Date.now() - screenSwitch.at >= SCREEN_SWITCH_SETTLE_MS) screenSwitch = null;
+  const bytes = new Uint8Array(frame);
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    try { receiveH264(bytes, epoch); }
+    catch { fallbackVideo(epoch); }
+    return;
+  }
+  if (activeVideoCodec === 'h264') {
+    resetVideoDecoder();
+    activeVideoCodec = 'jpeg';
+    status('Video switched to compatibility mode.');
+  }
+  const old = frameUrl;
+  frameUrl = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
+  $('screen').src = frameUrl;
+  $('screen').hidden = false;
+  if (old) URL.revokeObjectURL(old);
+}
+function clearFrame() {
+  resetVideoDecoder();
+  if (frameUrl) URL.revokeObjectURL(frameUrl);
+  frameUrl = '';
+  $('screen').removeAttribute('src');
+  $('screen').hidden = false;
+}
+function leave(message) {
+  streamEpoch++;
+  inputEnabled = false;
+  if (socket) { socket.close(); socket = undefined; }
+  if (heartbeat) { clearInterval(heartbeat); heartbeat = 0; }
+  if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
+  pendingMove = null;
+  if (wheelFrame) { cancelAnimationFrame(wheelFrame); wheelFrame = 0; }
+  pendingWheel = null;
+  stopEdgePan();
+  pointers.clear();
+  displayInfo = null;
+  overviewOpen = null;
+  threeFinger = null;
+  screenSwitch = null;
+  renderDisplays();
+  setHeldButton(null);
+  for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
+  keyReleaseRequested.clear();
+  keyReleaseQueue.length = 0;
+  pendingKeyTaps.clear();
+  syncHoldHeartbeat();
+  clearFrame();
+  closeKeyboard();
+  composingText = false;
+  skipCompositionCommitKey = false;
+  recentlyCommittedText = '';
+  resetZoom();
+  resetVisualViewport();
+  $('desktopTools').hidden = true;
+  $('toolsButton').setAttribute('aria-expanded', 'false');
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  document.body.classList.remove('desktop-live', 'trackpad');
+  $('control').hidden = true;
+  if (token) $('request').hidden = false;
+  status(message);
+}
+function unexpectedDisconnect(streamSocket) {
+  if (socket !== streamSocket || stopping) return;
+  leave('Connection interrupted. Checking whether access can resume…');
+  if (!token || !operatorSession || !requestId) return;
+  // Stop remains reachable while the target decides whether this interruption
+  // may resume. The browser cannot create a new grant on its own.
+  $('request').hidden = true;
+  $('control').hidden = false;
+  document.body.classList.add('desktop-live');
+  syncVisualViewport();
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    status('Connection interrupted. Stop access, then open the desktop again.');
+    return;
+  }
+  const generation = ++resumeGeneration;
+  resumeSetupFailures = 0;
+  resumeTransportFailures = 0;
+  scheduleResume(generation, 500);
+}
+function scheduleResume(generation, delay) {
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = 0;
+    if (!stopping && generation === resumeGeneration) void resumeDesktop(generation);
+  }, delay);
+}
+function abortResumeRequests() {
+  for (const controller of resumeControllers) controller.abort();
+  resumeControllers.clear();
+}
+async function resumeApi(path, method = 'GET', body) {
+  const controller = new AbortController();
+  resumeControllers.add(controller);
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try { return await api(path, method, body, controller.signal); }
+  finally { clearTimeout(timer); resumeControllers.delete(controller); }
+}
+async function resumeDesktop(generation) {
+  const current = () => !stopping && generation === resumeGeneration && !!requestId;
+  if (!current()) return;
+  let activated = false;
+  try {
+    const state = await resumeApi(`/desktop/requests/${encodeURIComponent(requestId)}`);
+    if (!current()) return;
+    if (state.status === 'revoked') throw Object.assign(new Error('Desktop access ended. Open it again when needed.'), { terminal: true });
+    if (state.status === 'approved') {
+      if (resumeAttempt?.generation === generation && state.connectionNonce !== resumeAttempt.body.previousConnectionNonce) {
+        resumeAttempt.approved = true;
+        activated = true;
+        await openStream(state, generation);
+        return;
+      }
+    }
+    if (state.status !== 'interrupted' && state.status !== 'approved') throw Object.assign(new Error('Desktop access cannot resume.'), { terminal: true });
+    if (resumeAttempt?.approved) resumeAttempt = null;
+    if (!resumeAttempt) {
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) throw Object.assign(new Error('Connection interrupted. Open the desktop again.'), { terminal: true });
+      reconnectAttempts++;
+      const previousKeyPair = keyPair;
+      const previousConnectionNonce = connectionNonce;
+      if (!previousKeyPair || !previousConnectionNonce || (state.status === 'approved'
+        && state.connectionNonce !== previousConnectionNonce)) throw Object.assign(
+          new Error('Desktop connection identity changed.'), { terminal: true });
+      keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+      ecdhKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+      if (!current()) return;
+      const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
+      const ecdhPublicKey = await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey);
+      const attemptId = crypto.randomUUID().replaceAll('-', '');
+      const browserNonce = crypto.randomUUID().replaceAll('-', '');
+      const browserPublicKey = bytesToBase64(publicKey);
+      const browserEcdhPublicKey = bytesToBase64(ecdhPublicKey);
+      const nextVideoCodec = activeVideoCodec;
+      const proof = await crypto.subtle.sign('Ed25519', previousKeyPair.privateKey,
+        encoder.encode(JSON.stringify(['desktop-resume-v1', requestId, previousConnectionNonce,
+          attemptId, browserPublicKey, browserEcdhPublicKey, browserNonce,
+          videoCodec, nextVideoCodec])));
+      if (!current()) return;
+      resumeAttempt = { generation, approved: false, body: {
+        attemptId, previousConnectionNonce, previousSignature: bytesToBase64(proof),
+        browserPublicKey, browserEcdhPublicKey, browserNonce,
+        previousVideoCodec: videoCodec, videoCodec: nextVideoCodec,
+      } };
+    }
+    const resumeBody = resumeAttempt.body;
+    let approved;
+    for (let retry = 0; retry < 3 && current(); retry++) {
+      try {
+        approved = await resumeApi(`/desktop/requests/${encodeURIComponent(requestId)}/resume`, 'POST', resumeBody);
+        break;
+      } catch (error) {
+        if (!current()) return;
+        if (error.httpStatus === 403) throw error;
+        // A lost HTTP response may follow a successful server activation.
+        const observed = await resumeApi(`/desktop/requests/${encodeURIComponent(requestId)}`);
+        if (observed.status === 'approved' && observed.connectionNonce !== resumeBody.previousConnectionNonce) {
+          approved = observed; break;
+        }
+        if (observed.status !== 'interrupted' && observed.status !== 'approved') throw Object.assign(error, { terminal: true });
+        await new Promise(resolve => setTimeout(resolve, 500 * 2 ** retry));
+      }
+    }
+    if (!current()) return;
+    if (!approved || approved.status !== 'approved') throw new Error('Desktop access could not resume.');
+    resumeAttempt.approved = true;
+    activated = true;
+    await openStream(approved, generation);
+  } catch (error) {
+    if (!current()) return;
+    if (activated && (error.transportFailure || error.transportSetup || error.httpStatus === 403)
+      && ++resumeSetupFailures <= 3) {
+      scheduleResume(generation, 500 * resumeSetupFailures);
+      return;
+    }
+    // Only a temporary transport read failure may be retried. A target refusal
+    // or expired PIN session is terminal for this automatic path.
+    if (!activated && !error.httpStatus && !error.terminal && ++resumeTransportFailures <= 3) {
+      scheduleResume(generation, 500 * 2 ** (resumeTransportFailures - 1));
+      return;
+    }
+    resumeAttempt = null;
+    leave(error.message || 'Desktop access cannot resume.');
+  }
+}
+async function api(path, method = 'GET', body, signal) {
+  let response;
+  try { response = await fetch(path, {
+    method, cache: 'no-store', credentials: 'same-origin',
+    ...(signal ? { signal } : {}),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-Instar-Operator-Session': operatorSession,
+      ...(method !== 'GET' ? { 'Content-Type': 'application/json', 'X-Instar-Request': '1' } : {}),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }); } catch (error) {
+    if (signal) error.transportFailure = true;
+    throw error;
+  }
+  let result;
+  try { result = await response.json(); }
+  catch (error) {
+    if (signal && (error.name === 'AbortError' || error instanceof TypeError)) {
+      error.transportFailure = true;
+      throw error;
+    }
+    if (signal) throw error;
+    result = {};
+  }
+  if (!response.ok) {
+    const error = new Error(result.error || `Server answered ${response.status}`);
+    error.httpStatus = response.status;
+    if (result.step) error.step = result.step;
+    throw error;
+  }
+  return result;
+}
+
+function requirePinAgain() {
+  desktopSetup?.stop();
+  if ($('setup')) $('setup').hidden = true;
+  token = '';
+  operatorSession = '';
+  $('retryButton').hidden = true;
+  $('request').hidden = true;
+  $('unlock').hidden = false;
+  status('Your dashboard session ended. Enter your PIN again.');
+}
+
+let desktopSetup = null;
+async function refreshSetup() {
+  try {
+    if (!desktopSetup) {
+      const { createDesktopSetup } = await import('./desktop-setup.js');
+      desktopSetup = createDesktopSetup({
+        api, $,
+        onPinLost: () => requirePinAgain(),
+        onReady: async row => {
+          status(`${row.label} is ready.`);
+          await loadTargetsAndMaybeOpen({ open: false });
+        },
+      });
+    }
+    await desktopSetup.refresh();
+  } catch {
+    // @silent-fallback-ok — setup is an aid; the picker above it still works.
+  }
+}
+
+// Setup exists even while this machine's own desktop is off, which is exactly
+// when /desktop/targets answers 503.
+async function loadDesktopPage(options) {
+  try { await loadTargetsAndMaybeOpen(options); }
+  catch (error) {
+    if (error.httpStatus !== 503) throw error;
+    $('unlock').hidden = true;
+    $('request').hidden = true;
+    status('Remote Desktop is off here. Set it up below.');
+  }
+  await refreshSetup();
+}
+
+async function loadTargetsAndMaybeOpen({ open = true } = {}) {
+  const targets = await api('/desktop/targets');
+  const machines = targets.machines || [];
+  $('machine').replaceChildren();
+  $('machineNotes')?.replaceChildren();
+  trustedTargetKeys.clear();
+  for (const target of machines) {
+    const option = document.createElement('option');
+    option.value = target.machineId;
+    const trustedKey = typeof target.targetSigningPublicKey === 'string'
+      ? target.targetSigningPublicKey : '';
+    option.disabled = !target.ready || !trustedKey;
+    setTimeout(() => { void refreshLockedCard(); }, 0);
+    option.textContent = option.disabled
+      ? `${target.label} — ${target.unavailableReason || 'Unavailable right now'}`
+      : target.label;
+    if (!option.disabled) trustedTargetKeys.set(target.machineId, trustedKey);
+    else {
+      // A phone truncates a disabled option, so each reason and its fix also
+      // appears in full below the picker.
+      const note = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = target.label;
+      note.append(name, ` ${target.unavailableReason || 'Unavailable right now.'}`);
+      $('machineNotes')?.append(note);
+    }
+    $('machine').append(option);
+  }
+  const preferredMachine = new URLSearchParams(location.search).get('machineId');
+  const preferredTarget = preferredMachine
+    ? machines.find(target => target.machineId === preferredMachine) : null;
+  const hasPreferredMachine = !!preferredTarget?.ready && trustedTargetKeys.has(preferredMachine);
+  if (hasPreferredMachine) $('machine').value = preferredMachine;
+  $('unlock').hidden = true;
+  const ready = [...$('machine').options].filter(option => !option.disabled);
+  $('requestButton').disabled = ready.length === 0;
+  if (!preferredMachine && ready.length > 0) $('machine').value = ready[0].value;
+  if (preferredMachine && !hasPreferredMachine) {
+    $('request').hidden = machines.length === 0;
+    $('retryButton').hidden = false;
+    status(preferredTarget?.unavailableReason || 'The requested machine is not available right now.');
+    return;
+  }
+  if (ready.length === 0) {
+    $('request').hidden = machines.length === 0;
+    $('retryButton').hidden = false;
+    const reason = machines.find(target => target.unavailableReason)?.unavailableReason;
+    status(reason || 'This machine’s desktop is not available right now.');
+    return;
+  }
+  $('retryButton').hidden = true;
+  if (open && (hasPreferredMachine || (machines.length === 1 && ready.length === 1))) {
+    if (!hasPreferredMachine) $('machine').value = ready[0].value;
+    status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
+    await requestDesktop();
+  } else {
+    $('request').hidden = false;
+    status('Choose a machine to open.');
+  }
+}
+
+$('unlockButton').addEventListener('click', async () => {
+  $('unlockButton').disabled = true;
+  try {
+    const response = await fetch('/dashboard/unlock', {
+      method: 'POST', cache: 'no-store', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: $('pin').value }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.token || !result.operatorSessionToken) {
+      throw new Error(result.error || 'Dashboard PIN was not accepted.');
+    }
+    token = result.token;
+    operatorSession = result.operatorSessionToken;
+    $('pin').value = '';
+    await loadDesktopPage();
+  } catch (error) {
+    if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
+    else status(error.message || 'Could not unlock.');
+  }
+  finally { $('unlockButton').disabled = false; }
+});
+
+$('retryButton').addEventListener('click', async () => {
+  $('retryButton').disabled = true;
+  try { await loadDesktopPage(); }
+  catch (error) {
+    if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
+    else status(error.message || 'Could not check this machine.');
+  } finally { $('retryButton').disabled = false; }
+});
+
+async function requestDesktop() {
+  reconnectAttempts = 0;
+  resumeTransportFailures = 0;
+  stopping = false;
+  resumeGeneration++;
+  resumeAttempt = null;
+  abortResumeRequests();
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
+  $('requestButton').disabled = true;
+  const previousRequestId = requestId;
+  requestId = '';
+  try {
+    if (previousRequestId) {
+      // A lost WebSocket can remain half-open at the target. Revoke it before
+      // seeking a fresh grant; the target's controller lock also fences overlap.
+      try { await api(`/desktop/requests/${encodeURIComponent(previousRequestId)}/revoke`, 'POST', {}); }
+      catch { /* A stale or unreachable grant is still fenced by the controller lock. */ }
+    }
+    keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+    ecdhKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
+    const ecdhPublicKey = await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey);
+    machineId = $('machine').value;
+    trustedTargetSigningPublicKey = trustedTargetKeys.get(machineId) || '';
+    if (!trustedTargetSigningPublicKey) throw new Error('Target identity is not verified.');
+    videoCodec = 'jpeg';
+    if (window.VideoDecoder?.isConfigSupported) {
+      try {
+        if ((await VideoDecoder.isConfigSupported(H264_CONFIG)).supported) videoCodec = 'h264';
+      } catch { /* JPEG remains available. */ }
+    }
+    activeVideoCodec = videoCodec;
+    const result = await api('/desktop/requests', 'POST', {
+      machineId,
+      browserPublicKey: bytesToBase64(publicKey),
+      browserEcdhPublicKey: bytesToBase64(ecdhPublicKey),
+      browserNonce: crypto.randomUUID().replaceAll('-', ''),
+      videoCodec,
+      client: 'browser',
+      controlRecords: true,
+    });
+    requestId = result.requestId;
+    const approved = await api(`/desktop/requests/${encodeURIComponent(requestId)}`);
+    if (approved.status !== 'approved') throw new Error('Desktop access was not granted.');
+    try {
+      const point = await api(`/desktop/requests/${encodeURIComponent(requestId)}/cursor`);
+      if (Number.isFinite(point.x) && Number.isFinite(point.y)) cursor = point;
+    } catch { /* A missing cursor readback cannot grant input or bypass host checks. */ }
+    await openStream(approved);
+  } catch (error) {
+    if (requestId) {
+      try { await api(`/desktop/requests/${encodeURIComponent(requestId)}/revoke`, 'POST', {}); }
+      catch { /* The lease and idle limit still fence access if the revoke request fails. */ }
+      requestId = '';
+    }
+    const message = error.message || 'Could not open desktop.';
+    if (/dashboard operator session|dashboard PIN session/i.test(message)) {
+      requirePinAgain();
+    } else {
+      $('request').hidden = false;
+      status(message);
+    }
+  }
+  finally { $('requestButton').disabled = false; }
+}
+$('requestButton').addEventListener('click', requestDesktop);
+
+async function openStream(result, resume = null) {
+  await verifyTarget(result);
+  if (stopping || (resume !== null && resume !== resumeGeneration)) return;
+  videoCodec = result.videoCodec;
+  activeVideoCodec = videoCodec;
+  videoFallbackCount = 0;
+  resetVideoDecoder();
+  // Keep the verified key and grant generation together even if the WebSocket
+  // upgrade never reaches its open event. A later target interruption must be
+  // signed by this generation, not by the already-replaced predecessor.
+  connectionNonce = result.connectionNonce;
+  aesKey = await deriveAesKey(result.targetEcdhPublicKey, result.salt);
+  if (stopping || (resume !== null && resume !== resumeGeneration)) return;
+  inputSequence = 0n;
+  frameSequence = 0n;
+  const payload = new TextEncoder().encode(JSON.stringify(['desktop-browser-possession-v1', requestId, result.connectionNonce]));
+  const proof = await crypto.subtle.sign('Ed25519', keyPair.privateKey, payload);
+  const ticket = await (resume === null ? api : resumeApi)(`/desktop/requests/${encodeURIComponent(requestId)}/ticket`, 'POST', {
+    connectionNonce: result.connectionNonce,
+    signature: bytesToBase64(proof),
+  });
+  if (stopping || (resume !== null && resume !== resumeGeneration)) return;
+  if (ticket.machineId !== machineId || typeof ticket.ticket !== 'string') throw new Error('Target identity changed.');
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  socket = new WebSocket(`${scheme}//${location.host}/desktop-stream`,
+    ['instar-desktop-v1', `ticket.${ticket.ticket}`]);
+  const streamSocket = socket;
+  const epoch = ++streamEpoch;
+  sendChain = Promise.resolve();
+  receiveChain = Promise.resolve();
+  socket.binaryType = 'arraybuffer';
+  controlSequence = 0n;
+  lockedSealKey = '';
+  lockedBoxRefusal = '';
+  secretSequence = 0;
+  syncLockedPassword();
+  return new Promise((resolve, reject) => {
+  let opened = false;
+  let settled = false;
+  const failSetup = () => {
+    if (settled || opened) return;
+    settled = true;
+    clearTimeout(setupTimer);
+    reject(Object.assign(new Error('Remote desktop connection could not open.'), { transportSetup: true }));
+  };
+  const setupTimer = setTimeout(() => {
+    if (!opened) { try { streamSocket.close(); } catch { /* close may already be in flight */ } }
+    failSetup();
+  }, 5_000);
+  socket.addEventListener('open', () => {
+    if (socket !== streamSocket || stopping || (resume !== null && resume !== resumeGeneration)) {
+      streamSocket.close(); failSetup(); return;
+    }
+    opened = true;
+    settled = true;
+    clearTimeout(setupTimer);
+    inputEnabled = true;
+    $('request').hidden = true;
+    $('control').hidden = false;
+    document.body.classList.add('desktop-live');
+    syncVisualViewport();
+    document.body.classList.toggle('trackpad', trackpad);
+    syncTouchModeButton();
+    updateCursor();
+    $('machineName').textContent = ticket.label;
+    status('Remote desktop is live.');
+    void refreshDisplays(epoch);
+    if (resume !== null) resumeAttempt = null;
+    resumeTransportFailures = 0;
+    heartbeat = setInterval(() => {
+      sendCommand({ type: 'ping' });
+      void refreshDisplays(epoch); // Picks up a screen plugged in, unplugged, or a read that failed.
+    }, 30_000);
+    resolve();
+  });
+  socket.addEventListener('message', event => {
+    if (socket !== streamSocket || epoch !== streamEpoch) return;
+    receiveChain = receiveChain.then(() => receiveFrame(event.data, epoch))
+      .catch(() => { if (socket === streamSocket && epoch === streamEpoch) leave('Encrypted remote display failed.'); });
+  });
+  socket.addEventListener('close', () => {
+    if (!opened) { failSetup(); return; }
+    unexpectedDisconnect(streamSocket);
+  });
+  socket.addEventListener('error', () => {
+    if (!opened) { failSetup(); return; }
+    unexpectedDisconnect(streamSocket);
+  });
+  });
+}
+
+const LOCK_SCREEN_KEYS = new Set(['Enter', 'Tab', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+/** A password typed at the shield must never leave as plain input. The helper
+ * also refuses it, but only this stops it reaching the server at all. */
+function refusedAtLock(action) {
+  if (!['locked-in-session', 'locked-by-policy', 'screensaver-or-sleep', 'unknown'].includes(lockedScreenState)) return false;
+  if (action.kind === 'type') return true;
+  return action.kind === 'keyDown' && !LOCK_SCREEN_KEYS.has(action.key);
+}
+function send(action) {
+  if (!inputEnabled) return Promise.resolve(false);
+  if (refusedAtLock(action)) return Promise.resolve(true);
+  if (screenSwitch && Date.now() - screenSwitch.at >= SCREEN_SWITCH_LIMIT_MS) screenSwitch = null;
+  if (screenSwitch && ['click', 'buttonDown', 'move'].includes(action.kind)) return Promise.resolve(false);
+  return sendCommand({ type: 'input', action });
+}
+function imageArea() {
+  const source = $('videoCanvas').hidden ? $('screen') : $('videoCanvas');
+  const rect = source.getBoundingClientRect();
+  const sourceWidth = source === $('screen') ? source.naturalWidth : source.width;
+  const sourceHeight = source === $('screen') ? source.naturalHeight : source.height;
+  if (!sourceWidth || !sourceHeight || !rect.width || !rect.height) return null;
+  const scale = Math.min(rect.width / sourceWidth, rect.height / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  const left = rect.left + (rect.width - width) / 2;
+  const top = rect.top + (rect.height - height) / 2;
+  return { left, top, width, height };
+}
+function clamp(value) { return Math.min(1, Math.max(0, value)); }
+function position(event) {
+  const area = imageArea();
+  return area ? { x: clamp((event.clientX - area.left) / area.width),
+    y: clamp((event.clientY - area.top) / area.height) } : null;
+}
+function updateCursor() {
+  const area = imageArea();
+  if (!area) return;
+  const rect = $('viewTransform').getBoundingClientRect();
+  $('localCursor').style.left = `${(area.left - rect.left + cursor.x * area.width) / zoom}px`;
+  $('localCursor').style.top = `${(area.top - rect.top + cursor.y * area.height) / zoom}px`;
+}
+function queueMove(at) {
+  pendingMove = at;
+  if (!moveFrame) moveFrame = requestAnimationFrame(flushMove);
+}
+function flushMove(time) {
+  if (time - lastMoveAt < 33) { moveFrame = requestAnimationFrame(flushMove); return; }
+  moveFrame = 0;
+  lastMoveAt = time;
+  if (pendingMove) { send({ kind: 'move', ...pendingMove }); pendingMove = null; }
+}
+function moveCursor(dx, dy) {
+  const area = imageArea();
+  if (!area) return;
+  cursor = { x: clamp(cursor.x + dx * 1.3 / area.width),
+    y: clamp(cursor.y + dy * 1.3 / area.height) };
+  followCursor();
+  updateCursor();
+  queueMove(cursor);
+}
+function followCursor() {
+  if (zoom <= 1.01) return;
+  const surface = $('surface').getBoundingClientRect();
+  const area = imageArea();
+  if (!area) return;
+  // RustDesk's rule: the view pans to keep the cursor at the centre until
+  // the desktop edge is reached, then the cursor moves on to the edge.
+  const x = area.left + cursor.x * area.width;
+  const y = area.top + cursor.y * area.height;
+  panX += surface.left + surface.width / 2 - x;
+  panY += surface.top + surface.height / 2 - y;
+  applyZoom();
+}
+function stopEdgePan() {
+  if (edgePanFrame) cancelAnimationFrame(edgePanFrame);
+  edgePanFrame = 0;
+  edgePointerId = null;
+}
+function edgePanTick() {
+  edgePanFrame = 0;
+  const state = pointers.get(edgePointerId);
+  if (!state || state.multi || trackpad || zoom <= 1.01 || !inputEnabled) return;
+  const rect = $('surface').getBoundingClientRect();
+  const margin = Math.min(48, rect.width / 4, rect.height / 4);
+  const edgeSpeed = (value, low, high) => value < low + margin
+    ? Math.max(-9, (value - low - margin) / 5)
+    : value > high - margin ? Math.min(9, (value - high + margin) / 5) : 0;
+  const dx = edgeSpeed(state.x, rect.left, rect.right);
+  const dy = edgeSpeed(state.y, rect.top, rect.bottom);
+  if (!dx && !dy) return;
+  const oldX = panX, oldY = panY;
+  panX -= dx;
+  panY -= dy;
+  applyZoom();
+  if (panX !== oldX || panY !== oldY) {
+    const at = position({ clientX: state.x, clientY: state.y });
+    if (at) { cursor = at; updateCursor(); queueMove(at); }
+    edgePanFrame = requestAnimationFrame(edgePanTick);
+  }
+}
+function clickCursor(button = 'left', count = 1) {
+  overviewOpen = null; // A click may have closed it.
+  if (!heldButton) send(count > 1 ? { kind: 'click', ...cursor, button, count } : { kind: 'click', ...cursor, button });
+}
+function heldModifiers() { return modifierKeys.filter(key => heldKeys.has(key)); }
+/** Resolves to the new list, or null when this read told us nothing new. */
+async function refreshDisplays(epoch = streamEpoch) {
+  let info;
+  try { info = await api(`/desktop/requests/${encodeURIComponent(requestId)}/displays`); }
+  catch { info = { supported: false, platform: null, displays: [], currentDisplayId: null, canShowAll: false }; }
+  if (epoch !== streamEpoch) return null;
+  // One failed read must not take working controls away; the next one retries.
+  if (displayInfo?.supported && !info.supported) return null;
+  displayInfo = info;
+  renderDisplays();
+  return info;
+}
+function displayChoices() {
+  const info = displayInfo;
+  if (!info?.supported) return [];
+  const rows = info.displays.map(display => ({ id: display.id,
+    label: `${display.name} · ${display.width}×${display.height}${display.main ? ' · Main' : ''}` }));
+  return info.canShowAll ? [{ id: null, label: 'All screens' }, ...rows] : rows;
+}
+function renderDisplays() {
+  const menu = $('displayMenu');
+  const button = $('displaysButton');
+  if (!menu || !button) return;
+  const info = displayInfo;
+  const choices = displayChoices();
+  button.hidden = !info?.supported || info.displays.length < 2;
+  if (button.hidden) { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); }
+  menu.replaceChildren(...choices.map(choice => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.textContent = choice.label; // Host text: never markup.
+    item.setAttribute('aria-pressed', String(choice.id === info.currentDisplayId));
+    item.addEventListener('click', () => { void chooseDisplay(choice.id); });
+    return item;
+  }));
+  const shortcuts = DESKTOP_SHORTCUTS[info?.platform] ?? null;
+  for (const node of document.querySelectorAll('[data-shortcut]')) {
+    const action = shortcuts?.[node.dataset.shortcut];
+    node.hidden = !action;
+    if (action) node.textContent = action.label;
+  }
+  const note = $('displayNote');
+  if (note) {
+    note.hidden = !info || info.supported;
+    if (!note.hidden) note.textContent = 'This machine needs an update before you can switch screens.';
+  }
+}
+async function chooseDisplay(displayId) {
+  if (!displayInfo?.supported || !inputEnabled) return;
+  const epoch = streamEpoch;
+  const chosen = displayChoices().find(choice => choice.id === displayId);
+  $('displayMenu').hidden = true;
+  $('displaysButton').setAttribute('aria-expanded', 'false');
+  overviewOpen = null;
+  flushPendingMove();
+  resetZoom();
+  releaseButton();
+  if (!await send({ kind: 'selectDisplay', displayId })) return;
+  // macOS applies Spaces to the screen under the pointer, so the gestures
+  // follow the picture only if the pointer does.
+  cursor = { x: 0.5, y: 0.5 };
+  void send({ kind: 'move', ...cursor });
+  screenSwitch = { at: Date.now() };
+  updateCursor();
+  status(`Showing ${chosen?.label.split(' · ')[0] ?? 'the chosen screen'}.`);
+  await new Promise(resolve => setTimeout(resolve, 1_200));
+  const info = await refreshDisplays(epoch);
+  if (info?.supported && info.currentDisplayId !== displayId) {
+    status('That screen is not available any more.');
+  }
+}
+async function sendChord(modifiers, key) {
+  const epoch = streamEpoch;
+  const pressed = [];
+  let allDown = true;
+  for (const modifier of modifiers) {
+    if (heldKeys.has(modifier)) continue; // A key the operator latched stays latched.
+    if (!await beginKey(modifier)) { allDown = false; break; }
+    pressed.push(modifier);
+  }
+  if (allDown && epoch === streamEpoch) await tapKey(key);
+  for (const modifier of pressed.reverse()) if (epoch === streamEpoch) await releaseKey(modifier);
+}
+function runShortcut(name) {
+  const shortcuts = DESKTOP_SHORTCUTS[displayInfo?.platform];
+  const action = shortcuts?.[name];
+  if (!action || !inputEnabled) return;
+  // Named beside the action: this Mac may have the shortcut turned off, and
+  // the viewer cannot see that.
+  status(`${action.label} (${action.hint})`);
+  overviewOpen = name === 'overview' || name === 'appWindows' ? name : null;
+  void sendChord(action.modifiers, action.key);
+}
+function closeOverview() {
+  overviewOpen = null;
+  status('Back');
+  void tapKey('Escape');
+}
+function swipeThreeFingers(direction) {
+  if (direction === 'left') runShortcut('nextSpace');
+  else if (direction === 'right') runShortcut('previousSpace');
+  else if (direction === 'up') {
+    if (overviewOpen === 'appWindows') closeOverview();
+    else if (!overviewOpen) runShortcut('overview');
+  } else if (overviewOpen) closeOverview();
+  else runShortcut('appWindows');
+}
+function moveThreeFingers() {
+  if (!threeFinger || threeFinger.fired || pointers.size < 3 || heldButton) return;
+  const fingers = [...pointers.values()];
+  const dx = fingers.reduce((sum, state) => sum + state.x - state.startX, 0) / fingers.length;
+  const dy = fingers.reduce((sum, state) => sum + state.y - state.startY, 0) / fingers.length;
+  const major = Math.max(Math.abs(dx), Math.abs(dy));
+  if (major < THREE_FINGER_TRAVEL || major < 1.5 * Math.min(Math.abs(dx), Math.abs(dy))) return;
+  threeFinger.fired = true; // One swipe, one action.
+  swipeThreeFingers(Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down'));
+}
+function syncTouchModeButton() {
+  $('modeButton').hidden = !touchCapable;
+  $('modeButton').textContent = trackpad ? 'Trackpad · swipe to move' : 'Direct · touch position';
+  $('modeButton').setAttribute('aria-pressed', String(trackpad));
+  $('modeButton').setAttribute('aria-label', trackpad
+    ? 'Touch mode: Trackpad. Swipe to move the pointer; tap to click.'
+    : 'Touch mode: Direct. The pointer follows your finger; tap to click.');
+}
+function flushWheel() {
+  wheelFrame = 0;
+  if (!pendingWheel) return;
+  const { dx, dy } = pendingWheel;
+  pendingWheel = null;
+  if (inputEnabled && (dx || dy)) void send({ kind: 'scroll',
+    dx: Math.max(-200, Math.min(200, dx)), dy: Math.max(-200, Math.min(200, dy)) });
+}
+function syncVisualViewport() {
+  const viewport = window.visualViewport;
+  if (!viewport || !document.body.classList.contains('desktop-live')) return;
+  const control = $('control');
+  control.style.setProperty('--desktop-visible-top', `${Math.max(0, viewport.offsetTop)}px`);
+  control.style.setProperty('--desktop-visible-left', `${Math.max(0, viewport.offsetLeft)}px`);
+  control.style.setProperty('--desktop-visible-width', `${Math.max(1, viewport.width)}px`);
+  control.style.setProperty('--desktop-visible-height', `${Math.max(1, viewport.height)}px`);
+  applyZoom();
+}
+function resetVisualViewport() {
+  for (const name of ['--desktop-visible-top', '--desktop-visible-left',
+    '--desktop-visible-width', '--desktop-visible-height']) $('control').style.removeProperty(name);
+}
+function applyZoom() {
+  const rect = $('surface').getBoundingClientRect();
+  panX = Math.max(-(zoom - 1) * rect.width / 2, Math.min((zoom - 1) * rect.width / 2, panX));
+  panY = Math.max(-(zoom - 1) * rect.height / 2, Math.min((zoom - 1) * rect.height / 2, panY));
+  $('viewTransform').style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  $('zoomResetButton').hidden = zoom <= 1.01;
+  updateCursor();
+}
+function resetZoom() { stopEdgePan(); zoom = 1; panX = 0; panY = 0; twoFinger = null; applyZoom(); }
+function pairMetrics() {
+  const [a, b] = [...pointers.values()];
+  return { distance: Math.hypot(a.x - b.x, a.y - b.y),
+    x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
+    bothMoved: Math.hypot(a.x - a.startX, a.y - a.startY) > 3 &&
+      Math.hypot(b.x - b.startX, b.y - b.startY) > 3 };
+}
+function moveTwoFingers() {
+  if (!twoFinger || pointers.size !== 2) return;
+  const now = pairMetrics();
+  const scaleChange = Math.abs(now.distance - twoFinger.distance);
+  const travel = Math.hypot(now.x - twoFinger.x, now.y - twoFinger.y);
+  if (twoFinger.mode === 'pending' && (now.bothMoved || (scaleChange > 24 && scaleChange > travel * 1.4))) {
+    twoFinger.mode = scaleChange > Math.max(8, travel * .45) ? 'zoom' : 'scroll';
+  }
+  if (twoFinger.mode !== 'pending' && multiTap) multiTap.moved = true;
+  if (twoFinger.mode === 'zoom') {
+    const nextZoom = Math.max(1, Math.min(5, twoFinger.zoom * now.distance / Math.max(1, twoFinger.distance)));
+    const rect = $('surface').getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
+    panX = now.x - centerX - (nextZoom / twoFinger.zoom) * (twoFinger.x - centerX - twoFinger.panX);
+    panY = now.y - centerY - (nextZoom / twoFinger.zoom) * (twoFinger.y - centerY - twoFinger.panY);
+    zoom = nextZoom;
+    applyZoom();
+  } else if (twoFinger.mode === 'scroll') {
+    const dx = now.x - twoFinger.lastX, dy = now.y - twoFinger.lastY;
+    // Natural direction: the content follows the fingers, as on the phone itself.
+    if (dx || dy) send({ kind: 'scroll', dx: Math.max(-200, Math.min(200, -dx * 1.5)),
+      dy: Math.max(-200, Math.min(200, -dy * 1.5)) });
+  }
+  twoFinger.lastX = now.x; twoFinger.lastY = now.y;
+}
+function closeKeyboard() {
+  $('typeText').blur();
+  $('keyboardBar').hidden = true;
+  $('keyboardButton').setAttribute('aria-expanded', 'false');
+  syncVisualViewport();
+}
+$('toolsButton').addEventListener('click', () => {
+  const open = $('desktopTools').hidden;
+  $('desktopTools').hidden = !open;
+  $('toolsButton').setAttribute('aria-expanded', String(open));
+});
+$('keyboardButton').addEventListener('click', () => {
+  if (!$('keyboardBar').hidden) { closeKeyboard(); return; }
+  $('desktopTools').hidden = true;
+  $('toolsButton').setAttribute('aria-expanded', 'false');
+  $('keyboardBar').hidden = false;
+  $('keyboardButton').setAttribute('aria-expanded', 'true');
+  $('typeText').focus(); // Must happen in the trusted tap for the iOS keyboard.
+  syncVisualViewport();
+});
+$('hideKeyboardButton').addEventListener('click', closeKeyboard);
+$('displaysButton')?.addEventListener('click', () => {
+  const open = $('displayMenu').hidden;
+  $('displayMenu').hidden = !open;
+  $('displaysButton').setAttribute('aria-expanded', String(open));
+  if (open) void refreshDisplays(); // A screen may have been plugged in since.
+});
+for (const button of document.querySelectorAll('[data-shortcut]')) {
+  button.addEventListener('click', () => {
+    if (overviewOpen && button.dataset.shortcut === overviewOpen) closeOverview();
+    else runShortcut(button.dataset.shortcut);
+  });
+}
+$('zoomResetButton').addEventListener('click', resetZoom);
+$('fullscreenButton').hidden = !document.fullscreenEnabled || !$('control').requestFullscreen;
+$('fullscreenButton').addEventListener('click', () => {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  else if ($('control').requestFullscreen) void $('control').requestFullscreen().catch(() => {});
+});
+$('modeButton').addEventListener('click', () => {
+  stopEdgePan();
+  releaseButton();
+  trackpad = !trackpad;
+  pointers.clear();
+  document.body.classList.toggle('trackpad', trackpad);
+  syncTouchModeButton();
+});
+$('dragButton').addEventListener('click', () => {
+  if (heldButton) { releaseButton(); return; }
+  beginHold('left');
+});
+$('rightButton').addEventListener('click', () => clickCursor('right'));
+for (const button of document.querySelectorAll('[data-remote-key]')) {
+  button.addEventListener('click', () => {
+    const key = button.dataset.remoteKey;
+    if (button.dataset.modifier) {
+      if (heldKeys.has(key)) {
+        const epoch = streamEpoch;
+        void Promise.all([...pendingKeyTaps]).then(() => {
+          if (epoch === streamEpoch) return releaseKey(key);
+        });
+      }
+      else beginKey(key);
+    } else {
+      const tap = tapKey(key);
+      pendingKeyTaps.add(tap);
+      void tap.finally(() => pendingKeyTaps.delete(tap));
+    }
+  });
+}
+function eventKey(event) {
+  const key = event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  return remoteKeys.has(key) ? key : null;
+}
+document.addEventListener('keydown', event => {
+  if (!inputEnabled || event.target instanceof HTMLInputElement) return;
+  const key = eventKey(event);
+  if (!key) return;
+  event.preventDefault();
+  if (!event.repeat) beginKey(key);
+});
+document.addEventListener('keyup', event => {
+  if (!inputEnabled || event.target instanceof HTMLInputElement) return;
+  const key = eventKey(event);
+  if (!key) return;
+  event.preventDefault();
+  releaseKey(key);
+});
+$('surface').addEventListener('contextmenu', event => event.preventDefault());
+$('surface').addEventListener('wheel', event => {
+  if (!inputEnabled || event.ctrlKey) return;
+  event.preventDefault();
+  const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2
+    ? Math.max(1, $('surface').clientHeight) : 1;
+  if (!pendingWheel) pendingWheel = { dx: 0, dy: 0 };
+  pendingWheel.dx += event.deltaX * scale;
+  pendingWheel.dy += event.deltaY * scale;
+  if (!wheelFrame) wheelFrame = requestAnimationFrame(flushWheel);
+}, { passive: false });
+$('surface').addEventListener('pointerdown', event => {
+  event.preventDefault();
+  if (event.pointerType === 'touch' && !touchCapable) { touchCapable = true; syncTouchModeButton(); }
+  $('surface').setPointerCapture(event.pointerId);
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY,
+    startX: event.clientX, startY: event.clientY, maxDistance: 0,
+    at: Date.now(), multi: pointers.size > 0 });
+  if (pointers.size > 1) for (const state of pointers.values()) state.multi = true;
+  if (event.pointerType !== 'mouse' && pointers.size >= 2) {
+    clearTimeout(pointers.get(event.pointerId)?.longPress);
+    for (const state of pointers.values()) clearTimeout(state.longPress);
+    multiTap = { count: Math.max(multiTap?.count ?? 0, pointers.size), at: multiTap?.at ?? Date.now(), moved: multiTap?.moved ?? false };
+  }
+  if (pointers.size === 1 && event.pointerType !== 'mouse') {
+    multiTap = null;
+    const state = pointers.get(event.pointerId);
+    const now = Date.now();
+    state.secondTap = !!pendingTapClick && !!lastTap && now - lastTap.at < DOUBLE_TAP_MS
+      && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40;
+    if (state.secondTap) { clearTimeout(pendingTapClick); pendingTapClick = 0; }
+    else flushTapClick();
+    // Hold still to right-click, as on AnyDesk and most phone remote desktops.
+    state.longPress = setTimeout(() => {
+      if (pointers.get(event.pointerId) !== state || state.maxDistance >= 10 || state.multi || state.secondTap) return;
+      state.longPressed = true;
+      if (!trackpad) { const at = position({ clientX: state.x, clientY: state.y }); if (at) { cursor = at; updateCursor(); } }
+      flushPendingMove();
+      clickCursor('right');
+    }, LONG_PRESS_MS);
+  }
+  if (pointers.size === 2 && event.pointerType !== 'mouse') {
+    stopEdgePan();
+    const pair = pairMetrics();
+    twoFinger = { ...pair, zoom, panX, panY, lastX: pair.x, lastY: pair.y, mode: 'pending' };
+  }
+  if (pointers.size === 3 && event.pointerType !== 'mouse') {
+    stopEdgePan();
+    twoFinger = null;
+    for (const state of pointers.values()) { state.startX = state.x; state.startY = state.y; }
+    threeFinger = { fired: false };
+  }
+  if (!trackpad || event.pointerType === 'mouse') {
+    const at = position(event);
+    if (at) { cursor = at; updateCursor(); queueMove(at); }
+    if (event.pointerType === 'mouse' && at && !heldButton) {
+      mousePress = { pointerId: event.pointerId, at: Date.now(), x: event.clientX, y: event.clientY,
+        button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', detail: event.detail };
+      const press = mousePress;
+      // Only a press that lasts or drags becomes a held button.
+      setTimeout(() => { if (mousePress === press) { mousePress = null; beginHold(press.button); } }, MOUSE_CLICK_MS);
+    }
+  }
+});
+$('surface').addEventListener('pointermove', event => {
+  const state = pointers.get(event.pointerId);
+  if (!state) {
+    if (event.pointerType === 'mouse') { const at = position(event); if (at) { cursor = at; updateCursor(); queueMove(at); } }
+    return;
+  }
+  event.preventDefault();
+  if (mousePress && mousePress.pointerId === event.pointerId
+    && Math.hypot(event.clientX - mousePress.x, event.clientY - mousePress.y) >= 4) {
+    const press = mousePress; mousePress = null; beginHold(press.button);
+  }
+  if (multiTap && Math.hypot(event.clientX - state.startX, event.clientY - state.startY) >= 12) multiTap.moved = true;
+  if (state.secondTap && !state.multi && dragPointerId === null && event.pointerType !== 'mouse'
+    && Math.hypot(event.clientX - state.startX, event.clientY - state.startY) >= 10) {
+    // Double-tap and hold, then move: drag with the left button down.
+    clearTimeout(state.longPress);
+    dragPointerId = event.pointerId;
+    if (!trackpad) { const at = position({ clientX: state.startX, clientY: state.startY }); if (at) { cursor = at; updateCursor(); queueMove(at); } }
+    beginHold('left');
+  }
+  const dx = event.clientX - state.x, dy = event.clientY - state.y;
+  state.x = event.clientX; state.y = event.clientY;
+  state.maxDistance = Math.max(state.maxDistance,
+    Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
+  if (threeFinger && event.pointerType !== 'mouse') {
+    moveThreeFingers();
+  } else if (pointers.size > 1 && event.pointerType !== 'mouse') {
+    moveTwoFingers();
+  } else if (state.multi && event.pointerType !== 'mouse') {
+    // Do not turn the trailing finger of a scroll gesture into pointer motion.
+  } else if (trackpad && event.pointerType !== 'mouse') moveCursor(dx, dy);
+  else {
+    const at = position(event);
+    if (at) { cursor = at; updateCursor(); queueMove(at); }
+    if (event.pointerType !== 'mouse' && zoom > 1.01 && state.maxDistance >= 10) {
+      edgePointerId = event.pointerId;
+      if (!edgePanFrame) edgePanFrame = requestAnimationFrame(edgePanTick);
+    }
+  }
+});
+$('surface').addEventListener('pointerup', event => {
+  const state = pointers.get(event.pointerId);
+  if (!state) return;
+  event.preventDefault();
+  if (edgePointerId === event.pointerId) stopEdgePan();
+  clearTimeout(state.longPress);
+  pointers.delete(event.pointerId);
+  if (pointers.size < 2) twoFinger = null;
+  if (pointers.size === 0) threeFinger = null;
+  if (event.pointerType === 'mouse' && mousePress?.pointerId === event.pointerId) {
+    const press = mousePress; mousePress = null;
+    const at = position(event);
+    if (at) cursor = at;
+    flushPendingMove();
+    clickCursor(press.button);
+    return;
+  }
+  if (dragPointerId === event.pointerId) {
+    dragPointerId = null;
+    if (!trackpad) { const at = position(event); if (at) { cursor = at; queueMove(at); } }
+    releaseButton();
+    lastTap = null;
+    return;
+  }
+  if (multiTap && event.pointerType !== 'mouse') {
+    if (pointers.size === 0) {
+      const tap = multiTap; multiTap = null;
+      // Two fingers tapped together = right click; three = middle click.
+      if (!tap.moved && Date.now() - tap.at < 400 && !twoFingerUsed(tap)) {
+        flushPendingMove();
+        clickCursor(tap.count >= 3 ? 'middle' : 'right');
+      }
+    }
+    return;
+  }
+  if (state.longPressed) { lastTap = null; return; }
+  if (event.pointerType === 'mouse' && heldButton) {
+    const at = position(event);
+    if (at) { cursor = at; queueMove(at); }
+    releaseButton();
+    return;
+  }
+  const distance = Math.max(state.maxDistance,
+    Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
+  if (!state.multi && distance < 10 && state.secondTap) {
+    // The first tap's click is still unsent: a real double tap goes out as one
+    // double-click, and a second press held without moving as one click.
+    if (!trackpad) { const at = position(event); if (at) cursor = at; }
+    flushPendingMove();
+    clickCursor('left', Date.now() - state.at < 500 ? 2 : 1);
+    lastTap = null;
+  } else if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
+    if (!trackpad || event.pointerType === 'mouse') { const at = position(event); if (at) cursor = at; }
+    if (event.pointerType === 'mouse') { clickCursor(event.button === 2 ? 'right' : 'left'); lastTap = null; }
+    else {
+      lastTap = { at: Date.now(), x: event.clientX, y: event.clientY };
+      pendingTapClick = setTimeout(flushTapClick, DOUBLE_TAP_MS);
+    }
+  }
+});
+function twoFingerUsed(tap) { return tap.zoomed === true; }
+function flushTapClick() {
+  if (!pendingTapClick) return;
+  clearTimeout(pendingTapClick);
+  pendingTapClick = 0;
+  clickCursor('left');
+}
+function cancelGestures() {
+  stopEdgePan();
+  clearTimeout(pendingTapClick); pendingTapClick = 0;
+  for (const state of pointers.values()) clearTimeout(state.longPress);
+  pointers.clear(); twoFinger = null; threeFinger = null; multiTap = null; mousePress = null; dragPointerId = null; lastTap = null;
+  releaseControls();
+}
+$('surface').addEventListener('pointercancel', cancelGestures);
+window.addEventListener('blur', cancelGestures);
+document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGestures(); });
+window.addEventListener('resize', () => { syncVisualViewport(); applyZoom(); updateCursor(); });
+window.visualViewport?.addEventListener('resize', syncVisualViewport);
+window.visualViewport?.addEventListener('scroll', syncVisualViewport);
+$('screen').addEventListener('load', updateCursor);
+$('typeText').addEventListener('focus', () => { releaseControls(); syncVisualViewport(); });
+$('typeText').addEventListener('compositionstart', () => { composingText = true; });
+$('typeText').addEventListener('keydown', event => {
+  if (composingText || event.isComposing || event.keyCode === 229) return;
+  if (skipCompositionCommitKey && (event.key === 'Enter' || event.key === 'Backspace')) {
+    event.preventDefault();
+    skipCompositionCommitKey = false;
+    return;
+  }
+  if (event.key === 'Enter' || event.key === 'Backspace') {
+    event.preventDefault();
+    void tapKey(event.key);
+  }
+});
+$('typeText').addEventListener('input', event => {
+  if (composingText || event.isComposing) return;
+  const text = $('typeText').value;
+  if (recentlyCommittedText && text === recentlyCommittedText) {
+    $('typeText').value = '';
+    recentlyCommittedText = '';
+    return;
+  }
+  if (!text) {
+    if (event.inputType === 'deleteContentBackward') void tapKey('Backspace');
+    return;
+  }
+  $('typeText').value = '';
+  // With Ctrl, Cmd or Alt latched, a letter or digit is a shortcut, not text.
+  if (heldModifiers().length && /^[a-z0-9]$/i.test(text)) { void tapKey(text.toLowerCase()); return; }
+  for (let i = 0; i < text.length; i += 64) void send({ kind: 'type', text: text.slice(i, i + 64) });
+});
+$('typeText').addEventListener('compositionend', () => {
+  composingText = false;
+  skipCompositionCommitKey = true;
+  setTimeout(() => { skipCompositionCommitKey = false; recentlyCommittedText = ''; }, 0);
+  const text = $('typeText').value;
+  $('typeText').value = '';
+  recentlyCommittedText = text;
+  if (text) void send({ kind: 'type', text });
+});
+$('stopButton').addEventListener('click', async () => {
+  stopping = true;
+  resumeGeneration++;
+  resumeAttempt = null;
+  abortResumeRequests();
+  reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
+  inputEnabled = false;
+  if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
+  pendingMove = null;
+  if (wheelFrame) { cancelAnimationFrame(wheelFrame); wheelFrame = 0; }
+  pendingWheel = null;
+  stopEdgePan();
+  pointers.clear();
+  setHeldButton(null);
+  for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
+  keyReleaseRequested.clear();
+  keyReleaseQueue.length = 0;
+  pendingKeyTaps.clear();
+  syncHoldHeartbeat();
+  sendCommand({ type: 'stop' });
+  const stoppingRequestId = requestId;
+  // Blank the viewer immediately, even when the revoke HTTP request is slow.
+  // Input was disabled above; late video frames are ignored by receiveFrame.
+  clearFrame();
+  $('control').hidden = true;
+  status('Stopping remote desktop…');
+  let message = 'Remote desktop stopped.';
+  try { await api(`/desktop/requests/${encodeURIComponent(stoppingRequestId)}/revoke`, 'POST', {}); }
+  catch { message = 'The viewer closed, but the target has not confirmed revocation. Access expires automatically.'; }
+  leave(message);
+});
+$('lockedPassword')?.addEventListener('submit', event => {
+  event.preventDefault();
+  const input = $('lockedPasswordInput');
+  const text = input.value;
+  input.value = '';
+  if (text) void sendLockedPassword(text);
+});
+const LOCKED_REASONS = { 'unsupported-macos': 'Not available yet: this Mac\u2019s macOS has not passed the crash and Stop tests.' };
+async function refreshLockedCard() {
+  let rows;
+  try { rows = (await api('/desktop/locked/status?scope=pool')).machines; }
+  catch { $('lockedCard').hidden = true; return; }
+  const row = rows?.find(item => item.machineId === $('machine').value);
+  if (!row) { $('lockedCard').hidden = true; return; }
+  $('lockedCard').hidden = !row.enabled && !!row.refusal;
+  $('lockedCardText').textContent = row.refusal ? LOCKED_REASONS[row.refusal] ?? 'Opening this Mac at its lock screen is unavailable.'
+    : row.enabled ? 'You can open this Mac at its lock screen. It relocks when you finish.' : 'Opening this Mac at its lock screen is off.';
+  $('lockedToggle').hidden = !!row.refusal;
+  $('lockedToggle').textContent = row.enabled ? 'Turn off' : 'Turn on';
+  $('lockedToggle').onclick = async () => {
+    try { await api('/desktop/locked/settings', 'POST', { machineId: row.machineId, enabled: !row.enabled }); }
+    catch (error) { status(error.message); }
+    void refreshLockedCard();
+  };
+}
+$('machine')?.addEventListener('change', () => { void refreshLockedCard(); });
+$('leaveUnlockedButton')?.addEventListener('click', () => { void sendCommand({ type: 'leave-unlocked' }); });
+window.addEventListener('beforeunload', () => {
+  stopping = true;
+  sendCommand({ type: 'stop' });
+  clearFrame();
+});

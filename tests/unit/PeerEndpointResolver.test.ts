@@ -34,6 +34,20 @@ function mkResolver(over: Partial<PeerEndpointResolverConfig> = {}, deps: { now?
   return new PeerEndpointResolver({ config, now: deps.now, ownCidrs: deps.ownCidrs ?? (() => ['192.168.87.67/24', '100.64.165.27/10']) });
 }
 
+describe('LAN subnet check on a cloud private network', () => {
+  const lan = [{ kind: 'lan' as const, url: 'http://10.77.0.3:4040' }];
+  const kinds = (cidr: string, url = lan) => mkResolver({ lanSubnetGate: true }, { ownCidrs: () => [cidr] }).resolve('peerA', url, undefined).map((e) => e.kind);
+  it('a /32 interface does not rule out a peer on the same /16', () => {
+    expect(kinds('10.77.0.2/32')).toContain('lan');
+  });
+  it('a /32 interface still rules out another network', () => {
+    expect(kinds('10.78.0.2/32')).not.toContain('lan');
+  });
+  it('an ordinary subnet keeps its exact width', () => {
+    expect(kinds('10.77.1.2/24')).not.toContain('lan');
+  });
+});
+
 describe('PeerEndpointResolver — host validation helpers', () => {
   it('isTailscaleCgnat accepts 100.64/10, rejects outside', () => {
     expect(isTailscaleCgnat('100.64.0.0')).toBe(true);

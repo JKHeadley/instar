@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "mobile-native-session-screen",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T07:33:12.746Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-session-screen.md",
+  "artifactSha256": "6ca76252bf36b4036eba67872dbaf7826d9d981481ebb90f9609c77ce73bc77f",
+  "specPath": "docs/specs/mobile-native-session-screen.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-session-screen.eli16.md",
+    "docs/specs/mobile-native-session-screen.md",
+    "docs/specs/reports/mobile-native-session-screen-convergence.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobileSessionTerminalRoutes.ts",
+    "tests/e2e/mobile-session-terminal-alive.test.ts",
+    "tests/integration/mobile-session-terminal.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/next/mobile-native-session-screen.md",
+    "upgrades/side-effects/mobile-native-session-screen.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New device-key access to session read and input routes (security-sensitive); converged spec, second pass, all three test tiers.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

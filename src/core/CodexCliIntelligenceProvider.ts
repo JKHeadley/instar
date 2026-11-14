@@ -359,6 +359,7 @@ export interface CodexCallAccount {
 }
 
 export class CodexCliIntelligenceProvider implements IntelligenceProvider {
+  readonly frameworkId = 'codex-cli';
   private readonly codexPath: string;
   /** @see CodexCliIntelligenceProviderOptions.resolveAccount */
   private readonly resolveAccount: (() => CodexCallAccount | null) | undefined;
@@ -381,6 +382,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     // it to retry ONE call on the sibling account — a decision that belongs to that
     // attempt, not to the provider, and that a provider-level closure cannot express.
     const override = options?.accountOverride;
+    if (options?.requiredRoute && !override) {
+      throw new Error('CodexCliIntelligenceProvider: required subscription account missing');
+    }
+    if (options?.requiredRoute && override &&
+      (typeof override.accountId !== 'string' || override.accountId.length === 0 ||
+        typeof override.configHome !== 'string' || override.configHome.length === 0)) {
+      throw new Error('CodexCliIntelligenceProvider: invalid required account override');
+    }
     if (override && typeof override.configHome === 'string' && override.configHome.length > 0) {
       return { accountId: override.accountId, configHome: override.configHome };
     }
@@ -420,8 +429,11 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
 
   /** Hygiene args shared by BOTH modes (clean-call spec; pinned by the
    * both-modes unit test). */
-  private hygieneArgs(model: string, scratchDir: string): string[] {
+  private hygieneArgs(model: string, scratchDir: string, noLocalTools = false): string[] {
     return [
+      // A read-only sandbox can still read local files, so a call carrying outside text
+      // asks for no tools at all (docs/specs/ecosystem-idea-pipeline.md §1).
+      ...(noLocalTools ? ['--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use', '-c', 'mcp_servers={}'] : []),
       '--model',
       model,
       '--sandbox',
@@ -513,6 +525,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       return await this.evaluateWithModel(prompt, options, model, execJson, account);
     } catch (error) {
       if (
+        !options?.strictModelPin &&
         model !== CODEX_CHATGPT_FALLBACK_MODEL &&
         classifyCodexErrorMessage((error as Error).message) === 'unsupported' &&
         KNOWN_CODEX_MODEL_IDS.includes(CODEX_CHATGPT_FALLBACK_MODEL)
@@ -568,7 +581,8 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     return new Promise((resolve, reject) => {
       const args = [
         'exec',
-        ...this.hygieneArgs(model, scratchDir),
+        ...(account && options?.requiredRoute ? ['-c', 'cli_auth_credentials_store="file"'] : []),
+        ...this.hygieneArgs(model, scratchDir, options?.noLocalTools === true),
         // Pass the prompt as a positional arg. Codex CLI reads stdin
         // for very long prompts but the positional path is fine for the
         // narrow prompts reviewers/sentinels send (a few hundred tokens
@@ -588,9 +602,17 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       // are dropped automatically — the prior explicit deletes are now
       // redundant but the hygiene intent is preserved by the allowlist.
       const childEnv = buildCodexChildEnv(
-        account ? { codexHome: account.configHome } : undefined,
+        account ? { codexHome: account.configHome, subscriptionOnly: options?.requiredRoute !== undefined }
+          : { subscriptionOnly: options?.requiredRoute !== undefined },
       );
 
+      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+        reject(new Error('CodexCliIntelligenceProvider: launch guard refused'));
+        return;
+      }
+
+      let aborted = false;
+      let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
       const child = execFile(
         this.codexPath,
         args,
@@ -602,6 +624,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           env: childEnv,
         },
         (error, stdout, stderr) => {
+          options?.signal?.removeEventListener('abort', onAbort);
+          if (forceKillTimer) clearTimeout(forceKillTimer);
+          // execFile invokes its callback after the child has closed. Retain
+          // the caller's capacity slot until then, even if SIGTERM was ignored.
+          if (aborted) {
+            reject(new Error('Codex CLI call aborted'));
+            return;
+          }
           if (error) {
             // Generous stderr slice so the circuit breaker's rate-limit
             // classifier can see usage/limit language past the first 200 chars.
@@ -616,6 +646,15 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           resolve(stdout.trim());
         },
       );
+      const onAbort = (): void => {
+        if (aborted) return;
+        aborted = true;
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+        forceKillTimer.unref();
+      };
+      options?.signal?.addEventListener('abort', onAbort, { once: true });
+      if (options?.signal?.aborted) onAbort();
 
       // Stdin must be explicitly closed or Codex hangs waiting for EOF
       // even when the prompt was passed as a positional. Same bug class
@@ -660,20 +699,26 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     try {
       const args = [
         'exec',
+        ...(account && options?.requiredRoute ? ['-c', 'cli_auth_credentials_store="file"'] : []),
         '--json',
         '--output-last-message',
         outFile,
-        ...this.hygieneArgs(model, scratchDir),
+        ...this.hygieneArgs(model, scratchDir, options?.noLocalTools === true),
         // The prompt moves OFF argv in --json mode (argv is world-readable
         // via `ps`; macOS ARG_MAX ~1 MB would hard-fail large prompts). The
         // positional becomes `-` and the prompt is written to stdin.
         '-',
       ];
 
+      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+        throw new Error('CodexCliIntelligenceProvider: launch guard refused');
+      }
       const result = await spawnCodexExecJson(this.codexPath, args, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        signal: options?.signal,
         env: buildCodexChildEnv(
-          account ? { codexHome: account.configHome } : undefined,
+          account ? { codexHome: account.configHome, subscriptionOnly: options?.requiredRoute !== undefined }
+            : { subscriptionOnly: options?.requiredRoute !== undefined },
         ), // Spec 12 Rule 1a — both modes
         prompt,
         onLine: (line) => {
@@ -749,6 +794,17 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
               cachedTokens: usage.cachedTokens,
+              // Unified usage ledger (Slice 2): Codex input_tokens includes cached input.
+              detail: {
+                sessionId: acc.threadId,
+                input: Math.max(0, usage.inputTokens - (usage.cachedTokens ?? 0)),
+                cacheRead: usage.cachedTokens ?? null,
+                cacheWrite: null,
+                output: usage.outputTokens,
+                reasoning: null,
+                reportedUsd: null,
+                reportedBasis: null,
+              },
             });
           } catch {
             /* @silent-fallback-ok: onUsage is pure observability */

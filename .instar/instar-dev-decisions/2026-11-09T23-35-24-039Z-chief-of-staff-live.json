@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-09T23:35:24.039Z",
+  "slug": "chief-of-staff-live",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 298,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffActionProtocol.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/ChiefOfStaffTriage.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 274,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered controller: the daily note and the capped immediates now count from durable note records (which can only lower their rate across restarts), the failover settle is a bounded recovery step gated by holder signature + fresh renewal + minimum age, the triage route and the app check-in are one-shot owner taps. No restart/respawn/kill/retry path is added."
+  },
+  "verdict": "pass"
+}

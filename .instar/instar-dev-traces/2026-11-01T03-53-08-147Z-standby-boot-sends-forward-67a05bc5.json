@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "standby-boot-sends-forward",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-11-01T03:53:08.147Z",
+  "artifactPath": "upgrades/side-effects/standby-boot-sends-forward.md",
+  "artifactSha256": "8e056ca4c7c0cdf997e772703a261a005f915d2fe20976282586865a255240e4",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Route-decision fix, small and reversible by revert or the existing forward switch",
+  "eli16Path": "upgrades/side-effects/standby-boot-sends-forward.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standby-boot-sends-forward.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

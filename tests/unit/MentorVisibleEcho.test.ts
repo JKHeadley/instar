@@ -63,3 +63,11 @@ describe('mentor visible echo', () => {
     expect(log.mock.calls.flat().join(' ')).toContain('disabled');
   });
 });
+
+
+it('records a quiet visible echo without landed chunks or degradation', async () => {
+  const send = vi.fn().mockResolvedValue({ delivered: false, recorded: true, quietId: 'echo-q' }); const report = vi.fn(); const log = vi.fn();
+  await sendMentorVisibleEcho('x'.repeat(9000), { enabled: true, topicId: 42, roleTag: '[mentor]', bot: { sendToTopic: send }, reportFailure: report, log });
+  expect(send).toHaveBeenCalledOnce(); expect(report).not.toHaveBeenCalled(); expect(log).toHaveBeenCalledWith(expect.stringContaining('outcome=quiet-recorded'));
+  expect(log.mock.calls.some(([line]) => line.includes('outcome=visible'))).toBe(false);
+});

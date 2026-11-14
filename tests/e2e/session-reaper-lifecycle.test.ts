@@ -32,6 +32,9 @@ function session(id: string, over: Partial<Session> = {}): Session {
   return { id, name: id, status: 'running', tmuxSession: `t-${id}`, startedAt: new Date(0).toISOString(), framework: 'claude-code', claudeSessionId: `c-${id}`, ...over };
 }
 
+import { computePressure } from '../../src/monitoring/SessionReaper.js';
+const LAPTOP_2026_10_25 = { freePct: 42.8, loadPerCore: 9.4, cpuBusyPct: 100 - 40.7, compressorPct: 35 / 128 * 100 };
+
 describe('SessionReaper E2E lifecycle', () => {
   let tmpDir: string;
   let stateDir: string;
@@ -72,7 +75,10 @@ describe('SessionReaper E2E lifecycle', () => {
       activeSubagentCount: () => 0,
       buildOrAutonomousActive: () => false,
       protectedSessions: () => [],
-      pressure: () => ({ tier }),
+      // The tier is driven by the test; the INPUTS are the real classifier's output for the
+      // 2026-10-25 laptop vector, so the "alive" test can assert the reaper-pressure-signals
+      // fields reach the route through the production plumbing.
+      pressure: () => ({ tier, inputs: computePressure(LAPTOP_2026_10_25, { cpuModerateLoadPerCore: 1.0, cpuCriticalLoadPerCore: 1.5 }).inputs }),
       terminate,
       markReaping: (id) => reaping.add(id),
       clearReaping: (id) => reaping.delete(id),
@@ -112,6 +118,18 @@ describe('SessionReaper E2E lifecycle', () => {
       expect(res.status).toBe(200);
       expect(res.body.enabled).toBe(true);
       expect(res.body.pressure).toBeDefined();
+      // reaper-pressure-signals: the new inputs are on the wire, and the phantom is gone —
+      // loadPerCore 9.4 is reported but cpuTier is normal at ~59% busy.
+      expect(res.body.pressure.inputs.cpuSignal).toBe('busy');
+      expect(res.body.pressure.inputs.loadPerCore).toBe(9.4);
+      expect(res.body.pressure.inputs.cpuBusyPct).toBeCloseTo(59.3, 1);
+      expect(res.body.pressure.inputs.cpuTier).toBe('normal');
+      expect(res.body.pressure.inputs.compressorPct).toBeCloseTo(27.34, 1);
+      // The compressor readings are surfaced for evidence; they grade nothing, so memTier is
+      // the available-memory tier exactly as before this change.
+      expect(res.body.pressure.inputs.kernelMemoryPressureLevel).toBeNull();
+      expect(res.body.pressure.inputs.compressorPct).toBeCloseTo(27.34, 1);
+      expect(res.body.pressure.inputs.memTier).toBe('normal');
       expect(Array.isArray(res.body.sessions)).toBe(true);
       expect(res.body.pool).toBeUndefined();
     });

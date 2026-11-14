@@ -17,6 +17,9 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
+/** The PIN page's notice under the /view sandbox (dashboard-conversations-browser-device §4.12). */
+export const VIEW_PIN_NOTICE = 'This view is protected by a PIN. Unlocking protected views isn\'t available at this address right now.';
+
 export interface PrivateViewMetadata {
   /** Source that created this view (e.g. { type: 'job', id: 'coherence-audit' }) */
   source?: { type: string; id: string };
@@ -157,9 +160,15 @@ export class PrivateViewer {
   }
 
   /**
-   * Render a PIN entry page for a protected view.
+   * Render the page shown for a PIN-protected view.
+   *
+   * Every /view response is served under `Content-Security-Policy: sandbox …` with no
+   * `allow-scripts` and no `allow-forms` (dashboard-conversations-browser-device §4.12), so a PIN
+   * form could never submit. The page states that plainly instead of showing a form that cannot work.
+   * Repairing the unlock is a separate change (feedback fb-fa94058c-e42). `_error` is kept for
+   * callers that still pass it.
    */
-  renderPinPage(view: PrivateView, error = false): string {
+  renderPinPage(view: PrivateView, _error = false): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -186,49 +195,8 @@ export class PrivateViewer {
       width: 90%;
       text-align: center;
     }
-    .pin-box h1 {
-      font-size: 1.3rem;
-      margin-bottom: 0.5rem;
-      color: #16213e;
-    }
-    .pin-box p {
-      font-size: 0.9rem;
-      color: #666;
-      margin-bottom: 1.5rem;
-    }
-    .pin-input {
-      width: 100%;
-      padding: 0.75rem 1rem;
-      font-size: 1.5rem;
-      letter-spacing: 0.3em;
-      text-align: center;
-      border: 2px solid #e0e0e0;
-      border-radius: 8px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .pin-input:focus { border-color: #533483; }
-    .pin-input.error { border-color: #e74c3c; }
-    .error-msg {
-      color: #e74c3c;
-      font-size: 0.85rem;
-      margin-top: 0.5rem;
-      display: ${error ? 'block' : 'none'};
-    }
-    .submit-btn {
-      width: 100%;
-      padding: 0.75rem;
-      margin-top: 1.25rem;
-      background: #16213e;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    .submit-btn:hover { background: #533483; }
-    .submit-btn:disabled { background: #aaa; cursor: not-allowed; }
+    .pin-box h1 { font-size: 1.3rem; margin-bottom: 0.5rem; color: #16213e; }
+    .pin-box p { font-size: 0.95rem; color: #555; line-height: 1.45; }
     .lock-icon { font-size: 2rem; margin-bottom: 0.75rem; }
   </style>
 </head>
@@ -236,46 +204,8 @@ export class PrivateViewer {
   <div class="pin-box">
     <div class="lock-icon">&#128274;</div>
     <h1>${escapeHtml(view.title)}</h1>
-    <p>This content is PIN-protected.</p>
-    <form id="pin-form">
-      <input type="password" class="pin-input${error ? ' error' : ''}" id="pin" name="pin"
-        placeholder="Enter PIN" autocomplete="off" inputmode="numeric" autofocus>
-      <div class="error-msg" id="error-msg">Incorrect PIN. Please try again.</div>
-      <button type="submit" class="submit-btn">Unlock</button>
-    </form>
+    <p>${VIEW_PIN_NOTICE}</p>
   </div>
-  <script>
-    document.getElementById('pin-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const pin = document.getElementById('pin').value;
-      const btn = document.querySelector('.submit-btn');
-      btn.disabled = true;
-      btn.textContent = 'Verifying...';
-      try {
-        const res = await fetch(window.location.pathname + '/unlock', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin }),
-        });
-        if (res.ok) {
-          const html = await res.text();
-          document.open();
-          document.write(html);
-          document.close();
-        } else {
-          document.getElementById('error-msg').style.display = 'block';
-          document.getElementById('pin').classList.add('error');
-          document.getElementById('pin').value = '';
-          document.getElementById('pin').focus();
-          btn.disabled = false;
-          btn.textContent = 'Unlock';
-        }
-      } catch {
-        btn.disabled = false;
-        btn.textContent = 'Unlock';
-      }
-    });
-  </script>
 </body>
 </html>`;
   }

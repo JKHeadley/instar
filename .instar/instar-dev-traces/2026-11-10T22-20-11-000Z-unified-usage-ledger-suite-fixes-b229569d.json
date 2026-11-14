@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-suite-fixes",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T22:20:11.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-suite-fixes.md",
+  "artifactSha256": "e2c14074f9ee185b59bc12277e8c29b5adf909135bc5b542e0064cf47d966af8",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "src/monitoring/usageReadModel.ts",
+    "src/server/AgentServer.ts",
+    "src/server/usageRoutes.ts",
+    "tests/unit/codex-cli-provider-execjson.test.ts",
+    "tests/unit/intelligence-provider-usage-contract.test.ts",
+    "upgrades/side-effects/unified-usage-ledger-suite-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test and evidence fixes on the Tier-2 usage ledger",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

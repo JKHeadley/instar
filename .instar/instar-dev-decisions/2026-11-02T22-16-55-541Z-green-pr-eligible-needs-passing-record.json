@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-02T22:16:55.541Z",
+  "slug": "green-pr-eligible-needs-passing-record",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/localVerify/localVerifyWiring.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "narrows an existing selection; adds no action or loop"
+  },
+  "verdict": "pass"
+}

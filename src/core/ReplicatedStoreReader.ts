@@ -88,6 +88,9 @@ export class ReplicatedStoreReader {
     this.seams = seams;
   }
 
+  /** Exact negative-registry pairing for physical retained-read proofs. */
+  usesDroppedOriginRegistry(registry: DroppedOriginRegistry): boolean { return this.seams.droppedOrigins === registry; }
+
   /** Is this store registered + enabled (so a read is non-dark)? A read on an
    *  unregistered or disabled store returns a strict no-op (no record). */
   private isLive(store: string): boolean {
@@ -119,6 +122,13 @@ export class ReplicatedStoreReader {
       // deduped attention item). The read returns value=null (neither version
       // clobbers) — the operator resolves it.
       this.seams.conflictStore.recordConflict(store, result.conflict);
+    } else if (result.collapsedIdentical) {
+      // An identical-content set used to be recorded as a conflict; close any such
+      // entry still open (the versions are identical, so the winner is the value).
+      this.seams.conflictStore.autoResolveIdenticalContent(
+        result.collapsedIdentical.conflictId,
+        result.collapsedIdentical.versions,
+      );
     }
     return result;
   }

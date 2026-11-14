@@ -3,11 +3,12 @@
  * multiMachine.seamlessness coherence flags (ws3OneVoice, ws13Reconcile, ws41DurableAck,
  * ws43RoleGuard, ws43JournalLease) moved from hardcoded `false` in ConfigDefaults to the
  * developmentAgent gate — config OMITS them, the runtime resolves via resolveDevAgentGate
- * (live-on-dev / dark-fleet), mirroring the ws44PoolLinks/ws44PoolCache precedent.
+ * (flag-on-dev / dark-fleet), mirroring the ws44PoolLinks/ws44PoolCache precedent.
+ * WS4.3 journal claiming also needs its separate pool-authority readiness floor.
  *
  * This test enforces the TWO halves the PR1 lesson taught us NOT to skip:
  *   A. RESOLUTION — each flag resolves true on a dev agent, false on the fleet (and the
- *      ws43JournalLeaseDryRun coherence: dev → live/false, fleet → dry-run/true).
+ *      ws43JournalLeaseDryRun coherence: dev → false, fleet → true).
  *   B. NO-MISSED-CONSUMER — every production read-site routes the raw config value through
  *      resolveDevAgentGate. A consumer left on the old raw `=== true` read would keep the
  *      feature DARK on a dev agent even though ConfigDefaults omits it (the exact "still-
@@ -106,6 +107,7 @@ describe('seamlessness dev-gate — B. no-missed-consumer (every read routes thr
   });
 
   it('ws43JournalLease — setJournalLeaseCutover enabled reads through resolveDevAgentGate; dryRun is coherent', () => {
+    expect(serverSrc).toMatch(/enabled:\s*JOB_LEASE_POOL_AUTHORITY_READY\s*&&\s*resolveDevAgentGate\(config\.multiMachine\?\.seamlessness\?\.ws43JournalLease,\s*config\)/);
     expect(serverSrc).toMatch(/resolveDevAgentGate\(config\.multiMachine\?\.seamlessness\?\.ws43JournalLease,\s*config\)/);
     // The dryRun consumer formula (cfg ?? !resolveDevAgentGate(undefined, config)).
     expect(serverSrc).toMatch(/ws43JournalLeaseDryRun \?\? !resolveDevAgentGate\(undefined,\s*config\)/);
@@ -117,6 +119,7 @@ describe('seamlessness dev-gate — B. no-missed-consumer (every read routes thr
     // The seamlessnessFlags advert advertises journal-lease only when the gate resolves
     // it live AND it is not dry-run — both via resolveDevAgentGate, never the raw === true.
     const advert = serverSrc.match(/seamlessnessFlags:\s*\{[\s\S]{0,400}?ws43JournalLease:[\s\S]{0,260}?stateSyncReceive/)![0];
+    expect(advert).toMatch(/ws43JournalLease:\s*JOB_LEASE_POOL_AUTHORITY_READY\s*&&/);
     expect(advert).toMatch(/resolveDevAgentGate\(config\.multiMachine\?\.seamlessness\?\.ws43JournalLease,\s*config\)/);
     expect(advert).not.toMatch(/ws43JournalLease:\s*config\.multiMachine\?\.seamlessness\?\.ws43JournalLease === true/);
   });

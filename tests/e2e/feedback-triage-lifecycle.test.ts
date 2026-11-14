@@ -19,6 +19,8 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig, IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
+import type { SubscriptionAccount, SubscriptionPool } from '../../src/core/SubscriptionPool.js';
+import type { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { handleFeedbackSubmit } from '../../src/feedback-factory/receiver/handlers.js';
 import { BlobInboxStore } from '../../src/feedback-factory/receiver/BlobInboxStore.js';
 import { BlobInboxClient } from '../../src/feedback-factory/inbox/BlobInboxClient.js';
@@ -77,12 +79,13 @@ describe('feedback triage — production lifecycle (live on a development agent)
     tracker = new InitiativeTracker(stateDir);
     const intelligence: IntelligenceProvider = {
       evaluate: async (prompt: string, options?: IntelligenceOptions) => {
-        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
         if (prompt.includes('registered Feedback Factory triage authority')) {
+          options?.onModel?.({ model: 'gpt-6-astra', framework: 'codex-cli' });
           return JSON.stringify({ decisions: packetsFrom(prompt).map((p) => decisionRow(p.clusterId, /pale/i.test(p.title)
             ? { disposition: 'ignore', reason: 'low-value', severity: 'low', priority: 10 }
             : { severity: 'high', priority: 85 })) });
         }
+        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
         const ids = [...prompt.matchAll(/"clusterId"\s*:\s*"([^"]+)"/g)].map((m) => m[1]).filter((id) => id !== '...');
         return JSON.stringify({ decisions: [...new Set(ids)].map((clusterId) => ({ clusterId, outcome: 'ready', confidence: 0.97, reasonCodes: ['coherent-recurrence'], evidenceIds: [`cluster:${clusterId}`] })) });
       },
@@ -140,7 +143,7 @@ describe('feedback triage — production lifecycle (live on a development agent)
     // Triage authority: the agent's Bearer cannot approve; the operator's PIN does.
     const triageAuthority = {
       action: 'create', operatorDecisionRef: 'operator-triage', agentId: 'e2e', ownerMachineId: 'e2e', ownerEpoch: 1,
-      provider: 'claude-code', modelFamily: 'fable-5', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5,
+      provider: 'codex-cli', modelFamily: 'gpt-6-astra', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5,
     };
     expect((await request(app).post('/feedback-factory/triage/authority').set(HX).send(triageAuthority)).status).toBe(403);
     const approved = await request(app).post('/feedback-factory/triage/authority').set(HX).send({ ...triageAuthority, pin: PIN });
@@ -211,3 +214,77 @@ describe('feedback triage — dark on the fleet', () => {
 
 // Keep the registry constants referenced so a rename breaks this lifecycle test loudly.
 void [FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID];
+
+describe('feedback triage — production account-selection wiring', () => {
+  it('initializes the live route and makes one decision through a verified spare Codex account', async () => {
+    const { root, stateDir } = prepare('feedback-triage-account-e2e-');
+    const now = Date.UTC(2026, 9, 31, 6, 0);
+    const homes = ['ambient', 'spare'].map((id): SubscriptionAccount => {
+      const configHome = path.join(root, id);
+      fs.mkdirSync(configHome, { recursive: true });
+      const email = `${id}@example.test`;
+      const idToken = `x.${Buffer.from(JSON.stringify({ email })).toString('base64url')}.x`;
+      fs.writeFileSync(path.join(configHome, 'auth.json'), JSON.stringify({ tokens: { id_token: idToken, account_id: id } }));
+      return { id, nickname: id, email, provider: 'openai', framework: 'codex-cli', configHome,
+        status: 'active', enrolledAt: new Date(now).toISOString(), version: 1 } as SubscriptionAccount;
+    });
+    const modelAccounts: string[] = [];
+    const intelligence: IntelligenceProvider = {
+      frameworkId: 'codex-cli',
+      evaluate: async (prompt, options) => {
+        if (options?.launchGuard && !options.launchGuard()) throw new Error('launch guard refused');
+        modelAccounts.push(options?.accountOverride?.accountId ?? 'unbound');
+        options?.onModel?.({ model: 'gpt-6-astra', framework: 'codex-cli' });
+        return JSON.stringify({ decisions: packetsFrom(prompt).map((packet) => decisionRow(packet.clusterId)) });
+      },
+    };
+    const window = (usedPercent: number) => ({ usedPercent, remainingPercent: 100 - usedPercent,
+      windowMinutes: 10080, resetsAt: 1795000000, resetsAtIso: null, resetsInSeconds: null });
+    const config = baseConfig(root, stateDir, { developmentAgent: true,
+      feedbackFactory: { processing: {}, drain: {}, consumer: { dryRun: true }, triage: { accountSelectionMode: 'on' } },
+    });
+    const tracker = new InitiativeTracker(stateDir);
+    const server = new AgentServer({ config, state: new StateManager(stateDir), initiativeTracker: tracker,
+      intelligence, sessionManager: noSessions,
+      subscriptionPool: { list: () => homes, get: (id: string) => homes.find((account) => account.id === id) } as unknown as SubscriptionPool,
+      codexLiveUsageReader: async ({ codexHome } = {}) => ({ source: 'codex-app-server', rolloutPath: '', threadId: null,
+        capturedAt: new Date(now).toISOString(), model: null, planType: 'pro', rateLimitReachedType: null,
+        primary: window(codexHome === homes[0].configHome ? 88 : 10), secondary: null }),
+      feedbackTriageDeps: { listMergedPrs: async () => [], secondOpinion: () => null, clock: () => now },
+    });
+    try {
+      await server.start();
+      const app = server.getApp();
+      const drain = (server as unknown as { feedbackDrain: { store: FeedbackDrainStore; authorityBinding: () => { ownerMachineId: string | null; ownerEpoch: number } } }).feedbackDrain;
+      const binding = drain.authorityBinding();
+      drain.store.startRun({ ownerHost: binding.ownerMachineId!, ownerEpoch: binding.ownerEpoch, leaseMs: 60_000 });
+      const waiting = await request(app).get('/feedback-factory/triage/summary').set(H);
+      expect(waiting.status).toBe(200);
+      const approved = await request(app).post('/feedback-factory/triage/authority').set(HX)
+        .send({ action: 'create', pin: PIN, operatorDecisionRef: 'account-e2e-owner-pin',
+          agentId: 'e2e', ownerMachineId: binding.ownerMachineId, ownerEpoch: binding.ownerEpoch,
+          provider: 'codex-cli', modelFamily: 'gpt-6-astra', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5 });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      const canonical = path.join(stateDir, 'state', 'feedback-factory', 'store');
+      fs.writeFileSync(path.join(canonical, 'clusters.jsonl'), `${JSON.stringify({ clusterId: 'spare-e2e', title: 'Jobs page crashes', type: 'bug', reportCount: 2,
+        createdAt: new Date(now - 86_400_000).toISOString(), updatedAt: new Date(now).toISOString() })}\n`);
+      fs.writeFileSync(path.join(canonical, 'feedback.jsonl'), `${JSON.stringify({ feedbackId: 'fb-spare-e2e', title: 'Jobs page crashes',
+        description: 'Opening jobs crashes', type: 'bug', clusterId: 'spare-e2e', receivedAt: new Date(now).toISOString() })}\n`);
+      await tracker.create({ id: 'feedback-spare-e2e', kind: 'task', pipelineStage: 'outline', feedbackWorkKey: 'feedback-work:spare-e2e:1',
+        title: 'Jobs page crashes', description: 'd', phases: [{ id: 'class-review', name: 'Class review' }],
+        links: [{ type: 'other', label: 'Feedback cluster', ref: 'spare-e2e' }] });
+      const tick = await request(app).post('/feedback-factory/triage/tick').set(HX);
+      expect(tick.status).toBe(202);
+      let summary = await request(app).get('/feedback-factory/triage/summary').set(H);
+      for (let i = 0; i < 200 && summary.body.lastTick?.runId !== tick.body.runId; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        summary = await request(app).get('/feedback-factory/triage/summary').set(H);
+      }
+      expect(summary.body.lastTick).toMatchObject({ result: 'succeeded', calls: 1, decided: 1 });
+      expect(modelAccounts).toEqual(['spare']);
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'feedback-triage-lifecycle.test.ts' });
+    }
+  });
+});

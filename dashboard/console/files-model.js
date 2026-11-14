@@ -323,6 +323,7 @@ export function configResultWords(status, data) {
 
 /** The headline: plain on arrival; said only when something is wrong. */
 export function filesHeadline({ root, machine }) {
+  // warning-path: pageHead
   if (root && !root.ok) return { text: root.kind === 'off' ? 'The file viewer is switched off.' : 'Can’t read the file list.', tone: root.kind === 'off' ? 'unknown' : 'bad', sub: root.text };
   return { text: 'Open a file, or find one by name.', tone: 'ok', sub: machine ? `Files on ${machine}. Each machine has its own.` : null };
 }

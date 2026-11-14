@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "locked-proof-harness-viewer",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T20:32:03.302Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-harness-viewer.md",
+  "artifactSha256": "7bbb0ccaa2d2c6839b26b4308a4d5f37e1098b0d6aa535d2519bd1b050d86c23",
+  "coveredFiles": [
+    "docs/specs/locked-proof-harness-viewer.eli16.md",
+    "scripts/locked-proof/configure-proof-agent.mjs",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/stage-proof-agents.sh",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/next/locked-proof-harness-viewer.md",
+    "upgrades/side-effects/locked-proof-harness-viewer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test tooling only (scripts/locked-proof + its test); no src or shipped behaviour; a revert fully undoes it",
+  "eli16Path": "docs/specs/locked-proof-harness-viewer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-harness-viewer.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

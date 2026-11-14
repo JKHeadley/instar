@@ -393,7 +393,7 @@ describe('Standard C — topic-less notice routing default (contract, adapter bo
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'routing-contract cleanup' });
   });
 
-  it('topic-less non-critical housekeeping burst → the ONE hub topic (from the first item, never one-per-item)', async () => {
+  it('topic-less routine housekeeping burst stays in the record without Telegram egress', async () => {
     const rec = installApiStub(adapter);
     const N = 200;
     for (let i = 0; i < N; i++) {
@@ -409,9 +409,8 @@ describe('Standard C — topic-less notice routing default (contract, adapter bo
         sourceContext: `/health/unique/${i}`,
       });
     }
-    // The RULE: exactly ONE hub topic for the whole burst — never N topics, and
-    // never even the budgeted 8. Every item is still recorded (no drops).
-    expect(rec.forumTopicsCreated).toBe(1);
+    // Routine self-health needs no operator action. Keep every record, but send nothing.
+    expect(rec.forumTopicsCreated).toBe(0);
     expect(adapter.getAttentionItems().filter((a) => a.category === 'agent-health').length).toBe(N);
     // All routed items are marked coalesced (hub-routed, not per-item topics).
     expect(adapter.getAttentionItems().filter((a) => a.lane === 'agent-health').every((a) => a.coalesced === true)).toBe(true);

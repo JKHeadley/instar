@@ -65,7 +65,7 @@ describe('W21 integration — a re-delivered message IS marked', () => {
     expect(injected).toHaveLength(1);
     // The session sees ONLY this until it opens the file — so the marker has to be here.
     expect(injected[0]).toContain(RE_DELIVERY_MARKER);
-    expect(injected[0]).toMatch(/^\[telegram:29723 — RE-DELIVERED/);
+    expect(injected[0]).toMatch(/^\[telegram:29723 "Window 21" — RE-DELIVERED/);
     expect(injected[0]).toContain('Long message saved to');
   });
 
@@ -96,11 +96,11 @@ describe('W21 integration — a first delivery is NOT marked', () => {
     expect(injected[0]).not.toContain(RE_DELIVERY_MARKER);
   });
 
-  it('emits the historical `[telegram:N] [Long message saved to …]` reference line unchanged', () => {
+  it('names the topic in the unmarked `[telegram:N "name"] [Long message saved to …]` reference line', () => {
     const { mgr, injected } = buildManager(tmpDir);
     mgr.injectTelegramMessage('sess', 29723, LONG, 'Window 21', 'Justin', 12345, 666);
 
-    expect(injected[0]).toMatch(/^\[telegram:29723\] \[Long message saved to \S+ — read it to see the full message\]$/);
+    expect(injected[0]).toMatch(/^\[telegram:29723 "Window 21"\] \[Long message saved to \S+ — read it to see the full message\]$/);
     expect(injected[0]).not.toContain(RE_DELIVERY_MARKER);
   });
 
@@ -141,7 +141,7 @@ describe('W21 integration — forgery: a body containing the marker is NOT a re-
     const { mgr, injected } = buildManager(tmpDir);
     mgr.injectTelegramMessage('sess', 29723, `${RE_DELIVERY_MARKER} ${LONG}`, 'Window 21', 'Justin', 12345, 1002);
 
-    expect(injected[0]).toMatch(/^\[telegram:29723\] \[Long message saved to /);
+    expect(injected[0]).toMatch(/^\[telegram:29723 "Window 21"\] \[Long message saved to /);
     expect(injected[0]).not.toContain(RE_DELIVERY_MARKER);
   });
 

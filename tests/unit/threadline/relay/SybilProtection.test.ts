@@ -27,7 +27,10 @@ describe('SybilProtection', () => {
     });
 
     it('rejects solution for wrong IP', () => {
-      const challenge = generateChallenge('127.0.0.1', 8);
+      // At 8 bits a nonce solved for one IP also satisfies another 1 time in 256, and the
+      // hash includes the epoch, so the test failed for a whole epoch at a time (main red,
+      // 2026-11-02 21:57 PST). 16 bits makes that ~1 in 65,536 and still solves in ms.
+      const challenge = generateChallenge('127.0.0.1', 16);
       const solution = solveChallenge(challenge, '127.0.0.1');
       // Verify with different IP
       const result = verifySolution(solution, '10.0.0.1');

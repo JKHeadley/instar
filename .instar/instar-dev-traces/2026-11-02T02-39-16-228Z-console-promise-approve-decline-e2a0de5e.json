@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-promise-approve-decline",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T02:39:16.228Z",
+  "artifactPath": "upgrades/side-effects/console-promise-approve-decline.md",
+  "artifactSha256": "9d113e003a440f8aa85d4e7970b39c92ba039eb6140435e2e9209f5f5c48a2f7",
+  "coveredFiles": [
+    "dashboard/console/promises-model.js",
+    "dashboard/console/promises.js",
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/routes.ts",
+    "tests/unit/commitment-routes.test.ts",
+    "tests/unit/console-promises.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive route over existing transition/withdraw plus two buttons; revert undoes",
+  "eli16Path": "upgrades/side-effects/console-promise-approve-decline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-promise-approve-decline.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

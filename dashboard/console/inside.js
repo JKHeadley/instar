@@ -16,7 +16,7 @@ import {
   CHIPS, KINDS, KIND_WORDS, COUNTERPARTIES, COUNTERPARTY_WORDS, STAGE_INFO, LOOKUP_KINDS, SCOPES, ADVISORY, CLAIM_KEYS, REVIEW_KEYS, CLAIMS_PAGE, WINDOW_STEP,
   setPeerNames,
 } from './inside-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, firstPaint, arrivalScroll } from './ui.js';
 
 const EYEBROW = 'Settings · Under the hood';
 const SUBTITLE = 'Conversation history, recurring problems, checks on my claims.';
@@ -24,7 +24,6 @@ const SUBTITLE = 'Conversation history, recurring problems, checks on my claims.
 const view = { chip: 'all', kind: null, counterparty: null, limit: WINDOW_STEP, older: [], claimsLimit: CLAIMS_PAGE, open: new Set() };
 let lastProblems = null;
 let lookupNode = null;
-let scrolledFor = null;
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 /** A write that keeps the status and body (the revoke route needs the intent header). */
@@ -38,7 +37,7 @@ async function send(req) {
 
 export async function renderInside(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.inside-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [recent, stats, sessions, pool, insights, week, all, claimsRes, reviewsRes, pairingRes, ...pages] = await Promise.all([
     get(recentUrl({ limit: view.limit, counterparty: view.counterparty })), get('/shared-state/stats'), get('/shared-state/sessions'), get('/pool'),
     get('/failures/insights?limit=50'), get('/failures/analysis?sinceDays=7'), get('/failures/analysis'),
@@ -65,14 +64,10 @@ export async function renderInside(main, ctx) {
     pageHead({ eyebrow: `${EYEBROW} · How I’m doing inside`, headline: h.text, tone: h.tone, sub: h.sub || SUBTITLE, facts: insideFacts({ activity, problems, claims, reviews }) }),
     el('div', { class: 'page-sections' }, sections)));
   const want = new URLSearchParams(location.hash.split('?')[1] || '').get('s');
-  if (want && scrolledFor !== want) { scrolledFor = want; const sec = main.querySelector(`#sec-${want}`); if (sec) { openFold(sec); sec.scrollIntoView({ block: 'start' }); } }
+  if (want) arrivalScroll(main.querySelector(`#sec-${want}`), { open: true });
 }
 
 // ── shared bits ───────────────────────────────────────────────────────────
-function openFold(sec) {
-  const head = sec.querySelector(':scope > button.list-head');
-  if (head && head.getAttribute('aria-expanded') === 'false') head.click();
-}
 /** A collapsible block whose open state survives refreshes. */
 function fold(id, title, count, body, { tone } = {}) {
   const isOpen = view.open.has(id);
@@ -291,5 +286,5 @@ function lookupBlock(get) {
 /** Test seam: forget the remembered view between tests. */
 export function _resetInsideState() {
   view.chip = 'all'; view.kind = null; view.counterparty = null; view.limit = WINDOW_STEP; view.older = []; view.claimsLimit = CLAIMS_PAGE; view.open = new Set();
-  lastProblems = null; lookupNode = null; scrolledFor = null;
+  lastProblems = null; lookupNode = null;
 }

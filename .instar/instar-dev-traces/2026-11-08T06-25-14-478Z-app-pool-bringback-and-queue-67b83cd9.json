@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-pool-bringback-and-queue",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-08T06:25:14.478Z",
+  "artifactPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "artifactSha256": "0e31a51e84a3946b467c2df9103a8900211382395ea950c044d966dbe61d52f9",
+  "coveredFiles": [
+    "docs/specs/app-pool-bringback-and-queue.eli16.md",
+    "src/core/QueueDrainLoop.ts",
+    "tests/unit/queue-drain-loop.test.ts",
+    "upgrades/next/app-pool-bringback-and-queue.md",
+    "upgrades/side-effects/app-pool-bringback-and-queue.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Proof step 8 finding in the same Tier 1 PR: an app message held on the holder survives that holder's own reboot instead of the 2-minute clamp; app rows and same tenure only",
+  "eli16Path": "docs/specs/app-pool-bringback-and-queue.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

@@ -21,11 +21,14 @@
  * for direct destructive `git <verb>` invocations (closed verb list).
  *
  * Exit codes:
- *   0 — no violations.
+ *   0 — every enumerated target file was inspected and none has a violation.
  *   1 — at least one violation.
- *   2 — could not inspect: files were scanned and NONE parsed (an environment
- *       problem, e.g. a missing `typescript`). Distinct from 1 on purpose —
- *       "I could not look" is not "I looked and found nothing".
+ *   2 — could not inspect: NONE of the scanned files parsed (an environment
+ *       problem, e.g. a missing `typescript`), or SOME target file could not be
+ *       read or parsed (or a directory could not be listed) and no violation was
+ *       found elsewhere. Each uninspected path is printed with its reason.
+ *       Distinct from 1 on purpose — "I could not look" is not "I looked and
+ *       found nothing".
  *
  * Usage:
  *   node scripts/lint-no-direct-destructive.js                # full repo
@@ -238,6 +241,54 @@ function hasAllowComment(text) {
 const violations = [];
 
 /**
+ * Files (or directories) this run was meant to inspect but could not: unreadable,
+ * unparseable, or an unlistable directory. Each one is a hole in the scan, and a
+ * hole must not look like a clean file (#2190 / #2189) — any entry here refuses
+ * the run with the path and the reason.
+ */
+const uninspected = [];
+
+function recordUninspected(file, reason) {
+  uninspected.push({ file, reason });
+}
+
+/** Errors worth one more attempt: the file may be mid-write or the fd table momentarily full. */
+const TRANSIENT_READ_CODES = new Set(['EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE']);
+const READ_RETRY_DELAYS_MS = [50, 200];
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Read a file, briefly retrying transient errors. Throws the last error if every attempt fails. */
+function readFileWithRetry(file) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // Test hook, fail-closed only (same contract as INSTAR_LINT_FORCE_PARSE_FAILURE):
+      // it can only make a read fail, never make a file pass. `<basename>` fails
+      // every attempt; `<basename>:<n>` fails only the first n (exercises the retry).
+      const forced = process.env.INSTAR_LINT_FORCE_READ_FAILURE;
+      const [forcedName, forcedTimes] = (forced || '').split(':');
+      if (forcedName && path.basename(file) === forcedName
+        && (forcedTimes === undefined || attempt < Number(forcedTimes))) {
+        const err = new Error(`forced read failure (INSTAR_LINT_FORCE_READ_FAILURE=${forced})`);
+        err.code = 'EBUSY';
+        throw err;
+      }
+      return fs.readFileSync(file, 'utf8');
+    } catch (err) {
+      if (attempt >= READ_RETRY_DELAYS_MS.length || !TRANSIENT_READ_CODES.has(err.code)) throw err;
+      sleepSync(READ_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+function describeError(err) {
+  const message = String(err && err.message ? err.message : err);
+  return err && err.code && !message.startsWith(err.code) ? `${err.code}: ${message}` : message;
+}
+
+/**
  * Per-callsite marker: `// safe-git-allow: incremental-migration` placed on
  * the line immediately above (or at end of) a flagged callsite suppresses
  * that single violation. Used during the transitional period before
@@ -336,6 +387,12 @@ const FS_MODULE_NAMES = new Set([
  *   7. Dynamic property access used to evade the rule (`fs['rm' + 'Sync']`) — flag.
  */
 function lintTsFile(file, text) {
+  // Per-file variant of the INSTAR_LINT_FORCE_PARSE_FAILURE hook (a basename
+  // instead of '1'), for the partial-failure refusal. Fail-closed only.
+  const forcedParse = process.env.INSTAR_LINT_FORCE_PARSE_FAILURE;
+  if (forcedParse && forcedParse !== '1' && path.basename(file) === forcedParse) {
+    throw new Error(`forced parse failure (INSTAR_LINT_FORCE_PARSE_FAILURE=${forcedParse})`);
+  }
   const T = ts();
   const sf = T.createSourceFile(file, text, T.ScriptTarget.Latest, true);
   const ctx = { text };
@@ -685,11 +742,42 @@ const DESTRUCTIVE_GIT_VERBS = [
   'mv', 'pull', 'push', 'rebase', 'reset', 'restore', 'revert',
   'rm', 'stash', 'submodule', 'switch', 'tag', 'update-ref',
   'worktree', 'prune', 'notes', 'replace', 'filter-branch',
+  // Object-database writers (EVO-029): classified write in SafeGitExecutor.
+  'merge-tree', 'commit-tree', 'write-tree',
 ];
+const SHELL_GIT_PREFIX = String.raw`(?:^|[\s;&|()])git\s+(?:-C\s+\S+\s+|-c\s+\S+\s+)*`;
 const SHELL_GIT_REGEX = new RegExp(
-  String.raw`(?:^|[\s;&|()])git\s+(?:-C\s+\S+\s+|-c\s+\S+\s+)*(${DESTRUCTIVE_GIT_VERBS.join('|')})\b`,
+  String.raw`${SHELL_GIT_PREFIX}(${DESTRUCTIVE_GIT_VERBS.join('|')})(?![\w-])`,
   'g',
 );
+
+// Verbs SafeGitExecutor classifies `shape` that shell scripts commonly use in a
+// read form (`git config --get`, `git remote -v`, `git symbolic-ref HEAD`). A
+// regex is not the classifier, so only their write forms are flagged (EVO-029).
+const SHELL_SHAPE_WRITE_PATTERNS = [
+  { verb: 'remote', re: new RegExp(String.raw`${SHELL_GIT_PREFIX}remote\s+(?:-v\s+|--verbose\s+)*(?:add|remove|rm|rename|set-url|set-head|set-branches|prune|update)(?![\w-])`) },
+  { verb: 'reflog', re: new RegExp(String.raw`${SHELL_GIT_PREFIX}reflog\s+(?:expire|delete)(?![\w-])`) },
+  { verb: 'symbolic-ref', re: new RegExp(String.raw`${SHELL_GIT_PREFIX}symbolic-ref\s+(?:(?:-q|--quiet|--short)\s+)*(?:-d(?![\w-])|--delete(?![\w-])|-m(?![\w-])|\S+\s+refs/)`) },
+  {
+    verb: 'config',
+    re: new RegExp(
+      String.raw`${SHELL_GIT_PREFIX}config\s+(?:(?:--global|--local|--system|--worktree|-f\s+\S+|--file[= ]\S+)\s+)*` +
+        String.raw`(?:--(?:add|unset|unset-all|replace-all|rename-section|remove-section|edit)(?![\w-])|-e(?![\w-])|(?:set|unset|rename-section|remove-section|edit)\s|[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\s+(?!\d*>)[^\s|;&<>])`,
+    ),
+  },
+];
+
+/** The first destructive git command in a shell string, or null. */
+function matchDestructiveShellGit(text) {
+  SHELL_GIT_REGEX.lastIndex = 0;
+  const m = SHELL_GIT_REGEX.exec(text);
+  if (m) return { index: m.index || 0, verb: m[1] };
+  for (const { verb, re } of SHELL_SHAPE_WRITE_PATTERNS) {
+    const sm = re.exec(text);
+    if (sm) return { index: sm.index || 0, verb };
+  }
+  return null;
+}
 
 const SHELL_ALLOWLIST = new Set([
   'scripts/setup-imessage-hardlink.sh',
@@ -716,10 +804,9 @@ function lintShellFile(file, text) {
     // Skip comments
     const stripped = line.replace(/^\s*#.*$/, '');
     if (!stripped) continue;
-    SHELL_GIT_REGEX.lastIndex = 0;
-    const m = SHELL_GIT_REGEX.exec(stripped);
+    const m = matchDestructiveShellGit(stripped);
     if (m) {
-      report(file, i + 1, (m.index || 0) + 1, `Shell script invokes destructive 'git ${m[1]}' — port to a Node script using SafeGitExecutor.`);
+      report(file, i + 1, m.index + 1, `Shell script invokes destructive 'git ${m.verb}' — port to a Node script using SafeGitExecutor.`);
     }
   }
 }
@@ -728,16 +815,17 @@ function lintPackageJsonScripts(file, text) {
   let pkg;
   try {
     pkg = JSON.parse(text);
-  } catch {
+  } catch (err) {
+    // An unparseable package.json hides every npm script from the git-verb check.
+    recordUninspected(file, `could not parse as JSON: ${describeError(err)}`);
     return;
   }
   const scripts = pkg.scripts || {};
   for (const [name, cmd] of Object.entries(scripts)) {
     if (typeof cmd !== 'string') continue;
-    SHELL_GIT_REGEX.lastIndex = 0;
-    const m = SHELL_GIT_REGEX.exec(cmd);
+    const m = matchDestructiveShellGit(cmd);
     if (m) {
-      report(file, 1, 1, `npm script "${name}" runs destructive 'git ${m[1]}' — refuse.`);
+      report(file, 1, 1, `npm script "${name}" runs destructive 'git ${m.verb}' — refuse.`);
     }
   }
 }
@@ -751,7 +839,10 @@ function walkDir(dir, out) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    // A target dir that does not exist has nothing to inspect; one that exists
+    // but cannot be listed hides every file beneath it.
+    if (err.code !== 'ENOENT') recordUninspected(dir, `could not list directory: ${describeError(err)}`);
     return;
   }
   for (const e of entries) {
@@ -809,6 +900,18 @@ function gatherAll() {
   return out;
 }
 
+function writeUninspected() {
+  if (uninspected.length === 0) return;
+  process.stderr.write('\n');
+  process.stderr.write(
+    `[lint-no-direct-destructive] COULD NOT INSPECT ${uninspected.length} path(s) — `
+    + 'these were NOT checked, so this run cannot report them clean:\n'
+  );
+  for (const u of uninspected) {
+    process.stderr.write(`  ${path.relative(ROOT, u.file) || u.file}\n    ${u.reason}\n`);
+  }
+}
+
 // ── Main ───────────────────────────────────────────────────────────
 
 function main() {
@@ -828,8 +931,9 @@ function main() {
   for (const file of files) {
     let text;
     try {
-      text = fs.readFileSync(file, 'utf8');
-    } catch {
+      text = readFileWithRetry(file);
+    } catch (err) {
+      recordUninspected(file, `could not read: ${describeError(err)}`);
       continue;
     }
 
@@ -854,10 +958,12 @@ function main() {
       lintTsFile(file, text);
       astParsed += 1;
     } catch (err) {
-      // Parse failure → emit a soft warning, not a violation. Deliberate: one
-      // unparseable file should not fail a build over syntax this parser does
-      // not accept. The total-failure case below is a different situation.
-      process.stderr.write(`[lint-no-direct-destructive] failed to parse ${rel}: ${err.message}\n`);
+      // A thrown parse is a file this run did not inspect (#2190). It used to be a
+      // stderr warning with exit 0, so an unchecked file looked exactly like a
+      // clean one. Syntax the parser dislikes does NOT land here —
+      // createSourceFile recovers and returns a tree — so this cannot fail a
+      // build over one odd-but-valid file; it fires when inspection itself broke.
+      recordUninspected(file, `failed to parse: ${describeError(err)}`);
     }
   }
 
@@ -870,6 +976,7 @@ function main() {
   // This is deliberately the TOTAL-failure case only, so it cannot fail a build
   // over one file the parser dislikes: in any working checkout, files parse.
   if (astAttempted > 0 && astParsed === 0) {
+    writeUninspected();
     process.stderr.write('\n');
     process.stderr.write(
       `[lint-no-direct-destructive] COULD NOT INSPECT — ${astAttempted} file(s) were scanned `
@@ -884,6 +991,17 @@ function main() {
     // uninstalled scratch tree as violations — which is how this was caught,
     // by three pre-push-gate tests going red in CI.
     return 2;
+  }
+
+  // Partial holes (#2190): some files could not be inspected. Name each one and
+  // its reason. Exit 2 ("could not inspect") unless violations were also found,
+  // which stay exit 1 — a definite finding outranks an incomplete scan.
+  if (uninspected.length > 0) {
+    writeUninspected();
+    if (violations.length === 0) {
+      process.stderr.write('Fix the cause (permissions, encoding, a broken install) and re-run.\n');
+      return 2;
+    }
   }
 
   if (violations.length === 0) {

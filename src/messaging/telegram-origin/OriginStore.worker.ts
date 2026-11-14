@@ -6,11 +6,11 @@ import type { OriginStoreOptions } from './StoreTypes.js';
 const data = workerData as { options: OriginStoreOptions; mode?: 'spool' };
 let backend: OriginStoreBackend | null = null;
 const methods = new Set([
-  'putEvidence', 'putVerifiedEvidence', 'admit', 'getOrigin', 'getChild', 'getOperation', 'listOrigins', 'getMetrics',
+  'putEvidence', 'putVerifiedEvidence', 'admit', 'getOrigin', 'getChild', 'getOperation', 'listOrigins', 'lookupOriginEvidence', 'getMetrics',
   'claim', 'markDispatched', 'releaseUndispatchedClaim', 'renewClaim', 'recordOutcome', 'reapAbandoned', 'addMaterialization',
-  'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
+  'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'compactArchives', 'purgeArchived', 'foldMetricEvents', 'expireAudit', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
   'retireNoticeOwner', 'reconcileReceipt',
-  'reserveRecoveryAttempt', 'listHeldOperations', 'unresolvedHeldOperationCount', 'markHoldExpiryReported', 'recordForwardedAcceptance', 'heldForwardAdmissions', 'supersedeOperation', 'supersedeWithAdmission',
+  'reserveRecoveryAttempt', 'listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'markHoldExpiryReported', 'recordForwardedAcceptance', 'recordForwardedOutcomeUnknown', 'heldForwardAdmissions', 'supersedeOperation', 'supersedeWithAdmission', 'mergeHoldDetail', 'recordOperationEvent', 'hasOperationEvent',
   'healthTransaction', 'recoverableAdmissions', 'takeRecoverableAdmissions', 'registerOwner', 'legacyCandidates', 'importLegacy', 'reserveDiagnostic', 'completeDiagnostic', 'browserRecovery', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'undiagnosedOrigins',
 ]);
 try { if (data.mode !== 'spool') backend = new OriginStoreBackend(data.options); parentPort!.postMessage({ ready: true }); }

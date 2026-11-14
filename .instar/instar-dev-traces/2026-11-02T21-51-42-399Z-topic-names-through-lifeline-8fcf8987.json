@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "topic-names-through-lifeline",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T21:51:42.399Z",
+  "artifactPath": "upgrades/side-effects/topic-names-through-lifeline.md",
+  "artifactSha256": "3c1aa2da6afd0571efd3b8f9518a3b54c4af53a7a3c4a7560bb33bd73107a946",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/session-lifecycle-phase-3-wiring.test.ts",
+    "upgrades/side-effects/topic-names-through-lifeline.eli16.md",
+    "upgrades/side-effects/topic-names-through-lifeline.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "annotations and a pinned-source test update",
+  "eli16Path": "upgrades/side-effects/topic-names-through-lifeline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-names-through-lifeline.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -29,11 +29,14 @@
  * trail). A re-merge restores from the ring (reversibility).
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { sanitizeMachineId } from './CoherenceJournal.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 /** How many un-merge quarantine sets to retain per (store, origin) before the
  *  oldest is pruned (mirrors JournalSyncApplier.MAX_QUARANTINE_PER_STREAM). */
@@ -53,23 +56,127 @@ interface DroppedDoc {
   dropped: DroppedOriginEntry[];
 }
 
+/** Health of the durable dropped-origins file as read at construction. */
+export interface DroppedOriginRegistryHealth {
+  /** `healthy`: absent or fully valid. `damaged`: the file could not be read,
+   *  did not parse, failed the schema, or held entries that had to be filtered
+   *  out — the full exclusion set is UNKNOWN and mutation is refused. */
+  status: 'healthy' | 'damaged';
+  /** Why the file was judged damaged (absent when healthy). */
+  reason?: string;
+  /** Where the damaged bytes were copied aside (null when the copy failed or
+   *  the file could not be read at all). */
+  preservedAt?: string | null;
+  /** How many entries were recovered from the damaged file and are still
+   *  treated as excluded. */
+  salvagedCount?: number;
+}
+
+/** Thrown by add()/remove() when the registry loaded from a damaged file: a
+ *  write would replace the damaged file with a partial list and permanently
+ *  erase every exclusion that could not be recovered. */
+export class DroppedOriginRegistryDamagedError extends Error {
+  readonly health: DroppedOriginRegistryHealth;
+  constructor(op: 'add' | 'remove', health: DroppedOriginRegistryHealth) {
+    super(
+      `dropped-origin registry is damaged (${health.reason ?? 'unknown'}); refusing to ${op} — ` +
+        'writing now would overwrite the damaged file with a partial list and erase the exclusions it could not recover',
+    );
+    this.name = 'DroppedOriginRegistryDamagedError';
+    this.health = health;
+  }
+}
+
+function isEntry(d: unknown): d is DroppedOriginEntry {
+  return (
+    !!d &&
+    typeof d === 'object' &&
+    typeof (d as DroppedOriginEntry).store === 'string' &&
+    typeof (d as DroppedOriginEntry).origin === 'string' &&
+    (d as DroppedOriginEntry).store.length > 0 &&
+    (d as DroppedOriginEntry).origin.length > 0
+  );
+}
+
+/** Best-effort recovery of `{ "store": ..., "origin": ... }` pairs from text
+ *  that does not parse as JSON (the usual shape of damage is a truncated
+ *  write). Only objects that themselves parse are kept. */
+function salvageEntries(raw: string): DroppedOriginEntry[] {
+  const out: DroppedOriginEntry[] = [];
+  const re = /\{[^{}]*\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    try {
+      const obj = JSON.parse(m[0]) as unknown;
+      if (isEntry(obj)) {
+        out.push({
+          store: obj.store,
+          origin: obj.origin,
+          droppedAt: typeof obj.droppedAt === 'string' ? obj.droppedAt : '',
+        });
+      }
+    } catch {
+      // @silent-fallback-ok: an unparseable fragment is simply not recoverable;
+      // the registry is already marked damaged and the degradation is reported.
+    }
+  }
+  return out;
+}
+
 /** The durable set of un-merged (store, origin) pairs. Consulted by the union
- *  reader's participating-namespace filter (§7.4). */
+ *  reader's participating-namespace filter (§7.4).
+ *
+ *  FAIL-SAFE ON DAMAGE. If the file exists but cannot be fully trusted (read
+ *  error, bad JSON, wrong shape/version, or any entry that had to be filtered
+ *  out) the registry:
+ *   - keeps every entry it CAN recover as excluded (a revoked/dropped origin
+ *     must not silently come back),
+ *   - copies the damaged bytes aside (non-destructive, idempotent by content
+ *     hash) and leaves the original in place, so the next restart still sees
+ *     the damage instead of a falsely healthy file,
+ *   - refuses add()/remove() with DroppedOriginRegistryDamagedError rather than
+ *     overwrite the file with the partial list (add() still applies the new
+ *     exclusion in memory — the safe direction — but does not write it),
+ *   - reports one degradation naming the preserved copy and the repair.
+ *  Entries from other machines are never ignored here: an exclusion is kept
+ *  whatever origin it names. */
 export class DroppedOriginRegistry {
   private readonly stateDir: string;
   private readonly readFileSync: (p: string) => string;
   private readonly existsSync: (p: string) => boolean;
+  private readonly copyFileSync: (from: string, to: string) => void;
+  private readonly reportDegradation: (detail: { reason: string; preservedAt: string | null; salvagedCount: number; path: string }) => void;
+  private healthState: DroppedOriginRegistryHealth = { status: 'healthy' };
   private doc: DroppedDoc;
+  private readonly physicalRoot: {path:string;device:bigint;inode:bigint}|null;
 
   constructor(seams: {
     stateDir: string;
     readFileSync?: (p: string) => string;
     existsSync?: (p: string) => boolean;
+    copyFileSync?: (from: string, to: string) => void;
+    reportDegradation?: (detail: { reason: string; preservedAt: string | null; salvagedCount: number; path: string }) => void;
   }) {
     this.stateDir = seams.stateDir;
+    try {const root=fs.realpathSync(seams.stateDir),stat=fs.statSync(root,{bigint:true});this.physicalRoot=stat.isDirectory()?{path:root,device:stat.dev,inode:stat.ino}:null;}
+    catch { /* @silent-fallback-ok: generic injected registries remain supported; the new physical proof API refuses them. */ this.physicalRoot=null; }
     this.readFileSync = seams.readFileSync ?? ((p) => fs.readFileSync(p, 'utf-8'));
     this.existsSync = seams.existsSync ?? ((p) => fs.existsSync(p));
+    this.copyFileSync = seams.copyFileSync ?? ((from, to) => fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL));
+    this.reportDegradation = seams.reportDegradation ?? defaultReportDegradation;
     this.doc = this.load();
+  }
+
+  /** Narrow physical evidence API. Does not refresh or rewrite generic live
+   * registry semantics: stale/injected/corrupt physical state refuses proof. */
+  physicalSnapshot(expectedRoot:string):string {
+    const root=this.physicalRoot;if(!root||root.path!==expectedRoot||fs.realpathSync(this.stateDir)!==root.path)throw new Error('dropped-origin-physical-root-mismatch');
+    const stat=fs.statSync(root.path,{bigint:true});if(!stat.isDirectory()||stat.dev!==root.device||stat.ino!==root.inode)throw new Error('dropped-origin-physical-root-changed');
+    const file=path.join(root.path,'state','state-sync','dropped-origins.json');
+    let missing=false;for(const component of [path.join(root.path,'state'),path.dirname(file)]){try{const entry=fs.lstatSync(component);if(!entry.isDirectory()||entry.isSymbolicLink())throw new Error('dropped-origin-physical-path-invalid');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;missing=true;break;}}
+    let disk:unknown={version:1,dropped:[]};if(!missing){let fd:number|undefined;try{fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));const entry=fs.fstatSync(fd);if(!entry.isFile()||entry.size>4*1024*1024)throw new Error('dropped-origin-physical-file-invalid');disk=JSON.parse(fs.readFileSync(fd,'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}finally{if(fd!==undefined)fs.closeSync(fd);}}
+    const normalize=(value:unknown):string=>{const raw=value as DroppedDoc;if(!raw||typeof raw!=='object'||Object.keys(raw).sort().join(',')!=='dropped,version'||raw.version!==1||!Array.isArray(raw.dropped)||raw.dropped.length>20000)throw new Error('dropped-origin-physical-document-invalid');const seen=new Set<string>();const rows=raw.dropped.map(row=>{if(!row||typeof row!=='object'||Object.keys(row).sort().join(',')!=='droppedAt,origin,store'||typeof row.store!=='string'||typeof row.origin!=='string'||typeof row.droppedAt!=='string')throw new Error('dropped-origin-physical-entry-invalid');const key=JSON.stringify([row.store,row.origin]);if(seen.has(key))throw new Error('dropped-origin-physical-duplicate');seen.add(key);return [row.store,row.origin,row.droppedAt];}).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));return JSON.stringify(rows);};
+    const physical=normalize(disk);if(physical!==normalize(this.doc))throw new Error('dropped-origin-physical-state-changed');return createHash('sha256').update(physical).digest('hex');
   }
 
   private docPath(): string {
@@ -79,24 +186,84 @@ export class DroppedOriginRegistry {
   private load(): DroppedDoc {
     const p = this.docPath();
     if (!this.existsSync(p)) return { version: 1, dropped: [] };
+    let text: string;
     try {
-      const raw = JSON.parse(this.readFileSync(p)) as Partial<DroppedDoc>;
-      const dropped = Array.isArray(raw.dropped)
-        ? raw.dropped.filter((d): d is DroppedOriginEntry => !!d && typeof (d as DroppedOriginEntry).store === 'string' && typeof (d as DroppedOriginEntry).origin === 'string')
-        : [];
-      return { version: 1, dropped };
-    } catch {
-      // @silent-fallback-ok: a corrupt dropped-origins file degrades to "nothing
-      // dropped" — the CONSERVATIVE direction is to FAIL CLOSED (treat a corrupt
-      // un-merge ledger as no un-merge ⇒ the origin participates again). That is
-      // safe: a stale-but-readable peer namespace re-joining the union is a normal
-      // re-merge, never data loss; the operator re-issues the un-merge if needed.
-      return { version: 1, dropped: [] };
+      text = this.readFileSync(p);
+    } catch (e) {
+      return this.markDamaged(`unreadable: ${(e as Error)?.message ?? String(e)}`, null, []);
     }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      return this.markDamaged('not valid JSON', text, salvageEntries(text));
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return this.markDamaged('not a JSON object', text, []);
+    }
+    const docRaw = raw as { version?: unknown; dropped?: unknown };
+    if (!Array.isArray(docRaw.dropped)) {
+      return this.markDamaged('"dropped" is not a list', text, []);
+    }
+    const valid = docRaw.dropped.filter(isEntry).map((d) => ({
+      store: d.store,
+      origin: d.origin,
+      droppedAt: typeof d.droppedAt === 'string' ? d.droppedAt : '',
+    }));
+    if (docRaw.version !== 1) {
+      return this.markDamaged(`unknown version ${JSON.stringify(docRaw.version)}`, text, valid);
+    }
+    if (valid.length !== docRaw.dropped.length) {
+      return this.markDamaged(`${docRaw.dropped.length - valid.length} malformed entr${docRaw.dropped.length - valid.length === 1 ? 'y' : 'ies'}`, text, valid);
+    }
+    return { version: 1, dropped: valid };
+  }
+
+  /** Record the damage, preserve the bytes aside, report once, and return the
+   *  salvaged (still-excluded) entries. Never writes to the original file. */
+  private markDamaged(reason: string, text: string | null, salvaged: DroppedOriginEntry[]): DroppedDoc {
+    const p = this.docPath();
+    let preservedAt: string | null = null;
+    if (text !== null) {
+      const hash = crypto.createHash('sha256').update(text).digest('hex').slice(0, 12);
+      const aside = `${p}.damaged-${hash}`;
+      try {
+        if (this.existsSync(aside)) preservedAt = aside;
+        else {
+          this.copyFileSync(p, aside);
+          preservedAt = aside;
+        }
+      } catch {
+        // @silent-fallback-ok: the original file is left untouched either way;
+        // the degradation below reports that no aside copy could be made.
+        preservedAt = null;
+      }
+    }
+    // De-duplicate salvaged entries (a damaged file may repeat a pair).
+    const seen = new Set<string>();
+    const dropped = salvaged.filter((d) => {
+      const k = `${d.store}\u0000${d.origin}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    this.healthState = { status: 'damaged', reason, preservedAt, salvagedCount: dropped.length };
+    try {
+      this.reportDegradation({ reason, preservedAt, salvagedCount: dropped.length, path: p });
+    } catch {
+      // @silent-fallback-ok: reporting is signal-only; the damaged status is
+      // still visible through health() and GET /state/quarantine.
+    }
+    return { version: 1, dropped };
   }
 
   private persist(): void {
     SafeFsExecutor.atomicWriteJsonSync(this.docPath(), this.doc, { operation: 'dropped-origin-registry:persist' });
+  }
+
+  /** Whether the on-disk file was fully trusted at load (see class doc). */
+  health(): DroppedOriginRegistryHealth {
+    return { ...this.healthState };
   }
 
   /** Is (store, origin) currently un-merged (excluded from the union)? */
@@ -112,10 +279,17 @@ export class DroppedOriginRegistry {
   add(store: string, origin: string, at: string): void {
     if (this.isDropped(store, origin)) return;
     this.doc.dropped.push({ store, origin, droppedAt: at });
+    // Damaged: the new exclusion takes effect live (more exclusion is the safe
+    // direction) but is NOT written — persisting would replace the damaged file
+    // with this partial list.
+    if (this.healthState.status === 'damaged') throw new DroppedOriginRegistryDamagedError('add', this.health());
     this.persist();
   }
 
   remove(store: string, origin: string): void {
+    // Damaged: refuse entirely. Un-dropping lets an origin back in, and writing
+    // would erase the exclusions that could not be recovered.
+    if (this.healthState.status === 'damaged') throw new DroppedOriginRegistryDamagedError('remove', this.health());
     const before = this.doc.dropped.length;
     this.doc.dropped = this.doc.dropped.filter((d) => !(d.store === store && d.origin === origin));
     if (this.doc.dropped.length !== before) this.persist();
@@ -124,6 +298,21 @@ export class DroppedOriginRegistry {
   list(): DroppedOriginEntry[] {
     return [...this.doc.dropped];
   }
+}
+
+function defaultReportDegradation(detail: { reason: string; preservedAt: string | null; salvagedCount: number; path: string }): void {
+  DegradationReporter.getInstance().report({
+    feature: 'DroppedOriginRegistry',
+    primary: 'Read the list of machines whose replicated data is excluded (dropped or revoked origins)',
+    fallback: `Kept the ${detail.salvagedCount} exclusion(s) that could be recovered; adding or removing exclusions is refused so the damaged file is never overwritten`,
+    reason: `The excluded-machines file ${detail.path} is damaged (${detail.reason})`,
+    impact:
+      'Exclusions that could not be recovered are not applied until the file is repaired. ' +
+      (detail.preservedAt
+        ? `The damaged file is preserved at ${detail.preservedAt}. `
+        : 'No copy of the damaged file could be made; the original is left untouched. ') +
+      'Repair: restore a good copy of the file (or rewrite it from the recovered list plus any known drops), then restart the server.',
+  });
 }
 
 /** The seams RollbackUnmerge needs from the journal/applier (DI'd for testability). */
@@ -199,6 +388,8 @@ export class RollbackUnmerge {
   unmergeOrigin(store: string, origin: string): UnmergeResult {
     const at = this.seams.now().toISOString();
     // (1) Register the drop FIRST — the live union excludes the origin instantly.
+    //     A damaged registry applies the exclusion live but throws
+    //     DroppedOriginRegistryDamagedError (nothing written, nothing moved).
     this.registry.add(store, origin, at);
 
     const stamp = this.seams.now().getTime();
@@ -268,6 +459,7 @@ export class RollbackUnmerge {
   /** Re-merge (reversibility, §7.4): remove the drop + restore the MOST RECENT
    *  quarantined streams/meta for (store, origin). Returns the count restored. */
   reMerge(store: string, origin: string): { restored: number } {
+    // A damaged registry throws here, before any stream is restored.
     this.registry.remove(store, origin);
     const peers = this.seams.peersDir();
     if (!this.existsSync(peers)) return { restored: 0 };

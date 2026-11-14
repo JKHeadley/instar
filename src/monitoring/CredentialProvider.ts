@@ -8,18 +8,17 @@
  * Part of the Instar Quota Migration spec (Phase 1).
  */
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import {
   credentialWriteFunnel,
   type CredentialWriteFunnel,
   type FunnelResult,
 } from '../core/CredentialWriteFunnel.js';
-import { credentialSlotKey } from '../core/OAuthRefresher.js';
+import { credentialSlotKey, claudeKeychainAccount, readClaudeKeychainItem, readClaudeKeychainItemSync } from '../core/OAuthRefresher.js';
 
 // ── Interfaces ──────────────────────────────────────────────────────
 
@@ -81,14 +80,6 @@ export function redactEmail(email: string): string {
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
-/**
- * Promisified async exec for the NON-BLOCKING keychain read. The macOS keychain read is an
- * out-of-process `security` spawn; run SYNCHRONOUSLY (`execFileSync`) it blocks the event loop for
- * the whole spawn — under multi-agent `securityd` contention that was seconds every QuotaCollector
- * poll cycle (the dashboard-flap / false-sleep residual). `readCredentials` (the polled read on the
- * collection-cycle timer) uses this so the read yields the loop instead of freezing it.
- */
-const execFileAsync = promisify(execFile);
 
 export class KeychainCredentialProvider implements CredentialProvider {
   readonly platform = 'darwin';
@@ -96,7 +87,8 @@ export class KeychainCredentialProvider implements CredentialProvider {
   private keychainAccount: string;
 
   constructor() {
-    this.keychainAccount = os.userInfo().username;
+    // The same account attribute the Claude CLI reads and writes (see claudeKeychainAccount).
+    this.keychainAccount = claudeKeychainAccount();
   }
 
   async readCredentials(): Promise<ClaudeCredentials | null> {
@@ -105,11 +97,9 @@ export class KeychainCredentialProvider implements CredentialProvider {
       // the event loop instead of freezing it. `readCredentials` is already async (callers await it);
       // the prior `execFileSync` made the `async` a lie — it blocked the loop for the spawn duration
       // on the QuotaCollector poll timer. Same args + same 10s timeout + same null-on-error semantics.
-      const { stdout } = await execFileAsync(
-        'security',
-        ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
-        { encoding: 'utf-8', timeout: 10000 }
-      );
+      // The CLI's own item first: a service can also hold a stale item under another account.
+      const stdout = await readClaudeKeychainItem(KEYCHAIN_SERVICE, 10000);
+      if (!stdout) return null;
       // RULE 3: EXEMPT — this parses our OWN credential store (the `Claude Code-credentials`
       // keychain entry the agent itself owns, fixed `claudeAiOauth` schema), NOT an evolving
       // upstream UI/log we detect state from. It is fail-SAFE (any parse error → the `catch`
@@ -137,12 +127,8 @@ export class KeychainCredentialProvider implements CredentialProvider {
     // Read existing data to preserve non-credential fields
     let existingData: Record<string, unknown> = {};
     try {
-      const result = execFileSync(
-        'security',
-        ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
-        { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-      existingData = JSON.parse(result.trim());
+      const result = readClaudeKeychainItemSync(KEYCHAIN_SERVICE, 10000);
+      if (result) existingData = JSON.parse(result.trim());
     } catch {
       // @silent-fallback-ok — no existing Keychain entry; start fresh
     }

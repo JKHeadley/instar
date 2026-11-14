@@ -1,0 +1,11 @@
+# Improvement must have evidence you can see
+
+A job can keep running, and a dashboard can stay green, while the intended result gets worse. The constitutional change says an effort meant to improve must name its intended outcome and record a starting point. It must evaluate the outcome repeatedly and show a clear history of progress, regressions and uncertainty. Changing the test is not itself an improvement.
+
+This applies to the whole effort and its important components. A parent’s good result cannot quietly stand in for a component’s missing evidence. Coverage must be compared against an independently read inventory so a feature or process does not disappear simply because it never registered a measurement contract. An accountable review must read the evidence and act within its existing authority.
+
+The rule keeps the existing duty that every feature ships with metrics that make its effectiveness auditable and gradable. It also requires enough history to understand sample counts, freshness, gaps and changes of method. Real activity must reach the evaluation and the deployed visual, including a check that a person can understand the result at a glance. Missing evidence holds unsupported improvement claims or promotion while ordinary services continue.
+
+The same obligation is being written into the 1.x Observability article and 2.0 Rule 39. This amendment changes the governing wording and its audit record; it does not add a database, scheduler, runtime promotion gate or universal claim blocker. Runtime measurement implementation is delivered separately in [PR 2847](https://github.com/JKHeadley/instar/pull/2847) and [PR 2853](https://github.com/JKHeadley/instar/pull/2853). The stronger [baseline capture and promotion proposal](https://github.com/JKHeadley/instar/pull/2851) is unapproved and safety-review-paused. No implementation or operator approval is created by publishing this explanation.
+
+The existing Building-family review preserves its prior enforcement floor and explicitly records the new gaps. Independent wording review is not the operator’s final constitutional ratification. Both books still need their required final approval and checks before this amendment is called delivered.

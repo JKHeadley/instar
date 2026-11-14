@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "false-stopped-session-self-recovery",
+  "sessionId": "1c95b40b-9024-4c98-9fb9-4ee9e682e3bc",
+  "timestamp": "2026-11-05T01:23:39.913Z",
+  "artifactPath": "upgrades/side-effects/false-stopped-session-self-recovery.md",
+  "artifactSha256": "459f6635b2258aee8a44e5020ed6f78346f4e3d24a293050ba637bdc83bbdcde",
+  "specPath": "docs/specs/resume-follows-account.md",
+  "coveredFiles": [
+    "src/messaging/slack/SlackApiClient.ts",
+    "upgrades/side-effects/false-stopped-session-self-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Node 26 compatibility blocks the required live Slack proof and could prevent Slack startup on target; approved lifecycle spec and independent review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -78,6 +78,8 @@ Inbound voice messages are auto-transcribed via your configured voice provider. 
 
 ## API
 
+Sessions reply through `POST /telegram/reply/:topicId`:
+
 ```bash
 # List topic-session mappings
 curl localhost:4040/telegram/topics

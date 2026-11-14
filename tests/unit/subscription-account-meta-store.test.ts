@@ -151,6 +151,25 @@ describe('projectAccountToMeta — credential boundary (R2, the load-bearing sec
     expect(Object.keys(meta).sort()).toEqual(['email', 'framework', 'id', 'nickname', 'provider', 'quota', 'status']);
   });
 
+  it('keeps every machine-local device-limit field out of the projection (codex-device-limit-tripwire §10)', () => {
+    const benched = {
+      ...(fullAccount as unknown as Record<string, unknown>),
+      status: 'needs-reauth',
+      statusCause: 'codex-device-limit',
+      deviceLimitSince: '2026-10-31T20:06:00.000Z',
+      deviceLimitSuspectedAt: '2026-10-31T20:00:00.000Z',
+      deviceLimitNextReadAt: '2026-10-31T21:06:00.000Z',
+      deviceLimitRefusedReads: 3,
+      deviceLimitReadsStopped: true,
+    } as unknown as Parameters<typeof projectAccountToMeta>[0];
+    const meta = projectAccountToMeta(benched);
+    for (const field of ['statusCause', 'deviceLimitSince', 'deviceLimitSuspectedAt', 'deviceLimitNextReadAt',
+      'deviceLimitRefusedReads', 'deviceLimitReadsStopped']) {
+      expect(meta).not.toHaveProperty(field);
+    }
+    expect(meta.status).toBe('needs-reauth');
+  });
+
   it('the projection passes its OWN receive-side schema (round-trip safe)', () => {
     const meta = projectAccountToMeta(fullAccount);
     expect(validate(meta)).not.toBeNull();

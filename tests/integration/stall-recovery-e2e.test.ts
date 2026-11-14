@@ -178,7 +178,7 @@ describe('Stall Recovery E2E', () => {
   // ─── Scenario 1: Dead Session ──────────────────────────
 
   describe('dead session recovery', () => {
-    it('detects dead session, skips LLM, restarts, notifies user', async () => {
+    it('detects dead session, skips LLM, and restarts quietly', async () => {
       const env = createTestEnvironment({
         sessions: [{
           name: 'test-session',
@@ -211,10 +211,8 @@ describe('Stall Recovery E2E', () => {
       expect(result.diagnosis?.action).toBe('restart');
       expect(result.diagnosis?.confidence).toBe('high');
 
-      // User was notified
-      const userMessages = env.getMessagesForTopic(1);
-      expect(userMessages.length).toBeGreaterThanOrEqual(1);
-      expect(userMessages[0].text).toContain('missing');
+      // Recovery is automatic; this path must not announce a stopped session.
+      expect(env.getMessagesForTopic(1)).toHaveLength(0);
 
       // Session was respawned
       expect(env.respawnCalls).toHaveLength(1);
@@ -400,10 +398,9 @@ describe('Stall Recovery E2E', () => {
       expect(result.actionsTaken).toContain('nudge');
       expect(result.actionsTaken).toContain('restart');
 
-      // User received a failure message with recovery instructions
-      const userMessages = env.getMessagesForTopic(5);
-      const failureMsg = userMessages.find(m => m.text.includes('wasn\'t able to recover'));
-      expect(failureMsg).toBeDefined();
+      // Earlier intervention updates can exist, but triage must not issue
+      // the final recovery-failure notice owned by SessionMonitor.
+      expect(env.getMessagesForTopic(5).some(m => m.text.includes("wasn't able to recover"))).toBe(false);
     });
   });
 

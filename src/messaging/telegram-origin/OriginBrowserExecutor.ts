@@ -1,3 +1,4 @@
+import { notificationContext } from '../NotificationSelectivityGate.js';
 import { sealOriginAdmission } from './OriginAdmissionSeal.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { assertOutgoingPayloadVisible } from '../invisible-payload.js';
@@ -16,6 +17,8 @@ import type { OriginDestination, TelegramOriginRecord } from './types.js';
 import { materializeBrowserSignature } from './OriginBrowserRenewal.js';
 import { nextOriginKnownFailure } from './OriginRetry.js';
 
+export const CLAIM_LEASE_MS = 60_000;
+export const CLAIM_RENEW_MS = 20_000;
 type SealedBrowserRequest = Omit<PreparedBrowserChild, 'childId' | 'originId' | 'claimFence'> & {
   policy?: import('./OriginSendPolicy.js').OriginSendPolicyInput;
 };
@@ -34,6 +37,9 @@ export interface OriginBrowserExecutorOptions extends Omit<TelegramBrowserBroker
   /** Owning agent's ASP key capability. This is not a general sign-as endpoint. */
   signBody: (body: string, topicId: number, timestamp: number) => string;
   authorize: (destination: OriginDestination) => boolean | Promise<boolean>;
+  /** Claim lease and renewal cadence while a child waits for the broker (tests shorten these). */
+  claimLeaseMs?: number;
+  claimRenewMs?: number;
 }
 
 /** The typed browser path uses the SAME credential-owner outbox as Bot API.
@@ -41,12 +47,22 @@ export interface OriginBrowserExecutorOptions extends Omit<TelegramBrowserBroker
  */
 export class OriginBrowserExecutor {
   readonly broker: TelegramBrowserBroker;
-  private readonly claims = new Map<string, { claim: ClaimedChild; request: SealedBrowserRequest; destination: OriginDestination; record: TelegramOriginRecord }>();
+  private readonly claims = new Map<string, { claim: ClaimedChild; request: SealedBrowserRequest; destination: OriginDestination; record: TelegramOriginRecord; renewalLost?: boolean; renewing?: Promise<void> }>();
+  /** Reply sends in flight (peer resolution, admission, claim, between chunks). The
+   * test-group busy rule reads this so admin work is never admitted ahead of a reply. */
+  private inFlight = 0;
+  get busy(): boolean { return this.inFlight > 0; }
   constructor(readonly options: OriginBrowserExecutorOptions) {
     this.broker = new TelegramBrowserBroker({ ...options,
       authorizePreparedChild: async child => {
         const active = this.claims.get(child.childId);
-        if (!active || active.claim.claimToken !== child.claimFence || active.claim.originId !== child.originId) return false;
+        // A claim whose renewal failed is never dispatched (telegram-test-groups §6); a
+        // renewal still in flight is settled first so its verdict is the one checked.
+        // A hung renewal holds this wait; the broker's dispatch deadline then settles the
+        // reply known-failed (nothing sent), and a late markDispatched is refused because
+        // the outcome is already recorded. Nothing can be dispatched twice.
+        if (active?.renewing) await active.renewing;
+        if (!active || active.renewalLost || active.claim.claimToken !== child.claimFence || active.claim.originId !== child.originId) return false;
         const { childId: _child, originId: _origin, claimFence: _fence, ...request } = child;
         if (canonicalOrigin(request) !== canonicalOrigin(active.request) ||
           !await options.authorize(active.destination)) return false;
@@ -111,7 +127,7 @@ export class OriginBrowserExecutor {
     });
     children[0].request.policy = service.currentSendPolicyInput(original.text);
     children[0].requestDigest = wireDigest(canonicalOrigin(children[0].request));
-    const unsigned = { ...producer, schemaVersion: 'instar-telegram-origin-v1' as const,
+    const unsigned = { ...producer, notification: service.notificationForCurrentProducer(), schemaVersion: 'instar-telegram-origin-v1' as const,
       executionOwnerMachineId: service.options.identity.originMachineId,
       originId, operationId, deliveryId: operationId, createdAt: now, operationKind: method,
       destination, contentDigest, planDigest: originDigest(children), display };
@@ -130,12 +146,31 @@ export class OriginBrowserExecutor {
     return operation;
   }
   async send(input: OriginBrowserInput): Promise<{ originId: string; receipts: BrowserReceipt[] }> {
-    const operation = this.prepare(input);
+    this.inFlight++;
+    try { return await this.sendInner(input); } finally { this.inFlight--; }
+  }
+  private async sendInner(input: OriginBrowserInput): Promise<{ originId: string; receipts: BrowserReceipt[] }> {
+    const notification = this.options.service.notificationForCurrentProducer();
+    const target = input.messageId === undefined ? this.options.service.notificationGate?.destination?.(notification) : null;
+    let operation: OriginPreparedBotOperation;
+    if (target) {
+      const destination: BrowserDestination = target.chatId.startsWith('-100') ? { kind: 'channel', id: target.chatId.slice(4), topicId: target.topicId }
+        : target.chatId.startsWith('-') ? { kind: 'chat', id: target.chatId.slice(1), topicId: target.topicId }
+        : { kind: 'user', id: target.chatId, topicId: target.topicId };
+      const peer = await this.broker.resolvePeer(destination);
+      const originalChat = input.destination.kind === 'channel' ? '-100' + input.destination.id : input.destination.kind === 'chat' ? '-' + input.destination.id : input.destination.id;
+      const contextTopicId = this.options.service.notificationTopicId(originalChat, input.destination.topicId === undefined ? null : String(input.destination.topicId));
+      operation = notificationContext.run({ ...notification, contextTopicId }, () => this.prepare({ ...input, destination, peer }));
+    } else operation = this.prepare(input);
     await this.options.service.bindRevision(operation);
     await this.options.service.admit(operation);
     return this.execute(operation);
   }
   async execute(input: OriginPreparedBotOperation): Promise<{ originId: string; receipts: BrowserReceipt[] }> {
+    this.inFlight++;
+    try { return await this.executeInner(input); } finally { this.inFlight--; }
+  }
+  private async executeInner(input: OriginPreparedBotOperation): Promise<{ originId: string; receipts: BrowserReceipt[] }> {
     const operation = structuredClone(input), store = this.options.store();
     if (operation.record.executionOwnerMachineId !== this.options.service.options.identity.originMachineId) {
       throw new TelegramOriginHoldError('execution-owner-mismatch', operation.record.operationId);
@@ -148,6 +183,7 @@ export class OriginBrowserExecutor {
       stored.operation?.operationId !== operation.record.operationId || operation.record.destination.accountId !== this.options.accountId) {
       throw new TelegramOriginHoldError('sealed-browser-plan-mismatch', operation.record.operationId);
     }
+    await this.options.service.classifyPreparedNotification(operation, stored);
     if (stored.children.some(child => child.state !== 'accepted')) await this.options.service.reviewPreparedSendPolicy(operation);
     const receipts: BrowserReceipt[] = [];
     let platformAccepted = stored.children.some(child => child.state === 'accepted');
@@ -168,7 +204,7 @@ export class OriginBrowserExecutor {
         await this.options.service.authorizeOriginDispatch(operation.record);
         this.options.service.authorizeSendPolicyDispatch(operation.record);
         const claim = await store.claim({ childId: child.childId, materializationId: materialization.materializationId,
-          ownerBootId: this.options.service.options.ownerBootId, leaseMs: 60_000 });
+          ownerBootId: this.options.service.options.ownerBootId, leaseMs: this.options.claimLeaseMs ?? CLAIM_LEASE_MS });
         if (claim.status !== 'claimed') throw new TelegramOriginHoldError(`outbox-${claim.reason}`, operation.record.operationId);
         if (claim.child.materialization.requestJson !== materialization.requestJson) throw new TelegramOriginHoldError('sealed-browser-request-mismatch', operation.record.operationId);
         // Reserve only under the exclusive claim: a contender that lost the
@@ -176,7 +212,25 @@ export class OriginBrowserExecutor {
         await this.options.service.reservePreparedContent(operation, claim.child.claimToken,
           () => store.releaseUndispatchedClaim({ ...claim.child, detail: 'content-reservation-held' }));
         reservedBy = claim.child.claimToken;
-        this.claims.set(child.childId, { claim: claim.child, request, destination: operation.record.destination, record: operation.record });
+        const entry: { claim: ClaimedChild; request: SealedBrowserRequest; destination: OriginDestination; record: TelegramOriginRecord; renewalLost?: boolean; renewing?: Promise<void> } =
+          { claim: claim.child, request, destination: operation.record.destination, record: operation.record };
+        this.claims.set(child.childId, entry);
+        // Keep the claim alive while it waits in the broker queue and through dispatch and
+        // invoke, until the broker call settles. Without this a long queued operation could
+        // expire the lease and the reaper would record a never-sent reply as delivered-ambiguous.
+        // A definitive refusal (false) loses the claim at once. A transient store error is
+        // tolerated while the last good renewal still leaves a full renewal interval of
+        // lease; past that the claim is treated as lost and the reply is never dispatched.
+        const leaseMs = this.options.claimLeaseMs ?? CLAIM_LEASE_MS, renewMs = this.options.claimRenewMs ?? CLAIM_RENEW_MS;
+        let lastRenewedAt = Date.now();
+        const renewal = setInterval(() => {
+          if (entry.renewalLost || entry.renewing) return;
+          entry.renewing = store.renewClaim({ childId: claim.child.childId, claimToken: claim.child.claimToken, leaseMs })
+            .then(ok => { if (ok) lastRenewedAt = Date.now(); else { entry.renewalLost = true; clearInterval(renewal); } },
+              () => { if (Date.now() - lastRenewedAt > leaseMs - renewMs) { entry.renewalLost = true; clearInterval(renewal); } })
+            .finally(() => { entry.renewing = undefined; });
+        }, renewMs);
+        renewal.unref?.();
         try {
           const outcome = await this.broker.executePreparedChild({ ...request, childId: child.childId,
             originId: operation.record.originId, claimFence: claim.child.claimToken });
@@ -204,7 +258,7 @@ export class OriginBrowserExecutor {
             throw new TelegramOriginHoldError(outcome.reason, operation.record.operationId, outcome.state);
           }
           receipts.push(outcome.receipt);
-        } finally { this.claims.delete(child.childId); }
+        } finally { clearInterval(renewal); this.claims.delete(child.childId); }
       }
     } catch (error) {
       if (acceptedAll) await this.options.service.completePreparedContent(operation);
@@ -212,6 +266,7 @@ export class OriginBrowserExecutor {
       throw error;
     }
     await this.options.service.completePreparedContent(operation);
+    this.options.service.completeNotification(operation.record);
     return { originId: operation.record.originId, receipts };
   }
   close(): Promise<void> { return this.broker.close(); }

@@ -130,6 +130,13 @@ describe('telegram egress boundary — the single door', () => {
       expect(f).not.toHaveBeenCalled();
     });
 
+    it('lets the member reads through: getChatMemberCount and getChatAdministrators carry only chat_id (the one-reader rule and the memory-privacy reader count depend on them)', async () => {
+      const f = arm();
+      await telegramFetch(api('getChatMemberCount'), post({ chat_id: -100 }));
+      await telegramFetch(api('getChatAdministrators'), post({ chat_id: -100 }));
+      expect(f, 'both reads are classified no-reader-visible-field').toHaveBeenCalledTimes(2);
+    });
+
     it('REFUSES an unclassified method instead of silently passing it', async () => {
       // The field map returns undefined for an unknown method and the visibility check returns
       // silently — which is right for a method KNOWN to carry no reader-visible field and wrong for

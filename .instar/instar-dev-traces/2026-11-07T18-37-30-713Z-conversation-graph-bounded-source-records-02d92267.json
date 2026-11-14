@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-bounded-source-records",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T18:37:30.713Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-bounded-source-records.md",
+  "artifactSha256": "14a624e9d2a8f5a576ece9421e7b8363811b870dc324a573a1c5c08b2b1ce066",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/ConversationGraphSourceInventory.ts",
+    "src/core/ConversationGraphSourceSweep.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "src/server/ConversationGraphSourceInventoryRuntime.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/integration/conversation-graph-source-inventory.test.ts",
+    "tests/unit/graph-source-row-unchanged.test.ts",
+    "upgrades/side-effects/conversation-graph-bounded-source-records.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

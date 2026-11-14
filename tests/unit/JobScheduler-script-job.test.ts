@@ -23,7 +23,16 @@ function config(jobsFile: string): JobSchedulerConfig {
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void> {
+/**
+ * True once the script's marker file holds `expected`. Waiting only for the file to EXIST
+ * races the shell: `> file` creates it empty before the command writes, and on a loaded
+ * machine a read lands in that gap (Local Verify, 2026-11-13: expected '' to be 'token=...').
+ */
+function markerHolds(file: string, expected: string): boolean {
+  try { return fs.readFileSync(file, 'utf-8').trim() === expected; } catch { return false; }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (predicate()) return;
@@ -69,7 +78,7 @@ describe('JobScheduler — script jobs run directly (no model session)', () => {
     expect(mockSM._spawnCount).toBe(0);
 
     // It actually executed directly in a subprocess.
-    await waitFor(() => fs.existsSync(markerPath));
+    await waitFor(() => markerHolds(markerPath, 'ran'));
     expect(fs.readFileSync(markerPath, 'utf-8').trim()).toBe('ran');
 
     // And run-history / job-state is recorded as success (not left pending).
@@ -138,7 +147,7 @@ describe('JobScheduler — script jobs run directly (no model session)', () => {
 
     const result = await scheduler.triggerJob('script-auth-env', 'test');
     expect(result).toBe('triggered');
-    await waitFor(() => fs.existsSync(markerPath));
+    await waitFor(() => markerHolds(markerPath, 'token=script-token agent=script-agent'));
     expect(fs.readFileSync(markerPath, 'utf-8')).toBe('token=script-token agent=script-agent');
   });
 

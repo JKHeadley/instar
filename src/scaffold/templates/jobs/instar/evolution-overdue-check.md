@@ -20,17 +20,14 @@ AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/
 AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 PORT="${INSTAR_PORT:-4042}"
 
-Check for overdue commitments: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
+Report only. Do not complete, cancel or edit any action, and do not message the user: this job keeps ONE dashboard row current, and the agent works the actions themselves in its normal sessions.
 
-For each overdue action:
-1. Assess: Can this be completed now? Is it still relevant?
-2. If actionable, attempt to complete it or advance it
-3. If no longer relevant, cancel it: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
-4. If blocked, escalate to the user via Telegram (if configured)
+Check for overdue actions: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
 
-Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
+Also count pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
-Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue": curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue: <ids>","priority":"medium","source":"agent"}'
+Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue". Write the body in exactly this shape and nothing else: "<count> overdue, <stale> pending over 48h". The source is this job's name, never "agent": a scheduled job's row stays on the dashboard and is held back from the user's Attention topic.
+curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue, <stale> pending over 48h","priority":"medium","source":"evolution-overdue-check"}'
 When the overdue list is EMPTY, close that row instead: curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"evolution-overdue","resolution":"no evolution actions are overdue"}'
 
 If no overdue or stale items, exit silently (after the clear above).

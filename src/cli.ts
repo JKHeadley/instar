@@ -343,6 +343,15 @@ program
 // ── Setup (explicit alias) ────────────────────────────────────────
 
 program
+  .command('set-claude-key')
+  .description('Put a new Claude sign-in key in place. Reads it from stdin or a hidden prompt.')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { setClaudeKey } = await import('./commands/setClaudeKey.js');
+    await setClaudeKey(opts);
+  });
+
+program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
   .option('--non-interactive', 'Run setup without LLM wizard (requires all flags)')
@@ -392,11 +401,34 @@ program
 // ── Init ─────────────────────────────────────────────────────────
 
 program
+  .command('install')
+  .description('Install Instar and create your first agent: the path that needs the fewest choices')
+  .option('--resume', 'Continue an install that stopped or is waiting on you')
+  .option('--yes', 'Agree to what the installer lists, without asking')
+  .option('--answers <file>', 'A JSON file with name, purpose, door and autostart, for AI tools')
+  .option('--status', 'Print the install status as JSON')
+  .option('--restart', 'Begin again instead of continuing an unfinished install')
+  .action(async (opts) => {
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    if (major < 20 || (major === 20 && minor < 12)) {
+      console.error(`\n  Instar needs Node.js 20.12 or later, and you're running ${process.versions.node}.`);
+      console.error(`  Upgrade: https://nodejs.org/en/download\n`);
+      process.exit(1);
+    }
+    const { runInstallCommand, INSTALL_EXIT_CODES } = await import('./commands/install.js');
+    const status = await runInstallCommand(opts);
+    process.exit(INSTALL_EXIT_CODES[status]);
+  });
+
+program
   .command('init [project-name]')
   .description('Initialize agent infrastructure (fresh project, existing, or standalone)')
   .option('-d, --dir <path>', 'Project directory (default: current directory)')
   .option('--port <port>', 'Server port (default: 4040)', (v: string) => parseInt(v, 10))
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
+  .option('--autostart', 'Allow the agent to install its own start-on-login job even though init runs without a terminal')
+  .option('--expires-in <duration>', 'Make this a throwaway agent that tears itself down after a duration (e.g. 30m, 6h, 2d)')
+  .option('--keep', 'Never expire this agent, even if it lives in a temporary folder')
   .option(
     '--framework <name>',
     `AI runtime to target: ${SUPPORTED_FRAMEWORKS.join(', ')}, or both (claude-code default)`,
@@ -522,6 +554,35 @@ addCmd
   .description('Add Claude API quota tracking')
   .option('--state-file <path>', 'Path to quota state file (default: .instar/state/quota.json)')
   .action((opts) => addQuota(opts));
+
+// ── Mobile: owner introducers (docs/specs/mobile-pairing-introducer.md) ──
+
+const mobileCmd = program
+  .command('mobile')
+  .description('Phone pairing settings for the Instar app');
+const introducerCmd = mobileCmd
+  .command('introducer')
+  .description('Agents whose owner phones may add this agent with Face ID');
+introducerCmd.command('show')
+  .description("Print this agent's own introducer entry, to add to an agent it creates")
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .option('--json', 'Print the entry as JSON')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.showIntroducer(opts); });
+introducerCmd.command('add')
+  .description("Trust an introducer's owner phones on this agent (restart to apply)")
+  .requiredOption('--name <name>', 'The introducing agent\'s name')
+  .requiredOption('--key <publicKey>', 'Its introducer key (from `instar mobile introducer show` on it)')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.addIntroducer(opts); });
+introducerCmd.command('remove')
+  .description('Stop trusting an introducer (restart to apply)')
+  .requiredOption('--key <publicKey>', 'The introducer key to remove')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.removeIntroducer(opts); });
+introducerCmd.command('list')
+  .description('List the introducers this agent trusts')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.listIntroducers(opts); });
 
 // ── Remove ──────────────────────────────────────────────────────
 
@@ -1958,14 +2019,20 @@ autostartCmd
   .command('install')
   .description('Install auto-start so your agent starts on login')
   .option('-d, --dir <path>', 'Project directory')
+  .option('--force', 'Install even for a throwaway agent (temporary folder, sandboxed HOME, or expired)')
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
     const { installAutoStart, takeLastLingerOutcome, describeLingerOutcome, currentSystemdUser } =
       await import('./commands/setup.js');
+    const { markAutoStartExplicit, takeLastAutoStartRefusal } = await import('./core/ThrowawayAgentGuard.js');
     const config = loadConfig(opts.dir);
     const hasTelegram = config.messaging?.some((m: { type: string }) => m.type === 'telegram') ?? false;
-    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram, { force: opts.force === true });
+    const refusal = takeLastAutoStartRefusal();
     if (installed) {
+      // The explicit request: the startup self-heals may maintain it from now on.
+      markAutoStartExplicit(config.projectDir, { forced: opts.force === true });
+      if (opts.force === true) console.log(pc.yellow('Auto-start installed with --force (throwaway safeguards bypassed for this install).'));
       console.log(pc.green(`Auto-start installed for "${config.projectName}".`));
       // On Linux, "installed" and "starts at boot" are different facts: an
       // enabled user service only runs while that user holds a login session
@@ -1979,6 +2046,8 @@ autostartCmd
       } else {
         console.log(pc.dim('Your agent will start automatically when you log in.'));
       }
+    } else if (refusal) {
+      console.log(pc.yellow(`Auto-start not installed: ${refusal}`));
     } else {
       console.log(pc.red('Failed to install auto-start.'));
       console.log(pc.dim(`Platform: ${process.platform} — auto-start supports macOS and Linux.`));
@@ -2059,6 +2128,8 @@ const migrateCmd = program
         port: config.port,
         hasTelegram,
         projectName: config.projectName,
+        claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+        host: config.host,
       });
       const result = await migrator.migrateAsync();
 

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-07T06:06:33.365Z",
+  "slug": "slack-refused-restart",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SlackRefusedHold.ts",
+      "src/core/SlackReplyRelayInstaller.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "unchanged: slack-refused-hold-retry stays registered with its 6-try schedule"
+    }
+  },
+  "verdict": "pass"
+}

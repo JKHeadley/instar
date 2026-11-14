@@ -1,5 +1,25 @@
 # Test-Runner Concurrency Bound — plain-English overview
 
+## October 2026: the merge line gets the next slot
+
+The one-at-a-time rule exposed a new bottleneck: while Local Verify had a long
+queue, other sessions ran full suites back to back, and the merge line started
+no tests for nearly three hours. A runnable verifier now reserves the next
+suite slot while it waits for the current suite to finish. It keeps that
+reservation while its child installs and builds. This stops other full suites
+from jumping in during setup. When the child is ready to run tests, it reserves the next
+slot again and waits for the current holder. If another merge check is already
+waiting on a one-slot machine, the server keeps the reservation for that next
+check until it can start. This closes a gap where a regular full suite could
+slip between two checks. The server can have a two-suite setting that its test
+process does not inherit; it keeps the reservation in that case too. When both
+processes can run two suites, it frees the other slot. Small targeted tests use their
+own lane throughout. Each reservation expires within two minutes if its owner
+stalls. On a sustained merge backlog, ordinary full suites can still wait up
+to their existing 45-minute limit; the status API explains whether merge
+priority is active. Older work branches must update before their test runners
+honor the new reservation.
+
 ## The problem in one paragraph
 
 When our test suite runs, it doesn't run as one process — it spins up a worker for roughly every CPU core on the machine. That's fine when one test suite runs at a time. But on a development machine where several AI agent sessions each build and test their own changes, nothing stops many suites from starting at once. On 2026-07-02, twenty-nine test suites ran simultaneously on one machine: roughly 300 worker processes fought for 16 cores, the agent servers sharing the machine froze, and the health watchdogs — misreading the freeze as sickness — killed healthy servers. The safety system became the outage.
@@ -24,6 +44,10 @@ A test suite that hangs forever would jam the lane forever, so after a generous 
 ## What could still hurt, honestly
 
 Full suites serialize: on a busy multi-agent machine, someone's push waits for someone else's suite. That's the deliberate price of the operator's rule, and the log makes the cost measurable so the cap can be raised with evidence. And because the system deliberately errs toward letting runs through when its own bookkeeping is broken, it's honestly a *best-effort* bound — in a rare stuck-lock situation a few extra runs can slip through for a short window (the safe direction), and those windows are logged and visible rather than silent. Even that failure mode has a hard floor, though: if a broken lock ever let runs pile up toward storm levels, a separate counter that doesn't depend on the lock stops admitting more — "let it through when unsure" flips off at exactly the point where letting more through would BE the meltdown. Older work branches that predate the change don't carry the ticket-taking code until they rebase — the bound covers the machine progressively, not instantly. And the whole thing is per-machine, per-user by design (a test run burns THIS machine's cores; there's nothing to coordinate across machines).
+
+## Taking turns fairly (added 2026-10-28)
+
+When several full suites wait for the one slot, they now take turns. Each waiting run holds a small ticket that it keeps refreshing. When the slot frees, an ordinary run that has waited 15 minutes goes first, then merge-verification work, then everyone else in arrival order. Before this, a long merge-verification queue could keep a live check waiting for close to an hour. The one-at-a-time limit is unchanged, and a broken or missing ticket just falls back to the old first-come behavior. The plain-English detail is in `test-runner-fair-suite-waiters.eli16.md`.
 
 ## Escape hatches
 

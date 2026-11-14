@@ -46,4 +46,55 @@ describe('installed Telegram origin tool guard', () => {
     expect(run('apply_patch', { patch: 'fetch("https://api.telegram.org/bot123:fixture/sendMessage")' }).status).toBe(0);
     expect(run('Bash', { command: 'rg sendMessage src/messaging' }).status).toBe(0);
   });
+  describe('managed profile matching is per path component (fb-bd431d9f-0a7)', () => {
+    let profiles: string, managedDir: string, roomDir: string;
+    beforeEach(() => {
+      profiles = path.join(root, 'playwright-profiles');
+      managedDir = path.join(profiles, 'justin-telegram'); roomDir = path.join(profiles, 'justin-telegram-room4');
+      fs.mkdirSync(managedDir, { recursive: true }); fs.mkdirSync(roomDir, { recursive: true });
+      fs.writeFileSync(path.join(root, '.instar/state/playwright-profiles.json'), JSON.stringify({ profiles: [
+        { executionOwner: 'telegram-origin-broker', userDataDir: managedDir },
+        { userDataDir: roomDir },
+      ] }));
+    });
+    it('still refuses a command naming the broker-owned profile', () => {
+      const result = run('Bash', { command: `chromium --user-data-dir=${managedDir}` });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('managed-telegram-profile-private');
+      expect(run('mcp__playwright__browser_navigate', { userDataDir: managedDir, url: 'about:blank' }).status).toBe(2);
+    });
+    it('allows a proof-room profile whose name only starts with the managed name', () => {
+      expect(run('Bash', { command: `chromium --user-data-dir=${roomDir}` }).status).toBe(0);
+      expect(run('Bash', { command: `chromium --user-data-dir="${roomDir}" about:blank` }).status).toBe(0);
+      expect(run('mcp__playwright__browser_navigate', { userDataDir: roomDir, url: 'about:blank' }).status).toBe(0);
+      expect(run('Bash', { command: `chromium --user-data-dir=${managedDir}.bak` }).status).toBe(0);
+    });
+    it.each([
+      ['a trailing separator', (d: string) => `chromium --user-data-dir=${d}/`],
+      ['a nested file', (d: string) => `chromium --user-data-dir=${d}/Default/Cookies`],
+      ['double quotes', (d: string) => `chromium --user-data-dir="${d}"`],
+      ['single quotes', (d: string) => `chromium --user-data-dir='${d}' about:blank`],
+      ['whitespace', (d: string) => `chromium --user-data-dir ${d} about:blank`],
+      ['a shell separator', (d: string) => `chromium --user-data-dir=${d};echo done`],
+    ])('still refuses the managed profile followed by %s', (_label, build) => {
+      expect(run('Bash', { command: build(managedDir) }).status).toBe(2);
+    });
+    it('still refuses the managed profile reached through a ".." step', () => {
+      expect(run('Bash', { command: `chromium --user-data-dir=${roomDir}/../justin-telegram` }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${profiles}/other/../justin-telegram/` }).status).toBe(2);
+      expect(run('mcp__playwright__browser_navigate', { userDataDir: `${roomDir}/../justin-telegram`, url: 'about:blank' }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${roomDir}/.././justin-telegram` }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${roomDir}/..//justin-telegram` }).status).toBe(2);
+      expect(run('mcp__playwright__browser_navigate', { userDataDir: `${roomDir}/.././justin-telegram`, url: 'about:blank' }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${profiles}//justin-telegram` }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${profiles}/./justin-telegram` }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${roomDir}/../justin-telegram-room1` }).status).toBe(0);
+      expect(run('Bash', { command: `chromium --user-data-dir=${roomDir}/.//justin-telegram-room1` }).status).toBe(0);
+    });
+    it('compares against the real path of the managed profile', () => {
+      const real = fs.realpathSync(managedDir);
+      expect(run('Bash', { command: `chromium --user-data-dir=${real}` }).status).toBe(2);
+      expect(run('Bash', { command: `chromium --user-data-dir=${fs.realpathSync(roomDir)}` }).status).toBe(0);
+    });
+  });
 });

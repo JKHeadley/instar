@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-02T22:59:36.619Z",
+  "slug": "install-core",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 1301,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/init.ts",
+      "src/commands/install.ts",
+      "src/commands/install/doors.ts",
+      "src/commands/install/engine.ts",
+      "src/commands/install/progress.ts",
+      "src/commands/setup-wizard/codex-driver.ts",
+      "src/commands/setup-wizard/gemini-driver.ts",
+      "src/commands/setup-wizard/state-machine.ts",
+      "src/core/Config.ts",
+      "src/core/QuotaPoller.ts"
+    ],
+    "addedLines": 1299,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven installer, not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

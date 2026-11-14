@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "test-agent-leak-guard",
+  "sessionId": "151db862-f0e5-4985-9614-540e5687e3fe",
+  "timestamp": "2026-10-27T04:30:57.894Z",
+  "artifactPath": "upgrades/side-effects/test-agent-leak-guard.md",
+  "artifactSha256": "be752046f4267194c82ad77bb3ae212bcaf21564487d3ed956e37d26cc442681",
+  "specPath": "docs/specs/test-agent-leak-guard.md",
+  "coveredFiles": [
+    "src/core/ThrowawayAgentGuard.ts",
+    "upgrades/side-effects/test-agent-leak-guard.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "Guard changes agent startup, auto-start registration, and owner-only configuration writes.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -45,6 +45,14 @@ const FRESHNESS_MAX_BYTES = 16 * 1024 * 1024;
 /** Forward scan bound for the first `cwd`-bearing record (measured at lines 2-6, under 3 KB). */
 const HEAD_MAX_BYTES = 64 * 1024;
 
+/**
+ * A value safe to pass as a session id: it reaches a command line and a file path, and a hook can
+ * report it. Never a flag (no leading dash), never a path (no slash or dot).
+ */
+export function isSafeSessionRef(id: unknown): id is string {
+  return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id);
+}
+
 export function isCanonicalUuid(uuid: string): boolean {
   return UUID_RE.test(uuid);
 }

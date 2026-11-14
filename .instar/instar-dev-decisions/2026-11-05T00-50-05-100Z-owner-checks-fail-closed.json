@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-05T00:50:05.100Z",
+  "slug": "owner-checks-fail-closed",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/memorySessionPolicy.ts"
+    ],
+    "addedLines": 24,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

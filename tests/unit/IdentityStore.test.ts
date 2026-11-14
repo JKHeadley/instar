@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IdentityStore, IdentityStoreRefusal } from '../../src/core/IdentityStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { MachineIdentity } from '../../src/core/types.js';
@@ -39,6 +39,15 @@ describe('IdentityStore', () => {
 
   afterEach(() => {
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/IdentityStore.test.ts' });
+  });
+
+  it('reads exact historical revocations in bounded reverse chunks across malformed and oversized audit rows', () => {
+    store.apply({identity:identity(),scope:'remote',actor:'pairing-trust',path:'pair'});store.revokeDurably('m_peer','m_local','explicit test revocation');const original=store.readChanges().findLast(row=>row.path==='revocation')!,ledger=path.join(root,'logs','identity-changes.jsonl');
+    fs.appendFileSync(ledger,'not-valid-json\n'+'x'.repeat(300*1024)+'\n');const reads=vi.spyOn(fs,'readSync'),whole=vi.spyOn(fs,'readFileSync');
+    try{expect(store.findRevocationEvidence('m_peer',original.keyEpoch,original.newSigningFingerprint)).toEqual(original);expect(reads.mock.calls.length).toBeGreaterThan(1);expect(reads.mock.calls.every(call=>typeof call[3]==='number'&&call[3]<=64*1024)).toBe(true);expect(whole).not.toHaveBeenCalled();expect(store.findRevocationEvidence('missing-peer',original.keyEpoch,original.newSigningFingerprint)).toBeNull();}finally{reads.mockRestore();whole.mockRestore();}
+  });
+  it('refuses a hardlinked Native revocation ledger rather than treating an alias as original evidence', () => {
+    store.apply({identity:identity(),scope:'remote',actor:'pairing-trust',path:'pair'});store.revokeDurably('m_peer','m_local','explicit test revocation');const original=store.readChanges().findLast(row=>row.path==='revocation')!,ledger=path.join(root,'logs','identity-changes.jsonl'),alias=path.join(root,'audit-alias.jsonl');fs.linkSync(ledger,alias);try{expect(()=>store.findRevocationEvidence('m_peer',original.keyEpoch,original.newSigningFingerprint)).toThrow('identity-revocation-ledger-invalid');}finally{SafeFsExecutor.safeUnlinkSync(alias,{operation:'identity-revocation-test:hardlink-alias'});}
   });
 
   it('establishes a first-hand recovery anchor only through pairing trust', () => {
@@ -168,6 +177,39 @@ describe('IdentityStore', () => {
     const registry = JSON.parse(fs.readFileSync(path.join(stateDir, 'machines', 'registry.json'), 'utf8'));
     expect(registry.machines.m_peer).toMatchObject({ status: 'active' });
     expect(registry.machines.m_peer.revokedAt).toBeUndefined();
+  });
+
+  it.each(['after-journal', 'after-epoch', 'after-registry', 'after-ledger'] as const)(
+    'durably recovers the original native revocation transaction at %s', (faultStep) => {
+      store.apply({ identity: identity(), scope: 'remote', actor: 'pairing-trust', path: 'pair' });
+      const crashing = new IdentityStore({stateDir, faultInjector: step => { if (step === faultStep) throw new Error('durable-native-crash'); }});
+      expect(() => crashing.revokeDurably('m_peer', 'm_local', 'explicit durable native action')).toThrow('durable-native-crash');
+      const original = JSON.parse(fs.readFileSync(store.transactionPath, 'utf8'));
+      expect(original.durable).toBe(true);
+      const recovered = new IdentityStore({stateDir});
+      expect(recovered.getEpoch('m_peer').revokedAt).toBeTruthy();
+      expect(recovered.readChanges().filter(row => row.transactionId === original.id)).toHaveLength(1);
+      expect(fs.existsSync(store.transactionPath)).toBe(false);
+    },
+  );
+
+  it('keeps the journal and active principal when the first durable journal barrier fails', () => {
+    store.apply({identity: identity(), scope: 'remote', actor: 'pairing-trust', path: 'pair'});
+    const original = fs.fsyncSync;
+    const fault = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+      if (fs.fstatSync(fd).isFile()) throw new Error('native-journal-barrier');
+      return original(fd);
+    });
+    try {
+      expect(() => store.revokeDurably('m_peer', 'm_local', 'explicit action')).toThrow('native-journal-barrier');
+      expect(store.getEpoch('m_peer').revokedAt).toBeUndefined();
+      expect(fs.existsSync(store.transactionPath)).toBe(true);
+      expect(() => new IdentityStore({stateDir})).toThrow('Pending identity transaction');
+      expect(store.getEpoch('m_peer').revokedAt).toBeUndefined();
+    } finally { fault.mockRestore(); }
+    const recovered = new IdentityStore({stateDir});
+    expect(recovered.getEpoch('m_peer').revokedAt).toBeTruthy();
+    expect(recovered.readChanges().filter(row => row.path === 'revocation')).toHaveLength(1);
   });
 
   it.each(['after-journal', 'after-epoch', 'after-registry', 'after-ledger'] as const)(

@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "cb-row-writer",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T20:15:19.883Z",
+  "artifactPath": "upgrades/side-effects/cb-row-writer.md",
+  "artifactSha256": "76cf82bcde4393fb34a7badacd13739b663b0686537c991246a174b9b657a4da",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationStore.ts",
+    "src/memory/TopicMemory.ts",
+    "src/memory/topicRowWriter.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/MessageLogger.ts",
+    "src/monitoring/foldCoordinatorBoot.ts",
+    "src/threadline/TelegramBridge.ts",
+    "tests/e2e/topic-row-writer-lifecycle.test.ts",
+    "tests/integration/topic-row-writer-channels.test.ts",
+    "tests/unit/topic-row-writer.test.ts",
+    "upgrades/next/cb-row-writer.md",
+    "upgrades/side-effects/cb-row-writer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Channel-neutral TopicMemory row writer per the approved spec §14: additive nullable columns, a Slack key correctness fix, and app rows behind contextBudget.enabled; no block/allow surface.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-driven action, not a self-triggered loop: the row writer reports a refusal at most once per inbound message it was handed; it never retries, re-drives or re-fires on its own"
+  }
+}

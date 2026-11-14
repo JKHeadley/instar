@@ -1,0 +1,5 @@
+# A test that failed by chance for hours at a time
+
+The agent network uses a small "proof of work" puzzle so that a flood of fake agents is expensive: a newcomer must find a number that, mixed with its own internet address and the current time window, produces a hash starting with a certain number of zero bits. One automated test checks that a solution found for one address does not work for a different address. It used a very easy puzzle (8 zero bits), and with an easy puzzle a solution for one address happens to also work for another address about once in 256 tries. Because the puzzle also mixes in the current time window, that coincidence holds for the whole window, so tonight the test failed every single time and blocked every change waiting to merge.
+
+The test now uses a harder puzzle (16 zero bits). The coincidence becomes about one in sixty-five thousand, and the puzzle still solves in a few thousandths of a second. The real code that checks puzzles is not changed at all; only the test's choice of difficulty is.

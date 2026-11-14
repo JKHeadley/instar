@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-07T12:20:52.266Z",
+  "slug": "conversation-graph-real-machine-fixes",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SecretStore.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplication.ts",
+      "src/core/GraphMemberLossOwnedRole.ts",
+      "src/core/GraphNativeMemberLossStore.ts",
+      "src/core/GraphPreparedTransferEnvelopes.ts",
+      "src/core/GraphWitnessRecoveryCoordinator.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/SecretStore.ts",
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts",
+      "src/server/GraphOwnerMemberLossExecution.ts"
+    ],
+    "addedLines": 73,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change adds no new trigger: the existing sync tick only logs a fixed-format reason when that reason changes."
+  },
+  "verdict": "pass"
+}

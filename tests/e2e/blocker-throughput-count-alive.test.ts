@@ -17,6 +17,7 @@ describe('Blocker lifecycle throughput count E2E (feature is alive)', () => {
   let tmp = '';
   let server: AgentServer;
   let tracker: CommitmentTracker;
+  let historyAt = 0;
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'blocker-throughput-e2e-'));
@@ -31,6 +32,14 @@ describe('Blocker lifecycle throughput count E2E (feature is alive)', () => {
       for (let i = 0; i < count; i++) seed.record({ origin: 'e2e', factor: 'deliverable-completion',
         sourceEventId: `seed-${dayIndex}-${i}`, observedAtMs, latencyMs: null, outcome: 'observed' }, true);
     });
+    // Controlled retained evaluations, not a production baseline or improvement claim.
+    historyAt = Date.now() - 60_000;
+    const evaluation = { origin: 'e2e', featureId: 'fixture-history', rung: 'live', dueSlotMs: historyAt - 6 * 3_600_000,
+      evaluatedAtMs: historyAt - 6 * 3_600_000 + 100, status: 'hold' as const, passingMetrics: 0, totalMetrics: 1,
+      minNormalizedMargin: -0.5, contractHash: 'fixture-history-v1', newestEvidenceAtMs: historyAt - 7 * 3_600_000 };
+    expect(seed.recordMaturationEvaluation(evaluation)).toBe(true);
+    expect(seed.recordMaturationEvaluation({ ...evaluation, dueSlotMs: historyAt, evaluatedAtMs: historyAt + 100,
+      status: 'ready', passingMetrics: 1, minNormalizedMargin: 0.25, newestEvidenceAtMs: historyAt - 1000 })).toBe(true);
     seed.close();
 
     tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir),
@@ -62,6 +71,9 @@ describe('Blocker lifecycle throughput count E2E (feature is alive)', () => {
       .set({ Authorization: `Bearer ${AUTH}` });
     expect(summary.status).toBe(200);
     expect(summary.body.schemaVersion).toBe(2);
+    expect(summary.body.origins[0].maturation).toMatchObject({ evaluated: 1,
+      byStatus: { hold: 1, ready: 1 }, latestByStatus: { hold: 0, ready: 1 },
+      outcomeContracts: { scope: 'current-d7-subjects' } });
     const count = summary.body.origins[0].factors.find((row: { factor: string }) => row.factor === 'deliverable-completion');
     expect(count).toMatchObject({ factor: 'deliverable-completion', unit: 'count', total: 16,
       completed: 16, missing: 0, excluded: 0, coverage: 1,
@@ -70,6 +82,12 @@ describe('Blocker lifecycle throughput count E2E (feature is alive)', () => {
     const trend = await request(server.getApp()).get('/blocker-lifecycle/trend?windowDays=7&scope=local')
       .set({ Authorization: `Bearer ${AUTH}` });
     expect(trend.status).toBe(200);
+    expect(trend.body.origins[0].maturation).toMatchObject({ cadenceContinuity: 'unknown', historyByteLimit: 384 * 1024,
+      features: [{ featureId: 'fixture-history', totalEvaluations: 2, omittedEvaluations: 0, evaluations: [
+        { dueAt: new Date(historyAt - 6 * 3_600_000).toISOString(), sameEvaluationSeries: false },
+        { dueAt: new Date(historyAt).toISOString(), evaluatedAt: new Date(historyAt + 100).toISOString(),
+          newestEvidenceAt: new Date(historyAt - 1000).toISOString(), sameEvaluationSeries: true },
+      ] }] });
     const climbing = trend.body.origins[0].factors.find((row: { factor: string }) => row.factor === 'deliverable-completion');
     expect(climbing).toMatchObject({ factor: 'deliverable-completion', unit: 'count', direction: 'climbing',
       window: { kind: 'rolling-days', days: 7, dailyBuckets: 'utc', currentDay: 'partial' },

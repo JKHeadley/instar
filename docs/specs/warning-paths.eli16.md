@@ -1,0 +1,5 @@
+Justin's rule is that anything telling you something is wrong must also give you a way to act on it. The last change did that for the health screens. This one makes it hard to break anywhere on the dashboard.
+
+Every place in the dashboard's code that marks something as a warning now has to say, right beside it, how the person acts on it: a page to open, a row that opens, a link, or a written reason why there is nothing to do. A test reads those notes and checks they are true, for example that the page named really exists. If someone adds a warning with no note, the test fails, and the change cannot land. Page headlines that show a warning get an "Ask the agent about this" link automatically.
+
+Two smaller fixes. A problem the agent has not sorted yet no longer uses its own internal wording as the title. And iMessage now reports what is true right now, rather than disappearing from the list half an hour after a restart while it is still broken. Its fix needs a person at the Mac, so the screen says exactly that and opens Remote Desktop.

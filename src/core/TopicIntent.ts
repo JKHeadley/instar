@@ -153,6 +153,8 @@ export interface CaptureCounters {
   degraded_cap_or_error: number;       // extractor degraded on cap breach / provider error
   degraded_shed: number;               // turns skipped under QuotaTracker load-shedding
   rate_limited: number;                // turns skipped by the per-topic rate ceiling
+  budget_deferred?: number;            // turns deferred by the layer token ceilings (context-budget §6.4)
+  layer_ticks?: number;                // transcript-growth ticks that reached the extractor (§6.4)
   // ── surface + use side (did it reach the agent / change anything?) ──
   briefing_served: number;             // agent-context briefing fetched for this topic
   briefing_refs_settled: number;       // cumulative authoritative refs carried by briefings
@@ -814,6 +816,8 @@ export function defaultCaptureCounters(): CaptureCounters {
     degraded_cap_or_error: 0,
     degraded_shed: 0,
     rate_limited: 0,
+    budget_deferred: 0,
+    layer_ticks: 0,
     briefing_served: 0,
     briefing_refs_settled: 0,
     briefing_refs_tentative: 0,

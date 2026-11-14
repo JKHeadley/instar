@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-07T08:28:52.161Z",
+  "slug": "machines-agnostic-resources",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/mobileSecretsRoutes.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 16,
+  "loc": 176,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AppMediaReplicator.ts",
+      "src/server/mobileAttentionChoiceRoutes.ts",
+      "src/server/mobileCapacityRoutes.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaHolderProxy.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobilePhonesMessagesRoutes.ts",
+      "src/server/mobilePlansPeopleRoutes.ts",
+      "src/server/mobileProposalsInsideRoutes.ts",
+      "src/server/mobileSecretsRoutes.ts",
+      "src/server/mobileSessionControlsRoutes.ts",
+      "src/server/mobileSessionRoutes.ts",
+      "src/server/mobileSessionTerminalRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 111,
+    "deletedLines": 65
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

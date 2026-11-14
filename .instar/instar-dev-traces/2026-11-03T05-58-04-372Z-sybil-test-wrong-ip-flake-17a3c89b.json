@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "sybil-test-wrong-ip-flake",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-03T05:58:04.372Z",
+  "artifactPath": "upgrades/side-effects/sybil-test-wrong-ip-flake.md",
+  "artifactSha256": "fa2fa86a022c0e7ff3f978d2c8631438bc19824fc35dea6af3b4599db847789a",
+  "coveredFiles": [
+    "tests/unit/threadline/relay/SybilProtection.test.ts",
+    "upgrades/next/sybil-test-wrong-ip-flake.md",
+    "upgrades/side-effects/sybil-test-wrong-ip-flake.eli16.md",
+    "upgrades/side-effects/sybil-test-wrong-ip-flake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only difficulty change; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/sybil-test-wrong-ip-flake.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sybil-test-wrong-ip-flake.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

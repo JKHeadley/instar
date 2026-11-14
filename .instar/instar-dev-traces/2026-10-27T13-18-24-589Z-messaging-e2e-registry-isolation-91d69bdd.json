@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "messaging-e2e-registry-isolation",
+  "sessionId": "2b2781fe-a0ae-4fac-96c1-86978e4139d8",
+  "timestamp": "2026-10-27T13:18:24.589Z",
+  "artifactPath": "upgrades/side-effects/messaging-e2e-registry-isolation.md",
+  "artifactSha256": "cfda52e8d8c84e60ff2c1343bc7c9bce4c46f941038f0ca81bd7e8b70e03b65b",
+  "coveredFiles": [
+    "docs/specs/messaging-e2e-registry-isolation.eli16.md",
+    "tests/e2e/messaging-multi-agent.test.ts",
+    "upgrades/next/messaging-e2e-registry-isolation.md",
+    "upgrades/side-effects/messaging-e2e-registry-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only fixture isolation; reverting removes all effects and production behavior is unchanged.",
+  "eli16Path": "docs/specs/messaging-e2e-registry-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/messaging-e2e-registry-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

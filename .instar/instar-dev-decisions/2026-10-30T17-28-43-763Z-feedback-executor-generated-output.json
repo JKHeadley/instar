@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-30T17:28:43.763Z",
+  "slug": "feedback-executor-generated-output",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/standardsRegistryPath.ts",
+      "src/feedback-factory/execute/changeSet.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

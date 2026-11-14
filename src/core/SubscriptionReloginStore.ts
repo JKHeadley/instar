@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { registerSqliteHandle } from './SqliteRegistry.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export const SUBSCRIPTION_RELOGIN_STATES = [
   'suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving',
@@ -23,6 +24,9 @@ export type SubscriptionReloginFailureClass =
   | 'passkey-refused'
   | 'agent-sign-in-unfinished' | 'no-healthy-seat' | 'agent-hard-line'
   | 'resolved-elsewhere'
+  // codex-device-limit-tripwire §4: the repair met a (suspected) device-limit page or the account
+  // was benched. Terminal, never slow-retried, not breaker or re-admission evidence.
+  | 'device-limit'
   | 'cancelled-by-operator' | 'other';
 
 export interface SubscriptionReloginEpisode {
@@ -106,6 +110,7 @@ const FAILURES: readonly string[] = [
   'passkey-refused',
   'agent-sign-in-unfinished', 'no-healthy-seat', 'agent-hard-line',
   'resolved-elsewhere',
+  'device-limit',
 ];
 /** An approval never stays alive longer than this after the operator's tap, however long it queues. */
 const APPROVAL_EXTENSION_CAP_MS = 60 * 60_000;
@@ -181,6 +186,11 @@ const READMIT_BLOCKING_FAILURES: ReadonlySet<string> = new Set([
  */
 const SLOW_RETRY_FAILURES: ReadonlySet<string> = new Set([
   'attempt-budget-exhausted', 'repair-time-budget-exhausted', 'agent-sign-in-unfinished',
+  // codex-device-limit-tripwire §4: a repair stopped at a (suspected) device-limit page is NOT
+  // a dead end. The service defers its slow retry while the account is suspected or benched, and
+  // repair admission refuses a benched account, so a confirmed lockout is never retried; a page
+  // the confirming read did not bear out is retried on the ordinary slow cadence.
+  'device-limit',
 ]);
 
 /**
@@ -489,7 +499,7 @@ export class SubscriptionReloginStore {
     reason?: string | null;
   }): SubscriptionReloginEpisode {
     const at = input.at ?? this.isoNow(); normalizeEvent(input.eventClass);
-    return this.db.transaction(() => {
+    const updated = this.db.transaction(() => {
       const ep = this.mustGet(id);
       if (ep.version !== input.expectedVersion) throw new SubscriptionReloginConflictError('episode-version-conflict');
       if (!TRANSITIONS[ep.state].includes(input.to))
@@ -515,10 +525,21 @@ export class SubscriptionReloginStore {
           AND state<>'delivering'`).run(ep.id);
       }
       if (input.to === 'waiting-operator-only') this.enqueueNotification(ep.id, 'operator-only', at);
-      if (TERMINAL.has(input.to)) this.enqueueNotification(ep.id, 'terminal', at);
+      // codex-device-limit-tripwire §4: an episode ending at a (suspected) device limit has no
+      // per-episode notice; the per-machine device-limit row is the only voice.
+      const deviceLimitEnd = (input.failureClass ?? ep.failureClass) === 'device-limit';
+      if (TERMINAL.has(input.to) && !deviceLimitEnd) this.enqueueNotification(ep.id, 'terminal', at);
       this.enforceCaps();
       return this.mustGet(ep.id);
     })();
+    if (TERMINAL.has(updated.state)) {
+      featureEvidence.record('subscriptionPool.assistedRelogin', {
+        kind: updated.state === 'succeeded' ? 'fired' : updated.state === 'cancelled' ? 'held' : 'error',
+        reason: updated.failureClass ? `repair-${updated.state}: ${updated.failureClass}` : `repair-${updated.state}`,
+        context: { episodeId: updated.id, accountId: updated.accountId, provider: updated.provider, state: updated.state, failureClass: updated.failureClass ?? null, attemptCount: updated.attemptCount, reissueCount: updated.reissueCount, eventClass: input.eventClass },
+      });
+    }
+    return updated;
   }
 
   cancel(id: string, at = this.isoNow()): SubscriptionReloginEpisode {

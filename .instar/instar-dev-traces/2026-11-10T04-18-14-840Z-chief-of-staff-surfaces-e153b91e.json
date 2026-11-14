@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-surfaces",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T04:18:14.840Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-surfaces.md",
+  "artifactSha256": "019a6d03632e6f4d3f58be5c957e6821ba3eb9f69f13f5fb3ab3f45767fadd0a",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "upgrades/side-effects/chief-of-staff-surfaces.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Artifact correction: the spawn change moved to PR 3.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

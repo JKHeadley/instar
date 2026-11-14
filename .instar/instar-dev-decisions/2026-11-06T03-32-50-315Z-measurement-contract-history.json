@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-06T03:32:50.315Z",
+  "slug": "measurement-contract-history",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 199,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BlockerLifecycleLedger.ts",
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/monitoring/MeasurementContractVersion.ts",
+      "src/monitoring/MeasurementTrend.ts"
+    ],
+    "addedLines": 188,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

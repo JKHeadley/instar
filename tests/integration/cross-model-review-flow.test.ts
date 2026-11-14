@@ -76,6 +76,7 @@ Route it through codex.
 - **fleet:** after operator review
 - **graduation criterion:** stated
 - **dark-window:** 14d
+- **ladder:** monitoring.example
 `;
 
 const ELI16 = 'overview '.repeat(120); // > 800 chars

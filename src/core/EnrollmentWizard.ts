@@ -33,6 +33,7 @@ import {
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import { validateEnrolledAccountEmail } from './AccountFollowMeEmailGate.js';
 import { ensureAgentOwnedMemory } from './AgentOwnedMemory.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 /** The public artifact a framework login yields (no secret). */
 export interface LoginArtifact {
@@ -480,6 +481,7 @@ export class EnrollmentWizard {
   private async validateFollowMeIdentity(
     login: PendingLogin,
     targetMachineNickname: string,
+    probedEmail?: string | null,
   ): Promise<
     | { outcome: 'validated'; login: PendingLogin; email: string }
     | { outcome: 'held'; login: PendingLogin; reason: string; expected: string | null; got: string | null }
@@ -487,8 +489,8 @@ export class EnrollmentWizard {
 
     // Read the email the COMPLETED login actually authenticated as. No oracle / no config-home
     // / a probe failure are all treated as "unavailable" → the gate fails closed below.
-    let completedEmail: string | null = null;
-    if (this.oracle) {
+    let completedEmail: string | null = probedEmail ?? null;
+    if (!completedEmail && this.oracle) {
       let probe;
       try {
         probe = await this.oracle.resolveSlotTenant(login.configHome ?? '');
@@ -542,41 +544,101 @@ export class EnrollmentWizard {
     const results: Array<{ id: string; outcome: 'validated' | 'held' }> = [];
     for (const login of this.store.active()) {
       if (!login.expectedEmail || !login.configHome) continue;
-      if (this.completionSweepInFlight.has(login.id)) continue;
-      this.completionSweepInFlight.add(login.id);
-      try {
+      const r = await this.completeLanded(login.id, { ...deps, proof: 'auth-revision' });
+      if (r.outcome === 'validated' || r.outcome === 'held') results.push({ id: login.id, outcome: r.outcome });
+    }
+    return results;
+  }
+
+  /**
+   * Drive ONE follow-me login to completion if its sign-in has provably landed.
+   * Shared by the background sweep and the post-submit completion watcher
+   * (FollowMeCompletionWatcher), so both use the same identity-verified path.
+   *
+   * proof:
+   *  - 'auth-revision': the slot's opaque auth revision changed from the baseline
+   *    captured before this artifact was issued (the sweep's safe default).
+   *  - 'live-identity': the slot's credential answers a LIVE identity probe with an
+   *    email. Used only after the operator submitted a code AND the login window
+   *    has exited — on hosts where no auth revision is readable this is the only
+   *    proof available, and a dead pre-login token cannot answer the probe.
+   *
+   * An unprovable landing answers 'not-landed' WITHOUT emitting any attention item.
+   */
+  async completeLanded(
+    id: string,
+    deps: {
+      onValidated: (login: PendingLogin, email: string) => void;
+      targetMachineNickname?: string;
+      proof: 'auth-revision' | 'live-identity';
+    },
+  ): Promise<
+    | { outcome: 'validated'; login: PendingLogin; email: string }
+    | { outcome: 'held'; login: PendingLogin; reason: string; expected: string | null; got: string | null }
+    | { outcome: 'not-landed' }
+    | { outcome: 'busy' }
+    | { outcome: 'finalize-failed'; error: string }
+    | { outcome: 'not-pending'; status: PendingLogin['status'] | null }
+  > {
+    const login = this.store.active().find((l) => l.id === id);
+    if (!login) return { outcome: 'not-pending', status: this.store.get(id)?.status ?? null };
+    if (!login.expectedEmail || !login.configHome) return { outcome: 'not-landed' };
+    if (this.completionSweepInFlight.has(login.id)) return { outcome: 'busy' };
+    this.completionSweepInFlight.add(login.id);
+    try {
+      let probedEmail: string | null | undefined;
+      if (deps.proof === 'auth-revision') {
         // Presence is not completion. Re-auth commonly starts in a slot that
         // already contains settings and old auth material. Require the opaque auth
         // revision to CHANGE from the baseline captured before this exact artifact.
-        if (!await this.authRevisionChanged(login)) continue;
-        const result = await this.validateFollowMeIdentity(login, deps.targetMachineNickname ?? 'this machine');
-        if (result.outcome === 'validated') {
-          try {
-            const completed = this.store.completeIfVersion(login.id, login.version, () => {
-              deps.onValidated(result.login, result.email);
-            });
-            if (completed) {
-              this.ensureCompletedLoginReady(completed);
-              results.push({ id: login.id, outcome: 'validated' });
-            }
-          } catch (err) {
-            // The store invokes this callback before its terminal CAS write. A
-            // failed pool finalization therefore leaves the login durably pending
-            // and eligible for the next bounded sweep.
-            this.logger.warn(`[EnrollmentWizard] completion-sweep pool-add failed for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else {
-          const completed = this.store.completeIfVersion(login.id, login.version, () => {});
-          if (completed) {
-            this.ensureCompletedLoginReady(completed);
-            results.push({ id: login.id, outcome: 'held' });
-          }
-        }
-      } finally {
-        this.completionSweepInFlight.delete(login.id);
+        if (!await this.authRevisionChanged(login)) return { outcome: 'not-landed' };
+      } else {
+        probedEmail = await this.probeSlotEmail(login);
+        if (!probedEmail) return { outcome: 'not-landed' };
       }
+      const result = await this.validateFollowMeIdentity(login, deps.targetMachineNickname ?? 'this machine', probedEmail);
+      if (result.outcome === 'validated') {
+        try {
+          const completed = this.store.completeIfVersion(login.id, login.version, () => {
+            deps.onValidated(result.login, result.email);
+          });
+          if (!completed) return { outcome: 'not-pending', status: this.store.get(id)?.status ?? null };
+          this.ensureCompletedLoginReady(completed);
+          return { outcome: 'validated', login: completed, email: result.email };
+        } catch (err) {
+          // The store invokes this callback before its terminal CAS write. A
+          // failed pool finalization therefore leaves the login durably pending
+          // and eligible for the next bounded sweep.
+          const error = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`[EnrollmentWizard] completion pool-add failed for ${login.id}: ${error}`);
+          DegradationReporter.getInstance().report({
+            feature: 'EnrollmentWizard.completeLanded',
+            primary: 'Add the validated sign-in back to the subscription pool',
+            fallback: 'Login left pending; the next sweep or watch retries',
+            reason: `Why: ${error}`,
+            impact: `Account ${login.id} stays signed out in the pool until a retry succeeds`,
+          });
+          return { outcome: 'finalize-failed', error };
+        }
+      }
+      const completed = this.store.completeIfVersion(login.id, login.version, () => {});
+      if (!completed) return { outcome: 'not-pending', status: this.store.get(id)?.status ?? null };
+      this.ensureCompletedLoginReady(completed);
+      return { ...result, login: completed };
+    } finally {
+      this.completionSweepInFlight.delete(login.id);
     }
-    return results;
+  }
+
+  private async probeSlotEmail(login: PendingLogin): Promise<string | null> {
+    if (!this.oracle) return null;
+    try {
+      const probe = await this.oracle.resolveSlotTenant(login.configHome ?? '');
+      return 'email' in probe && probe.email ? probe.email : null;
+    } catch {
+      // @silent-fallback-ok: an unreadable slot is not completion proof.
+      return null;
+    }
   }
 
   private async authRevisionChanged(login: PendingLogin): Promise<boolean> {

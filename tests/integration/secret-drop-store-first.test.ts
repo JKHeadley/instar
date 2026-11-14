@@ -24,7 +24,7 @@
  * a SecretStore without forceFileKey.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -104,8 +104,32 @@ describe('Secret Drop — store-first durable persistence', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     deleteAgentToken(PROJECT_NAME);
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'test-cleanup' });
+  });
+
+  it('uses the serving machine title when a secret receipt starts a topic session on a standby', async () => {
+    const ctx = buildCtx(tmpDir);
+    const spawn = vi.fn(async () => 'echo-new-session');
+    ctx.sessionManager = {
+      isSessionAlive: () => false,
+      spawnInteractiveSession: spawn,
+    } as never;
+    ctx.resolvePeerUrls = (() => [{ machineId: 'studio', url: 'http://127.0.0.1:4567' }]) as never;
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ serving: true, topics: [{ topicId: 13481, topicName: 'Credentials for launch' }] }),
+    })));
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes(ctx));
+
+    await dropSecret(app, { apiKey: 'test-value' });
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
+    expect(spawn.mock.calls[0][1]).toBe('Credentials for launch');
+    const registry = JSON.parse(fs.readFileSync(path.join(tmpDir, '.instar', 'topic-session-registry.json'), 'utf-8'));
+    expect(registry.topicToName['13481']).toBe('Credentials for launch');
   });
 
   it('persists a submission to the durable store the instant it is received', async () => {

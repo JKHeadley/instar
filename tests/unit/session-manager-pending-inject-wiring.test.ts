@@ -234,6 +234,20 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     expect(warning).not.toHaveBeenCalled();
   });
 
+  it('accepts /clear through the same fenced control path (context-budget §9.2 rung 1)', () => {
+    const h = controlHarness();
+    const before = h.ledger.status().logicalRows;
+    expect(h.activeManager.injectInternalControlCommand(h.tmux, '2271', '/clear')).toBe(true);
+    expect(h.ledger.status().logicalRows).toBe(before);
+    expect(h.controlSync).toHaveBeenCalledOnce();
+  });
+
+  it('refuses any command outside the closed control set', () => {
+    const h = controlHarness();
+    expect(h.activeManager.injectInternalControlCommand(h.tmux, '2271', '/exit' as never)).toBe(false);
+    expect(h.controlSync).not.toHaveBeenCalled();
+  });
+
   it('refuses /compact when the session dies at the action-time fence', () => {
     const h = controlHarness();
     h.setBeforeFence(() => mockTmuxSessions.delete(h.tmux));
@@ -374,7 +388,7 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
   it('preserves Slack durable conversation authority across resume-failure fresh spawn', async () => {
     vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
       .mockResolvedValue(false);
-    const spawn = vi.spyOn(manager, 'spawnInteractiveSession').mockResolvedValue('fresh-slack');
+    const spawn = vi.spyOn(manager, 'spawnInteractiveSessionUnlocked').mockResolvedValue('fresh-slack');
 
     await (manager as unknown as {
       handleReadyAndInject(s: string, n: string, m: string, t: number, o: Record<string, unknown>): Promise<void>;

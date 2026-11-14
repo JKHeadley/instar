@@ -446,9 +446,25 @@ export interface BuildKnowledgeTombstoneInput {
 export function buildKnowledgeTombstoneData(input: BuildKnowledgeTombstoneInput): KnowledgeRecordData | null {
   const recordKey = deriveKnowledgeRecordKey(input.title, input.url, input.type);
   if (recordKey === null) return null;
+  return buildKnowledgeTombstoneFromKey({ ...input, recordKey });
+}
+
+/**
+ * The same tombstone built from an already-derived recordKey. A tombstone carries no
+ * identity beyond the key, so a deletion recorded without the identity (the replicated-
+ * store reconciler's deletion intents) builds exactly the record the identity-taking
+ * builder above would.
+ */
+export function buildKnowledgeTombstoneFromKey(input: {
+  recordKey: string;
+  hlc: HlcTimestamp;
+  origin: string;
+  deletedAt: string;
+  observed?: HlcTimestamp;
+}): KnowledgeRecordData {
   return {
     deletedAt: input.deletedAt,
-    recordKey,
+    recordKey: input.recordKey,
     hlc: input.hlc,
     op: 'delete' as ReplicatedOp,
     origin: input.origin,

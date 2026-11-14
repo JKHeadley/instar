@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-loop",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T03:11:54.254Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-loop.md",
+  "artifactSha256": "24c1c8d771761da627692a7c1a86ac29ec1db6b8eaa2133701adabb805d78fd4",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/data/llmBenchCoverage.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Classification row for the Chief of Staff judge (completion-claim judge); no behaviour change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "team-2a",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T07:59:17.890Z",
+  "artifactPath": "upgrades/side-effects/team-2a.md",
+  "artifactSha256": "fb225deeb12f686321dea93809c9e159a44978a18e9db82e42fc26d9a97985f0",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/TeamAccessLog.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/unit/team-guards.test.ts",
+    "upgrades/side-effects/team-2a.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

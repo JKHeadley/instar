@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-28T01:34:14.878Z",
+  "slug": "lv-status-reason-repost",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/StatusReconciler.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

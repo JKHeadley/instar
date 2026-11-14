@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-05T08:55:14.156Z",
+  "slug": "lease-job-coverage-and-catchup",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/JobCoverage.ts",
+      "src/core/JobCoverageMonitor.ts",
+      "src/scheduler/PromotionCatchUpStore.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

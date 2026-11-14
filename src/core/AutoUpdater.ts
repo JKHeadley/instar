@@ -29,11 +29,31 @@ import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
 import type { SessionManagerLike, SessionMonitorLike, SessionInfo, RestartHold } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { ProcessIntegrity } from './ProcessIntegrity.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
 import type { UpdateRestartHandshake } from './UpdateRestartHandshake.js';
 
 const DEFAULT_RESTART_RETRY_MS = 5 * 60_000;
+/** Retry delay once the local-verify hold that deferred a restart has ended. */
+const RESTART_HOLD_ENDED_RETRY_MS = 1_000;
+
+/**
+ * Is semver `a` strictly newer than `b`? Pre-release suffixes are ignored; malformed input is never newer.
+ * Same comparison as the private `UpdateChecker.isNewer`; keep the two in step.
+ */
+function isNewerVersion(a: string, b: string): boolean {
+  const semverRe = /^(\d+)\.(\d+)\.(\d+)/;
+  const matchA = semverRe.exec(a);
+  const matchB = semverRe.exec(b);
+  if (!matchA || !matchB) return false;
+  for (let i = 1; i <= 3; i++) {
+    const va = Number(matchA[i]);
+    const vb = Number(matchB[i]);
+    if (va !== vb) return va > vb;
+  }
+  return false;
+}
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -93,6 +113,8 @@ export interface AutoUpdaterStatus {
   lastApply: string | null;
   /** The version that was last successfully applied */
   lastAppliedVersion: string | null;
+  /** This process is installing an update or has installed one and still needs its restart. */
+  updateActivationPendingSince: string | null;
   /** Current configuration */
   config: Required<AutoUpdaterConfig>;
   /** Any pending update that hasn't been applied yet */
@@ -128,6 +150,8 @@ export interface AutoUpdaterStatus {
 export interface RestartDeferralState {
   active: boolean;
   targetVersion: string;
+  /** A manual apply keeps its window bypass through hold retries and process restarts. */
+  bypassWindow?: boolean;
   firstDeferredAt: string;
   reason: string;
   currentBlockers: string[];
@@ -164,6 +188,10 @@ export class AutoUpdater {
   private deferralRetryInFlight = false;
   private deferralLifecycleGeneration = 0;
   private restartDeferral: RestartDeferralState | null = null;
+  // Process-local admission brake. Cleared by a failed install or by the new
+  // process on restart; a successful install must never open a verify-start gap
+  // while its restart is requested or waiting for a hold.
+  private updateActivationPendingSince: string | null = null;
 
   // Loop prevention — track version mismatch notifications to avoid spam
   private notifiedVersionMismatch: string | null = null;
@@ -256,6 +284,7 @@ export class AutoUpdater {
     // restart, or any path that clears an in-memory timer, must not strand an
     // already-installed update forever. Re-arm from the persisted deadline;
     // an overdue retry runs immediately.
+    this.dropSatisfiedRestartDeferral();
     this.ensureDeferredRestartRetry();
 
     // Then run periodically
@@ -313,6 +342,7 @@ export class AutoUpdater {
       lastCheck: this.lastCheck,
       lastApply: this.lastApply,
       lastAppliedVersion: this.lastAppliedVersion,
+      updateActivationPendingSince: this.updateActivationPendingSince,
       config: { ...this.config },
       pendingUpdate: this.pendingUpdate,
       lastError: this.lastError,
@@ -377,9 +407,10 @@ export class AutoUpdater {
   }
 
   /**
-   * Hold automatic update restarts while in-flight work a restart would LOSE exists (see
+   * Hold update restarts while in-flight work a restart would LOSE exists (see
    * UpdateGate "Restart holds"). Each hold ends at its own `until`, so the hold is bounded.
-   * A manual apply (POST /updates/apply) is an operator act and is not held.
+   * A manual apply skips the preferred time window but keeps these holds unless
+   * its caller explicitly forces the restart.
    */
   setRestartHold(key: string, provider: () => RestartHold[]): void {
     this.gate.setRestartHoldProvider(key, provider);
@@ -455,6 +486,22 @@ export class AutoUpdater {
       this.lastError = null;
 
       if (!info.updateAvailable) {
+        // RECONCILE (#2282): the running build is current, so whatever pending
+        // update existed has landed. If it landed without passing through
+        // applyPendingUpdate's success branch (process killed mid-apply after
+        // the shadow install was written, a restart onto an externally
+        // installed build, ...) lastAppliedVersion was never advanced and
+        // would stay stale forever once pendingUpdate is cleared below.
+        // Advance it to the running version — forward only, and only when a
+        // version has been applied before (null means "never applied").
+        const runningVersion = this.updateChecker.getInstalledVersion();
+        if (this.lastAppliedVersion && isNewerVersion(runningVersion, this.lastAppliedVersion)) {
+          console.log(
+            `[AutoUpdater] Reconciling lastAppliedVersion v${this.lastAppliedVersion} → v${runningVersion} ` +
+            `(running build is newer than the recorded apply)`
+          );
+          this.lastAppliedVersion = runningVersion;
+        }
         this.pendingUpdate = null;
         this.pendingUpdateDetectedAt = null;
         this.coalescingUntil = null;
@@ -598,13 +645,19 @@ export class AutoUpdater {
    * Extracted from tick() so it can be called by the coalescing timer
    * and by manual trigger (POST /updates/apply).
    */
-  async applyPendingUpdate(options?: { bypassWindow?: boolean }): Promise<void> {
+  async applyPendingUpdate(options?: { bypassWindow?: boolean; bypassHolds?: boolean }): Promise<void> {
     if (this.isApplying) {
       console.log('[AutoUpdater] Skipping apply — already in progress');
       return;
     }
 
     if (!this.pendingUpdate) {
+      // A manual apply may have installed the update but left its restart waiting
+      // for a running verify. An explicit override must still work after that apply.
+      if (options?.bypassHolds && this.restartDeferral?.active) {
+        await this.gatedRestart(this.restartDeferral.targetVersion, true, true);
+        return;
+      }
       console.log('[AutoUpdater] No pending update to apply');
       return;
     }
@@ -613,12 +666,14 @@ export class AutoUpdater {
 
     try {
       this.isApplying = true;
+      this.updateActivationPendingSince = new Date().toISOString();
       console.log(`[AutoUpdater] Applying update to v${targetVersion}...`);
 
       const result = await this.updateChecker.applyUpdate();
       this.isApplying = false;
 
       if (!result.success) {
+        this.updateActivationPendingSince = null;
         this.lastError = result.message;
         this.saveState();
         console.error(`[AutoUpdater] Update failed: ${result.message}`);
@@ -637,7 +692,14 @@ export class AutoUpdater {
       // updates files in-place (making getInstalledVersion() return the new version
       // before the verification step). Using targetVersion ensures the loop breaker
       // always matches and prevents the update→apply→notify→restart spam loop.
-      this.lastAppliedVersion = targetVersion;
+      // Exception (#2282): applyUpdate() re-checks the registry and installs
+      // whatever is latest, which can be NEWER than the pending target if a
+      // release landed during coalescing. Record that version, or the record
+      // lags the install and the loop breaker re-applies the newer build.
+      const appliedVersion = isNewerVersion(result.newVersion, targetVersion)
+        ? result.newVersion
+        : targetVersion;
+      this.lastAppliedVersion = appliedVersion;
       this.pendingUpdate = null;
       this.pendingUpdateDetectedAt = null;
       this.coalescingUntil = null;
@@ -653,6 +715,7 @@ export class AutoUpdater {
           console.log(`[AutoUpdater] Cleaned up ${cleanup.removed.length} stale global install(s)`);
         }
       } catch (err) {
+        // @silent-fallback-ok — the cleanup failure is logged; update activation still proceeds.
         console.warn(`[AutoUpdater] Global cleanup error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
 
@@ -665,9 +728,12 @@ export class AutoUpdater {
       // The loop breaker in tick() (checking lastAppliedVersion === latestVersion)
       // prevents this from becoming an infinite loop. After restart, the loop
       // breaker catches the next cycle and returns early.
-      await this.gatedRestart(targetVersion, options?.bypassWindow ?? false);
+      await this.gatedRestart(appliedVersion, options?.bypassWindow ?? false, options?.bypassHolds ?? false);
     } catch (err) {
       this.isApplying = false;
+      // @silent-fallback-ok — lastError is persisted and logged below; release the temporary pause.
+      // A failed install or a rejected restart decision cannot keep peers paused.
+      this.updateActivationPendingSince = null;
       this.lastError = err instanceof Error ? err.message : String(err);
       this.saveState();
       console.error(`[AutoUpdater] Apply error: ${this.lastError}`);
@@ -725,7 +791,12 @@ export class AutoUpdater {
    * If sessions are active, defers and retries on a timer.
    * After max deferral, restarts regardless with warnings.
    */
-  private async gatedRestart(newVersion: string, bypassWindow = false): Promise<void> {
+  private async gatedRestart(newVersion: string, bypassWindow = false, bypassHolds = false): Promise<void> {
+    // Fence new verifier starts while this attempt decides whether to restart.
+    // A durable deferral releases this short fence; its own pause rule then
+    // governs the wait until the next retry begins.
+    this.updateActivationPendingSince ??= new Date().toISOString();
+    try {
     // RESTART COOLDOWN: If we already requested a restart for this exact version
     // within the last 30 minutes, don't restart again. This is the safety net
     // for binary path mismatches (npx cache, etc.) where the loop breaker in
@@ -738,6 +809,7 @@ export class AutoUpdater {
           `[AutoUpdater] Restart cooldown: already requested restart for v${newVersion} ` +
           `${Math.round(elapsed / 60_000)}m ago (cooldown: 30m). Skipping.`
         );
+        this.updateActivationPendingSince = null;
         return;
       }
     }
@@ -758,6 +830,7 @@ export class AutoUpdater {
       });
       if (decision.kind === 'batch') {
         await this.handleDampenerBatch(newVersion, decision.eligibleAt);
+        this.updateActivationPendingSince = null;
         return;
       }
       console.log(`[AutoUpdater] Cascade dampener: ${decision.reason}`);
@@ -767,13 +840,14 @@ export class AutoUpdater {
     // invite waiting for the operator; its secret lives only in memory). Uses the same durable
     // deferral record and retry timer as session deferral. The retry runs at the next 5-minute
     // check or when the soonest hold ends, whichever is first, so the restart proceeds once the
-    // work finishes or expires. Not applied to a manual apply (bypassWindow).
+    // work finishes or expires. A manual apply skips the time window, but still
+    // protects in-flight work unless the caller explicitly bypasses holds.
     //
     // Holds also respect the gate's maxDeferralHours, counted from this version's first durable
     // deferral (whatever its cause): past it, holds are logged and no longer hold. A hold whose
     // end comes from untrusted input (an inviter-written expiry) can therefore never hold an
     // update longer than the session gate's own ceiling.
-    if (!bypassWindow) {
+    if (!bypassHolds) {
       const maxDeferralMs = this.gate.getStatus().maxDeferralHours * 3_600_000;
       const firstDeferredAt = this.getActiveRestartDeferral(newVersion)?.firstDeferredAt;
       const deferredSince = firstDeferredAt ? Date.parse(firstDeferredAt) : Number.NaN;
@@ -782,6 +856,9 @@ export class AutoUpdater {
       if (holds.length > 0 && Date.now() >= holdCeiling) {
         console.log(`[AutoUpdater] Restart holds for v${newVersion} ignored: max deferral (${this.gate.getStatus().maxDeferralHours}h) reached (${holds.map((h) => h.name).join(', ')})`);
         holds = [];
+        // The supervisor's independent Local Verify guard must honor this
+        // same ceiling rather than adding another three-hour wait.
+        bypassHolds = true;
       }
       if (holds.length > 0) {
         const soonest = holds[0];
@@ -790,11 +867,13 @@ export class AutoUpdater {
         console.log(`[AutoUpdater] Restart deferred for v${newVersion}: ${reason}. Will retry in ${Math.ceil(retryMs / 1000)}s`);
         this.recordRestartDeferral({
           targetVersion: newVersion,
+          bypassWindow,
           reason,
           currentBlockers: holds.map((h) => h.name),
           nextRetryAt: new Date(Date.now() + retryMs).toISOString(),
         });
         this.scheduleDeferredRestartRetry(newVersion, retryMs, 'restart hold re-check');
+        this.updateActivationPendingSince = null;
         return;
       }
     }
@@ -822,6 +901,7 @@ export class AutoUpdater {
         console.log(`[AutoUpdater] Outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}) with ${blockers.length} active session(s). Deferring restart for v${newVersion} (~${waitH}h)`);
         this.recordRestartDeferral({
           targetVersion: newVersion,
+          bypassWindow,
           reason: `outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}); ${blockers.length} active session(s)`,
           currentBlockers: blockers,
           nextRetryAt: new Date(Date.now() + waitMs).toISOString(),
@@ -829,6 +909,7 @@ export class AutoUpdater {
 
         // Schedule a retry at the window start
         this.scheduleDeferredRestartRetry(newVersion, waitMs, 'restart window reached');
+        this.updateActivationPendingSince = null;
         return;
       }
       // Idle (no active sessions) — the window has nothing to protect; fall
@@ -843,7 +924,7 @@ export class AutoUpdater {
       this.lastRestartRequestedVersion = newVersion;
       this.saveState();
       await new Promise(r => setTimeout(r, 2000));
-      this.requestRestart(newVersion);
+      if (!this.requestRestart(newVersion, bypassHolds)) this.updateActivationPendingSince = null;
       return;
     }
 
@@ -951,7 +1032,7 @@ export class AutoUpdater {
       this.saveState();
 
       await new Promise(r => setTimeout(r, 2000));
-      this.requestRestart(newVersion);
+      if (!this.requestRestart(newVersion, bypassHolds)) this.updateActivationPendingSince = null;
       return;
     }
 
@@ -959,6 +1040,7 @@ export class AutoUpdater {
     console.log(`[AutoUpdater] Restart deferred: ${result.reason}. Will retry in ${Math.round((result.retryInMs ?? 300_000) / 60_000)}m`);
     this.recordRestartDeferral({
       targetVersion: newVersion,
+      bypassWindow,
       reason: result.reason ?? 'active sessions',
       currentBlockers: result.blockingSessions ?? [],
       nextRetryAt: new Date(Date.now() + (result.retryInMs ?? 300_000)).toISOString(),
@@ -981,6 +1063,58 @@ export class AutoUpdater {
       result.retryInMs ?? DEFAULT_RESTART_RETRY_MS,
       'session deferral elapsed',
     );
+    this.updateActivationPendingSince = null;
+    } catch (err) {
+      // Gate dependencies can throw before a restart request exists. The durable
+      // deferral, if any, remains responsible for pausing peer admission.
+      this.updateActivationPendingSince = null;
+      throw err;
+    }
+  }
+
+  /**
+   * A local-verify restart hold just ended (its verify finished). When the restart is deferred
+   * on that hold and no hold is active now, retry it at once instead of at the next re-check
+   * (up to 5 minutes later): while an update waits, no new verify starts, so that gap was dead
+   * time for both the update and the verify line (35 pauses, 3.3 h, 2026-10-20..26). The retry
+   * runs the whole restart gate again, so anything else still blocking (sessions, the window)
+   * defers it exactly as before.
+   */
+  recheckRestartHolds(): void {
+    const deferral = this.restartDeferral;
+    // Only ever brings forward a retry that is already scheduled: after stop() (no timer) or
+    // while a retry runs, this does nothing, so it can never arm a restart on its own.
+    if (!deferral?.active || this.deferralRetryInFlight || !this.deferralTimer) return;
+    if (!(deferral.currentBlockers ?? []).some((b) => b.startsWith('local-verify'))) return;
+    if (this.gate.getActiveHolds().length > 0) return;
+    this.scheduleDeferredRestartRetry(deferral.targetVersion, RESTART_HOLD_ENDED_RETRY_MS, 'restart hold ended');
+  }
+
+  /**
+   * A restart deferral asks for a restart ONTO `targetVersion`. When this process already runs
+   * that version (or a newer one), the restart it was waiting for has happened: something other
+   * than this updater restarted the server while the deferral waited (a planned restart request,
+   * the supervisor, a crash). Nothing cleared the durable record then, so the next boot resumed
+   * it and restarted the server a second time, pausing Local Verify dispatch until it could
+   * (Studio 2026-11-13: booted onto 1.3.1758 at 19:20:45Z, "durable deferral resumed —
+   * attempting restart for v1.3.1758" at 19:21:31Z).
+   *
+   * Only the version frozen at process boot (ProcessIntegrity) can answer "what is running":
+   * the on-disk version moves the moment an update is installed. Without that record, or with a
+   * version that does not parse, the deferral is kept.
+   */
+  private dropSatisfiedRestartDeferral(): void {
+    const deferral = this.restartDeferral;
+    if (!deferral?.active) return;
+    const running = ProcessIntegrity.getInstance()?.runningVersion;
+    const semver = /^\d+\.\d+\.\d+/;
+    if (!running || !semver.test(running) || !semver.test(deferral.targetVersion)) return;
+    if (isNewerVersion(deferral.targetVersion, running)) return;
+    console.log(
+      `[AutoUpdater] Restart deferral for v${deferral.targetVersion} dropped: this process already runs v${running}`,
+    );
+    this.clearRestartDeferral();
+    this.saveState();
   }
 
   /**
@@ -1037,7 +1171,7 @@ export class AutoUpdater {
    */
   private async retryDeferredRestart(targetVersion: string, generation: number): Promise<void> {
     try {
-      await this.gatedRestart(targetVersion);
+      await this.gatedRestart(targetVersion, this.getActiveRestartDeferral(targetVersion)?.bypassWindow === true);
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       console.error(`[AutoUpdater] Deferred restart retry failed: ${this.lastError}`);
@@ -1046,6 +1180,7 @@ export class AutoUpdater {
       const nextRetryAt = new Date(Date.now() + DEFAULT_RESTART_RETRY_MS).toISOString();
       this.recordRestartDeferral({
         targetVersion,
+        bypassWindow: deferral.bypassWindow,
         reason: deferral.reason,
         currentBlockers: deferral.currentBlockers,
         nextRetryAt,
@@ -1176,7 +1311,7 @@ export class AutoUpdater {
    * a notice that a restart is needed. This is strictly better than attempting
    * self-restart, which can loop or leave the port bound.
    */
-  private requestRestart(newVersion: string): void {
+  private requestRestart(newVersion: string, bypassHolds = false): boolean {
     const previousVersion = this.updateChecker.getInstalledVersion();
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
     const data = {
@@ -1185,15 +1320,18 @@ export class AutoUpdater {
       targetVersion: newVersion,
       previousVersion,
       plannedRestart: true, // Signals lifeline/supervisor: this is maintenance, not a crash
+      bypassHolds, // Preserve the explicit forceRestart contract across processes.
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour TTL (was 10 min — too short for foreground mode)
       pid: process.pid,
     };
+    let written = false;
     try {
       const dir = path.dirname(flagPath);
       fs.mkdirSync(dir, { recursive: true });
       const tmpPath = `${flagPath}.${process.pid}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
       fs.renameSync(tmpPath, flagPath);
+      written = true;
       console.log(`[AutoUpdater] Restart requested — supervisor or ForegroundRestartWatcher will handle (target: v${newVersion})`);
     } catch (err) {
       console.error(`[AutoUpdater] Failed to write restart request: ${err}`);
@@ -1223,6 +1361,7 @@ export class AutoUpdater {
         console.error(`[AutoUpdater] Failed to write lifeline restart signal: ${err}`);
       }
     }
+    return written;
   }
 
   /**
@@ -1332,6 +1471,7 @@ export class AutoUpdater {
 
   private recordRestartDeferral(input: {
     targetVersion: string;
+    bypassWindow?: boolean;
     reason: string;
     currentBlockers: string[];
     nextRetryAt: string | null;
@@ -1342,6 +1482,7 @@ export class AutoUpdater {
     this.restartDeferral = {
       active: true,
       targetVersion: input.targetVersion,
+      ...(input.bypassWindow === true || existing?.bypassWindow === true ? { bypassWindow: true } : {}),
       firstDeferredAt: existing?.firstDeferredAt ?? new Date().toISOString(),
       reason: input.reason,
       currentBlockers: input.currentBlockers,
@@ -1364,6 +1505,7 @@ export class AutoUpdater {
     return {
       active: true,
       targetVersion: data.targetVersion,
+      ...(data.bypassWindow === true ? { bypassWindow: true } : {}),
       firstDeferredAt: typeof data.firstDeferredAt === 'string' ? data.firstDeferredAt : new Date().toISOString(),
       reason: data.reason,
       currentBlockers: Array.isArray(data.currentBlockers)

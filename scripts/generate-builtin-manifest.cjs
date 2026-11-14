@@ -70,6 +70,7 @@ function scanHooks() {
     { file: 'claim-intercept.js', domain: 'coherence' },
     { file: 'claim-intercept-response.js', domain: 'coherence' },
     { file: 'stop-gate-router.js', domain: 'safety' },
+    { file: 'attribution-gate.js', domain: 'safety' },
     { file: 'auto-approve-permissions.js', domain: 'safety' },
   ];
 

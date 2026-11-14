@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-real-machine-fixes",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T12:20:37.637Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-real-machine-fixes.md",
+  "artifactSha256": "cefd866d9d3333f3b7742a8d46b4a4ee6d968536b041c1b1d5409d42954598d3",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/ConversationGraphReplication.ts",
+    "src/core/GraphMemberLossOwnedRole.ts",
+    "src/core/GraphNativeMemberLossStore.ts",
+    "src/core/GraphPreparedTransferEnvelopes.ts",
+    "src/core/GraphWitnessRecoveryCoordinator.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/SecretStore.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "src/server/GraphOwnerMemberLossExecution.ts",
+    "tests/helpers/conversation-graph-runtime.ts",
+    "tests/helpers/graph-member-loss-production-entry.ts",
+    "tests/integration/conversation-graph-replication-runtime.test.ts",
+    "tests/integration/graph-native-member-loss-store.test.ts",
+    "tests/unit/secret-store-keychain-read-memo.test.ts",
+    "upgrades/side-effects/conversation-graph-real-machine-fixes.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

@@ -22,6 +22,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, commandFailureTail, confinedCacheEnv, confinedEnv, type ConfinementPaths } from './executePolicy.js';
 import { shq } from './executorSession.js';
+import { claudeDirBreach } from './changeSet.js';
 import type { ConfinedRunner } from './ConfinedRunner.js';
 
 export interface CanaryProbeResult { probe: string; expect: 'fail' | 'succeed'; ok: boolean; detail: string }
@@ -336,7 +337,7 @@ export async function runRunnerCanary(input: {
   await mustSucceed('sqlite-open', node(`const D=require('better-sqlite3');const d=new D(':memory:');if(d.prepare('select 1 as x').get().x!==1)process.exit(1);console.log('sqlite-ok')`));
   if (input.fullGate) {
     await mustSucceed('base-lint-gate', input.fullGate.lintCommand, CONFINED_COMMAND_TIMEOUT_MS);
-    await mustSucceed('base-unit-smoke', `npx vitest run --no-cache ${input.fullGate.smokeTests.map(shq).join(' ')}`, CONFINED_COMMAND_TIMEOUT_MS);
+    await mustSucceed('base-unit-smoke', `./node_modules/.bin/vitest run --no-cache ${input.fullGate.smokeTests.map(shq).join(' ')}`, CONFINED_COMMAND_TIMEOUT_MS);
   }
   if (fs.existsSync(path.join(paths.publishClone, `.canary-${fx.nonce}`))) results.push({ probe: 'publish-clone-untouched', expect: 'fail', ok: false, detail: 'a canary file appeared in the publish clone' });
   results.push(...linkEffectChecks(paths, fx));
@@ -395,6 +396,12 @@ export function evaluateSessionCanary(paths: ConfinementPaths, fx: CanaryFixture
   const bashFile = path.join(paths.workspace, `.feedback-canary-bash-${fx.nonce}`);
   results.push({ probe: 'session-write-tool-in-workspace', expect: 'succeed', ok: fs.existsSync(okFile), detail: 'the Write tool must be able to write in the workspace' });
   results.push({ probe: 'session-bash-write-in-workspace', expect: 'succeed', ok: fs.existsSync(bashFile), detail: 'Bash must be able to write in the workspace' });
+  // The change-set gate refuses any `.claude/` the session left in its workspace; the rehearsal
+  // applies the SAME check, so a framework update that starts leaving something there fails here,
+  // once, instead of discarding every real attempt (2026-10-26: Claude Code 2.1.310 began creating
+  // `.claude/.cc-writes/` itself and both attempts were thrown away as sandbox-breach).
+  const claudeBreach = claudeDirBreach(paths.workspace);
+  results.push({ probe: 'session-claude-dir-clean', expect: 'fail', ok: claudeBreach === null, detail: claudeBreach ?? 'no .claude/ breach in the workspace' });
   // The verdict expression below is deliberately UNCHANGED. Only `detail` is enriched: the latch this
   // probe can trigger is a 24h stop that no route clears, and it previously recorded the probe NAME
   // only — so the one fact needed to diagnose it (what the session actually reported for step 9) died

@@ -111,7 +111,8 @@ describe('RelayHolderFinder — which machine holds my relay connection', () => 
       listPeers: () => Object.keys(answers).map((u, i) => ({ machineId: `m_${i}`, url: u })),
       ownFingerprint: () => OWN_FP,
       fetchFn: async (url, init) => {
-        const base = url.replace('/threadline/health', '');
+        expect(url).toContain('/threadline/health?scope=local');
+        const base = url.replace('/threadline/health?scope=local', '');
         hits.push(base);
         return Promise.race([
           answers[base](),

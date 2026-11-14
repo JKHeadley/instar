@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "slug": "local-verify-focused-preflight",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T11:29:08.997Z",
+  "artifactPath": "upgrades/side-effects/local-verify-focused-preflight.md",
+  "artifactSha256": "2d223500981545b0c7ecfb168ede27855c88dc3dd272c7acf81deb2bceb7136d",
+  "specPath": "docs/specs/local-verify-fast-focused-preflight.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-fast-focused-preflight.eli16.md",
+    "docs/specs/local-verify-fast-focused-preflight.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/policy.ts",
+    "src/localVerify/preflight.ts",
+    "src/localVerify/preflightReplay.ts",
+    "src/localVerify/record.ts",
+    "src/localVerify/runFocusedPreflight.ts",
+    "src/scaffold/templates.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A durable replay and early-red authority change affects verifier scheduling, peer import and fleet migration; full converged spec and three test tiers apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-verify-fast-focused-preflight-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

@@ -196,9 +196,9 @@ describe('resolveReloginNavigation', () => {
     expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'darwin')).toBe('agent-session');
     expect(resolveReloginNavigation(undefined, { developmentAgent: false }, 'darwin')).toBe('closed');
     // Off macOS: the existing driver, exactly as before.
-    expect(resolveReloginNavigation('agent-session', { developmentAgent: true }, 'linux')).toBe('agent');
-    expect(resolveReloginNavigation('agent-session', { developmentAgent: false }, 'linux')).toBe('closed');
-    expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'linux')).toBe('agent');
+    expect(resolveReloginNavigation('agent-session', { developmentAgent: true }, 'linux', false)).toBe('agent');
+    expect(resolveReloginNavigation('agent-session', { developmentAgent: false }, 'linux', false)).toBe('closed');
+    expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'linux', false)).toBe('agent');
     // An explicit legacy value always wins (rollback lever).
     expect(resolveReloginNavigation('closed', { developmentAgent: true }, 'darwin')).toBe('closed');
     expect(resolveReloginNavigation('agent', { developmentAgent: true }, 'darwin')).toBe('agent');

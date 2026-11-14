@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "allow-cc-writes-dir",
+  "sessionId": "e82cf1fb-8d20-4927-82ff-79db212c5b4a",
+  "timestamp": "2026-10-26T13:42:34.928Z",
+  "artifactPath": "upgrades/side-effects/allow-cc-writes-dir.md",
+  "artifactSha256": "5b0430bd31ece4e60de9ed44f4b803af05377f70bf8e4408dfd5fdb6ee52eb97",
+  "coveredFiles": [
+    "docs/specs/allow-cc-writes-dir.eli16.md",
+    "src/feedback-factory/execute/changeSet.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/allow-cc-writes-dir.md",
+    "upgrades/side-effects/allow-cc-writes-dir.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two source files (~45 lines): the change-set breach check accepts exactly Claude Code 2.1.310's own empty .claude/.cc-writes/ (proven by reproduction) and fails closed on everything else; the canary applies the same check; canary version bumped. Revert fully undoes it. Independent Codex review: round 1 BLOCKED, fixed, round 2 CLEAN.",
+  "eli16Path": "docs/specs/allow-cc-writes-dir.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/allow-cc-writes-dir.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,55 @@
+{
+  "ts": "2026-10-31T16:21:19.469Z",
+  "slug": "local-verify-failed-file-diagnosis",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 1364,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/FailedFileDiagnosisCoordinator.ts",
+      "src/localVerify/FailedFileDiagnosisPeerService.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/diagnosisSeams.ts",
+      "src/localVerify/failedFileDiagnosis.ts",
+      "src/localVerify/failedFileDiagnosisClient.ts",
+      "src/localVerify/failedFileDiagnosisPeer.ts",
+      "src/localVerify/failedFileDiagnosisStore.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/runFailedFileDiagnosis.ts",
+      "src/localVerify/runFailedFileDiagnosisMain.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1357,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The exact-key durable terminal marker caps a stale-busy peer at one dispatch across restart; 24-hour candidate age prevents a second dispatch after 14-day retention."
+    }
+  },
+  "verdict": "pass"
+}

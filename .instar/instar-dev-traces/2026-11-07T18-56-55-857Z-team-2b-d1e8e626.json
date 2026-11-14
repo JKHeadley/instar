@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "team-2b",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T18:56:55.857Z",
+  "artifactPath": "upgrades/side-effects/team-2b.md",
+  "artifactSha256": "bf74269457f47310f32cc0e4550738f78d06ee33aa6c43ecb70419b1a76de679",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/core/TeamAccessLog.ts",
+    "src/core/TeamAccessSync.ts",
+    "src/server/teamRoutes.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "tests/unit/team-access-sync.test.ts",
+    "upgrades/side-effects/team-2b.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

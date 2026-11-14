@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-05T05:06:38.798Z",
+  "slug": "lease-scheduler-role-continuity",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/roleFollowRestart.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "usage-wall-current-layout",
+  "sessionId": "8d6a2926-13de-489c-8c9b-8365ea44255d",
+  "timestamp": "2026-11-10T16:29:16.286Z",
+  "artifactPath": "upgrades/side-effects/usage-wall-current-layout.md",
+  "artifactSha256": "af9d7d4a51c7aac977f23a28d868a6b99049200d50b3d93f1029d64b395b23a2",
+  "coveredFiles": [
+    "docs/specs/usage-wall-current-layout.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ProactiveSwapMonitor.ts",
+    "src/core/SessionManager.ts",
+    "src/core/SwapAntiThrash.ts",
+    "src/core/SwapLedger.ts",
+    "src/core/types.ts",
+    "src/monitoring/SessionWatchdog.ts",
+    "src/monitoring/rateLimitDetection.ts",
+    "src/monitoring/sessionUsageLimitEvidence.ts",
+    "src/scaffold/templates.ts",
+    "tests/fixtures/usage-wall/claude-weekly-wall-side-panel-2026-11-10.txt",
+    "tests/unit/swap-continuity-wiring.test.ts",
+    "tests/unit/usage-wall-current-layout.test.ts",
+    "upgrades/next/usage-wall-current-layout.md",
+    "upgrades/side-effects/usage-wall-current-layout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix to usage-wall detection and a bounded escalation that reuses the existing reactive-swap path; a revert fully undoes it, no migration.",
+  "eli16Path": "docs/specs/usage-wall-current-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-wall-current-layout.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

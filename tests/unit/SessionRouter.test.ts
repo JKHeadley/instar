@@ -28,7 +28,7 @@ function makeRouter(over: Partial<SessionRouterDeps> = {}, registry: MachineCapa
     casClaimOwnership: vi.fn((_s: string, _m: string, e: number) => ({ ok: true, epoch: e + 1 })),
     deliverMessage: async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck,
     handleLocally: vi.fn(async () => {}),
-    spawnOnMachine: vi.fn(async () => {}),
+    spawnOnMachine: vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const })),
     queueMessage: vi.fn(() => 'refused' as const),
     raiseAttention: vi.fn(),
     markOwnerSuspect: vi.fn(),
@@ -113,7 +113,7 @@ describe('SessionRouter.dispatch (§L4)', () => {
   });
 
   it('owner not alive → owner-dead re-placement (marks suspect, re-places, claims)', async () => {
-    const spawn = vi.fn(async () => {});
+    const spawn = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
     const { router, deps } = makeRouter({
       resolveOwnership: () => ({ owner: 'm_dead', epoch: 1, status: 'active' }),
       isMachineAlive: (m) => m !== 'm_dead',
@@ -132,12 +132,12 @@ describe('SessionRouter.dispatch (§L4)', () => {
   });
 
   it('unowned → place → CAS won → spawn on the chosen remote machine + CONFIRM the owner (placing→active, bug #11)', async () => {
-    const spawn = vi.fn(async () => {});
+    const spawn = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
     const confirmClaim = vi.fn();
     const { router } = makeRouter({ spawnOnMachine: spawn, confirmClaim }, [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })]);
     const out = await router.route(msg());
     expect(out).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
-    expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }));
+    expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }), 1); // the CAS-landed epoch
     // bug #11: without this confirm the record stays 'placing' and later messages queue forever.
     expect(confirmClaim).toHaveBeenCalledWith('s1', 'm_remote');
   });
@@ -327,6 +327,78 @@ describe('SessionRouter — channel-scope threading (placement-platform-workspac
     expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', expect.any(Number));
   });
 
+  describe('an unowned key with a live session on this machine', () => {
+    const cheaperPeer = [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })];
+
+    it('stays here even when a peer is cheaper, and the message is handled here', async () => {
+      const { router, deps } = makeRouter({ liveLocalSession: () => true }, cheaperPeer);
+      const out = await router.route(msg());
+      expect(out).toMatchObject({ action: 'handled-locally', owner: SELF, acked: true });
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', SELF, 0);
+      expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+    });
+    it('confirms the claim at once, so a later Slack or drained message is not queued behind placing', async () => {
+      const confirmClaim = vi.fn();
+      const { router } = makeRouter({ liveLocalSession: () => true, confirmClaim }, cheaperPeer);
+      await router.route(msg());
+      expect(confirmClaim).toHaveBeenCalledWith('s1', SELF);
+    });
+    it('an ordinary self-placement is not confirmed early', async () => {
+      const confirmClaim = vi.fn();
+      const { router } = makeRouter({ liveLocalSession: () => false, confirmClaim }, [cap(SELF, { loadAvg: 0 }), cap('m_remote', { loadAvg: 9 })]);
+      await router.route(msg());
+      expect(confirmClaim).not.toHaveBeenCalled();
+    });
+    it('a machine that lost the workspace does not keep the session: mandatory checks still hold', async () => {
+      const registry = [
+        cap(SELF, { servesChannels: { slack: { workspaceIds: ['W-other'] } }, loadAvg: 0 }),
+        cap('m_remote', { servesChannels: { slack: { workspaceIds: ['W-live'] } }, loadAvg: 5 }),
+      ];
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, registry);
+      await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('a quota-blocked machine does not keep the session when a peer can take it', async () => {
+      const registry = [cap(SELF, { quotaState: { blocked: true } as MachineCapacity['quotaState'] }), cap('m_remote', { loadAvg: 5 })];
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, registry);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('with no live session, placement still chooses the cheaper peer', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => false }, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('a preferred machine wins over the live session: that is a request to move', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, cheaperPeer);
+      await router.route(msg({ topicMetadata: { preferredMachine: 'm_remote', pinned: true } }));
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('does not apply to a dead-owner re-placement', async () => {
+      const live = vi.fn(() => true);
+      const { deps, router } = makeRouter({ liveLocalSession: live, resolveOwnership: () => ({ owner: 'm_dead', epoch: 3, status: 'active' }), isMachineAlive: (m) => m !== 'm_dead' }, cheaperPeer);
+      await router.route(msg());
+      expect(live).not.toHaveBeenCalled();
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 3);
+    });
+    it('a key that already has an owner is untouched', async () => {
+      const live = vi.fn(() => true);
+      const { router } = makeRouter({ liveLocalSession: live, resolveOwnership: () => ({ owner: 'm_remote', epoch: 1, status: 'active' }) }, cheaperPeer);
+      expect(await router.route(msg())).toMatchObject({ action: 'forwarded', owner: 'm_remote' });
+      expect(live).not.toHaveBeenCalled();
+    });
+    it('a read error leaves the decision to placement', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => { throw new Error('tmux gone'); } }, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('without the dep, routing is unchanged', async () => {
+      const { deps, router } = makeRouter({}, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+  });
+
   it('no channel (telegram/shared or legacy) → decide() gets no channel → fail-open (unchanged routing)', async () => {
     const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
     const { router } = makeRouter({
@@ -336,5 +408,150 @@ describe('SessionRouter — channel-scope threading (placement-platform-workspac
     await router.route(msg()); // no channel
     const req = decideSpy.mock.calls[0][0] as { channel?: unknown };
     expect(req.channel).toBeUndefined();
+  });
+});
+
+// 2026-11-01 (Echo Bugs topic 10000001183): a message arrived while its topic
+// moved to another machine. The placement hop sent epoch 0 and ignored the
+// reply; the receiver held an older record for the topic, NACKed it stale, and
+// the router still reported `spawned` — so nothing handled the message.
+describe('SessionRouter — remote placement reads the spawn ACK', () => {
+  const remoteFirst = [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })];
+
+  it('spawn carries the epoch the placement CAS landed (not 0)', async () => {
+    const spawn = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
+    const { router } = makeRouter({
+      resolveOwnership: () => ({ owner: null, epoch: 3, status: null }), // a released record at epoch 3
+      spawnOnMachine: spawn,
+    }, remoteFirst);
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
+    expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }), 4);
+  });
+
+  it('the incident: a receiver holding an older record accepts the placement at the CAS epoch', async () => {
+    const { createDeliverMessageHandler } = await import('../../src/core/DeliverMessageHandler.js');
+    const receiver = createDeliverMessageHandler({ ownerEpochOf: () => 3, recordReceipt: () => true });
+    const spawn = vi.fn(async (_m: string, m: InboundMessage, epoch: number) =>
+      receiver({ type: 'deliverMessage', session: m.sessionKey, messageId: m.messageId, payload: m.payload, ownershipEpoch: epoch }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: () => ({ owner: null, epoch: 3, status: null }), spawnOnMachine: spawn }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
+    // The pre-fix hop (epoch 0) is exactly what this receiver refuses.
+    expect(receiver({ type: 'deliverMessage', session: 's1', messageId: 'evt-2', payload: 'x', ownershipEpoch: 0 })).toMatchObject({ accepted: 'stale-ownership' });
+  });
+
+  it('stale-ownership spawn ACK → NOT spawned: placement taken back and handled locally, no remote confirm', async () => {
+    const confirmClaim = vi.fn();
+    const reclaimPlacement = vi.fn(() => true);
+    const { router, deps } = makeRouter({
+      spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' as const }),
+      confirmClaim,
+      reclaimPlacement,
+    }, remoteFirst);
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'handled-locally', owner: SELF, detail: 'spawn-stale-ownership', acked: true });
+    expect(isRemotelyHandled(out, SELF)).toBe(false); // the caller dispatches locally
+    expect(reclaimPlacement).toHaveBeenCalledWith('s1', 'm_remote');
+    expect(deps.handleLocally).toHaveBeenCalledOnce();
+    expect(confirmClaim).not.toHaveBeenCalled();
+    expect(deps.markOwnerSuspect).not.toHaveBeenCalled(); // it answered; it is not dead
+  });
+
+  it('spawn transport failure → retries, marks the target suspect, then takes the placement back', async () => {
+    const spawn = vi.fn(async () => { throw new Error('ETIMEDOUT'); });
+    const reclaimPlacement = vi.fn(() => true);
+    const { router, deps } = makeRouter({ spawnOnMachine: spawn, reclaimPlacement }, remoteFirst);
+    const out = await router.route(msg());
+    expect(spawn).toHaveBeenCalledTimes(4); // initial + 3 retries
+    expect(deps.markOwnerSuspect).toHaveBeenCalledWith('m_remote');
+    expect(out).toMatchObject({ action: 'handled-locally', detail: 'spawn-unreachable', acked: true });
+  });
+
+  it('a missing ACK is never read as success', async () => {
+    const reclaimPlacement = vi.fn(() => true);
+    const { router } = makeRouter({ spawnOnMachine: (async () => undefined) as never, reclaimPlacement }, remoteFirst);
+    expect((await router.route(msg())).action).toBe('handled-locally');
+  });
+
+  it('placement cannot be taken back → durable custody (acked) when the queue takes it', async () => {
+    const queueMessage = vi.fn(() => 'queued' as const);
+    const { router } = makeRouter({
+      spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' as const }),
+      reclaimPlacement: () => false,
+      queueMessage,
+    }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'queued', detail: 'spawn-stale-ownership', acked: true });
+    expect(queueMessage).toHaveBeenCalledWith(expect.anything(), 'spawn-stale-ownership');
+  });
+
+  it('no take-back and no queue → un-acked, so the caller falls through to local dispatch', async () => {
+    const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' as const }) }, remoteFirst);
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'queued', acked: false });
+    expect(isRemotelyHandled(out, SELF)).toBe(false);
+  });
+
+  it('a duplicate spawn ACK counts as taken (the target already holds it)', async () => {
+    const confirmClaim = vi.fn();
+    const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'duplicate' as const }), confirmClaim }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
+    expect(confirmClaim).toHaveBeenCalledWith('s1', 'm_remote');
+  });
+
+  it('a sender-rejected spawn ACK is a terminal refusal, never spawned or re-placed', async () => {
+    const reclaimPlacement = vi.fn(() => true);
+    const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'sender-rejected' as const }), reclaimPlacement }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'rejected', detail: 'sender-deauthorized', acked: true });
+    expect(reclaimPlacement).not.toHaveBeenCalled();
+  });
+});
+
+describe('routingOnly: a pool stepped down to dark never places', () => {
+  const msg = (over: Partial<InboundMessage> = {}): InboundMessage => ({ sessionKey: '7', messageId: 'm1', payload: 'hi', routingOnly: true, ...over });
+  const owned: OwnershipView = { status: 'active', owner: 'm_remote', epoch: 3 };
+
+  it('reaches a live owner', async () => {
+    const deliverMessage = vi.fn(async (): Promise<DeliverAck> => ({ messageId: 'm1', accepted: 'queued' }));
+    const { router } = makeRouter({ resolveOwnership: () => owned, deliverMessage, isMachineAlive: () => true });
+    expect((await router.route(msg())).action).toBe('forwarded');
+    expect(deliverMessage).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['a dead owner', { resolveOwnership: () => owned, isMachineAlive: () => false }],
+    ['an unowned conversation', {}],
+    ['an owner that stops answering', {
+      resolveOwnership: () => owned, isMachineAlive: () => true,
+      deliverMessage: async (): Promise<DeliverAck> => { throw new Error('down'); },
+    }],
+  ])('%s stays on this machine', async (_name, over) => {
+    const { router, deps } = makeRouter(over as Partial<SessionRouterDeps>);
+    const decide = vi.spyOn(deps.placement, 'decide');
+    const out = await router.route(msg());
+    expect(out.action).toBe('handled-locally');
+    expect(out.detail).toBe('routing-only');
+    expect(deps.handleLocally).toHaveBeenCalledOnce();
+    expect(decide).not.toHaveBeenCalled();
+    expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+  });
+  it('takes the record for itself when the owner is gone, or the queue would refuse local delivery', async () => {
+    const confirmClaim = vi.fn();
+    const { router, deps } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => false, confirmClaim });
+    await router.route(msg());
+    expect(deps.casClaimOwnership).toHaveBeenCalledWith('7', SELF, 3);
+    expect(confirmClaim).toHaveBeenCalledWith('7', SELF);
+  });
+  it('an unowned conversation claims nothing', async () => {
+    const { router, deps } = makeRouter();
+    await router.route(msg());
+    expect(deps.casClaimOwnership).not.toHaveBeenCalled();
+  });
+  it('a lost claim keeps the message in custody, never delivered here', async () => {
+    const { router, deps } = makeRouter({
+      resolveOwnership: () => owned, isMachineAlive: () => false,
+      casClaimOwnership: vi.fn(() => ({ ok: false, epoch: 4 })),
+      queueMessage: vi.fn(() => 'queued' as const),
+    });
+    expect(await router.route(msg())).toMatchObject({ action: 'queued', acked: true });
+    expect(deps.handleLocally).not.toHaveBeenCalled();
   });
 });

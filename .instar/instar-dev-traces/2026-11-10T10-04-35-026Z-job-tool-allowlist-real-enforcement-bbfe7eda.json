@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "job-tool-allowlist-real-enforcement",
+  "sessionId": "bb009edc-834d-40af-a92c-3b81122b1fee",
+  "timestamp": "2026-11-10T10:04:35.026Z",
+  "artifactPath": "upgrades/side-effects/job-tool-allowlist-real-enforcement.md",
+  "artifactSha256": "5cbc327b3f851871bdf8521dcb660d5728a6e859f05c2529d64d4b24dce780d6",
+  "specPath": "docs/specs/job-tool-allowlist-real-enforcement.md",
+  "coveredFiles": [
+    "docs/specs/job-tool-allowlist-real-enforcement.md",
+    "tests/integration/job-tool-confinement-live.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/side-effects/job-tool-allowlist-real-enforcement.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the EVO-008 commit: renames the opt-in live-test switch so the shared test setup file is not changed.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

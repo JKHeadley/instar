@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "server-down-remote-recovery",
+  "sessionId": "5c623401-e6f7-4a07-a977-3f1b368dd0c8",
+  "timestamp": "2026-11-07T18:35:43.035Z",
+  "artifactPath": "upgrades/side-effects/server-down-remote-recovery.md",
+  "artifactSha256": "a1c15af7265cfe1ebc1124f40e82ec8107669165e1dd59e3c2cbd0d40c2bd9d6",
+  "specPath": "docs/specs/server-down-remote-recovery.md",
+  "coveredFiles": [
+    "src/commands/recoveryMainWiring.ts",
+    "src/commands/server.ts",
+    "src/recovery/RecoveryMainWiring.ts",
+    "tests/unit/recovery-main-wiring.test.ts",
+    "upgrades/side-effects/server-down-remote-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Keeps main-server code out of the independent recovery runtime; part of the tier 2 recovery feature; independent reviewer concurred.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

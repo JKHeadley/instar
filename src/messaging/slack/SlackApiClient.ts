@@ -10,7 +10,7 @@
 
 import { getTier, type RateLimitTier } from './types.js';
 import { redactToken } from './sanitize.js';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 // RULE 3: EXEMPT — this transport consumes Slack's documented Web API JSON
 // contract; malformed/non-ok responses fail loudly and never establish hidden
@@ -46,6 +46,27 @@ const PERMANENT_ERRORS = new Set([
 ]);
 
 const FETCH_FAILURES_BEFORE_TRANSPORT_RESET = 3;
+
+/**
+ * Slack methods that do not read a JSON body (verified 2026-11-08 against the live API: with
+ * `application/json` they answer `user_not_found` / `invalid_arguments` as if no argument was sent).
+ * They take form encoding, which every Slack method accepts. Before this, every user-name and
+ * channel-name lookup failed and fell back to the raw id (fb-4db533fa-9d9).
+ */
+export const FORM_ENCODED_METHODS: ReadonlySet<string> = new Set([
+  'users.info', 'conversations.info', 'conversations.replies', 'conversations.members', 'files.info',
+]);
+
+/** The request body for one Slack Web API call: form encoding for FORM_ENCODED_METHODS, JSON otherwise. */
+export function encodeSlackRequest(method: string, params: Record<string, unknown>): { contentType: string; body: string } {
+  if (!FORM_ENCODED_METHODS.has(method)) return { contentType: 'application/json; charset=utf-8', body: JSON.stringify(params) };
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    form.set(k, typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v));
+  }
+  return { contentType: 'application/x-www-form-urlencoded; charset=utf-8', body: form.toString() };
+}
 
 export class SlackApiClient {
   private botToken: string;
@@ -98,23 +119,22 @@ export class SlackApiClient {
     attempt: number,
     maxRetries: number,
   ): Promise<SlackApiResponse> {
-    let response: Response;
-    // Keep the recovery pool scoped to Slack requests. Rebuilding a
-    // process-global dispatcher could disrupt unrelated HTTP clients. Node's
-    // fetch honors the undici `dispatcher` init option, but the DOM-typed
-    // RequestInit doesn't declare it — declare the init with the extended type
-    // instead of casting the literal.
-    const init: RequestInit & { dispatcher?: Agent } = {
+    let response: Awaited<ReturnType<typeof undiciFetch>>;
+    // Use the package fetch with its matching Agent. Node's built-in fetch may
+    // bundle a different undici version and reject this dispatcher at runtime.
+    // Keep the recovery pool scoped to Slack requests.
+    const encoded = encodeSlackRequest(method, params);
+    const init: Parameters<typeof undiciFetch>[1] = {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Type': encoded.contentType,
       },
-      body: JSON.stringify(params),
+      body: encoded.body,
+      dispatcher: this.dispatcher,
     };
-    init.dispatcher = this.dispatcher;
     try {
-      response = await fetch(`https://slack.com/api/${method}`, init);
+      response = await undiciFetch(`https://slack.com/api/${method}`, init);
       this.consecutiveFetchFailures = 0;
     } catch (error) {
       this.consecutiveFetchFailures++;

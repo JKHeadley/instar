@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-30T19:04:54.471Z",
+  "slug": "doorway-scan-real-run",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 330,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/doorway-scan.mjs",
+      "src/scaffold/templates/jobs/instar/scripts/doorway-scan.mjs",
+      "src/scheduler/ScriptCanaryRunner.ts"
+    ],
+    "addedLines": 308,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

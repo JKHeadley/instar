@@ -1,0 +1,70 @@
+{
+  "version": 3,
+  "slug": "feedback-triage-account-selection",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-31T07:23:02.604Z",
+  "artifactPath": "upgrades/side-effects/feedback-triage-account-selection.md",
+  "artifactSha256": "909c4c13acb4a0cdb91dd9202e6f0dd7d1f6a975316a7be0dbf926d68f13ab33",
+  "specPath": "docs/specs/feedback-triage-pool-quota.md",
+  "coveredFiles": [
+    "src/config/ConfigDefaults.ts",
+    "src/core/CircuitBreakingIntelligenceProvider.ts",
+    "src/core/CodexCliIntelligenceProvider.ts",
+    "src/core/IntelligenceRouter.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SpawnCapIntelligenceProvider.ts",
+    "src/core/types.ts",
+    "src/feedback-factory/drain/FeedbackDrainStore.ts",
+    "src/feedback-factory/triage/FeedbackTriageAccountSelector.ts",
+    "src/feedback-factory/triage/FeedbackTriageArbiter.ts",
+    "src/feedback-factory/triage/FeedbackTriageService.ts",
+    "src/feedback-factory/triage/buildFeedbackTriage.ts",
+    "src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.ts",
+    "src/providers/adapters/openai-codex/transport/codexSpawn.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/feedback-triage-lifecycle.test.ts",
+    "tests/fixtures/feedbackTriageHarness.ts",
+    "tests/integration/feedback-triage-routes.test.ts",
+    "tests/unit/CodexCliIntelligenceProvider.test.ts",
+    "tests/unit/PostUpdateMigrator-feedbackTriageAccountQuota.test.ts",
+    "tests/unit/codex-exec-json-spawn.test.ts",
+    "tests/unit/codexLiveRateLimitReader.test.ts",
+    "tests/unit/feedback-factory/triage-account-selector.test.ts",
+    "tests/unit/feedback-factory/triage-arbiter.test.ts",
+    "tests/unit/feedback-factory/triage-service.test.ts",
+    "tests/unit/feedback-factory/triage-wiring.test.ts",
+    "tests/unit/intelligence-router.test.ts",
+    "tests/unit/providers/adapters/openai-codex/codexSpawn-env.test.ts",
+    "upgrades/next/feedback-triage-account-selection.md",
+    "upgrades/side-effects/feedback-triage-account-selection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes credential identity, subscription spend admission, transactional call reservation and multi-machine ownership; a complete approved converged spec and independent side-effects review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The feedback-triage-tick fixture models the durable per-item 24-hour requeue throttle under sustained pressure and restart. The ratchet fails if the modeled controller repeats calls within that floor. It does not exercise the production reservation store or daily and per-kind caps; tests/unit/feedback-factory/triage-arbiter.test.ts separately tests those limits and transactional accounting. Quota refusal does not retry."
+    }
+  }
+}

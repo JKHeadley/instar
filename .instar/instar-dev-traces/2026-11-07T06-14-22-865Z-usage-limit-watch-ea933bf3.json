@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "usage-limit-watch",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T06:14:22.865Z",
+  "artifactPath": "upgrades/side-effects/usage-limit-watch.md",
+  "artifactSha256": "045fbe20674b4b533c313ae4c1d74152f816464d0b03e93c6654bb6ec20d60b2",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/UsageLimitWatch.ts",
+    "upgrades/eli16-usage-limit-watch.md",
+    "upgrades/side-effects/usage-limit-watch.md",
+    "upgrades/usage-limit-watch.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Note rename and fallback markers; no behaviour change",
+  "eli16Path": "upgrades/usage-limit-watch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-limit-watch.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "unchanged: usage-limit-session-refresh stays registered with its daily cap"
+    }
+  }
+}

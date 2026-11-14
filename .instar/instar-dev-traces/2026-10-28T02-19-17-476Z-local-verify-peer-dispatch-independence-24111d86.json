@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-dispatch-independence",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-28T02:19:17.476Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-dispatch-independence.md",
+  "artifactSha256": "72fabdace8c2ef68da97e96a4a07e4bc086c58ba18cf31a48d7338b07d8e5a94",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "upgrades/side-effects/local-verify-peer-dispatch-independence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Integration timing correction for the approved cross-machine verifier scheduling change; retains independent review and exact-head validation.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

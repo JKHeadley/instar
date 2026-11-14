@@ -28,14 +28,25 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 let tmpDir: string;
 let stateFile: string;
 let legacyFile: string;
+let stores: TopicProfileStore[];
 
 beforeEach(() => {
+  stores = [];
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'topic-profile-store-'));
   stateFile = path.join(tmpDir, 'state', 'topic-profiles.json');
   legacyFile = path.join(tmpDir, 'state', 'topic-frameworks.json');
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Construction may start a best-effort boot flush from a legacy seed. Wait
+  // for it before deleting the fixture, or the writer can recreate `state/`
+  // while fs.rmSync walks it (observed ENOTEMPTY on a loaded CI runner).
+  for (const store of stores) {
+    const pending = store as unknown as { flushInFlight: Promise<void> | null; trailingFlush: Promise<void> | null };
+    while (pending.flushInFlight || pending.trailingFlush) {
+      await Promise.allSettled([pending.flushInFlight, pending.trailingFlush].filter((p): p is Promise<void> => p !== null));
+    }
+  }
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,
     force: true,
@@ -44,11 +55,13 @@ afterEach(() => {
 });
 
 function newStore(opts: { isDryRun?: () => boolean } = {}): TopicProfileStore {
-  return new TopicProfileStore({
+  const store = new TopicProfileStore({
     stateFilePath: stateFile,
     legacyFrameworksPath: legacyFile,
     isDryRun: opts.isDryRun,
   });
+  stores.push(store);
+  return store;
 }
 
 describe('TopicProfileStore — mutate field-merge', () => {

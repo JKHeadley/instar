@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-03T00:23:54.737Z",
+  "slug": "held-expiry-one-row-per-topic",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes the grouping key of an existing notification; no new action or loop"
+  },
+  "verdict": "pass"
+}

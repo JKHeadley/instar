@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "mobile-native-conversations-inc3-followup",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T16:20:58.533Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-conversations-inc3-followup.md",
+  "artifactSha256": "5618bdf24c303413df66eac8d9bf040782fe65a8732b19b11261437f2739e816",
+  "coveredFiles": [
+    "docs/specs/reports/mobile-native-conversations-inc3-followup.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-telegram-free-alive.test.ts",
+    "tests/integration/mobile-dashboard-pairing.test.ts",
+    "tests/unit/pairing-without-telegram-claude-md-awareness.test.ts",
+    "upgrades/next/mobile-native-conversations-inc3-followup.md",
+    "upgrades/side-effects/mobile-native-conversations-inc3-followup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three low review findings: a test, one CLAUDE.md sentence refreshed in place, and dropping a hidden confirm code; a revert undoes all of it.",
+  "eli16Path": "docs/specs/reports/mobile-native-conversations-inc3-followup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-native-conversations-inc3-followup.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

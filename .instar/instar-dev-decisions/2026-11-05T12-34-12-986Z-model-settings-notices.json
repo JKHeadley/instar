@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-05T12:34:12.986Z",
+  "slug": "model-settings-notices",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 161,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/TopicProfileOrchestrator.ts",
+      "src/server/routes.ts",
+      "src/server/sessionSpawnTopicBinding.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 143,
+    "deletedLines": 18
+  },
+  "causalAutopsy": {
+    "origin": "unknown",
+    "notes": "Boot sweep treated accepted direct-spawn choice/default drift as failed pin application and stored no durable notice episode."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Repeated server boot re-enters the same profile mismatch notification edge. The durable fingerprint claim settles at one notification under sustained busy pressure, including reconstruction before every tick; production claimReconciliationNotice is exercised by the registry and the real disk/HTTP lifecycle proves restart persistence."
+    },
+    "component": "TopicProfileOrchestrator"
+  },
+  "verdict": "pass"
+}

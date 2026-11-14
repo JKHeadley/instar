@@ -36,6 +36,8 @@
  * are registered.
  */
 
+import { isSlackConversationKey } from './SlackForwardBridge.js';
+import { isAppOwnershipKey } from './SessionOwnership.js';
 import type { SessionOwnershipRegistry, CasResult } from './SessionOwnershipRegistry.js';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { TopicPin, TopicPlacementPinStore } from './TopicPlacementPinStore.js';
@@ -43,6 +45,8 @@ import { compareHlc } from './TopicPinReplicatedStore.js';
 import { claimSuspensionExcludesPin } from './TopicClaimAnnotationStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import type { StaleOwnerReleaseEngine } from './StaleOwnerReleaseEngine.js';
+import { TopicRef } from '../messaging/shared/topicRef.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface ReconcilerMachineView {
   machineId: string;
@@ -148,6 +152,36 @@ export interface OwnershipReconcilerDeps {
   /** U4.1 §2E brake (ii): a pending pin older than this raises ONE deduped
    *  fulfil-or-unpin attention item. Default 24h (ws13PendingPinMaxAgeMs). */
   pendingPinMaxAgeMs?: number;
+  /**
+   * trustworthy-machine-load D1 — a TRANSIENT move input, separate from pins: topics this
+   * machine should shed because it has stayed overloaded (topic → target, episode id).
+   * Processed AFTER pins and at lower precedence: a pinned topic is never overload-moved,
+   * and an entry is never written to the pin store (no durable pin, no pin-divergence
+   * alarm). The proposer drops an entry once ownership lands on the target or it expires.
+   * Absent ⇒ no overload moves (today's behavior).
+   */
+  overloadMoves?: () => ReadonlyArray<{ sessionKey: string; target: string; episodeId: string }>;
+  /**
+   * Performs an overload move through the owner-side drain, which closes the session
+   * and hands over custody. Fire-and-forget: it reports its outcome to the planner.
+   * Absent ⇒ no overload move happens: a bare transfer would leave the session running
+   * on the overloaded machine with ownership pointing elsewhere.
+   */
+  drainMove?: (mv: { sessionKey: string; target: string; episodeId: string }, epoch: number) => void;
+  /**
+   * trustworthy-machine-load D4 — drive in-flight transfers to claim or abort INDEPENDENTLY
+   * of pins, so a move outlives its proposal (expiry, restart): each tick the durable
+   * registry is scanned for unpinned `transferring` records this machine is party to; the
+   * target claims, and the source aborts past the deadline whether or not the target looks
+   * online. Read live. Absent / false ⇒ only pinned transfers are driven (today's behavior).
+   */
+  driveUnpinnedTransfers?: () => boolean;
+  /**
+   * trustworthy-machine-load D4: whether THIS machine may take on moved work. A target
+   * that became overloaded after a move was proposed does not claim it (the source
+   * aborts it back after the deadline). Absent ⇒ always claims (today's behavior).
+   */
+  acceptingMovedWork?: () => boolean;
   /** U4.1 P17 escalation seam (deduped upstream by id). Absent ⇒ no escalation. */
   raiseAttention?: (item: { id: string; title: string; body: string; priority: string; sourceContext: string }) => void;
   now?: () => number;
@@ -174,6 +208,13 @@ export interface ReconcileTickReport {
   deferredAutonomousRun: number;
   /** U4.1 §2D pacing: move-initiating actions withheld this tick (over ws13MaxMovesPerTick). */
   deferredPaced: number;
+  /** Pins on Slack conversations, never acted on: a Slack conversation stays with its connection. */
+  skippedSlackPins?: number;
+  /** trustworthy-machine-load D1: overload-shed transfers initiated this tick (also counted in `transfers`). */
+  overloadTransfers?: number;
+  /** trustworthy-machine-load D4: unpinned in-flight transfers claimed / aborted this tick (also counted in claims/aborts). */
+  unpinnedClaims?: number;
+  unpinnedAborts?: number;
   dryRun: boolean;
   skipped?: 'disabled' | 'single-machine' | 'self-id-unresolved';
 }
@@ -244,6 +285,8 @@ export class OwnershipReconciler {
   private readonly d: OwnershipReconcilerDeps;
   /** First time we observed each topic's CURRENT conflict (cleared on convergence). */
   private readonly conflictSince = new Map<string, number>();
+  /** trustworthy-machine-load D1: topic → overload episode already transferred (one transfer per topic per episode). */
+  private readonly overloadTransferred = new Map<string, string>();
   /** Observability (Observable Intelligence): the most recent tick's report + when. */
   private lastReport: ReconcileTickReport | null = null;
   private lastTickAtMs = 0;
@@ -405,6 +448,16 @@ export class OwnershipReconciler {
 
     for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
       if (!pin.pinned || !pin.preferredMachine) continue;
+      // app-conversations-in-the-pool §2.2: an app conversation moves only by a completed drain or the
+      // operator's "bring it back here". A leftover pin on one is never acted on.
+      if (isAppOwnershipKey(sessionKey)) continue;
+      // slack-conversations-stay-with-connection §2.1: a pin left on a Slack conversation (from a move
+      // tried before this fix, or replicated from an older machine) never moves it. No case below may
+      // transfer, claim or adopt it: nothing would close the old session, and two would answer.
+      if (isSlackConversationKey(sessionKey)) {
+        report.skippedSlackPins = (report.skippedSlackPins ?? 0) + 1;
+        continue;
+      }
       pinnedSeenThisTick.add(sessionKey);
       const rec = this.d.ownership.read(sessionKey);
       const owner = rec && rec.status !== 'released' ? rec.ownerMachineId : null;
@@ -554,6 +607,89 @@ export class OwnershipReconciler {
       }
       // Neither owner nor pin target: not my move this tick.
     }
+    // ── trustworthy-machine-load D1: overload moves (transient, lower precedence than pins).
+    const moves = (() => {
+      try { return this.d.overloadMoves?.() ?? []; } catch { return []; /* @silent-fallback-ok — a broken proposer yields no overload moves this tick; pins are unaffected */ }
+    })();
+    for (const mv of moves) {
+      if (pinnedSeenThisTick.has(mv.sessionKey)) continue; // a pinned topic is never overload-moved
+      // One transfer per topic per overload episode at the ACTUATOR: a transfer that the
+      // target did not claim is aborted back, and must not be re-initiated from the same
+      // proposal (that would loop transfer → abort every deadline).
+      if (this.overloadTransferred.get(mv.sessionKey) === mv.episodeId) continue;
+      if (!mv.target || mv.target === self) continue;
+      const rec = this.d.ownership.read(mv.sessionKey);
+      if (!rec || rec.status !== 'active' || rec.ownerMachineId !== self) continue; // only the live owner sheds
+      if (!targetActuationOk(byId.get(mv.target), mv.target)) { report.deferredTargetOffline++; continue; }
+      if (this.d.hasLiveAutonomousRun) {
+        let live = false;
+        try { live = this.d.hasLiveAutonomousRun(mv.sessionKey); } catch { live = false; /* @silent-fallback-ok — unreadable run registry reads as no live run; the busy gate below still applies */ }
+        if (live) { report.deferredAutonomousRun++; continue; }
+      }
+      // No safe-point deadline override for an overload move: wait for idle.
+      if (this.d.isTopicBusy(mv.sessionKey)) { report.deferredBusy++; continue; }
+      if (movesInitiated() >= maxMoves) { report.deferredPaced++; continue; }
+      if (!this.d.drainMove) continue;
+      let reconcileDryRun = true;
+      try { reconcileDryRun = this.d.dryRun(); } catch { reconcileDryRun = true; /* @silent-fallback-ok — an unreadable gate reads as dry-run: nothing moves */ }
+      if (reconcileDryRun) continue;
+      this.overloadTransferred.set(mv.sessionKey, mv.episodeId);
+      if (this.overloadTransferred.size > 1000) this.overloadTransferred.delete(this.overloadTransferred.keys().next().value as string);
+      report.transfers += 1;
+      report.overloadTransfers = (report.overloadTransfers ?? 0) + 1;
+      this.log(`overload-shed drain ${mv.sessionKey} → ${mv.target} (episode ${mv.episodeId})`);
+      try { this.d.drainMove(mv, rec.ownershipEpoch); }
+      catch (err) { this.log(`overload-shed drain failed to start for ${mv.sessionKey}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+
+    // ── trustworthy-machine-load D4: drive UNPINNED in-flight transfers (a started move
+    // outlives its proposal). Pinned records are already driven by the loop above.
+    let driveUnpinned = false;
+    try { driveUnpinned = this.d.driveUnpinnedTransfers?.() === true; } catch { driveUnpinned = false; /* @silent-fallback-ok — unreadable flag keeps today's pin-only behavior */ }
+    // A drain-flow record is always driven, whatever the shed's dry-run says, so flipping
+    // that switch mid-move cannot strand a topic in `transferring`.
+    {
+      const deadline = this.d.transferDeadlineMs ?? DEFAULT_TRANSFER_DEADLINE_MS;
+      let all: ReturnType<SessionOwnershipRegistry['all']> = [];
+      try { all = this.d.ownership.all(); } catch { all = []; /* @silent-fallback-ok — an unreadable registry drives nothing this tick; the next tick retries */ }
+      for (const rec of all) {
+        if (rec.status !== 'transferring' || pinnedSeenThisTick.has(rec.sessionKey)) continue;
+        // app-conversations-in-the-pool §2.5: a `transferring` app record is resolved by its own owner.
+        if (isAppOwnershipKey(rec.sessionKey)) continue;
+        // slack-conversations-stay-with-connection §2.1: a Slack conversation caught mid-transfer (an
+        // older owner's move, or one in flight at upgrade) is never claimed elsewhere — its owner takes
+        // it back at once, whatever the flags, so it is neither split nor left queuing in `transferring`.
+        if (isSlackConversationKey(rec.sessionKey)) {
+          if (rec.ownerMachineId === self && rec.transferTo && rec.transferTo !== self) {
+            this.act(report, 'aborts', rec.sessionKey, { type: 'abort-transfer', machineId: self }, 'reconcile-abort-transfer');
+          }
+          continue;
+        }
+        if (!driveUnpinned && rec.drainInFlight !== true) continue;
+        const age = now - (rec.timestamp ?? 0); // same fallback as the pinned path
+        if (rec.transferTo === self) {
+          let accepting = true;
+          try { accepting = this.d.acceptingMovedWork?.() !== false; } catch { accepting = true; /* @silent-fallback-ok — unreadable admission reads as accepting (today's behavior); the source's deadline still bounds the move */ }
+          if (!accepting) { report.deferredBusy++; continue; }
+          if (rec.drainInFlight === true && age < DEFAULT_DRAIN_CLAIM_GRACE_MS) { report.deferredBusy++; continue; }
+          const before = report.claims;
+          this.act(report, 'claims', rec.sessionKey, { type: 'claim', machineId: self }, 'reconcile-claim');
+          if (report.claims > before) report.unpinnedClaims = (report.unpinnedClaims ?? 0) + 1;
+          continue;
+        }
+        if (rec.ownerMachineId === self && rec.transferTo && rec.transferTo !== self) {
+          // A drain-flow transfer gets its drain grace on top of the deadline.
+          const limit = deadline + (rec.drainInFlight === true ? DEFAULT_DRAIN_CLAIM_GRACE_MS : 0);
+          if (age < limit) continue;
+          // The deadline applies whether or not the target looks online (D4): a live target
+          // that has not claimed by now is aborted the same way as an unreachable one.
+          const before = report.aborts;
+          this.act(report, 'aborts', rec.sessionKey, { type: 'abort-transfer', machineId: self }, 'reconcile-abort-transfer');
+          if (report.aborts > before) report.unpinnedAborts = (report.unpinnedAborts ?? 0) + 1;
+        }
+      }
+    }
+
     // U4.1 §2D/§2E episode boundaries: a pin that vanished (cleared/tombstoned)
     // closes its open attention episodes — a re-pin later opens a NEW episode.
     for (const key of [...this.divergedEpisodes]) {
@@ -608,8 +744,8 @@ export class OwnershipReconciler {
       try {
         raise({
           id: `u41:pin-diverged:${sessionKey}`,
-          title: `Topic ${sessionKey} placement diverged from its pin`,
-          body: `Topic ${sessionKey} is pinned to ${pin.preferredMachine} but has been running elsewhere for over ${Math.round(divergedWindow / 60000)} minutes. The reconciler keeps converging it; if this persists, the pinned machine may be refusing the topic — check GET /pool/placement?topic=${sessionKey} and GET /pool/reconciler?topic=${sessionKey}.`,
+          title: `${TopicRef(sessionKey)} placement diverged from its pin`,
+          body: `${TopicRef(sessionKey)} is pinned to ${pin.preferredMachine} but has been running elsewhere for over ${Math.round(divergedWindow / 60000)} minutes. The reconciler keeps converging it; if this persists, the pinned machine may be refusing the topic — check GET /pool/placement?topic=${sessionKey} and GET /pool/reconciler?topic=${sessionKey}.`,
           priority: 'medium',
           sourceContext: 'ws13-pin-persistence',
         });
@@ -622,8 +758,8 @@ export class OwnershipReconciler {
       try {
         raise({
           id: `u41:pin-pending-aged:${sessionKey}`,
-          title: `Topic ${sessionKey}'s pin has waited ${Math.round(pinAge / 3600000)}h unfulfilled`,
-          body: `Topic ${sessionKey} is pinned to ${pin.preferredMachine} but the pin has not been fulfilled for over ${Math.round(maxPendingAge / 3600000)} hours (the machine may be offline, decommissioned, or the topic is deferring on live work). Fulfil it (bring ${pin.preferredMachine} back / free the topic) or unpin via POST /pool/unpin {"topic":${JSON.stringify(sessionKey)}}.`,
+          title: `${TopicRef(sessionKey)}'s pin has waited ${Math.round(pinAge / 3600000)}h unfulfilled`,
+          body: `${TopicRef(sessionKey)} is pinned to ${pin.preferredMachine} but the pin has not been fulfilled for over ${Math.round(maxPendingAge / 3600000)} hours (the machine may be offline, decommissioned, or the topic is deferring on live work). Fulfil it (bring ${pin.preferredMachine} back / free the topic) or unpin via POST /pool/unpin {"topic":${JSON.stringify(sessionKey)}}.`,
           priority: 'medium',
           sourceContext: 'ws13-pin-persistence',
         });
@@ -667,6 +803,8 @@ export class OwnershipReconciler {
   ): boolean {
     if (this.d.dryRun()) {
       this.log(`DRY-RUN would ${action.type} ${sessionKey} (${reason})`);
+      // A would-act repeats every tick until the pin converges: one row per topic and step per hour.
+      featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws13Reconcile', `${sessionKey}|${action.type}|${reason}`, 60 * 60_000, { kind: 'fired', reason: `would ${action.type} (${reason})`, context: { topic: sessionKey, action: action.type, step: reason, dryRun: true } });
       if (!countOnce) report[counter]++;
       return false; // dry-run never lands a CAS, so chained steps stop here
     }
@@ -679,11 +817,13 @@ export class OwnershipReconciler {
     if (r.ok) {
       if (!countOnce) report[counter]++;
       this.log(`${action.type} landed for ${sessionKey} (${reason}, epoch ${r.record.ownershipEpoch})`);
+      featureEvidence.record('multiMachine.seamlessness.ws13Reconcile', { kind: 'fired', reason: `${action.type} landed (${reason})`, context: { topic: sessionKey, action: action.type, step: reason, epoch: r.record.ownershipEpoch, dryRun: false } });
       try { this.d.emitPlacement(sessionKey, r, reason); } catch { /* §3.3 pairing is observability — never endangers the CAS */ }
       this.conflictSince.delete(sessionKey);
       return true;
     }
     this.log(`${action.type} rejected for ${sessionKey} (${'reason' in r ? r.reason : 'unknown'}) — will re-evaluate next tick`);
+    featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws13Reconcile', `rejected|${sessionKey}|${action.type}`, 60 * 60_000, { kind: 'error', reason: `${action.type} refused (${'reason' in r ? r.reason : 'unknown'})`, context: { topic: sessionKey, action: action.type, step: reason, code: 'reason' in r ? String(r.reason) : 'unknown', dryRun: false } });
     return false;
   }
 
@@ -804,6 +944,13 @@ export class OwnershipReconciler {
     if (!pin || !pin.pinned || !pin.preferredMachine) return { pinned: false };
     const pinHlc = pin.hlc ?? this.deriveLocalPinHlc(pin);
     const base = { pinned: true as const, preferredMachine: pin.preferredMachine, pinHeldSince: pinHlc.physical };
+    if (isAppOwnershipKey(sessionKey)) {
+      return { ...base, pinState: 'pending', pendingReason: 'An app conversation moves only by a completed move, so this pin is ignored.' };
+    }
+    // slack-conversations-stay-with-connection: a pin on a Slack conversation is never acted on — say so.
+    if (isSlackConversationKey(sessionKey)) {
+      return { ...base, pinState: 'pending', pendingReason: 'A Slack conversation stays with the machine that holds the Slack connection, so this pin is ignored.' };
+    }
     // U4.2 §2.4: a claim suspension excludes the pin — derived, never written.
     try {
       const s = this.d.claimSuspensions?.()?.get(Number(sessionKey));

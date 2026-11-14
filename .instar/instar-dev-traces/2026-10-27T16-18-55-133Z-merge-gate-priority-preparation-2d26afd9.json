@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "slug": "merge-gate-priority-preparation",
+  "sessionId": "2b2781fe-a0ae-4fac-96c1-86978e4139d8",
+  "timestamp": "2026-10-27T16:18:55.133Z",
+  "artifactPath": "upgrades/side-effects/merge-gate-priority-preparation.md",
+  "artifactSha256": "c1cdc33a0e69943200c7a0da69cd8e02ab147d7e219ae982972c09f405399357",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    "docs/specs/test-runner-concurrency-bound.eli16.md",
+    "docs/specs/test-runner-concurrency-bound.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-mergeGatePreparation.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/merge-gate-priority-preparation.md",
+    "upgrades/side-effects/merge-gate-priority-preparation.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

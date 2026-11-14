@@ -264,3 +264,129 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
       .toEqual({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'chrome-launch-timeout-apple-event-no-reply' });
   });
 });
+
+describe('AnthropicReloginBrowserDriver device-limit page judgement (codex-device-limit-tripwire §2 C)', () => {
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  function dlFixture(states: ReloginBrowserSnapshot[], opts: {
+    judge?: (text: string) => Promise<boolean>; mainText?: (() => Promise<string>) | null;
+    beforeSnapshot?: (index: number) => void | Promise<void>; maxSteps?: number;
+  } = {}) {
+    let index = 0;
+    const browser: ReloginBrowserPort = {
+      open: vi.fn(async () => {}),
+      snapshot: vi.fn(async () => {
+        const i = index++;
+        await opts.beforeSnapshot?.(i);
+        await flush(); // let any pending verdict land before the step boundary
+        return states[Math.min(i, states.length - 1)]!;
+      }),
+      chooseExpectedAccount: vi.fn(async () => {}), fillPublic: vi.fn(async () => {}), fillSecret: vi.fn(async () => {}),
+      click: vi.fn(async () => {}), readPasteCode: vi.fn(async () => 'returned-code'),
+      wait: vi.fn(async () => {}), close: vi.fn(async () => {}),
+      ...(opts.mainText === null ? {} : { mainText: vi.fn(opts.mainText ?? (async () => 'You have reached the device limit for paid accounts.')) }),
+    };
+    const judge = vi.fn(opts.judge ?? (async () => true));
+    const supervise = vi.fn(async ({ allowedActions }: { allowedActions: string[] }) => allowedActions[0] as never);
+    const seatLease = { acquire: vi.fn(() => ({ acquired: true })), release: vi.fn() };
+    const driver = new AnthropicReloginBrowserDriver({ browser, resolveSecret: async () => null, supervise, seatLease,
+      now: () => NOW, maxSteps: opts.maxSteps ?? 6, judgeDeviceLimitPage: judge });
+    const request = { artifact: { ...artifact, kind: 'device-code' as const, userCode: 'ABCD-1234' },
+      verificationUrl: 'https://auth.openai.com/codex/device', provider: 'openai' as const,
+      expectedIdentity: 'operator@example.com', loginMethod: 'session-cookie' as const, secretRefs: {}, allowedScopes: [] };
+    return { browser, judge, driver, request, seatLease };
+  }
+  const openai = (pageClass: ReloginBrowserSnapshot['pageClass'], origin = 'https://auth.openai.com') => state(pageClass, { origin });
+
+  it('a true verdict on an unknown auth.openai.com page ends the drive refused/device-limit on the same page', async () => {
+    const f = dlFixture([openai('unknown'), openai('unknown'), openai('unknown'), openai('success')]);
+    const result = await f.driver.drive(f.request);
+    expect(result).toEqual({ outcome: 'refused', failureClass: 'device-limit', reason: 'browser-page-judged-device-limit' });
+    expect(f.judge).toHaveBeenCalledOnce();
+    expect(f.judge).toHaveBeenCalledWith('You have reached the device limit for paid accounts.');
+    expect(f.browser.close).toHaveBeenCalled();
+    expect(f.seatLease.release).toHaveBeenCalled();
+  });
+
+  it('also judges an unknown page on https://chatgpt.com', async () => {
+    const f = dlFixture([openai('unknown', 'https://chatgpt.com'), openai('unknown', 'https://chatgpt.com'), openai('success')]);
+    expect(await f.driver.drive(f.request)).toMatchObject({ outcome: 'refused', failureClass: 'device-limit' });
+  });
+
+  it('a verdict that arrives after the page changed is stale and never stops the drive', async () => {
+    let resolveJudge!: (v: boolean) => void;
+    const f = dlFixture([openai('unknown'), openai('success')], {
+      judge: () => new Promise<boolean>((resolve) => { resolveJudge = resolve; }),
+      // The verdict lands while the next snapshot (a different page class) is being taken.
+      beforeSnapshot: (i) => { if (i === 1) resolveJudge(true); },
+    });
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'approved' });
+    expect(f.judge).toHaveBeenCalledOnce();
+  });
+
+  it('a verdict for a page left by origin (same class) is stale', async () => {
+    let resolveJudge!: (v: boolean) => void;
+    const f = dlFixture([openai('unknown'), openai('unknown', 'https://chatgpt.com'), openai('success')], {
+      judge: vi.fn()
+        .mockImplementationOnce(() => new Promise<boolean>((resolve) => { resolveJudge = resolve; }))
+        .mockImplementation(async () => false),
+      beforeSnapshot: (i) => { if (i === 1) resolveJudge(true); },
+    });
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'approved' });
+    expect(f.judge).toHaveBeenCalledTimes(2); // once per page generation
+  });
+
+  it('returning to a page after leaving it is a new generation: judged again, and an old verdict does not apply', async () => {
+    const answers = [false, false];
+    const f = dlFixture([openai('unknown'), openai('device-code'), openai('unknown'), openai('unknown'), openai('success')], {
+      judge: vi.fn(async () => answers.shift() ?? false),
+    });
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'approved' });
+    expect(f.judge).toHaveBeenCalledTimes(2);
+  });
+
+  it('is called at most once per page generation even across many steps on that page', async () => {
+    const f = dlFixture(Array.from({ length: 6 }, () => openai('unknown')), { judge: async () => false, maxSteps: 6 });
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+    expect(f.judge).toHaveBeenCalledOnce();
+  });
+
+  it('is never asked for a non-openai provider, a non-allowed origin, or a non-unknown page', async () => {
+    // Anthropic drive with an unknown page.
+    const anth = dlFixture([state('unknown', { origin: 'https://claude.ai' }), state('success', { origin: 'https://claude.ai' })]);
+    expect(await anth.driver.drive({ ...anth.request, provider: 'anthropic', verificationUrl: 'https://claude.ai/oauth/authorize?x=1',
+      artifact })).toEqual({ outcome: 'approved' });
+    expect(anth.judge).not.toHaveBeenCalled();
+    // OpenAI drive, unknown page on an allowed but not-judged origin (platform.openai.com / Google).
+    for (const origin of ['https://platform.openai.com', 'https://accounts.google.com']) {
+      const other = dlFixture([openai('unknown', origin), openai('success')]);
+      expect(await other.driver.drive(other.request)).toEqual({ outcome: 'approved' });
+      expect(other.judge).not.toHaveBeenCalled();
+    }
+    // OpenAI drive on auth.openai.com, but a classified page.
+    const classified = dlFixture([openai('device-code'), openai('success')]);
+    expect(await classified.driver.drive(classified.request)).toEqual({ outcome: 'approved' });
+    expect(classified.judge).not.toHaveBeenCalled();
+  });
+
+  it('is never asked when the browser cannot read main text, or the text is empty', async () => {
+    const noText = dlFixture([openai('unknown'), openai('success')], { mainText: null });
+    expect(await noText.driver.drive(noText.request)).toEqual({ outcome: 'approved' });
+    expect(noText.judge).not.toHaveBeenCalled();
+    const empty = dlFixture([openai('unknown'), openai('success')], { mainText: async () => '' });
+    expect(await empty.driver.drive(empty.request)).toEqual({ outcome: 'approved' });
+    expect(empty.judge).not.toHaveBeenCalled();
+  });
+
+  it('a judge that rejects, or a mainText that throws, never breaks the drive', async () => {
+    const rejecting = dlFixture([openai('unknown'), openai('unknown'), openai('success')], { judge: async () => { throw new Error('jev down'); } });
+    expect(await rejecting.driver.drive(rejecting.request)).toEqual({ outcome: 'approved' });
+    expect(rejecting.judge).toHaveBeenCalledOnce();
+    const throwing = dlFixture([openai('unknown'), openai('unknown'), openai('success')], { mainText: async () => { throw new Error('cdp gone'); } });
+    expect(await throwing.driver.drive(throwing.request)).toEqual({ outcome: 'approved' });
+  });
+
+  it('a false verdict leaves the drive exactly as today', async () => {
+    const f = dlFixture([openai('unknown'), openai('unknown'), openai('success')], { judge: async () => false });
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'approved' });
+  });
+});

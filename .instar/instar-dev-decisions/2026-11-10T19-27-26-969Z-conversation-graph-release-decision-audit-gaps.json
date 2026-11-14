@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-10T19:27:26.969Z",
+  "slug": "conversation-graph-release-decision-audit-gaps",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/notification-selectivity-raw-baseline.json",
+      "src/commands/machine.ts",
+      "src/core/GraphMembershipTypes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -100,6 +100,7 @@ describe('Outbound advisory E2E lifecycle (feature is alive)', () => {
     expect(res.status).toBe(200);
     expect(res.body.entries).toHaveLength(1);
     expect(res.body.entries[0].jobSlug).toBe('evolution-overdue-check');
+    expect(res.body.entries[0]).toMatchObject({ deliveryStatus: 'not-confirmed', stage: 'preflight' });
   });
 
   it('both routes require the bearer token (401 without)', async () => {

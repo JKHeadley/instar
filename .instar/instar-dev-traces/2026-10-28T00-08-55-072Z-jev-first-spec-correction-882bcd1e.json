@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "jev-first-spec-correction",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T00:08:55.072Z",
+  "artifactPath": "upgrades/side-effects/jev-first-spec-correction.md",
+  "artifactSha256": "4e00b564fef83ae3242d8f41c6d02777c4fbbd9ebd2ca8a5116c7b90540352ca",
+  "coveredFiles": [
+    "docs/specs/job-cost-reduction.eli16.md",
+    "docs/specs/job-cost-reduction.md",
+    "docs/specs/job-model-routing.eli16.md",
+    "docs/specs/job-model-routing.md",
+    "upgrades/side-effects/jev-first-spec-correction.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only correction of an unimplemented Jev result design; no runtime change or new authority.",
+  "eli16Path": "docs/specs/job-model-routing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-spec-correction.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

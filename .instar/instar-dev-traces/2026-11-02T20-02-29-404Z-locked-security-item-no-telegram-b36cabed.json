@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "locked-security-item-no-telegram",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T20:02:29.404Z",
+  "artifactPath": "upgrades/side-effects/locked-security-item-no-telegram.md",
+  "artifactSha256": "af5178ca0b5442aaf85c9bfaa8406f42f9348ee5f07e23cf0743297ef4cc0442",
+  "coveredFiles": [
+    "docs/specs/locked-security-item-no-telegram.eli16.md",
+    "src/core/LocalAttentionItems.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/locked-security-item-without-telegram.test.ts",
+    "tests/integration/attention-local-without-telegram.test.ts",
+    "tests/unit/PostUpdateMigrator-attentionWithoutTelegram.test.ts",
+    "tests/unit/local-attention-items.test.ts",
+    "upgrades/next/locked-security-item-no-telegram.md",
+    "upgrades/side-effects/locked-security-item-no-telegram.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Gives an existing security report a place to land when Telegram is absent; no change with Telegram; a revert restores the previous behaviour exactly.",
+  "eli16Path": "docs/specs/locked-security-item-no-telegram.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-security-item-no-telegram.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered loop. The added push and local write run once per raise from the existing DesktopLockedController sweep, which stops raising a condition once raiseSecurity returns true (mark-reported); a failed write retries at the existing 10 s sweep cadence only while the condition is open. Each push passes MobilePush per-device budgets and folding."
+  }
+}

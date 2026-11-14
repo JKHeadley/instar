@@ -6,7 +6,8 @@ import type { QuotaPoller } from './QuotaPoller.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import type { PlaywrightProfileRegistry, PlaywrightAccount, PlaywrightProfileDetail } from './PlaywrightProfileRegistry.js';
 import type { PendingLogin } from './PendingLoginStore.js';
-import { evaluateSubscriptionReloginAdmission, type PasskeyCellAdmissionState } from './SubscriptionReloginPolicy.js';
+import { evaluateSubscriptionReloginAdmission, isReloginSupportedPath, type PasskeyCellAdmissionState,
+  type SubscriptionReloginRefusal } from './SubscriptionReloginPolicy.js';
 import { SubscriptionReloginStore, type SubscriptionReloginEpisode } from './SubscriptionReloginStore.js';
 import { SubscriptionReloginOrchestrator } from './SubscriptionReloginOrchestrator.js';
 import { SubscriptionReloginService } from './SubscriptionReloginService.js';
@@ -15,7 +16,8 @@ import { AnthropicReloginBrowserDriver, type ReloginBrowserAction, type AgentNav
 import { PlaywrightSeatLease } from './PlaywrightSeatLease.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { validClaudePasteBackCode, type ClaudePasteBackController } from './ClaudePasteBackController.js';
-import { SubscriptionReloginHelper, type ReloginHelperSeat } from './SubscriptionReloginHelper.js';
+import { SubscriptionReloginHelper, type ReloginHelperBrowserDriver, type ReloginHelperSeat } from './SubscriptionReloginHelper.js';
+import { isWslHost } from './wslPlatform.js';
 import type { CliLoginVerdict } from './CliLoginStatus.js';
 import type { ReloginLastResortStatus } from './ReloginLastResortProvider.js';
 
@@ -59,6 +61,7 @@ export interface SubscriptionReloginRuntimeDeps {
     listHelpers: () => Array<{ name: string; tmuxSession: string }>;
     hasCapacity: () => boolean;
     serverPort: number;
+    browserDriver?: ReloginHelperBrowserDriver;
     /** `codex login status` for a config home, proven able to fail (CliLoginStatus). */
     codexLoginStatus?: (codexHome: string) => Promise<CliLoginVerdict>;
     /** Test seams for the helper's timers. */
@@ -84,6 +87,15 @@ export interface SubscriptionReloginRuntimeDeps {
    * false`). Then no Codex repair can ever prove authenticated use (the rollout file is not proof),
    * so Codex episodes are refused at admission with a named reason instead of burning attempts.
    */
+  /**
+   * codex-device-limit-tripwire §4: true while the account is suspected or benched for a device
+   * limit on this machine (switch-aware). Defers slow retries; never mutates an episode.
+   */
+  deviceLimitHold?: (accountId: string) => boolean;
+  /** codex-device-limit-tripwire §2 C: judge an `unknown` OpenAI sign-in page (true ⇒ device limit). */
+  judgeDeviceLimitPage?: (accountId: string, text: string) => Promise<boolean>;
+  /** codex-device-limit-tripwire §4: a repair ended at a (suspected) device-limit page. */
+  onDeviceLimitStopped?: (accountId: string) => void;
   codexLiveReadAvailable?: boolean;
   /** Host seat lease override (tests); defaults to the host-wide Playwright seat lease. */
   seatLease?: PlaywrightSeatLease;
@@ -117,10 +129,13 @@ export function resolveReloginNavigation(
   navigation: 'agent' | 'closed' | 'agent-session' | undefined,
   config: { developmentAgent?: boolean } | undefined,
   platform: NodeJS.Platform = process.platform,
+  wsl: boolean = isWslHost(platform),
 ): 'agent' | 'closed' | 'agent-session' {
   // Skill-driven sign-in repair (spec skill-driven-signin-repair): `agent-session` is honored on
-  // macOS only; omitted ⇒ `agent-session` on a macOS development agent. Everywhere else the value
-  // resolves to the existing driver exactly as before.
+  // macOS, and on WSL when set explicitly (spec windows-signin-repair); omitted ⇒ `agent-session`
+  // on a macOS development agent. Everywhere else the value resolves to the existing driver
+  // exactly as before.
+  if (wsl && navigation === 'agent-session') return 'agent-session';
   if (platform === 'darwin') {
     if (navigation === 'agent-session') return 'agent-session';
     if (navigation === undefined && resolveDevAgentGate(undefined, config)) return 'agent-session';
@@ -141,7 +156,24 @@ export interface SubscriptionReloginRuntime {
    * never verifiable here ⇒ false.
    */
   cellVerifiedHealthy(accountId: string, machineId: string): boolean;
+  /**
+   * Why each needs-sign-in account on THIS machine has no repair (Registry First: "why didn't the
+   * repair start?" is a read, never a guess). Read-only: no row, ledger entry or login is written.
+   */
+  blockers(): Promise<SubscriptionReloginBlocker[]>;
+  /** codex-device-limit-tripwire §4: end every live repair for a benched account on this machine. */
+  endForDeviceLimit(accountId: string): Promise<Array<{ id: string; ended: boolean; reason?: string }>>;
   start(): void; stop(): void; close(): void;
+}
+
+/**
+ * A needs-sign-in account the automatic repair will not start for. `no-open-incident`: nothing
+ * has corroborated the sign-in as dead on this machine (for example its stored login cannot be
+ * read), and a repair needs that evidence; any other reason is the admission refusal.
+ */
+export interface SubscriptionReloginBlocker {
+  accountId: string; machineId: string; framework: string;
+  reason: 'no-open-incident' | SubscriptionReloginRefusal;
 }
 
 /** Production-shaped composition. All authority lookups are repeated at action boundaries. */
@@ -150,6 +182,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
   const store = new SubscriptionReloginStore({ stateDir: deps.stateDir, now });
   const seatLease = deps.seatLease ?? new PlaywrightSeatLease({ now });
   const agentSession = deps.navigation === 'agent-session';
+  const windowsHelper = agentSession && deps.helperSession?.browserDriver === 'windows';
   if (agentSession && !deps.helperSession) throw new Error('relogin-agent-session-ports-missing');
   // Every navigation path honors the configured mode the same way (spec
   // relogin-unattended-agent-session-and-slow-retry, superseding skill-driven-signin-repair's
@@ -243,8 +276,13 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       store.enqueuePhoneTap(episodeId);
       void serviceRef?.flushNotifications();
     },
+    onDeviceLimitReported: (episodeId) => {
+      const accountId = store.get(episodeId)?.accountId;
+      if (accountId) deps.onDeviceLimitStopped?.(accountId);
+    },
     validateCode: validClaudePasteBackCode,
     serverPort: deps.helperSession!.serverPort,
+    browserDriver: deps.helperSession!.browserDriver,
     now,
     ...(deps.helperSession!.timing ?? {}),
   }) : null;
@@ -327,7 +365,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         return { outcome: 'refused', failureClass: 'provider-rejected' };
       if (helper && !lastResortDrives.has(episode.id)) {
         const result = await helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
-          provider: acct.provider, profileDir: detail.userDataDir,
+          provider: acct.provider, profileDir: (windowsHelper ? detail.windowsUserDataDir : undefined) ?? detail.userDataDir,
           vaultBindingNames: Object.values(browserAccount.vaultBindings ?? {}).filter((name): name is string => typeof name === 'string'),
         }, signal);
         // A drive resumed past the pre-attempt check (a restart after `cli-starting`) reaches the
@@ -342,13 +380,16 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // its model calls are capped per drive by the port, bracketed here.
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
         resolveSecret: deps.resolveSecret, takeBackupCode: deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
-        navigation: agentNavigation || lastResortDrive ? 'agent' : 'closed', navigate: deps.navigate });
+        navigation: agentNavigation || lastResortDrive ? 'agent' : 'closed', navigate: deps.navigate,
+        ...(deps.judgeDeviceLimitPage ? { judgeDeviceLimitPage: (text: string) => deps.judgeDeviceLimitPage!(acct.id, text) } : {}) });
       deps.lastResort?.beginDrive(episode.id);
       try {
-        return await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
+        const driven = await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
           expectedIdentity: acct.email,
           loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
           allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
+        if (driven.outcome === 'refused' && driven.failureClass === 'device-limit') deps.onDeviceLimitStopped?.(acct.id);
+        return driven;
       } finally {
         deps.lastResort?.endDrive(episode.id);
       }
@@ -452,12 +493,13 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     }
     return evaluateSubscriptionReloginAdmission({ configuredMode: effectiveMode,
       poolAuthority: deps.pool.getAvailability().state, account: { id: acct.id, machineId: deps.machineId,
-        status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email) },
+        status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email), statusCause: acct.statusCause ?? null },
       sourceEpisode, hasLiveRepair: store.list({ accountId: acct.id, limit: 10 }).some((item) =>
         item.id !== currentEpisodeId && !['succeeded', 'refused', 'cancelled', 'failed'].includes(item.state)),
       hasLivePendingLogin: livePending?.status === 'pending' && !ownLeftover,
       profile: detail && browserAccount ? { id: detail.id, ambiguous: resolved.ambiguous === true,
-        dirExists: detail.dirExists, dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
+        // A WSL helper can only open a Windows folder; the Linux path is metadata there.
+        dirExists: detail.dirExists && (!windowsHelper || !!detail.windowsUserDataDir), dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
         loginMethod: browserAccount.loginMethod, danglingRefs: browserAccount.danglingRefs,
         passkeyEntryKey: browserAccount.vaultBindings?.passkey ?? null,
         passkeyCell: passkeyCellFor(acct, browserAccount) } : null,
@@ -504,6 +546,25 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     return !!acct && acct.status === 'active' && acct.identityDrifted !== true
       && deps.quotaPoller.loginCheck?.(acct.id) === 'ok';
   };
+  const blockers = async (): Promise<SubscriptionReloginBlocker[]> => {
+    if (deps.pool.getAvailability().state !== 'ready') return [];
+    const open = deps.ledger.listEpisodes({ limit: 500 }).filter((item) => item.closedAt === null && item.machineId === deps.machineId);
+    const out: SubscriptionReloginBlocker[] = [];
+    for (const acct of deps.pool.list()) {
+      if (acct.status !== 'needs-reauth' || !isReloginSupportedPath(acct.provider, acct.framework)) continue;
+      const sourceEpisode = open.find((item) => item.accountId === acct.id);
+      const base = { accountId: acct.id, machineId: deps.machineId, framework: acct.framework };
+      // A device-limit bench is the reason, with or without an open incident (spec codex-device-limit-tripwire §8).
+      if (acct.statusCause === 'codex-device-limit') { out.push({ ...base, reason: 'device-limit-benched' }); continue; }
+      if (!sourceEpisode) { out.push({ ...base, reason: 'no-open-incident' }); continue; }
+      // A repair row for this incident is already visible as an episode; its state says the rest.
+      if (store.list({ accountId: acct.id, limit: 100 }).some((item) => item.sourceEpisodeId === sourceEpisode.id
+        && item.machineId === deps.machineId)) continue;
+      const verdict = await admissionFor(acct, sourceEpisode);
+      if (!verdict.admitted) out.push({ ...base, reason: verdict.reason });
+    }
+    return out;
+  };
   const service = new SubscriptionReloginService({ store, orchestrator, scanCandidates,
     revalidate: async (episode) => {
       const acct = account(episode); const sourceEpisode = source(episode);
@@ -520,9 +581,11 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     tickMs: deps.tickMs, now,
     // Verified healthy by the server: pool `active`, no identity drift (the poller reconciles the
     // credential's identity), and this process's latest poll was an authenticated read.
+    deviceLimitHold: deps.deviceLimitHold ? (episode) => deps.deviceLimitHold!(episode.accountId) : undefined,
     cellHealthy: (episode) => cellVerifiedHealthy(episode.accountId, episode.machineId) });
   serviceRef = service;
-  return { store, service, helper, lastResort: deps.lastResort ?? null, cellVerifiedHealthy,
+  return { store, service, helper, lastResort: deps.lastResort ?? null, blockers, cellVerifiedHealthy,
+    endForDeviceLimit: (accountId: string) => service.endForDeviceLimit(accountId, deps.machineId),
     start: () => {
       // Boot cleanup: a `relogin-*` helper left by a previous process can never finish.
       if (helper) {
@@ -546,6 +609,7 @@ export function buildReloginHelperSessionPorts(input: {
     'spawnSession' | 'isSessionAlive' | 'killSessionByTmuxName' | 'listRunningSessions'>;
   maxSessions: number;
   serverPort: number;
+  browserDriver?: ReloginHelperBrowserDriver;
   codexLoginStatus?: (codexHome: string) => Promise<CliLoginVerdict>;
 }): NonNullable<SubscriptionReloginRuntimeDeps['helperSession']> {
   const { sessionManager } = input;
@@ -566,6 +630,7 @@ export function buildReloginHelperSessionPorts(input: {
       .map((session) => ({ name: session.name, tmuxSession: session.tmuxSession })),
     hasCapacity: () => sessionManager.listRunningSessions().length < input.maxSessions,
     serverPort: input.serverPort,
+    browserDriver: input.browserDriver ?? 'macos',
     ...(input.codexLoginStatus ? { codexLoginStatus: input.codexLoginStatus } : {}),
   };
 }
@@ -587,6 +652,7 @@ export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRunt
     // Registry First: the last-resort model's live state (never the key), or available:false.
     lastResortStatus: (): ReloginLastResortStatus | { available: false } =>
       runtime.lastResort?.available() ? runtime.lastResort.status() : { available: false },
+    blockers: () => runtime.blockers(),
     close: () => runtime.close(),
   };
 }

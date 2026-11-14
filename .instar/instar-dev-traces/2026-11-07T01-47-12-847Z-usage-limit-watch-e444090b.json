@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "slug": "usage-limit-watch",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T01:47:12.847Z",
+  "artifactPath": "upgrades/side-effects/usage-limit-watch.md",
+  "artifactSha256": "2f2610debe85ba2dced79f715b53cde287bc1ddaf34991ac5ae714b1eb935dd6",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ClaudeCliIntelligenceProvider.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/UsageLimitWatch.ts",
+    "src/core/claudeChildAuth.ts",
+    "src/core/claudeKeyProbe.ts",
+    "src/core/claudeKeyRecovery.ts",
+    "src/monitoring/PresenceProxy.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/usage-limit-watch-alive.test.ts",
+    "tests/unit/ClaudeKeyHealth.test.ts",
+    "tests/unit/usage-limit-watch.test.ts",
+    "upgrades/eli16-usage-limit-watch.md",
+    "upgrades/next/usage-limit-watch.md",
+    "upgrades/side-effects/usage-limit-watch.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A revert fully undoes it and a leftover state file is inert; it tells people and restarts through the existing session refresh, no new blocking authority",
+  "eli16Path": "upgrades/eli16-usage-limit-watch.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-limit-watch.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "usage-limit-session-refresh is registered: 3 attempts per session per rolling day, persisted; notices bounded by a 1-hour reopen cooldown and a 6-hour operator gap"
+    }
+  }
+}

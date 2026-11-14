@@ -19,6 +19,7 @@ describe('Update Apply API (integration)', () => {
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
   let updateChecker: UpdateChecker;
+  let config: InstarConfig;
   const AUTH_TOKEN = 'test-update-apply-token';
 
   beforeAll(() => {
@@ -46,7 +47,7 @@ describe('Update Apply API (integration)', () => {
       healthCheck: 'skipped',
     });
 
-    const config: InstarConfig = {
+    config = {
       projectName: 'update-test',
       projectDir: project.dir,
       stateDir: project.stateDir,
@@ -145,6 +146,33 @@ describe('Update Apply API (integration)', () => {
     // Both should have consistent structure
     expect(res1.body).toHaveProperty('success');
     expect(res2.body).toHaveProperty('success');
+  });
+
+  it('routes manual applies through the updater with holds preserved by default and an explicit override', async () => {
+    const applyPendingUpdate = vi.fn(async () => {});
+    const autoUpdater = { applyPendingUpdate, getStatus: () => ({ restartDeferral: null }) };
+    const routed = new AgentServer({
+      config, sessionManager: createMockSessionManager() as any, state: project.state,
+      updateChecker, autoUpdater: autoUpdater as any,
+    }).getApp();
+
+    const ordinary = await request(routed).post('/updates/apply')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`).send({});
+    expect(ordinary.status).toBe(200);
+    expect(applyPendingUpdate).toHaveBeenLastCalledWith({ bypassWindow: true, bypassHolds: false });
+
+    const forced = await request(routed).post('/updates/apply')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`).send({ forceRestart: true });
+    expect(forced.status).toBe(200);
+    expect(applyPendingUpdate).toHaveBeenLastCalledWith({ bypassWindow: true, bypassHolds: true });
+
+    const invalid = await request(routed).post('/updates/apply')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`).send({ forceRestart: 'yes' });
+    expect(invalid.status).toBe(400);
+    const nullOverride = await request(routed).post('/updates/apply')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`).send({ forceRestart: null });
+    expect(nullOverride.status).toBe(400);
+    expect(applyPendingUpdate).toHaveBeenCalledTimes(2);
   });
 
   it('persists update check state to disk', async () => {

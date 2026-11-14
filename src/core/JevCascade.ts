@@ -15,7 +15,7 @@
  * (browser-controller research: page-state questions had no confident errors,
  * goal-progress questions did).
  */
-import type { IntelligenceProvider } from './types.js';
+import type { IntelligenceOptions, IntelligenceProvider } from './types.js';
 
 export interface CascadeBand { lo: number; hi: number }
 /** The band the controller research measured: escalating 0.30–0.70 removed every observed error. */
@@ -123,7 +123,34 @@ export async function askReferee(
   referee: IntelligenceProvider,
   state: string,
   questions: CascadeQuestion[],
-  opts: { timeoutMs?: number; component: string; now?: () => number },
+  opts: {
+    timeoutMs?: number;
+    component: string;
+    now?: () => number;
+    /** Category for routing; default 'other'. */
+    category?: 'sentinel' | 'gate' | 'job' | 'reflector' | 'other';
+    /** Deferrable marker; default true (background work). */
+    deferrable?: boolean;
+    /**
+     * Extra attribution fields (e.g. jobSlug, machineId, runId) merged into the
+     * call's attribution, so per-slug spend is exact. They never override
+     * `component`, `category` or `deferrable`.
+     */
+    attribution?: Record<string, string | number | boolean | null | undefined>;
+    /**
+     * Run this one call on a named provider account (its config home) instead of
+     * the provider's ambient login. Absent ⇒ today's behaviour.
+     */
+    accountOverride?: { accountId: string; configHome: string };
+    /**
+     * Pin the call to one CLI door and exact model, with no router fallbacks.
+     * When set, the call also carries that model id and `strictModelPin`, because
+     * the provider reads the model from those fields, not from the route. Codex
+     * refuses a required route without an `accountOverride`, so a missing
+     * account fails the call instead of falling back to the default home.
+     */
+    requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  },
 ): Promise<RefereeOutcome> {
   const now = opts.now ?? Date.now;
   const t0 = now();
@@ -132,10 +159,17 @@ export async function askReferee(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const call = referee.evaluate(buildRefereePrompt(state, questions), {
-      model: 'fast',
+      model: (opts.requiredRoute ? opts.requiredRoute.modelId : 'fast') as IntelligenceOptions['model'],
+      ...(opts.requiredRoute ? { requiredRoute: opts.requiredRoute, strictModelPin: true } : {}),
+      ...(opts.accountOverride ? { accountOverride: opts.accountOverride } : {}),
       timeoutMs,
       onModel: (m) => { model = m.model; },
-      attribution: { component: opts.component, category: 'other', deferrable: true },
+      attribution: {
+        ...(opts.attribution ?? {}),
+        component: opts.component,
+        category: opts.category ?? 'other',
+        deferrable: opts.deferrable ?? true,
+      } as IntelligenceOptions['attribution'],
     });
     const timeout = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs + 1000); });
     const raw = await Promise.race([call, timeout]);

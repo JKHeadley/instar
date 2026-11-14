@@ -21,6 +21,7 @@ import type { IntelligenceProvider } from '../../src/core/types.js';
 import { CompletionEvaluator } from '../../src/core/CompletionEvaluator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { EncryptToPinnedSendError } from '../../src/threadline/client/ThreadlineClient.js';
+import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'collab-redrive-test-'));
@@ -556,5 +557,106 @@ describe('CollaborationRedriveEngine — a nudge refused by encrypt-to-pinned is
     const result = await engineWith(tracker, () => { throw new Error('socket closed'); }).tick();
     expect(result.sent).toBe(1);
     expect(tracker.get(c.id)!.redriveCount).toBe(1);
+  });
+});
+
+describe('CollaborationRedriveEngine — ladder evidence', () => {
+  const NOW = Date.parse('2026-05-28T20:00:00Z');
+  let dir: string;
+  let tracker: CommitmentTracker;
+  let log: FeatureEvidenceLog;
+  const rows = () => fs.existsSync(log.filePath)
+    ? fs.readFileSync(log.filePath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    : [];
+  const engine = (
+    relayClient: unknown,
+    cfg: Partial<typeof DEFAULT_REDRIVE_CONFIG> = {},
+    known: Array<{ name: string; publicKey: string }> = [{ name: 'dawn', publicKey: 'fp-dawn-1' }],
+  ) => new CollaborationRedriveEngine(
+    {
+      commitmentTracker: tracker,
+      completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence() }),
+      knownAgentsPath: makeKnownAgents(dir, known),
+      relayClient: relayClient as never,
+      now: () => NOW,
+      log: { log: () => {}, warn: () => {} },
+    },
+    { ...DEFAULT_REDRIVE_CONFIG, enabled: true, ...cfg },
+  );
+  const open = (relatedAgent = 'dawn') => recordThreadlineReplyCommitment(tracker, { relatedAgent, lastReplyAt: '2026-05-28T18:00:00Z' });
+
+  beforeEach(() => {
+    dir = makeTmpDir();
+    tracker = setupTracker(dir);
+    log = new FeatureEvidenceLog({ projectDir: dir, machine: 'm', instarVersion: '0' });
+    setFeatureEvidenceLog(log);
+  });
+  afterEach(() => {
+    setFeatureEvidenceLog(null);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts' });
+  });
+
+  it('a sent nudge writes one fired row that names the commitment and holds no message text', async () => {
+    const c = open();
+    const relay = makeRelayStub();
+    await engine(relay.client).tick();
+    expect(relay.sent).toHaveLength(1);
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toMatchObject({
+      featureId: 'monitoring.collaborationRedrive', kind: 'fired',
+      context: { commitmentId: c.id, peer: 'dawn', attempt: 1, maxRedrives: 2 },
+    });
+    expect(typeof rows()[0].eventId).toBe('string');
+    expect(JSON.stringify(rows()[0])).not.toContain('deploy /api/instar/read');
+  });
+
+  it('a failed send writes error and no fired row, and the send behaviour is unchanged', async () => {
+    const c = open();
+    const result = await engine({ sendPlaintext: () => { throw new Error('relay down'); } }).tick();
+    expect(rows().map((r) => r.kind)).toEqual(['error']);
+    expect(rows()[0].reason).toContain('relay down');
+    expect(result.sent).toBe(1); // existing behaviour: the count stands per spec
+    expect(tracker.get(c.id)!.redriveCount).toBe(1);
+  });
+
+  it('no relay client writes error, not fired', async () => {
+    open();
+    await engine(undefined).tick();
+    expect(rows().map((r) => r.kind)).toEqual(['error']);
+  });
+
+  it('a refused encrypted send writes error once however many sweeps retry it', async () => {
+    const c = open();
+    const e = engine({ sendPlaintext: (fp: string) => { throw new EncryptToPinnedSendError(fp as never, new Error('no key')); } });
+    expect((await e.tick()).skipped[c.id]).toBe('encrypted-send-refused');
+    await e.tick();
+    await e.tick();
+    expect(rows().map((r) => r.kind)).toEqual(['error']);
+  });
+
+  it('a per-peer cap writes held at most once a day, with no fired row', async () => {
+    const a = open();
+    await tracker.mutate(a.id, (p) => ({ ...p, lastRedriveAt: new Date(NOW - 60_000).toISOString() } as Commitment));
+    open();
+    const relay = makeRelayStub();
+    const e = engine(relay.client, { perPeerDailyCap: 1 });
+    await e.tick();
+    await e.tick();
+    expect(relay.sent).toEqual([]);
+    expect(rows().map((r) => [r.kind, r.reason])).toEqual([['held', 'per-peer daily cap']]);
+  });
+
+  it('routine skips (not silent yet, spacing, cap already reached) write nothing', async () => {
+    recordThreadlineReplyCommitment(tracker, { relatedAgent: 'dawn', lastReplyAt: new Date(NOW - 60_000).toISOString() });
+    const done = open();
+    await tracker.mutate(done.id, (p) => ({ ...p, redriveCount: 2 } as Commitment));
+    await engine(makeRelayStub().client).tick();
+    expect(rows()).toEqual([]);
+  });
+
+  it('a disabled engine writes nothing', async () => {
+    open();
+    await engine(makeRelayStub().client, { enabled: false }).tick();
+    expect(rows()).toEqual([]);
   });
 });

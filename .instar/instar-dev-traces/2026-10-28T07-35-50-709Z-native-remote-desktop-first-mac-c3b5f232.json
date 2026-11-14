@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T07:35:50.709Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "f852bbce74901d9e3c4eb7c04d7ff5900dad77466bc46a640e38e933f80bd051",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/server/CapabilityIndex.ts",
+    "tests/unit/remote-desktop-delivery-parity.test.ts",
+    "upgrades/side-effects/native-remote-desktop-first-mac.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Correct self-discovery for the reviewed privileged desktop flow.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "astra-ux-constitution",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

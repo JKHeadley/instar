@@ -1,4 +1,5 @@
 /**
+ * Focused preflight may shorten a stable red, but a green still requires every full lane.
  * The local-verify run orchestrator (spec local-verify-merge-authority.md §2 Run
  * steps 1–5 and 8): one verify of one (head, base) merge, driven entirely through
  * injected seams (git, process, fs, clock, test-runner holders) so it is unit
@@ -17,13 +18,24 @@
 
 import path from 'node:path';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
-import { readUnhandledErrors } from './unhandledErrorsReporter.js';
+import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
+
+/** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
+const PROGRESS_MAX_BYTES = 64 * 1024;
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
 import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
-import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
+import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord, type PreflightEvidence } from './record.js';
+import { effectivePreflightMode, PREFLIGHT_LIMITS } from './preflight.js';
+import { PreflightCleanupError, runFocusedPreflight } from './runFocusedPreflight.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
+import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
+
+/** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
+export const MAX_LANE_SHARDS = 4;
+/** Upper bound for the per-machine unit-lane worker setting (`laneShards.unitWorkers`). */
+export const MAX_UNIT_WORKERS = 12;
 
 // ── Seams ──────────────────────────────────────────────────────────────
 
@@ -40,7 +52,11 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   deadlineKilled: boolean;
+  /** Stopped through `opts.signal` (fail-fast: a sibling lane already failed); never set with `deadlineKilled`. */
+  aborted?: boolean;
   pid: number | null;
+  /** For isolated preflight commands, every process in the dedicated group exited. */
+  quiescent?: boolean;
 }
 
 export interface GitCallOpts {
@@ -57,10 +73,24 @@ export interface OrchestratorFs {
   writeFile(p: string, data: string): void;
   /** null when absent or unreadable. */
   readFile(p: string): string | null;
+  /** Size in bytes, null when absent or unreadable. Absent seam ⇒ the duration history is never read. */
+  size?(p: string): number | null;
   /** A fresh private temp directory (outside the worktree). */
   mkdtemp(prefix: string): string;
   /** Recursive delete, scoped to local-verify's own directories by the real seam. */
   removeTree(p: string): Promise<void>;
+  /** Entry names of a directory; null when unreadable. Absent seam ⇒ the orphan sweep is skipped. */
+  list?(p: string): string[] | null;
+  /** Resolved path; null when it cannot be resolved. */
+  realpath?(p: string): string | null;
+  /**
+   * Whether any running process uses `dir` (its working folder is inside it, or
+   * its command line names it). null when that cannot be read. Absent seam ⇒
+   * the orphan sweep is skipped.
+   */
+  inUse?(dir: string): boolean | null;
+  /** Bytes under `dir` (every file, recursively); null when that cannot be read. Absent seam ⇒ kept entries are listed without a size. */
+  treeSize?(dir: string): number | null;
 }
 
 export interface OrchestratorSeams {
@@ -73,7 +103,7 @@ export interface OrchestratorSeams {
   exec(
     command: string,
     args: string[],
-    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void },
+    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
   ): Promise<ExecResult>;
   fs: OrchestratorFs;
   now(): number;
@@ -88,6 +118,13 @@ export interface OrchestratorSeams {
    */
   holdSuiteSlot?(): Promise<(() => void) | 'busy' | null>;
   log(event: Record<string, unknown>): void;
+  /**
+   * Record a degradation beyond the run log, so a problem that silently stops a safety
+   * behaviour (an unreadable kept-failed.json stopping all sweeping) is seen without
+   * reading a run's log. The run child collects these into its result; the server's
+   * DegradationReporter records them (the child must not write the server's file). Absent ⇒ log only.
+   */
+  degrade?(event: RunDegradation): void;
   /** Every file reachable through relative imports from `files` (absolute paths; roots included). */
   importGraph?(files: string[]): string[];
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
@@ -126,6 +163,23 @@ export interface VerifyRunInput {
    * on a PR verify ⇒ no re-run. `main` verifies ignore it (the plain rule).
    */
   isolation?: { allowed: boolean; notCleanOnGreenMain: readonly string[] };
+  /** A peer verify (spec local-verify-capacity.md Part D): copied onto the record as `attempt`. */
+  attempt?: { id: string; coordinatorMachineId: string; leaseEpoch: number | null };
+  /**
+   * PR verifies only: once a lane ends with a failure the isolation re-run did not clear, stop
+   * the other lanes (the verdict is already `failure`). Absent/false ⇒ every lane runs to the end.
+   */
+  failFast?: boolean;
+  /** Host-local focused preflight posture, read once when this attempt starts. */
+  preflightMode?: 'off' | 'observe' | 'enforce';
+  /** True only for an automatic watcher candidate that can be rediscovered after a lease move. */
+  preflightRediscoverable?: boolean;
+  /**
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service),
+   * and the per-machine unit-lane worker count `unitWorkers` (1..MAX_UNIT_WORKERS).
+   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards` / `unitWorkersParallel`.
+   */
+  laneShards?: { integration?: number; e2e?: number; unitWorkers?: number };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -151,10 +205,17 @@ export interface Overlap {
   holders: number[];
 }
 
-export type VerifyRunResult =
+/** A degradation the run child noticed (disk-steward §5); the server's reporter records it. */
+export interface RunDegradation { feature: string; primary: string; fallback: string; reason: string; impact: string }
+
+export type VerifyRunResult = (
   | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[]; flakyRetried?: FlakyRetry[] }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
-  | { kind: 'invalid'; errors: string[] };
+  | { kind: 'invalid'; errors: string[] }
+) & {
+  /** Carried from the run child to the server, which has the only DegradationReporter that reaches /health. */
+  degradations?: RunDegradation[];
+};
 
 export interface VerifyPaths {
   verifyRoot: string;
@@ -163,6 +224,8 @@ export interface VerifyPaths {
   runDir: string;
   reportsDir: string;
   keptListFile: string;
+  /** Per-file durations of earlier runs on this machine (balanced shards only; never a verdict input). */
+  durationsPath: string;
 }
 
 export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
@@ -175,6 +238,7 @@ export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
     runDir: path.join(verifyRoot, 'runs', sha12),
     reportsDir: path.join(verifyRoot, 'reports', sha12),
     keptListFile: path.join(verifyRoot, 'kept-failed.json'),
+    durationsPath: path.join(verifyRoot, 'file-durations.json'),
   };
 }
 
@@ -257,8 +321,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let mergeCommit = '';
   let worktreeCreated = false;
   let flags: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
+  let enteredPreflight = false;
+  let preflight: PreflightEvidence | undefined;
+  let preflightStartedAt: number | null = null;
+  let preflightEnded = false;
 
-  const remaining = () => d.totalActiveMs - (seams.now() - startedAtMs);
+  const remaining = () => d.totalActiveMs + (enteredPreflight ? PREFLIGHT_LIMITS.totalMs : 0) - (seams.now() - startedAtMs);
   /** Deadline for a step: its own budget, capped by what is left of the total. */
   const budget = (stepMs: number) => {
     const left = remaining();
@@ -297,14 +365,15 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   runEnv.PATH = [binDir, input.baseEnv.PATH ?? ''].filter(Boolean).join(path.delimiter);
 
   /** Run one process step; a deadline is an error naming the step. */
-  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv) => {
+  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv, signal?: AbortSignal) => {
     const t0 = seams.now();
     const r = await seams.exec(command, args, {
       cwd: p.runDir, env, deadlineMs: deadline.ms,
       onPid: (pid) => { ourPids.add(pid); },
+      ...(signal ? { signal } : {}),
     });
     // Per-step timing (metadata only): the Acceptance measurement reads these.
-    seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled });
+    seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled, ...(r.aborted ? { stoppedEarly: true } : {}) });
     if (r.deadlineKilled) throw new RunError(deadline.capped ? 'deadline:total' : `deadline:${step}`, `${command} hit its deadline`);
     return r;
   };
@@ -312,6 +381,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let failureReason: string | null = null;
   let evaluationReasons: string[] = [];
   let failures: FailureDetail[] = [];
+  let boundedFailedFiles: string[] | null = null;
   const flakyRetried: FlakyRetry[] = [];
   const firstMessages = new Map<string, string>();
   const rerunMessages = new Map<string, string>();
@@ -333,6 +403,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     seams.fs.writeFile(path.join(p.bare, 'config'), bareConfigTemplate(input.remoteUrl));
     await seams.fs.removeTree(path.join(p.bare, 'hooks'));
     seams.fs.mkdirp(path.join(p.bare, 'hooks'));
+    // Checkouts left by runs cut short (restart, update, crash) are never cleaned by
+    // their own run; sweep them now, while this run is the only one (disk-steward §5).
+    await sweepOrphanVerifyRuns(seams, p);
 
     await gitOk(['fetch', '--no-tags', '--no-recurse-submodules', 'origin', input.headSha, input.baseSha], 'fetch', undefined, d.fetchMs);
     await gitOk(['update-ref', 'refs/heads/main', input.baseSha], 'update-ref');
@@ -384,12 +457,60 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
     }
 
+    // Charge the optional preflight for its exact-base changed-file scan too.
+    // The scan remains necessary for isolation re-runs when preflight is off.
+    const mode = effectivePreflightMode(input.preflightMode, input.kind === 'main' ? 'main' : 'pr', input.preflightRediscoverable === true);
+    preflightStartedAt = mode === 'off' ? null : seams.now();
+    if (preflightStartedAt !== null) enteredPreflight = true;
+    const preflightGitBudget = (reserveMs: number = PREFLIGHT_LIMITS.teardownReserveMs) => {
+      if (preflightStartedAt === null) return d.gitStepMs;
+      const left = PREFLIGHT_LIMITS.totalMs - (seams.now() - preflightStartedAt) - reserveMs;
+      if (left <= 0) throw new RunError('deadline:preflight', 'preflight budget exhausted');
+      return Math.min(d.gitStepMs, left);
+    };
     // Changed files (merge-base→head) for the isolation re-run's PR rule; null = unreadable.
     if (input.kind !== 'main') {
       try {
-        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base')).trim();
-        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff')).map((r) => r.path));
+        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base', undefined, preflightGitBudget())).trim();
+        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff', undefined, preflightGitBudget())).map((r) => r.path));
       } catch { changedForIsolation = null; }
+    }
+
+    // The installed verifier, not the PR's test code, decides whether this
+    // synthetic merge may spend the bounded diagnostic preflight budget.
+    if (mode !== 'off') {
+      // Full classification reads every changed test and remains on the ordinary
+      // record path below. The early check needs only a conservative harness
+      // veto; package changes without both revisions are deliberately skipped.
+      const harnessChanging = changedForIsolation !== null && classifyHarness({
+        changedPaths: [...changedForIsolation], packageJson: { base: null, head: pkgText },
+        extraGlobs: input.extraHarnessGlobs,
+      }).harnessChanging;
+      if (harnessChanging || changedForIsolation === null) {
+        preflight = {
+          mode, outcome: 'skip', reason: harnessChanging ? 'harness-changing' : 'changed-files-unreadable',
+          elapsedMs: Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!)), changedFiles: Math.min(changedForIsolation?.size ?? 0, 10_000), selectedFiles: [], selectedCases: 0,
+          headSha: input.headSha, baseSha: input.baseSha,
+        };
+      } else {
+        preflight = await runFocusedPreflight({
+          seams, runDir: p.runDir, reportsDir: p.reportsDir, binDir, baseEnv: runEnv,
+          baseSha: input.baseSha, headSha: input.headSha, mode,
+          startedAtMs: preflightStartedAt!,
+          changedFiles: changedForIsolation.size, reporter,
+          activeRemainingMs: remaining, onPid: (pid) => { ourPids.add(pid); },
+        });
+        const wtGitDir = worktreeGitDir(seams, p);
+        if (!wtGitDir) throw new RunError('preflight-porcelain', 'run worktree admin dir unreadable');
+        const clean = await git(['status', '--porcelain'], 'preflight-porcelain', { gitDir: wtGitDir, workTree: p.runDir }, preflightGitBudget(0));
+        if (clean.status !== 0 || clean.stdout.trim()) throw new RunError('preflight-dirty-tree', 'preflight changed the merge worktree');
+      }
+      preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!));
+      preflightEnded = true;
+      seams.log({ event: 'preflight', mode, outcome: preflight.outcome, reason: preflight.reason, elapsedMs: preflight.elapsedMs,
+        changedFiles: preflight.changedFiles, selectedFiles: preflight.selectedFiles.length, selectedCases: preflight.selectedCases,
+        headSha: input.headSha, baseSha: input.baseSha, baseRefName: input.baseRefName });
+      if (mode === 'enforce' && preflight.outcome === 'red') throw new RunFailure('preflight-red');
     }
 
     // The inventory comes first: the isolation re-run needs each lane's assigned files.
@@ -411,6 +532,20 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       seams.log({ event: 'overlap', ...o, slot: 'busy' });
       throw new Requeue('foreign-suite-at-start');
     }
+    // Fail-fast (PR verifies, `input.failFast`): the first lane to end with a failure the
+    // isolation re-run did not clear stops its siblings; their lanes are reported as stopped.
+    const stopLanes = new AbortController();
+    const failFast = input.failFast === true && input.kind !== 'main';
+    // Per-file durations from earlier runs on this machine (balanced shards); unreadable ⇒ none.
+    // Test code runs as the same user and could write this file: it is read only when small,
+    // and it can only change which process runs a file (see shardPlan.ts), never a verdict.
+    let durations: FileDurations = {};
+    try {
+      const size = seams.fs.size ? seams.fs.size(p.durationsPath) : null;
+      if (size !== null && size <= DURATIONS_MAX_BYTES) durations = mergeDurations(JSON.parse(seams.fs.readFile(p.durationsPath) ?? '{}'), {});
+      else if (size !== null) seams.log({ event: 'durations-ignored', bytes: size });
+    } catch { durations = {}; }
+    const observed: FileDurations = {};
     try {
       const settled = await Promise.allSettled(LANES.map((lane) => runLane(lane)));
       const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
@@ -418,15 +553,31 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const s of settled) if (s.status === 'fulfilled') laneRuns.push(s.value);
     } finally {
       if (typeof releaseSlot === 'function') releaseSlot();
+      // Keep what this run measured for the next run's shard plan (never part of a verdict).
+      if (Object.keys(observed).length > 0) {
+        try { seams.fs.writeFile(p.durationsPath, JSON.stringify(mergeDurations(durations, observed))); } catch { /* @silent-fallback-ok: a missed update only makes the next plan less balanced */ }
+      }
     }
 
     async function runLane(lane: (typeof LANES)[number]): Promise<LaneRunInput> {
-      const shards = lane.name === 'e2e' ? LOCAL_VERIFY_LIMITS.e2eShards : 1;
+      const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
+        : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
+      const plan = shards > 1 ? planShards(inventory.byLane[lane.name] ?? [], shards, durations) : null;
+      if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
         // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
-        laneEnv.INSTAR_TEST_WORKERS = String(LOCAL_VERIFY_LIMITS.unitWorkersParallel);
+        const uw = input.laneShards?.unitWorkers;
+        const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
+        laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        // This run already holds the host suite slot. Its own unit lane is a child of that
+        // holder, so the host test-runner bound's nested clamp capped it at 4 workers whatever
+        // was asked (2026-11-12: 8 workers ran no faster, 1159 s). Declare the lane as the
+        // holder's own suite: the bound then skips only the clamp (the kill switch would also
+        // log a disabled bound on every run and trip the self-disable detector).
+        laneEnv.INSTAR_HOST_TEST_OWN_SUITE_HOLDER = String(process.pid);
+        seams.log({ event: 'unit-workers', workers, source: workers === uw ? 'machine-setting' : 'policy-default' });
         laneEnv.AUDIT_CHANGE_KIND = 'pull_request';
         laneEnv.AUDIT_CHANGE_BASE_SHA = input.baseSha;
         laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;
@@ -441,25 +592,57 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const pTmp = seams.fs.mkdtemp('lv-tmp-');
         const pTmux = seams.fs.mkdtemp('lv-tmux-');
         tempDirs.push(pTmp, pTmux);
+        const progressPath = path.join(p.reportsDir, `${key}.progress.json`);
         const env: NodeJS.ProcessEnv = { ...laneEnv, TMPDIR: pTmp, TMUX_TMPDIR: pTmux };
-        if (reporter) env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
-        const r = await exec(
-          path.join(binDir, 'vitest'),
-          ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
-            ...(shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
-          key, budget(d.lanes[lane.name]), env,
-        );
+        if (reporter) {
+          env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
+          env.LOCAL_VERIFY_PROGRESS_FILE = progressPath;
+        }
+        let r: Awaited<ReturnType<typeof exec>>;
+        try {
+          // The signal is always passed: a deadline anywhere ends the run as an error, so the
+          // sibling lanes stop then too (fail-fast or not); before, they ran on for up to
+          // ~11 min holding the suite slot for a run already lost (brainstorm 2026-11-12 E2).
+          r = await exec(
+            path.join(binDir, 'vitest'),
+            ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
+              ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
+            key, budget(d.lanes[lane.name]), env, stopLanes.signal,
+          );
+        } catch (e) {
+          if (e instanceof RunError && e.step.startsWith('deadline:')) {
+            // Deadline forensics: which files were still running at the kill.
+            // Written by test-side code: read only when small (like the durations file).
+            const progressSize = seams.fs.size ? seams.fs.size(progressPath) : null;
+            const progress = reporter && (progressSize === null || progressSize <= PROGRESS_MAX_BYTES)
+              ? readProgress(seams.fs.readFile(progressPath), p.runDir, seams.now()) : null;
+            seams.log({ event: 'deadline-in-flight', step: key, ...(progress ?? { unknown: true }) });
+            if (!stopLanes.signal.aborted) {
+              seams.log({ event: 'lanes-stop', after: key, reason: 'deadline' });
+              stopLanes.abort();
+            }
+            if (progress && progress.running.length > 0) {
+              throw new RunError(e.step, `vitest hit its deadline; ${progress.finishedFiles} files finished; still running: ${progress.running.map((x) => `${x.file} (${x.seconds}s)`).join(', ')}`.slice(0, 1500));
+            }
+          }
+          throw e;
+        }
+        if (r.aborted) return { report: null, status: null, unhandled: null, aborted: true };
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
         if (text != null) {
           try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
         }
         const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
-        return { report, status: r.status, unhandled };
+        return { report, status: r.status, unhandled, aborted: false };
       }));
       const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
       if (shardError) throw shardError.reason;
-      const parts = settledParts.map((x) => (x as PromiseFulfilledResult<{ report: ParsedLaneReport | null; status: number | null; unhandled: number | null }>).value);
+      const parts = settledParts.map((x) => (x as PromiseFulfilledResult<{ report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean }>).value);
+      if (parts.some((x) => x.aborted)) {
+        seams.log({ event: 'lane-stopped-early', lane: lane.name });
+        return { lane: lane.name, report: null, seconds: Math.round((seams.now() - t) / 1000), exitCode: null, stoppedEarly: true };
+      }
       // A lane's report is the union of its shards' reports; a missing shard report is a
       // missing lane report (the inventory rule then fails the run).
       // A file reported by two shards makes the lane report untrusted (missing): the verdict
@@ -468,6 +651,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const part of parts) {
         if (!part.report || !report) { report = null; continue; }
         for (const [f, c] of part.report.files) {
+          if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
           if (report.files.has(f)) {
             seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
             report = null;
@@ -495,14 +679,34 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (decision.rerun.length > 0 && report) {
         rerunBudget -= decision.rerun.length;
         const laneDeadlineAt = t + d.lanes[lane.name];
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt);
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal);
         // The exit code is cleared only when the failed files explain it: they all passed alone
         // AND the lane reported zero unhandled errors (checked before the re-run).
         if (allPassed && unhandled === 0) exitCode = 0;
       } else if (decision.reason !== 'no-failures') {
         seams.log({ event: 'isolation-rerun-skipped', lane: lane.name, reason: decision.reason });
       }
+      if (failFast && !stopLanes.signal.aborted && laneFailedFinally(report, exitCode)) {
+        seams.log({ event: 'lanes-stop', after: lane.name });
+        stopLanes.abort();
+      }
       return { lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode };
+    }
+
+    /** A shard count from the run input, clamped to 1..MAX_LANE_SHARDS; anything else is the default. */
+    function shardCount(v: number | undefined, fallback: number): number {
+      return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= MAX_LANE_SHARDS ? v : fallback;
+    }
+
+    /**
+     * A lane that will fail the run whatever its siblings do (counted after any isolation re-run).
+     * Mirrors `evaluateRun`'s lane rules exactly: a missing report, a failed file, or a NUMERIC
+     * non-zero exit (a null exit with a clean report is not a lane failure there, so not here).
+     */
+    function laneFailedFinally(report: ParsedLaneReport | null, exitCode: number | null): boolean {
+      if (!report) return true;
+      for (const c of report.files.values()) if (c.failed > 0) return true;
+      return exitCode != null && exitCode !== 0;
     }
 
     // ── 5. Tree must be clean, then the inventory rule ──
@@ -518,6 +722,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       .filter(([, c]) => c.failed > 0)
       .slice(0, FAILURE_DETAILS_MAX)
       .map(([file, c]) => ({ file, lane: c.lane, failed: c.failed, message: firstMessages.get(file) ?? c.message ?? '', ...(rerunMessages.has(file) ? { rerunMessage: rerunMessages.get(file)! } : {}) }));
+    const allFailedFiles = Object.entries(ev.perFile)
+      .filter(([, c]) => c.failed > 0)
+      .map(([file]) => file).sort();
+    const onlyAssertionFailureReasons = ev.reasons.every((r) => /^file-failed:|^lane-failed:|^lane-zero-passed:|^lane-stopped-early:/.test(r));
+    if (!dirty && onlyAssertionFailureReasons && allFailedFiles.length >= 1 && allFailedFiles.length <= 3
+      && allFailedFiles.every((file) => isInventoried(file)
+        && (ev.perFile[file]?.assertionFailures ?? 0) > 0 && !ev.perFile[file]?.nonAssertionFailure)) boundedFailedFiles = allFailedFiles;
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];
     if (evaluationReasons.length > 0) {
       outcome = 'failure';
@@ -525,6 +736,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     }
     flags = await classify();
   } catch (e) {
+    if (preflight && preflightStartedAt !== null && !preflightEnded) {
+      preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt));
+      preflightEnded = true;
+    }
     if (e instanceof Requeue) {
       await cleanup(false);
       return { kind: 'requeue', reason: e.reason, overlaps };
@@ -536,7 +751,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       flags = await classify().catch(() => ({ ...flags, harnessChanging: true }));
     } else {
       outcome = 'error';
-      errorStep = e instanceof RunError ? e.step : 'crash';
+      errorStep = e instanceof RunError ? e.step : e instanceof PreflightCleanupError ? 'preflight-cleanup' : 'crash';
       evaluationReasons = [e instanceof Error ? e.message : String(e)];
     }
   }
@@ -550,7 +765,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   };
   if (errorStep) record.errorStep = errorStep;
   if (input.kind === 'main') record.kind = 'main';
+  if (input.attempt && input.kind !== 'main') record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
+  if (preflight) record.preflight = preflight;
+  if (outcome === 'failure' && input.kind !== 'main' && boundedFailedFiles) record.failedFiles = boundedFailedFiles;
   const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };
@@ -562,8 +780,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   /**
    * Failed files that must NOT be treated as possibly flaky (PR verifies): every one when the
    * PR rule cannot be applied (no green `main` record, no isolation input, unreadable diff);
-   * otherwise files the PR changed, files importing a changed file (static relative-import
-   * scan), and files that did not pass cleanly in the last green `main` verify. A `main`
+   * otherwise files the PR changed and files importing a changed file (static relative-import
+   * scan). A file that was itself re-run-passed on the last green `main` stays eligible: it is
+   * flaky on `main` already, so refusing its re-run failed every PR that hit the flake. A `main`
    * verify uses the plain rule (nothing is ineligible).
    */
   async function ineligibleFor(failed: readonly string[]): Promise<Set<string>> {
@@ -573,7 +792,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const out = new Set<string>();
     const notClean = new Set(iso.notCleanOnGreenMain);
     for (const f of failed) {
-      if (changedForIsolation.has(f) || notClean.has(f)) { out.add(f); continue; }
+      if (changedForIsolation.has(f)) { out.add(f); continue; }
+      if (notClean.has(f)) seams.log({ event: 'isolation-rerun-flaky-on-main', file: f });
       let graph: string[] = [];
       try { graph = seams.importGraph ? seams.importGraph([path.join(p.runDir, f)]) : []; } catch { graph = []; }
       if (!seams.importGraph) { out.add(f); continue; } // no import scan available ⇒ cannot rule a change out
@@ -594,6 +814,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
    */
   async function isolationRerun(
     lane: LaneName, config: string, files: readonly string[], report: ParsedLaneReport, env: NodeJS.ProcessEnv, laneDeadlineAt: number,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     let all = true;
     for (let k = 0; k < files.length; k++) {
@@ -617,8 +838,15 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const r = await seams.exec(
         path.join(binDir, 'vitest'),
         ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
-        { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); } },
+        { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); }, ...(signal ? { signal } : {}) },
       );
+      if (r.aborted) {
+        // The run already failed in another lane: the re-run's answer no longer matters.
+        rerunMessages.set(file, 'isolation re-run stopped: another lane had already failed');
+        seams.log({ event: 'isolation-rerun', lane, file, outcome: 'stopped' });
+        all = false;
+        continue;
+      }
       let again: ParsedLaneReport | null = null;
       const text = r.deadlineKilled ? null : seams.fs.readFile(out);
       if (text != null) { try { again = parseVitestJson(text, p.runDir); } catch { again = null; } }
@@ -826,14 +1054,116 @@ export async function removeWorktree(seams: OrchestratorSeams, p: VerifyPaths, d
   });
 }
 
-/** Record a kept failed-run worktree; drop the oldest beyond the cap. */
-async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Promise<void> {
-  let list: string[] = [];
+/**
+ * The kept failed-run list. `ok: false` when the file exists but cannot be parsed:
+ * then nothing may be swept (any run could be a kept one) and the file is left as
+ * it is for a person to repair (disk-steward §5).
+ */
+export function readKeptList(seams: OrchestratorSeams, p: VerifyPaths): { ok: true; list: string[] } | { ok: false } {
+  const raw = seams.fs.readFile(p.keptListFile);
+  if (raw === null) return seams.fs.exists(p.keptListFile) ? { ok: false } : { ok: true, list: [] };
   try {
-    const raw = seams.fs.readFile(p.keptListFile);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(parsed)) list = parsed.filter((x): x is string => typeof x === 'string');
-  } catch { list = []; }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { ok: false };
+    return { ok: true, list: parsed.filter((x): x is string => typeof x === 'string') };
+  } catch {
+    return { ok: false }; // @silent-fallback-ok — reported by the callers (sweep stops, keepFailed leaves the file)
+  }
+}
+
+/**
+ * Remove run checkouts under `runs/` that no run owns: not the current run, not a
+ * kept failed run. Only a non-forced `git worktree remove` is used, so git keeps
+ * anything it considers dirty, locked or unregistered; those are listed, never
+ * forced. Never throws: a sweep problem must not fail a verify.
+ */
+export async function sweepOrphanVerifyRuns(seams: OrchestratorSeams, p: VerifyPaths): Promise<{ removed: string[]; kept: string[]; skipped?: string }> {
+  const removed: string[] = [];
+  const kept: string[] = [];
+  try {
+    if (!seams.fs.list || !seams.fs.inUse) return { removed, kept, skipped: 'no-list-seam' };
+    const kl = readKeptList(seams, p);
+    if (!kl.ok) {
+      seams.log({ event: 'orphan-sweep-skipped', detail: 'kept-failed.json unreadable; nothing swept until it parses again' });
+      degradeKeptList(seams, p, 'the orphan sweep removes nothing until it parses again, so run checkouts cut short accumulate');
+      return { removed, kept, skipped: 'kept-list-unreadable' };
+    }
+    const real = (x: string) => seams.fs.realpath?.(x) ?? null;
+    const protectedPaths = new Set<string>();
+    for (const k of [...kl.list, p.runDir]) {
+      protectedPaths.add(path.resolve(k));
+      const r = real(k);
+      if (r) protectedPaths.add(r);
+    }
+    // Only checkouts the verifier itself made: its 12-hex run-id name AND
+    // registered in its own clone. Anything else in runs/ (a hand-made copy,
+    // an entry orphaned by a re-made clone) is left alone and listed.
+    const listed = await seams.git(['worktree', 'list', '--porcelain'], {
+      cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:worktree-list', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
+    });
+    if (listed.status !== 0) {
+      seams.log({ event: 'orphan-sweep-skipped', detail: `git worktree list failed (${listed.status}); nothing swept this run`, stderr: listed.stderr.slice(0, 500) });
+      return { removed, kept, skipped: 'worktree-list-failed' };
+    }
+    const registered = new Set<string>();
+    for (const line of listed.stdout.split('\n')) {
+      if (!line.startsWith('worktree ')) continue;
+      const w = line.slice('worktree '.length).trim();
+      registered.add(path.resolve(w));
+      const r = real(w);
+      if (r) registered.add(r);
+    }
+    const names = seams.fs.list(p.runsDir) ?? [];
+    for (const name of names) {
+      const dir = path.join(p.runsDir, name);
+      const r = real(dir);
+      if (protectedPaths.has(path.resolve(dir)) || (r && protectedPaths.has(r))) continue;
+      if (!/^[0-9a-f]{12}$/.test(name) || !(registered.has(path.resolve(dir)) || (r && registered.has(r)))) { kept.push(dir); continue; }
+      if (seams.fs.inUse(dir) !== false) { kept.push(dir); continue; }
+      const res = await seams.git(['worktree', 'remove', dir], {
+        cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:orphan-sweep', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
+      });
+      if (res.status === 0 && !seams.fs.exists(dir)) removed.push(dir);
+      else kept.push(dir);
+    }
+    if (removed.length > 0) {
+      await seams.git(['worktree', 'prune'], {
+        cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:worktree-prune', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
+      });
+    }
+    // Kept entries are listed with their size (disk-steward §5), so a person can see what
+    // the sweep is leaving behind and how much it costs without a du of their own.
+    const keptEntries = kept.slice(0, 20).map((dir) => ({ dir, bytes: seams.fs.treeSize?.(dir) ?? null }));
+    seams.log({ event: 'orphan-sweep', removed: removed.length, kept: kept.length, keptEntries });
+  } catch (e) {
+    seams.log({ event: 'orphan-sweep-failed', detail: e instanceof Error ? e.message : String(e) });
+  }
+  return { removed, kept };
+}
+
+/** The one degradation both readers of an unparseable kept-failed.json record (disk-steward §5). */
+function degradeKeptList(seams: OrchestratorSeams, p: VerifyPaths, impact: string): void {
+  seams.degrade?.({
+    feature: 'LocalVerify.keptList',
+    primary: 'the kept-failed list (kept-failed.json in the verify root) names the failed runs kept for diagnosis',
+    fallback: 'the unreadable list exactly as it is, untouched, until a person repairs or removes it',
+    reason: 'kept-failed.json exists but is not a JSON array of paths',
+    impact,
+  });
+}
+
+/** Record a kept failed-run worktree; drop the oldest beyond the cap. Exported for its tests. */
+export async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Promise<void> {
+  const kl = readKeptList(seams, p);
+  if (!kl.ok) {
+    // Never overwrite a list we cannot read: it may name runs someone is keeping.
+    seams.log({ event: 'kept-list-unreadable', detail: 'kept-failed.json left as is; this run is kept but not listed' });
+    // The run folder's absolute path stays in the run log; the degradation text reaches /health.
+    seams.log({ event: 'kept-list-unreadable-run', detail: p.runDir });
+    degradeKeptList(seams, p, 'this failed run is kept but not listed; the next sweep removes it once the list parses again');
+    return;
+  }
+  let list = kl.list;
   list = list.filter((d) => d !== p.runDir);
   list.push(p.runDir);
   while (list.length > LOCAL_VERIFY_LIMITS.keepFailedWorktrees) {

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-10T12:19:57.341Z",
+  "slug": "cb-sentinel",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 644,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/ContextBudgetSentinel.ts",
+      "src/monitoring/FoldCoordinator.ts",
+      "src/monitoring/contextBudgetSentinelBoot.ts",
+      "src/monitoring/engineCheckpoint.ts",
+      "src/monitoring/foldCarriers.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 638,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

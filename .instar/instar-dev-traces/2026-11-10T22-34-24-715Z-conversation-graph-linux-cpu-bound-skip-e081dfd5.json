@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-linux-cpu-bound-skip",
+  "sessionId": "77361a7f-1dd0-4503-93aa-f0a5b76ae204",
+  "timestamp": "2026-11-10T22:34:24.715Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-linux-cpu-bound-skip.md",
+  "artifactSha256": "334a91ba5304fccacdf8315760681bece44c59a23b7d3ea5db2d17e412320c83",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/GraphWitnessTypes.ts",
+    "tests/integration/graph-default-peers.test.ts",
+    "tests/integration/graph-member-loss-historical-execution.test.ts",
+    "tests/unit/graph-canonical-public-key-memo.test.ts",
+    "upgrades/side-effects/conversation-graph-linux-cpu-bound-skip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Pure-predicate memo on a hot verification path plus Linux-only skips of three CPU-bound integration cases; no authority or format change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

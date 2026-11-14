@@ -1,0 +1,61 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T07:32:46.877Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "cfc043199c373e0098d4f4138fad8810911a29558f237e66cc1c3bf1aa36f8b5",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-28T07-23-33-492Z-native-remote-desktop-first-mac.json",
+    ".instar/instar-dev-traces/2026-10-28T07-23-16-464Z-native-remote-desktop-first-mac-f62df322.json",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.eli16.md",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+    "src/core/DesktopAccessAudit.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/PinAttemptStore.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/desktopTransport.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/remote-desktop-delivery-parity.test.ts",
+    "upgrades/side-effects/native-remote-desktop-first-mac.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Privileged remote desktop admission and live OS input require full security review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "approved",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "astra-ux-constitution",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/blocker-handoff-across-machines-and-surfaces-convergence.md",
+      "iterations": 6,
+      "verified": false
+    }
+  }
+}

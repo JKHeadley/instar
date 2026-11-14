@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "feedback-drain-ci-fixture",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-30T14:56:31.112Z",
+  "artifactPath": "upgrades/side-effects/feedback-drain-ci-fixture.md",
+  "artifactSha256": "b0ce8a3979de9fb3889ba639916d1cb4a7953c01d5d8c7ab1028be53e7a067a0",
+  "coveredFiles": [
+    "docs/eli16/feedback-drain-ci-fixture.eli16.md",
+    "tests/integration/feedback-factory-process-job-body.test.ts",
+    "upgrades/next/feedback-drain-ci-fixture.md",
+    "upgrades/side-effects/feedback-drain-ci-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only isolation fix; a revert fully restores the prior fixture and no runtime behavior or agent state changes.",
+  "eli16Path": "docs/eli16/feedback-drain-ci-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-drain-ci-fixture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

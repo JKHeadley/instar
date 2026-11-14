@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-off-fallback-last",
+  "sessionId": "3f59cc8e-b019-43f3-b3cc-45dc0d407235",
+  "timestamp": "2026-11-09T23:34:55.996Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-off-fallback-last.md",
+  "artifactSha256": "d99d0473f3461c8e2df478a571d7938828efdb3733ae916089c8244eb12f8319",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/ConversationGraphSurface.ts",
+    "tests/e2e/conversation-graph-surface-alive.test.ts",
+    "tests/integration/conversation-graph-surface.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

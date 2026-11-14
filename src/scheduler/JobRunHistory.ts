@@ -54,11 +54,20 @@ export interface JobRun {
   /** Duration in seconds (computed on completion) */
   durationSeconds?: number;
   /** Result of the run */
-  result: 'pending' | 'success' | 'failure' | 'timeout' | 'spawn-error';
+  /** `skipped` (job-cost-reduction §5.2) — a script reported nothing to do
+   *  (feature dark, prober absent). Neither success nor failure: excluded
+   *  from stats, leaves consecutiveFailures unchanged, no retry. */
+  result: 'pending' | 'success' | 'failure' | 'timeout' | 'spawn-error' | 'skipped';
   /** Error message if failed */
   error?: string;
   /** Model tier used */
   model?: string;
+  /** Framework actually used for this session, when known. */
+  framework?: string;
+  /** How the model route was chosen; older rows have unknown provenance. */
+  routeBasis?: 'bench' | 'category-default' | 'default' | 'fallback' | 'unknown';
+  /** First failed pin check, when routeBasis is fallback. */
+  reason?: string;
   /** Machine ID that ran this job (multi-machine) */
   machineId?: string;
   /** Condensed output from the session (last ~1000 chars) */
@@ -72,7 +81,15 @@ export interface JobRun {
   // ── Phase 1b observability (jobs-as-agentmd spec §"Run-record observability") ──
   /** Where the job came from. "legacy" = traditional jobs.json entry,
    *  "instar" or "user" = per-slug manifest entry with the matching origin. */
-  origin?: 'instar' | 'user' | 'legacy';
+  /** `triage` (job-cost-reduction F13) marks a triage investigation session's
+   *  row — recorded under the job's slug but OUTSIDE the slug's stats. */
+  origin?: 'instar' | 'user' | 'legacy' | 'triage';
+  /** job-cost-reduction §5.1 — `script` for a no-session script run. */
+  runner?: 'script';
+  /** Lock-file trust verdict at run time (script runs). */
+  lockTrust?: string;
+  /** LLM tokens used by the run. Always 0 for a script run. */
+  tokens?: number;
   /** Absolute path the agentmd body was resolved from; null for non-agentmd. */
   resolvedPath?: string | null;
   /** SHA-256 of the body validated for this run. null for non-agentmd. */
@@ -90,9 +107,24 @@ export interface JobRun {
   /** Whether the resolver clamped the requested allowlist to [Read]
    *  because the unrestricted-tools two-flag guard failed. */
   clampedAllowlist?: boolean;
+  /** EVO-008: true only when the launched session carried the confined launch form (no
+   *  bypass flag; dontAsk + --tools) — read from the session, never from the request.
+   *  Absent on old rows and on spawn errors: unknown, never "confined". */
+  toolsConfined?: boolean;
+  /** EVO-008: why the tool list was or was not applied (`confined`, `confined-with-shell`,
+   *  `gate-off`, `config-unreadable`, `no-declared-allowlist`, `read-only-default`,
+   *  `unsupported-tool-names`, `not-applied:<framework>`, `not-applicable`, and on a spawn
+   *  error `confine-refused` / `confine-failed`). */
+  toolEnforcement?: string;
   /** When the row exceeded the 2 KB cap, non-essential fields are
    *  truncated and this flag is set. */
   truncated?: boolean;
+  /**
+   * docs/specs/backup-email-sending.md: the email outbox row for this run's report, written in the same completion
+   * bookkeeping. `quiet` means the run had nothing to report (Quiet by Default). It outlives the row's tombstone, so
+   * a marked run is never reconciled again; an unmarked completed run of an emailing job is.
+   */
+  emailOutboxId?: string;
 }
 
 export interface JobRunStats {
@@ -121,6 +153,20 @@ export function averageMeasuredJobSuccessRates(
     .filter((rate): rate is number => rate !== null);
   if (measured.length === 0) return null;
   return measured.reduce((sum, rate) => sum + rate, 0) / measured.length;
+}
+
+/** Trigger stamped on canary rows (job-cost-reduction §5.6.4). */
+export const SCRIPT_CANARY_TRIGGER = 'script-canary';
+
+/**
+ * A "side run" is recorded under a job's slug but is not the job doing its
+ * work: a triage investigation session (`origin: 'triage'`, F13) or a daily
+ * must-fail canary (`trigger: 'script-canary'`, §5.6.4). Side runs are excluded
+ * from stats and must be excluded from any failure-streak / crash-loop
+ * counting — a canary is SUPPOSED to fail.
+ */
+export function isSideRun(r: Pick<JobRun, 'origin' | 'trigger'>): boolean {
+  return r.origin === 'triage' || r.trigger === SCRIPT_CANARY_TRIGGER;
 }
 
 /** Monotonic counter to ensure unique runIds even within the same millisecond */
@@ -172,6 +218,10 @@ export class JobRunHistory {
   private cachedRuns: JobRun[] | null = null;
   private cachedSize = 0;
   private cachedMtimeMs = 0;
+  private lastReadHealthy = true;
+
+  /** Lets coverage reporters distinguish an empty ledger from a failed read. */
+  isReadHealthy(): boolean { return this.lastReadHealthy; }
 
   constructor(stateDir: string) {
     this.ledgerDir = path.join(stateDir, 'ledger');
@@ -192,8 +242,14 @@ export class JobRunHistory {
     sessionId: string;
     trigger: string;
     model?: string;
+    framework?: string;
+    routeBasis?: JobRun['routeBasis'];
+    reason?: string;
     // Phase 1b observability extensions (jobs-as-agentmd spec)
-    origin?: 'instar' | 'user' | 'legacy';
+    origin?: 'instar' | 'user' | 'legacy' | 'triage';
+    runner?: 'script';
+    lockTrust?: string;
+    tokens?: number;
     resolvedPath?: string | null;
     bodyHash?: string | null;
     frontmatterHash?: string | null;
@@ -201,6 +257,8 @@ export class JobRunHistory {
     toolAllowlist?: string[] | '*' | null;
     unrestrictedTools?: boolean;
     clampedAllowlist?: boolean;
+    toolsConfined?: boolean;
+    toolEnforcement?: string;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -211,8 +269,14 @@ export class JobRunHistory {
       startedAt: new Date().toISOString(),
       result: 'pending',
       model: opts.model,
+      ...(opts.framework !== undefined ? { framework: opts.framework } : {}),
+      ...(opts.routeBasis !== undefined ? { routeBasis: opts.routeBasis } : {}),
+      ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
       machineId: this.machineId ?? undefined,
       origin: opts.origin,
+      ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
+      ...(opts.lockTrust !== undefined ? { lockTrust: opts.lockTrust } : {}),
+      ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
       resolvedPath: opts.resolvedPath ?? null,
       bodyHash: opts.bodyHash ?? null,
       frontmatterHash: opts.frontmatterHash ?? null,
@@ -220,6 +284,8 @@ export class JobRunHistory {
       toolAllowlist: opts.toolAllowlist ?? null,
       unrestrictedTools: opts.unrestrictedTools ?? false,
       clampedAllowlist: opts.clampedAllowlist ?? false,
+      ...(opts.toolsConfined !== undefined ? { toolsConfined: opts.toolsConfined } : {}),
+      ...(opts.toolEnforcement !== undefined ? { toolEnforcement: opts.toolEnforcement } : {}),
     };
     this.appendLine(run);
     return runId;
@@ -238,9 +304,10 @@ export class JobRunHistory {
    */
   recordCompletion(opts: {
     runId: string;
-    result: 'success' | 'failure' | 'timeout';
+    result: 'success' | 'failure' | 'timeout' | 'skipped';
     error?: string;
     outputSummary?: string;
+    emailOutboxId?: string;
   }): void {
     // Find the pending entry to get start time
     const pending = this.findRun(opts.runId);
@@ -266,8 +333,19 @@ export class JobRunHistory {
       result: opts.result,
       error: opts.error,
       outputSummary: opts.outputSummary,
+      ...(opts.emailOutboxId ? { emailOutboxId: opts.emailOutboxId } : {}),
     };
     this.appendLine(completed);
+  }
+
+  /**
+   * Marks a completed run with its email outbox row (docs/specs/backup-email-sending.md): the reconciliation sweep's
+   * write for a run whose completion bookkeeping did not get to it. Appends a new version of the row.
+   */
+  recordEmailOutboxId(runId: string, emailOutboxId: string): void {
+    const run = this.findRun(runId);
+    if (!run || run.emailOutboxId) return;
+    this.appendLine({ ...run, emailOutboxId });
   }
 
   /**
@@ -297,6 +375,7 @@ export class JobRunHistory {
     trigger: string;
     error: string;
     model?: string;
+    toolEnforcement?: string;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const now = new Date().toISOString();
@@ -312,6 +391,7 @@ export class JobRunHistory {
       error: opts.error,
       model: opts.model,
       machineId: this.machineId ?? undefined,
+      ...(opts.toolEnforcement !== undefined ? { toolEnforcement: opts.toolEnforcement } : {}),
     };
     this.appendLine(run);
     return runId;
@@ -326,6 +406,8 @@ export class JobRunHistory {
     sinceHours?: number;
     limit?: number;
     offset?: number;
+    /** Drop triage + canary rows (see isSideRun). Default false. */
+    excludeSideRuns?: boolean;
   }): { runs: JobRun[]; total: number } {
     const all = this.getDeduplicatedRuns();
     const cutoff = opts?.sinceHours
@@ -335,6 +417,7 @@ export class JobRunHistory {
     const filtered = all.filter(r => {
       if (opts?.slug && r.slug !== opts.slug) return false;
       if (opts?.result && r.result !== opts.result) return false;
+      if (opts?.excludeSideRuns && isSideRun(r)) return false;
       if (cutoff && r.startedAt < cutoff) return false;
       return true;
     });
@@ -345,9 +428,22 @@ export class JobRunHistory {
     const total = filtered.length;
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
+    // Preserve the exact capped row. Adding a default field after persistence
+    // can push a 2 KB row over its bound; absent provenance means unknown.
     const runs = filtered.slice(offset, offset + limit);
 
     return { runs, total };
+  }
+
+  /**
+   * This machine's rows for one slug, newest first (job-cost-reduction §13:
+   * each machine triages the runs it executed). Rows with no machineId count
+   * as local only when this history has no machine id either.
+   */
+  localRunsForSlug(slug: string, limit: number): JobRun[] {
+    const { runs } = this.query({ slug, limit: 10000 });
+    const mine = runs.filter(r => (r.machineId ?? null) === (this.machineId ?? null));
+    return mine.slice(0, Math.max(0, limit));
   }
 
   /**
@@ -356,7 +452,10 @@ export class JobRunHistory {
   stats(slug: string, sinceHours?: number): JobRunStats {
     const { runs } = this.query({ slug, sinceHours, limit: 10000 });
 
-    const completed = runs.filter(r => r.result !== 'pending');
+    // `skipped` runs and side runs (triage sessions, canaries) are neither
+    // successes nor failures (job-cost-reduction §5.2, F13, §5.6.4): out of
+    // numerator AND denominator.
+    const completed = runs.filter(r => r.result !== 'pending' && r.result !== 'skipped' && !isSideRun(r));
     const successes = completed.filter(r => r.result === 'success').length;
     const failures = completed.filter(r => r.result !== 'success').length;
     const budgetCondensedRuns = completed.filter(r => r.truncated === true).length;
@@ -726,6 +825,7 @@ export class JobRunHistory {
    */
   private readLines(): JobRun[] {
     if (!fs.existsSync(this.file)) {
+      this.lastReadHealthy = true;
       this.cachedRuns = [];
       this.cachedSize = 0;
       this.cachedMtimeMs = 0;
@@ -733,6 +833,7 @@ export class JobRunHistory {
     }
 
     try {
+      this.lastReadHealthy = true;
       const stat = fs.statSync(this.file);
       const size = stat.size;
       const mtimeMs = stat.mtimeMs;
@@ -773,6 +874,7 @@ export class JobRunHistory {
       this.cachedMtimeMs = mtimeMs;
       return runs;
     } catch (error) {
+      this.lastReadHealthy = false;
       console.error(`[JobRunHistory] Failed to read:`, error);
       DegradationReporter.getInstance().report({
         feature: 'JobRunHistory.readLines',

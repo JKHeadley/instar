@@ -1,0 +1,55 @@
+{
+  "ts": "2026-11-08T09:03:05.091Z",
+  "slug": "mobile-unread-messages",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 2047,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/BackupManager.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/ConversationReadMarkers.ts",
+      "src/core/ConversationReadMarkersWiring.ts",
+      "src/core/ConversationUnreadService.ts",
+      "src/core/MobilePush.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1957,
+    "deletedLines": 90
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Two controllers registered in src/testing/selfActionRegistry.ts and driven under the pinned sustained-pressure fixture: read-marker-emit-coalesce (the outbox offers a refused key at most once per EMIT_THROTTLE_MS via markerEmitDue; an eternal sentinel with a 10 s rate floor whose give-up is the journal's rate bucket) and read-marker-catch-up-retry (a peer failing forever is asked every CATCH_UP_RETRY_MS at most CATCH_UP_MAX_FAILURES=12 times via catchUpAttemptDue, then waits for onPeerOnline or the next boot). The ratchet proves the emit rate never exceeds elapsed/10 s and the retry count settles at 12 independent of the horizon."
+    },
+    "component": "ConversationUnreadService"
+  },
+  "verdict": "pass"
+}

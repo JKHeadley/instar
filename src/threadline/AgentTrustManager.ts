@@ -23,6 +23,7 @@ import { PairingPendingStore, type PendingPairingRecord } from './PairingPending
 import { deriveSASv2, deriveSasBitsV2, deriveSasFingerprintV2, derivePairingIdV2 } from './ThreadlineCrypto.js';
 import { isAcceptableIdentityKey, type InviteTrust } from '@sagemindai/threadline-core';
 import { earliestMark } from './encryptedSeenMark.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -774,6 +775,7 @@ export class AgentTrustManager implements InviteTrust {
     profile.updatedAt = now;
 
     this.save();
+    featureEvidence.record('threadline.verifiedPairing', { kind: 'fired', reason: 'pairing-completed', context: { peerFp, method: 'sas', previousLevel, newLevel: profile.level, peerAcked: profile.peerAcked ?? null } });
 
     // §3.8 — replicate ONLY the verified-IDENTITY RESULT to the agent's OWN machines.
     // The emitter is handed ONLY the 5-field result (it has NO access to the SAS store),
@@ -964,6 +966,7 @@ export class AgentTrustManager implements InviteTrust {
     profile.source = 'mutual-verified'; // LAST: the credential-share authorization bit
     profile.updatedAt = now;
     this.save();
+    featureEvidence.record('threadline.verifiedPairing', { kind: 'fired', reason: 'pairing-completed', context: { peerFp: fp, method: 'invite', via: args.via.slice(0, 32), previousLevel, newLevel: profile.level } });
     if (this.pairingReplication) {
       try {
         this.pairingReplication.emitVerified({ peerFp: fp, peerIdentityPub: key, verifiedAt: now, verifiedOnMachine: this.machineId, pairingMethod: 'invite' });

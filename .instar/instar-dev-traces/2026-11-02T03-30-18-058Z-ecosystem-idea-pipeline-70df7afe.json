@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "ecosystem-idea-pipeline",
+  "sessionId": "18604a86-3b10-4658-ba57-581bcce3d6ca",
+  "timestamp": "2026-11-02T03:30:18.058Z",
+  "artifactPath": "upgrades/side-effects/ecosystem-idea-pipeline.md",
+  "artifactSha256": "80a75eb6a1f261fed7f903a23b384e0ca19eb1ab2891d025205cf1de9f689bec",
+  "specPath": "docs/specs/ecosystem-idea-pipeline.md",
+  "coveredFiles": [
+    "src/ecosystem/EcosystemIdeaService.ts",
+    "src/ecosystem/EcosystemIdeasReplicatedStore.ts",
+    "src/ecosystem/EcosystemLedger.ts",
+    "src/ecosystem/buildEcosystemIdeas.ts",
+    "src/ecosystem/frameworkAdmission.ts",
+    "src/ecosystem/ideaBands.ts",
+    "src/ecosystem/ideaPrompts.ts",
+    "src/ecosystem/projectFetch.ts",
+    "src/ecosystem/sourceSearch.ts",
+    "src/ecosystem/types.ts",
+    "src/server/AgentServer.ts",
+    "src/server/ecosystemIdeaRoutes.ts",
+    "upgrades/side-effects/ecosystem-idea-pipeline.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "x",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

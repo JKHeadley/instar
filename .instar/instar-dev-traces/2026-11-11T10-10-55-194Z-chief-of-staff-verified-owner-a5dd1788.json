@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-verified-owner",
+  "sessionId": "ae92b143-dc27-40c3-9778-e8c22c9cf672",
+  "timestamp": "2026-11-11T10:10:55.194Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-verified-owner.md",
+  "artifactSha256": "21d495b0ff4707a3625abd4809f5c5f1c8a1f0c31f76539e6ba41f1d142ab3b2",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/chief-of-staff-verified-owner.eli16.md",
+    "upgrades/side-effects/chief-of-staff-verified-owner.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to the same Chief of Staff fix: reorders one option in the PresenceProxy wiring so an existing wiring test finds speakerElection; no behaviour change.",
+  "eli16Path": "upgrades/chief-of-staff-verified-owner.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chief-of-staff-verified-owner.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

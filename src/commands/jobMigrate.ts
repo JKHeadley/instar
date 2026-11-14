@@ -135,8 +135,10 @@ function writeUserTemplate(userDir: string, slug: string, entry: any): string {
   if (Array.isArray(entry.tags)) fm.tags = entry.tags;
   if (entry.gate) fm.gate = entry.gate;
   if (typeof entry.telegramNotify === 'boolean') fm.telegramNotify = entry.telegramNotify;
-  // User jobs default to minimal Read allowlist per spec §Trust Model.
-  fm.toolAllowlist = ['Read'];
+  // EVO-008: no toolAllowlist is written. A migrated job never declared one; the resolver
+  // still records the ['Read'] default for it (kind default-user), but a written list read
+  // as an author's choice, and once tool lists are applied it would cut a migrated job that
+  // uses the shell down to Read.
   const fmYaml = yaml.dump(fm, { lineWidth: -1, noRefs: true, quotingType: '"' }).trimEnd();
   const body = (entry.execute && typeof entry.execute.value === 'string') ? entry.execute.value : '';
   const content = `---\n${fmYaml}\n---\n${body.endsWith('\n') ? body : body + '\n'}`;

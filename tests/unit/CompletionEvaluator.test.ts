@@ -57,8 +57,8 @@ describe('CompletionEvaluator', () => {
     const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
     // Bumped to v2 for the signal extension (objective-signals block + fenced
     // transcript + folded milestone floor, spec §2b.4); v3 for the field-gated
-    // scope-accretion context block (autonomous-scope-accretion-completion.md).
-    expect(e.promptVersion).toBe('completion-eval-v3');
+    // scope-accretion context block; v4 adds server-owned wider goal context.
+    expect(e.promptVersion).toBe('completion-eval-v4');
   });
 });
 

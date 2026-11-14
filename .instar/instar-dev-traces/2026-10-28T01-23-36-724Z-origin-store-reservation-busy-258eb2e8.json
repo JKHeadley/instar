@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "origin-store-reservation-busy",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-28T01:23:36.724Z",
+  "artifactPath": "upgrades/side-effects/origin-store-reservation-busy.md",
+  "artifactSha256": "62482dea556a0f25722a05bd785a81975d30b1cbd4ac124ed9cf51bc0cc6bd41",
+  "coveredFiles": [
+    "docs/specs/origin-store-reservation-busy.eli16.md",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "tests/unit/telegram-origin/recovery-review-budget.test.ts",
+    "upgrades/next/origin-store-reservation-busy.md",
+    "upgrades/side-effects/origin-store-reservation-busy.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A lock refusal on one store method maps to its existing 'not reserved' answer; callers already skipped on the throw; revert fully undoes it.",
+  "eli16Path": "docs/specs/origin-store-reservation-busy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-store-reservation-busy.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

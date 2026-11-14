@@ -26,6 +26,7 @@
 export type MachineId = string;
 
 export type MeshCommand =
+  | { type: 'notification-preference'; intent: import('../messaging/NotificationPreferences.js').NotificationPreferenceIntent }
   | import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand
   | { type: 'place'; session: string; machine: MachineId }
   | { type: 'claim'; session: string; epoch: number; failover?: boolean }
@@ -39,7 +40,16 @@ export type MeshCommand =
       transferEpoch: number;
       transfer: import('./InboundDeliveryStore.js').EncryptedDeliveryTransfer;
     }
-  | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
+  | {
+      type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number;
+      /** The message's TopicMemory row (context-budget §14 relay-path carrier). An older peer ignores it. */
+      row?: unknown;
+      /**
+       * Files by attachment id (native-conversation-base §3c). Never a path; validated on receipt by
+       * `parseInboundMediaField`. An older peer ignores it and injects the payload's path-free sentence.
+       */
+      media?: unknown;
+    }
   | {
       /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */
       type: 'a2a-inbox-deliver';
@@ -71,6 +81,21 @@ export type MeshCommand =
       purpose?: string;
     }
   | {
+      // a2a-required-acknowledgment D4: a relay STANDBY hands one kinded ack to my
+      // machine holding the relay. A verb of its own, because the chat forward carries
+      // only a chat body: a mixed-version holder would send a summary as a real
+      // message. Registered-peer class; the HANDLER is the gate (feature on, holder
+      // not a standby, capability). A holder without the verb refuses it, and the
+      // standby's pending row stays pending until it expires.
+      type: 'a2a-relay-forward-ack';
+      peerFp: string;
+      ack: { kind: string; state?: string; reason?: string; refMessageIds: string[]; summary?: string };
+      text: string;
+      threadId?: string | null;
+      triggerEncrypted: boolean;
+      ackKinds?: number | null;
+    }
+  | {
       // A2A cross-machine route §5: the relay holder asks the machine that has a
       // topic's live session to type a reply into it. Registered-peer class —
       // the RECEIVER decides from its own live session for the topic, injects
@@ -81,6 +106,33 @@ export type MeshCommand =
       text: string;
       messageId: string;
       threadId: string;
+    }
+  | {
+      // Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4): the lease
+      // holder routes ONE claimed action to the conversation's OWNERSHIP machine. Registered-
+      // peer class — the envelope proves a machine of mine sent it; the HANDLER is the gate:
+      // it verifies the INNER holder signature against the current lease holder + a fresh
+      // renewal, re-checks ownership, the open-intent rule, the stand-down list and the
+      // dedupe index under the conversation lock, and refuses when the feature is off.
+      type: 'cos-action';
+      conversationKey: string;
+      action: 'restart-inject' | 'restart-run' | 'redirect' | 'close' | 'mirror-status';
+      leaseEpoch: number;
+      sequence: number;
+      holderMachineId: string;
+      holderSignature: string;
+      claimedAt: string;
+      payload: { text?: string; durationHours?: number };
+    }
+  | {
+      // Chief of Staff §2.4 step 4: the holder asks the owner to SETTLE an open intent (find
+      // the receipt by idempotency key ⇒ started, else tombstone ⇒ rejected). The holder may
+      // write `lost` only after this answers. Same class and gate as cos-action.
+      type: 'cos-settle';
+      conversationKey: string;
+      intentKey: string;
+      holderMachineId: string;
+      holderSignature: string;
     }
   | {
       // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
@@ -128,6 +180,7 @@ export type MeshCommand =
   | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
   | { type: 'agent-identity-request'; agentName: string; expectedFingerprint: string; requesterNonce: string }
   | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'recovery-enrollment-advert' }
   | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
       // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
@@ -257,6 +310,42 @@ export type MeshCommand =
       topics: string[];
     }
   | {
+      // Moved-conversation history (session-pool-signed-history). Read/observe class:
+      // the lease holder serves its OWN recent messages for one topic to a registered
+      // same-operator peer. Exists so a move needs no shared bearer token.
+      type: 'topic-history-pull';
+      topic: number;
+      limit?: number;
+    }
+  | {
+      // Relay-path row carrier (context-budget-layered-summaries §14). Read/observe class:
+      // a registered same-operator peer asks for this machine's OWN TopicMemory rows of one
+      // topic — by seq of the stream this machine carried (a gap), or its recent rows and
+      // stream heads (a topic move). Bounded by its handler; the receiver re-validates every row.
+      type: 'topic-row-pull';
+      topic: number;
+      mode: 'seq' | 'recent';
+      stream?: string;
+      fromSeq?: number;
+      toSeq?: number;
+      limit?: number;
+    }
+  | {
+      // session-pool-move-nudge. Registered-peer class: "pull placements from me now". Names the
+      // claim to look for and grants nothing; ownership crosses only as signed journal entries.
+      type: 'ownership-nudge';
+      sessionKey: string;
+      epoch: number;
+      landedAt: number;
+    }
+  | {
+      // Duplicate check (session-pool-activation-at-pairing, Change 8). Read/observe class:
+      // says only whether this machine holds a live session for one conversation.
+      type: 'session-live-probe';
+      platform: string;
+      platformId: string;
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -268,6 +357,11 @@ export type MeshCommand =
       manifestOnly?: boolean;
       want?: { relPath: string; offset: number }[];
     }
+  // App media copying (mobile-native-chat-media §4.12). Read/observe class: serves OWN blobs that
+  // an unpurged local event references (≤ 1 MiB slices), this machine's held-hash inventory, or a
+  // nudge asking it to pull hashes a peer holds alone. The receiver verifies length and SHA-256
+  // before keeping a byte, so the verb carries reach, never authority.
+  | import('./AppMediaReplicator.js').AppMediaPullCommand
   | {
       // WS4.4 "links that survive machine boundaries"
       // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). The tunnel-fronting machine
@@ -291,6 +385,20 @@ export type MeshCommand =
       method: string;
       probeOnly?: boolean;
       assertion?: unknown;
+    }
+  | {
+      // docs/specs/backup-email-sending.md (Who sends): a standby forwards an email to the lease holder, the one
+      // voice. Carries a session's one-off or a standby-fired report; `id` is the caller's idempotency id, so a
+      // re-issue after a mesh timeout answers the existing row. The holder runs its own guard, outbox, budget and
+      // queue, and re-checks the fallback topic's readers itself. Mutating: the handler is the gate.
+      type: 'email-send-forward';
+      id: string;
+      kind: 'report' | 'one-off';
+      subject: string;
+      text: string;
+      topicText: string;
+      fallbackTopicId: number | null;
+      jobSlug?: string;
     };
 
 export interface MeshEnvelope {
@@ -400,7 +508,7 @@ export interface RbacDeps {
    * authority is the R4a asymmetric signature verification in the handler, which re-binds to the
    * authenticated sender + registered operator key. Mirrors the deny-by-default discipline of R3a.
    */
-  authorizeMandateDeliver?: (args: { sender: MachineId }) => boolean;
+  authorizeMandateDeliver?: (args: { sender: MachineId; command?: MeshCommand }) => boolean;
 }
 
 /**
@@ -473,11 +581,15 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // the trusted operator machine / the feature is dark, the verb is refused HERE — before the
       // handler runs. The LOAD-BEARING authority is still the R4a signature re-verification in the
       // handler (this gate is the coarse, fail-closed pre-filter).
-      const authd = deps.authorizeMandateDeliver?.({ sender }) ?? false;
+      const authd = deps.authorizeMandateDeliver?.({ sender, command }) ?? false;
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
     case 'commitment-mutate':
     case 'telegram-origin':
+    // email-send-forward (backup-email-sending, Who sends): the same posture. verifyEnvelope proves the sending
+    // machine; the holder's handler re-runs the credential guard, the readers check on the carried topic, the
+    // budget and the owner-only transport, and answers an existing row for a repeated id.
+    case 'email-send-forward':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
       // §3.4/§5): any registered peer may issue it under the same-operator
       // posture — meaning RBAC adds NO authorization beyond verifyEnvelope,
@@ -491,17 +603,27 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
+    case 'app-media-pull':
     case 'topic-profile-pull':
+    case 'topic-history-pull':
+    case 'topic-row-pull':
+    case 'session-live-probe':
+    case 'ownership-nudge':
     case 'commitments-sync':
+    case 'notification-preference':
     case 'preferences-sync':
     case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
+    case 'recovery-enrollment-advert':
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
+    case 'a2a-relay-forward-ack':
     case 'a2a-topic-reply-inject':
+    case 'cos-action':
+    case 'cos-settle':
     case 'agent-identity-observe':
     case 'agent-identity-request':
       // agent-identity-observe / agent-identity-request (a2a-single-agent-identity
@@ -530,10 +652,19 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // files behind a fresh-manifest allowlist (disclosure accepted for
       // registered same-operator peers, §3.1 note); the handler itself stays
       // dark unless replication is explicitly enabled (§3.7 gate).
+      // app-media-pull joins it (mobile-native-chat-media §4.12): it serves OWN
+      // blobs only while an unpurged local event references them; the puller
+      // keeps a copy only when its length and SHA-256 equal the reference.
       // topic-profile-pull joins it (TOPIC-PROFILE-SPEC §5.3): it serves OWN
       // per-topic profile entries — disclosure-only for registered
       // same-operator peers; the receiver revalidates every field (§10.2)
       // before anything persists, so the verb carries reach, not authority.
+      // topic-history-pull joins it (session-pool-signed-history): it serves OWN recent
+      // messages for one topic, the same disclosure the bearer history route makes to
+      // this agent's own machines, capped in count and size by its handler.
+      // topic-row-pull joins it (context-budget §14): it serves OWN TopicMemory rows of one
+      // topic (the rows this machine carried, or its recent rows), the same disclosure the
+      // deliverMessage carrier already makes to the owner; capped by its handler.
       // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
       // verb is reachable by any registered peer, but its HANDLER is the real
       // gate — it serves a private view body ONLY when the carried user-auth

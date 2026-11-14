@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-04T03:24:48.591Z",
+  "slug": "feature-maturation-ladder",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/MaturationLadderService.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Raising is braked by raiseDue from the durable audit log: at most once a day per harmed feature, once a week per ready feature, 5 per pass; modeled as maturation-ladder-raise under sustained pressure."
+    }
+  },
+  "verdict": "pass"
+}

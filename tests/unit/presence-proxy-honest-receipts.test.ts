@@ -46,6 +46,7 @@ function mkProxy(overrides: Record<string, unknown> = {}) {
     stateDir,
     intelligence: null,
     agentName: 'echo',
+    confirmSessionUsageLimit: () => true,
     // A LIVE child process — the condition that previously forced "working".
     getProcessTree: () => [{ command: 'claude', pid: 4242, cpu: 0, mem: 0 }],
     isSessionAlive: () => true,

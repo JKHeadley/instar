@@ -10,6 +10,7 @@ import path from 'node:path';
 import {
   suspendAutonomousTopicForMove,
   listAutonomousJobs,
+  reportableAutonomousJobs,
   activeAutonomousJobs,
   autonomousRunRemainingForTopic,
   structuralLongWorkActive,
@@ -45,6 +46,36 @@ afterEach(() => {
 });
 
 describe('listing', () => {
+  it('keeps an active unbounded run reportable', () => {
+    writeJob('13480'); // no duration_seconds is a valid unbounded run
+    expect(reportableAutonomousJobs(stateDir, Date.parse('2026-05-24T18:00:00Z')).map(({ job }) => job.topic)).toEqual(['13480']);
+  });
+  it('reports a real suspended move and a paused run after its original window', () => {
+    writeJob('13481');
+    writeJob('13482', { paused: true });
+    for (const topic of ['13481', '13482']) {
+      const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^started_at:.*$/m, '$&\nduration_seconds: 3600'));
+    }
+    suspendAutonomousTopicForMove(stateDir, '13481', 'm_destination');
+    const jobs = reportableAutonomousJobs(stateDir, Date.parse('2026-05-24T18:00:00Z'));
+    expect(jobs.map(({ job }) => job.topic).sort()).toEqual(['13481', '13482']);
+    expect(jobs.every(({ remainingSeconds }) => remainingSeconds === 0)).toBe(true);
+    expect(jobs.find(({ job }) => job.topic === '13481')?.job.active).toBe(false);
+  });
+
+  it('never reports a stopped record whose stale paused or move markers remain', () => {
+    writeJob('13481', { paused: true });
+    writeJob('13482');
+    for (const topic of ['13481', '13482']) {
+      const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^started_at:.*$/m, '$&\nduration_seconds: 3600'));
+    }
+    suspendAutonomousTopicForMove(stateDir, '13482', 'm_destination');
+    expect(stopAutonomousTopic(stateDir, '13481')).toBe(true);
+    expect(stopAutonomousTopic(stateDir, '13482')).toBe(true);
+    expect(reportableAutonomousJobs(stateDir, Date.parse('2026-05-23T18:30:00Z'))).toEqual([]);
+  });
   it('lists per-topic jobs and a legacy job', () => {
     writeJob('9984');
     writeJob('12143', { paused: true });

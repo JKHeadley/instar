@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "job-supervision-offline-trial",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T18:55:17.794Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-offline-trial.md",
+  "artifactSha256": "0ff5609080f9765459ad0a3065508700752ac90c20ee007a96aeab19872a84f4",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "docs/research/job-result-supervision-v2-bench/OFFLINE-TRIAL-2026-10-28.md",
+    "scripts/job-supervision-offline-trial.mjs",
+    "upgrades/next/job-supervision-offline-trial.md",
+    "upgrades/side-effects/job-supervision-offline-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "An offline trial harness for a security-sensitive rollout; no production route changes, but the isolation evidence warrants full review and tests.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

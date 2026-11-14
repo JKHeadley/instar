@@ -171,22 +171,40 @@ export function resolveProtectedMeasurementSnapshot({ root, fixtureRoot = null }
   if (!/^[a-f0-9]{40}$/.test(baseRevision)) {
     throw new Error(`protected merge base unavailable for canonical main ${protectedMainSha.slice(0, 12)}`);
   }
+  // baseRevision is a fixed commit, so every successful answer below is
+  // immutable for the life of this snapshot. One measurement asked for the same
+  // blob up to 36 times and the same marker up to 4 times (891 git processes,
+  // ~64 s spent spawning them), so each distinct question runs git once. A null
+  // from git (absent path, no match, or a transient failure) is not cached, so a
+  // repeat asks again exactly as before.
+  const memo = (fn) => {
+    const cache = new Map();
+    return (key) => {
+      if (cache.has(key)) return cache.get(key);
+      const value = fn(key);
+      if (value !== null) cache.set(key, value);
+      return value;
+    };
+  };
+  const show = memo((rel) => git(root, ['show', `${baseRevision}:${rel}`]));
+  const lsTree = memo((prefix) => git(root, ['ls-tree', '-r', '--name-only', baseRevision, '--', prefix]));
+  const grep = memo((marker) => git(root, ['grep', '-q', '-w', '--fixed-strings', marker, baseRevision, '--', 'src']));
   return {
     source: 'canonical-server-content-addressed-merge-base',
     protectedMainSha,
     baseRevision,
     readFile(rel) {
       if (!safeRepoPath(rel)) return null;
-      return git(root, ['show', `${baseRevision}:${rel}`]);
+      return show(rel);
     },
     listFiles(prefix) {
       if (!safeRepoPath(prefix)) return [];
-      const output = git(root, ['ls-tree', '-r', '--name-only', baseRevision, '--', prefix]);
+      const output = lsTree(prefix);
       return output === null ? [] : output.trim().split('\n').filter(Boolean).sort();
     },
     hasMarker(marker) {
       if (typeof marker !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(marker)) return false;
-      return git(root, ['grep', '-q', '-w', '--fixed-strings', marker, baseRevision, '--', 'src']) !== null;
+      return grep(marker) !== null;
     },
   };
 }

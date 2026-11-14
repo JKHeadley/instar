@@ -21,7 +21,7 @@ const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkc
 beforeAll(async () => { worker = await compileStallableOriginWorker(); });
 afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.close(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-async function harness() {
+async function harness(storageTimeouts: { requestTimeoutMs?: number; stallTimeoutMs?: number } = {}) {
   const stateDir = temporaryState(), botToken = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
   const network = vi.fn(async (_url: string, init: RequestInit) => {
@@ -30,7 +30,9 @@ async function harness() {
   });
   vi.stubGlobal('fetch', network);
   const runtime = await TelegramOriginRuntime.open({
-    storage: { stateDir, agentId: 'echo', requestTimeoutMs: 200, stallTimeoutMs: 800, restart: { baseDelayMs: 50, maxDelayMs: 200, maxAttempts: 3, healthyWindowMs: 1 } },
+    storage: { stateDir, agentId: 'echo', requestTimeoutMs: storageTimeouts.requestTimeoutMs ?? 200,
+      stallTimeoutMs: storageTimeouts.stallTimeoutMs ?? 800,
+      restart: { baseDelayMs: 50, maxDelayMs: 200, maxAttempts: 3, healthyWindowMs: 1 } },
     workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token: botToken, accountId: 'bot-1', chatId: '-100123' },
@@ -43,7 +45,7 @@ async function harness() {
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }] },
     telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
     telegram: { sendToTopic: async (topicId: number, text: string) => {
@@ -60,6 +62,26 @@ async function harness() {
 }
 
 describe('Telegram reply path across an origin worker stall', () => {
+  it('delivers a queued reply even when a newer message exists in its topic (native-conversation-base §3a, causal rule)', async () => {
+    const h = await harness();
+    h.runtime.service.options.authorize = async () => false;
+    const held = await h.reply('Status written before the conversation moved on.');
+    expect(held.status).toBe(409);
+    expect(h.network).not.toHaveBeenCalled();
+    // The session's own acknowledgment and a newer user message exist; neither ends the reply.
+    h.runtime.service.options.authorize = async () => true;
+    expect((await h.reply('A newer acknowledgment from the same session.')).status).toBe(200);
+    expect(h.network).toHaveBeenCalledTimes(1);
+
+    await h.runtime.recoverHeld();
+
+    expect(h.network).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(h.network.mock.calls[1][1].body as string).text).toContain('Status written before the conversation moved on.');
+    const records = (await h.runtime.store.listOrigins()).records;
+    expect(records.map(r => r.operation?.state).sort()).toEqual(['accepted', 'accepted']);
+    expect(records.some(r => r.operation?.state === 'suppressed')).toBe(false);
+  });
+
   it('holds during the stall and delivers again after automatic recovery, with no server restart', async () => {
     const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
     const h = await harness();
@@ -93,7 +115,9 @@ describe('Telegram reply path across an origin worker stall', () => {
 
   it('the recovery tick replaces only a store that has given up, never one mid-restart', async () => {
     vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
-    const h = await harness();
+    // This case tests replacement policy, not deadline behavior. Give its real
+    // worker enough time under CI contention so scheduling delay is not a failure.
+    const h = await harness({ requestTimeoutMs: 2000, stallTimeoutMs: 5000 });
     const store = h.runtime.store;
     vi.spyOn(store, 'health').mockReturnValue({ ...store.health(), state: 'restarting' });
     vi.spyOn(store, 'needsReplacement').mockReturnValue(false);

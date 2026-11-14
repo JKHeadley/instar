@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "slug": "native-update-preflight",
+  "sessionId": "74daee86-47af-4cdb-8103-ac596912a10f",
+  "timestamp": "2026-11-04T17:36:44.195Z",
+  "artifactPath": "upgrades/side-effects/native-update-preflight.md",
+  "artifactSha256": "65ecfa516bcffbca408f5d586bc844aab276305842563f2f184ea24b381bdb37",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/UpdateChecker.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "tests/e2e/update-native-candidate-lifecycle.test.ts",
+    "tests/integration/native-update-preflight.test.ts",
+    "tests/unit/PostUpdateMigrator-bootWrapperAbiCheck.test.ts",
+    "tests/unit/UpdateChecker.test.ts",
+    "upgrades/native-update-preflight.eli16.md",
+    "upgrades/next/native-update-preflight.md",
+    "upgrades/side-effects/native-update-preflight.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible updater bug fix, no new schema or external authority. File count reflects tests and startup recovery parity; the below-floor tier choice is intentional and reviewed.",
+  "eli16Path": "upgrades/native-update-preflight.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-update-preflight.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "second-pass",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}

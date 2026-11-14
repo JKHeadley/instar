@@ -23,6 +23,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isUnderTempRoot } from './ThrowawayAgentGuard.js';
 
 /** Claude Code hashes project keys longer than this; we do not guess the hash. */
 const MAX_KEY_LENGTH = 200;
@@ -277,8 +278,7 @@ function freeSetAsidePath(linkPath: string): string {
 
 /** Under the OS temp folder (test fixtures, throwaway deploys). */
 function isThrowaway(p: string): boolean {
-  const target = realpathOr(p);
-  return [os.tmpdir(), '/tmp'].map(realpathOr).some((t) => target === t || target.startsWith(t + path.sep));
+  return isUnderTempRoot(p);
 }
 
 function isSymlink(p: string): boolean {

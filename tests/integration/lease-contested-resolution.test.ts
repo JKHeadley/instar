@@ -107,6 +107,29 @@ describe('MultiMachineCoordinator — contested-resolution (Problem A v3)', () =
     coord.stop();
   });
 
+  it('an expired peer record at our epoch is not a tie: the would-be loser keeps its lease', async () => {
+    let peer: LeaseRecord | null = null;
+    const { lc, coord } = await setup('Bbb', () => peer);
+    peer = fl('Aaa').buildAcquisition(undefined, 2_000 - TTL * 2, 7); // Aaa @ epoch 1, long expired
+    await vi.advanceTimersByTimeAsync(1_300);
+    expect(lc.holdsLease()).toBe(true);
+    expect(lc.currentHolder()).toBe('Bbb');
+    expect(lc.currentEpoch()).toBe(1);
+    expect(coord.getSyncStatus().splitBrainState).toBe('clear');
+    coord.stop();
+  });
+
+  it('a released peer record at our epoch is not a tie either', async () => {
+    let peer: LeaseRecord | null = null;
+    const { lc, coord } = await setup('Bbb', () => peer);
+    peer = fl('Aaa').signLease(1, new Date(2_000).toISOString(), new Date(2_000 + TTL).toISOString(), 8, true);
+    await vi.advanceTimersByTimeAsync(1_300);
+    expect(lc.holdsLease()).toBe(true);
+    expect(lc.currentHolder()).toBe('Bbb');
+    expect(coord.getSyncStatus().splitBrainState).toBe('clear');
+    coord.stop();
+  });
+
   it('LOSER (higher machineId) relinquishes — stops holding, reconciles to standby', async () => {
     let peer: LeaseRecord | null = null;
     const { lc, coord } = await setup('Zzz', () => peer);

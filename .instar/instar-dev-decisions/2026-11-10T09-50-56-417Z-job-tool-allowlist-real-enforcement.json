@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-10T09:50:56.417Z",
+  "slug": "job-tool-allowlist-real-enforcement",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/commands/jobMigrate.ts touches migrate*() migration family",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 585,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/jobMigrate.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/scaffold/templates.ts",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JobRunHistory.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 516,
+    "deletedLines": 69
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

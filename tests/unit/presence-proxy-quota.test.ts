@@ -39,8 +39,8 @@ You've hit your limit - resets 7pm (America/Los_Angeles)
 
   it('detects various quota exhaustion messages', () => {
     expect(detectQuotaExhaustion('usage limit has been reached')).not.toBeNull();
-    expect(detectQuotaExhaustion('quota exceeded for this period')).not.toBeNull();
-    expect(detectQuotaExhaustion('rate limit exceeded')).not.toBeNull();
+    expect(detectQuotaExhaustion('quota exceeded for this period')).toBeNull();
+    expect(detectQuotaExhaustion('rate limit exceeded')).toBeNull();
   });
 
   it('returns null for normal terminal output', () => {
@@ -156,9 +156,11 @@ describe('PresenceProxy source — quota integration', () => {
       'utf-8'
     );
 
-    // Should call detectQuotaExhaustion in tier 1, 2, and 3
-    const matches = source.match(/detectQuotaExhaustion\(snapshot\)/g) || [];
+    // Every tier goes through quotaWallMessage (which calls detectQuotaExhaustion
+    // and applies the usage-wall-rescue wording), tier 1, 2, and 3.
+    const matches = source.match(/quotaWallMessage\(state\.sessionName, snapshot\)/g) || [];
     expect(matches.length).toBeGreaterThanOrEqual(3);
+    expect(source).toMatch(/const standard = detectQuotaExhaustion\(snapshot\);/);
   });
 
   it('short-circuits LLM call when quota detected', () => {
@@ -173,7 +175,7 @@ describe('PresenceProxy source — quota integration', () => {
     const tier1Start = source.indexOf('private async fireTier1');
     const tier1End = source.indexOf('private async fireTier2');
     const tier1Section = source.slice(tier1Start, tier1End);
-    const quotaIdx = tier1Section.indexOf('detectQuotaExhaustion');
+    const quotaIdx = tier1Section.indexOf('quotaWallMessage');
     const llmIdx = tier1Section.indexOf('callLlm');
     expect(quotaIdx).toBeGreaterThan(0);
     expect(quotaIdx).toBeLessThan(llmIdx);

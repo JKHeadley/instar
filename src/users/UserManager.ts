@@ -37,6 +37,24 @@ export interface UserReplicationEmitter {
   emitDelete(channels: UserChannel[], deletedAt: string): void;
 }
 
+/**
+ * silent-loss-refusal-conservation §2.D — the fixture-identity refusal rule, shared by
+ * the manager's write/load paths and the read-only disk reader. Returns the matched
+ * marker when the profile must be REFUSED, or null when it is permitted (no match, the
+ * double-keyed test escape is active, or a verified signed `allowTestIdentity`).
+ */
+export function refusedTestIdentityFor(
+  stateDir: string,
+  testIdentityKey: string | undefined,
+  profile: Pick<UserProfile, 'id' | 'slackUserId' | 'channels' | 'allowTestIdentity'>,
+): string | null {
+  const marker = matchTestIdentity(profile);
+  if (!marker) return null;
+  if (testIdentitiesAllowed(stateDir)) return null;
+  if (verifyAllowTestIdentity(testIdentityKey, profile.id, marker, profile.allowTestIdentity)) return null;
+  return marker;
+}
+
 export class UserManager {
   private users: Map<string, UserProfile> = new Map();
   private channelIndex: Map<string, string> = new Map(); // "type:identifier" -> userId
@@ -70,11 +88,40 @@ export class UserManager {
    * matched marker string when the write/load must be REFUSED, or null when it is
    * permitted (either no match, or an accepted override). */
   private refusedTestIdentity(profile: Pick<UserProfile, 'id' | 'slackUserId' | 'channels' | 'allowTestIdentity'>): string | null {
-    const marker = matchTestIdentity(profile);
-    if (!marker) return null;
-    if (testIdentitiesAllowed(this.stateDir)) return null;
-    if (verifyAllowTestIdentity(this.testIdentityKey, profile.id, marker, profile.allowTestIdentity)) return null;
-    return marker;
+    return refusedTestIdentityFor(this.stateDir, this.testIdentityKey, profile);
+  }
+
+  /**
+   * Read `users.json` from disk WITHOUT constructing a manager: no high-water marker
+   * write, no corrupt-file backup copy, no per-row logging. Applies the same
+   * malformed-row skip and fixture refusal as `loadUsers`, so a refused or malformed
+   * row is counted in `skipped`, never returned. Missing file ⇒ `present: false`.
+   * A file that does not parse as a JSON array THROWS. Used by the replicated-store
+   * reconciler, which reads the store on a timer and must never write.
+   */
+  static readProfilesFromDisk(
+    stateDir: string,
+    testIdentityKey?: string,
+  ): { profiles: UserProfile[]; skipped: number; present: boolean } {
+    const file = path.join(stateDir, 'users.json');
+    if (!fs.existsSync(file)) return { profiles: [], skipped: 0, present: false };
+    const data: unknown = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (!Array.isArray(data)) throw new Error('users.json is not an array');
+    const profiles: UserProfile[] = [];
+    let skipped = 0;
+    for (const raw of data) {
+      const user = raw as UserProfile;
+      if (!user || !user.id || !Array.isArray(user.channels) || !Array.isArray(user.permissions)) {
+        skipped++;
+        continue;
+      }
+      if (refusedTestIdentityFor(stateDir, testIdentityKey, user)) {
+        skipped++;
+        continue;
+      }
+      profiles.push(user);
+    }
+    return { profiles, skipped, present: true };
   }
 
   /**

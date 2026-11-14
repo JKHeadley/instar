@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "green-pr-eligible-needs-passing-record",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T22:16:44.034Z",
+  "artifactPath": "upgrades/side-effects/green-pr-eligible-needs-passing-record.md",
+  "artifactSha256": "b2d16012bc367f5f6424406270d5cd27f4558d4e5572ddadb8fd4183e08e1dae",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "tests/unit/green-pr-passing-record.test.ts",
+    "upgrades/next/green-pr-eligible-needs-passing-record.md",
+    "upgrades/side-effects/green-pr-eligible-needs-passing-record.eli16.md",
+    "upgrades/side-effects/green-pr-eligible-needs-passing-record.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrows merge candidacy to passing records; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/green-pr-eligible-needs-passing-record.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/green-pr-eligible-needs-passing-record.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "narrows an existing selection; adds no action or loop"
+  }
+}

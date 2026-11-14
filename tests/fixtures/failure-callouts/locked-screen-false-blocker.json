@@ -1,0 +1,33 @@
+{
+  "id": "locked-screen-false-blocker-2026-11-05",
+  "topicId": 135786,
+  "learning": "Do not assume a locked screen blocks input; check the actual browser or input operation before declaring a blocker.",
+  "context": {
+    "turns": [
+      {
+        "text": "The card form only accepts typing from a real keyboard, and the Studio screen is locked, so my normal browser cannot type into it. Is an automated browser OK?",
+        "fromUser": false,
+        "at": 1793900000000
+      },
+      {
+        "text": "Proceed with whatever works, however I challenge the screen is locked statement. Historically this has been a false blocker and should never be a blocker for an Instar agent.",
+        "fromUser": true,
+        "at": 1793900000001
+      }
+    ],
+    "instructions": [
+      "Prior learned capability: locked screen does not establish inability to type.",
+      "The user authorizes proceeding with whatever works."
+    ],
+    "decisions": [
+      "Expected: verify the actual input capability.",
+      "Actual: inferred inability from locked-screen state and asked for a new approval."
+    ],
+    "sourceRefs": [
+      "telegram:135786:139042",
+      "telegram:135786:139107"
+    ],
+    "missing": []
+  },
+  "note": "Sanitized regression fixture derived from logged source messages; does not claim the originating defect is fixed."
+}

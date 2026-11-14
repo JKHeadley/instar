@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-06T21:25:57.055Z",
+  "slug": "server-down-remote-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/feature-ladders.json",
+      "src/recovery/RecoveryAdmission.ts",
+      "src/recovery/RecoveryRuntimeSlot.ts",
+      "src/server/mobilePlansPeopleRoutes.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      2874
+    ],
+    "notes": "Full CI exposed missing lifecycle/registry/rollout/mobile integration and test reliance on tool-cache interpreter permissions. Final source preserves strict ownership and auth limits, explicitly fails malformed cleanup, registers DB shutdown ownership and requires honest rollout evidence. M5 exact candidate passed 23 native and 115 focused unit cases."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registered recovery controller is pressured over sustained, doubled and reconstructed horizons; durable target admission independently enforces finite mutation budgets and explicit owner rearm."
+    },
+    "prNumber": 2874,
+    "component": "RecoveryRepairCoordinator"
+  },
+  "verdict": "pass"
+}

@@ -2,40 +2,40 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-10-25T00:28:51.000Z",
-      "auditRef": "docs/audits/standards-building-tcc-protected-directories-2026-10-24.json",
-      "auditSha256": "f8bd546a7e616214258e02dd5b075574dae54dc4a0a0fda453ede8b54c4bff97",
-      "areaSha256": "91a7fc1537a3060e83fd64b7827cd8812596578be4336affd5318cca69673e5c",
+      "lastAuditedAt": "2026-11-14T00:43:20.000Z",
+      "auditRef": "docs/audits/standards-backreference-completion-building-family-2026-11-13.json",
+      "auditSha256": "aaf7aa6ba2a5500c01c2f5b6467cf858026a0331c6399d699a2da9829d2059aa",
+      "areaSha256": "64edd8878c3d67257177b1850c7abd21dd94676d18ab3e096de0e1dc21045723",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-09-07T03:58:13.637Z",
-      "auditRef": "docs/audits/telegram-message-origin-interaction-family.json",
-      "auditSha256": "0e3f891eb8f329d68cc50202f825579ef718c2087197ecc9d3cea04ae898d735",
-      "areaSha256": "e83a01a0c25843f89ed07600e594ed4fdd68fa0777aad288b2afde3b4d07b9c1",
+      "lastAuditedAt": "2026-11-05T23:05:00.000Z",
+      "auditRef": "docs/audits/attributed-statements-trace-interaction-family-2026-11-05.json",
+      "auditSha256": "0039e562c633c5dffa38a1b264b645bcb99bd4ff3d6adbcc1c41ab0df0b93fa8",
+      "areaSha256": "c2902dc347d54e1c03d1d9db756679c49236aa000697c9b7c981ce4ff9558d9e",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
-      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
-      "areaSha256": "4691ffb2f80681d3d29078cde9752576aa58a6a7034c80e9e2435a0b5b81149c",
+      "lastAuditedAt": "2026-11-14T08:19:56.000Z",
+      "auditRef": "docs/audits/maturation-dated-owner-shipping-family-2026-11-14.json",
+      "auditSha256": "ecc6c0ae128fffd82094fcdea86b590c0638fd129837d41621ce7f8ebc55ee5e",
+      "areaSha256": "1fb87921b71fb3f94a795d35c5d8bc1cf3ba909efa31a7ba999bee53e993c424",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
       }
     },
     "The Fractal": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "b6a5b408d865803a48b25f68a44cbdf79b5d789f7f938b43f58a14179354bd14",
+      "lastAuditedAt": "2026-11-04T07:59:34.000Z",
+      "auditRef": "docs/audits/maturation-path-and-alignment-2026-11-04.json",
+      "auditSha256": "7b2b785c5e8cc33dfe65754dc45a04e5a46e5d7a84c715a8aa4ddfe4f538bdac",
+      "areaSha256": "f5a580b9834ff1450600c1526409bf2df628c7e1154d8035f0bfd87234c40d5a",
       "refResolutionFloor": {
         "enforced": 1,
         "total": 1
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-09-23T02:56:09.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22b.json",
-      "auditSha256": "0c7bea1a10b5dfb5145d3a9d572f0ea5ac209b7e778225b7d00d8a34c1ac3414",
-      "areaSha256": "9b36c471fe967bcd2b07c03c875343b91cfeaba836abcaffb63b5f0a9e7a7e9b",
+      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
+      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
+      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
+      "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

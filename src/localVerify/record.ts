@@ -1,4 +1,5 @@
 /**
+ * A preflight field is evidence about an attempt, not independent proof of full-suite green.
  * The local-verify record (spec local-verify-merge-authority.md §2 step 6, Keys).
  *
  * Records are keyed by (repo, pr, headSha, baseRefName); execution is
@@ -7,9 +8,27 @@
  */
 
 import type { LaneTotals } from './laneReport.js';
+import { isBoundedFailedFileSet } from './failedFileDiagnosis.js';
 import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
+
+/** Bounded early-test evidence. It never authorizes a green merge verdict. */
+export interface PreflightEvidence {
+  mode: 'observe' | 'enforce';
+  outcome: 'pass' | 'red' | 'skip' | 'timeout' | 'error';
+  reason: string;
+  elapsedMs: number;
+  changedFiles: number;
+  selectedFiles: string[];
+  selectedCases: number;
+  headSha: string;
+  baseSha: string;
+  /** Present only when two trusted attempts failed assertions in this selected file. */
+  repeatedFailedFile?: string;
+}
+
+export const PREFLIGHT_MAX_SELECTED_FILES = 5;
 
 export interface LocalVerifyRecord {
   repo: string;
@@ -52,6 +71,36 @@ export interface LocalVerifyRecord {
    * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
    */
   flakyRetried?: FlakyRetry[];
+  /** Complete failed test-file set when a full PR run failed in 1–3 inventoried files. */
+  failedFiles?: string[];
+  /**
+   * Present only on a record a PEER verifier produced for a coordinator's hand-off
+   * (spec local-verify-capacity.md Part D): the attempt it answers, the coordinator that
+   * dispatched it and that coordinator's lease epoch at dispatch. The coordinator imports
+   * a peer record only when all three match its own dispatch marker.
+   */
+  attempt?: PeerAttemptRef;
+  /** Diagnostic or early-red preflight evidence, validated before journal/peer import. */
+  preflight?: PreflightEvidence;
+}
+
+export interface PeerAttemptRef {
+  /** 32 lowercase hex characters (16 random bytes). */
+  id: string;
+  coordinatorMachineId: string;
+  /** The coordinator's serving-lease epoch when it dispatched (null when the pool reports none). */
+  leaseEpoch: number | null;
+}
+
+export const ATTEMPT_ID_RE = /^[0-9a-f]{32}$/;
+
+export function isValidAttemptRef(a: unknown): a is PeerAttemptRef {
+  if (!a || typeof a !== 'object') return false;
+  const x = a as Record<string, unknown>;
+  return typeof x.id === 'string' && ATTEMPT_ID_RE.test(x.id)
+    && typeof x.coordinatorMachineId === 'string' && x.coordinatorMachineId.length > 0 && x.coordinatorMachineId.length <= 200
+    && (x.leaseEpoch === null || (typeof x.leaseEpoch === 'number' && Number.isSafeInteger(x.leaseEpoch) && x.leaseEpoch >= 0))
+    && Object.keys(x).every((k) => k === 'id' || k === 'coordinatorMachineId' || k === 'leaseEpoch');
 }
 
 export interface FlakyRetry {
@@ -125,9 +174,33 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     });
     if (!ok) errors.push('flakyRetried');
   }
+  if (x.failedFiles !== undefined) {
+    if (!isBoundedFailedFileSet(x.failedFiles) || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
+  }
   if (x.independentReview !== undefined) {
     const ir = x.independentReview as Record<string, unknown> | null;
     if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
+  }
+  if (x.attempt !== undefined && (!isValidAttemptRef(x.attempt) || x.kind === 'main')) errors.push('attempt');
+  if (x.preflight !== undefined) {
+    const p = x.preflight as Record<string, unknown> | null;
+    const isCount = (n: unknown, max: number) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n <= max;
+    const selected = p && Array.isArray(p.selectedFiles) && p.selectedFiles.length <= PREFLIGHT_MAX_SELECTED_FILES
+      && p.selectedFiles.every((f) => typeof f === 'string' && f.length > 0 && f.length <= 300 && !f.startsWith('/') && !f.includes('..') && !f.includes('\\'));
+    const valid = p && x.kind !== 'main'
+      && (p.mode === 'observe' || p.mode === 'enforce')
+      && ['pass', 'red', 'skip', 'timeout', 'error'].includes(String(p.outcome))
+      && typeof p.reason === 'string' && p.reason.length <= 200
+      && isCount(p.elapsedMs, 90_000)
+      && isCount(p.changedFiles, p.outcome === 'skip' ? 10_000 : 40)
+      && selected && isCount(p.selectedCases, p.outcome === 'skip' ? 10_000 : 200)
+      && p.headSha === x.headSha && p.baseSha === x.baseSha
+      && (p.repeatedFailedFile === undefined || (typeof p.repeatedFailedFile === 'string' && (p.selectedFiles as string[]).includes(p.repeatedFailedFile)))
+      && (p.outcome !== 'red' || (p.repeatedFailedFile !== undefined && (p.selectedCases as number) > 0))
+      && (p.mode !== 'enforce' || p.outcome !== 'red' || (p.reason === 'preflight-red' && x.outcome === 'failure' && Array.isArray(x.lanes) && x.lanes.length === 0))
+      && (p.mode !== 'observe' || !(x.outcome === 'failure' && Array.isArray(x.lanes) && x.lanes.length === 0 && p.outcome === 'red'))
+      && Object.keys(p).every((k) => ['mode', 'outcome', 'reason', 'elapsedMs', 'changedFiles', 'selectedFiles', 'selectedCases', 'headSha', 'baseSha', 'repeatedFailedFile'].includes(k));
+    if (!valid) errors.push('preflight');
   }
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }

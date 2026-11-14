@@ -51,8 +51,8 @@ describe('slip grouping and words', () => {
     const text = slipSummary(mandate(), names, NOW);
     expect(text).toMatch(/^Echo and Dawn may sign a code review and hand over a read-only credential until /);
     expect(text).not.toMatch(/aaaa|bbbb|sign-code-review/);
-    // Unknown agents fall back to a short fingerprint, never a dump of 32 hex chars.
-    expect(slipSummary(mandate(), {}, NOW)).toMatch(/^agent aaaaaaaa… and agent bbbbbbbb… may /);
+    // Unknown agents have a plain label; their fingerprints stay out of the sentence.
+    expect(slipSummary(mandate(), {}, NOW)).toMatch(/^an unnamed agent and an unnamed agent may /);
     // The carrier a user-authority approval issues (same agent twice, no authorities, one grant).
     const carrier = mandate({ agents: [FP_ECHO, FP_ECHO], authorities: [], grants: [{ floorAction: 'prod-deploy', grantedTo: 'U1', authorizedBy: 'Justin', expiresAt: hours(1) }] });
     expect(slipSummary(carrier, names, NOW)).toMatch(/^A carrier for one person’s grant, until /);
@@ -63,12 +63,16 @@ describe('slip grouping and words', () => {
     expect(agentName('', names)).toBe('an agent');
   });
   it('whenWords: today / tomorrow / a weekday within the week / a date beyond it', () => {
-    const now = Date.now();
+    // Local noon today, and calendar-day steps: a fixed 24h step is still
+    // "today" on a 25-hour DST-end day, and now+60s can cross midnight.
+    const noon = new Date(); noon.setHours(12, 0, 0, 0);
+    const now = noon.getTime();
+    const daysOut = (n: number) => { const d = new Date(now); d.setDate(d.getDate() + n); return d; };
     expect(whenWords(new Date(now + 60_000).toISOString(), now)).toMatch(/^today /);
-    expect(whenWords(new Date(now + 86400_000).toISOString(), now)).toMatch(/^tomorrow /);
-    const inThree = new Date(now + 3 * 86400_000);
+    expect(whenWords(daysOut(1).toISOString(), now)).toMatch(/^tomorrow /);
+    const inThree = daysOut(3);
     expect(whenWords(inThree.toISOString(), now)).toMatch(new RegExp(`^${inThree.toLocaleDateString([], { weekday: 'long' })} `));
-    expect(whenWords(new Date(now + 20 * 86400_000).toISOString(), now)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, /);
+    expect(whenWords(daysOut(20).toISOString(), now)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, /);
     expect(whenWords('nope', now)).toBe('an unknown time');
   });
   it('grants read as sentences, live or over; a person with a live grant counts once', () => {
@@ -81,9 +85,9 @@ describe('slip grouping and words', () => {
     expect(g.map((r) => r.live)).toEqual([true, false, true]);
     expect(g[0].text).toMatch(/^Mia may deploy to production until /);
     expect(g[1].text).toMatch(/^Mia could move money until .* \(over\)\.$/);
-    expect(g[2].text).toMatch(/^U9 may send something outside until /); // an unknown id is shown as itself
+    expect(g[2].text).toMatch(/^an unnamed person may send something outside until /);
     const card = slipCard(m, { names, users, now: NOW });
-    expect(card.peopleLine).toBe('Also lets Mia and U9 act.');
+    expect(card.peopleLine).toBe('Also lets Mia and an unnamed person act.');
     expect(buildSlips(ok({ mandates: [m] }), { names, users, now: NOW })).toMatchObject({ counts: { people: 2 } });
     // A grant on an ended slip is over even if its own clock has not passed.
     expect(grantRows(mandate({ ...m, revoked: { at: hours(-1), reason: 'r' } }), users, NOW)[0].live).toBe(false);

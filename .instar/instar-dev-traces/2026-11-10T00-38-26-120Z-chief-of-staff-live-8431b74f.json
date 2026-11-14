@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-live",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T00:38:26.120Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-live.md",
+  "artifactSha256": "5aca3001bcf9a8b315558fbbdc0ba9efd3c49a9557cca14cd3eb62ce139dbce6",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffActionProtocol.ts",
+    "tests/unit/ChiefOfStaffActionProtocol.test.ts",
+    "upgrades/next/chief-of-staff-live.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Executor acceptance seam in the action protocol's start-run path; live-proof fix under the converged, approved Chief of Staff spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/StallTriageNurse.ts');
 /**
  * StallTriageNurse — LLM-powered session recovery for stalled sessions.
  *
@@ -465,13 +467,9 @@ export class StallTriageNurse extends EventEmitter {
         }
       }
 
-      // Exhausted all escalations — notify user with actionable instructions
+      // Exhausted all escalations. SessionMonitor is the one voice for a
+      // dead session's failed recovery; a stall can race into that state.
       const failReason = 'max_escalations_reached';
-      await this.deps.sendToTopic(topicId,
-        `I wasn't able to recover the session automatically. You can:\n` +
-        `• Send a new message to this topic (will auto-spawn a fresh session)\n` +
-        `• Use /restart to force a fresh start`
-      ).catch(() => {});
       this.emit('triage:failed', { topicId, reason: failReason, actionsTaken });
       const result: TriageResult = {
         resolved: false, actionsTaken, diagnosis: lastDiagnosis,
@@ -788,8 +786,8 @@ export class StallTriageNurse extends EventEmitter {
     originAuthor?: OriginAutomationAuthor,
   ): Promise<void> {
     console.log(`[StallTriageNurse] Executing ${action} for session "${context.sessionName}" (topic ${context.topicId})`);
-    const send = () => originAuthor ? this.deps.sendToTopic(context.topicId, userMessage, originAuthor)
-      : this.deps.sendToTopic(context.topicId, userMessage);
+    const send = () => originAuthor ? withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(context.topicId, userMessage, { ...(originAuthor) }))
+      : withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(context.topicId, userMessage));
 
     switch (action) {
       case 'status_update':
@@ -822,9 +820,6 @@ export class StallTriageNurse extends EventEmitter {
         break;
 
       case 'restart':
-        await send().catch(err => {
-          console.warn(`[StallTriageNurse] sendToTopic failed:`, err);
-        });
         await this.deps.respawnSession(context.sessionName, context.topicId, { silent: true });
         break;
     }

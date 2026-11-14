@@ -1,3 +1,6 @@
+import { createOperatorLinkOriginResolver, originOrNull } from '../../server/dashboardPaths.js';
+import { notificationStamper, withNotificationEnvelope } from '../../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/feedback-factory/triage/buildFeedbackTriage.ts');
 /**
  * Production construction of feedback triage (docs/specs/feedback-triage-and-execution.md).
  * Called from AgentServer inside the operated-drain block, so triage shares the drain's
@@ -17,10 +20,12 @@ import { readLatestCodexUsage } from '../../providers/adapters/openai-codex/obse
 import { buildIntelligenceProvider, type IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
 import { LlmCircuitBreaker } from '../../core/LlmCircuitBreaker.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
+import { createAuthenticatedGitHubCliRuntimeResolver } from '../../core/githubRuntime.js';
 import { FeedbackTriageArbiter } from './FeedbackTriageArbiter.js';
 import { FeedbackTriageStore } from './FeedbackTriageStore.js';
 import { FeedbackTriageAuditLog } from './FeedbackTriageAuditLog.js';
 import { FeedbackTriageService, resolveTriageConfig, type AttentionInput, type FeedbackTriageServiceOptions } from './FeedbackTriageService.js';
+import { FeedbackTriageAccountSelector, revalidateTriageAccount, verifyTriageExecutionIdentity } from './FeedbackTriageAccountSelector.js';
 import type { MergedPr } from './triagePacket.js';
 
 const execFileAsync = promisify(execFile);
@@ -70,11 +75,15 @@ export function buildFeedbackTriage(input: {
   ownerEpoch: () => number;
   isCanonicalOwner: () => boolean;
   resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
-  codexLiveUsageReader: ((opts?: { codexHome?: string }) => Promise<CodexUsageSnapshot | null>) | null;
+  codexLiveUsageReader: ((opts?: { codexHome?: string; subscriptionOnly?: boolean; timeoutMs?: number; signal?: AbortSignal }) => Promise<CodexUsageSnapshot | null>) | null;
   subscriptionPool: SubscriptionPool | null;
   telegram: { sendToTopic: (topicId: number, text: string, opts?: { provenance?: 'automation' }) => Promise<unknown> } | null;
-  raiseAttention: (item: AttentionInput) => Promise<void>;
+  raiseAttention: (item: AttentionInput) => Promise<unknown>;
   tunnelUrl: () => string | null;
+  /** True when this agent runs a tunnel (up or not): links then wait for its public URL instead of using localhost. */
+  tunnelConfigured?: () => boolean;
+  /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
+  paceTicks?: FeedbackTriageServiceOptions['paceTicks'];
   overrides?: Partial<Pick<FeedbackTriageServiceOptions, 'secondOpinion' | 'quotaUsedPercent' | 'listMergedPrs' | 'sendToTopic' | 'raiseAttention' | 'clock'>>;
 }): FeedbackTriageRouteContext {
   const { config } = input;
@@ -117,11 +126,25 @@ export function buildFeedbackTriage(input: {
     return null;
   });
 
+  const selector = input.subscriptionPool && input.codexLiveUsageReader
+    ? new FeedbackTriageAccountSelector(input.subscriptionPool, (opts) => input.codexLiveUsageReader!(opts), clock)
+    : null;
+  const primaryAccountAdmission: NonNullable<FeedbackTriageServiceOptions['primaryAccountAdmission']> = {
+    select: (mode, deadlineAt) => selector
+      ? mode === 'on' ? selector.select(deadlineAt) : selector.selectAmbient(deadlineAt)
+      : Promise.resolve({ state: 'unreadable' }),
+    revalidate: (account) => Boolean(input.subscriptionPool && revalidateTriageAccount(input.subscriptionPool, account, clock())),
+    verifyExecutionIdentity: (account) => Boolean(input.subscriptionPool && verifyTriageExecutionIdentity(input.subscriptionPool, account)),
+    observe: (deadlineAt) => selector ? selector.select(deadlineAt) : Promise.resolve({ state: 'unreadable' }),
+  };
+
+  const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: config.stateDir });
   const listMergedPrs = input.overrides?.listMergedPrs ?? (async (): Promise<MergedPr[] | null> => {
     try {
+      const runtime = githubRuntime();
       const since = new Date(clock() - 30 * 24 * 60 * 60_000).toISOString().slice(0, 10);
-      const { stdout } = await execFileAsync('gh', ['pr', 'list', '--state', 'merged', '--search', `merged:>=${since}`, '--limit', '200', '--json', 'number,title,body,commits'],
-        { cwd: config.projectDir, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
+      const { stdout } = await execFileAsync(runtime.executable, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${since}`, '--limit', '200', '--json', 'number,title,body,commits'],
+        { cwd: config.projectDir, env: runtime.env, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
       // RULE 3: EXEMPT — not a provider/CLI state-detector: this parses gh's documented --json output (a
       // stable, versioned data contract) into a list of merged PRs; any parse error yields `unknown`.
       const parsed = JSON.parse(stdout) as Array<{ number: number; title?: string; body?: string; commits?: Array<{ messageHeadline?: string; messageBody?: string }> }>;
@@ -136,7 +159,7 @@ export function buildFeedbackTriage(input: {
   });
 
   const telegram = input.telegram;
-  const sendToTopic = input.overrides?.sendToTopic ?? (telegram ? async (topicId: number, text: string) => { await telegram.sendToTopic(topicId, text, { provenance: 'automation' }); } : undefined);
+  const sendToTopic = input.overrides?.sendToTopic ?? (telegram ? async (topicId: number, text: string) => { return withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text, { provenance: 'automation' })); } : undefined);
 
   const service = new FeedbackTriageService({
     drainStore: input.drainStore,
@@ -151,12 +174,17 @@ export function buildFeedbackTriage(input: {
     isCanonicalOwner: input.isCanonicalOwner,
     config: () => resolveTriageConfig(config.feedbackFactory?.triage as Record<string, unknown> | undefined, config.feedbackFactory?.execute as Record<string, unknown> | undefined),
     quotaUsedPercent,
+    primaryAccountAdmission: input.overrides?.quotaUsedPercent ? undefined : primaryAccountAdmission,
     listMergedPrs,
     executorStatus: () => ({ available: false, reason: 'not-built' }),
     raiseAttention: input.overrides?.raiseAttention ?? input.raiseAttention,
     reportDegradation: (event) => DegradationReporter.getInstance().report(event),
     sendToTopic,
-    dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: config.port, tunnelConfigured: input.tunnelConfigured ?? (() => false), tunnelUrl: input.tunnelUrl });
+      return () => { const origin = originOrNull(resolveOrigin()); return origin ? `${origin}/dashboard?tab=feedback-drain` : null; };
+    })(),
+    paceTicks: input.paceTicks ?? null,
     clock,
   });
 

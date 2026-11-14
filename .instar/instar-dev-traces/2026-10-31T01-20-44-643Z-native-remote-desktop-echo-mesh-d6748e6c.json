@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-echo-mesh",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T01:20:44.643Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-echo-mesh.md",
+  "artifactSha256": "bbf33abea20ac2e47a0e43ba3aad43f424423a500faffad08df2d90a52bed0eb",
+  "specPath": "docs/specs/native-remote-desktop-echo-mesh.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "site/src/content/docs/features/multi-machine.md",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/e2e/desktop-mesh-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/integration/machine-routes.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/desktop-assertion-replay-store.test.ts",
+    "tests/unit/desktop-delegated-session-store.test.ts",
+    "tests/unit/desktop-mesh-broker.test.ts",
+    "tests/unit/desktop-mesh-origin-gate.test.ts",
+    "tests/unit/desktop-mesh-stream-relay.test.ts",
+    "tests/unit/desktop-operator-assertion.test.ts",
+    "tests/unit/desktop-peer-url-gate.test.ts",
+    "tests/unit/desktop-video-viewer.test.ts",
+    "tests/unit/windows-desktop-host.test.ts",
+    "upgrades/side-effects/native-remote-desktop-echo-mesh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Cross-machine remote input and Windows companion require a converged approved architecture and independent safety review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

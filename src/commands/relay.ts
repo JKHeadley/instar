@@ -14,6 +14,10 @@
 
 import pc from 'picocolors';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { validateProductionRecoveryAuthorities } from '../recovery/RecoveryAuthoritySetup.js';
+import type { RecoveryAuthorityConfig } from '../recovery/RecoveryControlPlane.js';
 
 export interface RelayStartOptions {
   port?: number;
@@ -59,6 +63,20 @@ export async function startRelay(opts: RelayStartOptions): Promise<void> {
     rateLimitConfig: { authAttemptsPerMinute: authRate },
     registryDataDir: dataDir,
   });
+  const recoveryFile = process.env.RELAY_RECOVERY_AUTHORITY_FILE;
+  if (recoveryFile) {
+    const st = fs.lstatSync(recoveryFile);
+    if (!st.isFile() || st.isSymbolicLink() || st.size > 262_144 || (st.mode & 0o077)) throw new Error('recovery-authority-file-invalid');
+    const authorities = JSON.parse(fs.readFileSync(recoveryFile, 'utf8')) as Record<string, RecoveryAuthorityConfig>;
+    const rootsFile=process.env.RELAY_RECOVERY_CERTIFICATION_ROOTS_FILE??fileURLToPath(new URL('../keys/instar-recovery-certification-roots.json',import.meta.url));
+    if(!fs.existsSync(rootsFile))throw new Error('recovery-setup-release-root-required');
+    const rootStat=fs.lstatSync(rootsFile);
+    if(!rootStat.isFile()||rootStat.isSymbolicLink()||(rootStat.mode&0o022)||rootStat.size>65536)throw new Error('recovery-setup-release-root-invalid');
+    const roots=JSON.parse(fs.readFileSync(rootsFile,'utf8')) as string[];
+    if(!Array.isArray(roots)||roots.some(root=>typeof root!=='string'))throw new Error('recovery-setup-release-root-invalid');
+    validateProductionRecoveryAuthorities(authorities,roots);
+    relay.configureRecovery(new Map(Object.entries(authorities)));
+  }
   await relay.start();
 
   const addr = relay.address!;

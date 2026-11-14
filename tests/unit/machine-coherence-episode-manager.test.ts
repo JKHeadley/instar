@@ -278,6 +278,24 @@ describe('§4.2.1 pendingFix state machine', () => {
     expect(m.status().openEpisode?.pendingFix).toBeNull();
   });
 
+  it('a default-model row never auto-proposes (a tie could propose removing Opus) and asks which model to use', () => {
+    const m = mgr();
+    // The lease holder (m_laptop) has nothing set — the holder tie-break would pick "account-default".
+    const vc = { m_laptop: 'account-default', m_mini: 'claude-opus-5-5' };
+    const modelRow = { identity: skewRowIdentity('flag', 'defaultModel.claude-code', vc), dimension: 'flag' as const, key: 'defaultModel.claude-code', participants: ['m_laptop', 'm_mini'], valueClasses: vc };
+    const eff = m.reconcile(input({ confirmedRows: [modelRow] }));
+    expect(m.status().openEpisode?.pendingFix).toBeNull();
+    const raise = eff.find((e) => e.kind === 'raise');
+    expect(raise?.kind).toBe('raise');
+    if (raise?.kind === 'raise') {
+      expect(raise.description).toContain('the default claude-code model for topics with no model pin');
+      expect(raise.description).toContain('the laptop=account-default, the mini=claude-opus-5-5');
+      expect(raise.description).toContain('Tell me which model you want on all of them');
+      expect(raise.description).not.toContain('root switch');
+      expect(raise.description).not.toContain('Reply **fix it**');
+    }
+  });
+
   it('an EXCLUDED root class (developmentAgent) renders the manual decision block, no pendingFix', () => {
     const m = mgr();
     const devRow = { identity: skewRowIdentity('flag', 'developmentAgent', { m_laptop: 'true', m_mini: 'false' }), dimension: 'flag' as const, key: 'developmentAgent', participants: ['m_laptop', 'm_mini'], valueClasses: { m_laptop: 'true', m_mini: 'false' } };

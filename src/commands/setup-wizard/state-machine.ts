@@ -33,7 +33,16 @@ export interface WizardAnswers {
   slackConfigured?: boolean;
   githubBackupRepo?: string;
   serverStarted?: boolean;
+  /** Install flow only: the AI door the person chose. */
+  door?: InstallDoor;
+  /** Install flow only: the person agreed to what the installer listed. */
+  installConsent?: boolean;
+  /** Install flow only: the person agreed to start on reboot. Defaults to the install consent. */
+  autostartConsent?: boolean;
 }
+
+/** The doors the installer can carry today. Other doors arrive with their proofs (spec section 5). */
+export type InstallDoor = 'claude-code' | 'codex-cli';
 
 export type WizardActionKind =
   | 'init'                  // run `instar init` with collected name + framework
@@ -44,7 +53,14 @@ export type WizardActionKind =
   | 'github-backup'         // create instar-<name> repo + push
   | 'start-server'          // `instar server start`
   | 'install-autostart'     // `instar autostart install`
-  | 'send-greeting';        // greet via lifeline topic
+  | 'send-greeting'         // greet via lifeline topic
+  | 'install-preflight'     // disk, platform and tool checks; read-only
+  | 'install-tools'         // tools the agent needs, such as tmux
+  | 'install-tailscale-operator' // Linux: Tailscale operator rights; optional, never fails
+  | 'door-install'          // install the chosen AI door
+  | 'door-sign-in'          // prove the door is signed in, or send the person to sign in
+  | 'agent-init'            // create the agent in its default home
+  | 'owner-slot';           // today the viewing PIN; owner enrollment when that spec ships
 
 export interface WizardAction {
   kind: WizardActionKind;
@@ -63,6 +79,8 @@ export interface NarrativeState {
    * per-turn LLM call.
    */
   prompt: string;
+  /** Install flow: text always shown before this question, even when the answer was given up front. */
+  renderPreamble?: (answers: WizardAnswers) => string;
   /** Optional preamble keys for the driver to look up narrative-prompt builders. */
   narrativeContext: string;
   input:
@@ -396,3 +414,145 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
 }
 
 export const INITIAL_STATE = 'welcome';
+
+/** Fixed text: no AI door is signed in yet, so nothing here can come from a model (spec 4.1). */
+export const INSTALL_EXPLANATION =
+  'An Instar agent is an AI that lives on your computer and works for you around the clock. ' +
+  'It remembers what you tell it, does work on a schedule, keeps its promises, and asks you ' +
+  'before anything risky.\n' +
+  '\n' +
+  'To work on its own it runs without a permission prompt for each action. It works while this ' +
+  'computer is on and awake.';
+
+export const INSTALL_DOOR_LABELS: Record<InstallDoor, string> = {
+  'claude-code': 'Claude Code',
+  'codex-cli': 'Codex',
+};
+
+export interface InstallFlowContext {
+  /** Doors found on this machine, best first. */
+  detectedDoors: InstallDoor[];
+  /** The harness running the installer, when there is one. */
+  runningInDoor?: InstallDoor;
+  /** Refuses a name that can't be used, with a plain reason. */
+  validateName: (name: string) => string | null;
+  /** What the installer will do, listed in the single consent. */
+  describePlan: (answers: WizardAnswers) => string[];
+}
+
+/** The door when there is nothing to ask: the harness running this, or the only one found. */
+export function impliedInstallDoor(context: InstallFlowContext): InstallDoor | undefined {
+  if (context.runningInDoor) return context.runningInDoor;
+  return context.detectedDoors.length === 1 ? context.detectedDoors[0] : undefined;
+}
+
+/**
+ * The installer's flow (spec install-experience 4.1). Deterministic and fixed-text up to sign-in,
+ * with at most three questions before the single consent: name, purpose and, only when ambiguous,
+ * which AI door. Lives beside the fresh-project flow, which stays until the comparison in 4.2.
+ */
+export function buildInstallFlow(context: InstallFlowContext): Record<string, WizardState> {
+  const doorChoices = (Object.keys(INSTALL_DOOR_LABELS) as InstallDoor[]).map((value) => ({
+    value,
+    label: context.detectedDoors.includes(value)
+      ? `${INSTALL_DOOR_LABELS[value]} (found on this computer)`
+      : INSTALL_DOOR_LABELS[value],
+  }));
+  const consentChoices = [
+    { value: 'yes', label: 'Yes' },
+    { value: 'no', label: 'No' },
+  ];
+  const action = (id: string, kind: WizardActionKind, description: string, next: string): ActionState => ({
+    id,
+    kind: 'action',
+    action: { kind, description },
+    next: () => next,
+  });
+
+  return {
+    'do-preflight': action('do-preflight', 'install-preflight', 'Check this computer', 'agent-name'),
+
+    'agent-name': {
+      id: 'agent-name',
+      kind: 'narrative-then-prompt',
+      narrativeContext: 'agent-name',
+      prompt: 'What would you like to call your agent? (one word works best)',
+      input: { kind: 'text', placeholder: 'e.g. scout', required: true },
+      validate: (answer) => requireNonEmpty('name')(answer) ?? context.validateName(answer.trim()),
+      next: (answer) => ({ state: 'agent-purpose', updates: { agentName: answer.trim() } }),
+    },
+
+    'agent-purpose': {
+      id: 'agent-purpose',
+      kind: 'narrative-then-prompt',
+      narrativeContext: 'agent-role',
+      prompt: 'In one sentence, what do you want help with? (you can change this anytime)',
+      input: { kind: 'text', placeholder: 'e.g. keep my week organized', required: true },
+      validate: requireNonEmpty('sentence'),
+      next: (answer) => {
+        const door = impliedInstallDoor(context);
+        return door
+          ? { state: 'consent', updates: { agentRole: answer.trim(), door } }
+          : { state: 'door-choice', updates: { agentRole: answer.trim() } };
+      },
+    },
+
+    'door-choice': {
+      id: 'door-choice',
+      kind: 'narrative-then-prompt',
+      narrativeContext: 'door-choice',
+      prompt:
+        'Which AI do you want to use?\n' +
+        '\n' +
+        doorChoices.map((c, i) => `  ${i + 1}. ${c.label}`).join('\n'),
+      input: { kind: 'choice', choices: doorChoices },
+      validate: requireChoice(doorChoices),
+      next: (answer) => ({
+        state: 'consent',
+        updates: { door: resolveChoice(answer, doorChoices)! as InstallDoor },
+      }),
+    },
+
+    consent: {
+      id: 'consent',
+      kind: 'narrative-then-prompt',
+      narrativeContext: 'consent',
+      prompt: 'Is that okay?\n\n  1. Yes\n  2. No',
+      renderPreamble: (answers) =>
+        'This will:\n' +
+        '\n' +
+        context.describePlan(answers).map((line) => `  - ${line}`).join('\n') +
+        '\n\n' +
+        'This creates a new agent. To put an existing agent here, ask that agent.',
+      input: { kind: 'choice', choices: consentChoices },
+      validate: requireChoice(consentChoices),
+      next: (answer) =>
+        resolveChoice(answer, consentChoices) === 'yes'
+          ? { state: 'do-install-tools', updates: { installConsent: true } }
+          : { state: 'declined', updates: { installConsent: false } },
+    },
+
+    'do-install-tools': action('do-install-tools', 'install-tools', 'Install the tools your agent needs', 'do-tailscale-operator'),
+    'do-tailscale-operator': action('do-tailscale-operator', 'install-tailscale-operator', 'Let your agent use Tailscale', 'do-door-install'),
+    'do-door-install': action('do-door-install', 'door-install', 'Install your AI', 'do-door-sign-in'),
+    'do-door-sign-in': action('do-door-sign-in', 'door-sign-in', 'Check your AI is signed in', 'do-init'),
+    'do-init': action('do-init', 'agent-init', 'Create your agent', 'do-start-server'),
+    'do-start-server': action('do-start-server', 'start-server', 'Start your agent', 'do-install-autostart'),
+    'do-install-autostart': action('do-install-autostart', 'install-autostart', 'Set your agent to start after a reboot', 'do-owner-slot'),
+    'do-owner-slot': action('do-owner-slot', 'owner-slot', 'Set up your dashboard access', 'complete'),
+
+    complete: {
+      id: 'complete',
+      kind: 'terminal',
+      farewell: 'Your agent is running.',
+    },
+
+    declined: {
+      id: 'declined',
+      kind: 'terminal',
+      farewell: 'No problem. Nothing was installed. Run this again whenever you\'re ready.',
+    },
+  };
+}
+
+export const INSTALL_INITIAL_STATE = 'do-preflight';

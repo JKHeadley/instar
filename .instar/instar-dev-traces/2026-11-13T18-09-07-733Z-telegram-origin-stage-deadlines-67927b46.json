@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-stage-deadlines",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T18:09:07.733Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-stage-deadlines.md",
+  "artifactSha256": "4db71a304f51b4cc3127436f4f4a582c3abb37142bd0045ab939be941148ae15",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-stage-deadlines.eli16.md",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/e2e/telegram-dashboard-edit-rejection.test.ts",
+    "tests/e2e/telegram-deterministic-notice-origin.test.ts",
+    "tests/e2e/telegram-origin-browser-outbox.test.ts",
+    "tests/e2e/telegram-origin-enrollment.test.ts",
+    "tests/e2e/telegram-origin-notice-policy.test.ts",
+    "tests/e2e/telegram-origin-runtime-lifecycle.test.ts",
+    "tests/helpers/telegramLateCapacity.ts",
+    "tests/helpers/telegramLateCapacityHttp.ts",
+    "tests/helpers/telegramOriginStore.ts",
+    "tests/integration/lease-renew-unreachable-peer-sends.test.ts",
+    "tests/unit/telegram-origin/origin-stage-deadlines.test.ts",
+    "tests/unit/telegram-origin/transport-deadlines.test.ts",
+    "upgrades/next/telegram-origin-stage-deadlines.md",
+    "upgrades/side-effects/telegram-origin-stage-deadlines.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One production file: five literal time budgets become an optional, validated per-service option with the same defaults; no production caller sets it; a revert restores the literals. The rest is tests. It sits on the outbound hold decision, so it had an independent review (three reads; concur on the third).",
+  "eli16Path": "docs/specs/telegram-origin-stage-deadlines.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-stage-deadlines.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

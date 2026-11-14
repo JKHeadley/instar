@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-07T05:52:43.316Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 567,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TeamAccessEvents.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/permissions/TeamAccess.ts"
+    ],
+    "addedLines": 567,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

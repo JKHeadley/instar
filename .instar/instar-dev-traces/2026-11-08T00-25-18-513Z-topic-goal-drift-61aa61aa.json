@@ -1,0 +1,61 @@
+{
+  "version": 3,
+  "slug": "topic-goal-drift",
+  "sessionId": "cc72af66-7e1f-45d6-b5fb-0ab126bc5c0c",
+  "timestamp": "2026-11-08T00:25:18.513Z",
+  "artifactPath": "upgrades/side-effects/topic-goal-drift.md",
+  "artifactSha256": "7402396f3c01a24c6ac8b0e99590b9e7b234bcb81ae94cb9394b0054cc6c95ba",
+  "coveredFiles": [
+    "docs/specs/topic-goal-drift.eli16.md",
+    "docs/topic-goal-drift-case-study.md",
+    "src/core/CompletionEvaluator.ts",
+    "src/core/TopicGoalContext.ts",
+    "src/recommended/catalog.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/topic-goal-completion-lifecycle.test.ts",
+    "tests/integration/topic-goal-completion.test.ts",
+    "tests/unit/CompletionEvaluator-completion-discipline.test.ts",
+    "tests/unit/CompletionEvaluator.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "tests/unit/topic-goal-context.test.ts",
+    "upgrades/next/topic-goal-drift.md",
+    "upgrades/side-effects/topic-goal-drift.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible completion-context bug fix: existing model remains authority; no new schema, credentials, controller, or irreversible action.",
+  "eli16Path": "docs/specs/topic-goal-drift.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-goal-drift.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Completion judged a narrowed registered charter without consuming the wider user-supported topic goal; topic 135786 incident 140504."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/topic-goal-completion.test.ts",
+      "howCaught": "Incident-shaped regression requires broader user-goal evidence at the existing completion authority; missing wiring or forged replacement fails."
+    },
+    "component": "CompletionEvaluator"
+  }
+}

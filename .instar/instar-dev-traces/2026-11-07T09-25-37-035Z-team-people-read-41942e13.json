@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "team-people-read",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T09:25:37.035Z",
+  "artifactPath": "upgrades/side-effects/team-people-read.md",
+  "artifactSha256": "d71fe633833d32e1f621e09368bd2173d323e29b1a8196cd2dbb61d39b4233a0",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "docs/specs/team-roles-and-access.md",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/team-people-read.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

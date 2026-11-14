@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/machineCoherenceEffectsExecutor.ts');
 /**
  * Machine-coherence effects executor (calm-transient-episode-alerting M-P2).
  *
@@ -56,10 +58,10 @@ export function executeMachineCoherenceEffects(effects: EpisodeEffect[], deps: E
           const item = tg?.getAttentionItem(eff.itemId);
           // Follow-up lines go only where the item itself was posted: an item the
           // Attention hub filter held stays held (attentionHubPolicy).
-          if (item?.topicId !== undefined && tg?.attentionHubAdmits?.(eff.itemId) !== false) await tg?.sendToTopic(item.topicId, eff.text, { silent: eff.silent === true });
+          if (item?.topicId !== undefined && tg?.attentionHubAdmits?.(eff.itemId) !== false) await withNotificationEnvelope(stampNotification(), async () => tg?.sendToTopic(item.topicId!, eff.text, { silent: eff.silent === true }));
         } else if (eff.kind === 'resolve') {
           const item = tg?.getAttentionItem(eff.itemId);
-          if (item?.topicId !== undefined && tg?.attentionHubAdmits?.(eff.itemId) !== false) await tg?.sendToTopic(item.topicId, eff.note, { silent: eff.silent === true });
+          if (item?.topicId !== undefined && tg?.attentionHubAdmits?.(eff.itemId) !== false) await withNotificationEnvelope(stampNotification(), async () => tg?.sendToTopic(item.topicId!, eff.note, { silent: eff.silent === true }));
           await tg?.updateAttentionStatus(eff.itemId, 'DONE', { silent: eff.silent === true });
         } else if (eff.kind === 'resolve-status') {
           // Orphan self-closeout arm: status-only DONE, no message ever.

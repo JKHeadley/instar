@@ -23,6 +23,7 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import type { MeshEndpoint } from './types.js';
+import { lastingEndpoints } from './lastingLink.js';
 import { hostOf, isPublicHttps, isRfc1918, isTailscaleCgnat } from './PeerEndpointResolver.js';
 
 export interface MeshTunnelConfig {
@@ -227,15 +228,19 @@ export type NetIfaces = Record<string, Array<{ address: string; family: string |
 
 /**
  * Pick this machine's PRIMARY private IPv4 (Decision: first non-internal RFC-1918
- * IPv4 on an "en" or "eth" interface). Returns null if none. Pure over the
+ * IPv4 on an "en", "eth" or wireless interface, including Linux's enp7s0 and wlp2s0
+ * style names). Returns null if none. Pure over the
  * supplied interfaces map.
  */
 export function pickPrimaryLanIp(ifaces: NetIfaces): string | null {
-  for (const [name, addrs] of Object.entries(ifaces)) {
-    if (!/^(en|eth)\d+$/i.test(name)) continue;
-    for (const a of addrs ?? []) {
-      const isV4 = a.family === 'IPv4' || a.family === 4;
-      if (isV4 && !a.internal && isRfc1918(a.address)) return a.address;
+  // Plain names first, so a machine that already had one keeps advertising the same address.
+  for (const nameRule of [/^(en|eth)\d+$/i, /^(en|eth|wl)[a-z0-9]*$/i]) {
+    for (const [name, addrs] of Object.entries(ifaces)) {
+      if (!nameRule.test(name)) continue;
+      for (const a of addrs ?? []) {
+        const isV4 = a.family === 'IPv4' || a.family === 4;
+        if (isV4 && !a.internal && isRfc1918(a.address)) return a.address;
+      }
     }
   }
   return null;
@@ -355,4 +360,21 @@ export function advertiseSelfMeshEndpoints(
     // a degradation (mesh transport degrades gracefully to the remaining ropes).
     return false;
   }
+}
+
+/** What this machine can offer a peer that outlives a restart, known with or without a running tunnel. */
+export async function computeOwnLastingEndpoints(cfg: {
+  port?: number;
+  tunnel?: MeshTunnelConfig;
+  multiMachine?: { meshTransport?: { tailscaleEnabled?: boolean }; observedEndpoints?: { advertisedAddress?: string } };
+}): Promise<MeshEndpoint[]> {
+  const tailscaleEnabled = cfg.multiMachine?.meshTransport?.tailscaleEnabled !== false;
+  return lastingEndpoints(computeSelfMeshEndpoints({
+    cloudflareUrl: resolveAdvertisedMeshUrl(cfg.tunnel),
+    lanIp: pickPrimaryLanIp(networkInterfaces() as never),
+    tailscaleIp: tailscaleEnabled ? await detectTailscaleIp() : null,
+    advertisedAddress: cfg.multiMachine?.observedEndpoints?.advertisedAddress,
+    port: cfg.port ?? 4042,
+    tailscaleEnabled,
+  }));
 }

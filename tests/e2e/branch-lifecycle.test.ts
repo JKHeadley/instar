@@ -27,13 +27,7 @@ function git(args: string[], cwd: string): string {
   return SafeGitExecutor.run(args, { cwd,
     encoding: 'utf-8',
     stdio: 'pipe',
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'Test',
-      GIT_AUTHOR_EMAIL: 'test@test.com',
-      GIT_COMMITTER_NAME: 'Test',
-      GIT_COMMITTER_EMAIL: 'test@test.com',
-    }, operation: 'tests/e2e/branch-lifecycle.test.ts:26' }).trim();
+    operation: 'tests/e2e/branch-lifecycle.test.ts:26' }).trim();
 }
 
 /**

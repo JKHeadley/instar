@@ -246,6 +246,32 @@ describe('Multi-Machine HTTP E2E', () => {
     expect(resp.status).toBeGreaterThanOrEqual(400);
   });
 
+
+  it('team access rows go only to an authenticated machine', async () => {
+    const body = { have: { 'x/y': 3 } };
+    const refused = await fetch(`${baseA}/api/team-access/rows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    expect(refused.ok).toBe(false);
+    const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, body, 77);
+    const ok = await fetch(`${baseA}/api/team-access/rows`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    expect(ok.ok).toBe(true);
+    const page = await ok.json() as { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number>; standing?: Record<string, unknown> };
+    // Two real servers: a new agent's log is empty. The page also carries this machine's standing and stream starts.
+    expect(page.rows).toEqual([]);
+    expect(page.vector).toEqual({});
+    expect(page.starts).toEqual({});
+    expect(page.standing).toEqual(expect.objectContaining({ enforcement: expect.any(Number) }));
+  });
+
+  it('rows can be pushed only by an authenticated machine, and only as a list', async () => {
+    const body = { rows: 'not-a-list' };
+    const refused = await fetch(`${baseA}/api/team-access/push`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    expect(refused.ok).toBe(false);
+    expect(refused.status).not.toBe(400);
+    const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, body, 78);
+    const bad = await fetch(`${baseA}/api/team-access/push`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    expect(bad.status).toBe(400);
+  });
+
   it('accepts properly signed requests', async () => {
     const heartbeat = {
       holder: envB.machineId,

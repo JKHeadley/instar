@@ -85,22 +85,22 @@ describe('buildInjectionTag', () => {
 
     it('sender name + UID, no topic name', () => {
       const tag = buildInjectionTag(42, undefined, 'Justin', 12345);
-      expect(tag).toBe('[telegram:42 from Justin (uid:12345)]');
+      expect(tag).toBe('[telegram:42 (name unresolved) from Justin (uid:12345)]');
     });
 
     it('sender name only, no topic or UID', () => {
       const tag = buildInjectionTag(42, undefined, 'Justin');
-      expect(tag).toBe('[telegram:42 from Justin]');
+      expect(tag).toBe('[telegram:42 (name unresolved) from Justin]');
     });
 
     it('bare minimum: just topic ID', () => {
       const tag = buildInjectionTag(42);
-      expect(tag).toBe('[telegram:42]');
+      expect(tag).toBe('[telegram:42 (name unresolved)]');
     });
 
     it('bare minimum with all undefined', () => {
       const tag = buildInjectionTag(42, undefined, undefined, undefined);
-      expect(tag).toBe('[telegram:42]');
+      expect(tag).toBe('[telegram:42 (name unresolved)]');
     });
 
     it('General topic (topicId=1)', () => {
@@ -269,7 +269,7 @@ describe('toInjection', () => {
     it('works without topic name', () => {
       const pipeline = makePipeline({ topicName: undefined });
       const injection = toInjection(pipeline, 'session');
-      expect(injection.taggedText).toMatch(/^\[telegram:42 from Justin \(uid:12345\)\] Hello world$/);
+      expect(injection.taggedText).toMatch(/^\[telegram:42 \(name unresolved\) from Justin \(uid:12345\)\] Hello world$/);
     });
 
     it('works without sender name (Unknown fallback)', () => {
@@ -290,7 +290,7 @@ describe('toInjection', () => {
       // UID 0 is falsy, so no uid suffix. But Unknown is the sender fallback
       // With topicName undefined and sender firstName empty → sanitized to Unknown
       // telegramUserId 0 → falsy → no uid suffix
-      expect(injection.taggedText).toContain('[telegram:42 from Unknown]');
+      expect(injection.taggedText).toContain('[telegram:42 (name unresolved) from Unknown]');
     });
   });
 

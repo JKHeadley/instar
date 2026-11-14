@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "storage-refusals-named",
+  "sessionId": "3117ee1f-b832-43c4-82c6-601c1f9a80a9",
+  "timestamp": "2026-11-08T00:38:55.238Z",
+  "artifactPath": "upgrades/side-effects/storage-refusals-named.md",
+  "artifactSha256": "9bcc5040fa5d6461001d6a12c702a0fe039ec7a1590f6b593a42d15222ebafbc",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/storage-refusals-named.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Required classification of diagnostic-only dependencies. The certified members, hashes, fingerprint and signed evidence do not change. Read-only diagnostic helpers add no protocol authority.",
+  "eli16Path": "docs/specs/storage-refusals-named.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/storage-refusals-named.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dependency classification metadata only; no autonomous actions or runtime decisions change."
+  }
+}

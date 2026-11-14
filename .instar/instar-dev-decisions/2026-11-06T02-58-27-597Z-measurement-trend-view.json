@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-06T02:58:27.597Z",
+  "slug": "measurement-trend-view",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 361,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BlockerLifecycleLedger.ts",
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/monitoring/MaturationLadderService.ts",
+      "src/monitoring/MaturationOutcome.ts",
+      "src/monitoring/MeasurementCoverage.ts",
+      "src/monitoring/MeasurementTrend.ts",
+      "src/server/maturationBoardRoutes.ts",
+      "src/server/measurementCoverageRead.ts",
+      "src/server/measurementDetailRead.ts"
+    ],
+    "addedLines": 338,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

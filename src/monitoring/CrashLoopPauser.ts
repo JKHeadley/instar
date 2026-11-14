@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import type { JobDefinition } from '../core/types.js';
 
 export interface CrashLoopCandidate {
@@ -95,6 +96,10 @@ export class CrashLoopPauser {
         slug: job.slug,
         sinceHours: this.windowHours,
         limit: 1000,
+        // job-cost-reduction §5.6: canary and triage rows are recorded under the
+        // real slug but are not the job's own runs — a must-fail canary must
+        // never make a healthy job look like a crash loop.
+        excludeSideRuns: true,
       });
 
       const failures = runs.filter(
@@ -143,6 +148,9 @@ export class CrashLoopPauser {
     const skipped: Array<{ slug: string; reason: string }> = [];
 
     if (dryRun || candidates.length === 0) {
+      for (const c of candidates) {
+        featureEvidence.record('monitoring.crashLoopPauser', { kind: 'fired', reason: `would pause: ${c.reason}`, context: { slug: c.slug, candidateReason: c.reason, failureCount: c.failureCount, shortRunCount: c.shortRunCount, windowHours: c.evidence.windowHours, dryRun: true } });
+      }
       return { candidates, paused: [], skipped, dryRun };
     }
 
@@ -196,6 +204,10 @@ export class CrashLoopPauser {
         JSON.stringify({ pausedAt: now, ...c }) + '\n',
         'utf-8',
       );
+      featureEvidence.record('monitoring.crashLoopPauser', { kind: 'fired', reason: `paused: ${c.reason}`, context: { slug, candidateReason: c.reason, failureCount: c.failureCount, shortRunCount: c.shortRunCount, windowHours: c.evidence.windowHours, dryRun: false } });
+    }
+    for (const s of skipped) {
+      featureEvidence.record('monitoring.crashLoopPauser', { kind: 'held', reason: `skipped: ${s.reason}`, context: { slug: s.slug, dryRun: false } });
     }
 
     return { candidates, paused, skipped, dryRun };

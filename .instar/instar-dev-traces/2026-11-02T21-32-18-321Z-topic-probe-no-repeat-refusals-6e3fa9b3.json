@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "topic-probe-no-repeat-refusals",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T21:32:18.321Z",
+  "artifactPath": "upgrades/side-effects/topic-probe-no-repeat-refusals.md",
+  "artifactSha256": "c14ab78317b4468a18b0d4e19faaf6ea413a8ae611247bed2839d17d548bc68e",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/topic-name-probe-backoff.test.ts",
+    "upgrades/next/topic-probe-no-repeat-refusals.md",
+    "upgrades/side-effects/topic-probe-no-repeat-refusals.eli16.md",
+    "upgrades/side-effects/topic-probe-no-repeat-refusals.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "filters a start-time probe; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/topic-probe-no-repeat-refusals.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-probe-no-repeat-refusals.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "reduces an existing start-time probe; adds no action or loop"
+  }
+}

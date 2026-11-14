@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-02T06:59:47.122Z",
+  "slug": "desktop-multi-display-gestures",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/windows-desktop-local-transport.ps1",
+      "src/core/DirectDesktopAccess.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

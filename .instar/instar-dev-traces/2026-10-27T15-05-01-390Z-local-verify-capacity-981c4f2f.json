@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "local-verify-capacity",
+  "sessionId": "2b2781fe-a0ae-4fac-96c1-86978e4139d8",
+  "timestamp": "2026-10-27T15:05:01.390Z",
+  "artifactPath": "upgrades/side-effects/local-verify-capacity.md",
+  "artifactSha256": "e8425d44121ef781f5e093702ad94331e247ccf69b9f69573bbc76d65d9294fb",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/record.ts",
+    "src/scaffold/templates.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "upgrades/side-effects/local-verify-capacity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Cross-machine merge-authorizing verifier with lease, recovery, and migration behavior",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

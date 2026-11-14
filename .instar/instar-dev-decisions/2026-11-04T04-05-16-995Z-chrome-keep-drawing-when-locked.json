@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-04T04:05:16.995Z",
+  "slug": "chrome-keep-drawing-when-locked",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/templates/scripts/browser/chrome-launch.sh"
+    ],
+    "addedLines": 9,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fixed launch argument, no loop"
+  },
+  "verdict": "pass"
+}

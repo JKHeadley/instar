@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-readiness-reasons",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-11-01T06:51:08.352Z",
+  "artifactPath": "upgrades/side-effects/desktop-readiness-reasons.md",
+  "artifactSha256": "598e6bf786d25dd9c0a59cc37cf9dd3a6b58ae96f49afb3dc297f5975ae04699",
+  "coveredFiles": [
+    "dashboard/desktop.css",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-readiness-reasons.eli16.md",
+    "src/core/DesktopProbeReadiness.ts",
+    "tests/unit/desktop-probe-readiness.test.ts",
+    "upgrades/next/desktop-readiness-reasons.md",
+    "upgrades/side-effects/desktop-readiness-reasons.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "text and display only; revert restores",
+  "eli16Path": "docs/specs/native-remote-desktop-readiness-reasons.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-readiness-reasons.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

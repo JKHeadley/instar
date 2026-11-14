@@ -5,10 +5,11 @@ import type { SessionPoolE2EResultStore, StageE2EResult } from '../../src/core/S
 
 const SHA = 'commit-abc';
 
-/** A minimal in-memory result store: the only two methods StageAdvancer calls. */
+/** A minimal in-memory result store: the methods StageAdvancer calls. */
 function fakeStore(rows: Partial<Record<number, StageE2EResult>>): SessionPoolE2EResultStore {
   return {
     getLatestForStage: (idx: number) => rows[idx] ?? null,
+    all: () => Object.values(rows).filter((r): r is StageE2EResult => !!r),
     // A row present in the map is considered signature-valid for the test.
     verify: (row: StageE2EResult) => !!row,
   } as unknown as SessionPoolE2EResultStore;
@@ -137,5 +138,48 @@ describe('SessionPoolRolloutDriver', () => {
     const r = driver.tick();
     expect(r.reconciledTo).toBe('live-transfer'); // unchanged
     expect(getStage()).toBe('live-transfer');
+  });
+});
+
+describe('SessionPoolRolloutDriver — rollout-advanced only when the stage reads back advanced (CMT-1117)', () => {
+  it('a write that does not land is reported as not-applied, never as rollout-advanced', () => {
+    const events: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const stage: SessionPoolStage = 'dark';
+    const advancer = new StageAdvancer({
+      resultStore: fakeStore({ 0: row(0, 'green') }),
+      currentCommitSha: () => SHA,
+      readStage: () => stage,
+      writeStageConfig: () => { /* a refused / overwritten config write: the stage never changes */ },
+    });
+    const driver = new SessionPoolRolloutDriver({
+      advancer,
+      enabled: () => true,
+      targetCeiling: () => 'live-transfer',
+      audit: (event, detail) => events.push({ event, detail }),
+    });
+    const r = driver.tick();
+    expect(r.advancedTo).toBeNull();
+    expect(r.advanceSkippedReason).toBe('not-applied');
+    expect(events.map((e) => e.event)).toContain('rollout-advance-not-applied');
+    expect(events.map((e) => e.event)).not.toContain('rollout-advanced');
+  });
+
+  it('a write that lands is logged as rollout-advanced', () => {
+    const events: string[] = [];
+    let stage: SessionPoolStage = 'dark';
+    const advancer = new StageAdvancer({
+      resultStore: fakeStore({ 0: row(0, 'green') }),
+      currentCommitSha: () => SHA,
+      readStage: () => stage,
+      writeStageConfig: (s) => { stage = s; },
+    });
+    const driver = new SessionPoolRolloutDriver({
+      advancer,
+      enabled: () => true,
+      targetCeiling: () => 'live-transfer',
+      audit: (event) => events.push(event),
+    });
+    expect(driver.tick().advancedTo).toBe('shadow');
+    expect(events).toEqual(['rollout-advanced']);
   });
 });

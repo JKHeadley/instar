@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-02T12:21:05.573Z",
+  "slug": "native-conversations-gaps",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/appConversationText.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 39,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: request-driven token removal and read-only pool fan-outs; no loop, retry or timer is added"
+  },
+  "verdict": "pass"
+}

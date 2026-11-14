@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-07T23:14:08.278Z",
+  "slug": "recommended-services-bitwarden-recipe",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/recommended/bitwardenVault.ts",
+      "src/recommended/catalog.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The staged routes.ts change relabels an existing one-message owner notice (tellOwner), which fires once per state change (a confirmed switch-off, a re-check failure) behind the setup state's stopRequestedAt/told-once guards; the recipe's refresh is a timer bounded to one try per 24 h, one per 6 h after a failure, and a single re-check after three failures, under hasGrant and a verified pass, never a self-triggered loop"
+  },
+  "verdict": "pass"
+}

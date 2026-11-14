@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-07T10:17:26.221Z",
+  "slug": "lease-restart-no-tie",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 117,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/LocalLeaseStore.ts",
+      "src/core/MultiMachineCoordinator.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 10
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Three latent paths on no-shared-medium stores, found by review and simulation: claiming from an own stale copy, no renew timer without a conversation surface, and no way to confirm renewal while the peer boots."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "media-disk-tests",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-08T00:06:17.102Z",
+  "artifactPath": "upgrades/side-effects/media-disk-tests.md",
+  "artifactSha256": "91116137cc86e738f633e83fc818187200e8aace0c063d6a1aa8fde6e820e814",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "upgrades/next/media-disk-tests.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

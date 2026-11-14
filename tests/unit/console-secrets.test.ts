@@ -35,14 +35,15 @@ describe('request words and grouping', () => {
     expect(agoWords(NOW - 4 * 60_000, NOW)).toBe('4 min ago');
     expect(agoWords(NOW - 26 * 3600_000, NOW)).toBe('1 day ago');
   });
-  it('a conversation reads by its name, else by its number; no topic is none', () => {
+  it('a conversation reads by its name, otherwise reports missing name; no topic is none', () => {
     const map = topicNameMap(ok({ topics: [{ topicId: 52075, sessionName: 's', topicName: 'Instar 2.0' }, { topicId: 9, sessionName: 's2', topicName: null }] }));
     expect(map).toEqual({ '52075': 'Instar 2.0' });
     expect(topicNameMap(fail())).toEqual({});
     expect(conversationWords(52075, map)).toBe('Instar 2.0');
-    expect(conversationWords(9, map)).toBe('conversation 9');
+    expect(conversationWords(9, map)).toBe('conversation name unavailable');
     expect(conversationWords(undefined, map)).toBe('');
     expect(conversationChoices({ '2': 'b', '1': 'a' })).toEqual([{ value: '1', label: 'a' }, { value: '2', label: 'b' }]);
+    expect(conversationChoices({ '2': 'Scout', '3': 'scout', '4': 'Echo', '5': 'topic-5' })).toEqual([{ value: '4', label: 'Echo' }]);
   });
   it('the link: the tunnel when there is one, else the local path on this origin; anything else is refused', () => {
     expect(dropLink(pend(), 'http://localhost:4040')).toEqual({ url: 'https://x.trycloudflare.com/secrets/drop/tok1', remote: true });
@@ -78,6 +79,13 @@ describe('keys held, the vault, and sync', () => {
     expect(k).toEqual({ ok: true, names: ['anthropic_api_key', 'github_token'], source: 'vault', empty: false });
     expect(JSON.stringify(k)).not.toContain('secret block text');
     expect(buildKeys(ok({ names: [], vaultState: 'absent' }), off())).toMatchObject({ ok: true, names: [], empty: true });
+  });
+  it('saved Secret Drop entries (a token, not a name) show as one counted line', () => {
+    const h = (c: string) => c.repeat(64);
+    const k = buildKeys(ok({ names: ['github_token', `secretDrops.${h('a')} (+5 nested)`, `secretDrops.${h('b')} (+5 nested)`, 'secretDropsNote'], vaultState: 'ok' }), off());
+    expect(k.names).toEqual(['github_token', 'Saved Secret Drop submissions (2)', 'secretDropsNote']);
+    expect(JSON.stringify(k)).not.toContain(h('a'));
+    expect(buildKeys(ok({ names: [`secretDrops.${h('c')}`], vaultState: 'ok' }), off()).names).toEqual(['Saved Secret Drop submission (1)']);
   });
   it('a switched-off key list falls back to the sync record’s names; with neither it is can’t tell with the reason', () => {
     expect(buildKeys(off(), ok({ localKeyPaths: ['telegram.token'] }))).toEqual({ ok: true, names: ['telegram.token'], source: 'sync' });
@@ -168,7 +176,7 @@ describe('passwords & keys in a DOM', () => {
       '/secrets/pending': { body: () => ({ pending }) },
       '/self-knowledge/session-context?full=1': { body: () => ({ names: ['openai_api_key', 'github_token'], factCount: 1, vaultState: 'ok', block: 'VALUE-SHOULD-NEVER-RENDER sk-live-123' }) },
       '/secrets/sync-status': { status: 503, body: () => ({ error: 'secret-sync not available' }) },
-      '/telegram/topics': { body: () => ({ topics: [{ topicId: 52075, sessionName: 's', topicName: 'Instar 2.0' }] }) },
+      '/telegram/topics?scope=pool': { body: () => ({ topics: [{ topicId: 52075, sessionName: 's', topicName: 'Instar 2.0' }] }) },
       '/pool': { body: () => ({ enabled: false, machines: [] }) },
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string; headers?: Record<string, string> }) => {

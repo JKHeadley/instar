@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "queued-reply-peer-wait",
+  "sessionId": "220ff7db-8651-46b9-8d85-8536f15e29a6",
+  "timestamp": "2026-11-07T16:15:15.915Z",
+  "artifactPath": "upgrades/side-effects/queued-reply-peer-wait.md",
+  "artifactSha256": "23771f048bf041d13998b6474e958cbb7da15bb561a3c91822baeda32b1835f8",
+  "coveredFiles": [
+    "docs/specs/queued-reply-coherence.eli16.md",
+    "src/messaging/telegram-origin/QueuedReplySupersession.ts",
+    "tests/unit/telegram-origin/queued-reply-supersession.test.ts",
+    "upgrades/next/queued-reply-peer-wait.md",
+    "upgrades/queued-reply-peer-wait.eli16.md",
+    "upgrades/side-effects/queued-reply-peer-wait.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One condition in a pure review function; bounds an existing hold",
+  "eli16Path": "upgrades/queued-reply-peer-wait.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/queued-reply-peer-wait.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

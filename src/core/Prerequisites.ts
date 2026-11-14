@@ -6,6 +6,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { packageInstallCommand } from './packageInstall.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
@@ -156,12 +157,14 @@ function tmuxInstallInfo(): { hint: string; canAutoInstall: boolean; command?: s
         command: 'brew install tmux',
         needsHomebrew: true,
       };
-    case 'linux':
+    case 'linux': {
+      const command = packageInstallCommand(['tmux']);
       return {
-        hint: 'Install with: sudo apt install tmux (Debian/Ubuntu) or sudo yum install tmux (RHEL/CentOS)',
-        canAutoInstall: true,
-        command: 'sudo apt install -y tmux',
+        hint: 'Install with: sudo apt install tmux (Debian/Ubuntu), sudo pacman -S tmux (Arch) or sudo dnf install tmux (Fedora/RHEL)',
+        canAutoInstall: command !== null,
+        ...(command ? { command: command.join(' ') } : {}),
       };
+    }
     default:
       return {
         hint: 'Install tmux: https://github.com/tmux/tmux/wiki/Installing',
@@ -205,12 +208,14 @@ function ghInstallInfo(): { hint: string; canAutoInstall: boolean; command?: str
         command: 'brew install gh',
         needsHomebrew: true,
       };
-    case 'linux':
+    case 'linux': {
+      const command = packageInstallCommand(['gh']);
       return {
-        hint: 'Install with: sudo apt install gh (Debian/Ubuntu) or see https://cli.github.com/',
-        canAutoInstall: true,
-        command: 'sudo apt install -y gh',
+        hint: 'Install with: sudo apt install gh (Debian/Ubuntu), sudo pacman -S github-cli (Arch) or see https://cli.github.com/',
+        canAutoInstall: command !== null,
+        ...(command ? { command: command.join(' ') } : {}),
       };
+    }
     default:
       return {
         hint: 'Install GitHub CLI: https://cli.github.com/',

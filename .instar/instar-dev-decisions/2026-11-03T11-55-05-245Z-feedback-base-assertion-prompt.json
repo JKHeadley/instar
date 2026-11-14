@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-03T11:55:05.245Z",
+  "slug": "feedback-base-assertion-prompt",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/executorSession.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/feedback-factory/execute-units.test.ts",
+      "howCaught": "The rendered worker prompt contract test requires the assertion-only rule for existing behavior and the narrow missing-new-source exception; it fails if those instructions drift from the base classifier."
+    },
+    "prNumber": 2654,
+    "component": "FeedbackFactoryExecutor"
+  },
+  "verdict": "pass"
+}

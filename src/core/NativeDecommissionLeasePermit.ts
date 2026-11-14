@@ -1,0 +1,29 @@
+/** Continuation of already-applied native administration. Creation requires
+ * actual durable revocations and every surviving native member's receipt. It
+ * cannot perform a revoke, mint human consent or fabricate a lease record. */
+import crypto from 'node:crypto';
+import {GRAPH_REPLICATION_MAX_LEASE_EPOCH} from './ConversationGraphReplicationLimits.js';
+import type {LeaseCoordinator} from './LeaseCoordinator.js';
+import {FencedLease} from './FencedLease.js';
+import {GraphNativeMemberLossStore,verifyGraphNativeMemberLossFloor} from './GraphNativeMemberLossStore.js';
+import {verifyGraphNativeMemberLossReceipts,type GraphMemberLossIntentProof,type GraphNativeMemberLossFloor,type GraphNativeMemberLossReceipt} from './GraphMemberLossNativeProof.js';
+import type {GraphOwnerMemberLossConsent,GraphOwnerMemberLossContext} from './GraphOwnerMemberLoss.js';
+import type {LeaseRecord} from './types.js';
+import {canonicalHash} from './GraphWitnessTypes.js';
+const TOKEN=Symbol('durable-native-decommission-continuation');
+export class NativeDecommissionLeasePermit {
+ readonly stateRoot:string;readonly agentId:string;readonly consentHash:string;readonly newWriterId:string;readonly minimumEpoch:number;
+ #store:GraphNativeMemberLossStore;#coordinator:LeaseCoordinator;#consent:GraphOwnerMemberLossConsent;#context:GraphOwnerMemberLossContext;#intent:GraphMemberLossIntentProof;#receipts:GraphNativeMemberLossReceipt[];#floors:GraphNativeMemberLossFloor[];
+ private constructor(token:symbol,options:{store:GraphNativeMemberLossStore;coordinator:LeaseCoordinator;consent:GraphOwnerMemberLossConsent;context:GraphOwnerMemberLossContext;intent:GraphMemberLossIntentProof;receipts:GraphNativeMemberLossReceipt[];floors:GraphNativeMemberLossFloor[]}){
+  if(token!==TOKEN||!(options.store instanceof GraphNativeMemberLossStore))throw new Error('native-decommission-actual-revocations-required');const {context,consent,intent}=options;if(!verifyGraphNativeMemberLossReceipts(options.receipts,consent,{...context,ownerPublicKey:options.store.custodyAuthority.ownerPublicKey})||options.floors.length!==context.newMembership.members.length||new Set(options.floors.map(row=>row.machineId)).size!==options.floors.length||options.floors.some(row=>!verifyGraphNativeMemberLossFloor(row,intent,{...context,ownerPublicKey:options.store.custodyAuthority.ownerPublicKey})))throw new Error('native-decommission-survivor-evidence-incomplete');
+  this.#store=options.store;this.#coordinator=options.coordinator;this.#consent=structuredClone(consent);this.#context={...context,ownerPublicKey:options.store.custodyAuthority.ownerPublicKey,previousMembership:structuredClone(context.previousMembership),newMembership:structuredClone(context.newMembership),nativeIdentities:structuredClone(context.nativeIdentities)};this.#intent=structuredClone(intent);this.#receipts=structuredClone(options.receipts);this.#floors=structuredClone(options.floors);this.stateRoot=options.store.stateRoot;this.agentId=consent.payload.agentId;this.consentHash=canonicalHash(consent);this.newWriterId=context.newMembership.writerId;this.minimumEpoch=Math.max(...options.floors.map(row=>row.epoch));this.assertCurrent(options.coordinator,options.coordinator.selfMachineId);Object.freeze(this);
+ }
+ static fromCommittedRevocations(options:{store:GraphNativeMemberLossStore;coordinator:LeaseCoordinator;consent:GraphOwnerMemberLossConsent;context:GraphOwnerMemberLossContext;intent:GraphMemberLossIntentProof;receipts:GraphNativeMemberLossReceipt[];floors:GraphNativeMemberLossFloor[]}):NativeDecommissionLeasePermit{return new NativeDecommissionLeasePermit(TOKEN,options);}
+ assertCurrent(coordinator:LeaseCoordinator,machineId:string):void{if(coordinator!==this.#coordinator||machineId!==this.#store.machineId||machineId!==this.newWriterId)throw new Error('native-decommission-coordinator-scope-mismatch');if(coordinator.currentEpoch()>GRAPH_REPLICATION_MAX_LEASE_EPOCH)throw new Error('native-decommission-graph-epoch-capacity');const own=this.#receipts.find(row=>row.machineId===machineId),floor=this.#floors.find(row=>row.machineId===machineId);if(!own||!floor)throw new Error('native-decommission-local-evidence-missing');this.#store.assertDurableReceipt(this.#consent,this.#context,this.#intent,own);this.#store.assertDurableFloor(floor,this.#intent,this.#context);}
+ priorAcquisition(coordinator:LeaseCoordinator):LeaseRecord|null{this.assertCurrent(coordinator,coordinator.selfMachineId);return this.#store.acquiredLease(this.#consent,this.#context,this.#intent);}
+ async recordAcquisition(coordinator:LeaseCoordinator,lease:LeaseRecord):Promise<void>{this.assertCurrent(coordinator,coordinator.selfMachineId);await this.#store.recordAcquiredLease(coordinator,lease,this.#consent,this.#context,this.#intent);}
+ /** Choose a REAL retained signed native record, never an invented floor. */
+ acquisitionBase(current:LeaseRecord|null,epoch:number):LeaseRecord{
+  let base=current;for(const floor of this.#floors)if(!base||floor.epoch>base.epoch)base=floor.lease;if(epoch>=GRAPH_REPLICATION_MAX_LEASE_EPOCH||base&&base.epoch>=GRAPH_REPLICATION_MAX_LEASE_EPOCH)throw new Error('native-decommission-graph-epoch-capacity');if(!base||epoch>base.epoch||base.epoch<this.minimumEpoch)throw new Error('native-decommission-native-floor-unresolved');const removed=new Set(this.#consent.payload.removed.map(row=>row.machineId));if(base.holder!==this.newWriterId&&!removed.has(base.holder))throw new Error('native-decommission-surviving-holder-needs-handoff');const member=this.#context.previousMembership.members.find(row=>row.machineId===base.holder);if(!member||!crypto.verify(null,Buffer.from(FencedLease.canonicalize(base)),member.signingPublicKey,Buffer.from(base.signature,'base64')))throw new Error('native-decommission-original-floor-invalid');return structuredClone(base);
+ }
+}

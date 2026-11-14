@@ -33,12 +33,20 @@ export function versionMatches(cliOutput, expected) {
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function waitForPropagation(version, deadlineMs) {
-  const end = Date.now() + deadlineMs;
+  const startedAt = Date.now();
+  const end = startedAt + deadlineMs;
+  let nextNoticeAt = startedAt + 60_000;
   while (Date.now() < end) {
     try {
-      const published = execFileSync('npm', ['view', `instar@${version}`, 'version'], { encoding: 'utf-8' }).trim();
+      const published = execFileSync('npm', ['view', `instar@${version}`, 'version'], {
+        encoding: 'utf-8', timeout: 15_000,
+      }).trim();
       if (published === version) return true;
     } catch { /* not propagated yet */ }
+    if (Date.now() >= nextNoticeAt) {
+      console.log(`[smoke] instar@${version} is still propagating on npm (${Math.floor((Date.now() - startedAt) / 60_000)}m elapsed)…`);
+      nextNoticeAt = Date.now() + 60_000;
+    }
     await sleep(10_000);
   }
   return false;
@@ -50,13 +58,11 @@ async function main() {
 
   // npm's own publish output says the package "may take a few minutes to become
   // available", and for a tarball this size (~22MB, ~11k files) propagation has been
-  // measured at just over 4 minutes — past the old 3-minute deadline. The publish had
-  // genuinely SUCCEEDED in those runs, so this step failed good releases and, worse,
-  // trained us to read a red publish as normal. 1.3.1251 is the worked example: npm
-  // printed `+ instar@1.3.1251`, this step failed at 3m, and the version appeared on
-  // the registry ~4m after publish. Waiting longer costs a few idle minutes on a slow
-  // release; failing early costs a false alarm on every good one.
-  const propagationDeadlineMs = 900_000;
+  // measured at over 15 minutes for 1.3.1528 and 1.3.1529. Both publish steps
+  // printed success, but the old 15-minute smoke deadline failed before the
+  // registry exposed the package. Keep retrying with visible progress for up to
+  // 45 minutes so a slow registry does not leave a good release uncommitted.
+  const propagationDeadlineMs = 45 * 60_000;
   console.log(`[smoke] waiting for instar@${version} to propagate on npm…`);
   if (!await waitForPropagation(version, propagationDeadlineMs)) {
     console.error(
@@ -66,8 +72,12 @@ async function main() {
   }
 
   const prefix = mkdtempSync(path.join(tmpdir(), 'instar-smoke-'));
-  console.log(`[smoke] clean-installing instar@${version} into ${prefix}`);
-  execFileSync('npm', ['install', '--prefix', prefix, `instar@${version}`], { encoding: 'utf-8', stdio: 'inherit' });
+  // Match UpdateChecker.applyUpdate(): optional dependency postinstall downloads
+  // (notably cloudflared) are unrelated to the package/dist check and can hang.
+  console.log(`[smoke] clean-installing instar@${version} into ${prefix} without dependency scripts`);
+  execFileSync('npm', ['install', '--ignore-scripts', '--prefix', prefix, `instar@${version}`], {
+    encoding: 'utf-8', stdio: 'inherit', timeout: 15 * 60_000,
+  });
 
   const cli = path.join(prefix, 'node_modules', 'instar', 'dist', 'cli.js');
   if (!existsSync(cli)) {

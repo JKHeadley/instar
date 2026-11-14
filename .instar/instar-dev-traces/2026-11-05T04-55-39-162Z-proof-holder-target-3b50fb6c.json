@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "proof-holder-target",
+  "sessionId": "8892a2e9-ead6-4b97-98f0-ebda62082062",
+  "timestamp": "2026-11-05T04:55:39.162Z",
+  "artifactPath": "upgrades/side-effects/proof-holder-target.md",
+  "artifactSha256": "51a6d6d85c2919d1af2a8ea348c30a392c7b196842aa4dfc3e6b47bd6665a5ee",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/rebalanceProof.ts",
+    "tests/unit/rebalanceProof.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A proof-tool fix on a listed test topic: no live message path changes, two small functions, unit and wiring tests.",
+  "eli16Path": "upgrades/proof-holder-target.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/proof-holder-target.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

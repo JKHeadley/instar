@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "feature-maturation-ladder",
+  "sessionId": "5d64ec71-904d-47d7-b933-ec981d537d0d",
+  "timestamp": "2026-11-04T05:44:22.172Z",
+  "artifactPath": "upgrades/side-effects/feature-maturation-ladder.md",
+  "artifactSha256": "e5c8fc9de307ee6c9c88afa35de5997dea6848ac01dad0afdda6be552f4488ad",
+  "specPath": "docs/specs/feature-maturation-ladder.md",
+  "coveredFiles": [
+    "tests/integration/cross-model-review-flow.test.ts",
+    "upgrades/side-effects/feature-maturation-ladder.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New published routes, dev-gated, touches the scorer and the spec gate.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

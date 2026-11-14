@@ -37,6 +37,7 @@ afterEach(() => {
 function harness() {
   const calls: Array<{ initialMessage: string | undefined; name: string; opts: Record<string, unknown> }> = [];
   const sessionManager = {
+    registerMemoryInboundFile: vi.fn(),
     spawnInteractiveSession: async (initialMessage: string | undefined, name: string, opts: Record<string, unknown>) => {
       calls.push({ initialMessage, name, opts });
       return `tmux-${name}`;

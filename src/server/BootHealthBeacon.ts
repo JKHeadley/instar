@@ -6,6 +6,7 @@
 // at the canary rollout step (flag on, observe /health during a real boot on Echo),
 // which is the documented next step in the post-mortem plan.
 import http from 'node:http';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /**
  * BootHealthBeacon — a minimal HTTP listener that answers `/health` with 200
@@ -32,6 +33,9 @@ import http from 'node:http';
  */
 export class BootHealthBeacon {
   private server?: http.Server;
+  private startedAt = 0;
+  private healthAnswers = 0;
+  private notReadyAnswers = 0;
 
   constructor(
     private readonly port: number,
@@ -44,11 +48,13 @@ export class BootHealthBeacon {
     const server = http.createServer((req, res) => {
       const url = (req.url || '').split('?')[0];
       if (req.method === 'GET' && (url === '/health' || url === '/health/')) {
+        this.healthAnswers += 1;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', phase: 'booting' }));
         return;
       }
       // Everything else is not ready yet — the real server isn't up.
+      this.notReadyAnswers += 1;
       res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '5' });
       res.end(JSON.stringify({ status: 'warming', phase: 'booting' }));
     });
@@ -63,6 +69,7 @@ export class BootHealthBeacon {
       });
     });
     this.server = server;
+    this.startedAt = Date.now();
   }
 
   /**
@@ -81,6 +88,8 @@ export class BootHealthBeacon {
       // exists on Node 18.2+; older runtimes simply rely on keepAliveTimeout.
       (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     });
+    // Recorded at handoff, not at start: the evidence log is wired only once AgentServer exists.
+    featureEvidence.record('monitoring.bootHealthBeacon', { kind: 'fired', reason: 'answered through boot and handed over the port', context: { bootPhaseMs: Date.now() - this.startedAt, healthAnswers: this.healthAnswers, notReadyAnswers: this.notReadyAnswers, port: this.port } });
   }
 
   /** True while the beacon is bound. */

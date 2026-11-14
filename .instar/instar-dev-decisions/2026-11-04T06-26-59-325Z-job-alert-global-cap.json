@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-04T06:26:59.325Z",
+  "slug": "job-alert-global-cap",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 66,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/sessionCapacityRefusedError.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/job-capacity-episode.test.ts",
+      "howCaught": "The global cap refusal enters the existing durable capacity episode; tests verify no per-job alert, a single bounded episode notice, and one queued retry per 15-second poll. Pending admission counters permit only one borrowed scheduled slot."
+    }
+  },
+  "verdict": "pass"
+}

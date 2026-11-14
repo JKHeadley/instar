@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-28T08:23:01.003Z",
+  "slug": "worktree-capacity-preservation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 114,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/InstarWorktreeManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SafeGitExecutor.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 100,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

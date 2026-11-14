@@ -86,7 +86,7 @@ const ALLOWLIST = new Set([
  * entries require a spec change.
  */
 const GRANDFATHERED = new Set([
-  'src/messaging/TelegramAdapter.ts',           // OpenAI voice transcription — burn-detection Phase 5+
+  'src/core/VoiceTranscription.ts',             // OpenAI voice transcription (moved here from TelegramAdapter, shared with app voice notes) — burn-detection Phase 5+
   'src/messaging/backends/BaileysBackend.ts',   // OpenAI voice transcription — burn-detection Phase 5+
   'src/monitoring/QuotaCollector.ts',           // Anthropic OAuth (not messages) — left as-is, OAuth ≠ LLM call
   'src/monitoring/StallTriageNurse.ts',         // Direct Anthropic LLM call — burn-detection Phase 2

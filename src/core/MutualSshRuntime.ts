@@ -16,6 +16,7 @@ import { SshHostKeyLifecycle, canonicalHostKeyProposal } from './SshHostKeyLifec
 import { canonicalSshBootstrapAdvert, validateSshBootstrapAdvert, type SshBootstrapAdvert } from './SshBootstrapAdvert.js';
 import { PeerAuthorizedKeys, type PeerAuthorizedKey } from './PeerAuthorizedKeys.js';
 import { StandingSshVerifier } from './StandingSshVerifier.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface MutualSshPeer {
   machineId: string;
@@ -215,6 +216,17 @@ export class MutualSshRuntime {
   }
 
   handleProof(raw: unknown, authenticatedSender: string): { accepted: true } {
+    try {
+      return this.handleProofInner(raw, authenticatedSender);
+    } catch (error) {
+      // A peer retries a refused proof on every sweep: one row per peer and code per hour.
+      const code = error instanceof Error ? error.message.slice(0, 64) : 'invalid';
+      if (this.d.peerExecution) featureEvidence.recordAtMostEvery('multiMachine.peerExecution', `proof-refused|${authenticatedSender}|${code}`, 60 * 60_000, { kind: 'error', reason: 'peer proof refused', context: { machineId: authenticatedSender, code, dryRun: this.d.peerExecution.dryRun } });
+      throw error;
+    }
+  }
+
+  private handleProofInner(raw: unknown, authenticatedSender: string): { accepted: true } {
     if (!raw || typeof raw !== 'object') throw new Error('ssh-proof-invalid');
     const proof = raw as DirectionalSshProof;
     if (proof.sourceMachineId !== authenticatedSender || proof.targetMachineId !== this.d.selfMachineId || typeof proof.machineSignature !== 'string') throw new Error('ssh-proof-principal-mismatch');
@@ -478,10 +490,14 @@ export class MutualSshRuntime {
     })) return;
     try {
       const result = this.peerAuthorizedKeys.reconcile(this.authorizedKey(advert));
-      if (result.changed) this.audit({ type: 'peer-authorized-key-reconciled', machineId, pairingEpoch: advert.pairingEpoch, clientKeyGeneration: advert.clientKeyGeneration, dryRun: result.dryRun });
+      if (result.changed) {
+        this.audit({ type: 'peer-authorized-key-reconciled', machineId, pairingEpoch: advert.pairingEpoch, clientKeyGeneration: advert.clientKeyGeneration, dryRun: result.dryRun });
+        featureEvidence.record('multiMachine.peerExecution', { kind: 'fired', reason: result.dryRun ? 'would install a verified peer key' : 'installed a verified peer key', context: { machineId, pairingEpoch: advert.pairingEpoch, clientKeyGeneration: advert.clientKeyGeneration, dryRun: result.dryRun } });
+      }
       this.bootstrapFailures.delete(machineId);
     } catch (error) {
       this.bootstrapFailures.set(machineId, capturedBootstrapFailure(error, 'standing-key-store'));
+      featureEvidence.record('multiMachine.peerExecution', { kind: 'error', reason: 'could not write the peer key to the standing key store', context: { machineId, pairingEpoch: advert.pairingEpoch, dryRun: this.d.peerExecution?.dryRun ?? null } });
     }
   }
 

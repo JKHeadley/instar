@@ -48,6 +48,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { CredentialWriteFunnel, credentialWriteFunnel } from './CredentialWriteFunnel.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 /** Promisified async exec for the non-blocking keychain read (mirrors the sync `security` spawn). */
 const execFileAsync = promisify(execFile);
@@ -175,6 +176,64 @@ export function claudeCredentialService(configHome: string): string {
     : `Claude Code-credentials-${crypto.createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
 }
 
+/**
+ * The keychain ACCOUNT the Claude Code CLI files its credential under:
+ * `process.env.USER || os.userInfo().username` (falling back to "claude-code-user"),
+ * read and written as `security … -a <account> -s <service>`.
+ *
+ * Instar must read the SAME item. A service can hold more than one item (one per
+ * account attribute) — e.g. an item another process filed under `acct="unknown"`.
+ * `find-generic-password -s <service>` without `-a` returns whichever item the
+ * keychain lists first, so instar kept reading a frozen, dead copy while the CLI
+ * signed in and refreshed its own item (2026-11-10, gearfinity3d: the poller, the
+ * completion sweep and the identity probe all read an item last written 2026-11-08,
+ * so a successful re-login never completed and the account was never read again).
+ */
+export function claudeKeychainAccount(): string {
+  if (process.env.USER) return process.env.USER;
+  try { return os.userInfo().username || 'claude-code-user'; }
+  catch { return 'claude-code-user'; } // @silent-fallback-ok: the CLI's own fallback name
+}
+
+/** `security` argv for reading a Claude credential item: the CLI's account first, then any item. */
+export function claudeKeychainReadArgv(service: string): string[][] {
+  return [
+    ['find-generic-password', '-a', claudeKeychainAccount(), '-s', service, '-w'],
+    ['find-generic-password', '-s', service, '-w'],
+  ];
+}
+
+/**
+ * Read a Claude credential keychain item the way the CLI does (its account first),
+ * falling back to any item under the service for entries written by older tools.
+ * Async, never throws, null when absent/unreadable.
+ */
+export async function readClaudeKeychainItem(service: string, timeoutMs = KEYCHAIN_TIMEOUT_MS): Promise<string | null> {
+  for (const argv of claudeKeychainReadArgv(service)) {
+    try {
+      const { stdout } = await execFileAsync('security', argv, { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+      const raw = String(stdout ?? '').trim();
+      if (raw) return raw;
+    } catch {
+      // @silent-fallback-ok: no item for this account (or timeout) → try the next form
+    }
+  }
+  return null;
+}
+
+/** Sync twin of {@link readClaudeKeychainItem} for the sync credential-store read. */
+export function readClaudeKeychainItemSync(service: string, timeoutMs = KEYCHAIN_TIMEOUT_MS): string | null {
+  for (const argv of claudeKeychainReadArgv(service)) {
+    try {
+      const raw = withSyncOp(() => execFileSync('security', argv, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: timeoutMs })).trim();
+      if (raw) return raw;
+    } catch {
+      // @silent-fallback-ok: no item for this account (or timeout) → try the next form
+    }
+  }
+  return null;
+}
+
 /** Non-darwin credential file for a config home. */
 export function claudeCredentialFilePath(configHome: string): string {
   return path.join(expandHome(configHome), '.credentials.json');
@@ -184,16 +243,8 @@ export function claudeCredentialFilePath(configHome: string): string {
 export const defaultCredentialStore: CredentialStore = {
   read(configHome: string): string | null {
     if (process.platform === 'darwin') {
-      try {
-        const raw = execFileSync(
-          'security',
-          ['find-generic-password', '-s', claudeCredentialService(configHome), '-w'],
-          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: KEYCHAIN_TIMEOUT_MS },
-        ).trim();
-        return raw || null;
-      } catch {
-        return null; // @silent-fallback-ok: no keychain entry / timeout → unreadable (caller retries → needs-reauth)
-      }
+      // The CLI's own item first (see claudeKeychainAccount); null → unreadable (caller retries → needs-reauth).
+      return readClaudeKeychainItemSync(claudeCredentialService(configHome));
     }
     try {
       const p = claudeCredentialFilePath(configHome);
@@ -210,20 +261,8 @@ export const defaultCredentialStore: CredentialStore = {
    */
   async readAsync(configHome: string): Promise<string | null> {
     if (process.platform === 'darwin') {
-      try {
-        // Promisified `execFile` captures stdout/stderr into buffers (no `stdio` option — stderr is
-        // captured then ignored, matching the sync read's stderr suppression). encoding:'utf-8'
-        // gives a string stdout.
-        const { stdout } = await execFileAsync(
-          'security',
-          ['find-generic-password', '-s', claudeCredentialService(configHome), '-w'],
-          { encoding: 'utf-8', timeout: KEYCHAIN_TIMEOUT_MS },
-        );
-        const raw = stdout.trim();
-        return raw || null;
-      } catch {
-        return null; // @silent-fallback-ok: no keychain entry / timeout → unreadable (caller retries → needs-reauth)
-      }
+      // The CLI's own item first (see claudeKeychainAccount); null → unreadable (caller retries → needs-reauth).
+      return readClaudeKeychainItem(claudeCredentialService(configHome));
     }
     try {
       const p = claudeCredentialFilePath(configHome);
@@ -241,7 +280,7 @@ export const defaultCredentialStore: CredentialStore = {
             'add-generic-password',
             '-U', // update the existing entry in place
             '-a',
-            os.userInfo().username,
+            claudeKeychainAccount(),
             '-s',
             claudeCredentialService(configHome),
             '-w',
@@ -278,7 +317,7 @@ export const defaultCredentialStore: CredentialStore = {
             'add-generic-password',
             '-U', // update the existing entry in place
             '-a',
-            os.userInfo().username,
+            claudeKeychainAccount(),
             '-s',
             claudeCredentialService(configHome),
             '-w',

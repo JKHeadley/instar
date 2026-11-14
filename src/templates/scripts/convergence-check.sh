@@ -138,6 +138,14 @@ PY
     if echo "$URL_HOST" | grep -qE '(^|\.)ts\.net$'; then
       continue
     fi
+    # Skip Tailscale's own sign-in host. The Tailscale setup recipe must hand the person
+    # the one-tap link "tailscale up" prints, and that is the whole of their part. A live
+    # setup run (2026-11-06) was refused here even after the link came from tool output
+    # and resolved, and the session then edited this script to get past it. Exact host
+    # only: other tailscale.com pages stay checked.
+    if [ "$URL_HOST" = "login.tailscale.com" ]; then
+      continue
+    fi
     # Skip well-known service domains + common agent tunnel domains.
     if echo "$url" | grep -qE '(github\.com|vercel\.app|vercel\.com|netlify\.app|netlify\.com|npmjs\.com|npmjs\.org|cloudflare\.com|google\.com|twitter\.com|x\.com|youtube\.com|reddit\.com|discord\.com|discord\.gg|telegram\.org|t\.me|localhost|127\.0\.0\.1|stackoverflow\.com|developer\.mozilla\.org|docs\.anthropic\.com|anthropic\.com|openai\.com|grok\.com|x\.ai|claude\.ai|claude\.com|notion\.so|linear\.app|fly\.io|render\.com|railway\.app|heroku\.com|amazonaws\.com|azure\.com|gitlab\.com|bitbucket\.org|docker\.com|hub\.docker\.com|pypi\.org|crates\.io|rubygems\.org|pkg\.go\.dev|wikipedia\.org|medium\.com|substack\.com|circle\.so|ghost\.io|telegraph\.ph)'; then
       continue

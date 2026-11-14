@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "dashboard-chats-phone-layout",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T18:37:19.461Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "artifactSha256": "d0fe751fdf5a0c28242b2b345bd7b88075b4cd69be5119c29d01e725b589fbd6",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "docs/specs/dashboard-chats-phone-layout.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/dashboard-chats-phone-layout.md",
+    "upgrades/side-effects/dashboard-chats-phone-layout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Client: name the Slack machine on read and send; a revert undoes it.",
+  "eli16Path": "docs/specs/dashboard-chats-phone-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

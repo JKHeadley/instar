@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope } from '../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 import { generateKeyPairSync } from 'node:crypto';
@@ -8,7 +9,7 @@ import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.j
 import { signMessage, verifyMessage } from '../../src/core/agentSignatureProvenance.js';
 import { TelegramOriginRuntime } from '../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 import { OriginBrowserExecutor } from '../../src/messaging/telegram-origin/OriginBrowserExecutor.js';
-import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../helpers/telegramOriginStore.js';
 import type { PreparedBrowserChild } from '../../src/messaging/telegram-origin/BrowserTypes.js';
 import { browserOperationDigest } from '../../src/messaging/telegram-origin/BrowserTypes.js';
 import { canonicalOrigin, wireDigest } from '../../src/messaging/telegram-origin/CanonicalOrigin.js';
@@ -21,12 +22,13 @@ afterEach(async () => { for (const close of cleanups.splice(0)) await close(); }
 async function boot() {
   const asp = generateIdentityKeyPair();
   const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo' }, workerUrl: worker,
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS }, workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio', keyEpoch: 1 }, bot: { accountId: 'bot-1', token: `bot:${Math.random()}` },
     display: () => ({ agent: { enabled: false } }), authorize: () => true,
     isSessionLive: () => true, attachSessionLifecycle: () => undefined,
     diagnoseUnknown: vi.fn(async () => undefined), alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined });
+  allowSlowOriginRecording(runtime.service);
   runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }), ...fixtureOriginContentDedup(runtime.options.storage.stateDir) });
   let owned = true, supported = true;
   const invoke = vi.fn(async (child: Readonly<PreparedBrowserChild>): Promise<unknown> => {
@@ -48,6 +50,18 @@ async function boot() {
   return { runtime, executor, input, invoke, unown: () => { owned = false; }, drift: () => { supported = false; } };
 }
 describe('browser origin production outbox lifecycle', () => {
+  it('records browser automation terminally while preserving an actual reply', async () => {
+    const h = await boot();
+    const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.runtime.service.notificationGate = gate;
+    await expect(h.runtime.service.runAsAutomation('telegram-server', () => h.executor.send(h.input))).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(gate.store.counters().total).toBe(1);
+    expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
+    await h.runtime.service.runAsAutomation('telegram-server', () => notificationContext.run(verifiedReplyEnvelope('fixture-reply'), () => h.executor.send(h.input)));
+    expect(h.invoke).toHaveBeenCalledOnce();
+  });
+
   it('commits an in-flight browser receipt to the same healthy worker during recovery', async () => {
     const h = await boot(), originalStore = h.runtime.store;
     let entered!: () => void, release!: () => void;
@@ -145,7 +159,7 @@ describe('browser origin production outbox lifecycle', () => {
     h.runtime.browsers.set('operator-profile', { executor: h.executor, resolvePeer });
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config: { stateDir: h.runtime.options.storage.stateDir, port: 0, projectName: 'echo' },
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { stateDir: h.runtime.options.storage.stateDir, port: 0, projectName: 'echo' },
       telegramOrigin: h.runtime, sessionManager: {}, } as never));
     const payload = { text: h.input.text, destination: h.input.destination };
     const send = (body = payload, credential = token) => request(app).post('/telegram/browser/operator-profile/send')

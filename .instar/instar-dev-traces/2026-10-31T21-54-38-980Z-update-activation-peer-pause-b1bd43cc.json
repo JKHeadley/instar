@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "update-activation-peer-pause",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T21:54:38.980Z",
+  "artifactPath": "upgrades/side-effects/update-activation-peer-pause.md",
+  "artifactSha256": "c601c8fc201c9928f2036bc8fa7c357cece54d27acde362bd4bb8c1103e1e7ea",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/core/AutoUpdater.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/server/routes.ts",
+    "tests/e2e/update-apply-verification-hold-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/AutoUpdater-restart-holds.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/update-activation-peer-pause.md",
+    "upgrades/side-effects/update-activation-peer-pause.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible admission bug fix; 11-file size is mainly three test tiers and review/release documentation. No durable schema, config migration, or new merge authority; full-suite and exact-head verification remain required.",
+  "eli16Path": "docs/specs/local-verify-merge-authority.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/update-activation-peer-pause.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [2502],
+    "notes": "The updater cleared pendingUpdate after install before writing restart-requested.json. Peer admission read only pendingUpdate or durable restartDeferral, so a peer could accept work during that gap. M5 accepted PR #2381 just before its v1.3.1552 restart and lost the attempt."
+  }
+}

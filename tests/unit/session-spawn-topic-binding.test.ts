@@ -89,3 +89,54 @@ describe('session spawn topic binding', () => {
     expect(registry.topicToName['43003']).toBe('Observer 2');
   });
 });
+
+import { resolveTopicSpawnProfile } from '../../src/server/sessionSpawnTopicBinding.js';
+import type { ResolvedTopicProfile } from '../../src/core/TopicProfileResolver.js';
+
+describe('resolveTopicSpawnProfile (topic profile honoured at direct spawn)', () => {
+  const resolved = (over: Partial<ResolvedTopicProfile> = {}): ResolvedTopicProfile => ({
+    framework: 'claude-code',
+    model: 'claude-opus-5-5',
+    modelTier: null,
+    thinkingMode: undefined,
+    effort: undefined,
+    escalationOverride: 'inherit',
+    sources: { framework: 'pin', model: 'pin', thinkingMode: 'default', effort: 'default' },
+    notices: [],
+    ...over,
+  });
+  const resolverOf = (r: ResolvedTopicProfile) => ({ resolve: () => r });
+
+  it('applies the pinned framework + model when the request leaves them unset, and reports them as applied', () => {
+    const out = resolveTopicSpawnProfile({ resolver: resolverOf(resolved()), topicId: 7 });
+    expect(out.framework).toBe('claude-code');
+    expect(out.model).toBe('claude-opus-5-5');
+    expect(out.applied).toEqual({ framework: 'claude-code', model: 'claude-opus-5-5', modelTier: null, thinkingMode: null, effort: null });
+  });
+
+  it('an explicit request model wins and is what gets recorded', () => {
+    const out = resolveTopicSpawnProfile({ resolver: resolverOf(resolved()), topicId: 7, requestedModel: 'sonnet' });
+    expect(out.model).toBe('sonnet');
+    expect(out.applied?.model).toBe('sonnet');
+  });
+
+  it('does not put a claude pin model on an explicitly different framework', () => {
+    const out = resolveTopicSpawnProfile({ resolver: resolverOf(resolved()), topicId: 7, requestedFramework: 'codex-cli' });
+    expect(out.framework).toBe('codex-cli');
+    expect(out.model).toBeUndefined();
+    expect(out.applied).toEqual({ framework: 'codex-cli', model: null, modelTier: null, thinkingMode: null, effort: null });
+  });
+
+  it('a tier-shaped pin records the tier, not the concrete model', () => {
+    const out = resolveTopicSpawnProfile({ resolver: resolverOf(resolved({ modelTier: 'default' as never })), topicId: 7 });
+    expect(out.applied?.modelTier).toBe('default');
+    expect(out.applied?.model).toBeNull();
+  });
+
+  it('no topic / no resolver / a throwing resolver → request values only, nothing recorded', () => {
+    expect(resolveTopicSpawnProfile({ resolver: resolverOf(resolved()), requestedModel: 'opus' })).toEqual({ framework: undefined, model: 'opus', applied: null });
+    expect(resolveTopicSpawnProfile({ topicId: 7 })).toEqual({ framework: undefined, model: undefined, applied: null });
+    const throwing = { resolve: () => { throw new Error('boom'); } };
+    expect(resolveTopicSpawnProfile({ resolver: throwing, topicId: 7, requestedFramework: 'claude-code' }).applied).toBeNull();
+  });
+});

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T16:12:34.270Z",
+  "slug": "conversation-graph-removal-lease-holding",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 129,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphMemberLossActivation.ts",
+      "src/core/GraphMemberLossOwnedRole.ts",
+      "src/core/GraphNativeMemberLossStore.ts",
+      "src/core/GraphWitnessBootstrapStream.ts",
+      "src/core/GraphWitnessService.ts",
+      "src/core/GraphWitnessTypes.ts",
+      "src/server/GraphOwnerMemberLossExecution.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 44
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-driven action per attempt, with no new loop or trigger."
+  },
+  "verdict": "pass"
+}

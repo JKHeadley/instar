@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "quota-pause-awareness-companion",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-31T09:38:41.273Z",
+  "artifactPath": "upgrades/side-effects/quota-pause-awareness-companion.md",
+  "artifactSha256": "4d9b765c8ce00c80dea88e3cc6aadc22ed9b8f927205ecb0b6f22fda9d5fab1c",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-quotaPauseAwareness.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This adds conditional agent instruction text and an idempotent migration, without changing quota or scheduler decisions; revert is straightforward.",
+  "eli16Path": "docs/specs/quota-pause-awareness-companion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-pause-awareness-companion.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

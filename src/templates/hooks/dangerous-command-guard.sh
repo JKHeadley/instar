@@ -59,6 +59,10 @@ RISKY_PATTERNS=(
   "git push -f"
   "git reset --hard"
   "git clean -fd"
+  # Flags and global options can sit anywhere: a -q before the hard flag, git -C <path>, clean -xfd, push origin x -f.
+  "git +([^|;&]* +)?reset +([^|;&]* +)?--hard"
+  "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)"
+  "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"
   "DROP TABLE"
   "DROP DATABASE"
   "TRUNCATE"
@@ -99,7 +103,7 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 for pattern in "${RISKY_PATTERNS[@]}"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+  if echo "$INPUT" | grep -qiE "$pattern"; then
     # Allow the safe force-with-lease-to-own-branch case past the force-push patterns.
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue

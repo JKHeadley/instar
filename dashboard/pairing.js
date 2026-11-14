@@ -24,6 +24,8 @@
  * Same shape as mandates.js: pure renderers + createController({ doc, els, fetchImpl }).
  */
 
+import { verifiedDisplayName, uniqueNamedChoices } from './console/display-identity.js';
+
 const POLL_MS = 10_000;
 
 function esc(s) {
@@ -112,8 +114,7 @@ export function renderPairing(p) {
   const fp = esc(p.peerFp);
   const label = esc(STATE_LABEL[p.state] || p.state || 'Unknown');
   return `<div class="pair-card" data-pairing="${fp}">
-    <div class="pair-head"><strong>${esc(p.peerName || 'Unknown agent')}</strong> <span class="pair-state pair-state-${esc(p.state)}">${label}</span></div>
-    <div class="pair-meta">Agent ${fp.slice(0, 12)}…</div>
+    <div class="pair-head"><strong>${esc(verifiedDisplayName(p.peerName, p.peerFp) || 'Agent name unavailable')}</strong> <span class="pair-state pair-state-${esc(p.state)}">${label}</span></div>
   </div>`;
 }
 
@@ -254,8 +255,9 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
     const keep = els.forPeer.value;
     lastHtml.set('for', key);
     const opt = (fpValue, label) => { const o = doc.createElement('option'); o.value = fpValue; o.textContent = label; return o; };
-    els.forPeer.replaceChildren(opt('', 'Someone new'), ...peers.map((p) => opt(p.fp, `${p.name || 'Unknown agent'} (${p.fp.slice(0, 6)}…)`)));
-    if (peers.some((p) => p.fp === keep)) els.forPeer.value = keep;
+    const choices = uniqueNamedChoices(peers);
+    els.forPeer.replaceChildren(opt('', 'Someone new'), ...choices.map((p) => opt(p.fp, verifiedDisplayName(p.name, p.fp))));
+    if (choices.some((p) => p.fp === keep)) els.forPeer.value = keep;
   }
 
   async function makeInvite() {

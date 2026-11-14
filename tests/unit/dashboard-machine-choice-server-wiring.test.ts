@@ -39,9 +39,12 @@ describe('dashboard machine choice — server.ts wiring', () => {
     expect(ctxBlock).toContain('probeMachineReachable: (machineId) => (_dashboardProbeMachine ? _dashboardProbeMachine(machineId) : Promise.resolve(false))');
   });
 
-  it('the owner-side branch runs FIRST in onAccepted, only for a parsed object payload under a dashboard-create id', () => {
-    const at = src.indexOf('onAccepted: (cmd) => {');
-    const block = src.slice(at, at + 3000);
+  it('the dashboard branch precedes ordinary working-set delivery and requires its parsed payload and dashboard-create id', () => {
+    const at = src.indexOf('onAccepted: (cmd, sender, originalEnvelope) => {');
+    expect(at).toBeGreaterThan(-1);
+    const end=src.indexOf('workingSetPullCoordinator?.onTopicAccepted',at);
+    expect(end).toBeGreaterThan(at);
+    const block = src.slice(at,end+100);
     expect(block).toContain('parseDashboardCreatePayload(cmd.payload)');
     expect(block).toContain('cmd.messageId.startsWith(`dashboard-create:${cmd.session}:`)');
     expect(block.indexOf('_runDashboardCreateStart')).toBeLessThan(block.indexOf('workingSetPullCoordinator'));

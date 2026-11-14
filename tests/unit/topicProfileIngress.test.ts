@@ -16,14 +16,11 @@ import {
 
 describe('parseProfileTrigger — the closed grammar (§10.1, Tier 0)', () => {
   // Framework / model / thinking CHANGE recognition NO LONGER lives here — it was
-  // the keyword-intent audit's offender #1 (2026-07-03) and is now inferred by the
-  // ProfileIntentClassifier (LLM over the message + recent conversation), per the
-  // constitutional standard "Intelligence Infers, Keywords Only Guard"
-  // (docs/specs/keyword-intent-conversions-1-and-3.md, conversion #1). The parser
-  // returns null for those phrasings so the server-side ingress routes them to the
-  // classifier instead. Behavior coverage lives in ProfileIntentClassifier.test.ts,
-  // profile-intent-discrimination.test.ts, and profile-intent-ingress-path.test.ts.
-  it('no longer keyword-matches framework switches (moved to the LLM classifier)', () => {
+  // the keyword-intent audit's offender #1 (2026-07-03), per the constitutional
+  // standard "Intelligence Infers, Keywords Only Guard". The parser returns null
+  // for those phrasings so the message passes through to the agent, which drives
+  // the explicit propose/write routes itself (retire-staged-features-2026-10-25).
+  it('no longer keyword-matches framework switches (passes through to the agent)', () => {
     expect(parseProfileTrigger('use codex here')).toBeNull();
     expect(parseProfileTrigger('Use Claude here.')).toBeNull();
     expect(parseProfileTrigger('switch this topic to codex')).toBeNull();

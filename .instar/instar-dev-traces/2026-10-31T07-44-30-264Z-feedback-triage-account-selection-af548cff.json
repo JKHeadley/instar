@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-triage-account-selection",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-31T07:44:30.264Z",
+  "artifactPath": "upgrades/side-effects/feedback-triage-account-selection.md",
+  "artifactSha256": "c6905190ba9dab1ac6eaef6f39b16706bdcf26a9f4c961e5924eb305c012cdce",
+  "specPath": "docs/specs/feedback-triage-pool-quota.md",
+  "coveredFiles": [
+    "src/feedback-factory/triage/FeedbackTriageService.ts",
+    "src/monitoring/QueuePace.ts",
+    "src/monitoring/QueuePaceTuner.ts",
+    "tests/unit/feedback-factory/triage-service.test.ts",
+    "tests/unit/queue-pace-tuner.test.ts",
+    "tests/unit/queue-pace.test.ts",
+    "upgrades/side-effects/feedback-triage-account-selection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Cross-system quota admission and queue pacing affect subscription spend and production triage decisions; approved account-selection spec and independent Astra review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

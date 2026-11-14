@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-11T14:40:29.199Z",
+  "slug": "cmt-1610-interrupted-script-run-hold",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

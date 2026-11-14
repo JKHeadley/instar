@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "failover-reanswer",
+  "sessionId": "cb043ed0-7e1c-4bb9-b855-1ca00ef9c5b7",
+  "timestamp": "2026-11-05T03:58:39.825Z",
+  "artifactPath": "upgrades/side-effects/failover-reanswer.md",
+  "artifactSha256": "e4b9cfc5548f1be784c8dcb7d628c4e2906373bd1ecff010f7c6a77dd8292a7c",
+  "coveredFiles": [
+    "docs/specs/failover-reanswer.eli16.md",
+    "src/core/WriteDomainRegistry.ts",
+    "upgrades/side-effects/failover-reanswer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-on correction to the same reversible incident fix: declare the new loopback repair route as a machine-local write; no migration or new external effect.",
+  "eli16Path": "docs/specs/failover-reanswer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/failover-reanswer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

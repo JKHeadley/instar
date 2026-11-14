@@ -112,8 +112,22 @@ export class SessionMaintenanceRunner {
       'skill-telemetry.jsonl',
     ];
 
-    for (const filename of jsonlFiles) {
-      const filepath = path.join(this.stateDir, filename);
+    const candidates = jsonlFiles.map((filename) => path.join(this.stateDir, filename));
+
+    // Skill-learning sentinel slice 0 (decision 18): the telemetry hook appends
+    // per machine to `skill-telemetry/<machineId>.jsonl`; every `*.jsonl` in that
+    // directory rotates on the same threshold and the same in-place trim as the
+    // flat list. The legacy flat `skill-telemetry.jsonl` stays in the list above.
+    const telemetryDir = path.join(this.stateDir, 'skill-telemetry');
+    try {
+      for (const entry of fs.readdirSync(telemetryDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.jsonl')) candidates.push(path.join(telemetryDir, entry.name));
+      }
+    } catch {
+      // @silent-fallback-ok — no directory yet (hook never ran here) or unreadable; nothing to rotate
+    }
+
+    for (const filepath of candidates) {
       try {
         if (!fs.existsSync(filepath)) continue;
         const stat = fs.statSync(filepath);

@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "operator-links-wait-for-tunnel",
+  "sessionId": "8d6a2926-13de-489c-8c9b-8365ea44255d",
+  "timestamp": "2026-11-10T05:00:31.399Z",
+  "artifactPath": "upgrades/side-effects/operator-links-wait-for-tunnel.md",
+  "artifactSha256": "14e392b7840b8e11188516fbbeb249796bee9891827980c8869431bda23d4caa",
+  "coveredFiles": [
+    "docs/specs/operator-links-wait-for-tunnel.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SubscriptionReloginApprovalReminder.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/feedback-factory/triage/FeedbackTriageService.ts",
+    "src/feedback-factory/triage/buildFeedbackTriage.ts",
+    "src/server/AgentServer.ts",
+    "src/server/dashboardPaths.ts",
+    "src/server/routes.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/triage-service.test.ts",
+    "tests/unit/operator-link-origin.test.ts",
+    "tests/unit/subscription-relogin-approval-reminder.test.ts",
+    "upgrades/next/operator-links-wait-for-tunnel.md",
+    "upgrades/side-effects/operator-links-wait-for-tunnel.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bug fix: operator notice links wait for the tunnel's public URL instead of sending localhost; shared helper, no state or config; a revert fully undoes it.",
+  "eli16Path": "docs/specs/operator-links-wait-for-tunnel.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/operator-links-wait-for-tunnel.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

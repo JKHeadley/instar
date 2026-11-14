@@ -1,0 +1,59 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T07:23:16.464Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "d2ec6ebb1bb56527c1899b7dd3b6d553eb92eef3d9dfa56b30cb533060f2e2ae",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.eli16.md",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+    "src/core/DesktopAccessAudit.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/PinAttemptStore.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/desktopTransport.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/remote-desktop-delivery-parity.test.ts",
+    "upgrades/side-effects/native-remote-desktop-first-mac.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Privileged remote desktop admission and live OS input require full security review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "approved",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "astra-ux-constitution",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/blocker-handoff-across-machines-and-surfaces-convergence.md",
+      "iterations": 6,
+      "verified": false
+    }
+  }
+}

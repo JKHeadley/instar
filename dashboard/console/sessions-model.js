@@ -6,6 +6,16 @@
 // answers in words, and the WebSocket frames the terminal sends. Nothing here touches
 // the DOM.
 
+import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
+import { sessionTopicName } from './topic-names.js';
+import { unreachableClause } from './unreachable-model.js';
+
+/**
+ * What a person reads for a "door" (an AI tool a session runs on: Claude Code, Codex...). One place,
+ * so the word can change without touching the API or config, which keep `framework`.
+ */
+export const DOOR = { word: 'engine', Word: 'Engine', words: 'engines' };
+
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")
 export const HISTORY_FIRST = 2000;      // lines the server sends on subscribe
@@ -52,8 +62,8 @@ export function sessionKey(s) {
 }
 
 /** The name the operator knows: the Telegram topic name when there is one. */
-export function sessionTitle(s) {
-  const n = String((s && (s.platformName || s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
+export function sessionTitle(s, topicNames = {}) {
+  const n = String(sessionTopicName(s, topicNames) || (s && (s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
   return n.length > 80 ? n.slice(0, 77) + '…' : n || 'A session';
 }
 
@@ -92,14 +102,79 @@ export function mergeSessions(poolData, wsSessions) {
 /** One machine's name, from the pool roster, never a raw id when a name exists. */
 function nicknameOf(pool, machineId) {
   const m = (pool && Array.isArray(pool.machines) ? pool.machines : []).find((x) => x.machineId === machineId);
-  return (m && m.nickname) || machineId || 'another machine';
+  return verifiedDisplayName(m && m.nickname, machineId) || 'another machine';
 }
 
 /**
  * The whole list. sessionsRes is the GET /sessions?scope=pool read; ws is the live
  * socket's list for this machine (null when the socket has not sent one).
  */
-export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {}) {
+/** The message a session receives for attached files: the operator's text, then one
+ *  line per file naming where it was saved, so the session can open it. */
+export function attachmentMessage(text, paths) {
+  const lines = paths.map((p) => `[Attached file from the dashboard: ${p} (read it to see what I sent)]`);
+  return [String(text || '').trim(), ...lines].filter(Boolean).join('\n');
+}
+
+/** `triggeredBy` on a session the operator created from the dashboard's New session box. */
+export const OPERATOR_CREATED = 'dashboard-operator';
+
+/** Internal = machinery the operator did not start: scheduled jobs, and helper sessions
+ *  the agent spawned for itself (no chat attached, not created from the dashboard). A
+ *  conversation (Telegram, Slack, ...) is never internal. Hidden by default, one toggle away. */
+export function isInternalSession(s) {
+  if (!s) return false;
+  if (s.jobSlug || s.type === 'job') return true;
+  // An app conversation's session reports no chat platform, but it is a conversation.
+  if (typeof s.conversationRef === 'string' && s.conversationRef) return false;
+  return (s.platform || 'headless') === 'headless' && s.triggeredBy !== OPERATOR_CREATED;
+}
+
+/** The History read for a session: its conversation record, a page at a time. A session
+ *  on another machine is read through this machine, which asks the owner. */
+export const HISTORY_PAGE = 150;
+export function historyUrl(s, before = null) {
+  const q = new URLSearchParams({ limit: String(HISTORY_PAGE) });
+  if (before != null) q.set('before', String(before));
+  if (s.remote && s.machineId) q.set('machineId', s.machineId);
+  return `/sessions/${encodeURIComponent(s.tmuxSession)}/transcript?${q}`;
+}
+
+/** After a session's own record runs out, History continues into its topic's earlier
+ *  messages (earlier sessions of the same conversation), a page at a time. */
+export const TOPIC_HISTORY_PAGE = 50;
+export function topicOf(s) {
+  const n = Number(s && s.platform === 'telegram' ? s.platformId : NaN);
+  return Number.isSafeInteger(n) && n > 1 ? n : null;
+}
+export function topicHistoryUrl(topicId, beforeMs) {
+  const q = new URLSearchParams({ limit: String(TOPIC_HISTORY_PAGE), scope: 'pool', before: String(Math.floor(beforeMs)) });
+  return `/telegram/topics/${encodeURIComponent(topicId)}/messages?${q}`;
+}
+/** A topic message as a History entry: who, when, what. */
+export function topicHistoryEntry(m) {
+  if (!m || typeof m.text !== 'string' || !m.text.trim()) return null;
+  const at = Date.parse(m.timestamp);
+  return { role: m.fromUser ? 'user' : 'assistant', text: m.text, at: Number.isFinite(at) ? m.timestamp : null, atMs: Number.isFinite(at) ? at : null };
+}
+
+/** Words for a failed History read: never "no history" when the read failed. */
+export function historyErrorWords(res) {
+  const d = (res && res.data) || {};
+  if (d.reason === 'no-transcript') return 'This session has no conversation record yet.';
+  if (d.reason === 'peer-unreachable' || d.reason === 'peer-unknown') return `Can’t tell: ${d.error || 'the session’s machine did not answer'}.`;
+  const why = d.error || (res && res.reason) || (res && res.status ? `the server answered ${res.status}` : 'the server could not be reached');
+  return `Can’t tell: ${String(why).replace(/\.$/, '')}.`;
+}
+
+/** A user line from a chat bridge carries a routing prefix; show only what was said. */
+export function historyText(e) {
+  let t = String((e && e.text) || '');
+  if (e && e.role === 'user') t = t.replace(/^\[(telegram|slack|whatsapp):[^\]]*\]\s*/, '');
+  return t;
+}
+
+export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {}, showInternal = false } = {}) {
   if (!sessionsRes || !sessionsRes.ok) return { ok: false, reason: `Couldn’t list sessions: ${(sessionsRes && sessionsRes.reason) || 'no answer'}.` };
   const data = sessionsRes.data || {};
   if (!Array.isArray(data.sessions)) return { ok: false, reason: 'The session list answered without sessions.' };
@@ -108,41 +183,48 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
   const machines = Array.isArray(pool.machines) ? pool.machines : [];
   const multi = pool.enabled === true && machines.length >= 2;
   const { local, remote } = mergeSessions(data, ws);
-  const dupNames = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : []).flatMap((d) => (Array.isArray(d.sessions) ? d.sessions : [])));
-  const rows = [...local.map((s) => ({ ...s, machineNickname: s.machineNickname || selfName })), ...remote].map((s) => {
+  const duplicateConversations = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : [])
+    .filter((d) => typeof d.platform === 'string' && d.platformId != null)
+    .map((d) => `${d.platform}:${String(d.platformId)}`));
+  const allRows = [...local.map((s) => ({ ...s, machineNickname: s.machineNickname || selfName })), ...remote].map((s) => {
     const a = activity(s, now);
-    const duplicate = s.duplicateTopic === true || dupNames.has(s.name);
-    const machine = s.machineNickname || (s.remote ? nicknameOf(pool, s.machineId) : 'This machine');
+    const duplicate = s.duplicateTopic === true || (typeof s.platform === 'string' && s.platformId != null
+      && duplicateConversations.has(`${s.platform}:${String(s.platformId)}`));
+    const machine = verifiedDisplayName(s.machineNickname, s.machineId) || (s.remote ? nicknameOf(pool, s.machineId) : 'This machine');
     const started = Date.parse(s.startedAt);
     const running = Number.isFinite(started) ? spanWords(now - started) : null;
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
     return {
-      key: sessionKey(s), title: sessionTitle(s), sub, end: a.end, activity: a.state, duplicate,
+      key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate, internal: isInternalSession(s),
+      // warning-path: row
       tone: duplicate ? 'bad' : a.state === 'quiet' ? 'attn' : a.state === 'no-reading' ? 'unknown' : null,
       machine, remote: s.remote === true, model: modelWords(s.model),
-      session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
+      session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), internal: isInternalSession(s), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
     };
   });
   // Most recently active first inside each group.
   const lastOf = (r) => Date.parse(r.session.telemetry && r.session.telemetry.lastActivity) || Date.parse(r.session.startedAt) || 0;
-  rows.sort((x, y) => lastOf(y) - lastOf(x));
+  allRows.sort((x, y) => lastOf(y) - lastOf(x));
+  const hiddenInternal = showInternal ? 0 : allRows.filter((r) => r.internal).length;
+  const internalCount = allRows.filter((r) => r.internal).length;
+  const rows = showInternal ? allRows : allRows.filter((r) => !r.internal);
   const needsLook = rows.filter((r) => r.duplicate || r.activity === 'quiet');
   const working = rows.filter((r) => !needsLook.includes(r));
   const failedIds = new Set((Array.isArray(pool.failed) ? pool.failed : []).map((f) => f.machineId));
+  // How long it has been out of reach and whether anything is fixing it (CMT-1541).
+  const failedById = new Map((Array.isArray(pool.failed) ? pool.failed : []).map((f) => [f.machineId, f]));
   const unanswered = [...failedIds].map((id) => {
     const m = machines.find((x) => x.machineId === id);
-    const es = m && m.emptyState;
-    const last = es && es.lastSeen ? spanWords(now - Date.parse(es.lastSeen)) : null;
-    return { machineId: id, name: nicknameOf(pool, id), words: last && last !== 'now' ? `not answering (last seen ${last} ago)` : 'not answering' };
+    return { machineId: id, name: nicknameOf(pool, id), words: unreachableClause((m && m.reach) || null, failedById.get(id), now) };
   });
   const idleMachines = multi ? machines.filter((m) => m.sessionCount === 0 && !failedIds.has(m.machineId)).map((m) => ({
-    machineId: m.machineId, name: m.nickname || m.machineId || 'unnamed machine',
+    machineId: m.machineId, name: verifiedDisplayName(m.nickname, m.machineId) || 'another machine',
     words: m.emptyState && m.emptyState.text ? (m.emptyState.kind === 'online' ? 'answering, nothing running' : m.emptyState.text) : 'state unknown',
     ok: Boolean(m.emptyState && m.emptyState.kind === 'online'),
   })) : [];
   const machineCount = multi ? machines.length : 1;
   return {
-    ok: true, rows, needsLook, working, idleMachines, unanswered, multi, selfName,
+    ok: true, rows, allRows, hiddenInternal, internalCount, showInternal, needsLook, working, idleMachines, unanswered, multi, selfName,
     selfMachineId: pool.selfMachineId || null,
     counts: { running: rows.length, quiet: rows.filter((r) => r.activity === 'quiet').length, duplicate: rows.filter((r) => r.duplicate).length, machines: machineCount, answering: machineCount - unanswered.length },
   };
@@ -160,14 +242,18 @@ export function sessionsHeadline(m) {
     tail = ` One has been quiet for ${q ? q.end.replace(' min', ' minutes') : 'a while'}.`;
   } else if (quiet > 1) tail = ` ${quiet} have been quiet for 10+ minutes.`;
   else if (running === 0 && m.unanswered.length === 0) tail = m.multi ? ' Machines: all answering.' : '';
+  // warning-path: pageHead
   return { text: lead + tail, tone: duplicate ? 'bad' : quiet ? 'attn' : 'ok' };
 }
 
 /** At most four facts. "Waiting on you" is omitted: sessions do not report it yet. */
 export function sessionsFacts(m) {
   if (!m || !m.ok) return [];
+  // warning-path: pageHead
   const f = [{ n: m.counts.running, label: 'running', tone: null }, { n: m.counts.quiet, label: 'quiet 10+ min', tone: m.counts.quiet ? 'attn' : null }];
+  // warning-path: pageHead
   if (m.counts.duplicate) f.push({ n: m.counts.duplicate, label: 'on two machines', tone: 'bad' });
+  // warning-path: pageHead
   if (m.multi) f.push({ n: `${m.counts.answering} of ${m.counts.machines}`, label: 'machines answering', tone: m.unanswered.length ? 'attn' : null });
   return f;
 }
@@ -254,8 +340,8 @@ export function doorModelWords(options, framework, model) {
 /** The regime note: what a model choice actually does on this agent. */
 export function regimeWords(options) {
   const r = options && options.regime;
-  if (r === 'dry-run') return 'On this agent a chosen model is recorded as intent, not applied; the door still switches.';
-  if (r === 'disabled') return 'On this agent the door switch works, but model choice is turned off; a model will be refused.';
+  if (r === 'dry-run') return `On this agent a chosen model is recorded as intent, not applied; the ${DOOR.word} still switches.`;
+  if (r === 'disabled') return `On this agent the ${DOOR.word} switch works, but model choice is turned off; a model will be refused.`;
   return null;
 }
 
@@ -265,59 +351,85 @@ export function machineChoices(poolRes) {
   const machines = data && Array.isArray(data.machines) ? data.machines : [];
   if (machines.length < 2) return null;
   const self = data.selfMachineId || null;
+  const uniqueMachines = new Set(uniqueNamedChoices(machines, (m) => m.machineId, (m) => m.nickname).map((m) => m.machineId));
   const out = [{ value: '', label: 'Automatic', disabled: false }];
   for (const m of machines) {
     if (!m || typeof m.machineId !== 'string') continue;
-    let label = (typeof m.nickname === 'string' && m.nickname) || m.machineId;
+    let label = verifiedDisplayName(m.nickname, m.machineId) || 'Machine name unavailable';
     if (m.machineId === self) label += ' (this machine)';
     const offline = m.online !== true;
     const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
     if (offline) { const ls = m.liveness && m.liveness.state; label += ls === 'unreachable' ? ' (not answering)' : ls === 'stale' ? ' (not checked recently)' : ' (no recent contact)'; }
     else if (clockOff) label += ' (clock out of step)';
     else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
-    out.push({ value: m.machineId, label, disabled: offline || clockOff, self: m.machineId === self });
+    out.push({ value: m.machineId, label, disabled: offline || clockOff || !uniqueMachines.has(m.machineId), self: m.machineId === self });
   }
   return { choices: out, selfMachineId: self };
+}
+
+/**
+ * An id for one intended create, kept across retries until a definite answer. The server's request
+ * store needs `<epoch ms>-<uuid v4>` (the phone's format), so a retry finds the first create.
+ */
+export function newRequestId(now = Date.now()) {
+  let uuid = '';
+  try { if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') uuid = globalThis.crypto.randomUUID(); } catch { /* fall through */ }
+  if (!uuid) {
+    const h = () => Math.floor(Math.random() * 16).toString(16);
+    const r = (n) => Array.from({ length: n }, h).join('');
+    uuid = `${r(8)}-${r(4)}-4${r(3)}-${'89ab'[Math.floor(Math.random() * 4)]}${r(3)}-${r(12)}`;
+  }
+  return `${String(now).padStart(13, '0')}-${uuid}`;
 }
 
 export const PLATFORMS = [
   { value: 'auto', label: 'Automatic' },
   { value: 'telegram', label: 'Telegram topic' },
   { value: 'slack', label: 'Slack' },
-  { value: 'headless', label: 'No chat (terminal only)' },
+  { value: 'app', label: 'Instar app conversation' },
+  { value: 'headless', label: 'No conversation (terminal only)' },
 ];
 
-/** Door and model apply to Telegram topics only (v1); so does the machine choice. */
+/** Engine and model can be picked for a Telegram topic or an app conversation (session-conversation-for-every-session §2.3). */
 export function platformAllowsDoor(platform) { return platform !== 'headless' && platform !== 'slack'; }
+/** A new session's machine choice stays Telegram-only: an app conversation starts on the lease holder and moves afterwards. */
+export function platformAllowsMachine(platform) { return platform === 'auto' || platform === 'telegram'; }
 
 /**
  * The exact POST /sessions/create body. An unchanged door/model pick sends nothing,
  * so the server seeds its own default, exactly as the legacy modal does.
  */
-export function createBody({ name, platform = 'auto', framework = '', model = '', machine = '' }, options) {
+export function createBody({ name, platform = 'auto', framework = '', model = '', machine = '', requestId = '' }, options) {
   const n = String(name || '').trim();
   if (!n) return { ok: false, problems: ['Give it a name.'] };
   const body = { name: n, headless: platform === 'headless' };
   if (platform !== 'auto') body.platform = platform;
+  // A repeat of the same create (a double tap, a retry) answers the first one, never a second conversation.
+  if (platform === 'app' || platform === 'auto') body.requestId = requestId || newRequestId();
   if (platformAllowsDoor(platform) && framework) {
     const def = options && options.newTopicDefault;
     const pick = { framework, model: model || null };
     const differs = !def || !def.framework || def.framework !== pick.framework || (def.model || null) !== pick.model;
     if (differs) { body.framework = pick.framework; body.model = pick.model; }
   }
-  if (platformAllowsDoor(platform) && machine) body.machine = machine;
+  if (platformAllowsMachine(platform) && machine) body.machine = machine;
   return { ok: true, body };
 }
 
 /** The create answer in words: started, starting elsewhere, unsettled, or refused. */
 export function createResultWords(status, data, name) {
   const d = data || {};
+  const machineName = verifiedDisplayName(d.machine?.nickname, d.machine?.machineId) || 'the chosen machine';
   if (!(status >= 200 && status < 300)) return { ok: false, text: d.error || d.message || (status ? `Not created: the server answered ${status}.` : 'Not created: the server could not be reached.') };
   const where = d.profile ? ` on ${d.profile.label}${d.profile.model ? ' · ' + modelOptionWords(d.profile.model) : ''}` : '';
   if (d.ownership === 'superseded' || d.ownership === 'not-confirmed') return { ok: true, warn: true, text: d.error || `“${name}” was created, but which machine owns it is not settled yet. Send it a message.` };
-  if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${d.machine ? d.machine.nickname : 'the chosen machine'}.` };
-  if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${d.machine.nickname}.` };
-  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : ' with no chat'}${d.machine ? ` on ${d.machine.nickname}` : ''}.` };
+  if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${machineName}.` };
+  if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${machineName}.` };
+  if (d.state === 'in-progress') return { ok: true, warn: true, text: d.message || `“${name}” is still being created.` };
+  // session-conversation-for-every-session §2.5: an app conversation is opened in the app.
+  if (d.platform === 'app' && d.started === false) return { ok: true, warn: true, text: d.message || `“${name}” was created as an app conversation, but its session didn’t start yet. Its first message will start it.` };
+  if (d.platform === 'app') return { ok: true, text: `Started “${d.name || name}”. Open it in the app’s conversations to talk to it.` };
+  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : d.slackChannelId ? ' with a Slack channel' : ' with no conversation'}${d.machine ? ` on ${machineName}` : ''}.` };
 }
 
 /** The new-topic default in words, for the "Change the default" line. */
@@ -336,15 +448,33 @@ export function profileSourceWords(profile) {
   return 'the default';
 }
 
+/**
+ * Where a session's conversation keeps its engine and model (session-swap-any-conversation §2):
+ * `telegram:N` → `N`, `app:<key>` → itself, `slack:<team>:<channel>[:<thread>]` → `slack:<channel>[:<thread>]`.
+ * A row without a reference falls back to its Telegram topic. Null: no conversation.
+ */
+export function profileKeyOf(s) {
+  const ref = s && typeof s.conversationRef === 'string' ? s.conversationRef : null;
+  if (ref) {
+    let m = /^telegram:([1-9][0-9]{0,15})$/.exec(ref);
+    if (m) return m[1];
+    if (/^app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(ref)) return ref;
+    m = /^slack:(?:_|T[A-Z0-9]+):([CDG][A-Z0-9]+)(?::(\d{10}\.\d{6}))?$/.exec(ref);
+    if (m) return m[2] ? `slack:${m[1]}:${m[2]}` : `slack:${m[1]}`;
+    return null;
+  }
+  return s && s.platform === 'telegram' && s.platformId != null && /^[1-9][0-9]{0,15}$/.test(String(s.platformId)) ? String(s.platformId) : null;
+}
+
 /** A door switch has landed only when the session list shows the LAUNCHED model. */
 export function switchLanded(sessions, job) {
   if (!Array.isArray(sessions) || !job) return null;
-  return sessions.find((x) => String(x.platformId) === String(job.topicId) && Date.parse(x.startedAt) >= job.since - 1000 && (job.model === null || x.model === job.model)) || null;
+  return sessions.find((x) => profileKeyOf(x) === String(job.topicId) && Date.parse(x.startedAt) >= job.since - 1000 && (job.model === null || x.model === job.model)) || null;
 }
 
-/** A Telegram session on this machine can switch its door; others keep the label. */
+/** A session on this machine that serves a conversation (Telegram, app or Slack) can switch its engine. */
 export function canSwitchDoor(s) {
-  return Boolean(s && !s.remote && s.platform === 'telegram' && s.platformId != null);
+  return Boolean(s && !s.remote && profileKeyOf(s) !== null);
 }
 
 // ── Terminal ─────────────────────────────────────────────────────────────

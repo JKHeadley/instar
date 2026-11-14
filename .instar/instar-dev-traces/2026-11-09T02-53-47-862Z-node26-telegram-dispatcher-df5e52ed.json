@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "node26-telegram-dispatcher",
+  "sessionId": "a5f72d13-e1f2-42e6-92e0-9a1dd69be018",
+  "timestamp": "2026-11-09T02:53:47.862Z",
+  "artifactPath": "upgrades/side-effects/node26-telegram-dispatcher.md",
+  "artifactSha256": "f1faa4592878d6f6f95cc629afb6a1f94fe0268665e5b0334427ece12f719370",
+  "coveredFiles": [
+    "docs/specs/node26-telegram-dispatcher.eli16.md",
+    "src/messaging/telegram-egress.ts",
+    "tests/unit/telegram-egress-dispatcher-rejection.test.ts",
+    "upgrades/next/node26-telegram-dispatcher.md",
+    "upgrades/side-effects/node26-telegram-dispatcher.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-file transport fallback on one exact pre-network error; no gate, state or config; a revert fully undoes it.",
+  "eli16Path": "docs/specs/node26-telegram-dispatcher.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/node26-telegram-dispatcher.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

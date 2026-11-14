@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "feedback-confined-timeout",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T14:45:24.457Z",
+  "artifactPath": "upgrades/side-effects/feedback-confined-timeout.md",
+  "artifactSha256": "ab3290f81d5c5385254899be59241051ada1d63b38a6e68b3a5e6942a3248172",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/ConfinedRunner.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/feedback-confined-timeout.eli16.md",
+    "upgrades/side-effects/feedback-confined-timeout.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This changes a safety resource bound for confined executor commands and amends the approved execution spec; independent review and full three-tier verification are required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "feedback_gate_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/feedback-triage-and-execution-convergence.md",
+      "iterations": 10,
+      "verified": true
+    }
+  }
+}

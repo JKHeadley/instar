@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "job-supervision-live-hold",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-30T21:52:36.693Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-live-hold.md",
+  "artifactSha256": "cda29d346e6bb2c77eb531f0b74df60cd2aa7fa10f17f1e932088ec20680102d",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "docs/specs/job-result-supervision-v2-joined-test-agent-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Record the complete green local suite for the joined test-agent gate without changing runtime behavior.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-28T04:55:09.601Z",
+  "slug": "job-result-supervision-v2",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobSupervisionStore.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

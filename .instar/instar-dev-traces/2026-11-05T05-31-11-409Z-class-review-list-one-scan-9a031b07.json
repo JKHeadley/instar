@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "class-review-list-one-scan",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T05:31:11.409Z",
+  "artifactPath": "upgrades/side-effects/class-review-list-one-scan.md",
+  "artifactSha256": "0cb7c829dbe0f1d778c02f0b8a7e001b071d5ec7faa7fd7fa318b0a02c409a5c",
+  "coveredFiles": [
+    "docs/specs/class-review-list-one-scan.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ReplicatedPeerStreamReader.ts",
+    "src/monitoring/ClassReviewStore.ts",
+    "tests/unit/correction-class-review.test.ts",
+    "upgrades/next/class-review-list-one-scan.md",
+    "upgrades/side-effects/class-review-list-one-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path speed fix; same merge code; a revert undoes it.",
+  "eli16Path": "docs/specs/class-review-list-one-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/class-review-list-one-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Reduces repeated reads; adds no loop or action."
+  }
+}

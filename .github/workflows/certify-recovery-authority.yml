@@ -1,0 +1,82 @@
+name: Certify reviewed recovery authority
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Approved request folder under docs/recovery/requests on main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: certify-recovery-authority
+  cancel-in-progress: false
+
+jobs:
+  certify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate public reviewed request paths
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+        shell: bash
+        run: |
+          if [[ ! "$REQUEST_ID" =~ ^[a-z0-9][a-z0-9_-]{0,80}$ ]]; then
+            echo 'A reviewed request folder on main is required.' >&2
+            exit 1
+          fi
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const base=path.resolve('docs/recovery/requests',process.env.REQUEST_ID);
+          for(const file of ['certificate-request.json','approved-review.json']) {
+            const target=path.join(base,file),stat=fs.lstatSync(target);
+            if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536||fs.realpathSync(target)!==target)throw Error('Public reviewed request must be a regular repository file.');
+          }
+          JS
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build issuer without signing credentials
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts
+          node node_modules/typescript-native/bin/tsc --project tsconfig.relay.json
+          node scripts/package-recovery-root.mjs
+
+      - name: Issue only the explicitly reviewed agent certificate
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+          INSTAR_RECOVERY_CERTIFICATION_PRIVATE_KEY_PEM: ${{ secrets.INSTAR_RECOVERY_CERTIFICATION_KEY_A9543A3096A69941 }}
+        shell: bash
+        run: |
+          if [[ -z "$INSTAR_RECOVERY_CERTIFICATION_PRIVATE_KEY_PEM" ]]; then
+            echo 'The scoped recovery certification authority is unavailable.' >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/recovery-certificate"
+          node scripts/certify-recovery-authority.mjs \
+            "docs/recovery/requests/$REQUEST_ID/certificate-request.json" \
+            "docs/recovery/requests/$REQUEST_ID/approved-review.json" \
+            "$RUNNER_TEMP/recovery-certificate/certificate.json"
+
+      - name: Publish public certificate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-certificate-${{ github.run_id }}
+          path: ${{ runner.temp }}/recovery-certificate/certificate.json
+          if-no-files-found: error
+          retention-days: 14

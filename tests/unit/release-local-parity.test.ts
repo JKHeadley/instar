@@ -61,7 +61,19 @@ describe('release-local mirrors publish.yml', () => {
     expect(local).toContain('`chore: release v${VERSION} [skip ci]`');
     expect(workflow).toContain('for attempt in 1 2 3 4 5');
     expect(local).toContain('maxAttempts = 5');
+    expect(workflow).toContain('git push origin HEAD:main');
+    expect(workflow).not.toContain('git push origin main');
     expect(workflow).toContain('git tag "v${{ steps.bump.outputs.version }}"');
+    expect(workflow).toContain('git -c merge.renames=false rebase origin/main');
+    // CI can race a concurrent code merge. Its tag must stay on the exact
+    // release cut that npm received, even if main needs a later rebase.
+    expect(workflow.indexOf('git tag "v${{ steps.bump.outputs.version }}"'))
+      .toBeLessThan(workflow.indexOf('git -c merge.renames=false rebase origin/main'));
+    expect(workflow.indexOf('git push origin "v${{ steps.bump.outputs.version }}"'))
+      .toBeLessThan(workflow.indexOf('git push origin HEAD:main'));
+    expect(local).toContain("['-c', 'merge.renames=false', 'rebase', `${remote}/main`]");
+    // The local default has a stricter atomic path. Its explicit
+    // --keep-tag-on-published recovery path mirrors the CI race behavior.
     expect(local).toContain("['push', '--atomic', remote, 'HEAD:main', tag]");
   });
 

@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-03T02:16:34.882Z",
+  "slug": "boot-queued-reply-origin-label",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/pending-relay-store.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 180,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/pending-relay-store.ts",
+      "src/messaging/telegram-origin/OriginAttestation.ts",
+      "src/messaging/telegram-origin/OriginLegacy.ts",
+      "src/messaging/telegram-origin/OriginSessionRegistry.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/templates/scripts/telegram-reply.sh"
+    ],
+    "addedLines": 158,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

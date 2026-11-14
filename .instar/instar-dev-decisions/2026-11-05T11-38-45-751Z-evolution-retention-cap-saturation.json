@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-05T11:38:45.751Z",
+  "slug": "evolution-retention-cap-saturation",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/EvolutionArchive.ts",
+      "src/core/EvolutionManager.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Archive sync durably reserves each attempt and parks after six unchanged failures; runtime ratchet checks N/2N and reconstruction."
+    },
+    "component": "EvolutionArchiveSync"
+  },
+  "verdict": "blocked"
+}

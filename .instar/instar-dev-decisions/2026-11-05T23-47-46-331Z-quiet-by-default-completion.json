@@ -1,0 +1,63 @@
+{
+  "ts": "2026-11-05T23:47:46.331Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/threadline/peerHomebaseRelay.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 31,
+  "loc": 413,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-notification-selectivity.mjs",
+      "src/commands/server.ts",
+      "src/core/ClaudeKeyHealth.ts",
+      "src/core/MentorVisibleEcho.ts",
+      "src/core/ScopeAccretionRatifier.ts",
+      "src/core/SpendAlertResolver.ts",
+      "src/core/WindowRunCadenceExecutor.ts",
+      "src/core/WindowRunLivenessAuthority.ts",
+      "src/core/claudeKeyRecovery.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/feedback-factory/triage/buildFeedbackTriage.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/NotificationBatcher.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/notificationStampers.ts",
+      "src/messaging/shared/CrossPlatformAlerts.ts",
+      "src/messaging/telegram-origin/OriginDeterministicSend.ts",
+      "src/messaging/telegramSendSideComposition.ts",
+      "src/monitoring/BurnAlertDelivery.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/monitoring/SentinelNotifier.ts",
+      "src/monitoring/SessionMonitor.ts",
+      "src/monitoring/sentinelConsolidatedSend.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/notificationRoutes.ts",
+      "src/server/routes.ts",
+      "src/threadline/CollaborationSurfacer.ts",
+      "src/threadline/peerHomebaseRelay.ts"
+    ],
+    "addedLines": 274,
+    "deletedLines": 139
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "A durable quiet disposition must survive every existing notification consumer without pretending transport acceptance or replaying terminal work. Bound named emitters preserve producer categories through mixed batches; operator floors use admitted inbound identity."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "evidence": "tests/integration/notification-selectivity-gate.test.ts",
+    "howCaught": "1,000 mixed production sends conserve readable quiet counts with zero transport calls; category-preserving batching and restart receipt tests exercise terminal retry convergence, following tests/unit/self-action-convergence guard conventions."
+  },
+  "verdict": "pass"
+}

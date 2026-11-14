@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "a2a-required-acknowledgment",
+  "sessionId": "d97dab27-bfee-42c5-a716-7857828ed6d2",
+  "timestamp": "2026-11-05T00:01:30.100Z",
+  "artifactPath": "upgrades/side-effects/a2a-required-acknowledgment.md",
+  "artifactSha256": "3fe783b8fc2705f33def98b4c6742ba1857ab25916a35d65e075c29832b8a46d",
+  "specPath": "docs/specs/a2a-required-acknowledgment.md",
+  "coveredFiles": [
+    "src/core/WriteDomainRegistry.ts",
+    "tests/integration/threadline/required-ack.test.ts",
+    "tests/unit/keyword-intent-decision-ratchet.test.ts",
+    "upgrades/side-effects/a2a-required-acknowledgment.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI fixes on the Tier 2 a2a-required-acknowledgment change: a write-domain declaration, a ratchet allowlist entry and a test fix.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

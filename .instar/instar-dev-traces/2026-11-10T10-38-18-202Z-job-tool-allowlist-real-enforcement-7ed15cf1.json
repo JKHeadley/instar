@@ -1,0 +1,68 @@
+{
+  "version": 3,
+  "slug": "job-tool-allowlist-real-enforcement",
+  "sessionId": "bb009edc-834d-40af-a92c-3b81122b1fee",
+  "timestamp": "2026-11-10T10:38:18.202Z",
+  "artifactPath": "upgrades/side-effects/job-tool-allowlist-real-enforcement.md",
+  "artifactSha256": "5cbc327b3f851871bdf8521dcb660d5728a6e859f05c2529d64d4b24dce780d6",
+  "specPath": "docs/specs/job-tool-allowlist-real-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-10T09-50-56-417Z-job-tool-allowlist-real-enforcement.json",
+    ".instar/instar-dev-decisions/2026-11-10T09-51-29-622Z-job-tool-allowlist-real-enforcement.json",
+    ".instar/instar-dev-decisions/2026-11-10T09-52-00-137Z-job-tool-allowlist-real-enforcement.json",
+    ".instar/instar-dev-decisions/2026-11-10T09-52-27-876Z-job-tool-allowlist-real-enforcement.json",
+    "docs/specs/carriers/job-tool-allowlist-real-enforcement.json",
+    "docs/specs/job-tool-allowlist-real-enforcement.eli16.md",
+    "docs/specs/job-tool-allowlist-real-enforcement.md",
+    "docs/specs/reports/job-tool-allowlist-real-enforcement-convergence.md",
+    "src/commands/jobMigrate.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/scaffold/templates.ts",
+    "src/scheduler/AgentMdJobLoader.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/integration/job-tool-confinement-live.test.ts",
+    "tests/unit/PostUpdateMigrator-jobToolLimits.test.ts",
+    "tests/unit/commands/jobMigrate.test.ts",
+    "tests/unit/job-templates-tool-confinement-census.test.ts",
+    "tests/unit/scheduler/JobLoader.agentmd.test.ts",
+    "tests/unit/scheduler/JobScheduler.tool-enforcement.test.ts",
+    "tests/unit/session-manager-job-confinement.test.ts",
+    "upgrades/next/job-tool-allowlist-real-enforcement.md",
+    "upgrades/side-effects/job-tool-allowlist-real-enforcement.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace for EVO-008 (#3030) so the independent second-pass review covers every changed file at the current artifact.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-tool-allowlist-real-enforcement-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered action: this decides how an EXISTING scheduled job launch is formed (confined argv) or refuses that one launch before it starts; it adds no loop, retry, respawn or re-drive."
+  }
+}

@@ -1,0 +1,9 @@
+# Keep a project goal visible when judging a smaller run
+
+A user asked for useful services to be offered to every new agent owner, with remembered choices, setup performed by the agent, and working alternatives. The work eventually focused on proving two services. The autonomous run judged itself against that smaller proof and announced completion, leaving seven services and proactive offering unfinished.
+
+The defect is in what the independent completion checker can see. It already receives the run's registered completion condition and recent output. It did not receive the user's broader goal, even though that goal existed in the topic's stored intent. A careful checker cannot compare two scopes when one is missing.
+
+This small, reversible fix supplies attributed user-supported goal summaries and linked initiative phases to the existing checker. Agent-only next steps are excluded. Rejections are preserved as negative evidence. Text is bounded and treated as data, and client-supplied replacements are ignored. A user may legitimately request a smaller milestone; the checker must still require its registered condition to be finished. When only that milestone is done, the final report must explain the remaining project gap first, unless the user explicitly limited the run. Missing local goal records are disclosed to the checker rather than silently treated as a complete view.
+
+Jev's catalog description now explicitly says it is optional and the agent runs without it. No service becomes required or enabled by this change. No constitution changes, new schema, or irreversible operations are introduced. Reverting the commit restores the old behavior. Tests cover evidence provenance, bounded context, the HTTP path, and the production server lifecycle. The existing model remains the authority; this is additional context, not a keyword-based stop rule.

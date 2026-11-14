@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "window-run-liveness-per-topic",
+  "sessionId": "db3fe65e-5a14-46b5-b3a6-68b99e80127e",
+  "timestamp": "2026-11-02T07:11:27.253Z",
+  "artifactPath": "upgrades/side-effects/window-run-liveness-per-topic.md",
+  "artifactSha256": "b45c3b15cf5cd1682973bfd71c381d7970be7a994cda384b211ced128d3e0b55",
+  "coveredFiles": [
+    "src/core/AutonomousStartAdmission.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/WindowRunCadenceExecutor.ts",
+    "src/core/WindowRunLivenessAuthority.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/window-run-liveness-production-wiring.test.ts",
+    "tests/integration/window-run-liveness-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-windowRunLiveness.test.ts",
+    "tests/unit/autonomous-start-admission.test.ts",
+    "tests/unit/window-run-cadence-executor.test.ts",
+    "tests/unit/window-run-liveness-authority.test.ts",
+    "upgrades/next/window-run-liveness-per-topic.md",
+    "upgrades/side-effects/window-run-liveness-per-topic.eli16.md",
+    "upgrades/side-effects/window-run-liveness-per-topic.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Echo-only dev-gated feature; narrow bug fix removing an accidental agent-wide slot. Moves the binding file into a per-topic directory, so a plain revert needs one documented mv of that file (in the side-effects Rollback section); no fleet agent is affected",
+  "eli16Path": "upgrades/side-effects/window-run-liveness-per-topic.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-run-liveness-per-topic.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

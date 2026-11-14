@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "recommended-services-telegram-recipe",
+  "sessionId": "75a42c12-f4ab-4360-a2fa-d867ef572641",
+  "timestamp": "2026-11-09T03:25:22.232Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-telegram-recipe.md",
+  "artifactSha256": "b98f691f50969807071e74f2105cc0ea988fc6866f1c6ab8f8b2e8d3ab68c55d",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-09T03-24-44-309Z-recommended-services-telegram-recipe-7c138203.json",
+    "docs/specs/recommended-services-telegram-recipe.eli16.md",
+    "src/commands/server.ts",
+    "src/recommended/recipes.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/recommended-services-telegram.test.ts",
+    "tests/unit/recommended-services-telegram-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-telegram-recipe.md",
+    "upgrades/side-effects/recommended-services-telegram-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two small fixes found in the live proof of a dark recipe: per-service reach for Telegram's own setup, and installing the missing reply script at boot. A revert fully undoes both.",
+  "eli16Path": "docs/specs/recommended-services-telegram-recipe.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/recommended-services-telegram-recipe.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

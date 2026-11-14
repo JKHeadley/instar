@@ -57,7 +57,7 @@ describe('Slack context exhaustion recovery wiring', () => {
   });
 
   it('respawnSessionFresh includes thread history in Slack recovery', () => {
-    expect(block).toContain('getChannelMessages');
+    expect(block).toContain('getConversationMessagesWithFallback');
   });
 
   it('respawnSessionFresh includes Slack relay instructions in recovery', () => {

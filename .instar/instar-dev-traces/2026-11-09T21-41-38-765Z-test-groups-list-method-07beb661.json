@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "test-groups-list-method",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T21:41:38.765Z",
+  "artifactPath": "upgrades/side-effects/test-groups-list-method.md",
+  "artifactSha256": "8392311d8f360cce89d5f63f91462c2f181fe0483e199d2f8326c30da0486956",
+  "coveredFiles": [
+    "docs/eli16/test-groups-list-method.md",
+    "src/messaging/telegram-origin/TelegramWebKDriver.ts",
+    "tests/unit/telegram-origin/test-groups-page-scripts.test.ts",
+    "upgrades/next/test-groups-list-method.md",
+    "upgrades/side-effects/test-groups-list-method.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One read-only API call swapped for one the client ships; same filters; revert undoes it",
+  "eli16Path": "docs/eli16/test-groups-list-method.md",
+  "sideEffectsPath": "upgrades/side-effects/test-groups-list-method.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

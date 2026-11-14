@@ -1,0 +1,46 @@
+{
+  "ts": "2026-10-31T20:33:17.971Z",
+  "slug": "threadline-mcp-local-http",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1859,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/threadline-mcp-http-measure.mjs",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/credentialEnvNames.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/core/threadlineMcpSpawn.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/ThreadlineMcpHttpService.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/mcp-stdio-entry.ts"
+    ],
+    "addedLines": 1786,
+    "deletedLines": 73
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

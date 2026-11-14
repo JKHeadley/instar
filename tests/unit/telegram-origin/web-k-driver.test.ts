@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash, webcrypto } from 'node:crypto';
 import vm from 'node:vm';
+import { TelegramRpcRefusal } from '../../../src/messaging/telegram-origin/TelegramBrowserBroker.js';
 import type { PreparedBrowserChild } from '../../../src/messaging/telegram-origin/BrowserTypes.js';
 
 const fixture = vi.hoisted(() => ({ evaluate: (_expression: string): Promise<unknown> => Promise.resolve(null), closed: false, contextFailures: 0 }));
@@ -17,20 +18,20 @@ vi.mock('../../../src/messaging/telegram-origin/PrivateCdpPipe.js', async import
   }
   async close() { fixture.closed = true; }
 } }));
-import { TelegramWebKDriver, validWebKBuildEnrollment } from '../../../src/messaging/telegram-origin/TelegramWebKDriver.js';
+import { TelegramWebKDriver, validWebKBuildEnrollment, WEB_K_UNREADABLE_RESULT } from '../../../src/messaging/telegram-origin/TelegramWebKDriver.js';
 
 function harness() {
   const assets = ['app-fixture.js', 'apiManagerProxy-fixture.js', 'index-fixture.js'].sort();
   const bytes = new Map(assets.map(asset => [asset, `public bundle ${asset}`]));
   const assetDigests = Object.fromEntries([...bytes].map(([asset, content]) => [asset, createHash('sha256').update(content).digest('hex')]));
-  const state = { accountId: '123', sent: 0 };
+  const state = { accountId: '123', sent: 0, sendError: undefined as undefined | { code: number; type: string } };
   const context = { location: { origin: 'https://web.telegram.org', pathname: '/k/' },
     document: { scripts: assets.map(asset => ({ src: `https://web.telegram.org/k/${asset}` })) },
     performance: { getEntriesByType: () => [] }, crypto: webcrypto, AbortSignal, TextEncoder, Uint8Array,
     window: { createProxiedManagersForAccount: () => ({ apiManager: { getAccountNumber: async () => 1,
       invokeApi: async (method: string) => {
         if (method === 'users.getUsers') return [{ _: 'user', id: state.accountId }];
-        if (method === 'messages.sendMessage') { state.sent++; return { _: 'updateShortSentMessage', id: 55 }; }
+        if (method === 'messages.sendMessage') { state.sent++; if (state.sendError) throw { ...state.sendError }; return { _: 'updateShortSentMessage', id: 55 }; }
         throw new Error('unexpected method');
       } } }) },
     fetch: async (url: string) => new Response(bytes.get(url.split('/').pop()!) ?? '', { status: 200 }),
@@ -73,6 +74,23 @@ describe('Web K concrete page-script canary and dispatch boundary', () => {
       expect(h.state.sent).toBe(0);
       await h.driver.invoke(h.child);
       expect(h.state.sent).toBe(1);
+    } finally { await h.driver.close(); }
+  });
+  it('treats Web K 686 unreadable-result 400 as an unknown outcome, never a refusal', async () => {
+    const h = harness(); h.state.sendError = { code: 400, type: WEB_K_UNREADABLE_RESULT };
+    try {
+      const error = await h.driver.invoke(h.child).then(() => undefined, (e: unknown) => e);
+      expect(h.state.sent).toBe(1);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(TelegramRpcRefusal);
+      expect((error as Error).message).toBe('telegram-result-unreadable');
+    } finally { await h.driver.close(); }
+  });
+  it('keeps an ordinary server 400 a definite refusal', async () => {
+    const h = harness(); h.state.sendError = { code: 400, type: 'PEER_ID_INVALID' };
+    try {
+      await expect(h.driver.invoke(h.child)).rejects.toMatchObject({ code: 400 });
+      await expect(h.driver.invoke(h.child)).rejects.toBeInstanceOf(TelegramRpcRefusal);
     } finally { await h.driver.close(); }
   });
   it('does not treat filenames alone as an enrolled build', async () => {

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mobile-native-permissions",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T20:10:26.042Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-permissions.md",
+  "artifactSha256": "47b170667caf18f9b473189e96081538da0a511b55ed68d68eb3a0e373ae2896",
+  "specPath": "docs/specs/mobile-native-permissions.md",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/mobile-native-permissions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "ladder entry for the new mobilePairing.permissionActions switch (feature-ladder ratchet)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "registry data only"
+  }
+}

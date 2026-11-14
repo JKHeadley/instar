@@ -70,3 +70,48 @@ export function decidePollAction(i: PollDecisionInputs): PollAction {
   if (i.peerPresumedGone || i.startDebounceElapsed) return 'start';
   return 'hold';
 }
+
+/**
+ * How long a 409 still counts as evidence that another machine is polling. A 409 only
+ * arrives while this machine polls, so once it stops the count is memory, not evidence.
+ * Two minutes is twice the longest 409 backoff (60s), so a live conflict always lands a
+ * fresh 409 inside the window.
+ */
+export const RECENT_409_WINDOW_MS = 120_000;
+
+/**
+ * Is there fresh 409 evidence of another poller? A count with no recent 409 is stale: a
+ * machine that got 409s, then stood by, would otherwise never start polling again when it
+ * regains the lease, because only a successful poll resets the count (2026-11-06 drill).
+ */
+export function hasRecent409(i: { consecutive409s: number; last409AtMs: number; nowMs: number }): boolean {
+  return i.consecutive409s > 0 && i.nowMs - i.last409AtMs < RECENT_409_WINDOW_MS;
+}
+
+/** How long a held boot waits for the lease's opinion before polling as it always did. */
+export const BOOT_POLL_HOLD_MAX_MS = 180_000;
+
+/**
+ * Does this boot wait for the lease before polling? An absent `telegramPolling` defers to
+ * the lease, but the boot path polled before the lease had a say, so a standby took the
+ * slot on every start. Only when poll-follows-lease is live (`enabled` already resolved by
+ * the caller, `dryRun:false`); `telegramPolling:false` is the force-mute and never polls.
+ */
+export function holdPollAtBoot(i: { followsLeaseEnabled: boolean; dryRun: boolean | undefined; telegramPolling: boolean | undefined; pollOverride: string | undefined }): boolean {
+  if (!i.followsLeaseEnabled || i.dryRun !== false) return false;
+  if (i.telegramPolling === false || i.pollOverride === 'force-mute' || i.pollOverride === 'force-poll') return false;
+  return true;
+}
+
+/**
+ * What a held boot does on one reconcile. With an opinion the normal decision runs; the
+ * caller ends the hold only once a poll has started or the lease says standby, so an
+ * opinion that vanishes still reaches the bound. No opinion past the bound starts the
+ * poll: a single machine or a
+ * server that never came up writes no intent, and holding forever would be silence. That
+ * is the same blind start every boot made before the hold, only later.
+ */
+export function bootHoldStep(i: { heldSinceMs: number; nowMs: number; intentShouldPoll: boolean | null }): 'wait' | 'release' | 'expired' {
+  if (i.intentShouldPoll !== null) return 'release';
+  return i.nowMs - i.heldSinceMs >= BOOT_POLL_HOLD_MAX_MS ? 'expired' : 'wait';
+}

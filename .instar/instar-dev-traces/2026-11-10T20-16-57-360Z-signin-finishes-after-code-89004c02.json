@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "signin-finishes-after-code",
+  "sessionId": "8d6a2926-13de-489c-8c9b-8365ea44255d",
+  "timestamp": "2026-11-10T20:16:57.360Z",
+  "artifactPath": "upgrades/side-effects/signin-finishes-after-code.md",
+  "artifactSha256": "f0069a73e133b2234a7648ada4a0cd4f849c883b1ef23a3ae26aaa0492f411b6",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-10T20-16-47-230Z-signin-finishes-after-code.json",
+    "docs/specs/signin-finishes-after-code.eli16.md",
+    "src/core/EnrollmentWizard.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/signin-finishes-after-code.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to the same Tier-1 fix: report the pool-add failure via DegradationReporter and route the completion relay through poolPeerFetch; revert-safe.",
+  "eli16Path": "docs/specs/signin-finishes-after-code.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/signin-finishes-after-code.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

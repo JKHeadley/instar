@@ -1,0 +1,55 @@
+{
+  "ts": "2026-11-04T02:53:20.067Z",
+  "slug": "feature-maturation-ladder",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 2369,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "skills/spec-converge/scripts/write-convergence-tag.mjs",
+      "src/core/FeatureMaturationPlanGate.mjs",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/monitoring/FeatureEvidenceLog.ts",
+      "src/monitoring/LadderEvidenceReader.ts",
+      "src/monitoring/MaturationBoard.ts",
+      "src/monitoring/MaturationLadder.ts",
+      "src/monitoring/MaturationLadderService.ts",
+      "src/monitoring/maturationUniverse.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/maturationBoardRoutes.ts",
+      "src/server/maturationLadderRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2346,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Raising is braked by raiseDue from the durable audit log: at most once a day per harmed feature, once a week per ready feature, 5 per pass; modeled as maturation-ladder-raise under sustained pressure."
+    }
+  },
+  "verdict": "pass"
+}

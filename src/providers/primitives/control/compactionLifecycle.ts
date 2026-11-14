@@ -80,5 +80,10 @@ export interface PostCompactNotice {
   timestamp: string;
   /** Estimated tokens reclaimed by the compaction. */
   tokensReclaimed?: number;
+  /**
+   * The engine's compaction summary. `null` = the engine exposes none (Codex);
+   * absent = the producer does not carry it.
+   */
+  summary?: string | null;
   providerSpecific?: ProviderSpecific;
 }

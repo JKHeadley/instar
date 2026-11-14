@@ -288,15 +288,20 @@ describeMaybe('E2E: Instar lifecycle', () => {
     // Pause the scheduler so cron-spawned sessions don't fill all job slots
     scheduler.pause();
 
-    // Wait for any running job sessions to complete (mock-claude sleeps 2s)
-    await waitFor(
-      () => {
-        const running = sessionManager.listRunningSessions().filter(s => s.jobSlug);
-        return running.length === 0;
-      },
-      5000,
-      'running job sessions to drain',
-    );
+    // End every session this fixture still has running: Phase 5's two API
+    // sessions and any every-second cron session. They all share the 3-session
+    // budget with the manual trigger below. Waiting for them to finish on their
+    // own was a race: when the mock's "Session ended" line is missed under
+    // load, a session counts as running until the 15s startup grace. The drain
+    // then timed out (CI), or the manual spawn was refused at the session cap
+    // and re-queued after the API had already said "triggered", so e2e-health
+    // never got a lastRun (Mini). A cron spawn already in flight may still land
+    // after this, but one cron session plus the manual run fits both the job
+    // slots (2) and the session cap (3).
+    for (const session of sessionManager.listRunningSessions()) {
+      sessionManager.killSession(session.id);
+    }
+    expect(sessionManager.listRunningSessions()).toEqual([]);
 
     // Clear any queued jobs that accumulated while paused, then resume.
     // Without clearing, resume() calls processQueue() which may immediately
@@ -312,8 +317,17 @@ describeMaybe('E2E: Instar lifecycle', () => {
     expect(triggerRes.status).toBe(200);
     expect(triggerRes.body.result).toBe('triggered');
 
-    // Wait for spawn to complete
-    await new Promise(r => setTimeout(r, 200));
+    // "triggered" is returned before the session spawn settles. Prove the
+    // manual run really started: the scheduler writes lastRun and a
+    // job_triggered event for e2e-health only once its session is up.
+    await waitFor(
+      () => Boolean(state.getJobState('e2e-health')?.lastRun),
+      5000,
+    );
+    expect(
+      state.queryEvents({ type: 'job_triggered' })
+        .some(e => e.summary?.includes('"e2e-health"') && e.summary.includes('e2e-test')),
+    ).toBe(true);
 
     // Verify event was logged
     const eventsRes = await request(app)

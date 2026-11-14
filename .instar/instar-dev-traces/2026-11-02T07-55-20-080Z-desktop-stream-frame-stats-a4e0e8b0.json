@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "desktop-stream-frame-stats",
+  "sessionId": "b4eb0141-35cd-41ba-a713-da8371775ee5",
+  "timestamp": "2026-11-02T07:55:20.080Z",
+  "artifactPath": "upgrades/side-effects/desktop-stream-frame-stats.md",
+  "artifactSha256": "540e9bed62b4a40b323368ec334f6b85f39f6050efb88195920816b01ace7637",
+  "coveredFiles": [
+    "docs/specs/desktop-stream-frame-stats.eli16.md",
+    "src/server/DesktopStreamManager.ts",
+    "tests/unit/desktop-stream-frame-stats.test.ts",
+    "upgrades/next/desktop-stream-frame-stats.md",
+    "upgrades/side-effects/desktop-stream-frame-stats.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "counters and one log line; revert restores",
+  "eli16Path": "docs/specs/desktop-stream-frame-stats.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-stream-frame-stats.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

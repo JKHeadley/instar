@@ -256,6 +256,20 @@ describe('redPrWatchdogPass — orchestrator', () => {
     expect(h.audits.some((audit) => audit.event === 'red-pr-stuck')).toBe(false);
   });
 
+  it('(g) a stacked PR (base is a feature branch) is red by design and raises nothing — ACT-053', async () => {
+    const h = harness([redPr({ baseRefName: 'feat/a2a-inbound-id-ledger', failingChecks: [{ name: 'Stacked PR — retarget to main before merging', completedAt: NOW - 30 * H }] })]);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.attentionCalls.flat().some((l) => /PR #1399 red/.test(l))).toBe(false);
+    expect(h.state.redPrRaised?.[1399]).toBeUndefined();
+    expect(h.audits.some((a) => a.event === 'red-pr-stuck')).toBe(false);
+  });
+
+  it('(h) the same red PR into main still raises (the stacked skip is base-scoped)', async () => {
+    const h = harness([redPr({ baseRefName: 'main' })]);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.audits.some((a) => a.event === 'red-pr-stuck' && a.pr === 1399)).toBe(true);
+  });
+
   it('clears the raise memory when the PR recovers (goes green)', async () => {
     const h = harness([redPr()]);
     const merger = new GreenPrAutoMerger(h.deps, cfg);

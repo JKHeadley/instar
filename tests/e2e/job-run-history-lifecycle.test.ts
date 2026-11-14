@@ -476,6 +476,12 @@ describeMaybe('E2E: Job Run History lifecycle', () => {
     expect(stats).toHaveProperty('avgDurationSeconds');
     expect(stats).toHaveProperty('runsPerDay');
     expect(typeof stats.totalRuns).toBe('number');
-    expect(typeof stats.successRate).toBe('number');
+    // A capacity wait has no completed run yet; the API intentionally reports
+    // an unmeasured rate as null until a run finishes.
+    if (stats.totalRuns > 0) {
+      expect(typeof stats.successRate).toBe('number');
+    } else {
+      expect(stats.successRate).toBeNull();
+    }
   });
 });

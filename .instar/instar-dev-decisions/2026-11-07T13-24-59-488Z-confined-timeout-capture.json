@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-07T13:24:59.488Z",
+  "slug": "confined-timeout-capture",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/ConfinedRunner.ts"
+    ],
+    "addedLines": 24,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

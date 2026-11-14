@@ -31,7 +31,7 @@ export const FIX_SCRIPT_SIBLINGS = ['resolve-node-binary.cjs'] as const;
 
 export interface DepsCachePort {
   /** Ensure the cache for `baseSha` exists; returns its directory (holding node_modules). */
-  ensure(sourceRepoPath: string, baseSha: string): Promise<{ ok: true; dir: string; hash: string } | { ok: false; reason: string }>;
+  ensure(sourceRepoPath: string, baseSha: string): Promise<{ ok: true; dir: string; hash: string; gateKey?: string } | { ok: false; reason: string }>;
   /** Evict all but the two most recent caches and any in `inUse`. */
   evict(inUse: Set<string>): number;
   /** Total bytes across caches (for the summary). */
@@ -65,12 +65,27 @@ export function defaultListAtCommit(sourceRepoPath: string, sha: string, dir: st
   } catch { return []; } // @silent-fallback-ok: no workspace packages at the base SHA
 }
 
+/**
+ * Every release bumps the project's own version in package.json and package-lock.json. That changes
+ * no dependency, so it must not change the cache key: each release forced a new install and native
+ * rebuild, and two attempts on 2026-11-07 ended when that rebuild hit its time limit.
+ */
+export function dependencyManifestText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { version?: unknown; packages?: Record<string, { version?: unknown }> };
+    if (!parsed || typeof parsed !== 'object') return text;
+    delete parsed.version;
+    if (parsed.packages?.['']) delete parsed.packages[''].version;
+    return JSON.stringify(parsed);
+  } catch { return text; } // @silent-fallback-ok: a lockfile that is not JSON (pnpm) has no project version at its root
+}
+
 export class DepsCache implements DepsCachePort {
   constructor(private readonly opts: DepsCacheOptions) {}
 
   private read(src: string, sha: string, file: string): string | null { return (this.opts.readAtCommit ?? defaultReadAtCommit)(src, sha, file); }
 
-  async ensure(sourceRepoPath: string, baseSha: string): Promise<{ ok: true; dir: string; hash: string } | { ok: false; reason: string }> {
+  async ensure(sourceRepoPath: string, baseSha: string): Promise<{ ok: true; dir: string; hash: string; gateKey: string } | { ok: false; reason: string }> {
     const pnpmLock = this.read(sourceRepoPath, baseSha, 'pnpm-lock.yaml');
     const npmLock = this.read(sourceRepoPath, baseSha, 'package-lock.json');
     const pkg = this.read(sourceRepoPath, baseSha, 'package.json');
@@ -78,9 +93,11 @@ export class DepsCache implements DepsCachePort {
     const tool: 'pnpm' | 'npm' = pnpmLock && (this.opts.hasPnpm ?? defaultHasPnpm)() ? 'pnpm' : 'npm';
     const lock = tool === 'pnpm' ? pnpmLock! : npmLock;
     if (!lock) return { ok: false, reason: 'lockfile-missing-at-base' };
-    const hash = createHash('sha256').update(`${tool}\n${process.versions.modules}\n${pkg}\n${lock}`).digest('hex').slice(0, 20);
+    const hash = createHash('sha256').update(`${tool}\n${process.versions.modules}\n${dependencyManifestText(pkg)}\n${dependencyManifestText(lock)}`).digest('hex').slice(0, 20);
+    // The base gate still reruns for each release: it is what catches a red main before an item pays for it.
+    const gateKey = createHash('sha256').update(`${tool}\n${process.versions.modules}\n${pkg}\n${lock}`).digest('hex').slice(0, 20);
     const dir = path.join(this.opts.root, hash);
-    if (fs.existsSync(path.join(dir, '.ready'))) return { ok: true, dir, hash };
+    if (fs.existsSync(path.join(dir, '.ready'))) return { ok: true, dir, hash, gateKey };
     removeAttemptTree(dir, this.opts.trashRoot, 'feedback-execute discard partial deps cache');
     fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
     try {
@@ -101,7 +118,7 @@ export class DepsCache implements DepsCachePort {
       await (this.opts.install ?? defaultInstall)(dir, tool);
       await this.buildNatives(dir, sourceRepoPath, baseSha);
       fs.writeFileSync(path.join(dir, '.ready'), JSON.stringify({ hash, tool, builtAt: new Date().toISOString(), nodeAbi: process.versions.modules }));
-      return { ok: true, dir, hash };
+      return { ok: true, dir, hash, gateKey };
     } catch (error) {
       try { removeAttemptTree(dir, this.opts.trashRoot, 'feedback-execute discard failed deps cache'); } catch { /* @silent-fallback-ok: the next ensure() discards a partial cache before rebuilding */ }
       return { ok: false, reason: `deps-install-failed: ${error instanceof Error ? error.message.slice(0, 400) : 'unknown'}` };
@@ -118,11 +135,13 @@ export class DepsCache implements DepsCachePort {
       const version = (p: string) => { try { return (JSON.parse(fs.readFileSync(path.join(p, 'package.json'), 'utf8')) as { version?: string }).version ?? null; } catch { return null; } };
       const binRel = mod === 'better-sqlite3' ? path.join('build', 'Release', 'better_sqlite3.node') : null;
       if (!binRel) continue; // sqlite-vec ships prebuilt platform packages through the lockfile.
-      const homeBin = path.join(homeMod, binRel);
-      if (version(homeMod) && version(homeMod) === version(cacheMod) && fs.existsSync(homeBin)) {
+      const wanted = version(cacheMod);
+      const candidates = [homeMod, ...this.readyCacheDirs(dir).map((cache) => path.join(cache, 'node_modules', mod))];
+      const source = wanted ? candidates.find((candidate) => version(candidate) === wanted && fs.existsSync(path.join(candidate, binRel))) : undefined;
+      if (source) {
         const target = path.join(fs.realpathSync(cacheMod), binRel);
         fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.copyFileSync(homeBin, target);
+        fs.copyFileSync(path.join(source, binRel), target);
         continue;
       }
       needRebuild.push(mod);
@@ -161,6 +180,18 @@ export class DepsCache implements DepsCachePort {
     // The runner captures both streams and this threw them away, so a one-line EPERM was only
     // recoverable by re-running the whole sandbox by hand. Carry a bounded, scrubbed tail instead.
     if (result.exitCode !== 0) throw new Error(`native rebuild failed (exit ${String(result.exitCode)}${result.timedOut ? ', timed out' : ''})${rebuildFailureTail(result)}`);
+  }
+
+  /** Other finished caches built for this Node ABI: their native binaries are safe to reuse at the same version. */
+  private readyCacheDirs(except: string): string[] {
+    let names: string[] = [];
+    try { names = fs.readdirSync(this.opts.root); } catch { return []; } // @silent-fallback-ok: no cache root means nothing to reuse
+    return names.filter((name) => /^[0-9a-f]{20}$/.test(name)).map((name) => path.join(this.opts.root, name)).filter((cache) => {
+      if (cache === except) return false;
+      try {
+        return (JSON.parse(fs.readFileSync(path.join(cache, '.ready'), 'utf8')) as { nodeAbi?: string }).nodeAbi === process.versions.modules;
+      } catch { return false; } // @silent-fallback-ok: an unready or unreadable cache is not a source
+    });
   }
 
   evict(inUse: Set<string>): number {

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-02T03:39:29.347Z",
+  "slug": "ecosystem-idea-pipeline",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/types.ts",
+      "src/ecosystem/buildEcosystemIdeas.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "A failing project gets at most 3 attempts per cycle with backoff, then a durable week, then a breaker after 3 cycles: nine attempts in total, then silence until a person retries. Registered as ecosystem-idea-review."
+    }
+  },
+  "verdict": "pass"
+}

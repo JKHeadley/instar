@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "app-pool-bringback-and-queue",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-08T04:58:49.067Z",
+  "artifactPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "artifactSha256": "370dd104e1e0c60dfc9bbbc9d39c78959bd9bec9c328f7fd4d5e82b94b984665",
+  "coveredFiles": [
+    "docs/specs/app-pool-bringback-and-queue.eli16.md",
+    "src/commands/server.ts",
+    "src/core/appConversationMove.ts",
+    "src/core/appConversationPool.ts",
+    "tests/unit/app-pool-bringback-queue.test.ts",
+    "upgrades/next/app-pool-bringback-and-queue.md",
+    "upgrades/side-effects/app-pool-bringback-and-queue.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two small fixes behind the dev-only app-conversations pool flag, found by the two-machine proof; a revert fully undoes them",
+  "eli16Path": "docs/specs/app-pool-bringback-and-queue.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

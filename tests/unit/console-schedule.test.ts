@@ -61,7 +61,7 @@ describe('schedule model — honesty', () => {
 
   it('a machine that did not answer is named; a failed pool read falls back to this machine; stale is said', () => {
     const jobs = [job()];
-    expect(buildSchedulePage(res(jobs, { pool: pool(jobs, { failed: [{ machineId: 'm2', error: 'timeout' }] }) }), NOW, { names: NAMES }).notes).toContain('Mac Mini did not answer; its jobs are not shown.');
+    expect(buildSchedulePage(res(jobs, { pool: pool(jobs, { failed: [{ machineId: 'm2', error: 'timeout' }] }) }), NOW, { names: NAMES }).notes).toContain("Couldn't reach Mac Mini (for how long is not known); not known whether anything is fixing it. Its jobs are not shown.");
     const fb = buildSchedulePage(res(jobs, { pool: { ok: false, reason: 'no answer within 8 seconds' } }), NOW);
     expect(fb.ok).toBe(true);
     expect(fb.counts.total).toBe(1);
@@ -290,19 +290,22 @@ describe('actions', () => {
 describe('run history with skips', () => {
   const hist = ok({ runs: [
     { runId: 'r1', slug: 'git-sync', startedAt: minsAgo(30), completedAt: minsAgo(27), durationSeconds: 180, result: 'success', trigger: 'scheduled' },
-    { runId: 'r2', slug: 'git-sync', startedAt: minsAgo(1500), durationSeconds: 12, result: 'failure', error: 'exit 1', trigger: 'dashboard-manual' },
+    { runId: 'r2', slug: 'git-sync', startedAt: minsAgo(1600), durationSeconds: 12, result: 'failure', error: 'exit 1', trigger: 'dashboard-manual' },
   ], total: 2 });
   it('skips carry their recorded reason, or say none was recorded; they sort into the strip by time', () => {
-    const h = buildHistory(hist, ok({ events: [{ slug: 'git-sync', timestamp: minsAgo(10), reason: 'quota' }, { slug: 'git-sync', timestamp: minsAgo(1400) }] }), NOW);
+    const h = buildHistory(hist, ok({ events: [{ slug: 'git-sync', timestamp: minsAgo(10), reason: 'quota' }, { slug: 'git-sync', timestamp: minsAgo(1540) }] }), NOW);
     expect(h.ok).toBe(true);
     expect(h.marks.map((m) => m.word)).toEqual(['skipped (usage limit)', 'succeeded', 'skipped (no reason recorded)', 'failed']);
     // Day labels follow the local clock: the two recent marks share a day; the old ones are not "Today".
+    // The old marks sit more than 25h before NOW, so they fall on an earlier calendar day in every
+    // time zone (incl. a 25h DST day). At 1400 min the skip landed on NOW's UTC day and CI (TZ=UTC) failed.
     expect(h.marks[0].day).toBe(h.marks[1].day);
     expect(h.marks[2].day).not.toBe('Today');
     expect(h.marks[3].day).not.toBe('Today');
     expect(markText(h.marks[1], NOW)).toContain('succeeded · 3 min');
     expect(markText(h.marks[3], NOW)).toContain('failed · 12 s · exit 1 · started by dashboard manual');
     expect(skipWords('gate')).toBe('skipped (nothing to do, by its pre-flight check)');
+    expect(skipWords('definition-changed')).toBe('skipped (its settings changed while it was starting)');
     expect(skipWords('something-new')).toBe('skipped (something new)');
   });
   it('tells a failed history read from a failed skip read (runs still shown)', () => {

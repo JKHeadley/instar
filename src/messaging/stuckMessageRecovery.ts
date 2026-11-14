@@ -40,6 +40,8 @@ export interface StuckRecoveryDeps {
    * the original reply failed to commit its own entry (server flap / dup orphan).
    */
   hasRepliedSince?: (topic: string, sinceISO: string) => boolean;
+  /** Cross-machine reply evidence. Unknown must never authorize a replay. */
+  remoteReplyEvidence?: (entry: import('./MessageProcessingLedger.js').LedgerEntry) => 'answered' | 'unanswered' | 'unknown';
   /** Re-route the stored input as the holder (set current-inbound key, then inject). */
   reinject: (topicId: string, dedupeKey: string, text: string, sender: SenderEnvelope | null) => void;
   /**
@@ -94,6 +96,25 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
       skipped++;
       continue;
     }
+    // Reply-evidence guard: if the agent already answered this topic since the
+    // stuck entry arrived, the entry is a duplicate/superseded inbound that was
+    // effectively handled (its own reply just failed to commit — server flap, or
+    // a same-topic dup orphaned by the current-inbound overwrite). Commit it so
+    // it leaves 'processing' for good; do NOT re-inject (that is the replay loop).
+    const localReply = repliedSince(entry.topic, entry.receivedAt);
+    const remoteReply = localReply ? 'answered' : deps.remoteReplyEvidence?.(entry) ?? 'unanswered';
+    if (localReply) {
+      deps.ledger.commitReply(entry.dedupeKey, computeReplyIdempotencyKey(entry.dedupeKey, 0), deps.epoch);
+      deps.ledger.advanceCursor(entry.dedupeKey);
+      deps.logger?.(`stuck-recovery: ${entry.dedupeKey} already answered on its topic since receipt — committing, not re-running`);
+      alreadyHandled++;
+      continue;
+    }
+    if (remoteReply === 'answered' || remoteReply === 'unknown') {
+      deps.logger?.(`stuck-recovery: ${entry.dedupeKey} held — cross-machine reply ${remoteReply === 'answered' ? 'observed but not linked to this inbound' : 'history incomplete'}`);
+      skipped++;
+      continue;
+    }
     // Part D, third site: if a REACHABLE peer owns this topic, this machine must
     // NOT re-feed it (it doesn't own the topic) — leave the entry UNTOUCHED in the
     // durable ledger so the owner's own stuck-recovery drains it. reclaimStuck() is
@@ -104,18 +125,6 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
     if (deps.ownerElsewhereReachable?.(entry.topic)) {
       deps.logger?.(`stuck-recovery: ${entry.dedupeKey} skipped — topic ${entry.topic} owned by a reachable peer (owner drains it)`);
       skipped++;
-      continue;
-    }
-    // Reply-evidence guard: if the agent already answered this topic since the
-    // stuck entry arrived, the entry is a duplicate/superseded inbound that was
-    // effectively handled (its own reply just failed to commit — server flap, or
-    // a same-topic dup orphaned by the current-inbound overwrite). Commit it so
-    // it leaves 'processing' for good; do NOT re-inject (that is the replay loop).
-    if (repliedSince(entry.topic, entry.receivedAt)) {
-      deps.ledger.commitReply(entry.dedupeKey, computeReplyIdempotencyKey(entry.dedupeKey, 0), deps.epoch);
-      deps.ledger.advanceCursor(entry.dedupeKey);
-      deps.logger?.(`stuck-recovery: ${entry.dedupeKey} already answered on its topic since receipt — committing, not re-running`);
-      alreadyHandled++;
       continue;
     }
     if (entry.attempts >= maxAttempts) {

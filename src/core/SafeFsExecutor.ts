@@ -129,6 +129,29 @@ function guard(target: string, operation: string, fnName: string, localVerifySco
 
 // ── Public API ──────────────────────────────────────────────────────
 
+/** Depth-first removal, one awaited filesystem call at a time. Never follows a symbolic link. */
+async function removeTreeSerially(target: string): Promise<void> {
+  let stat: fs.Stats;
+  try {
+    stat = await fsp.lstat(target);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  if (!stat.isDirectory()) {
+    await fsp.unlink(target);
+    return;
+  }
+  // Read the whole listing first: removing entries while a directory stream is open can skip some.
+  const entries = await fsp.readdir(target, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(target, entry.name);
+    if (entry.isDirectory()) await removeTreeSerially(full);
+    else await fsp.unlink(full);
+  }
+  await fsp.rmdir(target);
+}
+
 export class SafeFsExecutor {
   /**
    * Recursive force-deletes default to fs.rm's native transient-error retry
@@ -180,6 +203,36 @@ export class SafeFsExecutor {
     }
   }
 
+  /**
+   * Async recursive remove that issues ONE filesystem call at a time.
+   *
+   * `safeRm` (fs.promises.rm) removes a directory by starting a call for every child at once.
+   * For a tree of several hundred thousand files that queues the whole tree on libuv's four
+   * threadpool threads, and every other async file read, DNS lookup, zlib and crypto call in
+   * the process waits behind it for as long as the delete takes. This walk awaits each call
+   * before the next, so it holds at most one of the four threads. Use it for large trees
+   * removed inside a long-running server. Symbolic links are removed, never followed.
+   *
+   * If the walk fails part-way (a racing writer, an unreadable directory), what is left is
+   * removed with `fs.promises.rm` and its retry defaults. Missing targets are a no-op.
+   */
+  static async safeRmTreeSerial(target: string, opts: SafeFsOptions): Promise<void> {
+    const { operation } = opts;
+    const canonical = guard(target, operation, 'safeRmTreeSerial');
+    try {
+      try {
+        await removeTreeSerially(target);
+      } catch {
+        // @silent-fallback-ok: the fallback below either finishes the removal or throws and is audited as denied.
+        await fsp.rm(target, SafeFsExecutor.withRmRetryDefaults({ recursive: true, force: true }));
+      }
+      audit('safeRmTreeSerial', operation, canonical, 'allowed');
+    } catch (err) {
+      audit('safeRmTreeSerial', operation, canonical, 'denied', `rm-error: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
   /** Sync fs.rmSync wrapper. */
   static safeRmSync(target: string, opts: SafeRmOptions): void {
     const { operation, localVerifyScopeOk, ...rmOpts } = opts;
@@ -195,7 +248,7 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.unlink wrapper. */
   static async safeUnlink(target: string, opts: SafeFsOptions): Promise<void> {
-    const canonical = guard(target, opts.operation, 'safeUnlink');
+    const canonical = guard(target, opts.operation, 'safeUnlink', opts.localVerifyScopeOk);
     try {
       await fsp.unlink(target);
       audit('safeUnlink', opts.operation, canonical, 'allowed');
@@ -207,7 +260,7 @@ export class SafeFsExecutor {
 
   /** Sync fs.unlinkSync wrapper. */
   static safeUnlinkSync(target: string, opts: SafeFsOptions): void {
-    const canonical = guard(target, opts.operation, 'safeUnlinkSync');
+    const canonical = guard(target, opts.operation, 'safeUnlinkSync', opts.localVerifyScopeOk);
     try {
       fs.unlinkSync(target);
       audit('safeUnlinkSync', opts.operation, canonical, 'allowed');

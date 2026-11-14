@@ -15,6 +15,7 @@
  * - Environment variable patterns
  */
 
+import { CREDENTIAL_SHAPES } from './credentialShapes.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -54,24 +55,8 @@ interface PELRule {
 
 // ── Credential Patterns ──────────────────────────────────────────────
 
-/** Regex patterns for common API key / credential formats */
-const CREDENTIAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
-  { name: 'OpenAI API key', pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/ },
-  { name: 'GitHub personal access token', pattern: /\bghp_[A-Za-z0-9]{36,}\b/ },
-  { name: 'GitHub OAuth token', pattern: /\bgho_[A-Za-z0-9]{36,}\b/ },
-  { name: 'GitHub user-to-server token', pattern: /\bghu_[A-Za-z0-9]{36,}\b/ },
-  { name: 'GitHub server-to-server token', pattern: /\bghs_[A-Za-z0-9]{36,}\b/ },
-  { name: 'GitHub refresh token', pattern: /\bghr_[A-Za-z0-9]{36,}\b/ },
-  { name: 'Slack bot token', pattern: /\bxoxb-[0-9]{10,}-[A-Za-z0-9-]+\b/ },
-  { name: 'Slack user token', pattern: /\bxoxp-[0-9]{10,}-[A-Za-z0-9-]+\b/ },
-  { name: 'AWS access key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
-  { name: 'Stripe secret key', pattern: /\bsk_live_[A-Za-z0-9]{24,}\b/ },
-  { name: 'Stripe test key', pattern: /\bsk_test_[A-Za-z0-9]{24,}\b/ },
-  { name: 'Anthropic API key', pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
-  { name: 'Generic bearer token', pattern: /Bearer\s+[A-Za-z0-9_\-.]{20,}/ },
-  { name: 'Password assignment', pattern: /(?:password|passwd|pwd)\s*[:=]\s*["']?[^\s"']{8,}/i },
-  { name: 'Private key block', pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/ },
-];
+/** Regex patterns for common API key / credential formats (one list, shared with the phone's file text). */
+const CREDENTIAL_PATTERNS = CREDENTIAL_SHAPES;
 
 // ── PII Patterns ─────────────────────────────────────────────────────
 

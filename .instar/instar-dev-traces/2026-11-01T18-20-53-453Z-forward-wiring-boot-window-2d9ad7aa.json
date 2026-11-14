@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "forward-wiring-boot-window",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-11-01T18:20:53.453Z",
+  "artifactPath": "upgrades/side-effects/forward-wiring-boot-window.md",
+  "artifactSha256": "589142251d6560adf6c8df89b3ae05de87e13f6cb56af9a9034820d609bf17a4",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow boot-window wait, reverts cleanly, no state",
+  "eli16Path": "upgrades/side-effects/forward-wiring-boot-window.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/forward-wiring-boot-window.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

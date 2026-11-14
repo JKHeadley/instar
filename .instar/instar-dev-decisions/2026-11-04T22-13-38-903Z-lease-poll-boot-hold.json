@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-04T22:13:38.903Z",
+  "slug": "lease-poll-boot-hold",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 128,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/pollDecision.ts"
+    ],
+    "addedLines": 112,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

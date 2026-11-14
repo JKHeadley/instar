@@ -25,6 +25,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { THREAD_ID_RE } from './ThreadLog.js';
 
@@ -559,6 +560,7 @@ export class InboundIdLedger {
   private onDbError(err: unknown): boolean {
     this.ledgerError++;
     const wasProbe = this.cooldownMs !== 0;
+    featureEvidence.record('threadline.inboundIdLedger', { kind: 'error', reason: wasProbe ? 'ledger-probe-failed' : 'ledger-transaction-failed', context: { ledgerError: this.ledgerError, failedProbes: this.failedProbes, errorName: err instanceof Error ? err.name : 'unknown' } });
     if (!wasProbe) {
       this.cooldownMs = COOLDOWN_START_MS;
       this.cooldownUntil = this.now() + this.cooldownMs;
@@ -685,9 +687,18 @@ export class InboundIdLedger {
 
     if (out.t === 'full') {
       this.persistent.unverifiedUnrecorded++;
+      featureEvidence.recordAtMostEvery('threadline.inboundIdLedger', 'unverified-full', 60 * 60 * 1000, { kind: 'held', reason: 'unverified-namespace-full', context: { ingress: req.ingress, unverifiedUnrecorded: this.persistent.unverifiedUnrecorded } });
       return noop('unverified-full');
     }
-    if (out.t === 'duplicate') return { kind: 'duplicate', row: out.row, bare: out.bare };
+    if (out.t === 'duplicate') {
+      // The written bar needs every dedupe explained, so each distinct id gets its row (a retry storm on one id stays one row an hour).
+      featureEvidence.recordAtMostEvery('threadline.inboundIdLedger', `dup|${senderKey}|${messageId}`, 60 * 60 * 1000, {
+        kind: 'fired',
+        reason: 'duplicate-id-suppressed',
+        context: { messageId, senderNamespace: senderKey.split(':')[0] ?? null, ingress: req.ingress, bare: out.bare, disposition: out.row.disposition, readmissions: out.row.readmissions },
+      });
+      return { kind: 'duplicate', row: out.row, bare: out.bare };
+    }
     if (out.t === 'in-flight') return { kind: 'in-flight', row: out.row };
 
     // In-flight entry, added in the same synchronous tick, owned by this attempt.
@@ -703,6 +714,12 @@ export class InboundIdLedger {
     const ticket = new AdmissionTicket(this, senderKey, messageId, out.attempt, out.readmissions, true);
     const crossNamespace = this.hasCrossNamespaceRow(senderKey, messageId);
     if (crossNamespace) this.persistent.crossNamespaceLabelled++;
+    // Admission is per message, so a bounded summary: one row an hour per ingress, with the live counters.
+    featureEvidence.recordAtMostEvery('threadline.inboundIdLedger', `admitted|${req.ingress}`, 60 * 60 * 1000, {
+      kind: 'fired',
+      reason: 'ids-ledgered',
+      context: { ingress: req.ingress, readmitted: out.readmitted, crossNamespace, totalReadmitted: this.persistent.readmitted, ledgerError: this.ledgerError },
+    });
     return { kind: 'admitted', ticket, readmitted: out.readmitted, crossNamespace };
   }
 
@@ -777,6 +794,7 @@ export class InboundIdLedger {
       return true;
     } catch {
       this.postAcceptWriteFailed++;
+      featureEvidence.record('threadline.inboundIdLedger', { kind: 'error', reason: 'post-accept-write-failed', context: { postAcceptWriteFailed: this.postAcceptWriteFailed, disposition } });
       return false;
     }
   }

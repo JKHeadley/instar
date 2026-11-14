@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "team-requests",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T22:55:59.798Z",
+  "artifactPath": "upgrades/side-effects/team-requests.md",
+  "artifactSha256": "93b5da693cfb8376918d5c54afd79e5866ab09b07c50ffedcc21d94501ccad1d",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/core/appInboundDispatch.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

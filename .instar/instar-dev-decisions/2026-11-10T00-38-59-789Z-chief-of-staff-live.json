@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-10T00:38:59.789Z",
+  "slug": "chief-of-staff-live",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffActionProtocol.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered controller: the executor now accepts the registration it already made instead of aborting it; restart counts, backoff and the breaker are unchanged."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "green-pr-poke-unknown-mergeable",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T22:44:32.623Z",
+  "artifactPath": "upgrades/side-effects/green-pr-poke-unknown-mergeable.md",
+  "artifactSha256": "ad576eed9d3095a2d0fd817c6590d2a68bec45be5153b1483a7bddd5b937326f",
+  "coveredFiles": [
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/greenPrAutomergeWiring.ts",
+    "tests/unit/green-pr-automerge-wiring.test.ts",
+    "tests/unit/green-pr-automerger.test.ts",
+    "upgrades/next/green-pr-poke-unknown-mergeable.md",
+    "upgrades/side-effects/green-pr-poke-unknown-mergeable.eli16.md",
+    "upgrades/side-effects/green-pr-poke-unknown-mergeable.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one read-only nudge per verified PR; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/green-pr-poke-unknown-mergeable.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/green-pr-poke-unknown-mergeable.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one bounded read per verified PR per tick; no new loop or trigger"
+  }
+}

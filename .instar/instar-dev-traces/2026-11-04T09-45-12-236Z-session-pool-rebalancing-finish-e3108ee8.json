@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "slug": "session-pool-rebalancing-finish",
+  "sessionId": "8e0c1528-9488-488c-a3a8-1ad4d9052387",
+  "timestamp": "2026-11-04T09:45:12.236Z",
+  "artifactPath": "upgrades/side-effects/session-pool-rebalancing-finish.md",
+  "artifactSha256": "1f3d424b9e9ffd46c6315d82a600eada839876b20ce87cad8f09e9a432c40f8b",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    "src/core/rebalanceProof.ts",
+    "upgrades/side-effects/session-pool-rebalancing-finish.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/session-pool-rebalancing-finish-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

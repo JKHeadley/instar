@@ -64,6 +64,24 @@ describe('attention store lifecycle', () => {
     expect(rec.hubPosts).toHaveLength(1);
   });
 
+  it('alert text names topics and machines; a row stored with the raw id is renamed quietly, not re-posted', async () => {
+    makeAdapter();
+    const rec = stubApi(adapter);
+    const key = 'pin-wait:127504';
+    // The topic has no name yet: the id stays as written.
+    const a = await adapter.createAttentionItem(obs('pin-a', { conditionKey: key, title: "Topic 127504's pin has waited 45h", summary: 'Owned by m_03b30f5b32c6ef3eb0afd3ca7054e252.' }));
+    expect(a.title).toBe("Topic 127504's pin has waited 45h");
+    expect(rec.hubPosts).toHaveLength(1);
+    // The name becomes known, and the machine resolver is wired.
+    (adapter as unknown as { topicToName: Map<number, string> }).topicToName.set(127504, 'Instar dashboard makeover');
+    adapter.setMachineNameResolver((id) => (id === 'm_03b30f5b32c6ef3eb0afd3ca7054e252' ? 'Mac Studio' : null));
+    const b = await adapter.createAttentionItem(obs('pin-b', { conditionKey: key, title: "Topic 127504's pin has waited 45h", summary: 'Owned by m_03b30f5b32c6ef3eb0afd3ca7054e252.' }));
+    expect(b.id).toBe(a.id);
+    expect(b.title).toBe('Topic "Instar dashboard makeover"\'s pin has waited 45h');
+    expect(b.summary).toBe('Owned by Mac Studio.');
+    expect(rec.hubPosts).toHaveLength(1);
+  });
+
   it('a changed ask (approve → tap your phone now) refreshes the row and re-posts; a mere repeat keeps ACKNOWLEDGED', async () => {
     makeAdapter();
     const rec = stubApi(adapter);

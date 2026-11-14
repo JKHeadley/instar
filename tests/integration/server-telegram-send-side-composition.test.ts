@@ -1,3 +1,5 @@
+import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
+import { unknownAutomationAuthor } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 /**
  * Regression for the production topology gap where the server constructed a
  * send-capable TelegramAdapter in Lifeline-owned/send-only mode, but only wired
@@ -74,6 +76,7 @@ describe('server Telegram send-side composition', () => {
     fs.writeFileSync(path.join(tmpDir, 'jobs.json'), '[]');
 
     const state = new StateManager(stateDir);
+    state.set('agent-attention-topic', 88);
     const sessionConfig: SessionManagerConfig = {
       tmuxPath: '/usr/bin/tmux',
       claudePath: '/usr/local/bin/claude',
@@ -135,7 +138,8 @@ describe('server Telegram send-side composition', () => {
       await (scheduler as unknown as {
         alertOnConsecutiveFailures(j: JobDefinition, failures: number, error: string): Promise<void>;
       }).alertOnConsecutiveFailures(job, 2, 'spawn refused');
-      expect(genericSend).toHaveBeenCalledTimes(1);
+      expect(genericSend).not.toHaveBeenCalled();
+      expect(topicSend).toHaveBeenCalledWith(88, expect.stringContaining('Health Check'));
 
       await batcher.enqueue({
         tier: 'IMMEDIATE',
@@ -185,4 +189,22 @@ describe('server Telegram send-side composition', () => {
     expect(pollingOnlySlice).not.toContain('telegramBridge = new TelegramBridge(');
     expect(pollingOnlySlice).not.toContain('scheduler.setRoleGuard(');
   });
+});
+
+
+it('separates quota/reap choices through actual batching and derives push only from delivery', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quiet-batcher-compose-'));
+  const gate = new NotificationSelectivityGate(root, 'test', () => ({ enabled: true, dryRun: false, push: { categories: { 'spend-alert': true } } }));
+  const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root); adapter.selectivity = gate;
+  const batcher = new NotificationBatcher(); const delivered = vi.fn(); batcher.onDelivered = delivered;
+  const network = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 123 } }) }); vi.stubGlobal('fetch', network);
+  try {
+    wireTelegramSendSide({ mode: 'send-only', telegram: adapter, notificationBatcher: batcher });
+    for (const producerId of ['quota-notifier', 'reap-notifier'] as const) await batcher.enqueue({ tier: 'DIGEST', category: producerId, message: `Routine ${producerId}`, timestamp: new Date(), topicId: 42, origin: { producerId, author: unknownAutomationAuthor('fixture') } });
+    await batcher.flush('DIGEST');
+    expect(network).toHaveBeenCalledOnce(); expect(delivered).toHaveBeenCalledOnce();
+    expect(batcher.getQueueSize()).toEqual({ summary: 0, digest: 0 }); expect(batcher.getStats().totalFlushed).toBe(1);
+    expect(gate.store.list().map(row => row.category).sort()).toEqual(['reap-notice', 'spend-alert']);
+    await batcher.flush('DIGEST'); expect(network).toHaveBeenCalledOnce();
+  } finally { batcher.stop(); await gate.close(); await adapter.stop(); vi.unstubAllGlobals(); SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'quiet batcher composition fixture' }); }
 });

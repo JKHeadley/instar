@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-11T02:52:56.436Z",
+  "slug": "cb-row-carrier",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/memory/topicRowCarrier.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "test-window drift and a duplicated helper caught by an existing ratchet"
+  },
+  "verdict": "blocked"
+}

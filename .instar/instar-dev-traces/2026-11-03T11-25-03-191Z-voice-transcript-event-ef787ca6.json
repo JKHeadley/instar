@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "voice-transcript-event",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T11:25:03.191Z",
+  "artifactPath": "upgrades/side-effects/voice-transcript-event.md",
+  "artifactSha256": "be3410fc356c81312c513d7cdf481d8cc11bf365d4c8f0ffe10a9a02aa8aabdf",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "src/core/AppMediaStore.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/mobile-native-media.test.ts",
+    "tests/unit/PostUpdateMigrator-appMedia.test.ts",
+    "tests/unit/app-voice-transcript-event.test.ts",
+    "tests/unit/app-voice-transcription.test.ts",
+    "upgrades/next/voice-transcript-event.md",
+    "upgrades/side-effects/voice-transcript-event.eli16.md",
+    "upgrades/side-effects/voice-transcript-event.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "replicated transcript event + late session line per converged spec §4.5.1; new event kind across machines",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/app-voice-transcript-event.test.ts",
+      "howCaught": "one transcription and at most one follow-up line per attachment per machine; claimed before provider start, never retried; 3 concurrent provider calls"
+    }
+  }
+}

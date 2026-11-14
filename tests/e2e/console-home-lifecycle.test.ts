@@ -19,7 +19,7 @@ import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
+  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, combineNeeds,
 } from '../../dashboard/console/home-model.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
@@ -80,7 +80,7 @@ describe('Console Home E2E (feature is alive)', () => {
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
       scheduler: { enabled: false, jobsFile, maxParallelJobs: 1 }, messaging: [], updates: {},
       // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
-      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
+      monitoring: { blockerLedger: { enabled: true }, failureCallouts: { enabled: false } } } as unknown as InstarConfig;
     features = new FeatureRegistry(stateDir, { hmacKey: AUTH });
     await features.open();
     for (const def of BUILTIN_FEATURES) features.register(def);
@@ -117,7 +117,8 @@ describe('Console Home E2E (feature is alive)', () => {
 
   it('every Home source answers through the real stack and maps to an honest card', async () => {
     tracker.record({ userRequest: 'approve the plan', agentResponse: 'waiting for your yes', type: 'one-time-action',
-      verificationMethod: 'manual', owner: 'user', blockedOn: 'user-input' } as never);
+      verificationMethod: 'manual', owner: 'user', blockedOn: 'user-input',
+      hardDeadlineAt: new Date(Date.now() + 3600_000).toISOString() } as never); // due soon: only then on Home
 
     const read = async (p: string) => {
       const r = await request(server.getApp()).get(p).set(auth);
@@ -125,7 +126,7 @@ describe('Console Home E2E (feature is alive)', () => {
     };
     const cards = {
       reach: buildReach(await read('/health')),
-      needs: buildNeeds(await read('/attention?scope=pool')),
+      needs: buildNeeds(await read('/attention?scope=pool&status=OPEN')),
       doing: buildDoing(await read('/sessions?scope=pool')),
       promised: buildPromised(await read('/commitments?scope=mesh')),
       running: buildRunning(await read('/pool')),
@@ -140,8 +141,17 @@ describe('Console Home E2E (feature is alive)', () => {
     }
     // The real commitment that waits on the operator surfaces.
     expect(cards.promised.state).toBe('attn');
-    expect(cards.promised.value).toBe('1 need you');
-    expect(headline(cards).text).not.toBe('All quiet.');
+    expect(cards.promised.value).toBe('1 waiting on you');
+    // "What needs you" is the one answer: it carries the waiting promise, and
+    // the headline counts that card alone, so the two agree (topic 127504).
+    const combined = { ...cards, needs: combineNeeds(cards.needs, cards.promised) };
+    if (Number.isFinite(cards.needs.count)) {
+      expect(combined.needs.count).toBe(cards.needs.count + 1);
+    } else {
+      // A queue that could not be read stays "can't tell" — never "Nothing needs you".
+      expect(combined.needs.value).not.toBe('Nothing needs you');
+    }
+    expect(headline(combined).text).not.toBe('All quiet.');
   });
 
   it('the Promises page reads the real mesh view and its Mark-as-done reaches the real tracker', async () => {
@@ -540,7 +550,7 @@ describe('Console Home E2E (feature is alive)', () => {
       const r = await request(server.getApp()).get(p).set(auth);
       return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
     };
-    const [pendingRes, ctxRes, syncRes, topicsRes] = await Promise.all([read('/secrets/pending'), read('/self-knowledge/session-context?full=1'), read('/secrets/sync-status'), read('/telegram/topics')]);
+    const [pendingRes, ctxRes, syncRes, topicsRes] = await Promise.all([read('/secrets/pending'), read('/self-knowledge/session-context?full=1'), read('/secrets/sync-status'), read('/telegram/topics?scope=pool')]);
     expect(pendingRes.status).toBe(200);
     expect([200, 503]).toContain(ctxRes.status); // dev-gated key list: on, or honestly off
     expect(syncRes.status).toBe(503);            // single-machine: sync is off, the page hides it
@@ -662,11 +672,17 @@ describe('Console Home E2E (feature is alive)', () => {
 
     // A real running session record: listed, named, its model in words, protected flag present.
     const startedAt = new Date(Date.now() - 30 * 60_000).toISOString();
-    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'running', startedAt, model: 'claude-opus-5-5' } as never);
+    // Created from the dashboard (triggeredBy), so it is listed by default; an agent-spawned
+    // headless helper with no chat is internal and hidden behind the toggle.
+    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'running', startedAt, model: 'claude-opus-5-5', triggeredBy: 'dashboard-operator' } as never);
+    state.saveSession({ id: 'e2e-helper-1', name: 'e2e-helper', tmuxSession: 'e2e-helper', status: 'running', startedAt, model: 'claude-opus-5-5' } as never);
     const one = buildSessions(await read('/sessions?scope=pool'), { now: Date.now() });
+    expect(one.ok && one.internalCount).toBe(1);
+    expect((buildSessions(await read('/sessions?scope=pool'), { now: Date.now(), showInternal: true }) as { rows: unknown[] }).rows).toHaveLength(2);
+    state.saveSession({ id: 'e2e-helper-1', name: 'e2e-helper', tmuxSession: 'e2e-helper', status: 'completed', startedAt, model: 'claude-opus-5-5' } as never);
     expect(one.ok && one.rows.map((r) => [r.title, r.model, r.session.protected])).toEqual([['e2e-sess', 'Opus 5.5', false]]);
     expect(one.ok && one.rows[0].sub.startsWith('This machine · 30 min')).toBe(true);
-    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'completed', startedAt, model: 'claude-opus-5-5' } as never);
+    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'completed', startedAt, model: 'claude-opus-5-5', triggeredBy: 'dashboard-operator' } as never);
     expect((buildSessions(await read('/sessions?scope=pool'), { now: Date.now() }) as { rows: unknown[] }).rows).toEqual([]);
 
     // Close a session that is not running: the page's own request, read as already closed.
@@ -698,6 +714,23 @@ describe('Console Home E2E (feature is alive)', () => {
     expect((await request(server.getApp()).delete('/sessions/x')).status).toBe(401);
     expect((await request(server.getApp()).post('/sessions/x/remote-close').send({ machineId: 'm', sessionUuid: 'u' })).status).toBe(401);
     expect((await request(server.getApp()).post('/sessions/create').send({ name: 'x' })).status).toBe(401);
+  });
+
+  it('a real internal pipeline wake remains Echo work after its due date, not a Home request', async () => {
+    const internal = tracker.record({ userRequest: 'Pipeline wake: restore a usable fallback',
+      agentResponse: 'Echo will check the login after reset', type: 'one-time-action',
+      source: 'pipeline-wake-2026-10-27T17:50:02Z', owner: 'agent', blockedOn: 'external',
+      hardDeadlineAt: new Date(Date.now() - 60_000).toISOString(), verificationMethod: 'manual' } as never);
+    const response = await request(server.getApp()).get('/commitments?scope=mesh').set(auth);
+    expect(response.status).toBe(200);
+    const record = response.body.commitments.find((x: { id: string }) => x.id === internal.id);
+    expect(record.source).toMatch(/^pipeline-wake-/);
+    const source = { ok: true, data: response.body };
+    const home = buildPromised(source);
+    const page = buildPromisesPage(source);
+    expect(home.rows.some((r) => r.key?.endsWith(`:${internal.id}`))).toBe(false);
+    expect(page.sections.missed.some((r) => r.id === internal.id)).toBe(false);
+    expect(page.sections.carrying.some((r) => r.id === internal.id)).toBe(true);
   });
 });
 
@@ -859,4 +892,5 @@ describe('Console "How I\'m doing inside" E2E (feature is alive)', () => {
       expect((await request(server.getApp()).get(path)).status, path).toBe(401);
     }
   });
+
 });

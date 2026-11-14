@@ -156,6 +156,16 @@ export async function startTopicOnMachine(
    *  next message is placed automatically. */
   pin?: () => Promise<boolean> | boolean,
 ): Promise<StartTopicOnMachineResult> {
+  return startCheckedTopicOnMachine({...deps,deliver:(target,env)=>deps.deliver(target,{...env,payload:env.payload as {dashboardCreate:DashboardCreateStart}}), makeDelivery:()=>({messageId:`dashboard-create:${sessionKey}:${deps.nonce()}`,payload:{dashboardCreate:start}})},sessionKey,target,pin);
+}
+
+/** Same fenced placement/delivery protocol for server-authenticated dispatches.
+ * makeDelivery runs once AFTER successful placement; retries preserve its bytes. */
+export interface CheckedTopicStartDeps extends Omit<StartTopicOnMachineDeps,'deliver'> {
+  makeDelivery:(placementEpoch:number)=>{messageId:string;payload:unknown};
+  deliver:(target:string,env:{sessionKey:string;messageId:string;payload:unknown;ownershipEpoch:number})=>Promise<DeliverOutcome>;
+}
+export async function startCheckedTopicOnMachine(deps:CheckedTopicStartDeps,sessionKey:string,target:string,pin?:()=>Promise<boolean>|boolean):Promise<StartTopicOnMachineResult>{
   const cur = deps.readOwnership(sessionKey);
   if (cur && cur.status !== 'released') {
     return { ok: false, code: 'topic-owned-elsewhere', reason: `record-${cur.status}` };
@@ -167,11 +177,13 @@ export async function startTopicOnMachine(
   // because the target's receipt ledger answers `duplicate` for a copy it already
   // recorded (and `duplicate` is accepted). A reply that REACHED the target
   // (5xx / 408 / no ack) is not retried: the target may be mid-start.
-  const messageId = `dashboard-create:${sessionKey}:${deps.nonce()}`;
-  let outcome: DeliverOutcome = { kind: 'unknown', detail: 'not attempted' };
-  for (let attempt = 0; attempt <= DELIVER_THROW_RETRIES; attempt++) {
+  let delivery:{messageId:string;payload:unknown}|null=null;
+  try{delivery=deps.makeDelivery(placed.epoch);}catch{/* no dispatch occurred; settle/release this exact placement below */}
+  const messageId=delivery?.messageId??'not-dispatched',payload=delivery?.payload;
+  let outcome: DeliverOutcome = delivery?{ kind: 'unknown', detail: 'not attempted' }:{kind:'rejected',detail:'dispatch-provenance-unavailable'};
+  for (let attempt = 0; delivery && attempt <= DELIVER_THROW_RETRIES; attempt++) {
     try {
-      outcome = await deps.deliver(target, { sessionKey, messageId, payload: { dashboardCreate: start }, ownershipEpoch: placed.epoch });
+      outcome = await deps.deliver(target, { sessionKey, messageId, payload, ownershipEpoch: placed.epoch });
       break;
     } catch (err) {
       outcome = { kind: 'unknown', detail: err instanceof Error ? err.message : String(err) };

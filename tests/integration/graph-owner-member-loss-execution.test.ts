@@ -1,0 +1,3 @@
+import {it} from 'vitest';
+import {runGraphMemberLossProductionEntry} from '../helpers/graph-member-loss-production-entry.js';
+it.each(['empty','pending','committed','denied-pending','committed-lost-host','committed-lost-host-slow','refused-committed-local-deny','cold-native-pending','renewed-native-pending','post-act-pending','pin-priority-deny','creation-erasure-resume','stream-final-mutation','stream-final-missing','stream-final-barrier','settlement-owner-revocation','upload-owner-revocation'] as const)('continues actual owner HTTP admission through native CAS, physical loss pins and Default replacement: %s',runGraphMemberLossProductionEntry,120000);

@@ -114,8 +114,8 @@ describe('GET /metrics/features (integration)', () => {
 
   it('marks /health degraded with the failing component and denominator', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
-    for (let i = 0; i < 15; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'error' });
-    for (let i = 0; i < 5; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'noop' });
+    for (let i = 0; i < 15; i++) ledger.record({ feature: 'FailingGate', outcome: 'error' });
+    for (let i = 0; i < 5; i++) ledger.record({ feature: 'FailingGate', outcome: 'noop' });
     for (let i = 0; i < 300; i++) ledger.record({ feature: 'HealthyGate', outcome: 'noop' });
     const fullSummary = vi.spyOn(ledger, 'summary');
 
@@ -128,7 +128,7 @@ describe('GET /metrics/features (integration)', () => {
       status: 'failing',
       components: [
         {
-          feature: 'ProfileIntentClassifier',
+          feature: 'FailingGate',
           errors: 15,
           realCalls: 20,
           errorRate: 0.75,

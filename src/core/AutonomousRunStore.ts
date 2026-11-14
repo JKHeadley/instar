@@ -103,6 +103,10 @@ export interface AutonomousRunRecord {
   /** Worktrees first seen at sweep time → their first-sight anchor SHA (R31). */
   worktreeFirstSeen: Record<string, string>;
   status: AutonomousRunStatus;
+  /** When the operator was told this run never left 'preparing' (once per run). */
+  preparingNoticeAt?: string;
+  /** Send attempts for that notice; capped so a dead delivery path cannot loop. */
+  preparingNoticeAttempts?: number;
   endedAt?: string;
   endReason?: string;
   /** Monotone positive corroborations — a merged PR stays merged (R21). */
@@ -140,6 +144,13 @@ export interface AutonomousRunRecord {
   realcheckOutcomeByCorrelation?: Record<string, { outcome: 'pass' | 'fail'; observedAtMs: number; applied: boolean }>;
   /** Optional StandingDrive composition extension. Absent preserves plain-run behavior. */
   standingDrive?: StandingDriveExtensionV1;
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md §4): a CoS-started run. The Liveness
+   *  Reconciler and the silence backstop skip it whenever the operator check-in lease is
+   *  expired (enforced on read). Absent ⇒ not CoS-started. */
+  cosNoRespawn?: boolean;
+  /** Chief of Staff §2.4 step 3: the intent key this run was started under, so recovery can
+   *  find the receipt by key (never by "a session exists"). */
+  idempotencyKey?: string;
 }
 
 /** Which enrolled completion decision point a correlation id belongs to (§5.3).
@@ -165,6 +176,9 @@ export interface RegisterRunInput {
   maxDurationMs: number;
   /** W32 authority owns promotion when present; omitted preserves legacy behavior. */
   initialStatus?: 'preparing' | 'active';
+  /** Chief of Staff (see AutonomousRunRecord). */
+  cosNoRespawn?: boolean;
+  idempotencyKey?: string;
 }
 
 export type RegisterRunResult =
@@ -288,6 +302,24 @@ export class AutonomousRunStore {
     return true;
   }
 
+  /** Chief of Staff §2.4 recovery: the run registered under an intent key, or null. Reads the
+   *  current record per topic AND the archived predecessors it still holds in memory. */
+  findByIdempotencyKey(key: string): { runId: string; topicId: string; status: AutonomousRunStatus } | null {
+    if (!key) return null;
+    for (const rec of this.listCurrentRecords()) {
+      if (rec.idempotencyKey === key) return { runId: rec.runId, topicId: rec.topicId, status: rec.status };
+    }
+    return null;
+  }
+
+  /** Chief of Staff §2.4 run-state eligibility: 'open' (preparing/active/at-risk & unexpired —
+   *  blocks), 'history' (any terminal or expired-by-time record — does not block), 'none'. */
+  blockingStateForTopic(topicId: string, now: number = Date.now()): 'none' | 'history' | 'open' {
+    const rec = this.getRecord(String(topicId));
+    if (!rec) return 'none';
+    return this.isOpen(rec, now) ? 'open' : 'history';
+  }
+
   /** Non-terminal registration, including W32 pre-active/demoted states. */
   isOpen(rec: AutonomousRunRecord, now: number = Date.now()): boolean {
     if (!['preparing', 'active', 'at-risk'].includes(rec.status)) return false;
@@ -295,8 +327,17 @@ export class AutonomousRunStore {
     return !Number.isFinite(end) || now <= end;
   }
 
+  /** Every open (preparing / active / at-risk, unexpired) registered run on this server. */
+  listOpen(now: number = Date.now()): AutonomousRunRecord[] {
+    return this.listCurrentRecords().filter((rec) => this.isOpen(rec, now));
+  }
+
   /** Every currently-active registered run on this server (R35 arming). */
   listActive(now: number = Date.now()): AutonomousRunRecord[] {
+    return this.listCurrentRecords().filter((rec) => this.isActive(rec, now));
+  }
+
+  private listCurrentRecords(): AutonomousRunRecord[] {
     let names: string[] = [];
     try {
       names = fs.readdirSync(this.dir);
@@ -311,7 +352,7 @@ export class AutonomousRunStore {
       if (!n.endsWith('.json') || n.endsWith('.archived.json') || n.includes('.artifacts.')) continue;
       if (n === 'session-map.json' || n === 'conformance-invocations.json' || n === 'index.json') continue;
       const rec = this.readRecordFile(path.join(this.dir, n));
-      if (rec && this.isActive(rec, now)) out.push(rec);
+      if (rec) out.push(rec);
     }
     return out;
   }
@@ -356,6 +397,8 @@ export class AutonomousRunStore {
       baseRoots: input.baseRoots,
       worktreeFirstSeen: {},
       status: input.initialStatus ?? 'active',
+      ...(input.cosNoRespawn ? { cosNoRespawn: true } : {}),
+      ...(input.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey).slice(0, 300) } : {}),
       corroborated: {},
       negativeCache: {},
       ratifiedArtifacts: [],
@@ -432,6 +475,11 @@ export class AutonomousRunStore {
       this.writeRecord(rec);
       return rec;
     });
+  }
+
+  /** The current record carrying `runId`, on any topic (Chief of Staff compensation by exact run id, spec §2.4 step 5). */
+  findByRunId(runId: string): AutonomousRunRecord | null {
+    return this.listCurrentRecords().find((r) => r.runId === runId) ?? null;
   }
 
   markTerminal(topicId: string, runId: string, status: 'met' | 'ended' | 'expired', reason?: string): AutonomousRunRecord | null {

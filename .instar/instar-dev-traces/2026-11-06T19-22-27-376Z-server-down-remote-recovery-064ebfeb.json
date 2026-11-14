@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "server-down-remote-recovery",
+  "sessionId": "0200696a-db4c-40a6-b09e-8cd9c69bc69f",
+  "timestamp": "2026-11-06T19:22:27.376Z",
+  "artifactPath": "upgrades/side-effects/server-down-remote-recovery.md",
+  "artifactSha256": "dc473c9ac49e57f8ed3a23c7cb4df143d3bc562e98f9a2ea840d6dcbce88f75f",
+  "specPath": "docs/specs/server-down-remote-recovery.md",
+  "coveredFiles": [
+    "docs/verification/server-down-recovery-1106/README.md",
+    "docs/verification/server-down-recovery-1106/gate-environment.json",
+    "tests/e2e/threadline/inbound-id-cross-namespace-alive.test.ts",
+    "tests/e2e/threadline/pairing-enable-without-restart.test.ts",
+    "upgrades/side-effects/server-down-remote-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Final scoped E2E fixture isolation and capability evidence preserve the reviewed recovery feature.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -41,6 +41,7 @@ describe('Inter-Agent Messaging API routes', () => {
   let app: ReturnType<AgentServer['getApp']>;
   let relayAgentToken: string;
   const AUTH_TOKEN = 'test-auth-messaging';
+  const injected: Array<{ session: string; text: string }> = [];
 
   beforeAll(async () => {
     project = createTempProject();
@@ -56,9 +57,10 @@ describe('Inter-Agent Messaging API routes', () => {
     const formatter = new MessageFormatter();
     const mockTmux = {
       getForegroundProcess: () => 'bash',
-      isSessionAlive: () => true,
+      // 'dead-session' models a target that is not running (same-agent → queued).
+      isSessionAlive: (s: string) => s !== 'dead-session',
       hasActiveHumanInput: () => false,
-      sendKeys: () => true,
+      sendKeys: (s: string, text: string) => { injected.push({ session: s, text }); return true; },
       getOutputLineCount: () => 100,
     };
     const delivery = new MessageDelivery(formatter, mockTmux);
@@ -147,8 +149,11 @@ describe('Inter-Agent Messaging API routes', () => {
   // ── POST /messages/send ─────────────────────────────────────────
 
   describe('POST /messages/send', () => {
-    it('creates and sends a local message (201, phase=sent)', async () => {
-      // Send to a different session on the SAME agent → stays local, no routing
+    it('delivers a same-agent message into the named session (201, phase=delivered)', async () => {
+      // Send to a different session on the SAME agent → typed into that session.
+      // Before 2026-11-03 this stayed 'sent' and never arrived (Echo Bugs topic
+      // 10000001474), which pushed sessions onto the user's Telegram topic.
+      injected.length = 0;
       const res = await request(app)
         .post('/messages/send')
         .set('Authorization', `Bearer ${AUTH_TOKEN}`)
@@ -163,7 +168,31 @@ describe('Inter-Agent Messaging API routes', () => {
         .expect(201);
 
       expect(res.body.messageId).toBeDefined();
-      expect(res.body.phase).toBe('sent');
+      expect(res.body.phase).toBe('delivered');
+      expect(injected).toHaveLength(1);
+      expect(injected[0].session).toBe('session-2');
+      expect(injected[0].text).toContain('Hello from integration test');
+      expect(injected[0].text).toContain('POST /messages/send to session "session-1"');
+      const stored = await messageStore.get(res.body.messageId);
+      expect(stored!.delivery.phase).toBe('delivered');
+    });
+
+    it('queues a same-agent message whose target session is not running (201, phase=queued)', async () => {
+      const res = await request(app)
+        .post('/messages/send')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+        .send({
+          from: { agent: 'test-agent', session: 'session-1', machine: 'test-machine' },
+          to: { agent: 'test-agent', session: 'dead-session', machine: 'local' },
+          type: 'handoff',
+          priority: 'medium',
+          subject: 'Handoff',
+          body: 'For a session that is not up yet',
+        })
+        .expect(201);
+      expect(res.body.phase).toBe('queued');
+      const stored = await messageStore.get(res.body.messageId);
+      expect(stored!.delivery.failureReason).toBe('Session not alive');
     });
 
     it('routes cross-agent message and queues when target offline (201, phase=queued)', async () => {
@@ -546,13 +575,13 @@ describe('Inter-Agent Messaging API routes', () => {
     });
 
     it('ack on sent-but-not-delivered message is no-op (invalid transition)', async () => {
-      // Send a message (stays in 'sent' phase for local delivery)
+      // An unresolved 'best' target stays in 'sent' (no session to type into)
       const sendRes = await request(app)
         .post('/messages/send')
         .set('Authorization', `Bearer ${AUTH_TOKEN}`)
         .send({
           from: { agent: 'test-agent', session: 'ack-edge-1', machine: 'test-machine' },
-          to: { agent: 'test-agent', session: 'ack-edge-2', machine: 'local' },
+          to: { agent: 'test-agent', session: 'best', machine: 'local' },
           type: 'info',
           priority: 'low',
           subject: 'Premature ack test',
@@ -720,22 +749,13 @@ describe('Inter-Agent Messaging API routes', () => {
 
       const id = sendRes.body.messageId;
 
-      // Phase 1: 'sent'
+      // Phases 1–2: 'sent' then 'delivered' — the router types a same-agent
+      // message into its named session as part of the send.
       let msg = await messageStore.get(id);
-      expect(msg!.delivery.phase).toBe('sent');
-      expect(msg!.delivery.transitions.length).toBe(1);
-      expect(msg!.delivery.transitions[0].from).toBe('created');
-      expect(msg!.delivery.transitions[0].to).toBe('sent');
-
-      // Simulate Phase 2: 'delivered'
-      await messageStore.updateDelivery(id, {
-        phase: 'delivered',
-        transitions: [
-          ...msg!.delivery.transitions,
-          { from: 'sent', to: 'delivered', at: new Date().toISOString() },
-        ],
-        attempts: 1,
-      });
+      expect(msg!.delivery.phase).toBe('delivered');
+      expect(msg!.delivery.transitions.length).toBe(2);
+      expect(msg!.delivery.transitions[0]).toMatchObject({ from: 'created', to: 'sent' });
+      expect(msg!.delivery.transitions[1]).toMatchObject({ from: 'sent', to: 'delivered' });
 
       // Phase 3: 'read' via ack
       await request(app)

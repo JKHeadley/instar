@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-target-bootstrap",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T03:25:49.310Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-target-bootstrap.md",
+  "artifactSha256": "415e97b2ff3384f6bdbabd6d70865f43ca43bc8b57b638dec4835c9bd4a4578c",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "tests/unit/remote-desktop-delivery-parity.test.ts",
+    "upgrades/side-effects/native-remote-desktop-target-bootstrap.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This corrects the security-sensitive desktop diagnostic trace and migration parity test; the release still requires all three test tiers.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

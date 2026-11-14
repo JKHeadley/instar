@@ -11,14 +11,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { markPlannedRestartDeferred, VERIFY_RESTART_HOLD_MS } from '../../../src/core/PlannedRestartVerifyGuard.js';
 import {
-  LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, MERGE_LINE,
-  MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
+  LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, decideStarved, INTERRUPTION_LIMITS, MERGE_LINE,
+  MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, capFor, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
   type LocalVerifyServiceSeams, type PrView, type InFlightIntent, type MergeHandoffResult,
 } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
+import { PreflightReplayStore, replayKey, REPLAY_ADMISSION_MAX } from '../../../src/localVerify/preflightReplay.js';
 
 const REPO = 'JKHeadley/instar';
 const sha = (c: string) => c.repeat(40);
@@ -44,7 +46,7 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; token: string; resolve: (x: { status: number | null; signal: string | null }) => void; intentAtSpawn: InFlightIntent | null }
 
-function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string } = {}) {
+function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
@@ -65,6 +67,8 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const starved: Array<{ pr: number }> = [];
   const records: LocalVerifyRecord[] = [];
   const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+  const degradations: Array<Record<string, unknown>> = [];
+  const priorities: boolean[] = [];
   let holders: number[] = [];
   /** What the verifier files on disk compute right now; null (the default) = unknown, never holds. */
   let diskVersion: string | null = null;
@@ -91,8 +95,11 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     killGroup: (g, s) => { kills.push({ pgid: g, signal: s }); if (!stubborn.has(g)) alive.delete(g); },
     readProcessArgs: async (p) => procArgs.get(p) ?? null,
     foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
+    suiteCapacity: () => opts.suiteCap ?? 1,
+    setSuitePriority: (active) => { priorities.push(active); },
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
+    onDegradation: (e) => { degradations.push(e as unknown as Record<string, unknown>); },
     signal: (key, detail) => { signals.push({ key, detail }); },
     installedVerifierVersion: () => diskVersion,
     now: () => t,
@@ -115,7 +122,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, degradations, priorities, intentPath,
     setHolders: (h: number[]) => { holders = h; },
     setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
@@ -124,6 +131,300 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
 }
 
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
+
+const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
+  mode: 'enforce', outcome: 'red', reason: 'preflight-red', elapsedMs: 1000, changedFiles: 1,
+  selectedFiles: ['tests/unit/a.test.ts'], selectedCases: 1, repeatedFailedFile: 'tests/unit/a.test.ts',
+  headSha: sha('a'), baseSha: sha('b'),
+} });
+
+describe('degradations carried by the run child', () => {
+  it('hands each degradation in the result to the seam, and the record still lands', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    const d = { feature: 'LocalVerify.keptList', primary: 'kept-failed.json names kept runs', fallback: 'left untouched', reason: 'not a JSON array', impact: 'nothing swept' };
+    await h.finish(0, { ...ok(record({ outcome: 'success' })), degradations: [d] });
+    expect(h.degradations).toEqual([d]);
+    expect(h.records).toHaveLength(1);
+  });
+
+  it('a result without degradations calls the seam for none', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(record({ outcome: 'success' })));
+    expect(h.degradations).toEqual([]);
+  });
+});
+
+describe('automatic full-suite replay after enforced preflight red', () => {
+  it('bypasses preflight on a fresh-tree retry after a preflight cleanup error', async () => {
+    const h = setup({ views: { 1: view() } });
+    h.svc.setPreflightMode(() => 'enforce');
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    await h.finish(0, ok(record({ outcome: 'error', errorStep: 'preflight-dirty-tree', lanes: [] })));
+    expect(h.spawned).toHaveLength(2);
+    const args = h.spawned[1].args;
+    const input = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+    expect(fs.readFileSync(h.svc.auditPath, 'utf8')).toContain('"event":"error-auto-retry"');
+  });
+  it('persists before red publication, joins a same-head request, and supersedes red with full green', async () => {
+    const h = setup({ views: { 1: view() } });
+    h.svc.setPreflightMode(() => 'enforce');
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    await h.finish(0, ok(preflightRed()));
+    const key = replayKey(preflightRed());
+    const store = () => new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    expect(store().get(key)?.state).toBe('pending');
+    expect(h.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    // The service's deterministic fake timer runs the pending admission poll.
+    h.timers.shift()?.();
+    await h.flush();
+    await h.flush();
+    expect(h.spawned).toHaveLength(2);
+    const args = h.spawned[1].args;
+    const input = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+    expect(store().get(key)?.state).toBe('running');
+    expect((await h.svc.request(1)).ok).toBe(true);
+    await h.finish(1, ok(record()));
+    expect(store().get(key)?.state).toBe('completed');
+    expect(h.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(fs.readFileSync(h.svc.auditPath, 'utf8')).toContain('"event":"preflight-false-red"');
+  });
+  it('reconstructs one obligation from a published red when the marker was lost before restart', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(preflightRed()));
+    const file = path.join(h.stateDir, 'state', 'local-verify', 'preflight-replays.json');
+    SafeFsExecutor.safeUnlinkSync(file, { operation: 'LocalVerifyService.test.ts:simulate-lost-replay-marker' });
+    h.svc.shutdown();
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    const marker = new PreflightReplayStore(path.join(h.stateDir, 'state')).get(replayKey(preflightRed()));
+    expect(marker?.state).toBe('pending');
+    expect(restarted.svc.getRecord(1, sha('a'), 'main')?.preflight?.reason).toBe('preflight-red');
+    restarted.svc.shutdown();
+  });
+  it('cancels a phantom marker when publication of its red record was interrupted', async () => {
+    const h = setup({ views: { 1: view() } });
+    const store = new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    store.ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z'));
+    h.svc.shutdown();
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    expect(new PreflightReplayStore(path.join(h.stateDir, 'state')).get(replayKey(preflightRed()))).toBeNull();
+    restarted.svc.shutdown();
+  });
+  it('gives a blocked same-head replay one chance after a verifier upgrade', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(preflightRed()));
+    const store = new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    const key = replayKey(preflightRed());
+    for (let n = 0; n < REPLAY_ADMISSION_MAX; n++) store.admissionFailed(key, Date.parse('2026-10-21T12:00:00Z') + n, 'queue-full');
+    expect(store.get(key)?.state).toBe('blocked');
+    h.svc.shutdown();
+    const upgraded = setup({ stateDir: h.stateDir, views: { 1: view() }, verifierVersion: '2.0.0' });
+    await upgraded.svc.boot();
+    const rearmed = new PreflightReplayStore(path.join(h.stateDir, 'state')).get(key);
+    expect(rearmed).toMatchObject({ state: 'pending', rearmed: true, admissionAttempts: 0, verifierVersion: '1.0.0' });
+    upgraded.svc.shutdown();
+  });
+  it('preserves a completed replay after its red journal proof was compacted and the verifier upgraded', async () => {
+    const h = setup({ views: { 1: view() } });
+    const store = new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    const key = store.ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z')).key;
+    store.completeFromJournal(key, Date.parse('2026-10-21T12:01:00Z'));
+    // Compaction retained only the full green record; the old verifier version
+    // makes even that record ineligible for the upgraded server's live index.
+    fs.writeFileSync(h.svc.journalPath, JSON.stringify({ v: 1, writtenAt: '2026-10-21T12:02:00Z', record: record() }) + '\n');
+    h.svc.shutdown();
+    const upgraded = setup({ stateDir: h.stateDir, views: { 1: view() }, verifierVersion: '2.0.0' });
+    await upgraded.svc.boot();
+    expect(new PreflightReplayStore(path.join(h.stateDir, 'state')).get(key)?.state).toBe('completed');
+    upgraded.svc.setPreflightMode(() => 'enforce');
+    expect((await upgraded.svc.request(1, { explicit: false })).ok).toBe(true);
+    const args = upgraded.spawned[0].args;
+    const input = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+    upgraded.svc.shutdown();
+  });
+  it('lets the replay marker, not a restored queue copy, enforce restart backoff and the breaker', async () => {
+    const h = setup({ views: { 1: view() } });
+    const state = path.join(h.stateDir, 'state');
+    const store = new PreflightReplayStore(state);
+    const key = store.ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z')).key;
+    store.admitted(key, Date.parse('2026-10-21T12:00:01Z'));
+    fs.writeFileSync(h.svc.journalPath, JSON.stringify({ v: 1, writtenAt: '2026-10-21T12:00:00Z', record: preflightRed() }) + '\n');
+    h.svc.shutdown();
+    fs.writeFileSync(h.svc.queuePath, JSON.stringify({ v: 1, entries: [{
+      pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main',
+      firstQueuedAt: Date.parse('2026-10-21T12:00:00Z'), attempts: 1, errorRetries: 0,
+      starvedRaised: false, inFlight: true,
+    }] }));
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    expect(new PreflightReplayStore(state).get(key)).toMatchObject({ state: 'retryable-error', executionAttempts: 1 });
+    expect(restarted.svc.snapshot().queue).toHaveLength(0);
+    expect(restarted.spawned).toHaveLength(0);
+    expect(fs.readFileSync(restarted.svc.auditPath, 'utf8')).toContain('"reason":"replay-managed"');
+    restarted.svc.shutdown();
+  });
+  describe('rebuildIndex reads open PRs in one call', () => {
+    const seed = (h: ReturnType<typeof setup>, prs: number[]) => {
+      fs.mkdirSync(path.dirname(h.svc.journalPath), { recursive: true });
+      fs.writeFileSync(h.svc.journalPath, prs.map((pr, n) => JSON.stringify({ v: 1, writtenAt: new Date(Date.parse('2026-10-21T12:00:00Z') + n).toISOString(), record: record({ pr }) })).join('\n') + '\n');
+    };
+    const seamsOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const countIsPrOpen = (h: ReturnType<typeof setup>) => {
+      const counter = { calls: 0 };
+      const original = seamsOf(h).isPrOpen;
+      seamsOf(h).isPrOpen = async (pr) => { counter.calls += 1; return original(pr); };
+      return counter;
+    };
+
+    it('makes no per-PR call when the list is available, and treats a PR missing from it as not open', async () => {
+      const h = setup();
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set([1, 3]); };
+      const res = await h.svc.rebuildIndex();
+      expect(lists).toBe(1);
+      expect(perPr.calls).toBe(0);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+
+    it('makes no GitHub call at all for an empty journal', async () => {
+      const h = setup();
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set<number>(); };
+      await h.svc.rebuildIndex();
+      expect(lists).toBe(0);
+      h.svc.shutdown();
+    });
+
+    it('gives the same answer as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      expect(await viaList.svc.rebuildIndex()).toEqual(await viaPerPr.svc.rebuildIndex());
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    const closedSeenOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { readClosedSeen(): Record<number, number> }).readClosedSeen();
+    const journalPrs = (h: ReturnType<typeof setup>) => fs.readFileSync(h.svc.journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => (JSON.parse(l) as { record: { pr: number } }).record.pr).sort();
+
+    it('starts the retention clock for a PR missing from the list, and writes the same state as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      await viaList.svc.rebuildIndex();
+      await viaPerPr.svc.rebuildIndex();
+      expect(Object.keys(closedSeenOf(viaList))).toEqual(['2']);
+      expect(closedSeenOf(viaList)).toEqual(closedSeenOf(viaPerPr));
+      expect(journalPrs(viaList)).toEqual(journalPrs(viaPerPr));
+      const key = (h: ReturnType<typeof setup>, pr: number) => h.svc.getRecord(pr, record({ pr }).headSha, 'main') !== null;
+      for (const h of [viaList, viaPerPr]) expect([1, 2, 3].map((pr) => key(h, pr))).toEqual([true, false, true]);
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    it('clears the clock when a later list shows the PR open again', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeDefined();
+      seamsOf(h).listOpenPrs = async () => new Set([1, 2]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('drops a listed-missing PR from the journal only after the retention window', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1, 2]);
+      h.advance(LOCAL_VERIFY_LIMITS.retentionAfterCloseMs + 1);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1]);
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('a PR GitHub cannot resolve: unknown and kept on the per-PR path, closed on the list path', async () => {
+      const perPr = setup({ open: { 2: null } });
+      seed(perPr, [1, 2]);
+      await perPr.svc.rebuildIndex();
+      expect(closedSeenOf(perPr)[2]).toBeUndefined();
+      const viaList = setup();
+      seed(viaList, [1, 2]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1]);
+      await viaList.svc.rebuildIndex();
+      expect(closedSeenOf(viaList)[2]).toBeDefined();
+      perPr.svc.shutdown();
+      viaList.svc.shutdown();
+    });
+
+    it.each([
+      ['returns null', async () => null],
+      ['throws', async () => { throw new Error('gh down'); }],
+    ])('falls back to one read per PR when the list %s', async (_label, listOpenPrs) => {
+      const h = setup({ open: { 2: false } });
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      seamsOf(h).listOpenPrs = listOpenPrs as LocalVerifyServiceSeams['listOpenPrs'];
+      const res = await h.svc.rebuildIndex();
+      expect(perPr.calls).toBe(3);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+  });
+  it('keeps the journal cap when pending replay proofs fill every slot', async () => {
+    const h = setup();
+    const state = path.join(h.stateDir, 'state');
+    const sample = new PreflightReplayStore(state).ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z'));
+    const reds = Array.from({ length: LOCAL_VERIFY_LIMITS.journalCap }, (_, n) => ({ ...preflightRed(), pr: n + 1 }));
+    const entries = reds.map((r) => ({ ...sample, pr: r.pr, key: replayKey(r) }));
+    fs.writeFileSync(path.join(state, 'local-verify', 'preflight-replays.json'), JSON.stringify({ v: 1, entries }));
+    const lines = [...reds, record({ pr: LOCAL_VERIFY_LIMITS.journalCap + 1 })]
+      .map((r, n) => JSON.stringify({ v: 1, writtenAt: new Date(Date.parse('2026-10-21T12:00:00Z') + n).toISOString(), record: r }));
+    fs.writeFileSync(h.svc.journalPath, lines.join('\n') + '\n');
+    const restarted = setup({ stateDir: h.stateDir });
+    await restarted.svc.rebuildIndex();
+    expect(fs.readFileSync(h.svc.journalPath, 'utf8').trim().split('\n')).toHaveLength(LOCAL_VERIFY_LIMITS.journalCap);
+    expect(fs.readFileSync(h.svc.journalPath, 'utf8')).not.toContain(`"pr":${LOCAL_VERIFY_LIMITS.journalCap + 1}`);
+    restarted.svc.shutdown();
+  });
+  it('runs in observe mode at capacity, then reclaims a closed terminal key in a bounded tick', async () => {
+    const h = setup({ views: { 1: view() } });
+    const state = path.join(h.stateDir, 'state');
+    const sample = new PreflightReplayStore(state).ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z'));
+    const entries = Array.from({ length: 500 }, (_, n) => ({ ...sample, pr: n + 1,
+      key: replayKey({ ...preflightRed(), pr: n + 1 }), state: 'completed' as const }));
+    fs.writeFileSync(path.join(state, 'local-verify', 'preflight-replays.json'), JSON.stringify({ v: 1, entries }));
+    h.svc.shutdown();
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() }, open: { 1: false } });
+    restarted.svc.setPreflightMode(() => 'enforce');
+    expect(restarted.svc.snapshot().preflight.mode).toBe('observe');
+    await restarted.svc.tick();
+    expect(restarted.svc.snapshot().preflight.mode).toBe('enforce');
+    restarted.svc.shutdown();
+  });
+});
 
 describe('checkEligibility', () => {
   const logins = { expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley' };
@@ -189,6 +490,78 @@ describe('request + queue', () => {
     expect(await s.svc.request(1)).toMatchObject({ ok: true, status: 'in-flight' });
   });
 
+  it('a full queue still admits a merge-throughput PR, up to the bounded overflow, at the head of the PR order', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 11; i++) views[i] = view({ headRefOid: sha(String(i % 10)), baseRefOid: sha('b') });
+    views[11] = view({ headRefOid: sha('e') });
+    const cap = LOCAL_VERIFY_LIMITS.queueCap, over = LOCAL_VERIFY_LIMITS.throughputOverflow;
+    for (let k = 0; k <= over; k++) views[100 + k] = view({ headRefOid: `${'a'.repeat(39)}${k.toString(16)}`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    views[200] = view({ headRefOid: `${'c'.repeat(39)}1` });
+    const s = setup({ views });
+    for (let i = 1; i <= 11; i++) expect((await s.svc.request(i)).ok).toBe(true);
+    expect(s.svc.snapshot().queue).toHaveLength(cap);
+    for (let k = 0; k < over; k++) expect(await s.svc.request(100 + k)).toMatchObject({ ok: true, status: 'queued' });
+    expect(s.svc.snapshot().queue).toHaveLength(cap + over);
+    // The overflow is bounded, and an ordinary PR is still refused.
+    expect(await s.svc.request(100 + over)).toEqual({ ok: false, code: 'queue-full' });
+    expect(await s.svc.request(200)).toEqual({ ok: false, code: 'queue-full' });
+    expect(capFor(QUEUE_PRIORITY.mergeThroughput)).toBe(cap + over);
+    expect(capFor(QUEUE_PRIORITY.ordinary)).toBe(cap);
+  });
+
+  it('an ordinary queued PR whose head moves keeps its place while the overflow is in use', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 11; i++) views[i] = view({ headRefOid: sha(String(i % 10)), baseRefOid: sha('b') });
+    views[11] = view({ headRefOid: sha('e') });
+    views[100] = view({ headRefOid: `${'a'.repeat(39)}1`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const s = setup({ views });
+    for (let i = 1; i <= 11; i++) await s.svc.request(i);
+    await s.svc.request(100); // the queue is now 10 ordinary + 1 labelled
+    const before = s.svc.snapshot().queue.map((e) => e.pr);
+    s.views[5] = view({ headRefOid: `${'c'.repeat(39)}5`, baseRefOid: sha('b') }); // a new push
+    expect(await s.svc.request(5)).toMatchObject({ ok: true, status: 'queued' });
+    const q = s.svc.snapshot().queue;
+    expect(q.map((e) => e.pr)).toEqual(before);
+    expect(q.find((e) => e.pr === 5)?.headSha).toBe(`${'c'.repeat(39)}5`);
+  });
+
+  it('a restart with a run in flight and the overflow full restores every entry', async () => {
+    const cap = LOCAL_VERIFY_LIMITS.queueCap, over = LOCAL_VERIFY_LIMITS.throughputOverflow;
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= cap + 1; i++) views[i] = view({ headRefOid: `${'d'.repeat(38)}${i.toString(16).padStart(2, '0')}`, baseRefOid: sha('b') });
+    for (let k = 0; k < over; k++) views[100 + k] = view({ headRefOid: `${'a'.repeat(39)}${k.toString(16)}`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const s = setup({ views });
+    for (let i = 1; i <= cap + 1; i++) await s.svc.request(i); // one runs, cap wait
+    for (let k = 0; k < over; k++) expect(await s.svc.request(100 + k)).toMatchObject({ ok: true, status: 'queued' });
+    const before = [...s.svc.snapshot().queue.map((e) => e.pr), 1].sort((a, b) => a - b);
+    s.svc.shutdown();
+    const s2 = setup({ stateDir: s.stateDir, views: s.views });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue.map((e) => e.pr).sort((a, b) => a - b)).toEqual(before);
+  });
+
+  it('labelled PRs admitted past the cap survive a restart (the restore uses the same bounded cap)', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 11; i++) views[i] = view({ headRefOid: sha(String(i % 10)), baseRefOid: sha('b') });
+    views[11] = view({ headRefOid: sha('e') });
+    views[100] = view({ headRefOid: `${'a'.repeat(39)}1`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    views[101] = view({ headRefOid: `${'a'.repeat(39)}2`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const s = setup({ views });
+    for (let i = 1; i <= 11; i++) await s.svc.request(i);
+    await s.svc.request(100);
+    await s.svc.request(101);
+    const before = s.svc.snapshot().queue.map((e) => e.pr).sort((a, b) => a - b);
+    expect(before).toContain(100);
+    expect(before).toContain(101);
+    s.svc.shutdown();
+    const s2 = setup({ stateDir: s.stateDir, views: s.views });
+    await s2.svc.boot();
+    const after = s2.svc.snapshot().queue.map((e) => e.pr).sort((a, b) => a - b);
+    // Every durably queued entry comes back (the ordinary ones below the cap and the labelled
+    // overflow), plus the in-flight run, which shutdown puts back at the head.
+    expect(after).toEqual([...before, 1].sort((a, b) => a - b));
+  });
+
   it('a moved head replaces the pending entry', async () => {
     const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
     await s.svc.request(1);
@@ -245,6 +618,9 @@ describe('merge-throughput label priority', () => {
     expect(effectivePriority({ priority: 0, firstQueuedAt: t0 }, t0 + THROUGHPUT_AGING_MS)).toBe(QUEUE_PRIORITY.mergeThroughput);
     expect(effectivePriority({ priority: 0, firstQueuedAt: t0, pausedMs: 10 * MIN }, t0 + THROUGHPUT_AGING_MS)).toBe(0);
     expect(effectivePriority({ priority: QUEUE_PRIORITY.mergeThroughput, firstQueuedAt: t0 }, t0 + 10 * THROUGHPUT_AGING_MS)).toBe(QUEUE_PRIORITY.mergeThroughput);
+    // A PR that waited outside the queue (first refused earlier) ages from that refusal.
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0, firstRefusedAt: t0 - THROUGHPUT_AGING_MS }, t0)).toBe(QUEUE_PRIORITY.mergeThroughput);
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0, firstRefusedAt: t0 - 1 }, t0)).toBe(0);
     expect(effectivePriority({ priority: QUEUE_PRIORITY.main, kind: 'main', firstQueuedAt: t0 }, t0)).toBe(QUEUE_PRIORITY.main);
     // The bound sits well inside the starved alarm, which is unchanged.
     expect(THROUGHPUT_AGING_MS).toBeLessThan(LOCAL_VERIFY_LIMITS.starvedAfterMs);
@@ -393,6 +769,66 @@ describe('retry table', () => {
 });
 
 describe('single flight and starvation', () => {
+  it('keeps renewing the next suite slot through child preparation, then releases it on exit', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([4242]);
+    await s.svc.request(1);
+    expect(s.priorities.at(-1)).toBe(true);
+    expect(s.spawned).toHaveLength(0);
+    s.setHolders([]);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1);
+    expect(s.priorities.at(-1)).toBe(true);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(true);
+    // Another holder does not complete the handoff; the child's own PID does.
+    s.setHolders([4242]);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(true);
+    s.setHolders([s.spawned[0].pid]);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(false);
+    await s.finish(0, ok(record()));
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
+  it('keeps the next-slot claim while one verify holds the only suite slot and another is queued', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('b') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    expect(s.spawned).toHaveLength(1);
+    s.setHolders([s.spawned[0].pid]);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(true);
+  });
+
+  it('leaves a spare suite slot available when the host cap exceeds one', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('b') }) }, suiteCap: 2 });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.setHolders([s.spawned[0].pid]);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
+  it('clears the claim when shutdown stops the queued verifier', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([4242]);
+    await s.svc.request(1);
+    s.svc.shutdown();
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
+  it('clears the claim if the queued verifier is held by a changed installed version', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([4242]);
+    await s.svc.request(1);
+    expect(s.priorities.at(-1)).toBe(true);
+    s.setDiskVersion('vh3:changed');
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
   it('does not start while a foreign full suite holds the slot; starts once it is gone', async () => {
     const s = setup({ views: { 1: view() } });
     s.setHolders([4242]);
@@ -415,7 +851,7 @@ describe('single flight and starvation', () => {
     s.advance(2000);
     await s.svc.tick();
     await s.svc.tick();
-    expect(s.starved).toEqual([{ pr: 1, headSha: sha('a'), waitedMs: LOCAL_VERIFY_LIMITS.starvedAfterMs + 1000 }]);
+    expect(s.starved).toEqual([{ pr: 1, headSha: sha('a'), waitedMs: LOCAL_VERIFY_LIMITS.starvedAfterMs + 1000, interruptions: 0, reason: 'waited' }]);
   });
 });
 
@@ -546,13 +982,27 @@ describe('restart hold', () => {
     expect(restartHoldUntil(0, 0, 4 * H)).toBe(LOCAL_VERIFY_DEADLINES.totalActiveMs + 2 * LOCAL_VERIFY_LIMITS.waitInPlaceMs);
   });
 
+  it('retains the child preflight allowance when the live mode changes during an update wait', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setPreflightMode(() => 'observe');
+    await s.svc.request(1);
+    const startedAt = Date.parse('2026-10-21T12:00:00.000Z');
+    const fullCeiling = startedAt + LOCAL_VERIFY_DEADLINES.totalActiveMs + 2 * LOCAL_VERIFY_LIMITS.waitInPlaceMs;
+    expect(s.svc.restartHolds(4 * H)[0].until).toBe(fullCeiling + 90_000);
+    s.svc.setPreflightMode(() => 'off');
+    expect(s.svc.restartHolds(4 * H)[0].until).toBe(fullCeiling + 90_000);
+    await s.finish(0, ok(record()));
+  });
+
   describe('through the real AutoUpdater', () => {
     let tmp: string;
     const checker = () => ({ getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker);
     const state = () => ({ get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager);
-    const gated = (u: AutoUpdater, bypass: boolean) => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', bypass);
+    const gated = (u: AutoUpdater, bypassWindow: boolean, bypassHolds = false) =>
+      (u as unknown as { gatedRestart(v: string, w?: boolean, h?: boolean): Promise<void> })
+        .gatedRestart('0.9.9', bypassWindow, bypassHolds);
 
-    it('an automatic update waits for a running verify; a manual apply is not held', async () => {
+    it('automatic and manual updates wait for a running verify unless the caller explicitly forces a restart', async () => {
       tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-')));
       dirs.push(tmp);
       fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
@@ -573,12 +1023,57 @@ describe('restart hold', () => {
         registerLocalVerifyRestartHold(m, s.svc);
         await gated(m, true);
         await new Promise((r) => setTimeout(r, 50));
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(false);
+        expect(m.getStatus().restartDeferral?.currentBlockers).toEqual(['local-verify:pr-1']);
+        await gated(m, true, true);
+        await new Promise((r) => setTimeout(r, 50));
         expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
         m.stop();
       } finally {
         log.mockRestore();
       }
     });
+
+    it('when the verify ends, a restart deferred on its hold goes ahead at once (no 5-minute wait)', async () => {
+      tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-')));
+      dirs.push(tmp);
+      fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const s = setup({ views: { 1: view() } });
+        s.advance(Date.now() - Date.parse('2026-10-21T12:00:00.000Z'));
+        await s.svc.request(1);
+        const u = new AutoUpdater(checker(), state(), tmp, { preRestartDelaySecs: 0 });
+        u.setSessionDeps({ listRunningSessions: () => [] });
+        registerLocalVerifyRestartHold(u, s.svc);
+        await gated(u, false);
+        expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-1'] });
+        await s.finish(0, null); // the verify ends (here as a crash; any end releases the hold)
+        await new Promise((r) => setTimeout(r, 4_500));
+        // The restart went ahead on the run's end, long before the 300 s re-check, exactly once.
+        expect(log.mock.calls.some((c) => String(c[0]).includes('restart hold ended — attempting restart for v0.9.9'))).toBe(true);
+        expect(u.getStatus().restartDeferral).toBeNull();
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
+        expect(log.mock.calls.filter((c) => String(c[0]).includes('attempting restart for v0.9.9')).length).toBe(1);
+        expect(s.spawned).toHaveLength(1); // nothing new started while the update waited
+        u.stop();
+      } finally {
+        log.mockRestore();
+      }
+    }, 15_000);
+  });
+});
+
+describe('run-ended listener', () => {
+  it('fires once per run end, and a throwing listener never breaks the run bookkeeping', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let calls = 0;
+    s.svc.setRunEndedListener(() => { calls++; throw new Error('listener broke'); });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, null);
+    expect(calls).toBe(1);
+    expect(s.spawned).toHaveLength(2); // the next run still started
   });
 });
 
@@ -597,7 +1092,178 @@ describe('shutdown', () => {
     expect(s.svc.restartHolds(3_600_000)).toEqual([]);
     expect(await s.svc.request(3)).toEqual({ ok: false, code: 'stopping' });
     const q = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8'));
-    expect(q.entries.map((e: { pr: number; attempts: number }) => [e.pr, e.attempts])).toEqual([[1, 0], [2, 0]]);
+    // The killed run stays counted (attempt 1) and is recorded as an interruption.
+    expect(q.entries.map((e: { pr: number; attempts: number; interruptions?: number }) => [e.pr, e.attempts, e.interruptions ?? 0])).toEqual([[1, 1, 1], [2, 0, 0]]);
+    expect(q.entries[0].resumeFirst).toBe(true);
+  });
+});
+
+describe('decideStarved', () => {
+  const H = 60 * 60_000;
+  it('by the clock: past starvedAfterMs, once', () => {
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false }, 3 * H + 1)).toMatchObject({ raise: true, reason: 'waited' });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false }, 3 * H)).toMatchObject({ raise: false, reason: null });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: true }, 9 * H)).toMatchObject({ raise: false });
+  });
+  it('by interruptions: at INTERRUPTION_LIMITS.starvedAfter, without waiting for the clock', () => {
+    expect(INTERRUPTION_LIMITS.starvedAfter).toBe(2);
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false, interruptions: 1 }, H)).toMatchObject({ raise: false });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false, interruptions: 2 }, H)).toMatchObject({ raise: true, reason: 'interrupted' });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: true, interruptions: 5 }, H)).toMatchObject({ raise: false });
+  });
+});
+
+describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 0 recorded attempts)', () => {
+  const watermark = (dir: string, state: 'healthy' | 'main-suspect' | 'main-red') => {
+    fs.writeFileSync(path.join(dir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm1', state, redHead: state === 'main-red' ? sha('8') : null, lastGreenHead: null, reason: state === 'healthy' ? 'green' : 'boot-unknown', updatedAt: '2026-10-21T00:00:00.000Z',
+    }));
+  };
+  /** Run PR 1, stop the server mid-run, boot a fresh service on the same state dir. */
+  const interruptOnce = async (stateDir?: string) => {
+    const s = setup({ views: { 1: view() }, ...(stateDir ? { stateDir } : {}) });
+    if (stateDir) await s.svc.boot();
+    await s.svc.request(1);
+    await s.svc.tick();
+    s.svc.shutdown();
+    await s.finish(s.spawned.length - 1, null);
+    return s;
+  };
+
+  it('a stop records an interruption and keeps the attempt; the boot restores both', async () => {
+    const s = await interruptOnce();
+    const audit = fs.readFileSync(s.svc.auditPath, 'utf-8');
+    expect(audit).toContain('"event":"interrupted"');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue[0]).toMatchObject({ pr: 1, attempts: 1, interruptions: 1, resumeFirst: true });
+  });
+
+  it('one interruption does not raise starved; the second does, at once, with reason interrupted', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.starved).toHaveLength(0);
+    await s2.flush(); // a restored entry re-reads its base before it starts
+    expect(s2.spawned).toHaveLength(1); // it resumed
+    s2.svc.shutdown();
+    await s2.finish(0, null);
+    const s3 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s3.svc.boot();
+    await s3.svc.tick();
+    expect(s3.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2, reason: 'interrupted' })]);
+    await s3.svc.tick();
+    expect(s3.starved).toHaveLength(1); // once per entry
+  });
+
+  it('an interrupted PR starts ahead of a main verify queued at boot (main suspect)', async () => {
+    const s = await interruptOnce();
+    watermark(s.stateDir, 'main-suspect');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('9'));
+    await s2.svc.settle();
+    await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
+    expect(s2.spawned).toHaveLength(1);
+    expect(s2.spawned[0].args.join(' ')).not.toContain(sha('9'));
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    expect(s2.svc.snapshot().queue.map((e) => e.kind ?? e.pr)).toEqual(['main']);
+  });
+
+  it('without an interruption, the same boot starts main first (the suspect repair path is unchanged)', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([1]); // queued, never started
+    await s.svc.request(1);
+    s.svc.shutdown();
+    watermark(s.stateDir, 'main-suspect');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('9'));
+    await s2.svc.settle();
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ kind: 'main' });
+  });
+
+  it('with main known red, main keeps priority even over an interrupted PR', async () => {
+    const s = await interruptOnce();
+    watermark(s.stateDir, 'main-red');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('9'));
+    await s2.svc.settle();
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ kind: 'main' });
+  });
+
+  it('resumeFirst is cleared once it starts (it does not keep jumping ahead)', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
+    expect(s2.spawned).toHaveLength(1);
+    const saved = JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8'));
+    expect(saved.entries[0].resumeFirst).toBeUndefined();
+    expect(saved.entries[0].interruptions).toBe(1);
+  });
+
+  it('a twice-interrupted PR alarms at boot, before a main observation can start it ahead of the first tick', async () => {
+    const s = await interruptOnce();
+    const s2 = await interruptOnce(s.stateDir);
+    const s3 = setup({ stateDir: s2.stateDir, views: { 1: view() } });
+    await s3.svc.boot();
+    expect(s3.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2, reason: 'interrupted' })]);
+    expect(JSON.parse(fs.readFileSync(s3.svc.queuePath, 'utf-8')).entries[0]).toMatchObject({ pr: 1, starvedRaised: true });
+    s3.svc.noteMainHead(sha('9')); // pumps at once: the interrupted PR starts before any tick
+    await s3.svc.settle();
+    await s3.flush(); // a restored entry re-reads its base before it starts
+    expect(s3.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    await s3.svc.tick();
+    expect(s3.starved).toHaveLength(1); // once
+  });
+
+  it('the running entry is part of the starved check (an entry that reached two interruptions while in flight)', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    // Simulate the count crossing the threshold while it runs (a second interruption recorded on the live entry).
+    const live = (s2.svc as unknown as { inFlight: { entry: { interruptions?: number } } }).inFlight.entry;
+    live.interruptions = 2;
+    await s2.svc.tick();
+    expect(s2.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2 })]);
+  });
+
+  it('a push while an interrupted PR waits keeps its turn (resumeFirst) and starts its interruptions over', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    s2.setHolders([1]); // a foreign suite holds the slot: nothing starts, the entry stays queued
+    await s2.svc.boot();
+    s2.views[1] = view({ headRefOid: sha('c') });
+    await s2.svc.request(1); // the new head takes the old entry's slot
+    const e = s2.svc.snapshot().queue.find((q) => q.pr === 1)!;
+    expect(e).toMatchObject({ headSha: sha('c'), resumeFirst: true });
+    expect(e.interruptions).toBeUndefined();
+  });
+
+  it('a second unclean exit raises starved before the entry is dropped with its error record', async () => {
+    const s = setup({ views: { 1: view() } });
+    fs.writeFileSync(s.svc.queuePath, JSON.stringify({ v: 1, entries: [{ pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', firstQueuedAt: Date.parse('2026-10-21T11:00:00.000Z'), attempts: 2, errorRetries: 1, starvedRaised: false, interruptions: 1, inFlight: true }] }));
+    await s.svc.boot();
+    expect(s.svc.snapshot().queue).toHaveLength(0);
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'error', errorStep: 'server-restarted' });
+    expect(s.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2, reason: 'interrupted' })]);
+  });
+
+  it('an unclean exit (server died mid-run) also counts as an interruption', async () => {
+    const s = setup({ views: { 1: view() } });
+    fs.writeFileSync(s.svc.queuePath, JSON.stringify({ v: 1, entries: [{ pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', firstQueuedAt: Date.parse('2026-10-21T11:00:00.000Z'), attempts: 1, errorRetries: 0, starvedRaised: false, inFlight: true }] }));
+    await s.svc.boot();
+    expect(s.svc.snapshot().queue[0]).toMatchObject({ pr: 1, interruptions: 1, resumeFirst: true, errorRetries: 1 });
   });
 });
 
@@ -617,6 +1283,7 @@ describe('durable queue', () => {
     expect(q).toEqual([[1, sha('a')], [2, sha('c')]]); // 3 head moved, 4 closed
     expect(s2.svc.snapshot().queue[0].firstQueuedAt).toBe(saved.entries[0].firstQueuedAt);
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
     expect(s2.spawned[0].args.join(' ')).toContain('--input');
   });
@@ -629,11 +1296,13 @@ describe('durable queue', () => {
     s2.alive.add(pgid); // the old group still runs; its identity is unconfirmed
     await s2.svc.boot();
     await s2.svc.tick();
+    await s2.flush(); // a restored start is async now: without this the next line could not fail
     expect(s2.svc.snapshot().blocked).toBe(true);
     expect(s2.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]);
     expect(s2.spawned).toHaveLength(0);
     s2.alive.delete(pgid);
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
   });
 
@@ -956,6 +1625,9 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(decideBaseRefresh(e, { now: 6_000, mainMovedAt: 5_500 })).toBe(true);  // moved after
     expect(decideBaseRefresh({ ...e, baseRefName: 'dev' }, { now: 6_000, mainMovedAt: 5_500 })).toBe(false); // main is not its base
     expect(decideBaseRefresh(e, { now: 5_000 + MERGE_LINE.baseRefreshAfterMs, mainMovedAt: null })).toBe(true); // waited long enough
+    // Restored after a restart (never resolved by this process): always, even on a clock near zero and on any base branch.
+    expect(decideBaseRefresh({ ...e, baseResolvedAt: 0 }, { now: 1, mainMovedAt: null })).toBe(true);
+    expect(decideBaseRefresh({ ...e, baseRefName: 'dev', baseResolvedAt: 0 }, { now: 1, mainMovedAt: null })).toBe(true);
     expect(decideBaseRefresh({ baseRefName: 'main', firstQueuedAt: 1_000 }, { now: 1_000 + MERGE_LINE.baseRefreshAfterMs - 1, mainMovedAt: null })).toBe(false); // falls back to firstQueuedAt
     const base = { outcome: 'success' as const, wired: true, stopped: false, holdOpen: false };
     expect(decideMergeHandoff(base)).toEqual({ handoff: true });
@@ -1242,6 +1914,75 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(s2.svc.snapshot().mergeLine.lastOutcome).toBe('error:watcher down');
   });
 
+  it('a planned restart waits for the merge: the hold marker is there before the run marker goes, and it ends with the hand-off', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    const holdFile = path.join(s.stateDir, 'state', 'local-verify', 'merge-hold.json');
+    const phase = () => (fs.existsSync(holdFile) ? (JSON.parse(fs.readFileSync(holdFile, 'utf-8')) as { v: number; phase: string }).phase : null);
+    const seen: Array<{ run: boolean; hold: string | null }> = [];
+    s.svc.setRunEndedListener(() => { seen.push({ run: fs.existsSync(s.intentPath), hold: phase() }); });
+    let answer!: (r: MergeHandoffResult) => void;
+    s.svc.setMergeHandoff(() => new Promise((r) => { answer = r; }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    // The run child is gone and the hand-off is open: the restart guard still has a marker, and
+    // nothing told a waiting restart to go in between.
+    expect(fs.existsSync(s.intentPath)).toBe(false);
+    expect(phase()).toBe('handoff');
+    expect(seen).toEqual([]);
+    expect(s.svc.restartHolds(3_600_000).map((h) => h.name)).toEqual(['local-verify:merge-pr-1']);
+    s.advance(10 * 60_000); // bounded: ten minutes after the hand-off opened the updater stops waiting
+    expect(s.svc.restartHolds(3_600_000)).toEqual([]);
+    answer({ acted: true, reason: 'merged' });
+    await s.flush();
+    // PR 2 started in the same tick the hold ended, so its own run marker is what holds now.
+    expect(seen[0]).toMatchObject({ hold: null });
+    expect(s.spawned).toHaveLength(2);
+    expect(s.svc.restartHolds(3_600_000).map((h) => h.name)).toEqual(['local-verify:pr-2']);
+  });
+
+  it('a red run, a refused hand-off and a detached watcher leave no merge hold behind', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
+    const holdFile = path.join(s.stateDir, 'state', 'local-verify', 'merge-hold.json');
+    let ended = 0;
+    s.svc.setRunEndedListener(() => { ended++; });
+    s.svc.setMergeHandoff(async () => ({ acted: false, reason: 'refused:needs-independent-review' }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.svc.request(3);
+    await s.finish(0, ok(record({ outcome: 'failure' }))); // red: settling ends at once
+    expect(fs.existsSync(holdFile)).toBe(false);
+    expect(ended).toBe(1);
+    await s.finish(1, ok(record({ pr: 2, headSha: sha('c') }))); // green, the watcher refuses
+    await s.flush();
+    expect(fs.existsSync(holdFile)).toBe(false);
+    expect(ended).toBe(2);
+    s.svc.setMergeHandoff(null);
+    await s.finish(2, ok(record({ pr: 3, headSha: sha('d') }))); // no merge line: exactly the old behavior
+    expect(fs.existsSync(holdFile)).toBe(false);
+    expect(ended).toBe(3);
+  });
+
+  it('a merge-hold marker left by the previous process is removed at boot, and a marker that cannot be written still lets a waiting restart go', async () => {
+    const s = setup({ views: { 1: view() } });
+    const holdFile = path.join(s.stateDir, 'state', 'local-verify', 'merge-hold.json');
+    fs.writeFileSync(holdFile, JSON.stringify({ v: 1, phase: 'handoff', since: Date.now() }));
+    s.svc.shutdown();
+    const restarted = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    expect(fs.existsSync(holdFile)).toBe(false);
+    // The marker path is a directory: every write fails. A red run must still announce its end.
+    fs.mkdirSync(holdFile);
+    let ended = 0;
+    restarted.svc.setRunEndedListener(() => { ended++; });
+    restarted.svc.setMergeHandoff(async () => ({ acted: false, reason: 'handoff-not-eligible:held' }));
+    await restarted.svc.request(1);
+    await restarted.finish(0, ok(record({ outcome: 'failure' })));
+    expect(ended).toBe(1);
+    expect(auditLines(restarted).some((l) => l.event === 'merge-hold-write-failed')).toBe(true);
+    SafeFsExecutor.safeRmSync(holdFile, { recursive: true, force: true, operation: 'LocalVerifyService.test.ts:merge-hold-unwritable' });
+  });
+
   it('with no watcher attached (or detached again) records are left to the watcher\'s ticks and nothing is held', async () => {
     const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
     s.svc.setMergeHandoff(async () => ({ acted: true, reason: 'merged' }));
@@ -1322,6 +2063,61 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s.svc.snapshot().records).toBe(0);
   });
 
+  describe('a restored entry is never tested on the PR view\'s stale base (2026-11-13: two runs on a 7-hour-old main)', () => {
+    type Seams = { seams: { baseHead?: (b: string) => Promise<string | null> } };
+    const inputOf = (s: ReturnType<typeof setup>, i = 0) => JSON.parse(fs.readFileSync(s.spawned[i].args[s.spawned[i].args.indexOf('--input') + 1], 'utf-8')) as { pr: number; baseSha: string };
+    const savedQueue = async (currentMain: string) => {
+      // PR 1 runs; PR 2 waits in the queue with the base this service resolved: today's main.
+      const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+      (s.svc as unknown as Seams).seams.baseHead = async () => currentMain;
+      await s.svc.request(1);
+      await s.svc.request(2);
+      expect(queueOnDisk(s.stateDir).find((e) => e.pr === 2)).toMatchObject({ baseSha: currentMain });
+      s.svc.shutdown();
+      return s;
+    };
+
+    it('restore keeps the saved base, and the pre-start refresh reads today\'s head even though the base was resolved seconds before the restart', async () => {
+      const s = await savedQueue(sha('e'));
+      // GitHub's view of both PRs still carries the base from when they were opened (sha('b')).
+      const s2 = setup({ stateDir: s.stateDir, views: s.views });
+      const reads: string[] = [];
+      (s2.svc as unknown as Seams).seams.baseHead = async (b) => { reads.push(b); return sha('f'); }; // main moved again while the server was down
+      await s2.svc.boot();
+      for (const e of s2.svc.snapshot().queue) expect(e.baseSha, `PR ${e.pr} restored on the PR view's stale base`).not.toBe(sha('b'));
+      await s2.svc.tick();
+      await s2.flush(); // a restored entry re-reads its base before it starts
+      expect(s2.spawned).toHaveLength(1);
+      expect(reads).toContain('main');
+      expect(inputOf(s2).baseSha).toBe(sha('f'));
+      expect(audit(s.stateDir).map((l) => l.event)).toContain('base-refreshed');
+    });
+
+    it('when today\'s head cannot be read, the run uses the saved base, not the PR view\'s', async () => {
+      const s = await savedQueue(sha('e'));
+      const s2 = setup({ stateDir: s.stateDir, views: s.views });
+      (s2.svc as unknown as Seams).seams.baseHead = async () => null;
+      await s2.svc.boot();
+      await s2.svc.tick();
+      await s2.flush(); // a restored entry re-reads its base before it starts
+      expect(s2.spawned).toHaveLength(1);
+      expect(inputOf(s2).baseSha).toBe(sha('e'));
+      expect(audit(s.stateDir).map((l) => l.event)).toContain('base-refresh-failed');
+    });
+
+    it('the "never resolved" marker is not written to the durable queue, and a later request records a real resolution time', async () => {
+      const s = await savedQueue(sha('e'));
+      const s2 = setup({ stateDir: s.stateDir, views: s.views });
+      (s2.svc as unknown as Seams).seams.baseHead = async () => sha('e');
+      await s2.svc.boot();
+      const onDisk = () => JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8')) as { entries: Array<{ pr: number; baseResolvedAt?: number }> };
+      for (const e of onDisk().entries) expect(e.baseResolvedAt ?? null, `PR ${e.pr}`).toBeNull();
+      s2.advance(1_000);
+      await s2.svc.request(2, { explicit: false });
+      expect(onDisk().entries.find((e) => e.pr === 2)?.baseResolvedAt).toBeGreaterThan(0);
+    });
+  });
+
   it('(b) after the restart the restored queue runs again, in order, on the new verifier version', async () => {
     const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) } });
     await s.svc.request(1);
@@ -1337,6 +2133,7 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s2.svc.snapshot().queue.map((e) => [e.pr, e.attempts])).toEqual([[1, 0], [2, 0], [3, 0]]); // nothing dropped as already-recorded
     expect(audit(s.stateDir).filter((l) => l.event === 'queue-restored').pop()).toMatchObject({ restored: 3, dropped: 0 });
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
     expect(JSON.parse(fs.readFileSync(s2.spawned[0].args[s2.spawned[0].args.indexOf('--input') + 1], 'utf-8'))).toMatchObject({ pr: 1, verifierVersion: 'vh2:new' });
     await s2.finish(0, ok(record({ verifierVersion: 'vh2:new' })));
@@ -1414,6 +2211,25 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s.spawned).toHaveLength(1); // still held: only a restart (or the files matching again) resumes
   });
 
+  it('restartNeededForQueuedWork: false with no hold, false while held with nothing queued, true while held with work waiting', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(1);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false); // a run in flight, no hold
+    await s.finish(0, mismatch());
+    expect(s.svc.snapshot().verifierHold).not.toBeNull();
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]); // the refused entry waits for the restart
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // The same hold with an empty queue needs no restart on anyone's behalf.
+    (s.svc as unknown as { queue: unknown[] }).queue.length = 0;
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(2);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // A stopped service answers false whatever it held.
+    s.svc.shutdown();
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+  });
+
   it('an ordinary crash is still an error record with one automatic re-run (the mismatch path changed nothing else)', async () => {
     const s = setup({ views: { 1: view() } });
     await s.svc.request(1);
@@ -1428,6 +2244,63 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
 // ── 2026-10-25: a restart deferred only for this verifier pauses new starts; closed PRs are skipped ──
 
 describe('a deferred restart is a pending update (the applied-but-not-restarted gap)', () => {
+  it('a planned restart from another writer holds the next PR until the flag is consumed', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    expect(s.spawned).toHaveLength(1);
+    const flagPath = path.join(s.stateDir, 'state', 'restart-requested.json');
+    fs.writeFileSync(flagPath, JSON.stringify({
+      requestedAt: '2026-10-21T10:00:00.000Z',
+      expiresAt: '2026-10-21T11:00:00.000Z',
+      plannedRestart: true,
+      requestedBy: 'setting-change',
+    }));
+    await s.finish(0, ok(record()));
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1);
+    expect(s.svc.snapshot().queue.map((entry) => entry.pr)).toEqual([2]);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1); // the request survives the original one-hour TTL
+    SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'LocalVerifyService.test.ts:planned-restart-consumed' }); // the supervisor consumed the request
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('a genuinely deferred request keeps the queue paused through its delivery window', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    const flagPath = path.join(s.stateDir, 'state', 'restart-requested.json');
+    const markerPath = path.join(s.stateDir, 'state', 'local-verify', 'inflight.json');
+    const flag = { requestedAt: new Date(T0).toISOString(), expiresAt: new Date(T0 + 60 * 60_000).toISOString(), plannedRestart: true };
+    fs.writeFileSync(flagPath, JSON.stringify(flag));
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    fs.writeFileSync(markerPath, JSON.stringify({ ...marker, pid: process.pid }));
+    expect(markPlannedRestartDeferred(s.stateDir, flag, T0)).toBe(true);
+    await s.finish(0, ok(record()));
+    s.advance(VERIFY_RESTART_HOLD_MS + 1);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1); // the supervisor is due to consume this request
+    SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'LocalVerifyService.test.ts:deferred-restart-consumed' });
+    await s.svc.tick();
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('pauses during install and until this process restarts, even for a manual apply with no deferral', () => {
+    const base = { config: { autoApply: false }, pendingUpdate: null, coalescingUntil: null,
+      pendingUpdateDetectedAt: '2026-10-21T08:00:00.000Z', restartDeferral: null };
+    const active = { ...base, updateActivationPendingSince: '2026-10-21T12:00:00.000Z' };
+    expect(updatePendingFromAutoUpdater(active, [])).toEqual({ pending: true, pendingSinceMs: T0, otherBlockers: false });
+    expect(decideUpdatePause(updatePendingFromAutoUpdater(active, []), T0 + UPDATE_PAUSE_MAX_MS)).toBe(true);
+    expect(decideUpdatePause(updatePendingFromAutoUpdater(active, []), T0 + UPDATE_PAUSE_MAX_MS + 1)).toBe(false);
+    expect(updatePendingFromAutoUpdater(active, ['hold:local-verify:pr-1']).otherBlockers).toBe(false);
+    expect(updatePendingFromAutoUpdater(active, ['hold:pairing-invite:one']).otherBlockers).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...active, updateActivationPendingSince: null }, []).pending).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...active, updateActivationPendingSince: 'invalid' }, []).pending).toBe(false);
+  });
+
   it('updatePendingFromAutoUpdater: an active restartDeferral with pendingUpdate cleared is pending, timed from firstDeferredAt', () => {
     const base = { config: { autoApply: true }, pendingUpdate: null, coalescingUntil: null, pendingUpdateDetectedAt: null };
     const deferral = { active: true, firstDeferredAt: '2026-10-21T12:00:00.000Z' };
@@ -1452,6 +2325,7 @@ describe('a deferred restart is a pending update (the applied-but-not-restarted 
     const checker = { getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker;
     const st = { get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager;
     const u = new AutoUpdater(checker, st, tmp, { preRestartDelaySecs: 0 });
+    let restarted: AutoUpdater | null = null;
     try {
       const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
       s.advance(Date.now() - T0); // the AutoUpdater reads the real clock
@@ -1471,12 +2345,23 @@ describe('a deferred restart is a pending update (the applied-but-not-restarted 
       expect(fs.readFileSync(s.svc.auditPath, 'utf-8')).toContain('"event":"update-pause"');
       expect(s.svc.restartHolds(4 * 3_600_000)).toEqual([]);
       await gated(); // the 5-minute retry: nothing holds it now
-      await new Promise((r) => setTimeout(r, 50));
-      expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
-      // The deferral is gone (on a real server the process restarts here); the queue resumes.
+      // The request file is written a moment after the gate opens. Wait for the file, not for a
+      // fixed 50 ms: on a loaded machine that was sometimes too short (seen 2026-11-13).
+      const requestFile = path.join(tmp, 'state', 'restart-requested.json');
+      for (let waited = 0; waited < 5000 && !fs.existsSync(requestFile); waited += 25) await new Promise((r) => setTimeout(r, 25));
+      expect(fs.existsSync(requestFile)).toBe(true);
+      // The old process still runs stale code, so the new marker keeps the queue
+      // paused until a fresh process replaces its updater and restarts admission.
+      await s.svc.tick();
+      expect(s.spawned).toHaveLength(1);
+      u.stop();
+      restarted = new AutoUpdater(checker, st, tmp, { preRestartDelaySecs: 0 });
+      restarted.setSessionDeps({ listRunningSessions: () => [] });
+      registerLocalVerifyRestartHold(restarted, s.svc);
       await s.svc.tick();
       expect(s.spawned).toHaveLength(2);
     } finally {
+      restarted?.stop();
       u.stop();
       log.mockRestore();
     }
@@ -1524,5 +2409,216 @@ describe('closed PRs are skipped', () => {
     const rows = audit.trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(rows.some((r) => r.event === 'dequeued' && r.pr === 2 && r.reason === 'closed')).toBe(true);
     expect(rows.some((r) => r.event === 'dequeued' && r.pr === 3)).toBe(false);
+  });
+});
+
+describe('fail-fast switch (monitoring.localVerify.failFast)', () => {
+  const inputOf = (s: ReturnType<typeof setup>) => JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'));
+  it('a PR verify carries failFast when the switch is absent (on by default)', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    expect(inputOf(s).failFast).toBe(true);
+  });
+  it('the switch read false turns it off at the next start', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setFailFastEnabled(() => false);
+    await s.svc.request(1);
+    expect(inputOf(s).failFast).toBeUndefined();
+  });
+  it('an unreadable switch reads as off (every lane runs)', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setFailFastEnabled(() => { throw new Error('config unreadable'); });
+    await s.svc.request(1);
+    expect(inputOf(s).failFast).toBeUndefined();
+  });
+});
+
+describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
+  const inputOf = (s: ReturnType<typeof setup>) => JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'));
+  it('absent ⇒ no override in the run input (the policy defaults apply)', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toBeUndefined();
+  });
+  it('valid counts pass through; invalid ones are dropped', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => ({ integration: 1, e2e: 7 }));
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toEqual({ integration: 1 });
+  });
+  it('a per-machine unit worker count passes through when 1..12; anything else is dropped', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => ({ unitWorkers: 8 }));
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toEqual({ unitWorkers: 8 });
+    for (const bad of [0, 13, 2.5, '8']) {
+      const t = setup({ views: { 1: view() } });
+      t.svc.setLaneShards(() => ({ unitWorkers: bad }));
+      await t.svc.request(1);
+      expect(inputOf(t).laneShards).toBeUndefined();
+    }
+  });
+  it('an unreadable setting means the defaults', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => { throw new Error('nope'); });
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toBeUndefined();
+  });
+});
+
+describe('a run that finished just before the server stopped (2026-11-13: PR 3107 cancelled 121 ms after its verdict)', () => {
+  /** Start PR 1, let its child write a result, and stop the server BEFORE the exit event is handled. */
+  const stopAfterResult = async (result: VerifyRunResult, opts: { childStillAlive?: boolean } = {}) => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    const run = s.spawned[0];
+    fs.writeFileSync(run.resultPath, JSON.stringify(result));
+    if (!opts.childStillAlive) s.alive.delete(run.pid);
+    s.svc.shutdown();
+    return { s, run };
+  };
+  const auditEvents = (s: ReturnType<typeof setup>): string[] =>
+    fs.readFileSync(s.svc.auditPath, 'utf-8').trim().split('\n').map((line) => (JSON.parse(line) as { event: string }).event);
+
+  it('keeps a green verdict: recorded, not counted as an interruption, not re-queued', async () => {
+    const { s } = await stopAfterResult(ok(record({ outcome: 'success' })));
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    const events = auditEvents(s);
+    expect(events).toContain('settled-at-shutdown');
+    expect(events).not.toContain('interrupted');
+    expect(events).not.toContain('cancel');
+    expect(s.kills).toEqual([]); // the group was already gone: nothing to signal
+    // The next boot finds the record and does not run the PR again.
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(s2.svc.snapshot().queue.filter((entry) => entry.pr === 1)).toEqual([]);
+    expect(s2.spawned).toHaveLength(0);
+    s2.svc.shutdown();
+  });
+
+  it('keeps a red verdict too, which is the case that was lost', async () => {
+    const { s } = await stopAfterResult(ok(record({ outcome: 'failure' })));
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(0);
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    s2.svc.shutdown();
+  });
+
+  it('the exit event that arrives after the stop does not replace the verdict with a crash', async () => {
+    const { s, run } = await stopAfterResult(ok(record({ outcome: 'success' })));
+    run.resolve({ status: 0, signal: null });
+    await s.flush();
+    await s.flush();
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    const events = auditEvents(s);
+    expect(events.filter((event) => event === 'run-error')).toEqual([]);
+    expect(events.filter((event) => event === 'settled-at-shutdown')).toHaveLength(1);
+  });
+
+  it('whatever is left of the group is swept as after any finished run, and the next boot is not blocked by it', async () => {
+    const { s, run } = await stopAfterResult(ok(record({ outcome: 'success' })), { childStillAlive: true });
+    expect(s.kills).toEqual([{ pgid: run.pid, signal: 'SIGKILL' }]);
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(fs.existsSync(s.intentPath)).toBe(false);
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().blocked).toBe(false);
+    s2.svc.shutdown();
+  });
+
+  it('a crash result written by the child is settled as the error it is, and its retry is queued without an interruption', async () => {
+    const { s } = await stopAfterResult({ kind: 'crash', detail: 'orchestrator threw' } as unknown as VerifyRunResult);
+    const events = auditEvents(s);
+    expect(events).toContain('settled-at-shutdown');
+    expect(events).toContain('run-error');
+    expect(events).not.toContain('interrupted');
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('error');
+    const queue = JSON.parse(fs.readFileSync(path.join(s.stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<{ pr: number; interruptions?: number; inFlight?: boolean }> };
+    const retries = queue.entries.filter((e) => e.pr === 1);
+    expect(retries).toHaveLength(1);
+    for (const entry of retries) {
+      expect(entry.interruptions ?? 0).toBe(0);
+      expect(entry.inFlight ?? false).toBe(false);
+    }
+  });
+
+  it('a file that is not a result object is not a verdict', async () => {
+    for (const junk of ['{}', '"done"', '0', 'null', 'not json']) {
+      const s = setup({ views: { 1: view() } });
+      await s.svc.request(1);
+      await s.svc.tick();
+      fs.writeFileSync(s.spawned[0].resultPath, junk);
+      s.svc.shutdown();
+      expect(auditEvents(s), junk).toContain('interrupted');
+      expect(auditEvents(s), junk).not.toContain('settled-at-shutdown');
+      await s.finish(0, null);
+    }
+  });
+
+  it('a result file that parses to something other than an object is a crash record, not a thrown exit handler', async () => {
+    // Before: '"done"' or '0' parsed fine, and the exit handler's `'degradations' in result`
+    // threw a TypeError out of the exit promise (an unhandled rejection in the server).
+    for (const junk of ['"done"', '0', 'true', '[1,2]']) {
+      const s = setup({ views: { 1: view() } });
+      await s.svc.request(1);
+      await s.svc.tick();
+      fs.writeFileSync(s.spawned[0].resultPath, junk);
+      s.alive.delete(s.spawned[0].pid);
+      await s.finish(0, null);
+      const events = auditEvents(s);
+      expect(events, junk).not.toContain('settled-at-shutdown');
+      // The exit handler ran to its end: the run is recorded as an error and retried.
+      expect(events, junk).toContain('run-error');
+      expect(events, junk).toContain('record');
+    }
+  });
+
+  it('is not settled when the verifier on disk changed: the next verifier would ignore the record, so the entry keeps its place', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    fs.writeFileSync(s.spawned[0].resultPath, JSON.stringify(ok(record({ outcome: 'success' }))));
+    s.alive.delete(s.spawned[0].pid);
+    s.setDiskVersion('vh3:changed');
+    s.svc.shutdown();
+    const events = auditEvents(s);
+    expect(events).toContain('interrupted');
+    expect(events).not.toContain('settled-at-shutdown');
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    const queue = JSON.parse(fs.readFileSync(path.join(s.stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<{ pr: number; resumeFirst?: boolean }> };
+    expect(queue.entries[0]).toMatchObject({ pr: 1, resumeFirst: true });
+  });
+
+  it('a run with no result yet is still an interruption, exactly as before', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    s.svc.shutdown();
+    const events = auditEvents(s);
+    expect(events).toContain('interrupted');
+    expect(events).not.toContain('settled-at-shutdown');
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    await s.finish(0, null);
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue[0]).toMatchObject({ pr: 1, interruptions: 1, resumeFirst: true });
+    s2.svc.shutdown();
+  });
+
+  it('a half-written result (the temporary file only) is not a verdict', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    fs.writeFileSync(`${s.spawned[0].resultPath}.tmp`, JSON.stringify(ok(record({ outcome: 'success' }))));
+    s.svc.shutdown();
+    expect(auditEvents(s)).toContain('interrupted');
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    await s.finish(0, null);
   });
 });

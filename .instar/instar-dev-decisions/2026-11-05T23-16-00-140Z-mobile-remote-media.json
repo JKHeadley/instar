@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T23:16:00.140Z",
+  "slug": "mobile-remote-media",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileMediaRoutes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Narrows a socket timeout; adds no loop or self-action."
+  },
+  "verdict": "pass"
+}

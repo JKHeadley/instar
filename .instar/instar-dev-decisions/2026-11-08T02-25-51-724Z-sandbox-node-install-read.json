@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-08T02:25:51.724Z",
+  "slug": "sandbox-node-install-read",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

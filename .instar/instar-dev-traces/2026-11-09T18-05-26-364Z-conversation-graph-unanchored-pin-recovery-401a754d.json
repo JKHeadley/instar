@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-unanchored-pin-recovery",
+  "sessionId": "3f59cc8e-b019-43f3-b3cc-45dc0d407235",
+  "timestamp": "2026-11-09T18:05:26.364Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-unanchored-pin-recovery.md",
+  "artifactSha256": "d3f736998285de2541db3c8fbde30853ea2813d589b1ba46e60a3c8c915abd33",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/GraphCustodyBootstrap.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "tests/integration/graph-default-nonmember-paired.test.ts",
+    "upgrades/side-effects/conversation-graph-unanchored-pin-recovery.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

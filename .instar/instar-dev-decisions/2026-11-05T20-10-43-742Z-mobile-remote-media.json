@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T20:10:43.742Z",
+  "slug": "mobile-remote-media",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 102,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileMediaHolderProxy.ts"
+    ],
+    "addedLines": 67,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Adds caps on open streams; adds no loop or self-action."
+  },
+  "verdict": "pass"
+}

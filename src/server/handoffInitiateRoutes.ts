@@ -25,6 +25,7 @@
  * ok that pretends a handoff happened.
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
@@ -64,7 +65,7 @@ export function createHandoffInitiateRoutes(deps: HandoffInitiateRoutesDeps): Ro
     } catch (err) {
       res.status(500).json({
         outcome: 'failed',
-        error: err instanceof Error ? err.message : String(err),
+        error: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-05T12:38:33.166Z",
+  "slug": "lease-job-definition-replication",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/FailedFileDiagnosisPeerService.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

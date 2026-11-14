@@ -1,0 +1,38 @@
+{
+  "_comment": "Shared by src/messaging/plainNoticeCheck.ts (test-time check of catalogued notices) and scripts/lint-plain-user-notices.mjs (build-time check of send sites). Standard: docs/UX-AND-AGENT-AGENCY-STANDARD.md Rule 8. Internal words the person cannot act on. Matched case-insensitively on word boundaries.",
+  "internalTerms": [
+    "drain bound",
+    "drained",
+    "final turn",
+    "respawn",
+    "respawned",
+    "respawning",
+    "epoch",
+    "CAS",
+    "tmux",
+    "reap-log",
+    "reaper",
+    "payload",
+    "stderr",
+    "stdout",
+    "exit code",
+    "pid",
+    "subprocess",
+    "launchd",
+    "systemd",
+    "pinned profile",
+    "boot sweep",
+    "undefined",
+    "NaN",
+    "null"
+  ],
+  "codePatterns": [
+    { "code": "DURATION_IN_MS", "re": "\\b\\d+\\s?ms\\b", "why": "a millisecond count is a setting, not news; say the time in words if it matters" },
+    { "code": "SNAKE_CASE", "re": "\\b[a-z]+_[a-z0-9_]+\\b", "why": "a snake_case name is a code identifier" },
+    { "code": "CAMEL_CASE", "re": "\\b[a-z]+[A-Z][A-Za-z0-9]*\\b", "why": "a camelCase name is a code identifier" },
+    { "code": "REASON_CODE", "re": "\\(reason: [a-z0-9-]+\\)", "why": "a raw reason code; translate it into what happened" },
+    { "code": "BRACKET_COUNTER", "re": "\\[#\\d+\\]", "why": "an audit counter means nothing to the person" },
+    { "code": "ERRNO", "re": "\\b(ENOENT|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EACCES|EPERM|EADDRINUSE)\\b", "why": "an operating-system error code" }
+  ],
+  "camelCaseAllow": ["iPhone", "iPad", "iMessage", "macOS", "iOS", "iCloud", "eBay", "gMail", "youTube"]
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "usage-limit-key-pickup",
+  "sessionId": "36583859-381c-4e27-85c7-6b88829e66ec",
+  "timestamp": "2026-11-08T00:35:08.738Z",
+  "artifactPath": "upgrades/side-effects/usage-limit-key-pickup.md",
+  "artifactSha256": "c4b7069325399a8f36ac9376fe960fc69b397fc91083b063e25f9ca6536eedc8",
+  "coveredFiles": [
+    "docs/specs/usage-limit-key-pickup.eli16.md",
+    "src/core/SessionManager.ts",
+    "tests/unit/usage-limit-key-pickup.test.ts",
+    "upgrades/next/usage-limit-key-pickup.md",
+    "upgrades/side-effects/usage-limit-key-pickup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Opt-in default-home mapping for one tmux answer, used only by the usage proof, which still requires the exact transcript row. Revert undoes it.",
+  "eli16Path": "docs/specs/usage-limit-key-pickup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-limit-key-pickup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

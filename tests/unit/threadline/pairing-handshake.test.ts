@@ -15,7 +15,7 @@ import { PinnedKeyStore } from '../../../packages/threadline-core/src/trust.js';
 import { PairingInviteStore } from '../../../packages/threadline-core/src/inviteStore.js';
 import { PairingInviteFlow } from '../../../packages/threadline-core/src/flow.js';
 import { generateIdentityKeyPair, sign, verify } from '../../../packages/threadline-core/src/crypto.js';
-import { createInvite as makeRawInvite, inviteMessage } from '../../../packages/threadline-core/src/invite.js';
+import { cleanLabel, createInvite as makeRawInvite, decodeInvite, inviteMessage } from '../../../packages/threadline-core/src/invite.js';
 import * as coreHs from '../../../packages/threadline-core/src/handshake.js';
 import * as instarHs from '../../../src/threadline/pairingHandshake.js';
 
@@ -145,6 +145,80 @@ async function offer(A: Agent, B: Agent) {
 }
 
 describe.each([['threadline-core', coreHs], ['Instar copy', instarHs as unknown as HsModule]] as const)('%s', (_label, M) => {
+  describe('owner info is required (ownerPolicy)', () => {
+    const policy = (own: string) => ({
+      ownName: () => own,
+      inviteOwner: (text: string) => { const d = decodeInvite(text); return d.ok ? d.invite.owner : null; },
+      clean: cleanLabel,
+    });
+    const setPolicy = (a: Agent, own: string) => { (a.hs as unknown as { deps: { ownerPolicy?: unknown } }).deps.ownerPolicy = policy(own); };
+
+    it('refuses to make an invite with no owner name, and makes nothing', async () => {
+      const { A } = await setup(M);
+      setPolicy(A, ' ');
+      const r = A.hs.createInvite({});
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/owner/);
+      expect(A.store.list()).toEqual([]);
+    });
+
+    it('treats an owner name of only invisible characters as none', async () => {
+      const { A } = await setup(M);
+      setPolicy(A, '\u200b');
+      expect(A.hs.createInvite({}).ok).toBe(false);
+    });
+
+    it('makes an invite that names the owner when it has one', async () => {
+      const { A } = await setup(M);
+      setPolicy(A, 'pp-owner');
+      const r = A.hs.createInvite({});
+      expect(r.ok).toBe(true);
+      expect(String(r.message)).toContain("pp-owner's agent");
+    });
+
+    it('refuses an incoming invite that names no owner, before any Approve prompt', async () => {
+      const { A, B } = await setup(M);
+      setPolicy(B, 'echo-owner');
+      const blank = makeRawInvite({ identityPubHex: A.pub, owner: '', agent: 'pp' });
+      const r = await B.hs.receiveInvite(inviteMessage(blank));
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/who owns/);
+      expect(B.events.filter((e) => e.kind === 'accept-prompt')).toEqual([]);
+      expect(B.flow.listPendingAccepts()).toEqual([]);
+    });
+
+    it('refuses to approve an invite when this agent has no owner name, and sends nothing', async () => {
+      const { net, A, B } = await setup(M);
+      const made = A.flow.createInvite({});
+      const got = await B.hs.receiveInvite(String(made.message));
+      setPolicy(B, '');
+      const before = net.queue.length;
+      const r = B.hs.approveAccept(String(got.iid));
+      expect(r.ok).toBe(false);
+      expect(net.queue.length).toBe(before);
+    });
+
+    it('refuses an accept with no owner: invite stays open, no Finish prompt, inviter told', async () => {
+      const { A } = await setup(M);
+      setPolicy(A, 'pp-owner');
+      const made = A.hs.createInvite({});
+      const r = await A.hs.handleControl('pair-invite-accept', 'ab'.repeat(16), { iid: made.iid, owner: '   ', agent: 'scout' });
+      expect(r.ok).toBe(false);
+      expect(A.store.getInternal(String(made.iid))?.state).not.toBe('used');
+      expect(A.events.filter((e) => e.kind === 'finish-prompt')).toEqual([]);
+      expect(find(A, 'accept-refused').map((n) => n.reason)).toEqual(['owner-required']);
+    });
+
+    it('still pairs when both sides name an owner', async () => {
+      const { A, B } = await setup(M);
+      setPolicy(A, 'pp-owner');
+      setPolicy(B, 'echo-owner');
+      const made = A.hs.createInvite({});
+      expect((await B.hs.receiveInvite(String(made.message))).ok).toBe(true);
+      expect(B.hs.approveAccept(String(made.iid)).ok).toBe(true);
+    });
+  });
+
   it('Approve → immediate notice → receipt → Finish → hello each way → "paired" on BOTH sides', async () => {
     const { net, clock, A, B } = await setup(M);
     const inv = await offer(A, B);

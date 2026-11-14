@@ -19,6 +19,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 import { artifactSha256 } from '../../scripts/lib/instar-dev-trace.mjs';
 import { buildGreenPrDeps, buildGuardLatchStore, isAnalyzableGreenPrRepo, resolveGreenPrAgentNamespace, resolveGreenPrPaths, GH_PR_JSON_FIELDS, LIST_PR_JSON_FIELDS, REFETCH_PR_JSON_FIELDS, reportUnknownGhJsonField, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { ghRowFromGraphqlPr } from '../../src/monitoring/greenPrOpenPrList.js';
 import { installedSafeMergePath } from '../../src/core/installedSafeMerge.js';
 import { DefaultMergeRunner } from '../../src/monitoring/MergeRunner.js';
 
@@ -31,6 +32,11 @@ beforeEach(() => {
   fs.writeFileSync(safeMergePath, '// fake\n');
 });
 afterEach(() => { try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test-cleanup' }); } catch { /* ignore */ } });
+
+/** One page of the paged open-PR listing, as `gh api graphql` prints it. */
+const openPrPage = (nodes: unknown[], viewer = 'me') => JSON.stringify({
+  data: { viewer: { login: viewer }, repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } },
+});
 
 /** A fake gh exec recording the calls; returns canned JSON per command shape. */
 function fakeGh(responses: Record<string, { stdout: string; code?: number; stderr?: string }>) {
@@ -78,7 +84,7 @@ describe('buildGreenPrDeps — config-threading (M2)', () => {
   it('uses the shared authenticated runtime on the default gh read path', async () => {
     const marker = path.join(dir, 'green-gh-env.txt');
     const fakeExecutable = path.join(dir, 'gh');
-    fs.writeFileSync(fakeExecutable, `#!/bin/sh\nprintf '%s|%s' "$GH_TOKEN" "$GITHUB_TOKEN" > "${marker}"\nprintf '[]'\n`, { mode: 0o700 });
+    fs.writeFileSync(fakeExecutable, `#!/bin/sh\nprintf '%s|%s' "$GH_TOKEN" "$GITHUB_TOKEN" > "${marker}"\nprintf '%s' '{"data":{"viewer":{"login":"me"},"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'\n`, { mode: 0o700 });
     const opts = baseOpts({
       ghExec: undefined,
       githubRuntime: () => ({
@@ -134,19 +140,18 @@ describe('resolveGreenPrAgentNamespace', () => {
 });
 
 describe('buildGreenPrDeps — widened projections (Blocker 4)', () => {
-  it('listOpenPrs requests autoMergeRequest in the projection and derives autoMergeArmed', async () => {
-    const rows = JSON.stringify([
-      { number: 1, title: 'a', labels: [], isDraft: false, headRefName: 'echo/x', headRefOid: 'h1', mergeable: 'MERGEABLE', statusCheckRollup: [], autoMergeRequest: { enabledAt: 't', expectedHeadOid: 'h1' } },
-      { number: 2, title: 'b', labels: [], isDraft: false, headRefName: 'echo/y', headRefOid: 'h2', mergeable: 'MERGEABLE', statusCheckRollup: [], autoMergeRequest: null },
-    ]);
-    const { ghExec, calls } = fakeGh({ 'pr list': { stdout: rows } });
+  it('listOpenPrs requests autoMergeRequest in the paged query and derives autoMergeArmed', async () => {
+    const node = (number: number, autoMergeRequest: unknown) => ({
+      number, title: 't', isDraft: false, headRefName: `echo/${number}`, headRefOid: `h${number}`, baseRefName: 'main',
+      mergeable: 'MERGEABLE', labels: { nodes: [] }, author: { __typename: 'User', login: 'me' }, autoMergeRequest,
+    });
+    const { ghExec, calls } = fakeGh({ 'api graphql': { stdout: openPrPage([node(1, { enabledAt: 't' }), node(2, null)]) } });
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), latches);
     const prs = await deps.listOpenPrs();
-    // The list projection requested autoMergeRequest.
-    const listCall = calls.find((c) => c[0] === 'pr' && c[1] === 'list')!;
-    const jsonFields = listCall[listCall.indexOf('--json') + 1];
-    expect(jsonFields).toContain('autoMergeRequest');
+    // The listing asked GitHub for autoMergeRequest.
+    const listCall = calls.find((c) => c[0] === 'api' && c[1] === 'graphql')!;
+    expect(listCall.find((a) => a.startsWith('query='))).toContain('autoMergeRequest');
     expect(prs[0].autoMergeArmed).toBe(true);
     expect(prs[1].autoMergeArmed).toBe(false);
   });
@@ -189,20 +194,24 @@ describe('gh --json projections are pinned to fields gh actually supports (2026-
     for (const f of LIST_PR_JSON_FIELDS) expect(GH_PR_JSON_FIELDS, `listOpenPrs field ${f}`).toContain(f);
     expect(GH_PR_JSON_FIELDS).not.toContain('mergeCommitOid');
     expect(REFETCH_PR_JSON_FIELDS).toContain('mergeCommit');
+    // The UNKNOWN-mergeability nudge only works if this read asks for the field.
+    expect(REFETCH_PR_JSON_FIELDS).toContain('mergeable');
   });
 
   it('the LIVE gh calls carry exactly the pinned projections (no stray literal field list)', async () => {
     const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'OPEN' });
-    const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view }, 'pr list': { stdout: '[]' } });
+    const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view }, 'api graphql': { stdout: openPrPage([]) } });
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), buildGuardLatchStore(baseOpts({ ghExec })));
     await deps.refetchPr(1);
     await deps.listOpenPrs();
     const fieldsOf = (c: string[]) => c[c.indexOf('--json') + 1].split(',');
     const viewCall = calls.find((c) => c[0] === 'pr' && c[1] === 'view')!;
-    const listCall = calls.find((c) => c[0] === 'pr' && c[1] === 'list')!;
     expect(fieldsOf(viewCall)).toEqual([...REFETCH_PR_JSON_FIELDS]);
-    expect(fieldsOf(listCall)).toEqual([...LIST_PR_JSON_FIELDS]);
-    for (const f of [...fieldsOf(viewCall), ...fieldsOf(listCall)]) expect(GH_PR_JSON_FIELDS).toContain(f);
+    // The paged listing returns rows carrying exactly the pinned list projection.
+    expect(calls.some((c) => c[0] === 'pr' && c[1] === 'list')).toBe(false);
+    const rowKeys = Object.keys(ghRowFromGraphqlPr({ number: 1 }));
+    expect(rowKeys).toEqual([...LIST_PR_JSON_FIELDS]);
+    for (const f of [...fieldsOf(viewCall), ...rowKeys]) expect(GH_PR_JSON_FIELDS).toContain(f);
   });
 
   it('an "Unknown JSON field" exit is a LOUD degradation naming the field (once per field), and still fails toward null', async () => {
@@ -300,7 +309,7 @@ describe('the watcher runs the INSTALLED safe-merge, never the checkout copy (AC
 
 describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base branch on GitHub (directive 2026-10-22)', () => {
   const CODEOWNERS = '# ownership\ndocs/STANDARDS-REGISTRY.md   @JKHeadley\n.github/CODEOWNERS @JKHeadley\n';
-  const ghFor = (o: { codeowners?: { code: number; stdout?: string; stderr?: string }; files?: string[]; filesCode?: number }) => {
+  const ghFor = (o: { codeowners?: { code: number; stdout?: string; stderr?: string }; files?: string[]; filesCode?: number; reviews?: object[]; reviewsCode?: number; reviewsRaw?: string }) => {
     const calls: string[][] = [];
     const ghExec = async (args: string[]) => {
       calls.push(args);
@@ -310,6 +319,7 @@ describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base bra
         return { stdout: c.stdout ?? '', stderr: c.stderr ?? '', code: c.code };
       }
       if (p.endsWith('/files')) return { stdout: (o.files ?? []).join('\n'), stderr: '', code: o.filesCode ?? 0 };
+      if (p.endsWith('/reviews')) return { stdout: o.reviewsRaw ?? (o.reviews ?? []).map((r) => JSON.stringify(r)).join('\n'), stderr: '', code: o.reviewsCode ?? 0 };
       return { stdout: '', stderr: '', code: 0 };
     };
     return { ghExec, calls };
@@ -322,6 +332,20 @@ describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base bra
     const v = await depsWith(g).codeOwnedPaths(prOf as never);
     expect(v).toEqual({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], protectedFiles: [], unverifiable: false });
     expect(g.calls.some((c) => c[1] === 'repos/JKHeadley/instar/contents/.github/CODEOWNERS?ref=main')).toBe(true);
+  });
+
+  it('an empty review decision is answered from the reviews: the owner on this head counts, nothing else does', async () => {
+    const owned = { files: ['docs/STANDARDS-REGISTRY.md'] };
+    const yes = { login: 'JKHeadley', state: 'APPROVED', commitId: 'h', submittedAt: '2026-11-06T07:46:00Z' };
+    const pr = { ...prOf, reviewDecision: null } as never;
+    expect((await depsWith(ghFor({ ...owned, reviews: [yes] })).codeOwnedPaths(pr)).ownerApproved).toBe(true);
+    expect((await depsWith(ghFor({ ...owned, reviews: [{ ...yes, commitId: 'old' }] })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    expect((await depsWith(ghFor({ ...owned, reviews: [{ ...yes, login: 'someone' }] })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    expect((await depsWith(ghFor({ ...owned, reviewsCode: 1 })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    expect((await depsWith(ghFor({ ...owned, reviewsRaw: 'not json' })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    const stated = ghFor({ ...owned, reviews: [yes] });
+    expect((await depsWith(stated).codeOwnedPaths({ ...prOf, reviewDecision: 'REVIEW_REQUIRED' } as never)).ownerApproved).toBeUndefined();
+    expect(stated.calls.some((c) => (c[1] ?? '').endsWith('/reviews'))).toBe(false);
   });
 
   it('protected-but-not-code-owned paths (safe-merge, the watcher, .github/workflows) are not code-owned', async () => {

@@ -56,6 +56,12 @@ describe('MessageRouter', () => {
 
   beforeEach(async () => {
     tmpDir = createTempDir();
+    // send() reads the agent registry (a locked file under the home folder) and drops undeliverable
+    // envelopes under ~/.instar/messages. Point both at this test's folder, so the test never takes
+    // the real machine registry's lock (it raced the live server and parallel test files) and never
+    // writes into the real home.
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpDir);
+    vi.stubEnv('INSTAR_TEST_REGISTRY_DIR', path.join(tmpDir, '.instar'));
     store = new MessageStore(tmpDir);
     await store.initialize();
 
@@ -70,6 +76,8 @@ describe('MessageRouter', () => {
 
   afterEach(async () => {
     await store.destroy();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     cleanup(tmpDir);
   });
 
@@ -137,18 +145,114 @@ describe('MessageRouter', () => {
       expect(envelope!.message.ttlMinutes).toBe(999);
     });
 
-    it('sets delivery phase to sent for local-agent messages', async () => {
-      // Same agent, different session → local delivery, stays as 'sent'
-      const result = await router.send(
-        { agent: 'my-agent', session: 's', machine: 'my-machine' },
+    // Same agent, different named session. Before 2026-11-03 this stayed at
+    // 'sent' forever (nothing delivered it), so sessions posted to the user's
+    // Telegram topic instead (Echo Bugs topic 10000001474).
+    it('delivers a same-agent message into the named local session', async () => {
+      const tmux = createMockTmuxOps();
+      const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), tmux as any), {
+        localAgent: 'my-agent', localMachine: 'my-machine', serverUrl: 'http://localhost:3000',
+      });
+      const result = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
         { agent: 'my-agent', session: 'other-session', machine: 'local' },
-        'info',
-        'medium',
-        'Test',
-        'Body',
+        'handoff', 'medium', 'Own the preflight trial', 'Please run the bounded preflight trial.',
       );
 
+      expect(result.phase).toBe('delivered');
+      expect(tmux.sendKeys).toHaveBeenCalledTimes(1);
+      expect(tmux.sendKeys.mock.calls[0][0]).toBe('other-session');
+      const injected = String(tmux.sendKeys.mock.calls[0][1]);
+      expect(injected).toContain('[AGENT MESSAGE] from: my-agent/desk');
+      expect(injected).toContain('Please run the bounded preflight trial.');
+      // Same-agent reply instruction points session-to-session, not threadline.
+      expect(injected).toContain('POST /messages/send to session "desk"');
+      expect(injected).not.toContain('threadline_send');
+      const stored = await store.get(result.messageId);
+      expect(stored!.delivery.phase).toBe('delivered');
+      expect(stored!.delivery.transitions.at(-1)).toMatchObject({ from: 'sent', to: 'delivered' });
+    });
+
+    it('queues a same-agent message when the target session cannot take it yet (retry manager picks it up)', async () => {
+      const tmux = createMockTmuxOps();
+      tmux.isSessionAlive.mockReturnValue(false);
+      const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), tmux as any), {
+        localAgent: 'my-agent', localMachine: 'my-machine', serverUrl: 'http://localhost:3000',
+      });
+      const result = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
+        { agent: 'my-agent', session: 'gone-session', machine: 'local' },
+        'handoff', 'medium', 'Subject', 'Body',
+      );
+
+      expect(result.phase).toBe('queued');
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
+      const stored = await store.get(result.messageId);
+      expect(stored!.delivery.phase).toBe('queued');
+      expect(stored!.delivery.failureReason).toBe('Session not alive');
+      // DeliveryRetryManager reads the inbox for this agent and retries 'queued'.
+      const inbox = await store.queryInbox('my-agent');
+      expect(inbox.map(e => e.message.id)).toContain(result.messageId);
+    });
+
+    it('queues (never throws) when delivery itself throws', async () => {
+      const tmux = createMockTmuxOps();
+      tmux.getForegroundProcess.mockImplementation(() => { throw new Error('tmux exploded'); });
+      const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), tmux as any), {
+        localAgent: 'my-agent', localMachine: 'my-machine', serverUrl: 'http://localhost:3000',
+      });
+      const result = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
+        { agent: 'my-agent', session: 'other-session', machine: 'local' },
+        'info', 'low', 'Subject', 'Body',
+      );
+      expect(result.phase).toBe('queued');
+      expect((await store.get(result.messageId))!.delivery.failureReason).toBe('tmux exploded');
+    });
+
+    it('refuses (failed, never typed, never retried) a target that is not a running session of this agent', async () => {
+      const tmux = createMockTmuxOps();
+      const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), tmux as any), {
+        localAgent: 'my-agent', localMachine: 'my-machine', serverUrl: 'http://localhost:3000',
+        isOwnSession: (name) => name === 'mine',
+      });
+      const result = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
+        { agent: 'my-agent', session: 'other-agents-session', machine: 'local' },
+        'handoff', 'medium', 'Subject', 'Body',
+      );
+      expect(result.phase).toBe('failed');
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
+      const stored = await store.get(result.messageId);
+      expect(stored!.delivery.failureReason).toBe('"other-agents-session" is not a running session of this agent');
+
+      const ok = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
+        { agent: 'my-agent', session: 'mine', machine: 'local' },
+        'handoff', 'medium', 'Subject', 'Body',
+      );
+      expect(ok.phase).toBe('delivered');
+      expect(tmux.sendKeys).toHaveBeenCalledTimes(1);
+    });
+
+    it('wiring: the production server passes a real isOwnSession backed by SessionManager', () => {
+      const src = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+      const block = src.slice(src.indexOf('const messageRouter = new MessageRouter('), src.indexOf('}, crossMachineDeps);'));
+      expect(block).toMatch(/isOwnSession: \(tmuxSession: string\) =>\s*sessionManager\.listRunningSessions\(\)\.some\(\(s\) => s\.tmuxSession === tmuxSession\)/);
+    });
+
+    it('leaves a same-agent unresolved "best" target at sent (no session to type into)', async () => {
+      const tmux = createMockTmuxOps();
+      const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), tmux as any), {
+        localAgent: 'my-agent', localMachine: 'my-machine', serverUrl: 'http://localhost:3000',
+      });
+      const result = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
+        { agent: 'my-agent', session: 'best', machine: 'local' },
+        'info', 'low', 'Subject', 'Body',
+      );
       expect(result.phase).toBe('sent');
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
     });
 
     it('sets delivery phase to queued for cross-agent messages to offline agent', async () => {

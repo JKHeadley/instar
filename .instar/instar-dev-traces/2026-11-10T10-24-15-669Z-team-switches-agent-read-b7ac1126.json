@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "team-switches-agent-read",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T10:24:15.669Z",
+  "artifactPath": "upgrades/side-effects/team-switches-agent-read.md",
+  "artifactSha256": "2a72ee1917b2f8036af57f87c2611a182940b16e757bc7f9119291b0379c8504",
+  "coveredFiles": [
+    "docs/specs/team-switches-agent-read.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "src/server/teamRoutes.ts",
+    "tests/e2e/team-people-alive.test.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "tests/integration/team-people-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-teamSwitchesRead.test.ts",
+    "upgrades/next/team-switches-agent-read.md",
+    "upgrades/side-effects/team-switches-agent-read.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only field added to an agent-token read plus one instruction phrase rewrite; no write path, no new state; a revert fully undoes it.",
+  "eli16Path": "docs/specs/team-switches-agent-read.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/team-switches-agent-read.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

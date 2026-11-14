@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-28T00:26:17.871Z",
+  "slug": "local-verify-next-slot-priority",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 77,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/serviceSeams.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

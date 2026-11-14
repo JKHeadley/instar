@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-name-invariant",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T09:12:16.886Z",
+  "artifactPath": "upgrades/side-effects/console-name-invariant.md",
+  "artifactSha256": "3fa370dd86be4cfa7462627be3b8680f2283b955250a47d518f229f1eb14285b",
+  "coveredFiles": [
+    "src/messaging/shared/channelIdentity.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing verified-name rule applied to remaining dashboard consumer surfaces; no new authority or persistence.",
+  "eli16Path": "upgrades/console-name-invariant.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-name-invariant.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

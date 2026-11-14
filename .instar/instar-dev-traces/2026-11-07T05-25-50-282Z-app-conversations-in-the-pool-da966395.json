@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "app-conversations-in-the-pool",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-07T05:25:50.282Z",
+  "artifactPath": "upgrades/side-effects/app-conversations-in-the-pool.md",
+  "artifactSha256": "e84fc30672290a5797e7002eb05227f2c54243e75c55397393829b333b7c5fee",
+  "specPath": "docs/specs/app-conversations-in-the-pool.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/MobileChatRequests.ts",
+    "src/core/appConversationPool.ts",
+    "tests/unit/app-conversations-pool-consumers.test.ts",
+    "tests/unit/app-conversations-pool.test.ts",
+    "upgrades/side-effects/app-conversations-in-the-pool.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Continues the Tier 2 change: delivery states on the mesh and phone surface.",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner: one force-claim per record, one notice per episode, each refused drain home waits five minutes. The overdue-waiting sweep settles each send once."
+    }
+  }
+}

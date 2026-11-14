@@ -95,3 +95,11 @@ this" over a live channel, or tags that auto-expire on a timer — is real but
 separate. This spec makes the tag follow the work via explicit release/claim/gate;
 the push-based version is a later, bigger change with its own delivery guarantees.
 It also does NOT touch the reaper janitor itself — PR #1258 owns that.
+
+**Later fix (2026-11-03).** One more way to start a session skipped the
+"this machine owns it" tag: an agent starting a session for a conversation
+directly. The other machine then thought nobody owned that conversation and
+started its own copy when the user wrote next. That direct start now sets the
+tag too, using the same code as the automatic restart. It never takes a
+conversation another machine already owns. Also, moving a conversation to the
+machine that is already running its build no longer pauses the build.

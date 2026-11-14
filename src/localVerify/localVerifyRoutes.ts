@@ -4,6 +4,11 @@
  *   POST /local-verify          body { "pr": <positive integer> } and nothing else
  *   GET  /local-verify          queue, in-flight run and record count
  *   GET  /local-verify/record   ?pr=&head=&base=  the record for one key, or 404
+ *   POST /local-verify/peer-run     a coordinator hands this machine one PR verify (Part D of
+ *                                   docs/specs/local-verify-capacity.md); refused on the lease holder
+ *   GET  /local-verify/peer-status  this machine's peer slot (served on a non-holder)
+ *   GET  /local-verify/peer-result  ?attemptId=  unknown | running | done + record
+ *   POST /local-verify/peer-cancel  { attemptId }: tombstone it, cancel it if running
  *   GET  /local-verify/status   the status reconcile loop: floor state (GitHub's real
  *                               settings), main health, last pass, stuck heads, failed
  *                               posts, dry-run/live. Read-only and NOT lease-gated (a
@@ -17,6 +22,9 @@
 import type { Router, Request, Response } from 'express';
 
 import type { LocalVerifyService, RequestResult } from './LocalVerifyService.js';
+import { parsePeerRunRequest } from './peer.js';
+import { parseDiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
+import { ATTEMPT_ID_RE } from './record.js';
 import type { StatusReconciler } from './StatusReconciler.js';
 
 export interface LocalVerifyRouteDeps {
@@ -24,7 +32,7 @@ export interface LocalVerifyRouteDeps {
   /** The status reconcile loop; absent/null ⇒ GET /local-verify/status answers 503. */
   status?: () => StatusReconciler | null;
   /** Lease view; absent on a single-machine agent (always the holder). */
-  lease?: { holdsLease(): boolean; holderMachineId(): string | null };
+  lease?: { holdsLease(): boolean; holderMachineId(): string | null; leaseEpoch?(): number | null };
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/;
@@ -41,7 +49,8 @@ export function statusForResult(r: RequestResult): number {
     case 'pr-invalid-shas': return 502;
     case 'main-unhealthy':
     case 'pr-closed': return 409;
-    case 'stopping': return 503;
+    case 'stopping':
+    case 'peer-only': return 503;
     default: return 500;
   }
 }
@@ -88,7 +97,7 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
   router.get('/local-verify', (_req: Request, res: Response) => {
     const svc = gate(res);
     if (!svc) return;
-    res.json(svc.snapshot());
+    res.json({ ...svc.snapshot(), diagnosis: svc.diagnosisSummary() });
   });
 
   router.get('/local-verify/status', (_req: Request, res: Response) => {
@@ -116,6 +125,102 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
       res.status(404).json({ error: 'no record', pr, head, base });
       return;
     }
-    res.json({ record });
+    res.json({ record, diagnosis: svc.diagnosisForRecord(record) });
+  });
+
+  router.get('/local-verify/diagnosis', (req: Request, res: Response) => {
+    const svc = gate(res);
+    if (!svc) return;
+    const pr = Number(req.query.pr);
+    const head = String(req.query.head ?? '');
+    const base = String(req.query.base ?? '');
+    if (!Number.isSafeInteger(pr) || pr <= 0 || !SHA_RE.test(head) || !BRANCH_RE.test(base)) {
+      res.status(400).json({ error: 'need pr, head, base' }); return;
+    }
+    const record = svc.getRecord(pr, head, base);
+    const diagnosis = record ? svc.diagnosisForRecord(record) : null;
+    if (!diagnosis) { res.status(404).json({ error: 'no diagnosis', pr, head, base }); return; }
+    res.json({ diagnosis });
+  });
+
+  // ---- peer verifier routes (Part D). Served on a NON-holder; the lease holder refuses peer-run. ----
+  const peerGate = (res: Response): LocalVerifyService | null => {
+    const svc = deps.service();
+    if (!svc) {
+      res.status(503).json({ error: 'local-verify not configured (disabled)' });
+      return null;
+    }
+    return svc;
+  };
+  const leaseCtx = (): { holdsLease: boolean; holderMachineId: string | null; leaseEpoch: number | null } => {
+    let holdsLease = true;
+    let holderMachineId: string | null = null;
+    try { holdsLease = deps.lease ? deps.lease.holdsLease() : true; } catch { holdsLease = true; } // @silent-fallback-ok — an unreadable lease reads as HELD here, so peer-run is refused (the safe direction)
+    try { holderMachineId = deps.lease?.holderMachineId() ?? null; } catch { holderMachineId = null; } // @silent-fallback-ok — an unknown holder refuses peer-run as not-coordinator
+    let leaseEpoch: number | null = null;
+    try { leaseEpoch = deps.lease?.leaseEpoch?.() ?? null; } catch { leaseEpoch = null; }
+    return { holdsLease, holderMachineId, leaseEpoch };
+  };
+
+  router.post('/local-verify/peer-run', async (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const body = parsePeerRunRequest(req.body);
+    if (!body) {
+      res.status(400).json({ ok: false, reason: 'invalid-request' });
+      return;
+    }
+    const ans = await svc.peerRun(body, leaseCtx());
+    res.status(ans.ok ? 202 : ans.reason === 'peer-disabled' ? 503 : 409).json(ans);
+  });
+
+  router.get('/local-verify/peer-status', (_req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    res.json(svc.peerStatus());
+  });
+
+  router.get('/local-verify/peer-result', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const id = String(req.query.attemptId ?? '');
+    if (!ATTEMPT_ID_RE.test(id)) {
+      res.status(400).json({ error: 'need attemptId (32 lowercase hex)' });
+      return;
+    }
+    res.json(svc.peerResult(id));
+  });
+
+  router.post('/local-verify/peer-cancel', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const id = req.body && typeof req.body === 'object' ? (req.body as { attemptId?: unknown }).attemptId : undefined;
+    if (typeof id !== 'string' || !ATTEMPT_ID_RE.test(id)) {
+      res.status(400).json({ error: 'body must be {"attemptId": <32 lowercase hex>}' });
+      return;
+    }
+    res.json(svc.peerCancel(id));
+  });
+
+  router.get('/local-verify/peer-diagnosis-status', (_req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (svc) res.json(svc.diagnosisPeerStatus());
+  });
+
+  router.post('/local-verify/peer-diagnose', async (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const request = parseDiagnosisPeerRequest(req.body);
+    if (!request) { res.status(400).json({ accepted: false, reason: 'invalid-request' }); return; }
+    const answer = await svc.diagnosisPeerAccept(request, leaseCtx());
+    res.status(answer.accepted ? 202 : answer.reason === 'disabled' ? 503 : 409).json(answer);
+  });
+
+  router.get('/local-verify/peer-diagnosis-result', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const id = String(req.query.attemptId ?? '');
+    if (!ATTEMPT_ID_RE.test(id)) { res.status(400).json({ error: 'need attemptId (32 lowercase hex)' }); return; }
+    res.json(svc.diagnosisPeerResult(id));
   });
 }

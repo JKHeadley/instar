@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "job-silence-alert",
+  "sessionId": "42912913-074b-480a-9565-222edcd29edc",
+  "timestamp": "2026-11-05T05:56:00.224Z",
+  "artifactPath": "upgrades/side-effects/job-silence-alert.md",
+  "artifactSha256": "06861b7a4b5454129b42d537f3e5f6c3270bb5a13a88d6e0a54897b724971ae8",
+  "coveredFiles": [
+    "docs/specs/job-silence-alert.eli16.md",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/job-failure-alert-escalation.test.ts",
+    "upgrades/side-effects/job-silence-alert.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small correction to avoid duplicate notices; no new execution authority.",
+  "eli16Path": "docs/specs/job-silence-alert.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-silence-alert.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

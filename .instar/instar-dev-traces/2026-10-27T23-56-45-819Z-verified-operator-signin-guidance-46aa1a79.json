@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "verified-operator-signin-guidance",
+  "sessionId": "8827b117-0209-4bc2-9898-d74ce9301729",
+  "timestamp": "2026-10-27T23:56:45.819Z",
+  "artifactPath": "upgrades/side-effects/verified-operator-signin-guidance.md",
+  "artifactSha256": "30e66baa515498e863093e23b52a5003d3da02c20993a83c7a95918a6de17799",
+  "coveredFiles": [
+    "docs/specs/verified-operator-cross-agent-signin.eli16.md",
+    "docs/specs/verified-operator-cross-agent-signin.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-assistedRelogin.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/verified-operator-signin-guidance.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible, agent-facing handoff guidance and idempotent text migration; no runtime authority or approval surface added. A source revert restores prior guidance.",
+  "eli16Path": "docs/specs/verified-operator-cross-agent-signin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verified-operator-signin-guidance.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

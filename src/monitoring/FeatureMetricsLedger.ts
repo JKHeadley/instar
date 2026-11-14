@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Observable Intelligence — No Autonomous LLM Action Is Unauditable*
+
 /**
  * FeatureMetricsLedger — per-feature observability for LLM-driven systems.
  *
@@ -97,6 +100,27 @@ export interface FeatureMetricRecord {
   verdictId?: string;
   /** Defaults to now(). */
   ts?: number;
+  /**
+   * Job-cost attribution (docs/specs/job-cost-reduction.md §9.1): the job slug,
+   * machine and run/episode id a call was made FOR (the anomaly narrator, the
+   * outage backup check, the supervision pass, Jev triage calls).
+   * Optional and content-free; NULL on every call not made for a job.
+   */
+  jobSlug?: string;
+  machineId?: string;
+  runId?: string;
+}
+
+/** One per-job feature-metrics rollup row (§9.1): calls a component made for a job slug. */
+export interface FeatureJobRollup {
+  jobSlug: string;
+  feature: string;
+  framework: string | null;
+  model: string | null;
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  tokensCached: number;
 }
 
 export interface FeatureRollup {
@@ -163,6 +187,13 @@ export interface FeatureReliabilitySummary {
 export const FEATURE_RELIABILITY_MINIMUM_CALLS = 20;
 export const FEATURE_RELIABILITY_DEGRADED_ERROR_RATE = 0.2;
 export const FEATURE_RELIABILITY_FAILING_ERROR_RATE = 0.5;
+
+/** The same snapshot without the components the person chose to stop counting (docs/specs/health-quick-actions.md). */
+export function withoutComponents(summary: FeatureReliabilitySummary, ignored: (feature: string) => boolean): FeatureReliabilitySummary {
+  const components = summary.components.filter((c) => !ignored(c.feature));
+  if (components.length === summary.components.length) return summary;
+  return { ...summary, components, status: components.some((c) => c.status === 'failing') ? 'failing' : components.length > 0 ? 'degraded' : 'ok' };
+}
 
 /**
  * Component-level reliability snapshot. The aggregate is deliberately not an
@@ -278,6 +309,12 @@ export type EvidenceStrength =
   | 'negative-evidence'
   | 'recurrence-proxy'
   | 'self-report';
+
+export interface DecisionMeasurementCohortRequest {
+  decisionPoint: string; ruleId: string; rung: GradingRung; evidenceStrength: EvidenceStrength; sinceMs: number; untilMs: number; machineSegment?: string | null;
+}
+export interface DecisionMeasurementCohort { total: number; right: number; wrong: number; unknownOrUnmatched: number }
+
 
 /**
  * One settled ENROLLED decision (§5.5 `decision_quality` — ~250B content-free
@@ -469,6 +506,26 @@ export interface FeatureMetricsLedgerOptions {
    */
   rawRetentionDays?: number;
 }
+
+/**
+ * THE precedence rule for a decision's winning grade (llm-decision-quality-meter
+ * §5.4): strongest rung first, then wrong before unknown before right, then the
+ * newest, then a stable tie-break. One text, used by the `decision_winning_grade`
+ * view and by the bucket-scoped recompute, so the two cannot drift.
+ */
+export const WINNING_GRADE_RANK_SQL = `ROW_NUMBER() OVER (
+           PARTITION BY o.correlation_id
+           ORDER BY
+             CASE o.rung
+               WHEN 'deterministic-ground-truth' THEN 0
+               WHEN 'recurrence'                 THEN 1
+               WHEN 'llm-interpreter'            THEN 2
+               WHEN 'self-report'                THEN 3
+               ELSE 4 END ASC,
+             CASE o.grade WHEN 'wrong' THEN 0 WHEN 'unknown' THEN 1 WHEN 'right' THEN 2 ELSE 3 END ASC,
+             o.ts DESC,
+             o.graded_by ASC
+         ) AS rn`;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS feature_metrics (
@@ -678,23 +735,38 @@ const SCHEMA = [
   `CREATE VIEW IF NOT EXISTS decision_winning_grade AS
      SELECT correlation_id, grade, rung, evidence_strength, rule_id, graded_by
        FROM (
-         SELECT o.*, ROW_NUMBER() OVER (
-           PARTITION BY o.correlation_id
-           ORDER BY
-             CASE o.rung
-               WHEN 'deterministic-ground-truth' THEN 0
-               WHEN 'recurrence'                 THEN 1
-               WHEN 'llm-interpreter'            THEN 2
-               WHEN 'self-report'                THEN 3
-               ELSE 4 END ASC,
-             CASE o.grade WHEN 'wrong' THEN 0 WHEN 'unknown' THEN 1 WHEN 'right' THEN 2 ELSE 3 END ASC,
-             o.ts DESC,
-             o.graded_by ASC
-         ) AS rn
+         SELECT o.*, ${WINNING_GRADE_RANK_SQL}
          FROM decision_outcomes o
        )
       WHERE rn = 1`,
 ];
+
+/**
+ * The winning grade of every decision in ONE (decision_point, day) bucket, as a
+ * joinable subquery with the columns `correlation_id` and `grade`. Binds
+ * `@decisionPoint`, `@start` and `@end`.
+ *
+ * It is the `decision_winning_grade` view restricted to the bucket's own
+ * decisions BEFORE the ranking runs. Joining the view itself ranks every row of
+ * `decision_outcomes` first (a window function cannot be pushed below), so each
+ * bucket recompute cost a scan of the whole table: about 100 ms per query at
+ * 62,000 outcomes, twice per graded decision, up to 200 decisions in one
+ * synchronous grading pass. That held the server's event loop for over a minute
+ * and its supervisor killed it (2026-11-13 13:00Z). Restricted, the same answer
+ * takes 1 to 5 ms.
+ *
+ * Precedence is NOT reimplemented here: the ranking is `WINNING_GRADE_RANK_SQL`,
+ * the same text the view is built from.
+ */
+export const BUCKET_WINNING_GRADE_SQL = `(
+           SELECT correlation_id, grade FROM (
+             SELECT o.correlation_id, o.grade, ${WINNING_GRADE_RANK_SQL}
+               FROM decision_outcomes o
+              WHERE o.correlation_id IN (
+                SELECT correlation_id FROM decision_quality
+                 WHERE decision_point = @decisionPoint AND ts >= @start AND ts < @end)
+           ) WHERE rn = 1
+         )`;
 
 /**
  * Columns added after the table's first ship. CREATE TABLE IF NOT EXISTS never
@@ -712,6 +784,11 @@ const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
   // ledger's reserveId === every provider_cost_report row's meteredCallId).
   // Additive + nullable; only metered calls stamp it (FD-21).
   { name: 'call_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN call_id TEXT' },
+  // job-cost-reduction §9.1: per-job attribution of calls made FOR a job. Additive +
+  // nullable; only calls whose attribution carries a jobSlug stamp them.
+  { name: 'job_slug', ddl: 'ALTER TABLE feature_metrics ADD COLUMN job_slug TEXT' },
+  { name: 'machine_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN machine_id TEXT' },
+  { name: 'run_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN run_id TEXT' },
 ];
 
 /** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
@@ -815,12 +892,21 @@ export class FeatureMetricsLedger {
     } catch {
       // @silent-fallback-ok: the partial index is a read-path optimization only.
     }
+    // job-cost-reduction §9.1: partial index for the per-job read (GET /jobs/cost).
+    try {
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_feature_metrics_job_slug
+           ON feature_metrics (job_slug, ts) WHERE job_slug IS NOT NULL`,
+      );
+    } catch {
+      // @silent-fallback-ok: the partial index is a read-path optimization only.
+    }
     // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
-         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id)
-       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId)`,
+         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id, job_slug, machine_id, run_id)
+       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId, @jobSlug, @machineId, @runId)`,
     );
     if (this.maintainSpendRollup) {
       try {
@@ -971,6 +1057,9 @@ export class FeatureMetricsLedger {
         waited: r.waited ? 1 : 0,
         waitMs: r.waitMs ?? null,
         verdictId: r.verdictId ?? null,
+        jobSlug: clampLabel(r.jobSlug),
+        machineId: clampLabel(r.machineId),
+        runId: clampLabel(r.runId),
       });
     } catch {
       // Observability must never break the path it observes (Close the Loop:
@@ -1225,6 +1314,48 @@ export class FeatureMetricsLedger {
         errorRowsWithUsage: Number(r.errorRowsWithUsage) || 0,
       };
     });
+  }
+
+  /**
+   * Per-job rollup (docs/specs/job-cost-reduction.md §9.1): llm calls a component
+   * made FOR a job slug (rows whose attribution carried a jobSlug), grouped by slug ×
+   * feature × framework × model, inside [sinceMs, untilMs). 'shed' rows are excluded —
+   * no call ran, so they carry no cost and are not model calls. `machineId`, when
+   * given, keeps rows stamped with that machine OR with no machine stamp (a call made
+   * on this machine before the stamp existed). Degrades to [] on a read failure.
+   */
+  byJobSlug(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): FeatureJobRollup[] {
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const machine = opts.machineId ?? null;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT job_slug AS jobSlug, feature, framework, model,
+             COUNT(*)                      AS calls,
+             COALESCE(SUM(tokens_in), 0)   AS tokensIn,
+             COALESCE(SUM(tokens_out), 0)  AS tokensOut,
+             COALESCE(SUM(tokens_cached), 0) AS tokensCached
+           FROM feature_metrics
+           WHERE job_slug IS NOT NULL AND ts >= ? AND ts < ? AND kind='llm' AND outcome != 'shed'
+             AND (? IS NULL OR machine_id IS NULL OR machine_id = ?)
+           GROUP BY job_slug, feature, framework, model`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string | null>>;
+      return rows.map((r) => ({
+        jobSlug: String(r.jobSlug),
+        feature: String(r.feature),
+        framework: r.framework === null || r.framework === undefined ? null : String(r.framework),
+        model: r.model === null || r.model === undefined ? null : String(r.model),
+        calls: Number(r.calls) || 0,
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        tokensCached: Number(r.tokensCached) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: a DB whose job_slug ALTER was swallowed reads as "no
+      // per-job calls" — the cost report states feature attribution, never throws.
+      return [];
+    }
   }
 
   /**
@@ -1681,10 +1812,10 @@ export class FeatureMetricsLedger {
            SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END) AS wrongCount,
            SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END) AS unknownCount
          FROM decision_quality q
-         JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
-         WHERE q.decision_point = ? AND q.ts >= ? AND q.ts < ?`,
+         JOIN ${BUCKET_WINNING_GRADE_SQL} w ON w.correlation_id = q.correlation_id
+         WHERE q.decision_point = @decisionPoint AND q.ts >= @start AND q.ts < @end`,
       )
-      .get(decisionPoint, start, start + 86_400_000) as
+      .get({ decisionPoint, start, end: start + 86_400_000 }) as
       { rightCount: number | null; wrongCount: number | null; unknownCount: number | null } | undefined;
     this.db
       .prepare(
@@ -1721,7 +1852,7 @@ export class FeatureMetricsLedger {
          SELECT
            q.decision_point,
            COALESCE(NULLIF(TRIM(COALESCE(q.model, '')), ''), '__missing__') AS m,
-           ?,
+           @day,
            SUM(CASE WHEN w.grade='right'   THEN 1 ELSE 0 END),
            SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END),
            SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END),
@@ -1729,13 +1860,13 @@ export class FeatureMetricsLedger {
            CASE WHEN COUNT(DISTINCT COALESCE(q.prompt_id, '')) = 1
                 THEN MIN(COALESCE(q.prompt_id, ''))
                 ELSE '__mixed__' END,
-           ?
+           @lastWriteAt
          FROM decision_quality q
-         LEFT JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
-         WHERE q.decision_point = ? AND q.ts >= ? AND q.ts < ?
+         LEFT JOIN ${BUCKET_WINNING_GRADE_SQL} w ON w.correlation_id = q.correlation_id
+         WHERE q.decision_point = @decisionPoint AND q.ts >= @start AND q.ts < @end
          GROUP BY m`,
       )
-      .run(day, this.now(), decisionPoint, start, start + 86_400_000);
+      .run({ day, lastWriteAt: this.now(), decisionPoint, start, end: start + 86_400_000 });
   }
 
   /** In-tx counter bump (column name from the closed map — never interpolated input). */
@@ -2054,6 +2185,32 @@ export class FeatureMetricsLedger {
     }
   }
 
+  /** Exact winning-grade cohort for measurement. Null is a failed read;
+   * real zero denominators remain zero counts for the caller to disclose.
+   * Unmatched includes unknown, ungraded and incompatible winning cohorts. */
+  decisionMeasurementCohort(input: DecisionMeasurementCohortRequest): DecisionMeasurementCohort | null {
+    return this.decisionMeasurementCohorts([input])?.[0] ?? null;
+  }
+
+  /** One canonical winning-view read per bounded pass, not one per subject. */
+  decisionMeasurementCohorts(inputs: DecisionMeasurementCohortRequest[]): DecisionMeasurementCohort[] | null {
+    if (this.closed || inputs.length > 64 || inputs.some(i => !Number.isSafeInteger(i.sinceMs) || !Number.isSafeInteger(i.untilMs) ||
+        i.sinceMs <= 0 || i.sinceMs > i.untilMs || (i.machineSegment!==null && (typeof i.machineSegment!=='string'||i.machineSegment.length<1||i.machineSegment.length>32)) || [i.decisionPoint,i.ruleId,i.rung,i.evidenceStrength].some(v => typeof v !== 'string' || v.length < 1 || v.length > 128))) return null;
+    if (!inputs.length) return [];
+    try {
+      const bindings = inputs.flatMap((i, index) => [index,i.decisionPoint,i.ruleId,i.rung,i.evidenceStrength,i.sinceMs,i.untilMs,i.machineSegment??null]);
+      const rows = this.db.prepare(`WITH requested(idx,point,rule,rung,strength,since,until,machine) AS (VALUES ${inputs.map(() => '(?,?,?,?,?,?,?,?)').join(',')})
+        SELECT r.idx,COUNT(q.correlation_id) AS total,
+          COALESCE(SUM(CASE WHEN q.machine_id IS r.machine AND w.rule_id=r.rule AND w.rung=r.rung AND w.evidence_strength=r.strength AND w.grade='right' THEN 1 ELSE 0 END),0) AS right,
+          COALESCE(SUM(CASE WHEN q.machine_id IS r.machine AND w.rule_id=r.rule AND w.rung=r.rung AND w.evidence_strength=r.strength AND w.grade='wrong' THEN 1 ELSE 0 END),0) AS wrong
+        FROM requested r LEFT JOIN decision_quality q ON q.decision_point=r.point AND q.ts>=r.since AND q.ts<=r.until AND (q.machine_id IS r.machine OR q.machine_id IS NULL)
+        LEFT JOIN decision_winning_grade w ON w.correlation_id=q.correlation_id GROUP BY r.idx ORDER BY r.idx`)
+        .all(...bindings) as Array<{ idx: number; total: number; right: number; wrong: number }>;
+      if (rows.length !== inputs.length || rows.some((row,index) => row.idx !== index || ![row.total,row.right,row.wrong].every(n => Number.isSafeInteger(n) && n >= 0) || row.right + row.wrong > row.total)) return null;
+      return rows.map(({total,right,wrong}) => ({total,right,wrong,unknownOrUnmatched:total-right-wrong}));
+    } catch { /* @silent-fallback-ok — null exposes unavailable cohort evidence instead of a zero-quality observation */ return null; }
+  }
+
   /**
    * Grade breakdown for GET /decision-quality (§5.5): winning grades joined to
    * their decision point over the window, grouped by (decisionPoint, ruleId,
@@ -2143,6 +2300,47 @@ export class FeatureMetricsLedger {
       // from its last durable boundary next run — never a throw.
       return null;
     }
+  }
+
+  /**
+   * Keep the scheduled grade-pass effect check and the pass itself on one
+   * SQLite writer lane. A second process cannot add a decision between the
+   * strict pre-read and the strict post-read. Nested ledger transactions use
+   * savepoints. The callback must be synchronous and bounded.
+   */
+  withExclusiveGradingPass<T>(work: () => T): T {
+    if (this.closed) throw new Error('quality ledger closed');
+    return this.db.transaction(work).immediate();
+  }
+
+  /** Strict, content-free read for proving a grade pass was genuinely idle. */
+  strictGradingIdleSnapshot(points: readonly string[]): Array<{
+    decisionPoint: string; cursorTs: number; cursorCorrelationId: string;
+    nextCorrelationId: string | null; nextTs: number | null; totalRows: number;
+  }> {
+    if (this.closed) throw new Error('quality ledger closed');
+    return points.map(decisionPoint => {
+      const cursor = this.db.prepare(`SELECT cursor_ts AS cursorTs,
+        cursor_correlation_id AS cursorCorrelationId FROM decision_grading_cursor
+        WHERE decision_point=?`).get(decisionPoint) as
+        { cursorTs: number; cursorCorrelationId: string } | undefined;
+      const cursorTs = cursor?.cursorTs ?? 0;
+      const cursorCorrelationId = cursor?.cursorCorrelationId ?? '';
+      const next = this.db.prepare(`SELECT correlation_id AS correlationId,ts
+        FROM decision_quality WHERE decision_point=?
+        AND (ts>? OR (ts=? AND correlation_id>?))
+        ORDER BY ts ASC,correlation_id ASC LIMIT 1`)
+        .get(decisionPoint, cursorTs, cursorTs, cursorCorrelationId) as
+        { correlationId: string; ts: number } | undefined;
+      // Count the whole point, including late rows behind the cursor. A
+      // cursor-only read can falsely certify idle after a late insert.
+      const count = this.db.prepare(`SELECT COUNT(*) AS totalRows FROM decision_quality
+        WHERE decision_point=?`).get(decisionPoint) as { totalRows: number };
+      if (!Number.isSafeInteger(count.totalRows) || count.totalRows < 0) throw new Error('invalid grading row count');
+      return { decisionPoint, cursorTs, cursorCorrelationId,
+        nextCorrelationId: next?.correlationId ?? null, nextTs: next?.ts ?? null,
+        totalRows: count.totalRows };
+    });
   }
 
   /**

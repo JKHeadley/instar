@@ -113,7 +113,7 @@ describe('Files never serve key material — E2E lifecycle (feature is alive)', 
     try {
       const migStateDir = path.join(projectDir, '.instar');
       fs.mkdirSync(path.join(migStateDir, 'hooks'), { recursive: true });
-      fs.writeFileSync(path.join(migStateDir, 'config.json'), JSON.stringify({ port: 4042, projectName: 'mig' }));
+      fs.writeFileSync(path.join(migStateDir, 'config.json'), JSON.stringify({ port: 4042, projectName: 'mig', claudeMd: { layout: 'full' } /* asserts the legacy chain's in-place insertion; the layout conversion is covered in claude-md-reference-layout tests */ }));
       // A pre-§5 project .gitignore and internal .instar/.gitignore.
       fs.writeFileSync(path.join(projectDir, '.gitignore'), '.instar/machine/signing-key.pem\n.instar/secrets/\n');
       fs.writeFileSync(path.join(migStateDir, '.gitignore'), 'secrets/\n');

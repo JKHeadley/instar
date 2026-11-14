@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "recommended-services-choices",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T07:08:27.917Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-choices.md",
+  "artifactSha256": "e259799228beff9ae3b4ee789003a5f41d51c8e4f0d73dff784aa46d3e0ba6d2",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/scaffold/templates.ts",
+    "upgrades/next/recommended-services-choices.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Merge from main with a conflict in imports",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -17,12 +17,10 @@
     "src/core/JobReflector.ts:cmd",
     "src/core/MessagingToneGate.ts:quote",
     "src/core/MessagingToneGate.ts:truncated",
-    "src/core/MoveIntentClassifier.ts:body",
     "src/core/PostUpdateMigrator.ts:message",
     "src/core/PostUpdateMigrator.ts:next",
     "src/core/PreCompactionFlush.ts:body",
     "src/core/PreCompactionFlush.ts:newLines",
-    "src/core/ProfileIntentClassifier.ts:body",
     "src/core/ResumeValidator.ts:text",
     "src/core/SeamlessOrchestratorEngine.ts:neutralize",
     "src/core/TemporalCoherenceChecker.ts:summary",
@@ -52,6 +50,6 @@
     "src/threadline/openConversationBrief.ts:snippet",
     "src/threadline/openConversationBrief.ts:text"
   ],
-  "ceiling": 45,
+  "ceiling": 43,
   "_regenerated": "Re-derived 2026-08-22 after the independent review found the inline detector desynchronised by a stray backtick (C4) and the keys unstable under line shifts (C5). The population GREW from 26 to 45 because shape 1 now also sees named-constant bounds, wrapped declarations and substr — the evasions of finding C6, one of which (a named constant) is the style the standard itself prescribes. Four inline entries were removed as parity-bug artifacts, not as fixes."
 }

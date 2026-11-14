@@ -10,9 +10,9 @@ eli16-overview: "ownership-follows-live-work.eli16.md"
 lessons-engaged:
   - "P2 Signal vs Authority — ownership is AUTHORITY (it moves the §L3 run-fence), so every new write goes through the SAME guarded `SessionOwnershipRegistry.cas()` + `applyOwnershipAction()` FSM at a fenced `epoch+1`; Part D's ownerOf read is a SIGNAL that informs forward-vs-rerun, never a new kill/authority (see 'Signal vs. authority')."
   - "P19 No Unbounded Loops — no new repeating loop is introduced (release fires once on the existing `sessionComplete` event; claim fires once per spawn; the recovery gate is a one-shot pre-respawn check); the existing reconciler/applier ticks are untouched (see 'Decision points touched')."
-  - "P10 Comprehensive-First / No Deferrals — A, B, and D ship together as the deliberate completion of the PR #1258 follow-up tracked-commitment; nothing is split out except the genuinely-separate evented-lease end-state (named in 'Out of scope') (see 'Tracked follow-through')."
+  - "P10 Comprehensive-First / No Deferrals — A, B, and D ship together as the deliberate completion of the PR #1258 tracked commitment; nothing is split out except the genuinely-separate evented-lease end-state (named in 'Out of scope') (see 'Tracked follow-through')."
   - "Maturation Path — ships ENABLED on developer agents via resolveDevAgentGate (live on echo, dark on the fleet); the fleet-OFF default is the dark stage of the ladder, not a permanent kill (see the Dark flag section)."
-  - "Close the Loop — this spec CLOSES the loop opened by PR #1258's tracked commitment (ownership-follows-live-work Part A/B/D); on merge it records the retirement of PR #1258's compensating liveness-snapshot gate as a tracked follow-up once A/B have soaked (see 'Tracked follow-through')."
+  - "Close the Loop — this spec CLOSES the loop opened by PR #1258's tracked commitment (ownership-follows-live-work Part A/B/D); on merge it records the retirement of PR #1258's compensating liveness-snapshot gate as tracked work once A/B have soaked (see 'Tracked follow-through')."
 approved: true
 approved-by: "Justin — blanket pre-approval, topic 27515 (24h autonomous mesh mission, 'pre-approval for any decisions or specs needed')"
 review-convergence: "2026-06-24T10:43:29.642Z"
@@ -28,7 +28,7 @@ contested-then-cleared: 0
 
 # Ownership Follows Live Work (the defense-in-depth fix for stale-ownership)
 
-## Problem (the follow-up to PR #1258, verified live against the code)
+## Problem (continuing PR #1258, verified live against the code)
 
 PR #1258 (`post-transfer-closeout-correctness`, shipped) **stopped the harm**: it liveness-gates the
 `SessionReaper` post-transfer closeout so the reaper never terminates a live local session on a stale
@@ -217,7 +217,7 @@ a `release` CAS so the record advances to `released` instead of being stuck `act
   against a record we no longer own. **Frontloaded Decision 1** records "release is best-effort,
   CAS-fenced, never forced".
 
-### Why this is the durable fix PR #1258 deferred
+### Why this is the durable fix PR #1258 left open
 
 PR #1258's liveness snapshot exists ONLY because a completed-but-not-released session leaves a stale
 `active` record. With Part A, that record becomes `released` the instant the session completes →
@@ -254,6 +254,26 @@ THIS machine.
   thread the same claim (a normative obligation, locked by the Tier-1 test below). There is no separate
   HTTP `POST /autonomous` route that spawns (verified: `/autonomous/*` routes are read/stop/evaluate
   only — `routes.ts:4216-4405` — the run is file-driven + lazily spawned).
+- **Also at `POST /sessions/spawn` with a `topicId`.** This route spawns a topic-bound session
+  directly (an agent starting a builder or bug-fix session for a conversation), binds it locally via
+  `registerTopicSession`, and bypasses `route()`. Without the claim, the pool reads the topic as
+  `unowned` while its session runs, and the next inbound message is placed on whichever machine the
+  router picks — a second live copy (Echo Bugs topic 10000001485; live on topics 136774 and
+  10000001485, 2026-11-03). It also makes the duplicate reconciler escalate instead of converge,
+  because the epoch it does see (the peer's) contradicts the live run (`rule2-rule3-contradiction`).
+  The route calls the SAME claim action through `ctx.claimTopicOwnershipOnSpawn` and reports the outcome
+  as `ownership` in its 201 body (`claimed` · `already-owned` · `in-flight` · `owned-elsewhere` · `lost` ·
+  `dark` · `error` · `unwired`). `in-flight` means a `placing` record on this machine or a
+  `transferring` record naming this machine: another path is landing the topic here and claims it
+  itself, so the spawn writes nothing. The action is single-sourced in `createClaimOwnershipOnSpawn`
+  (`src/core/ownershipFollowsLiveWork.ts`), so both callers keep the CAS + `emitPlacement` pairing and
+  the never-force-claim rule (FD3). Like the rest of this spec, it follows the
+  `multiMachine.ownershipFollowsLiveWork` dev-agent gate: live where it resolves on, `dark` on the
+  fleet until the flag graduates.
+- **Transfer to the machine already running the run.** `POST /pool/transfer` counts a live autonomous
+  run for the consent gate (WS1.4) and for suspend-on-move ONLY when that run is on a machine the topic
+  is LEAVING. A run on the transfer target is not interrupted by the move, so it neither prompts nor is
+  suspended. That is the repair lever for a topic whose record was placed on the wrong machine.
 - **The claim sequence (FSM-correct).** Ownership of a never-seen / released topic must go `place` →
   `claim` (a bare `claim` on a missing/released record is rejected `no-record`/`claim-out-of-sequence`,
   **SessionOwnership.ts:117,128**). So the autonomous claim mirrors the router's two-step seam:
@@ -719,7 +739,7 @@ This spec adds NO new external block/allow/route gate and NO new repeating loop.
 - A per-topic ownership check inside THREE existing recovery decisions (Part D), each strictly reducing
   double-dispatch. No existing decision boundary is removed or weakened.
 
-## Out of scope (explicit — SEPARATE follow-up)
+## Out of scope (explicit — separate designs, not promised here)
 
 - **Evented / push-based ownership lifecycle** (peers publish session start/stop over a bus so liveness
   is push, not poll/CAS). This is the race-free end-state PR #1258's spec named; it is a new
@@ -727,8 +747,8 @@ This spec adds NO new external block/allow/route gate and NO new repeating loop.
   this PR.
 - **Per-topic lease heartbeat / TTL on the ownership record** (a record that self-expires when the
   owner's session ends). Parts A/B make the record track live work via explicit release/claim; a
-  lease-TTL would make it self-correct even without an explicit release. Deferred as a separate
-  hardening once A/B soak. **Why explicit release/claim NOW instead of a lease (the alternatives
+  lease-TTL would make it self-correct even without an explicit release. It is a separate
+  hardening design, not part of this spec. **Why explicit release/claim NOW instead of a lease (the alternatives
   tradeoff both external reviewers asked for):** three ownership-lifecycle shapes were weighed —
   (i) **explicit release-on-complete + claim-on-spawn** (THIS spec): minimal, reuses the existing fenced
   CAS + replication path with ZERO new cross-machine surface, ships behind one dark flag, and directly

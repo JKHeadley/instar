@@ -1,9 +1,33 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSessionPlatform } from '../../src/server/sessionPlatform.js';
+import { resolveSessionPlatform, sessionDisplayName } from '../../src/server/sessionPlatform.js';
 
 const telegram = (map: Record<string, number>, names: Record<number, string> = {}) => ({
   getTopicForSession: (t: string) => map[t] ?? null,
   getTopicName: (id: number) => names[id] ?? null,
+});
+
+describe('sessionDisplayName', () => {
+  it('keeps a meaningful persisted or peer title when the adapter title is absent', () => {
+    expect(sessionDisplayName('Instar App', { platform: 'telegram', platformId: 134088 })).toBe('Instar App');
+    expect(sessionDisplayName('Release discussion', { platform: 'slack', platformId: 'C123456789:123.456' })).toBe('Release discussion');
+  });
+  it('does not treat decorated Slack routing identifiers as saved titles', () => {
+    const platform = { platform: 'slack', platformId: 'C123456789:123.456' };
+    expect(sessionDisplayName('#C123456789', platform)).toBe('Channel name unavailable');
+    expect(sessionDisplayName('Real title', { ...platform, platformName: '#C123456789' })).toBe('Real title');
+    expect(sessionDisplayName('C123456789 (thread 123.456)', platform)).toBe('Channel name unavailable');
+  });
+  it('uses a verified title and never a project-prefixed Telegram routing name', () => {
+    expect(sessionDisplayName('echo-topic-127504', { platform: 'telegram', platformId: 127504, platformName: 'Instar dashboard makeover' }))
+      .toBe('Instar dashboard makeover');
+    expect(sessionDisplayName('echo-topic-127504', { platform: 'telegram', platformId: 127504 }))
+      .toBe('Conversation name unavailable');
+  });
+
+  it('keeps ordinary sessions and masks an unbound topic routing name', () => {
+    expect(sessionDisplayName('health-check', { platform: 'headless' })).toBe('health-check');
+    expect(sessionDisplayName('echo-topic-127504', { platform: 'headless' })).toBe('Conversation name unavailable');
+  });
 });
 const slack = (map: Record<string, string>, names: Record<string, string> = {}) => ({
   getChannelForSession: (t: string) => map[t] ?? null,
@@ -26,6 +50,11 @@ describe('resolveSessionPlatform', () => {
       .toEqual({ platform: 'slack', platformId: 'C1', platformName: 'general' });
   });
 
+  it('does not advertise a Slack ID as a channel name', () => {
+    expect(resolveSessionPlatform('s', null, slack({ s: 'C123' }, { C123: 'C123' })))
+      .toEqual({ platform: 'slack', platformId: 'C123' });
+  });
+
   it('reports headless when no adapter binds the session', () => {
     expect(resolveSessionPlatform('train-109', telegram({}), slack({}))).toEqual({ platform: 'headless' });
     expect(resolveSessionPlatform('train-109', null, null)).toEqual({ platform: 'headless' });
@@ -42,6 +71,7 @@ describe('wiring: both session surfaces share the one derivation', () => {
   });
 
   it('GET /sessions uses the same helper', () => {
-    expect(read('src/server/routes.ts')).toContain('resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack)');
+    expect(read('src/server/routes.ts')).toContain('createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir })');
+    expect(read('src/server/AgentServer.ts')).toContain('sessionPresentationSources: () => ({ ...this.routeContext!, stateDir: this.config.stateDir })');
   });
 });

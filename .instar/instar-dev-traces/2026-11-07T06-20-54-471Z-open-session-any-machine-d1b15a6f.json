@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "open-session-any-machine",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T06:20:54.471Z",
+  "artifactPath": "upgrades/side-effects/open-session-any-machine.md",
+  "artifactSha256": "3c448f30a3738595123dba84a447cd97c816e04cab3c09fa0334097f14e0fe54",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/mobileSessionRoutes.ts",
+    "tests/e2e/mobile-open-session-alive.test.ts",
+    "tests/integration/mobile-open-session.test.ts",
+    "tests/unit/mobile-open-session.test.ts",
+    "upgrades/eli16/open-session-any-machine.md",
+    "upgrades/next/open-session-any-machine.md",
+    "upgrades/side-effects/open-session-any-machine.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One existing device route answers a session on another machine as remote instead of naming that machine's dashboard; a read-only loopback lookup of the pool listing. No new route, allowlist or authority.",
+  "eli16Path": "upgrades/eli16/open-session-any-machine.md",
+  "sideEffectsPath": "upgrades/side-effects/open-session-any-machine.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -56,6 +56,8 @@ export interface OriginStoreOptions {
   restart?: { baseDelayMs?: number; maxDelayMs?: number; maxAttempts?: number; healthyWindowMs?: number };
   /** Conservative aggregate structured-clone budget before worker enqueue. */
   maxPendingBytes?: number;
+  /** Audit horizon for origin stubs and their archives. An explicit operator policy. */
+  auditRetentionDays?: number;
   maxOperations?: number;
   maxPayloadBytes?: number;
   maxChildren?: number;
@@ -142,6 +144,8 @@ export interface OriginAuditRecord {
   sequence: number;
   record: StoredOriginInput;
   operation: { operationId: string; preparedAt: number; deadlineAt: number; maxAttempts: number; state: string;
+    /** native-conversation-base §3a item 2 — late-mark carrier (null on rows that were never replaced). */
+    firstPreparedAt?: number | null; lateMarkedAt?: number | null;
     /** a2a-single-agent-identity §4.2 — present only while a named hold is recorded. */
     holdReason?: string; holdDetail?: Record<string, unknown> | null } | null;
   children: Array<{ childId: string; deliveryId: string; destinationJson: string; generation: number; state: string; attempts: number }>;
@@ -163,6 +167,8 @@ export interface OriginListPage {
   cursor: string | null;
   upperSequence: number;
   coverage: 'complete';
+  /** Set once the audit horizon has removed records created before this time. */
+  historyExpiredBefore?: number;
 }
 export interface OriginMetrics {
   sampledAt: number;
@@ -205,4 +211,12 @@ export interface HeldOperationRow {
    * sealed envelope. Null when unreadable. Gates the user-facing delayed-reply notice:
    * background output never claims "I have your message". */
   producerKind?: string | null;
+  /** native-conversation-base §3a item 2 — the original draft time of a replaced reply (null = its own preparedAt). */
+  firstPreparedAt?: number | null;
+  /** §3a item 2 — set when a late first line was added; never marked twice. */
+  lateMarkedAt?: number | null;
+  /** The sealed author binding, read from the envelope (null when unreadable). */
+  originMachineId?: string | null;
+  sessionId?: string | null;
+  harnessId?: string | null;
 }

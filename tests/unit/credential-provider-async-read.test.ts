@@ -65,8 +65,11 @@ describe('KeychainCredentialProvider.readCredentials — async keychain spawn', 
     expect(execFileSyncMock).not.toHaveBeenCalled();
     // Confirm it spawned the keychain read with the expected args.
     expect(execFileMock.mock.calls[0][0]).toBe('security');
+    // The CLI's own keychain account first (a service can hold a stale second item).
     expect(execFileMock.mock.calls[0][1]).toEqual([
       'find-generic-password',
+      '-a',
+      expect.any(String),
       '-s',
       'Claude Code-credentials',
       '-w',
@@ -74,11 +77,14 @@ describe('KeychainCredentialProvider.readCredentials — async keychain spawn', 
   });
 
   it('returns null on a keychain miss without ever calling the sync spawn', async () => {
-    execFileMock.mockImplementationOnce(
-      (_cmd, _args, _opts, cb: (err: Error | null) => void) => {
-        cb(new Error('SecKeychainSearchCopyNext: not found'));
-      },
-    );
+    // Both the CLI-account read and the any-item fallback miss.
+    for (let i = 0; i < 2; i++) {
+      execFileMock.mockImplementationOnce(
+        (_cmd, _args, _opts, cb: (err: Error | null) => void) => {
+          cb(new Error('SecKeychainSearchCopyNext: not found'));
+        },
+      );
+    }
     const provider = new KeychainCredentialProvider();
     expect(await provider.readCredentials()).toBeNull();
     expect(execFileSyncMock).not.toHaveBeenCalled();

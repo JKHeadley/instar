@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-10T05:00:15.159Z",
+  "slug": "locked-proof-before-enter-aim",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs"
+    ],
+    "addedLines": 62,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

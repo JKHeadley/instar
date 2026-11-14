@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "spawn-claims-topic-ownership",
+  "sessionId": "b9be1b11-48c5-4546-b6cc-ec259ceffbab",
+  "timestamp": "2026-11-03T19:13:06.550Z",
+  "artifactPath": "upgrades/side-effects/spawn-claims-topic-ownership.md",
+  "artifactSha256": "c4dc5e1159e8b4a71e742ec6e9f404c22e9a74cc42f23fbdb336ccaad019dcec",
+  "specPath": "docs/specs/ownership-follows-live-work.md",
+  "coveredFiles": [
+    "docs/specs/ownership-follows-live-work.eli16.md",
+    "docs/specs/ownership-follows-live-work.md",
+    "src/commands/server.ts",
+    "src/core/ownershipFollowsLiveWork.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/ownership-follows-live-work-lifecycle.test.ts",
+    "tests/integration/pool-placement-transfer-routes.test.ts",
+    "tests/integration/sessions-spawn-claims-ownership.test.ts",
+    "tests/unit/claimOwnershipOnSpawn.test.ts",
+    "tests/unit/ownershipFollowsLiveWork.test.ts",
+    "upgrades/next/spawn-claims-topic-ownership.md",
+    "upgrades/side-effects/spawn-claims-topic-ownership.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Writes cross-machine ownership records (run-fence authority) from a new caller and changes the transfer consent gate; under the approved, converged ownership-follows-live-work spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

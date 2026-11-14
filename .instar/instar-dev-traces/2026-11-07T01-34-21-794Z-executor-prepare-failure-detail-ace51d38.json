@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "executor-prepare-failure-detail",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T01:34:21.794Z",
+  "artifactPath": "upgrades/side-effects/executor-prepare-failure-detail.md",
+  "artifactSha256": "4cf12b36c01ed9951632a0664ca4d05d32294f3c2134714a3983102266c8df75",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/unit/feedback-factory/execute-reroute-capacity.test.ts",
+    "upgrades/eli16/executor-prepare-failure-detail.md",
+    "upgrades/next/executor-prepare-failure-detail.md",
+    "upgrades/side-effects/executor-prepare-failure-detail.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Recording-only change on an existing failure path; a revert fully undoes it.",
+  "eli16Path": "upgrades/eli16/executor-prepare-failure-detail.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-prepare-failure-detail.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

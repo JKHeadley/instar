@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "feedback-delivery-route-docs",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T15:37:10.244Z",
+  "artifactPath": "upgrades/side-effects/feedback-delivery-route-docs.md",
+  "artifactSha256": "9cfdc57b302b2de6a3409efc09ff6e5a1e36dda005bfb81f32affa0876d081f8",
+  "coveredFiles": [
+    "site/src/content/docs/features/feedback-delivery-checks.md",
+    "upgrades/side-effects/feedback-delivery-route-docs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only CI coverage repair; no runtime decision or installed file changes.",
+  "eli16Path": "docs/specs/feedback-triage-and-execution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-delivery-route-docs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

@@ -9,6 +9,7 @@
  * blocked filenames, never-editable enforcement.
  */
 
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { Router, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -115,10 +116,31 @@ export const NEVER_SERVED_PREFIXES = [
   // path — it stays only as a legacy-layout regression pin.
   'state/judgment-provenance/',
   '.instar/state/judgment-provenance/',
+  // context-budget-layered-summaries §9.7: per-topic conversation layers and
+  // PostCompact summaries, and the transcript archive. Never served.
+  'state/context-layers/',
+  '.instar/state/context-layers/',
+  'state/context-archive/',
+  '.instar/state/context-archive/',
+  // Chrome profiles and the Linux driver's cookie, bindings and page reads (normal-chrome-linux).
+  // The trailing slash keeps state/playwright-profiles.json served.
+  'state/playwright-profiles/',
+  '.instar/state/playwright-profiles/',
+  'state/xdrive/',
+  '.instar/state/xdrive/',
+  // Codex device-limit judge provenance (codex-device-limit-tripwire §1): the prepared refusal
+  // text, machine-local only; the HTTP surface is the content-free log + GET /subscription-pool.
+  'state/codex-device-limit-provenance/',
+  '.instar/state/codex-device-limit-provenance/',
   // External-hog decision store: grading GROUND TRUTH (llm-decision-quality-
   // meter spec §5.3) — the dashboard file editor must not read or rewrite it
   // (serve-deny implies edit-deny via isNeverEditable).
   '.instar/state/external-hog-decisions.json',
+  // Hook telemetry (docs/specs/native-hook-events.md D1): per-session event
+  // records (paths, redacted message tails) and subagent records. Machine-local
+  // observability, read through /hooks/events/* — never served as files.
+  '.instar/hook-events/',
+  '.instar/subagent-tracking/',
   // Machine-bound subscription authority: active directory, witness,
   // candidates, rollbacks, and atomic temp siblings. Dual-root is required:
   // production paths include `.instar/`, legacy/test paths may not.
@@ -448,6 +470,9 @@ const NEVER_EDITABLE_PREFIXES = [
   // direct edits to instar/ would be overwritten on next update and risk
   // breaking the signed lock-file's body-hash verification.
   '.instar/jobs/instar/',
+  // claude-md-reference-layout spec: generated reference files are rewritten on
+  // every update, so a dashboard edit there would be silently lost.
+  '.instar/reference/',
   // Round-13 (security, grok-build spec §2.1): `.instar/config.json` selects
   // WHICH EXECUTABLE a session spawns (`sessions.frameworkBinaryPaths`), which
   // credentials a lane uses, and which features are enabled. `PATCH /config`
@@ -903,7 +928,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
             size: contentSize,
             success: false,
           });
-          res.status(500).json({ error: 'Failed to save file' });
+          res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
         }
         return;
       }
@@ -914,7 +939,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         size: contentSize,
         success: false,
       });
-      res.status(500).json({ error: 'Failed to save file' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
     }
   });
 

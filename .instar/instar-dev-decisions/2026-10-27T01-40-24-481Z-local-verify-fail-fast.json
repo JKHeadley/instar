@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-27T01:40:24.481Z",
+  "slug": "local-verify-fail-fast",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 238,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 219,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot per verify run, not a self-triggered loop: the stop fires at most once per run, only after a lane has already failed the run, and signals only that run's own lane processes (the child and its descendants found under it); nothing re-triggers it"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "slug": "session-pool-rebalancing-finish",
+  "sessionId": "8e0c1528-9488-488c-a3a8-1ad4d9052387",
+  "timestamp": "2026-11-04T08:23:06.086Z",
+  "artifactPath": "upgrades/side-effects/session-pool-rebalancing-finish.md",
+  "artifactSha256": "ad0c68bca369ee7ce5455c40d820b3d6c81b910fa1184f1533ace45d6e245fb3",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    "src/core/OverloadShedPlanner.ts",
+    "src/data/feature-ladders.json"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/session-pool-rebalancing-finish-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

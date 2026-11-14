@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "console-mobile-composer-work-tiles",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T19:41:31.602Z",
+  "artifactPath": "upgrades/side-effects/console-mobile-composer-work-tiles.md",
+  "artifactSha256": "629b560d489778298f93e7d2b0ab1924ae65d36c95c691309c498119a8b3222e",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/nav-model.js",
+    "tests/unit/console-costs.test.ts",
+    "tests/unit/console-development.test.ts",
+    "tests/unit/console-dom.test.ts",
+    "tests/unit/console-nav-model.test.ts",
+    "upgrades/next/console-mobile-composer-work-tiles.md",
+    "upgrades/side-effects/console-mobile-composer-work-tiles.eli16.md",
+    "upgrades/side-effects/console-mobile-composer-work-tiles.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "dashboard CSS and nav data only; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-mobile-composer-work-tiles.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-mobile-composer-work-tiles.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

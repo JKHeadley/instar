@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T00:24:09.461Z",
+  "slug": "improvement-evidence-history",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 119,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 113,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

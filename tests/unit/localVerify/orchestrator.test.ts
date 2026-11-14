@@ -19,6 +19,12 @@ import {
   type OrchestratorSeams, type VerifyRunInput, type GitResult, type ExecResult,
 } from '../../../src/localVerify/orchestrator.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
+
+/** Lane processes in one verify: unit + the integration shards + the e2e shards. */
+const LANE_PROCS = 1 + LOCAL_VERIFY_LIMITS.integrationShards + LOCAL_VERIFY_LIMITS.e2eShards;
+const E2E_N = LOCAL_VERIFY_LIMITS.e2eShards;
+/** An e2e lane process (its config), whatever the shard. */
+const isE2e = (args: string[]) => args.includes('vitest.e2e.config.ts');
 import { artifactSha256 } from '../../../scripts/lib/instar-dev-trace.mjs';
 
 const HOME = '/agents/echo';
@@ -57,6 +63,7 @@ interface FakeOpts {
   /** Per-step durations (ms) for exec steps, by step key: npm-ci, build, lint, unit, integration, e2e. */
   durations?: Partial<Record<string, number>>;
   gitTimeout?: string; // a git verb that times out
+  gitDurations?: Partial<Record<string, number>>;
   mergeTreeStatus?: number;
   npmCiStatus?: number;
   lintStatus?: number;
@@ -83,6 +90,16 @@ interface FakeOpts {
   imports?: Record<string, string[]>;
   /** `git log` responder (default: empty output). */
   log?: (args: string[]) => GitResult;
+  /** Lanes whose run only ends when the run's fail-fast signal aborts it (when a signal is passed). */
+  hang?: Array<'unit' | 'integration' | 'e2e'>;
+  /** Override a lane's exit code (e.g. null = killed by a signal after writing its report). */
+  laneExit?: Partial<Record<'unit' | 'integration' | 'e2e', number | null>>;
+  /** Isolation re-runs that only end when the run's fail-fast signal aborts them. */
+  rerunHang?: string[];
+  /** Results of the focused first run and optional retry. */
+  preflightStatuses?: Array<'passed' | 'failed'>;
+  preflightQuiescent?: boolean;
+  preflightRunDurationMs?: number;
 }
 
 function fake(o: FakeOpts = {}) {
@@ -90,11 +107,13 @@ function fake(o: FakeOpts = {}) {
   const files = new Map<string, string>();
   const dirs = new Set<string>();
   const removed: string[] = [];
-  const gitCalls: Array<{ args: string[]; cwd: string; gitDir: string; workTree?: string }> = [];
+  const gitCalls: Array<{ args: string[]; cwd: string; gitDir: string; workTree?: string; timeoutMs: number }> = [];
   const execCalls: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; deadlineMs: number }> = [];
   const logs: Array<Record<string, unknown>> = [];
   let holderCall = 0;
   let pid = 1000;
+  let preflightRun = 0;
+  const shardLists: Array<{ lane: string; files: string[] }> = [];
 
   files.set(path.join(P.runDir, 'package.json'), PKG);
   const shows: Record<string, string> = o.shows ?? {
@@ -141,12 +160,37 @@ function fake(o: FakeOpts = {}) {
 
   const seams: OrchestratorSeams = {
     async git(args, opts) {
-      gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree });
+      gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree, timeoutMs: opts.timeoutMs });
+      const duration = o.gitDurations?.[args[0]] ?? 0;
+      t += Math.min(duration, opts.timeoutMs);
+      if (duration > opts.timeoutMs) return { status: null, stdout: '', stderr: 'timeout', timedOut: true };
       return gitImpl(args);
     },
     async exec(command, args, opts) {
       execCalls.push({ command, args, env: opts.env, deadlineMs: opts.deadlineMs });
       opts.onPid?.(++pid);
+      if (args.includes('vitest.push.config.ts')) {
+        const out = args.find((a) => a.startsWith('--json=') || a.startsWith('--outputFile.json='))!.split('=')[1];
+        const selected = 'tests/unit/a.test.ts';
+        if (args[0] === 'list') {
+          files.set(out, JSON.stringify(args.includes('--filesOnly')
+            ? [{ file: path.join(P.runDir, selected) }]
+            : [{ file: path.join(P.runDir, selected), name: 'a' }]));
+          t += 1000;
+          return { status: 0, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid, quiescent: o.preflightQuiescent ?? true };
+        }
+        const status = o.preflightStatuses?.[preflightRun++] ?? 'passed';
+        const duration = o.preflightRunDurationMs ?? 1000;
+        if (duration > opts.deadlineMs) {
+          t += opts.deadlineMs;
+          return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', deadlineKilled: true, pid,
+            quiescent: o.preflightQuiescent ?? true };
+        }
+        files.set(out, vitestReport(selected, [status]));
+        if (opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE) files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE, JSON.stringify({ v: 1, unhandledErrors: 0, messages: [] }));
+        t += duration;
+        return { status: status === 'failed' ? 1 : 0, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid, quiescent: o.preflightQuiescent ?? true };
+      }
       const key = stepKey(command, args);
       const dur = o.durations?.[key] ?? 1000;
       const r = (status: number | null): ExecResult => ({ status, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid });
@@ -160,15 +204,33 @@ function fake(o: FakeOpts = {}) {
       if (key === 'build') return r(0);
       const out = args.find((a) => a.startsWith('--outputFile='))!.slice('--outputFile='.length);
       const lane = key as 'unit' | 'integration' | 'e2e';
+      if (o.hang?.includes(lane) && opts.signal) {
+        const sig = opts.signal;
+        await new Promise<void>((res) => { if (sig.aborted) res(); else sig.addEventListener('abort', () => res(), { once: true }); });
+        return { ...r(null), signal: 'SIGTERM', aborted: true };
+      }
       const errFile = opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
-      const isRerun = args.slice(1).some((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--config');
+      const isRerun = out.includes('-rerun-');
       if (errFile && args.includes('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js')) {
         files.set(errFile, JSON.stringify({ v: 1, unhandledErrors: isRerun ? (o.rerunUnhandled ?? 0) : (o.unhandled?.[lane] ?? 0), messages: [] }));
       }
       const positional = args.slice(1).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--config');
+      if (positional.length > 0 && !isRerun) {
+        // A balanced shard: an explicit file list. It reports exactly the lane's files it names.
+        shardLists.push({ lane, files: positional });
+        // vitest's real rule: a file runs when any filter is a case-insensitive substring of its path.
+        const mine = (o.laneFiles?.[lane] ? Object.keys(o.laneFiles[lane]!) : [TEST_FILES.find((f) => f.includes(`/${lane}/`))!]).filter((f) => positional.some((q) => f.toLowerCase().includes(q.toLowerCase())));
+        files.set(out, mine.length ? vitestReportMany(Object.fromEntries(mine.map((f) => [f, o.laneFiles?.[lane]?.[f] ?? o.laneStatuses?.[lane] ?? ['passed']]))) : JSON.stringify({ testResults: [] }));
+        return r(mine.some((f) => (o.laneFiles?.[lane]?.[f] ?? o.laneStatuses?.[lane] ?? []).includes('failed')) ? 1 : 0);
+      }
       if (positional.length > 0) {
         // An isolation re-run of one file.
         const file = positional[0];
+        if (o.rerunHang?.includes(file) && opts.signal) {
+          const sig = opts.signal;
+          await new Promise<void>((res) => { if (sig.aborted) res(); else sig.addEventListener('abort', () => res(), { once: true }); });
+          return { ...r(null), signal: 'SIGTERM', aborted: true };
+        }
         const outcome = o.rerun?.[file] ?? ['passed'];
         const rd = o.rerunMs ?? 1000;
         if (outcome === 'deadline' || rd > opts.deadlineMs) { t += opts.deadlineMs; return { ...r(null), signal: 'SIGTERM', deadlineKilled: true }; }
@@ -189,6 +251,7 @@ function fake(o: FakeOpts = {}) {
       const file = TEST_FILES.find((f) => f.includes(`/${lane}/`))!;
       const statuses = o.laneStatuses?.[lane] ?? ['passed'];
       files.set(out, vitestReport(file, statuses));
+      if (o.laneExit && lane in o.laneExit) return r(o.laneExit[lane] as number | null);
       return r(statuses.includes('failed') ? 1 : 0);
     },
     fs: {
@@ -196,6 +259,7 @@ function fake(o: FakeOpts = {}) {
       mkdirp: (p) => { dirs.add(p); },
       writeFile: (p, d) => { files.set(p, d); },
       readFile: (p) => files.get(p) ?? (p.includes('/runs/') && p.endsWith('/package.json') ? PKG : null),
+      size: (p) => (files.has(p) ? Buffer.byteLength(files.get(p)!) : null),
       mkdtemp: (prefix) => { const d = `/tmp/${prefix}${dirs.size}`; dirs.add(d); return d; },
       removeTree: async (p) => { removed.push(p); dirs.delete(p); for (const k of [...files.keys()]) if (k.startsWith(p + '/')) files.delete(k); },
     },
@@ -209,7 +273,7 @@ function fake(o: FakeOpts = {}) {
       return [abs, ...(o.imports?.[rel] ?? []).map((x) => path.join(P.runDir, x))];
     }),
   };
-  return { seams, files, dirs, removed, gitCalls, execCalls, logs, now: () => t };
+  return { seams, files, dirs, removed, gitCalls, execCalls, logs, shardLists, now: () => t };
 }
 
 function input(over: Partial<VerifyRunInput> = {}): VerifyRunInput {
@@ -282,7 +346,7 @@ describe('runVerify — happy path', () => {
       expect(typeof s.ms).toBe('number');
       expect(s.deadlineKilled).toBe(false);
     }
-    expect(steps.map((s) => s.step)).toEqual(expect.arrayContaining(['npm-ci', 'build-lint', 'unit', 'integration', 'e2e-1', 'e2e-2']));
+    expect(steps.map((s) => s.step)).toEqual(expect.arrayContaining(['npm-ci', 'build-lint', 'unit', ...Array.from({ length: LOCAL_VERIFY_LIMITS.integrationShards }, (_, k) => `integration-${k + 1}`), ...Array.from({ length: E2E_N }, (_, k) => `e2e-${k + 1}`)]));
   });
 
   it('gives every step a UTF-8 locale when the base environment has none (CI parity)', async () => {
@@ -298,7 +362,7 @@ describe('runVerify — happy path', () => {
     const ci = f.execCalls.find((c) => c.args[0] === 'ci');
     expect(ci?.env.HUSKY).toBe('0');
     const lanes = f.execCalls.filter((c) => c.args.includes('--config'));
-    expect(lanes.length).toBe(4); // unit, integration, e2e shard 1 and 2
+    expect(lanes.length).toBe(LANE_PROCS); // unit, the integration shards, the e2e shards
     for (const l of lanes) expect(l.env.HUSKY).toBeUndefined();
   });
 
@@ -341,11 +405,12 @@ describe('runVerify — happy path', () => {
     const sh = rest.filter((c) => c.command === 'sh').map((c) => c.args[1]);
     expect(sh).toEqual(['tsc', 'node scripts/gen.mjs', 'tsc --noEmit', 'node scripts/lint-a.js']);
     const lanes = rest.filter((c) => c.command.endsWith('vitest'));
-    expect(lanes).toHaveLength(4);
-    // The e2e lane runs as two shards; every lane process has its own TMPDIR and tmux server.
-    expect(lanes.filter((l) => l.args.some((a) => a.startsWith('--shard='))).map((l) => l.args.find((a) => a.startsWith('--shard=')))).toEqual(['--shard=1/2', '--shard=2/2']);
-    expect(new Set(lanes.map((l) => l.env.TMPDIR)).size).toBe(4);
-    expect(new Set(lanes.map((l) => l.env.TMUX_TMPDIR)).size).toBe(4);
+    expect(lanes).toHaveLength(LANE_PROCS);
+    // With no duration history the slow lanes use vitest's own --shard; every lane process has its own TMPDIR and tmux server.
+    const shardArgs = (n: number) => Array.from({ length: n }, (_, k) => `--shard=${k + 1}/${n}`);
+    expect(lanes.filter((l) => l.args.some((a) => a.startsWith('--shard='))).map((l) => l.args.find((a) => a.startsWith('--shard=')))).toEqual([...shardArgs(LOCAL_VERIFY_LIMITS.integrationShards), ...shardArgs(E2E_N)]);
+    expect(new Set(lanes.map((l) => l.env.TMPDIR)).size).toBe(LANE_PROCS);
+    expect(new Set(lanes.map((l) => l.env.TMUX_TMPDIR)).size).toBe(LANE_PROCS);
     for (const l of lanes) {
       expect(l.command).toBe(path.join(P.runDir, 'node_modules', '.bin', 'vitest'));
       expect(l.args).toContain('--allowOnly=false');
@@ -360,7 +425,66 @@ describe('runVerify — happy path', () => {
     expect(lanes[0].env).toMatchObject({ AUDIT_CHANGE_KIND: 'pull_request', AUDIT_CHANGE_BASE_SHA: BASE, AUDIT_CHANGE_HEAD_SHA: HEAD });
     expect(lanes[1].env.AUDIT_CHANGE_KIND).toBeUndefined();
     // Temp dirs removed: the run's pair plus one pair per lane process.
-    expect(f.removed.filter((p) => p.startsWith('/tmp/lv-'))).toHaveLength(10);
+    expect(f.removed.filter((p) => p.startsWith('/tmp/lv-'))).toHaveLength(2 + 2 * LANE_PROCS);
+  });
+});
+
+describe('runVerify — focused PR preflight', () => {
+  const focused = (mode: 'observe' | 'enforce') => input({ preflightMode: mode, preflightRediscoverable: true });
+  it('keeps an observed stable red diagnostic while the complete lanes determine green', async () => {
+    const f = fake({ preflightStatuses: ['failed', 'failed'] });
+    const r = await runVerify(focused('observe'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { mode: 'observe', outcome: 'red', reason: 'observed-stable-red' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.push.config.ts'))).toHaveLength(4);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('stops only an eligible stable assertion red before the full-suite slot', async () => {
+    const f = fake({ preflightStatuses: ['failed', 'failed'] });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'failure', lanes: [], preflight: { mode: 'enforce', outcome: 'red', reason: 'preflight-red' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('continues all full lanes after a failed first attempt passes its retry', async () => {
+    const f = fake({ preflightStatuses: ['failed', 'passed'] });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { mode: 'enforce', outcome: 'pass', reason: 'retry-green' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('turns an unconfirmed process-group cleanup into an infrastructure error before lanes', async () => {
+    const f = fake({ preflightQuiescent: false });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'preflight-cleanup', lanes: [] });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('charges a slow post-preflight cleanliness check to the 90-second cap', async () => {
+    const f = fake({ gitDurations: { status: 100_000 } });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'deadline:preflight-porcelain', lanes: [] });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThanOrEqual(90_000);
+    expect(f.gitCalls.find((c) => c.args[0] === 'status')?.timeoutMs).toBeLessThanOrEqual(90_000);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('continues full verification after a contained preflight deadline and a clean final status check', async () => {
+    const f = fake({ preflightRunDurationMs: 100_000 });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'timeout', reason: 'first-run-timeout' } });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThanOrEqual(90_000);
+    expect(f.gitCalls.find((c) => c.args[0] === 'status')?.timeoutMs).toBeGreaterThan(0);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('freezes preflight elapsed time before the full suite runs', async () => {
+    const f = fake({ durations: { unit: 60_000, integration: 60_000, e2e: 60_000 } });
+    const r = await runVerify(focused('observe'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'pass' } });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThan(10_000);
+  });
+  it('skips focused work for a changed harness file while the full lanes still decide green', async () => {
+    const f = fake({ diff: 'M\ttests/vitest-setup.ts\n' });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'skip', reason: 'harness-changing' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.push.config.ts'))).toHaveLength(0);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+    expect(f.gitCalls.find((c) => c.args[0] === 'merge-base')?.timeoutMs).toBeLessThanOrEqual(80_000);
   });
 });
 
@@ -378,7 +502,7 @@ describe('runVerify — errors', () => {
     ['npm ci', { durations: { 'npm-ci': LOCAL_VERIFY_DEADLINES.npmCiMs + 1 } }, 'deadline:npm-ci'],
     ['build+lint', { durations: { build: 8 * MIN, lint: 8 * MIN } }, 'deadline:build-lint'],
     ['unit lane', { durations: { unit: LOCAL_VERIFY_DEADLINES.lanes.unit + 1 } }, 'deadline:unit'],
-    ['integration lane', { durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } }, 'deadline:integration'],
+    ['integration lane', { durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } }, 'deadline:integration-1'],
     ['e2e lane', { durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } }, 'deadline:e2e-1'],
   ] as const)('%s past its deadline → error naming the step', async (_n, o, step) => {
     const f = fake(o as FakeOpts);
@@ -400,13 +524,30 @@ describe('runVerify — failures', () => {
     expect(r.kind).toBe('record');
     if (r.kind !== 'record') return;
     expect(r.record.outcome).toBe('failure');
+    expect(r.record.failedFiles).toEqual(['tests/integration/b.test.ts']);
     expect(r.reasons).toContain('file-failed:tests/integration/b.test.ts:1');
     expect(r.keptWorktree).toBe(P.runDir);
+  });
+  it('does not diagnose a failed assertion when another lane also has an infrastructure exit', async () => {
+    const f = fake({ laneStatuses: { integration: ['passed', 'failed'] },
+      rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const result = await exec(command, args, opts);
+      return isE2e(args) ? { ...result, status: 1 } : result;
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.reasons).toContain('file-failed:tests/integration/b.test.ts:1');
+    expect(r.reasons.some((reason) => reason.startsWith('lane-exit-nonzero:e2e:'))).toBe(true);
+    expect(r.record.failedFiles).toBeUndefined();
   });
   it('a dirty tree after the lanes fails the run', async () => {
     const r = await runVerify(input(), fake({ porcelain: '?? tests/unit/leftover.txt\n' }).seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(r.kind === 'record' && r.reasons).toContain('dirty-tree');
+    if (r.kind === 'record') expect(r.record.failedFiles).toBeUndefined();
   });
   it('a lint step failure is a failure that stops before the lanes', async () => {
     const f = fake({ lintStatus: 1 });
@@ -595,7 +736,7 @@ describe('runVerify — single flight', () => {
     f.seams.exec = async (c, a, o) => { if (c.endsWith('vitest')) order.push('lane'); return exec(c, a, o); };
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
-    expect(order).toEqual(['hold', 'lane', 'lane', 'lane', 'lane', 'release']);
+    expect(order).toEqual(['hold', ...Array(LANE_PROCS).fill('lane'), 'release']);
   });
   it('a busy suite slot re-queues without running a lane', async () => {
     const f = fake();
@@ -609,7 +750,7 @@ describe('runVerify — single flight', () => {
     let released = 0;
     f.seams.holdSuiteSlot = async () => () => { released++; };
     const r = await runVerify(input(), f.seams);
-    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'deadline:integration' });
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'deadline:integration-1' });
     expect(released).toBe(1);
   });
   it('a fail-open bound (no slot) still runs the lanes', async () => {
@@ -623,7 +764,7 @@ describe('runVerify — single flight', () => {
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
       const res = await exec(c, a, o);
-      if (!a.includes('--shard=1/2')) return res;
+      if (!(isE2e(a) && a.includes(`--shard=1/${E2E_N}`))) return res;
       f.files.delete(a.find((x) => x.startsWith('--outputFile='))!.slice('--outputFile='.length));
       return { ...res, status: null, signal: 'SIGKILL' };
     };
@@ -640,7 +781,7 @@ describe('runVerify — e2e shards', () => {
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
       const res = await exec(c, a, o);
-      if (!a.includes('--shard=2/2')) return res;
+      if (!(isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`))) return res;
       f.files.set(outFile(a), vitestReport('tests/e2e/d.test.ts', ['failed']));
       return { ...res, status: 1 };
     };
@@ -655,8 +796,8 @@ describe('runVerify — e2e shards', () => {
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
       const res = await exec(c, a, o);
-      if (a.includes('--shard=1/2')) return { ...res, status: null, signal: 'SIGKILL' };
-      if (a.includes('--shard=2/2')) return { ...res, status: 1 };
+      if ((isE2e(a) && a.includes(`--shard=1/${E2E_N}`))) return { ...res, status: null, signal: 'SIGKILL' };
+      if ((isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`))) return { ...res, status: 1 };
       return res;
     };
     const r = await runVerify(input(), f.seams);
@@ -668,7 +809,7 @@ describe('runVerify — e2e shards', () => {
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
       const res = await exec(c, a, o);
-      if (a.includes('--shard=2/2')) f.files.set(outFile(a), vitestReport(E2E, ['passed']));
+      if ((isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`))) f.files.set(outFile(a), vitestReport(E2E, ['passed']));
       return res;
     };
     const r = await runVerify(input(), f.seams);
@@ -676,12 +817,18 @@ describe('runVerify — e2e shards', () => {
     expect(f.logs.some((l) => l.event === 'file-in-multiple-shards' && l.file === E2E)).toBe(true);
   });
   it('a shard deadline waits for its sibling shard to exit before the slot is released', async () => {
-    const f = fake({ durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } });
+    // Only shard 1 hits its deadline; the last shard is still running when it does. (The fake
+    // clock is shared, so giving every shard the over-deadline duration would spend the overall
+    // budget before the last shard starts.)
+    const f = fake();
     const order: string[] = [];
     f.seams.holdSuiteSlot = async () => () => { order.push('release'); };
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
-      if (a.includes('--shard=2/2')) {
+      if (isE2e(a) && a.includes(`--shard=1/${E2E_N}`)) {
+        return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', deadlineKilled: true, pid: 999 };
+      }
+      if (isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`)) {
         await new Promise((r) => setTimeout(r, 20)); // still running when shard 1 has already failed
         const res = await exec(c, a, o);
         order.push('shard2-exited');
@@ -693,12 +840,26 @@ describe('runVerify — e2e shards', () => {
     expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error' });
     expect(order).toEqual(['shard2-exited', 'release']);
   });
+
   it('the unit lane is pinned to the parallel worker count; other lanes are not', async () => {
     const f = fake();
     await runVerify(input(), f.seams);
     const lanes = f.execCalls.filter((c) => c.command.endsWith('vitest'));
     expect(lanes[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
     for (const l of lanes.slice(1)) expect(l.env.INSTAR_TEST_WORKERS).toBeUndefined();
+  });
+  it('a per-machine unitWorkers setting sets the unit lane worker count; out of range keeps the default', async () => {
+    const f = fake();
+    await runVerify(input({ laneShards: { unitWorkers: 8 } }), f.seams);
+    expect(f.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe('8');
+    // The run holds the suite slot; its own unit lane is exempt from the nested clamp, other lanes are not touched.
+    const calls = f.execCalls.filter((c) => c.command.endsWith('vitest'));
+    expect(calls[0].env.INSTAR_HOST_TEST_OWN_SUITE_HOLDER).toBe(String(process.pid));
+    expect(calls[0].env.INSTAR_HOST_TEST_SEMAPHORE).toBeUndefined();
+    for (const l of calls.slice(1)) expect(l.env.INSTAR_HOST_TEST_OWN_SUITE_HOLDER).toBeUndefined();
+    const g = fake();
+    await runVerify(input({ laneShards: { unitWorkers: 99 } }), g.seams);
+    expect(g.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
   });
   it('a busy slot leaves an overlap entry (the evidence a re-queue happened)', async () => {
     const f = fake();
@@ -760,9 +921,9 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(r.kind === 'record' && r.record.flakyRetried).toEqual([{ file: 'tests/integration/b.test.ts', lane: 'integration', firstMessage: expect.stringContaining('boom') }]);
     const calls = vitestCalls(f);
-    expect(calls).toHaveLength(5);
-    // The four lane processes start together; the re-run comes after its lane.
-    const re = calls[4];
+    expect(calls).toHaveLength(LANE_PROCS + 1);
+    // The lane processes start together; the re-run comes after its lane.
+    const re = calls[LANE_PROCS];
     expect(re.args).toContain('tests/integration/b.test.ts');
     expect(re.args).toContain('--allowOnly=false');
     expect(re.args[re.args.indexOf('--config') + 1]).toBe('vitest.integration.config.ts');
@@ -784,14 +945,15 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], ...four } } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    if (r.kind === 'record') expect(r.record.failedFiles).toBeUndefined();
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'too-many-failures')).toBe(true);
   });
   it('no re-run when the lane has another failure (a file that collected nothing)', async () => {
     const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/x.test.ts': ['failed'], 'tests/unit/z.test.ts': [] } } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
   });
   it('the re-run respects the lane deadline: a re-run that hits it is a failure, never a pass or an error', async () => {
     const unitBudget = LOCAL_VERIFY_DEADLINES.lanes.unit;
@@ -800,7 +962,7 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     if (r.kind !== 'record') throw new Error(r.kind);
     expect(r.record.outcome).toBe('failure');
     expect(r.failures?.[0].rerunMessage).toMatch(/deadline/);
-    const re = vitestCalls(f)[4];
+    const re = vitestCalls(f)[LANE_PROCS];
     expect(re.deadlineMs).toBeLessThanOrEqual(30_000);
   });
   it('the cap covers the whole verify: 2 + 2 failed files re-run only the first lane\'s 2', async () => {
@@ -811,7 +973,7 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
       },
     });
     const r = await runVerify(input(), f.seams);
-    expect(vitestCalls(f)).toHaveLength(6); // 4 lane processes + 2 re-runs
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 2); // the lane processes + 2 re-runs
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'rerun-budget-spent')).toBe(true);
   });
@@ -824,23 +986,30 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     const f = fake({ ...oneFlake, diff: 'M\ttests/integration/b.test.ts\n' });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'related-to-change')).toBe(true);
   });
   it('a failed file that imports a file the PR changed is a real failure: no re-run', async () => {
     const f = fake({ ...oneFlake, diff: 'M\tsrc/core/thing.ts\n', imports: { 'tests/integration/b.test.ts': ['tests/helpers/h.ts', 'src/core/thing.ts'] } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
   });
   it('a PR verify with no green main record on this machine never re-runs', async () => {
     const f = fake(oneFlake);
     const r = await runVerify(input({ isolation: { allowed: false, notCleanOnGreenMain: [] } }), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
   });
-  it('a file that was not clean on the last green main is not re-run', async () => {
+  it('a file that was re-run-passed on the last green main is re-run like any other flake (it is flaky on main)', async () => {
     const f = fake(oneFlake);
+    const r = await runVerify(input({ isolation: { allowed: true, notCleanOnGreenMain: ['tests/integration/b.test.ts'] } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(r.kind === 'record' && r.record.flakyRetried?.map((x) => x.file)).toEqual(['tests/integration/b.test.ts']);
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-flaky-on-main')).toBe(true);
+  });
+  it('a flaky-on-main file the PR changed is still a real failure: no re-run', async () => {
+    const f = fake({ ...oneFlake, diff: 'M\ttests/integration/b.test.ts\n' });
     const r = await runVerify(input({ isolation: { allowed: true, notCleanOnGreenMain: ['tests/integration/b.test.ts'] } }), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
   });
@@ -854,14 +1023,14 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     const f = fake({ ...oneFlake, unhandled: { integration: 1 } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'unhandled-errors')).toBe(true);
   });
   it('an unknown unhandled-error count (no trusted reporter) means no re-run', async () => {
     const f = fake({ ...oneFlake, noReporter: true });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
   });
   it('a re-run that passes its tests but raises an unhandled error does not pass', async () => {
     const f = fake({ ...oneFlake, rerunUnhandled: 2 });
@@ -877,5 +1046,175 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     expect(rerun.env.TMUX_TMPDIR).not.toBe(lane.env.TMUX_TMPDIR);
     expect(f.removed).toContain(rerun.env.TMPDIR);
     expect(rerun.args).toContain('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js');
+  });
+});
+
+describe('runVerify — fail-fast across lanes (PR verifies)', () => {
+  const vitestCalls = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.command.endsWith('vitest'));
+  it('a lane that fails for real stops the lanes still running; the first reason is the real failure', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] }, hang: ['integration', 'e2e'] });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.record.outcome).toBe('failure');
+    expect(r.reasons[0]).toMatch(/^lane-failed:unit/);
+    expect(r.reasons).toContain('lane-stopped-early:integration');
+    expect(r.reasons).toContain('lane-stopped-early:e2e');
+    expect(r.reasons.some((x) => x.startsWith('file-not-run:'))).toBe(false);
+    expect(f.logs.some((l) => l.event === 'lanes-stop' && l.after === 'unit')).toBe(true);
+  });
+  it('a flake cleared by its isolation re-run does not stop the other lanes', async () => {
+    const f = fake({ laneStatuses: { integration: ['passed', 'failed'] } });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+  });
+  it('without failFast a real failure stops nothing: every lane runs to the end', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] } });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+    expect(vitestCalls(f).length).toBeGreaterThanOrEqual(4);
+  });
+  it('a lane with a clean report and a null exit (killed by a signal) is not a failure, so nothing stops', async () => {
+    const f = fake({ laneExit: { unit: null } });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+  });
+  it('an isolation re-run still running when another lane fails is stopped and counts as failing', async () => {
+    const f = fake({
+      laneStatuses: { unit: ['failed'], integration: ['passed', 'failed'] },
+      rerun: { 'tests/unit/a.test.ts': ['failed'] },
+      rerunHang: ['tests/integration/b.test.ts'],
+      diff: 'M\tsrc/index.ts\n',
+      imports: { 'tests/unit/a.test.ts': ['src/other.ts'] },
+      hang: ['e2e'],
+    });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some((l) => l.event === 'isolation-rerun' && l.outcome === 'stopped')).toBe(true);
+  });
+  it('a main verify never stops lanes early for a failure, even with failFast set', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] } });
+    const r = await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined, failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+  });
+});
+
+describe('runVerify — a lane deadline (brainstorm 2026-11-12 E2)', () => {
+  it('stops the sibling lanes at once, with or without failFast, and the run is a deadline error', async () => {
+    for (const failFast of [false, true]) {
+      const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 }, hang: ['e2e'] });
+      const r = await runVerify(input({ failFast, laneShards: { integration: 1, e2e: 1 } }), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('error');
+      expect(r.kind === 'record' && r.record.errorStep).toBe('deadline:integration');
+      expect(f.logs.some((l) => l.event === 'lanes-stop' && l.reason === 'deadline' && l.after === 'integration')).toBe(true);
+      expect(f.logs.some((l) => l.event === 'lane-stopped-early' && l.lane === 'e2e')).toBe(true);
+    }
+  });
+  it('names the test files still running at the kill, from the reporter\'s progress file', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const progress = o.env.LOCAL_VERIFY_PROGRESS_FILE;
+      if (progress && a.some((x) => x.includes('integration'))) {
+        f.files.set(progress, JSON.stringify({ v: 1, writtenAt: 0, finishedFiles: 41, running: [
+          { file: path.join(P.runDir, 'tests/integration/slow.test.ts'), startedAt: f.now() },
+        ] }));
+      }
+      return exec(c, a, o);
+    };
+    const r = await runVerify(input({ laneShards: { integration: 1, e2e: 1 } }), f.seams);
+    expect(r.kind === 'record' && r.record.errorStep).toBe('deadline:integration');
+    const ev = f.logs.find((l) => l.event === 'deadline-in-flight');
+    expect(ev).toMatchObject({ step: 'integration', finishedFiles: 41 });
+    expect((ev as { running: Array<{ file: string }> }).running[0].file).toBe('tests/integration/slow.test.ts');
+    expect(r.kind === 'record' && r.reasons[0]).toMatch(/still running: tests\/integration\/slow\.test\.ts \(\d+s\)/);
+  });
+  it('an oversized progress file is ignored (unknown)', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const progress = o.env.LOCAL_VERIFY_PROGRESS_FILE;
+      if (progress && a.some((x) => x.includes('integration'))) f.files.set(progress, ' '.repeat(70 * 1024));
+      return exec(c, a, o);
+    };
+    await runVerify(input({ laneShards: { integration: 1, e2e: 1 } }), f.seams);
+    expect(f.logs.find((l) => l.event === 'deadline-in-flight')).toMatchObject({ unknown: true });
+  });
+  it('an unreadable progress file is recorded as unknown, never as nothing running', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    const r = await runVerify(input({ laneShards: { integration: 1, e2e: 1 } }), f.seams);
+    expect(r.kind === 'record' && r.record.errorStep).toBe('deadline:integration');
+    expect(f.logs.find((l) => l.event === 'deadline-in-flight')).toMatchObject({ unknown: true });
+  });
+});
+
+describe('runVerify — balanced shards from duration history', () => {
+  const INT = ['tests/integration/b.test.ts', 'tests/integration/b2.test.ts', 'tests/integration/b3.test.ts'];
+  const E2E = ['tests/e2e/c.test.ts', 'tests/e2e/c2.test.ts', 'tests/e2e/c3.test.ts', 'tests/e2e/c4.test.ts'];
+  const many = (fs: string[]) => Object.fromEntries(fs.map((f) => [f, ['passed']]));
+  it('with history covering the lane, each shard gets an explicit file list: every file exactly once, and the run passes', async () => {
+    const f = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const hist = Object.fromEntries([...INT, ...E2E].map((x, i) => [x, 1000 * (i + 1)]));
+    f.files.set(P.durationsPath, JSON.stringify(hist));
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const byLane = (lane: string) => f.shardLists.filter((s) => s.lane === lane).map((s) => s.files);
+    expect(byLane('integration')).toHaveLength(LOCAL_VERIFY_LIMITS.integrationShards);
+    expect(byLane('e2e')).toHaveLength(E2E_N);
+    expect(byLane('integration').flat().sort()).toEqual([...INT].sort());
+    expect(byLane('e2e').flat().sort()).toEqual([...E2E].sort());
+    expect(f.logs.filter((l) => l.event === 'shard-plan').every((l) => l.balanced === true)).toBe(true);
+  });
+  it('without history it falls back to vitest --shard and logs an unbalanced plan', async () => {
+    const f = fake();
+    await runVerify(input(), f.seams);
+    expect(f.shardLists).toHaveLength(0);
+    expect(f.logs.some((l) => l.event === 'shard-plan' && l.balanced === false)).toBe(true);
+  });
+  it('an unreadable history file is ignored, never a failure', async () => {
+    const f = fake();
+    f.files.set(P.durationsPath, '{not json');
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+  });
+});
+
+describe('runVerify — lane shard counts from the run input (monitoring.localVerify.laneShards)', () => {
+  const vitestCalls = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.command.endsWith('vitest'));
+  it('{ integration: 1, e2e: 2 } restores the pre-2026-10-27 split', async () => {
+    const f = fake();
+    const r = await runVerify(input({ laneShards: { integration: 1, e2e: 2 } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(vitestCalls(f)).toHaveLength(4);
+    expect(vitestCalls(f).filter((c) => c.args.includes('vitest.integration.config.ts')).every((c) => !c.args.some((a) => a.startsWith('--shard=')))).toBe(true);
+  });
+  it('out-of-range or non-integer counts fall back to the defaults', async () => {
+    const f = fake();
+    await runVerify(input({ laneShards: { integration: 9, e2e: 1.5 } }), f.seams);
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS);
+  });
+});
+
+describe('runVerify — balanced shards: overlapping paths and a hostile history', () => {
+  it('a file whose path contains another file\'s path shares its shard, so nothing runs twice', async () => {
+    const INT = ['tests/integration/a.test.ts', 'tests/integration/nested/tests/integration/a.test.ts', 'tests/integration/b.test.ts', 'tests/integration/c.test.ts'];
+    const f = fake({ laneFiles: { integration: Object.fromEntries(INT.map((x) => [x, ['passed']])) } });
+    f.files.set(P.durationsPath, JSON.stringify(Object.fromEntries(INT.map((x) => [x, 1000]))));
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(f.logs.some((l) => l.event === 'file-in-multiple-shards')).toBe(false);
+  });
+  it('an oversized history file is ignored unread (logged), and the lanes fall back to --shard', async () => {
+    const f = fake();
+    f.files.set(P.durationsPath, 'x'.repeat(2 * 1024 * 1024 + 1));
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(f.logs.some((l) => l.event === 'durations-ignored')).toBe(true);
+    expect(f.shardLists).toHaveLength(0);
   });
 });

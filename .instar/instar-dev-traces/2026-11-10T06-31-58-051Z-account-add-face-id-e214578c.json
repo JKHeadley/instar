@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "account-add-face-id",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T06:31:58.051Z",
+  "artifactPath": "upgrades/side-effects/account-add-face-id.md",
+  "artifactSha256": "36b7b2877718888ed2a5f6ec3d169464b0cb51d0256197ab1912d043cfeb762d",
+  "specPath": "docs/specs/account-add-face-id.md",
+  "coveredFiles": [
+    "docs/specs/account-add-face-id.eli16.md",
+    "docs/specs/account-add-face-id.md",
+    "src/core/newSubscriptionAccountId.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/middleware.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/account-add-face-id-alive.test.ts",
+    "tests/integration/account-add-face-id.test.ts",
+    "tests/unit/account-add-face-id.test.ts",
+    "upgrades/next/account-add-face-id.md",
+    "upgrades/side-effects/account-add-face-id.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Credentials/authorization surface: a new owner-phone route that adds a subscription account and starts its sign-in with a Face ID proof.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

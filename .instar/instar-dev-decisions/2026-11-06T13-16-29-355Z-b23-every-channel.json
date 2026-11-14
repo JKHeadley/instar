@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-06T13:16:29.355Z",
+  "slug": "b23-every-channel",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/AppReplyRelayInstaller.ts matches relay / delivery path",
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 12,
+  "loc": 403,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/core/AppReplyRelayInstaller.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SlackReplyRelayInstaller.ts",
+      "src/core/attribution/attributionRuntime.ts",
+      "src/core/attribution/channelReaders.ts",
+      "src/server/routes.ts",
+      "src/server/slackSessionMetadata.ts",
+      "src/templates/scripts/app-reply.sh",
+      "src/templates/scripts/imessage-reply.sh",
+      "src/templates/scripts/slack-reply.sh",
+      "src/templates/scripts/whatsapp-reply.sh"
+    ],
+    "addedLines": 392,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "instrument-semantic-darkness",
+    "closure": "gap",
+    "gapItem": "ACT-605",
+    "component": "MessagingToneGate"
+  },
+  "verdict": "pass"
+}

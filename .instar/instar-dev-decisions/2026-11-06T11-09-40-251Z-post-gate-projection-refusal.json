@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-06T11:09:40.251Z",
+  "slug": "post-gate-projection-refusal",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/types.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 39,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2789
+    ],
+    "notes": "#2789 added the post-gate re-read and compared the live definition with a job already replaced by the session-rollback projection, so every gated projected job was refused. No test covered a gated job in projected form."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

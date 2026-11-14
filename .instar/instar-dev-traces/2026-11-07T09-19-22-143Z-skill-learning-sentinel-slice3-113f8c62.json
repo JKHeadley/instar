@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "skill-learning-sentinel-slice3",
+  "sessionId": "f1d7515b-8a10-4206-94b6-7c0f689d2d22",
+  "timestamp": "2026-11-07T09:19:22.143Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-sentinel-slice3.md",
+  "artifactSha256": "b81e69f3b209c88ea1ca53739c609ad9f3fe09edca5b4ba656fc66779eda2856",
+  "specPath": "docs/specs/skill-learning-sentinel.md",
+  "coveredFiles": [
+    "tests/e2e/skill-learning-alive.test.ts",
+    "tests/unit/skill-usage-telemetry-hook.test.ts",
+    "upgrades/side-effects/skill-learning-sentinel-slice3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "test-only change on the slice-3 branch of an approved Tier-2 spec: two conditional skip guards removed so the verifier's skip ratchet does not flag the record; no runtime behaviour touched",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

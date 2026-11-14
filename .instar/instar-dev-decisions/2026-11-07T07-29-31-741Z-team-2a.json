@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T07:29:31.741Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 102,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/MobilePush.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/memorySessionPolicy.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

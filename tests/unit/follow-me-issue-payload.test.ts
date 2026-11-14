@@ -10,7 +10,7 @@ import { buildFollowMeIssuePayload } from '../../dashboard/subscriptions.js';
 
 const mockCard = (accountId, targetMachineId) => ({
   getAttribute: (k) =>
-    k === 'data-account-id' ? accountId : k === 'data-target-machine-id' ? targetMachineId : null,
+    k === 'data-account-id' ? accountId : k === 'data-target-machine-id' ? targetMachineId : k === 'data-target-verified' ? '1' : null,
 });
 const OFFERS = [
   { accountId: 'adriana', targetMachineId: 'm_4cbc', agents: ['fpA', 'fpB'] },
@@ -42,5 +42,10 @@ describe('buildFollowMeIssuePayload', () => {
   it('null on a bad card / missing ids', () => {
     expect(buildFollowMeIssuePayload(null, OFFERS, '123456')).toBeNull();
     expect(buildFollowMeIssuePayload(mockCard(null, null), OFFERS, '123456')).toBeNull();
+  });
+
+  it('null when the target name has not been verified', () => {
+    const card = { getAttribute: (k) => k === 'data-account-id' ? 'adriana' : k === 'data-target-machine-id' ? 'm_4cbc' : null };
+    expect(buildFollowMeIssuePayload(card, OFFERS, '123456')).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ import { wireTelegramSendSide } from '../../src/messaging/telegramSendSideCompos
 import { sendDeterministicTelegramNotice, sendUnknownProducerTelegramNotice, withUnknownProducerOrigin } from '../../src/messaging/telegram-origin/OriginDeterministicSend.js';
 import { QuotaNotifier } from '../../src/monitoring/QuotaNotifier.js';
 import { OriginAuthorCall } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
-import { compileOriginWorker, compileOriginConfigWorker } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, compileOriginConfigWorker, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -36,6 +36,7 @@ async function boot(mode: 'send-only' | 'server-polling') {
     diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
   cleanups.push(() => runtimeBoot.close());
   const runtime = runtimeBoot.runtime;
+  allowSlowOriginRecording(runtime.service);
   runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }) });
   let seq = 0;
   const wire = vi.fn(async (_url: string, init: RequestInit) => {

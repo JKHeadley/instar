@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "console-desktop-card-grid",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-03T04:41:24.061Z",
+  "artifactPath": "upgrades/side-effects/console-desktop-card-grid.md",
+  "artifactSha256": "ec74a374ce7cf0018bb15d30a5f13e9dd7b4ae253f7da4f0121959a55e673ee8",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "upgrades/next/console-desktop-card-grid.md",
+    "upgrades/side-effects/console-desktop-card-grid.eli16.md",
+    "upgrades/side-effects/console-desktop-card-grid.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console layout only; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-desktop-card-grid.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-desktop-card-grid.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

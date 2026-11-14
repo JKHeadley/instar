@@ -1,0 +1,72 @@
+{
+  "version": 3,
+  "slug": "job-result-supervision-v2",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T04:21:28.621Z",
+  "artifactPath": "upgrades/side-effects/job-result-supervision-v2.md",
+  "artifactSha256": "330eea903fee2cdca9bf6c808667d5a04e377e493e4459ceea0735d6b39e0ba2",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-28T04-20-25-595Z-job-result-supervision-v2.json",
+    ".instar/instar-dev-traces/2026-10-28T04-20-13-893Z-job-result-supervision-v2-0b26851a.json",
+    "docs/specs/job-result-supervision-v2-benchmark-evidence.md",
+    "scripts/bench-job-supervision-replacement.mjs",
+    "scripts/bench-job-supervision.mjs",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/scheduler/JobFixedResultCertificate.ts",
+    "src/scheduler/JobResultTriage.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/JobSupervisionEvidence.ts",
+    "src/scheduler/JobSupervisionReplacementPrompt.ts",
+    "src/scheduler/JobSupervisionRollout.ts",
+    "src/scheduler/JobSupervisionStore.ts",
+    "src/scheduler/JobSupervisionWorker.ts",
+    "src/scheduler/ScriptCanaryRunner.ts",
+    "src/server/AgentServer.ts",
+    "src/server/jobTriageRoutes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/fixtures/job-result-supervision-benchmark-v1.json",
+    "tests/integration/job-supervision-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-scriptJobs.test.ts",
+    "tests/unit/ScriptCanaryRunner.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/job-fixed-result-certificate.test.ts",
+    "tests/unit/job-supervision-benchmark-corpus.test.ts",
+    "tests/unit/job-supervision-evidence.test.ts",
+    "tests/unit/job-supervision-replacement-prompt.test.ts",
+    "tests/unit/job-supervision-store.test.ts",
+    "tests/unit/job-supervision-worker.test.ts",
+    "tests/unit/job-triage-routes.test.ts",
+    "upgrades/next/job-result-supervision-v2.md",
+    "upgrades/side-effects/job-result-supervision-v2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable production-job accounting and scheduler admission affect fleet behavior; model decisions remain code-gated off.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-result-supervision-v2-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The permanent-failure and restart fixture settles at one census recovery per run ID and three provider calls per result; the durable unique run ID and call count survive restarts."
+    }
+  }
+}

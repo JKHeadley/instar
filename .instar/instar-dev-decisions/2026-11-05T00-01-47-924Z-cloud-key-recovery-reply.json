@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-05T00:01:47.924Z",
+  "slug": "cloud-key-recovery-reply",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 417,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClaudeKeyHealth.ts",
+      "src/core/SlackReplyRelayInstaller.ts",
+      "src/core/claudeKeyRecovery.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/templates/scripts/slack-reply.sh"
+    ],
+    "addedLines": 398,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

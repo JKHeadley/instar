@@ -1,0 +1,52 @@
+{
+  "ts": "2026-10-30T22:15:49.817Z",
+  "slug": "native-remote-desktop-echo-mesh",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/DesktopMeshStreamRelay.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 23,
+  "loc": 2060,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/desktop-public-browser-smoke.mjs",
+      "scripts/install-windows-desktop-companion.mjs",
+      "scripts/install-windows-desktop-companion.ps1",
+      "src/commands/server.ts",
+      "src/core/DesktopAssertionReplayStore.ts",
+      "src/core/DesktopDelegatedSessionStore.ts",
+      "src/core/DesktopOperatorAssertion.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/WindowsDesktopCompanionDiscovery.ts",
+      "src/core/WindowsDesktopHost.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/types.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/DesktopMeshBroker.ts",
+      "src/server/DesktopMeshStreamRelay.ts",
+      "src/server/DesktopPeerUrlGate.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 2029,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The supervised restart is one-shot and requires an explicit operator config activation; the WSL companion install runs once at opt-in server boot. Neither action self-triggers a restart or retry. The five-second desktop keepalive is bounded by a ten-minute PIN grant and cleared at Stop."
+  },
+  "verdict": "pass"
+}

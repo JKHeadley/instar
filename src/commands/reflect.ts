@@ -10,6 +10,7 @@
  * outputs a formatted summary of what happened during recent job runs.
  */
 
+import { configureClaudeChildAuth } from '../core/claudeChildAuth.js';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { ExecutionJournal } from '../core/ExecutionJournal.js';
@@ -429,6 +430,7 @@ export async function runReflection(slug: string | undefined, opts: ReflectRunOp
   const config = await loadConfig(opts.dir);
 
   // Resolve intelligence provider
+  configureClaudeChildAuth(() => (config.sessions?.claudeChildAuth?.enabled === false ? undefined : config.sessions?.anthropicApiKey), () => config.sessions?.anthropicBaseUrl);
   const intelligence = resolveIntelligence(config.sessions?.claudePath, config.sessions);
   if (!intelligence) {
     console.log();

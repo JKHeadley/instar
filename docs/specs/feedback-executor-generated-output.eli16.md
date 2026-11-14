@@ -1,0 +1,7 @@
+# Generated check output in feedback drafts
+
+The feedback executor asks a builder to make a specific change in a temporary workspace. Before publishing a pull request, a trusted comparison lists everything the builder changed. In a live attempt, the builder made the requested single design draft, but ordinary repository checks also wrote six generated files. The comparison counted all seven and rejected the draft. That rejection protected the publication boundary, yet the builder could not complete a valid request after running the required checks.
+
+This narrow repair recognizes those six generated output names. The comparison ignores one only when the trusted source copy does not already contain it. If a named file was already tracked, a builder change to it remains visible. The file walker still rejects links, devices, and nested Git metadata before this exception is applied. Unrelated source files and protected tooling paths remain visible and subject to the existing size, secret, review, and merge rules.
+
+The choice is a fixed, enumerable set of local build products, not a judgment about whether arbitrary content is safe. The two standards-registry names come from the existing registry path owner so another module does not become a competing authority for those asset names. A revert restores the previous comparison behavior. This change does not rewrite stored feedback attempts; a later live retry is needed to demonstrate the builder can now reach review.

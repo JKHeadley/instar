@@ -98,6 +98,6 @@ describe('production wiring (commands/server.ts source pins)', () => {
   });
 
   it('the thread resume map resolves a thread session\'s framework from the session registry', () => {
-    expect(src).toMatch(/new ThreadResumeMap\(config\.stateDir, config\.stateDir, undefined, undefined, \{[\s\S]{0,400}frameworkResolver: \(sessionName\) => state\.listSessions\(\)\.find\(\(s\) => s\.tmuxSession === sessionName\)\?\.framework/);
+    expect(src).toMatch(/new ThreadResumeMap\(config\.stateDir, config\.stateDir, undefined, undefined, \{[\s\S]{0,400}frameworkResolver: \(sessionName\) => state\.findSessionByTmux\(sessionName\)\?\.framework/);
   });
 });

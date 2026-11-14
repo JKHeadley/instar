@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-08T00:25:12.199Z",
+  "slug": "recommended-services-offers",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 592,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/notification-selectivity-raw-baseline.json",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/recommended/RecommendedServicesLedger.ts",
+      "src/recommended/offerList.ts",
+      "src/recommended/offerTaps.ts",
+      "src/recommended/setupState.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 550,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The list is one send per owner per week at most, each service offered once (offered rows), a refused send retried once an hour and released after a week, one build at a time under an in-process guard; the taps are user-driven, single-use and rate-bounded"
+  },
+  "verdict": "pass"
+}

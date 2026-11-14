@@ -184,6 +184,41 @@ describe('release-local push + ref refresh (real git)', () => {
     expect(g(bare, 'log', '-1', '--format=%s', 'main^')).toBe('concurrent merge');
   });
 
+  it('keeps a concurrent release fragment in upgrades/next while rebasing the published cut', () => {
+    g(clone, 'reset', '--hard', 'HEAD^');
+    const next = path.join(clone, 'upgrades', 'next');
+    fs.mkdirSync(next, { recursive: true });
+    fs.writeFileSync(path.join(next, 'consumed.md'), 'published fragment\n');
+    g(clone, 'add', '-A');
+    g(clone, 'commit', '-qm', 'add fragment for next release');
+    g(clone, 'push', '-q', 'origin', 'HEAD:main');
+    g(other, 'fetch', '-q', 'origin', 'main');
+    g(other, 'reset', '--hard', 'origin/main');
+
+    fs.unlinkSync(path.join(next, 'consumed.md'));
+    fs.writeFileSync(path.join(clone, 'upgrades', '1.0.1.md'), 'published fragment\n');
+    fs.writeFileSync(path.join(clone, 'version.txt'), '1.0.1\n');
+    g(clone, 'add', '-A');
+    g(clone, 'commit', '-qm', 'chore: release v1.0.1 [skip ci]');
+    g(clone, 'tag', 'v1.0.1');
+    const published = g(clone, 'rev-parse', 'HEAD');
+
+    const otherNext = path.join(other, 'upgrades', 'next');
+    fs.writeFileSync(path.join(otherNext, 'later.md'), 'unreleased fragment\n');
+    g(other, 'add', '-A');
+    g(other, 'commit', '-qm', 'concurrent fragment merge');
+    g(other, 'push', '-q', 'origin', 'HEAD:main');
+
+    const calls: string[][] = [];
+    const res = pushTagThenMain({ run: runner(clone, calls), remote: 'origin', version: '1.0.1' });
+    expect(res).toMatchObject({ ok: true, attempts: 2 });
+    expect(calls).toContainEqual(['git', '-c', 'merge.renames=false', 'rebase', 'origin/main']);
+    expect(g(bare, 'rev-parse', 'v1.0.1^{commit}')).toBe(published);
+    expect(g(bare, 'show', 'main:upgrades/next/later.md')).toBe('unreleased fragment');
+    expect(g(bare, 'show', 'main:upgrades/1.0.1.md')).toBe('published fragment');
+    expect(g(bare, 'ls-tree', '--name-only', 'main:upgrades/next')).toBe('later.md');
+  });
+
   it('--keep-tag-on-published: a hook refusal on the main push still stops at once', () => {
     g(clone, 'tag', 'v1.0.1');
     const hook = path.join(clone, '.git', 'hooks', 'pre-push');
@@ -414,7 +449,7 @@ describe('activePublishRuns (ANY publish.yml run, not just this commit)', () => 
     const calls: string[][] = [];
     const run = (c: string, a: string[]): R => {
       calls.push([c, ...a]);
-      const status = a[a.indexOf('--status') + 1];
+      const status = a.includes('--status') ? a[a.indexOf('--status') + 1] : 'unfiltered';
       return answers[status] ?? { status: 0, stdout: '[]', stderr: '' };
     };
     return { run, calls };
@@ -428,13 +463,33 @@ describe('activePublishRuns (ANY publish.yml run, not just this commit)', () => 
     // never filtered to one commit
     expect(calls.every((c) => !c.includes('--commit'))).toBe(true);
     // one query per active status
-    expect(calls.map((c) => c[c.indexOf('--status') + 1])).toEqual(ACTIVE_RUN_STATUSES);
+    expect(calls.filter((c) => c.includes('--status')).map((c) => c[c.indexOf('--status') + 1])).toEqual(ACTIVE_RUN_STATUSES);
+    // plus exactly one unfiltered recent-runs query
+    expect(calls.filter((c) => !c.includes('--status'))).toHaveLength(1);
     expect(calls.every((c) => c.includes('--workflow') && c.includes('publish.yml') && c.includes('o/r'))).toBe(true);
   });
 
   it('an in-progress run for another sha is active too', () => {
     const { run } = gh({ in_progress: { status: 0, stdout: JSON.stringify([{ databaseId: 5, status: 'in_progress', headSha: 'bbb' }]), stderr: '' } });
     expect(activePublishRuns(run, 'o/r').state).toBe('active');
+  });
+
+  it('a run PENDING behind the publish concurrency group is active (no status filter returns it)', () => {
+    const { run } = gh({ unfiltered: { status: 0, stdout: JSON.stringify([
+      { databaseId: 9, status: 'pending', headSha: 'ccc' },
+      { databaseId: 8, status: 'completed', headSha: 'ddd' },
+    ]), stderr: '' } });
+    expect(activePublishRuns(run, 'o/r')).toEqual({ state: 'active', ids: [9] });
+  });
+
+  it('a run seen by both a status query and the recent-runs query is listed once', () => {
+    const q = JSON.stringify([{ databaseId: 4, status: 'queued', headSha: 'eee' }]);
+    const { run } = gh({ queued: { status: 0, stdout: q, stderr: '' }, unfiltered: { status: 0, stdout: q, stderr: '' } });
+    expect(activePublishRuns(run, 'o/r')).toEqual({ state: 'active', ids: [4] });
+  });
+
+  it('a failed recent-runs query → unknown, never clear', () => {
+    expect(activePublishRuns(gh({ unfiltered: { status: 1, stdout: '', stderr: 'HTTP 502' } }).run, 'o/r').state).toBe('unknown');
   });
 
   it('all empty → clear; ANY failed or unreadable query → unknown (never clear)', () => {

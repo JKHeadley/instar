@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "job-silence-alert",
+  "sessionId": "42912913-074b-480a-9565-222edcd29edc",
+  "timestamp": "2026-11-05T04:38:45.392Z",
+  "artifactPath": "upgrades/side-effects/job-silence-alert.md",
+  "artifactSha256": "e32f43760e76f6b6702cf3ac21a22e3d1fc1c4243f96e0928d0d6436dd967285",
+  "coveredFiles": [
+    "docs/specs/job-silence-alert.eli16.md",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/SkipLedger.ts",
+    "tests/unit/job-continuity-alert.test.ts",
+    "upgrades/next/job-silence-alert.md",
+    "upgrades/side-effects/job-silence-alert.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible alerting fix with no job execution or migration authority; a revert fully removes it.",
+  "eli16Path": "docs/specs/job-silence-alert.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-silence-alert.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

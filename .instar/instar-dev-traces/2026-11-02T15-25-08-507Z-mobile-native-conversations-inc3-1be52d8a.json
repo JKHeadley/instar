@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mobile-native-conversations-inc3",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T15:25:08.507Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-conversations-inc3.md",
+  "artifactSha256": "0565d6c94c809654f8426d9193e841a478ddfd9998dc779d0e858b4354ebb28b",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "dashboard/console/nav-model.js",
+    "upgrades/side-effects/mobile-native-conversations-inc3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the increment-3 PR: register the new Phones tab in the console navigation model.",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

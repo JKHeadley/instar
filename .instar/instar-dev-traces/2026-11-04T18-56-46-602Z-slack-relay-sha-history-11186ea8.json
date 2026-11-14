@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "slack-relay-sha-history",
+  "sessionId": "4df2d4c9-bfc2-41df-8e33-5c8ae7684dc4",
+  "timestamp": "2026-11-04T18:56:46.602Z",
+  "artifactPath": "upgrades/side-effects/slack-relay-sha-history.md",
+  "artifactSha256": "59a7224280854535db2b3ab65f42b62f6eff1da0e04caf8cec3d8860e7889e23",
+  "specPath": "docs/specs/slack-session-reply-relay.md",
+  "coveredFiles": [
+    "scripts/lint-template-sha-history.ts",
+    "src/core/SlackReplyRelayInstaller.ts",
+    "tests/fixtures/slack-reply-2026-11-03.sh",
+    "tests/integration/slack-reply-relay-migration.test.ts",
+    "tests/unit/grok-budget-concurrency.test.ts",
+    "tests/unit/lint-template-sha-history.test.ts",
+    "tests/unit/slack-reply-relay-installer.test.ts",
+    "upgrades/next/slack-relay-sha-history.md",
+    "upgrades/side-effects/slack-relay-sha-history.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide script migration changes Slack inbound readiness; approved spec and reviewed diff apply. Rebase removed duplicate audit test change already on main.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

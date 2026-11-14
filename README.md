@@ -155,6 +155,12 @@ We didn't just claim it works. We ran controlled experiments — same model, sam
 | **Cross-framework portability** | First-class Codex CLI support via `instar setup --framework codex-cli`. Codex-only init produces zero `.claude/` files. Framework-aware telegram-reply path. FrameworkSessionStore (per-runtime transcripts). FrameworkParitySentinel | [→](https://instar.sh/features/portability/) |
 | **Default Jobs** | Fourteen built-in jobs covering health, reflection, evolution, relationship maintenance, identity review, and five `overseer-*` jobs across development, learning, infrastructure, maintenance, and guardian responsibilities | [→](https://instar.sh/reference/default-jobs/) |
 
+**Queue pace** reports whether each work queue is catching up or falling behind, using arrivals,
+completions, and remaining work rather than a snapshot count alone. `QueuePace` defines the
+measurements, `QueuePaceAdapters` reads the source queues, `QueuePaceLedger` keeps hourly evidence,
+and the opt-in `QueuePaceTuner` can add bounded feedback-sorting runs when that worker is the limit.
+See the [queue pace guide](site/src/content/docs/features/queue-pace.md).
+
 > **Reference:** [CLI Commands](https://instar.sh/reference/cli/) · [API Endpoints](https://instar.sh/reference/api/) · [Configuration](https://instar.sh/reference/configuration/) · [File Structure](https://instar.sh/reference/file-structure/)
 
 Server lifecycle commands use `SessionServerGuard` so an active agent session
@@ -317,3 +323,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full story.
 ## License
 
 MIT
+
+### Storage errors and backups
+
+Storage refusals and failed saves name the computer that produced them, using its machine nickname or hostname. If a phone reports that Mac Studio is nearly out of disk space, free space on Mac Studio. Another computer receiving that error keeps the original machine name.
+
+Use `instar backup create` to snapshot agent state, `instar backup list` to inspect snapshots, and `instar backup restore [id]` to restore one. A storage failure during a backup or restore identifies the computer performing the operation; check its available space and directory permissions before retrying.
+
+Owner requests are kept by the [TeamRequests store](src/core/TeamRequests.ts). Asking for access does not grant it: the owner's phone must sign the access change. If storage fails while handling a signed team action, the reply names the computer needing attention and keeps private file paths out of the response.

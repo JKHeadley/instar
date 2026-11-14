@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "pairing-owner-required",
+  "sessionId": "660e5b00-fda7-454d-b107-e1c4d47e305b",
+  "timestamp": "2026-10-31T05:03:13.228Z",
+  "artifactPath": "upgrades/side-effects/pairing-owner-required.md",
+  "artifactSha256": "222e4a8a0b7aa9608850458e818ed6af2843df14cfa4cdee50a71ef070318b53",
+  "coveredFiles": [
+    "docs/specs/pairing-owner-required.eli16.md",
+    "packages/threadline-core/src/handshake.ts",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/threadline/ThreadlineBootstrap.ts",
+    "src/threadline/pairingHandshake.ts",
+    "src/threadline/pairingOwnerName.ts",
+    "tests/e2e/threadline/pairing-invite-failure-paths.test.ts",
+    "tests/unit/threadline/pairing-handshake.test.ts",
+    "tests/unit/threadline/pairing-owner-name.test.ts",
+    "upgrades/next/pairing-owner-required.md",
+    "upgrades/side-effects/pairing-owner-required.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Requested refusal of blank owner on pairing; a revert fully undoes it; no stored state changes.",
+  "eli16Path": "docs/specs/pairing-owner-required.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pairing-owner-required.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

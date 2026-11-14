@@ -31,6 +31,7 @@
  */
 
 import { classifyWedgeTail } from './ContextWedgeSentinel.js';
+import { currentUsageLimitBanner } from './rateLimitDetection.js';
 import { liveTail as sharedLiveTail } from '../core/paneTail.js';
 
 export type StuckKind =
@@ -47,19 +48,6 @@ export interface StuckClassification {
   /** Optional extracted detail (e.g. a reset time), for logs/audit. */
   detail?: string;
 }
-
-/** Rate-limit / usage-limit pane signatures (the Claude usage-limit form the
- *  RateLimitSentinel does NOT auto-handle — it only owns the capacity throttle).
- *  Anchored on the STATIVE/blocking forms Claude Code prints when it actually
- *  blocks a turn ("You've hit your session limit · resets 10:30pm"), NOT prose
- *  that merely mentions limits ("when you hit your usage limit, the session
- *  pauses") — the same prose-vs-block discriminator the wedge detector uses. */
-const RATE_LIMIT_TAIL_PATTERNS: readonly RegExp[] = [
-  /you'?ve (?:hit|reached) your (?:session|usage|5-hour) limit/i,
-  /usage limit reached/i,
-  /(?:session|usage|5-hour) limit reached/i,
-  /\blimit\b[^.\n]{0,30}\bresets?\b/i,   // "limit · resets 10:30pm" co-occurrence
-];
 
 /** Context-exhaustion pane signatures — the genuine "conversation too long"
  *  block (NOT the normal compaction lifecycle, which recovers on its own). */
@@ -149,8 +137,9 @@ export function classifyStuckSignature(
 
   // Rate / usage limit — tail-gated. Clears on its own, so the message is
   // reassuring rather than action-demanding.
-  if (anyMatch(tail, RATE_LIMIT_TAIL_PATTERNS)) {
-    const hint = extractResetHint(tail);
+  const limitBanner = currentUsageLimitBanner(capture);
+  if (limitBanner) {
+    const hint = extractResetHint(limitBanner);
     return {
       kind: 'rate-limited',
       message:

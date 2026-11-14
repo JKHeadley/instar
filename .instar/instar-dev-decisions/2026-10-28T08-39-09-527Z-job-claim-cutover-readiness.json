@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-28T08:39:09.527Z",
+  "slug": "job-claim-cutover-readiness",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 100,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/scheduler/JobLeaseClaimStore.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 60,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

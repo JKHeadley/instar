@@ -18,6 +18,45 @@
 # If validation fails, the message is NOT sent. This is the reverse of the
 # original flow which sent first and notified second.
 
+# imessage-reply-feature: tone-reaction
+# Answering a 422 tone-gate-advisory. Flags go BEFORE everything else:
+#   --tone-complied <RULE>     You agreed and revised the text.
+#   --tone-ack <RULE>          You disagree and send unchanged; needs --tone-reason.
+#   --tone-reason "<why>"      Why the nudge is wrong here.
+#   --tone-decision-ref <REF>  The decisionRef from the 422.
+TONE_ACK=""; TONE_REASON=""; TONE_COMPLIED=""; TONE_REF=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tone-ack|--tone-reason|--tone-complied|--tone-decision-ref)
+      [ $# -ge 2 ] || { echo "Error: $1 needs a value" >&2; exit 1; }
+      case "$1" in
+        --tone-ack) TONE_ACK="$2" ;;
+        --tone-reason) TONE_REASON="$2" ;;
+        --tone-complied) TONE_COMPLIED="$2" ;;
+        --tone-decision-ref) TONE_REF="$2" ;;
+      esac
+      shift 2 ;;
+    *) break ;;
+  esac
+done
+# Rule ids are charset-clamped and a decision ref must have the router's shape, so nothing
+# shell- or JSON-hostile rides the metadata. Empty when no reaction was given.
+TONE_META=$(TONE_ACK="$TONE_ACK" TONE_REASON="$TONE_REASON" TONE_COMPLIED="$TONE_COMPLIED" TONE_REF="$TONE_REF" python3 -c '
+import json, os, re
+clamp = lambda v: re.sub(r"[^A-Z0-9_]", "", v)[:64]
+m = {}
+if os.environ["TONE_ACK"]:
+    m["toneAdvisoryAck"] = clamp(os.environ["TONE_ACK"])
+    if os.environ["TONE_REASON"]:
+        m["toneAdvisoryAckReason"] = os.environ["TONE_REASON"][:500]
+if os.environ["TONE_COMPLIED"]:
+    m["toneAdvisoryComplied"] = clamp(os.environ["TONE_COMPLIED"])
+ref = os.environ["TONE_REF"]
+if len(ref) <= 128 and re.fullmatch(r"[db]-(?:[A-Za-z0-9_]{1,64}-)?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", ref):
+    m["toneAdvisoryDecisionRef"] = ref
+print(json.dumps(m) if m else "")
+' 2>/dev/null || true)
+
 RECIPIENT="$1"
 shift
 
@@ -78,14 +117,17 @@ fi
 
 # ── Step 1: Validate with server BEFORE sending (get single-use token) ──
 
+VALIDATE_JSON="{\"text\":${JSON_MSG}}"
+[ -z "$TONE_META" ] || VALIDATE_JSON="{\"text\":${JSON_MSG},\"metadata\":${TONE_META}}"
+
 VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST "http://localhost:${PORT}/imessage/validate-send/${ENCODED_RECIPIENT}" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
   ${AGENT_HEADER:+-H "$AGENT_HEADER"} \
   -H 'Content-Type: application/json' \
-  -d "{\"text\":${JSON_MSG}}" 2>/dev/null)
+  -d "$VALIDATE_JSON" 2>/dev/null)
 
-VALIDATE_BODY=$(echo "$VALIDATE_RESPONSE" | head -n -1)
+VALIDATE_BODY=$(echo "$VALIDATE_RESPONSE" | sed '$d')
 VALIDATE_CODE=$(echo "$VALIDATE_RESPONSE" | tail -n 1)
 
 if [ "$VALIDATE_CODE" != "200" ]; then
@@ -96,6 +138,34 @@ if [ "$VALIDATE_CODE" != "200" ]; then
   REASON=$(echo "$VALIDATE_BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("reason") or d.get("issue") or "unknown")' 2>/dev/null || echo "unknown")
   SUGGESTION=$(echo "$VALIDATE_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("suggestion",""))' 2>/dev/null || echo "")
   if [ "$VALIDATE_CODE" = "422" ]; then
+    TONE_NUDGE=$(printf '%s' "$VALIDATE_BODY" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+kind = d.get("blockedBy") or d.get("error")
+rule = d.get("rule") or "RULE"
+ref = d.get("decisionRef") or ""
+tail = (" --tone-decision-ref " + ref) if ref else ""
+if kind == "tone-gate-advisory":
+    print("ADVISORY: not sent yet, and the decision is yours (a nudge, not a wall).")
+    print("  Rule: " + rule)
+    print("  Issue: " + str(d.get("issue", "unknown")))
+    if d.get("suggestion"):
+        print("  Suggestion: " + str(d["suggestion"]))
+    if ref:
+        print("  decisionRef: " + ref)
+    print("  AGREE: revise, then re-run with: --tone-complied " + rule + tail)
+    print("  DISAGREE: re-run unchanged with: --tone-ack " + rule + " --tone-reason \"why the nudge is wrong here\"" + tail)
+elif kind == "tone-gate-advisory-reason-required":
+    print("NOT SENT: an override needs a reason.")
+    print("  Re-run with: --tone-ack " + rule + " --tone-reason \"why the nudge is wrong here\"")
+' 2>/dev/null || true)
+    if [ -n "$TONE_NUDGE" ]; then
+      printf '%s\n' "$TONE_NUDGE" >&2
+      exit 1
+    fi
     echo "BLOCKED by tone gate — message not sent to user." >&2
     echo "  Issue: $REASON" >&2
     if [ -n "$SUGGESTION" ]; then

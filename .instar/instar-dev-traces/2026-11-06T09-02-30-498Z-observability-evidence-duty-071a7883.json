@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "observability-evidence-duty",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T09:02:30.498Z",
+  "artifactPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "artifactSha256": "fbe2cef5e3ab65c98bbae89ea37721309b9b9b180494d5c41de615e2aa36c192",
+  "coveredFiles": [
+    "docs/specs/improvement-evidence-history.eli16.md",
+    "docs/specs/observability-evidence-duty.eli16.md",
+    "upgrades/next/improvement-evidence-history.md",
+    "upgrades/next/observability-evidence-duty.md",
+    "upgrades/side-effects/observability-evidence-duty.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only cleanup separating the existing constitutional wording from runtime delivery notes. No governing wording, runtime behavior, approval or enforcement-floor change in this commit.",
+  "eli16Path": "docs/specs/observability-evidence-duty.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

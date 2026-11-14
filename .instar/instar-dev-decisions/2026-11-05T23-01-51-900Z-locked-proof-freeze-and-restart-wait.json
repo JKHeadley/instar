@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-05T23:01:51.900Z",
+  "slug": "locked-proof-freeze-and-restart-wait",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs"
+    ],
+    "addedLines": 11,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

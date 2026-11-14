@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-04T23:07:41.586Z",
+  "slug": "memory-privacy-owner-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 473,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/memorySandboxProbe.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/users/MemoryAudience.ts",
+      "src/users/MemoryInboundTracker.ts",
+      "src/users/MemoryPrivacy.ts",
+      "src/users/MemoryPrivacyRecovery.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 431,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the repair runs only when the owner submits a one-time link, and the owner notice runs only on an inbound message and is limited to one per 10 minutes"
+  },
+  "verdict": "pass"
+}

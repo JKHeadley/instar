@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-surfaces",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T03:12:39.419Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-surfaces.md",
+  "artifactSha256": "f00dcd7d56e806857eb8e5c845a84b841fb88082dd4056c75dc4d1973caaf997",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/core/WriteDomainRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Write-domain declaration for the Chief of Staff POST routes (classification only) under the converged, approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

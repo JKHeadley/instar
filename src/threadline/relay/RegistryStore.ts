@@ -180,7 +180,7 @@ export class RegistryStore {
     // Enable WAL mode
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
-    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('synchronous = FULL');
 
     this.initSchema();
     this.resetOnlineStatus();
@@ -191,8 +191,18 @@ export class RegistryStore {
     this.staleCronTimer = setInterval(() => this.runStaleCron(), 24 * 60 * 60 * 1000);
   }
 
+  recoveryRead(key: string): unknown {
+    const row = this.db.prepare('SELECT value FROM recovery_control WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? JSON.parse(row.value) : null;
+  }
+  recoveryWrite(key: string, value: unknown): void {
+    this.db.prepare('INSERT OR REPLACE INTO recovery_control (key,value) VALUES (?,?)').run(key, JSON.stringify(value));
+  }
+  recoveryTransaction<T>(fn: () => T): T { return this.db.transaction(fn)(); }
+
   private initSchema(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS recovery_control (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agents (
         public_key TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,

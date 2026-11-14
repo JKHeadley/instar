@@ -141,11 +141,11 @@ describe('feedback execute routes — owner', () => {
     expect(tick.body.reason).toBe('approver-not-independent');
   });
 
-  it('auto-merge disabled on the repository → 503', async () => {
+  it('native auto-merge disabled does not replace the approver-independence refusal', async () => {
     fakes.repo.allowAutoMerge = false;
     const res = await request(server.getApp()).post('/feedback-factory/execute/tick').set(HX);
     expect(res.status).toBe(503);
-    expect(res.body.reason).toBe('auto-merge-disabled');
+    expect(res.body.reason).toBe('approver-not-independent');
     fakes.repo.allowAutoMerge = true;
   });
 });

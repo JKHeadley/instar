@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-03T11:44:11.747Z",
+  "slug": "claude-md-reference-layout",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 1156,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/knowledge/TreeTraversal.ts",
+      "src/scaffold/claudeMdLayout.ts",
+      "src/scaffold/templates.ts",
+      "src/server/fileRoutes.ts"
+    ],
+    "addedLines": 1085,
+    "deletedLines": 71
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

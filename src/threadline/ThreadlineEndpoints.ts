@@ -15,15 +15,18 @@
  * Part of Threadline Protocol Phase 3.
  */
 
+import { parseKindedAck } from './requiredAck.js';
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { bearerMatches } from '../server/middleware.js';
 import type { HandshakeManager, HelloPayload, ConfirmPayload } from './HandshakeManager.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { verify } from './ThreadlineCrypto.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { recordInboundAck, type InboundAckDeps } from './recordInboundAck.js';
 import { isAutoAckBody, autoAckBodyRecognition } from './autoAck.js';
+import { wireTypeOf } from './PeerUserMeantJudge.js';
 import { computeFingerprint } from './client/MessageEncryptor.js';
 import { recordThreadMessage } from './recordThreadMessage.js';
 import { honorPeerThreadSync, serveBackfill, type SymmetryDeps } from './threadSymmetry.js';
@@ -58,8 +61,20 @@ export interface ThreadlineError {
 }
 
 export interface ThreadlineEndpointsConfig {
+  /** Agent-wide operational view. Local-only health probes omit it to avoid recursive peer reads. */
+  agentRelayStatus?: () => Promise<import('./agentRelayStatus.js').AgentRelayStatus>;
+  agentRelayAuthToken?: string;
   /** Name of this agent */
   localAgent: string;
+  /**
+   * peer-conversation-homebase-topic §2.6: posts a verified peer's user-meant message on an
+   * unbound conversation into that peer's own topic. Optional; absent ⇒ no post (as before).
+   */
+  peerHomebaseRelay?: {
+    relayInbound(input: { threadId: string; peers: Array<string | undefined | null>; senderName: string; text: string; messageType?: string | null }): Promise<{ posted: boolean }>;
+  };
+  /** Is this conversation already bound to a topic (then TopicLinkageHandler owns its posts)? */
+  conversationBound?: (threadId: string) => boolean;
   /** Threadline protocol version */
   version: string;
   /** Agent state directory — used to resolve the canonical routing identity for /threadline/health */
@@ -296,7 +311,7 @@ export function createThreadlineRoutes(
 
   // ── Health ─────────────────────────────────────────────────────
 
-  router.get('/threadline/health', (_req: Request, res: Response) => {
+  router.get('/threadline/health', async (req: Request, res: Response) => {
     // Report the canonical routing identity (the address the relay answers to),
     // resolved via the SAME read-only API the relay client uses. When it
     // resolves, identityPub + fingerprint correspond
@@ -321,7 +336,18 @@ export function createThreadlineRoutes(
     } catch {
       identityCoherence = null; // a throwing probe must not take the health route down
     }
+    let agentRelay: import('./agentRelayStatus.js').AgentRelayStatus | null = null;
+    const authenticated = Boolean(config.agentRelayAuthToken) && bearerMatches(req, config.agentRelayAuthToken);
+    if (req.query.scope !== 'local' && config.agentRelayStatus && authenticated) {
+      try { agentRelay = await config.agentRelayStatus(); } catch { /* report unknown rather than a false local answer */ }
+    }
     res.json({
+      ...(req.query.scope !== 'local' && config.agentRelayStatus ? { agentRelay: agentRelay ?? {
+        state: relay.report.state === 'connected' ? 'reachable' : 'unknown', throughMachine: null, throughMachineId: null,
+        reason: authenticated ? 'The agent-wide relay status could not be checked.' : 'Authenticate to check the holder; this public view does not probe sibling machines.',
+        ifMachineAway: 'Reachability cannot be confirmed until a holder is verified.',
+        peersChecked: 0, peersUnknown: 0,
+      } } : {}),
       // `status` now reflects the relay. Deliberately still HTTP 200 with
       // protocol/identityPub/fingerprint unchanged: AgentDiscovery.verifyAgent
       // gates on response.ok + identityPub + protocol and NEVER on this field, so
@@ -716,6 +742,15 @@ export function createThreadlineRoutes(
         threadId: body.message?.threadId,
       });
 
+      // a2a-required-acknowledgment D1: a kinded ack branches BEFORE any delivery
+      // record, on every route. Same-machine routes send none, so one arriving here
+      // is consumed with no effect: it never flips a row by thread, never routes.
+      if (parseKindedAck(body.message?.body)) {
+        ticket?.recordNoReply();
+        console.log(`[ThreadlineEndpoints] kinded ack (thread: ${body.message?.threadId ?? 'none'}) consumed on the HTTP route — no effect`);
+        return;
+      }
+
       // Robustness Phase 1 (D-E / closes F4): record the implicit delivery ack on
       // the VERIFIED E2E relay inbound path — the path that previously lacked it,
       // producing the permanent false `stale: true` noise. threadlineAuth has
@@ -768,9 +803,34 @@ export function createThreadlineRoutes(
         }
       } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
 
+      // §2.6: a verified peer's user-meant message on an unbound conversation is posted by the
+      // server into the peer's own topic. Keyed on the DERIVED fingerprint, never the name.
+      // Fire-and-forget: it never delays or blocks routing to a session.
+      try {
+        const hbFp = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+        const hbThread = body.message?.threadId;
+        if (config.peerHomebaseRelay && hbFp && hbThread && !config.conversationBound?.(hbThread)) {
+          const hbText = typeof body.message?.body === 'string'
+            ? body.message.body
+            : String((body.message?.body as Record<string, unknown> | undefined)?.content ?? (body.message?.body as Record<string, unknown> | undefined)?.text ?? '');
+          void config.peerHomebaseRelay.relayInbound({
+            threadId: hbThread,
+            peers: [hbFp],
+            senderName: typeof body.message?.from?.agent === 'string' ? body.message.from.agent : hbFp,
+            text: hbText,
+            messageType: wireTypeOf(body.message?.body),
+          }).catch(() => { /* @silent-fallback-ok — the relay logs; delivery to the session is unaffected */ });
+        }
+      } catch { /* @silent-fallback-ok: a homebase post never blocks inbound routing */ }
+
       const chainTicket = ticket;
       chainStarted = true;
-      void threadlineRouter.handleInboundMessage(envelope, undefined, { resentNotice })
+      const memoryPeerFingerprint = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+      void threadlineRouter.handleInboundMessage(envelope, undefined, {
+        resentNotice,
+        // Memory privacy: the signature-verified principal, never the body's `from` (memory-privacy-agent-places §1).
+        ...(memoryPeerFingerprint ? { memoryPeerFingerprint } : {}),
+      })
         .then((result) => {
           chainTicket?.recordRouterResult(result);
           if (result?.error) {

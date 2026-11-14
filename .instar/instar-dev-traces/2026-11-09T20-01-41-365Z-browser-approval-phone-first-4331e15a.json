@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "browser-approval-phone-first",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T20:01:41.365Z",
+  "artifactPath": "upgrades/side-effects/browser-approval-phone-first.md",
+  "artifactSha256": "92b93e437c3a5553cb1f459b7194e5a3aad64c524eb7e7f72402e0c651aa3559",
+  "coveredFiles": [
+    "src/core/MobilePush.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-pairing-approve.test.ts",
+    "tests/unit/mobile-push.test.ts",
+    "upgrades/next/browser-approval-phone-first.md",
+    "upgrades/side-effects/browser-approval-phone-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Fixed alert wording per notice subject; no caller text; revert undoes it",
+  "eli16Path": "docs/eli16/browser-approval-phone-first.md",
+  "sideEffectsPath": "upgrades/side-effects/browser-approval-phone-first.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

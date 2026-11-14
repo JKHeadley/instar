@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-01T05:06:24.295Z",
+  "slug": "telegram-userseat-allowance-1031",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-origin/OriginConfig.ts",
+      "src/messaging/telegram-origin/ReviewedWebKBuilds.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/types.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

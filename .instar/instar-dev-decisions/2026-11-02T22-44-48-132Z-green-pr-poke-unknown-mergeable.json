@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-02T22:44:48.132Z",
+  "slug": "green-pr-poke-unknown-mergeable",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one bounded read per verified PR per tick; no new loop or trigger"
+  },
+  "verdict": "pass"
+}

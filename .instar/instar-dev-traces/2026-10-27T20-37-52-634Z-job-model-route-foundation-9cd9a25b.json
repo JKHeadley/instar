@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "job-model-route-foundation",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-27T20:37:52.634Z",
+  "artifactPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "artifactSha256": "fd33ff4e910dca436487d6a68ceac0a5d4cef1f07b72f5db5e5d72cfc15c6c3a",
+  "coveredFiles": [
+    "tests/unit/modelTier-launchMechanisms.test.ts",
+    "upgrades/side-effects/job-model-route-foundation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test expectation follows the corrected launch-model recording; no runtime change.",
+  "eli16Path": "upgrades/eli16/job-model-route-foundation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

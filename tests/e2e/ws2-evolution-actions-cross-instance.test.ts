@@ -161,7 +161,7 @@ describe('E2E — an evolution action raised on A is readable on B (WS2.5 send-s
     expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value!.data.status).toBe('completed');
   });
 
-  it('an expired action tombstone survives a full peer resync and cannot resurrect', () => {
+  it('an archived action reaches a peer as a reversible close, and a restore reopens it', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
@@ -174,12 +174,13 @@ describe('E2E — an evolution action raised on A is readable on B (WS2.5 send-s
       expect(a.evolution.runActionAutoExpirySweep()).toMatchObject({ eligible: 1, expired: 1 });
       cursor = replicate(a, A, b, cursor);
       expect(cursor).toBeGreaterThan(0);
-      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value).toBeNull();
+      // CMT-1132: the peer sees a close it can recover from, never a tombstone.
+      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value!.data.status).toBe('cancelled');
 
-      // Re-applying the whole origin stream models a peer resync from cursor zero. The
-      // later tombstone must still win over the earlier put.
-      replicate(a, A, b, 0);
-      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value).toBeNull();
+      // A restore reaches the peer as the live action again.
+      expect(a.evolution.restoreArchivedAction(action.id)).toMatchObject({ id: action.id, status: 'pending' });
+      replicate(a, A, b, cursor);
+      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value!.data.status).toBe('pending');
     } finally {
       vi.useRealTimers();
     }

@@ -1,0 +1,40 @@
+{
+  "ts": "2026-10-30T19:04:27.176Z",
+  "slug": "check-in-reminder-server-tick",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 468,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/CheckInReminderReconciler.ts",
+      "src/monitoring/CheckInReminderTicker.ts",
+      "src/monitoring/checkInReminderCore.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 389,
+    "deletedLines": 79
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "check-in-reminder-pass is registered: the tick only drives that pass. Steady-state bound is the durable sent stamp; the settling brake is CHECK_IN_MAX_ATTEMPTS, persisted before each send, so total emits per commitment are bounded by attempts, not elapsed time."
+    }
+  },
+  "verdict": "blocked"
+}

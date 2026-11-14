@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-04T17:35:36.253Z",
+  "slug": "agent-health-quiet-default",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 87,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/TelegramAdapter.ts"
+    ],
+    "addedLines": 61,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

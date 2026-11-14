@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "agent-status-verdict",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T21:16:26.069Z",
+  "artifactPath": "upgrades/side-effects/agent-status-verdict.md",
+  "artifactSha256": "f3403d8f33635e73a38966e396868d07ed2b11549f112f2fe960274eab13d3ba",
+  "coveredFiles": [
+    "dashboard/console/health-model.js",
+    "src/monitoring/healthIssues.ts",
+    "src/server/mobileHealthRoutes.ts",
+    "tests/e2e/mobile-health-issues-alive.test.ts",
+    "tests/integration/mobile-health-issues.test.ts",
+    "tests/unit/console-health.test.ts",
+    "tests/unit/health-choices.test.ts",
+    "tests/unit/mobile-health-issues.test.ts",
+    "upgrades/next/agent-status-verdict.md",
+    "upgrades/side-effects/agent-status-verdict.eli16.md",
+    "upgrades/side-effects/agent-status-verdict.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display verdict label for health; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/agent-status-verdict.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/agent-status-verdict.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no action is taken: computes a status label and its words"
+  }
+}

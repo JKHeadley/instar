@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "slug": "cloud-key-recovery-reply",
+  "sessionId": "62841c36-23ac-4ea9-949c-fa3d92acf5f1",
+  "timestamp": "2026-11-05T00:06:09.591Z",
+  "artifactPath": "upgrades/side-effects/cloud-key-recovery-reply.md",
+  "artifactSha256": "2055cd298c29c80afe501438cfcdd65db7f5f848ea2a9c7f2c52dddf9b88ebbf",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ClaudeKeyHealth.ts",
+    "src/core/SlackReplyRelayInstaller.ts",
+    "src/core/claudeKeyRecovery.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/templates/scripts/slack-reply.sh",
+    "tests/e2e/claude-key-alive.test.ts",
+    "tests/unit/ClaudeKeyHealth.test.ts",
+    "tests/unit/claudeKeyRecovery.test.ts",
+    "tests/unit/slack-adapter-operator-reach.test.ts",
+    "tests/unit/slack-reply-session-channel-arg.test.ts",
+    "upgrades/cloud-key-recovery-reply.eli16.md",
+    "upgrades/next/cloud-key-recovery-reply.md",
+    "upgrades/side-effects/cloud-key-recovery-reply.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow follow-up fix to merged #2695 from a live drill: recovery prompt, answer check, operator-notice reach, one reply-script argument case. A revert restores the previous behaviour.",
+  "eli16Path": "upgrades/cloud-key-recovery-reply.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cloud-key-recovery-reply.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "likely-duplicate",
+    "cause": "concurrency",
+    "causes": [
+      "concurrency"
+    ],
+    "decision": "proceed",
+    "reason": "Follow-up to merged #2695 (same topic 137264): fixes the recovery reply fault found in the 136880 nimbus drill and the unread operator notice. Not a duplicate; PR 1271 is unrelated SessionManager work.",
+    "acknowledgedEvidenceIds": [
+      "EV-1",
+      "EV-2",
+      "EV-3",
+      "EV-4",
+      "EV-5"
+    ],
+    "checkedAt": "2026-11-04T23:38:00.187Z",
+    "specSlug": "cloud-key-internal-calls"
+  }
+}

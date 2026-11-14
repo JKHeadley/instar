@@ -31,7 +31,7 @@
  * being removed. `isCommand:true` is returned ONLY on a high-confidence command
  * with a resolved intent (`open`, or `tie` with an enum-resolved target).
  *
- * Pattern: `MoveIntentClassifier` (the proven exemplar, PR #1367) + `CoherenceGate`
+ * Pattern: the LLM-with-context intent recognizer (PR #1367) + `CoherenceGate`
  * (LLM via the shared `IntelligenceProvider`) + the cheap-prefilter→LLM hybrid
  * (`TopicIntentCapture`) — the prefilter may ONLY skip toward pass-through (a
  * message with no bind-ish signal anywhere cannot be a bind command), NEVER decide
@@ -47,6 +47,7 @@ import type { IntelligenceProvider } from '../core/types.js';
 import type { HubCommand } from './hubCommands.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_HUB_INTENT_CLASSIFY } from '../data/provenanceCoverage.js';
+import { topicNameFor, topicRef } from '../messaging/shared/topicRef.js';
 
 export const HUB_INTENT_PROMPT_ID = 'hub-intent-v1';
 
@@ -148,7 +149,7 @@ function normalizeTopics(topics: HubTopicCandidate[], max: number): HubTopicCand
   for (const t of topics) {
     if (!t || typeof t.topicId !== 'number' || !Number.isFinite(t.topicId)) continue;
     if (seen.has(t.topicId)) continue;
-    const name = typeof t.topicName === 'string' && t.topicName.trim() ? t.topicName.trim() : `topic ${t.topicId}`;
+    const name = typeof t.topicName === 'string' && t.topicName.trim() ? t.topicName.trim() : (topicNameFor(t.topicId) ?? topicRef(t.topicId));
     seen.add(t.topicId);
     out.push({ topicId: t.topicId, topicName: name });
     if (out.length >= max) break;

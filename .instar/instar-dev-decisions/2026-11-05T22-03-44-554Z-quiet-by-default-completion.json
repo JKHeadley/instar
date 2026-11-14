@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-05T22:03:44.554Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/stageBCertifiedSet.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2739
+    ],
+    "notes": "PR2739 intentionally covered only routine Agent Health; other automated egress remained outside the approved Quiet by Default gate. This completes the cross-egress gate and preserves distinct quiet vs delivered outcomes."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/notification-selectivity-gate.test.ts",
+      "howCaught": "A sustained 1000-send mixed producer storm emits zero Telegram calls; an opted-in 500-event storm emits only three immediate pushes plus one bounded window summary. Durable preference attempts settle at eight and successful polling cannot rearm them; eligibility-before-batching prevents starvation. Digest cadence is once per day; failure episodes max three/day. These temporal brakes follow the canonical tests/unit/self-action-convergence.test.ts invariant and are driven through the actual gate in the new integration and route tests."
+    },
+    "component": "NotificationSelectivityGate"
+  },
+  "verdict": "blocked"
+}

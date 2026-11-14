@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "job-model-route-foundation",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-27T20:18:04.535Z",
+  "artifactPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "artifactSha256": "069657967582fcc03b07aa13aacc2efc3e78e3f3ad3c0b3fd6a4e04b4dff8666",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/core/types.ts",
+    "src/scheduler/AgentMdJobLoader.ts",
+    "src/scheduler/InstallBuiltinJobs.ts",
+    "src/scheduler/JobCostAuditReadiness.ts",
+    "src/scheduler/JobModelRoute.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/buildPerSlugManifest.ts",
+    "tests/unit/JobModelRoute.test.ts",
+    "tests/unit/scheduler/JobScheduler.agentmd-dispatch.test.ts",
+    "tests/unit/session-manager-behavioral.test.ts",
+    "upgrades/eli16/job-model-route-foundation.eli16.md",
+    "upgrades/next/job-model-route-foundation.md",
+    "upgrades/side-effects/job-model-route-foundation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark, reversible foundation: code-owned audit gate prevents any model pin from activating; existing jobs retain their route.",
+  "eli16Path": "upgrades/eli16/job-model-route-foundation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

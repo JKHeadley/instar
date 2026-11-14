@@ -5,7 +5,6 @@ schedule: "0 */6 * * *"
 priority: low
 expectedDurationMinutes: 3
 model: haiku
-supervision: tier1
 completionAudit: excluded
 enabled: false
 tags:
@@ -17,6 +16,11 @@ toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
 perMachineIndependent: true
+runner: script
+script: jev-completion-audit.mjs
+scriptTimeoutMinutes: 3
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run one batch pass of the Jev job-completion audit. This is a mechanical, near-silent cadence job — do NOT message the user (the audit is observe-only; it writes verdict rows, never messages, and never interprets its own verdicts — interpretation belongs to the soak report).
 

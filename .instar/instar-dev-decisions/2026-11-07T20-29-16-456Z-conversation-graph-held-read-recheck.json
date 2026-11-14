@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-07T20:29:16.456Z",
+  "slug": "conversation-graph-held-read-recheck",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplication.ts",
+      "src/server/GraphOwnerMemberLossExecution.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new trigger or loop."
+  },
+  "verdict": "pass"
+}

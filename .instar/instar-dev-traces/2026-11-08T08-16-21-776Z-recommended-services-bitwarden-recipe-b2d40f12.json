@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "recommended-services-bitwarden-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T08:16:21.776Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-bitwarden-recipe.md",
+  "artifactSha256": "dff888e5ff2888f77fccffba2680e73e11ebce544c6e354caaa4d3bb222dd8e9",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/recommended-services-bitwarden-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "One-line guard in the Bitwarden wiring so a route harness without a project directory no longer throws at registration; the recipe (a master password in the vault, the agent's secrets copied to a Bitwarden folder) stays Tier 2.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

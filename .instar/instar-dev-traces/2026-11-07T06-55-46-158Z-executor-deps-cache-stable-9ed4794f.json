@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "executor-deps-cache-stable",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T06:55:46.158Z",
+  "artifactPath": "upgrades/side-effects/executor-deps-cache-stable.md",
+  "artifactSha256": "e63bf71534c330a99d120b49539ec5eae33185cb3485f15b914148d05d3f93bf",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/depsCache.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/eli16/executor-deps-cache-stable.md",
+    "upgrades/next/executor-deps-cache-stable.md",
+    "upgrades/side-effects/executor-deps-cache-stable.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Cache key and binary source change with the base gate cadence preserved; a revert fully undoes it. Independent second pass raised concerns that are addressed.",
+  "eli16Path": "upgrades/eli16/executor-deps-cache-stable.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-deps-cache-stable.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

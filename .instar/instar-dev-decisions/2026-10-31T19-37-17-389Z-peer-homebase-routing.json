@@ -1,0 +1,40 @@
+{
+  "ts": "2026-10-31T19:37:17.389Z",
+  "slug": "peer-homebase-routing",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/peerHomebaseRelay.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 507,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/peerHomebaseAwareness.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/peerHomebase.ts",
+      "src/threadline/peerHomebaseRelay.ts"
+    ],
+    "addedLines": 474,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot reaction to an inbound peer message: at most one Telegram post per message (per-thread 1/min, per-topic 3/min caps), plus a create-once homebase ensure on a pairing notice; no feedback path re-triggers it, so it is not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

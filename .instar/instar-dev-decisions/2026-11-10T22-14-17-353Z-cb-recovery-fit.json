@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-10T22:14:17.353Z",
+  "slug": "cb-recovery-fit",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 169,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/BackupManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/compactionCanary.ts"
+    ],
+    "addedLines": 157,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "src/monitoring/compactionCanary.ts#isTruncatedHookOutput",
+      "howCaught": "The canary now judges the DELIVERED content (Claude Code's <persisted-output> wrapper marks a truncated delivery) instead of the printed stdout; tests/unit/recovery-output-fit.test.ts and the integration route test fail if a truncated delivery is credited as a recovery"
+    },
+    "component": "CompactionCanary"
+  },
+  "verdict": "pass"
+}

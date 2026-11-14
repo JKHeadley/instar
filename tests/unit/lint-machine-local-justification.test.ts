@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain-JS gate script, no type declarations
-import { findPostureSection } from '../../scripts/lint-machine-local-justification.js';
+import { findPostureSection, gradeMachineLocalMarkers } from '../../scripts/lint-machine-local-justification.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +52,21 @@ function runLint(...args: string[]): RunResult {
 }
 
 const fx = (name: string) => path.join(FIX, name);
+
+describe('status surface posture signal', () => {
+  it('flags a status route whose spec never declares its scope', () => {
+    const text = '# Spec\n\nGET /threadline/status returns a verdict.\n\n## Multi-machine posture\n\nProxied-on-read.\n';
+    expect(gradeMachineLocalMarkers(text).findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule: 'A4-status-surface-posture-missing' }),
+    ]));
+  });
+  it('accepts a status route named inside the posture section', () => {
+    const text = '# Spec\n\nGET /threadline/status returns a verdict.\n\n## Multi-machine posture\n\nGET /threadline/status is proxied-on-read; a dark holder is unknown.\n';
+    expect(gradeMachineLocalMarkers(text).findings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule: 'A4-status-surface-posture-missing' }),
+    ]));
+  });
+});
 
 /** An ISO date `n` days from now — so a passing fixture never rots into a failure. */
 function daysFromNow(n: number): string {

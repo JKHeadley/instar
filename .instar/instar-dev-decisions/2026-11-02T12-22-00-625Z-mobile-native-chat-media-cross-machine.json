@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-02T12:22:00.625Z",
+  "slug": "mobile-native-chat-media-cross-machine",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 170,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AppMediaReplicator.ts",
+      "src/core/AppMediaStore.ts",
+      "src/server/mobileMediaRoutes.ts"
+    ],
+    "addedLines": 146,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

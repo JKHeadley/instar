@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "plain-user-notices",
+  "sessionId": "ebfa6d9c-3146-453c-be44-d14fcb3552f3",
+  "timestamp": "2026-11-04T00:05:22.594Z",
+  "artifactPath": "upgrades/side-effects/plain-user-notices.md",
+  "artifactSha256": "aa72b55a85cdb2bdded70756c0480ceec64564237dc79f8ed05247c7c22911ee",
+  "coveredFiles": [
+    "docs/UX-AND-AGENT-AGENCY-STANDARD.md",
+    "package.json",
+    "scripts/lint-plain-user-notices.mjs",
+    "scripts/plain-user-notices-baseline.json",
+    "src/commands/server.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/core/TopicProfileOrchestrator.ts",
+    "src/data/plain-notice-terms.json",
+    "src/messaging/plainNoticeCheck.ts",
+    "src/messaging/shared/isSystemOrProxyMessage.ts",
+    "src/messaging/userNotices.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/SessionDrainRunner.test.ts",
+    "tests/unit/TopicProfileOrchestrator.test.ts",
+    "tests/unit/lint-chain-completeness.test.ts",
+    "tests/unit/userNotices.test.ts",
+    "upgrades/next/plain-user-notices.md",
+    "upgrades/side-effects/plain-user-notices.eli16.md",
+    "upgrades/side-effects/plain-user-notices.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Wording of four server notices, a test-time check and a build-time lint ratchet registered in the lint chain; no state or data migration, a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/plain-user-notices.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/plain-user-notices.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action: this change rewords existing notices and suppresses one post-respawn notice; every respawn/notify call site and its trigger are unchanged"
+  }
+}

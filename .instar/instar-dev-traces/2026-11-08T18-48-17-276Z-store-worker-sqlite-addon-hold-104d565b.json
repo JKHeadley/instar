@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "store-worker-sqlite-addon-hold",
+  "sessionId": "33c98a2a-c212-493b-b2d8-b2d3eb75ee43",
+  "timestamp": "2026-11-08T18:48:17.276Z",
+  "artifactPath": "upgrades/side-effects/store-worker-sqlite-addon-hold.md",
+  "artifactSha256": "0acbbdb922270c72425a07af4f825bb60bbcc105f754cfa901be9c701028f64b",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "tests/helpers/originStoreAddonProbe.ts",
+    "tests/unit/telegram-origin/sqlite-addon-hold.test.ts",
+    "upgrades/next/store-worker-sqlite-addon-hold.md",
+    "upgrades/side-effects/store-worker-sqlite-addon-hold.eli16.md",
+    "upgrades/side-effects/store-worker-sqlite-addon-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-file load-order fix plus tests; no decision point, no state, a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/store-worker-sqlite-addon-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/store-worker-sqlite-addon-hold.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

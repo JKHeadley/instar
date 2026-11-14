@@ -150,10 +150,10 @@ describe('conversations and the merged agent rows', () => {
     const c = conversationRows(conv([ownConv, replicaConv]), threads, { selfMachineId: 'studio', names: { studio: 'Mac Studio', mini: 'the mini' } }, NOW);
     expect(c.state).toBe('ok');
     const own = c.rows.find((r) => r.id === 'thread-pp-1')!;
-    expect(own).toMatchObject({ heldElsewhere: false, main: 'Conversation thread-p', end: '12 min ago', hasTopic: false });
+    expect(own).toMatchObject({ heldElsewhere: false, main: 'Conversation name unavailable', end: '12 min ago', hasTopic: false });
     expect(own.sub).toBe('open · 6 messages · no Telegram topic');
     const rep = c.rows.find((r) => r.id === 'thread-pp-2')!;
-    expect(rep).toMatchObject({ heldElsewhere: true, holderName: 'the mini', main: 'Conversation in Telegram topic 52075', hasTopic: true });
+    expect(rep).toMatchObject({ heldElsewhere: true, holderName: 'the mini', main: 'Conversation name unavailable', hasTopic: true });
     expect(rep.sub).toContain('lives on the mini (record 7 min old)');
     expect(rep.sub).toContain('record behind');
     expect(Object.keys(c.byPeer)).toEqual([FP]);
@@ -182,6 +182,18 @@ describe('conversations and the merged agent rows', () => {
 });
 
 describe('the page', () => {
+  it('does not turn stale history fingerprints into agent names or a waiting headline', () => {
+    const fp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    for (const label of [fp, fp.slice(0, 8), `${fp.slice(0, 8)}…`]) {
+      const page = buildAgentsPage({ ...quiet(), pairingRes: off('verified pairing not enabled'), invitesRes: invites({ knownPeers: [] }),
+        peersRes: ok({ peers: [peer({ peerFp: fp, peerName: label, stale: true, pendingCount: 1, oldestPendingAgeMs: 28 * 86400_000 })] }),
+        convRes: conv([{ ...ownConv, peerFingerprint: fp }]), threadsRes: ok({ threads: [] }) }, NOW);
+      expect(page.headline).toBe('The agent network is off on this machine.');
+      expect(page.agents[0].main).toBe('Unnamed agent');
+      expect(page.agents[0].tone).toBe('unknown');
+      expect(page.facts).toEqual([]);
+    }
+  });
   it('leads with what waits on the operator, then my own relay, then a peer not answering, then waiting sends, then the calm count', () => {
     const q = quiet();
     expect(buildAgentsPage(q, NOW)).toMatchObject({ mode: 'ok', headline: 'PP is reachable.', tone: 'ok' });
@@ -226,7 +238,7 @@ describe('the page', () => {
     expect(unsure.sub).toContain('the server answered 404');
     // One known agent means the page is NOT the off page, whatever the relay says.
     expect(buildAgentsPage({ ...offAll, peersRes: ok({ peers: [peer()] }) }, NOW).mode).toBe('ok');
-    expect(buildAgentsPage({ ...offAll, peersRes: ok({ peers: [peer()] }) }, NOW).sub).toContain('Pairing is turned off on this agent');
+    expect(buildAgentsPage({ ...offAll, peersRes: ok({ peers: [peer()] }) }, NOW).sub).toContain('No agents are paired here');
   });
 });
 
@@ -342,7 +354,7 @@ describe('the page in a DOM', () => {
     // The agent sheet lists both conversations; the one the mini holds is a summary, the own one opens the history.
     (doc.querySelector('#sec-agents button.row') as HTMLButtonElement).click();
     const convRows = [...doc.querySelectorAll('.sheet button.row')];
-    expect(convRows.map((r) => r.querySelector('.row-title')!.textContent)).toEqual(['Conversation thread-p', 'Conversation in Telegram topic 52075']);
+    expect(convRows.map((r) => r.querySelector('.row-title')!.textContent)).toEqual(['Conversation name unavailable', 'Conversation name unavailable']);
     expect(doc.querySelector('.sheet .mono')!.textContent).toBe(FP);
     (convRows[1] as HTMLButtonElement).click();
     expect(doc.querySelector('.sheet .confirm-text')!.textContent).toContain('lives on the mini');
@@ -376,5 +388,32 @@ describe('the page in a DOM', () => {
     expect(posted[0].body).toEqual({ pin: '135790' });
     expect(doc.querySelector('.pin-input')).toBeNull();
     expect(card.querySelector('.action-status')!.textContent).toBe('Finishing. Checking we can talk…');
+  });
+
+  it('the agent\'s paste link (#/people/agents?connect=paste) opens "I was sent one" ready, once, and drops the ask from the address', async () => {
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/people/agents?connect=paste' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    g.fetch = async (url: string) => {
+      const q = quiet();
+      const table: Record<string, unknown> = {
+        '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
+        '/threadline/health': q.health.data, '/threadline/pairing': q.pairingRes.data, '/threadline/pairing/invites': invites().data,
+        '/threadline/peers/health?scope=pool': q.peersRes.data, '/threadline/conversations?scope=mesh': q.convRes.data,
+        '/threadline/observability/threads': threads.data, '/pool': pool.data,
+      };
+      if (!(url in table)) return { ok: false, status: 404, json: async () => ({ error: 'no such route in the test' }) };
+      return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(table[url])) };
+    };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 20));
+    const doc = dom.window.document;
+    const paste = doc.querySelector('.sheet textarea[aria-label="The invite you were sent"]') as HTMLTextAreaElement;
+    expect(paste).toBeTruthy();
+    expect(paste.value).toBe(''); // the invite is never carried in the link
+    expect(doc.activeElement).toBe(paste);
+    expect(dom.window.location.hash).toBe('#/people/agents');
   });
 });

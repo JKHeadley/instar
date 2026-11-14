@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "job-supervision-scheduled-trial",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T19:50:52.566Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-scheduled-trial.md",
+  "artifactSha256": "4df7bb1804cb6a20911648e9504cf191c02dccbe909f1f05cd88826db2d36ee6",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "docs/research/job-result-supervision-v2-bench/SCHEDULED-TRIAL-2026-10-28.md",
+    "scripts/job-supervision-scheduled-trial.mjs",
+    "upgrades/next/job-supervision-scheduled-trial.md",
+    "upgrades/side-effects/job-supervision-scheduled-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "An OS-isolated scheduler trial for a security-sensitive staged rollout; no production route change, but evidence and safety invariants warrant Tier 2.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

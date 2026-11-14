@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-resolution",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-29T18:50:06.417Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-resolution.md",
+  "artifactSha256": "5cc4bc00ad84ae17d02add4b0ef3f1fbcb144719f84c98ed62c23a9fcbf5459e",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-29T18-49-54-639Z-native-remote-desktop-resolution.json",
+    ".instar/instar-dev-traces/2026-10-29T18-49-15-321Z-native-remote-desktop-resolution-c252fd38.json",
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-quality.md",
+    "scripts/desktop-public-browser-smoke.mjs",
+    "site/src/content/docs/guides/remote-desktop.md",
+    "src/core/DesktopVideo.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/server/DesktopStreamManager.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/unit/DesktopStreamManager.test.ts",
+    "tests/unit/DesktopVideo.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/MacDesktopHostCapture.test.ts",
+    "tests/unit/desktop-video-viewer.test.ts",
+    "upgrades/next/native-remote-desktop-resolution.md",
+    "upgrades/side-effects/native-remote-desktop-resolution.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This commit changes only capture size and bandwidth constants in the existing bounded frame loop; its new decoder startup timer is a one-shot action inside a user-opened desktop grant and never reschedules itself."
+  }
+}

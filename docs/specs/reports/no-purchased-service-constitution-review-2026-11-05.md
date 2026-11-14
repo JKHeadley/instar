@@ -1,0 +1,19 @@
+# Review: No Feature May Require a Purchased Service (2026-11-05)
+
+## What changed
+`docs/STANDARDS-REGISTRY.md`: the new article *No Feature May Require a Purchased Service* joins the Building family as a tree node under *Framework-Agnostic — and Framework-Optimizing*, which names it back. It is the 1.x counterpart of 2.0 Rule 122 (instar-2). The rule text is the wording in 136110/139251, which the operator approved: "Yes, on the new rule" [source: telegram 136110/139311 2026-11-05]. Its last sentence and the title are Echo's, and that message said the sentence was. The alignment map gains the pair's rows. The article-count assertion moves from 95 to 97, with *Attributed Statements Trace to Their Source* in the same pull request.
+
+## What I checked
+One independent read by GPT-6 Astra (a different model family), through the charter launcher, over the changes in both books and the source messages. Standards lints: tree parentage, insertion placement, generated hierarchy, all clean.
+
+## Findings
+- F1, applied (self, before the completed read): the alignment map's article count still said 95. An interrupted first launch of the read pointed it out; corrected to 96 before the completed run.
+- N1, resolved by combining (note): when this article stood alone, the map's list of 26 2.0-only rules did not include R121 because its 1.x pair #2812 was still open. The two now share #2812, and R121 has its row.
+- N2, kept (note): `build-register --check` in 2.0 fails on the real clock at a deadline this change does not touch; the 2.0 change review records it.
+- The read confirmed the rule bodies are byte-identical to the approved draft in both books (349 bytes), that every quote matches the log, that no enforcement is claimed, and re-counted, on the standalone change, 96 articles, 122 rules and 51 aligned / 42 differs / 3 1.x-only. It called the parent defensible and said a root position would be too; moving it would fix nothing.
+
+## Verdict
+VERDICT YES, 0 must-fix, 2 notes. The direction guard waits on the operator's approving review.
+
+## Combined with the second rule (2026-11-05)
+This pull request now also carries *No Feature May Require a Purchased Service*, so one review covers both articles. GPT-6 Astra read the combined diff: both rule bodies byte-identical to their approved drafts (591 and 349 bytes), every operator quote matching the log, 97 articles, 122 rules, 52 aligned / 42 differs / 3 1.x-only, and no change to the registry or map from merging main beyond the two articles. It returned NO on one must-fix in these records: current-change statements still said the count moved from 95 to 96, and a note still called R121's pair open. Corrected here; the counts in the sections above are the record of the earlier standalone reads. The result of the narrow recheck of that correction is on the pull request.

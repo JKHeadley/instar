@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "lv-restore-keeps-fresh-base",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T20:35:09.813Z",
+  "artifactPath": "upgrades/side-effects/lv-restore-keeps-fresh-base.md",
+  "artifactSha256": "204fa26cca850ffb5e8861262509abba20a2c559459d49e44f5151e4a57257ab",
+  "coveredFiles": [
+    "docs/specs/lv-restore-keeps-fresh-base.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/lv-restore-keeps-fresh-base.md",
+    "upgrades/side-effects/lv-restore-keeps-fresh-base.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Observability only: the peer side audits why its run failed; no decision, payload or format changes; revert undoes it",
+  "eli16Path": "docs/specs/lv-restore-keeps-fresh-base.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-restore-keeps-fresh-base.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

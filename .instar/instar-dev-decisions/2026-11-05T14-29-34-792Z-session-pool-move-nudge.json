@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-05T14:29:34.792Z",
+  "slug": "session-pool-move-nudge",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 313,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/OwnershipNudge.ts",
+      "src/core/PeerPresencePuller.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 312,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

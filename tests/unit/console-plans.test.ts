@@ -4,7 +4,7 @@
  * jsdom (In the way above In flight, the project sheet, Stop this round through
  * its confirm, Resume with that round's index).
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   buildPlansPage, buildInTheWay, buildAutonomousRuns, projectNeedsOk, currentRoundIndex, projectLine, initiativeLine, needsYouWords,
@@ -233,8 +233,8 @@ describe('autonomous runs', () => {
     ] }), { 2: 'Console build' });
     expect(r.openOnArrival).toBe(true);
     expect(r.rows.map((x) => [x.main, x.sub])).toEqual([
-      ['Topic 13481', 'making progress'], ['Console build', 'no new work and no message from me for 1 h 35 min'],
-      ['Topic 3', 'just started being watched'], ['Topic 4', 'can’t tell · read breaker open'],
+      ['Conversation name unavailable', 'making progress'], ['Console build', 'no new work and no message from me for 1 h 35 min'],
+      ['Conversation name unavailable', 'just started being watched'], ['Conversation name unavailable', 'can’t tell · read breaker open'],
     ]);
     expect(autonomousRow({ topicId: 1, decision: 'unknown' }).tone).toBe('unknown');
   });
@@ -250,7 +250,11 @@ describe('navigation', () => {
 
 describe('plans page in a DOM', () => {
   let dom: JSDOM;
-  afterEach(() => dom?.window.close());
+  // The page reads Date.now(); pin it to the fixtures' NOW so the rows stay "moving"
+  // (touched within 7 days) whatever day the suite runs. Only Date is faked — the
+  // page's setTimeout/rAF still run on real timers.
+  beforeEach(() => vi.useFakeTimers({ toFake: ['Date'], now: NOW }));
+  afterEach(() => { vi.useRealTimers(); dom?.window.close(); });
 
   it('renders In the way above In flight, opens the project sheet, and stops the round through its confirm; Resume sends that round’s index', async () => {
     const posted: Array<[string, unknown]> = [];

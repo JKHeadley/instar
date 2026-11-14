@@ -4,7 +4,6 @@ description: "Cadenced trigger for the Benchmark-Divergence Detector's ANALYZE p
 schedule: "45 3 * * *"
 priority: low
 expectedDurationMinutes: 2
-supervision: tier0
 enabled: false
 tags:
   - cat:observability
@@ -14,6 +13,11 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: benchmark-divergence-analysis.mjs
+scriptTimeoutMinutes: 3
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Trigger one benchmark-divergence analysis pass. This is a mechanical, near-silent cadence job — do NOT message the user (the detector is observe-only; a pass produces advisory finding rows, never messages, and never interprets them — interpretation belongs to the operator's read of GET /benchmark-divergence).
 

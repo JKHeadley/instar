@@ -21,6 +21,7 @@
 
 import type { NobodyPollingDecision, NobodyPollingLedger } from './nobodyPollingRecovery.js';
 import { decidePostCasSelfReverify } from './nobodyPollingRecovery.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /**
  * The minimal authority surface the actuator needs — the real wiring supplies
@@ -81,6 +82,7 @@ export async function applyNobodyPollingRecovery(args: {
   // DARK / dryRun: observe only. Record the counterfactual; perform NO side effect.
   if (dryRun) {
     log?.(`[g2-actuator] DRY-RUN would claim poll-ownership (epoch n+1) — no CAS, no poll-lever write`);
+    featureEvidence.record('multiMachine.nobodyPollingRecovery', { kind: 'fired', reason: 'would claim poll ownership', context: { result: 'dry-run-would-claim', decisionReason: decision.reason, dryRun: true } });
     return { result: 'dry-run-would-claim', reason: 'dry-run-observe-only' };
   }
 
@@ -88,6 +90,7 @@ export async function applyNobodyPollingRecovery(args: {
   // stand down (the single-claimant invariant holds via the fence, not our guess).
   const won = await ports.acquireFencedCas();
   if (!won) {
+    featureEvidence.record('multiMachine.nobodyPollingRecovery', { kind: 'held', reason: 'another machine won the fenced epoch', context: { result: 'cas-lost', decisionReason: decision.reason, dryRun: false } });
     return { result: 'cas-lost', reason: 'another-machine-won-the-fenced-epoch' };
   }
 
@@ -98,6 +101,7 @@ export async function applyNobodyPollingRecovery(args: {
     ports.relinquishAndSelfExclude();
     ledger.recordSelfExclusion(nowIso);
     log?.(`[g2-actuator] won CAS but self-unfit on re-verify → relinquished + self-excluded`);
+    featureEvidence.record('multiMachine.nobodyPollingRecovery', { kind: 'error', reason: 'won the claim but failed the live poll re-verify', context: { result: 'self-excluded', decisionReason: reverify.reason, dryRun: false } });
     return { result: 'self-excluded', reason: reverify.reason };
   }
 
@@ -105,5 +109,6 @@ export async function applyNobodyPollingRecovery(args: {
   // (The caller's post-claim live-verify confirms lifeline-poll-active.json advances.)
   ports.startPolling(ports.currentEpoch());
   log?.(`[g2-actuator] claimed poll-ownership + started polling at epoch ${ports.currentEpoch()}`);
+  featureEvidence.record('multiMachine.nobodyPollingRecovery', { kind: 'fired', reason: 'claimed poll ownership and started polling', context: { result: 'claimed-serving', decisionReason: decision.reason, epoch: ports.currentEpoch(), dryRun: false } });
   return { result: 'claimed-serving', reason: 'cas-won-self-reverified-fit' };
 }

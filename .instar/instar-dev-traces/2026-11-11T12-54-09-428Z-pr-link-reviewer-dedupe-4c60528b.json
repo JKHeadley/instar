@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "pr-link-reviewer-dedupe",
+  "sessionId": "eb466fc2-389d-4a94-9118-995278292f66",
+  "timestamp": "2026-11-11T12:54:09.428Z",
+  "artifactPath": "upgrades/side-effects/pr-link-reviewer-dedupe.md",
+  "artifactSha256": "e6c7b14072bc6f7b473e2845010a05bf1a1483a82df91bec5230e837db5ba89a",
+  "coveredFiles": [
+    "docs/specs/pr-link-requests-reviewer.eli16.md",
+    "docs/specs/pr-link-requests-reviewer.md",
+    "scripts/pr-reviewer-request.d.mts",
+    "scripts/pr-reviewer-request.mjs",
+    "src/core/PrLinkReviewerCheck.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/server/routes.ts",
+    "tests/unit/PrLinkReviewerCheck.test.ts",
+    "tests/unit/pr-link-reviewer-route.test.ts",
+    "tests/unit/pr-reviewer-request.test.ts",
+    "upgrades/next/pr-link-reviewer-dedupe.md",
+    "upgrades/pr-link-reviewer-dedupe.eli16.md",
+    "upgrades/side-effects/pr-link-reviewer-dedupe.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes a duplicate, dev-gated send-time path; no new logic; a revert fully undoes it",
+  "eli16Path": "upgrades/pr-link-reviewer-dedupe.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr-link-reviewer-dedupe.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

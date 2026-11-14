@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { signingRotationMessage, type RotationBinding } from './MachineRecoveryKey.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { sign } from './MachineIdentity.js';
 import type { MachineIdentity } from './types.js';
 import { IDENTITY_REANNOUNCE_PROTOCOL_VERSION } from './IdentityReannounce.js';
@@ -266,6 +267,7 @@ export class IdentityReannounceClaimant {
           if (episode.continuityRequired && !continuitySignature) {
             row.status = 'refused';
             row.lastReason = 'recovery-continuity-unavailable';
+            featureEvidence.record('multiMachine.identityReannounce', { kind: 'error', reason: 'reannounce withheld: recovery continuity unavailable', context: { side: 'claimant', peer: peerMachineId, keyEpoch: epoch, attempts: row.attempts } });
           } else {
             const result = await this.d.submitClaim(peer, {
               challengeId: challenge.challengeId,
@@ -274,6 +276,7 @@ export class IdentityReannounceClaimant {
             });
             row.status = result.outcome === 'would-quarantine' ? 'quarantined' : result.outcome;
             row.lastReason = result.reason;
+            featureEvidence.record('multiMachine.identityReannounce', { kind: result.outcome === 'refused' ? 'error' : 'fired', reason: `reannounce attempt: ${result.outcome}`, context: { side: 'claimant', peer: peerMachineId, keyEpoch: epoch, attempts: row.attempts, outcome: result.outcome, code: result.reason ?? null } });
             if (row.status === 'refused') {
               row.nextAttemptAt = now + BACKOFF_MS[Math.min(row.attempts - 1, BACKOFF_MS.length - 1)];
             }
@@ -282,6 +285,7 @@ export class IdentityReannounceClaimant {
           const status = typeof err === 'object' && err && 'status' in err ? Number((err as { status: unknown }).status) : 0;
           row.status = status === 404 || status === 501 ? 'route-absent' : 'pending';
           row.lastReason = status === 404 || status === 501 ? 'peer-lacks-accept-route' : 'attempt-failed';
+          featureEvidence.recordAtMostEvery('multiMachine.identityReannounce', `attempt|${peerMachineId}|${row.lastReason}`, 60 * 60_000, { kind: row.status === 'route-absent' ? 'held' : 'error', reason: `reannounce attempt: ${row.lastReason}`, context: { side: 'claimant', peer: peerMachineId, keyEpoch: epoch, attempts: row.attempts, httpStatus: status } });
           if (!status) {
             row.unreachableSince ??= now;
             // An ordinary observed transport failure is not an identity

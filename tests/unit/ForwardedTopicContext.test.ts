@@ -20,6 +20,7 @@ describe('formatForwardedTopicContext (moved-session context relay — bug #2)',
     ], 'deploys');
     expect(out).toContain('Thread History (last 2 messages, relayed from the previous machine)');
     expect(out).toContain('continue THIS conversation, not start something new');
+    expect(out).toContain('history excerpt');
     expect(out).toContain('Topic: deploys');
     // Local-tz rendering (2026-06-05 time-incoherency fix): timestamps are
     // rendered in the HOST's local timezone with an explicit tz label.
@@ -43,4 +44,25 @@ describe('formatForwardedTopicContext (moved-session context relay — bug #2)',
     const line = out.split('\n').find((l) => l.includes('User:'))!;
     expect(line.length).toBeLessThan(2100); // capped well under the raw 5000
   });
+});
+
+describe('cross-machine reply evidence', () => {
+  it('finds the previous owner reply after a specific inbound', async () => {
+    const { replyEvidenceForInbound } = await import('../../src/core/ForwardedTopicContext.js');
+    const messages = [
+      { messageId: 136473, fromUser: true, timestamp: '2026-11-03T05:19:55Z', text: 'Please look into this' },
+      { messageId: 136475, fromUser: false, timestamp: '2026-11-03T05:20:18Z', text: 'Got it' },
+    ];
+    expect(replyEvidenceForInbound(messages, 136473, true)).toBe('answered');
+    expect(replyEvidenceForInbound(messages, 999, false)).toBe('unknown');
+    expect(replyEvidenceForInbound(messages.slice(0, 1), 136473, true)).toBe('unknown');
+    expect(replyEvidenceForInbound(messages.slice(0, 1), 136473, false)).toBe('unanswered');
+  });
+});
+
+it('permits a genuinely unanswered local topic after a complete self-only placement read', async () => {
+  const { crossMachineReplyEvidence } = await import('../../src/core/ForwardedTopicContext.js');
+  const messages = [{ messageId: 100, fromUser: true, timestamp: '2026-11-04T18:00:00Z' }];
+  expect(crossMachineReplyEvidence(messages, 100, [], [], [], true)).toBe('unanswered');
+  expect(crossMachineReplyEvidence(messages, 100, [], [], [], false)).toBe('unknown');
 });

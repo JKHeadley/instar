@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-07T08:04:41.501Z",
+  "slug": "memory-session-safety",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/memorySessionPolicy.ts",
+      "src/users/MemoryPrivacy.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

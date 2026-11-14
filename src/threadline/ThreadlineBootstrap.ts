@@ -14,6 +14,7 @@
  * Part of Threadline Protocol integration (Principle #11: "I am the interface").
  */
 
+import type { KindedAckWire } from './requiredAck.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,7 @@ import { InboundMessageGate } from './InboundMessageGate.js';
 import { attachRelayObservability, type RelayConnectionEvent } from './relayConnectionObserver.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { EventEmitter } from 'node:events';
+import { cleanLabel, decodeInvite } from './PairingInvite.js';
 import { PairingInviteStore } from './PairingInviteStore.js';
 import { PairingInviteFlow, type InviteEvent } from './PairingInviteFlow.js';
 import { PairingHandshake, ALL_PAIRING_OPS, type HandshakeTimings, type PairingNotice } from './pairingHandshake.js';
@@ -81,8 +83,8 @@ export interface ThreadlineBootstrapConfig {
   port: number;
   /** Enable cloud relay connection (opt-in, default: false) */
   relayEnabled?: boolean;
-  /** The operator's display name, shown (as CLAIMED) in pairing invites. */
-  ownerName?: string;
+  /** The operator's display name, shown (as CLAIMED) in pairing invites. Read at each use: a blank refuses pairing. */
+  ownerName?: string | (() => string);
   /**
    * This machine is a quiet standby of a multi-machine agent (the operator set
    * `multiMachine.telegramPolling: false`, the same per-machine flag that keeps
@@ -584,7 +586,13 @@ export async function bootstrapThreadline(
       // accept until answered, answers accepts with signed receipts or refusals, runs the hello, and
       // turns every outcome into an operator notice. The relay's verdict on every invite control
       // message is logged (§11.8).
+      const pairingOwnerName = () => (typeof config.ownerName === 'function' ? config.ownerName() : config.ownerName ?? '');
       const handshake = new PairingHandshake({
+        ownerPolicy: {
+          ownName: pairingOwnerName,
+          inviteOwner: (text) => { const d = decodeInvite(text); return d.ok ? d.invite.owner : null; },
+          clean: cleanLabel,
+        },
         store: invStore,
         trust: trustManager!,
         identity: () => {
@@ -630,7 +638,7 @@ export async function bootstrapThreadline(
         sendPlaintext: handshake.flowSendPlaintext,
         sendToKey: handshake.flowSendToKey,
         notify: (e: InviteEvent) => handshake.flowNotify(e as unknown as { kind: string; iid?: string }),
-        ownName: () => ({ owner: config.ownerName ?? '', agent: config.agentName }),
+        ownName: () => ({ owner: pairingOwnerName(), agent: config.agentName }),
       }, markers);
       handshake.attach(flow);
       pairingInvites = { flow, handshake, store: invStore, events: invEvents, markers };
@@ -685,6 +693,7 @@ export async function bootstrapThreadline(
     });
 
     // Handle unknown senders — decode payload directly (relay-authenticated, not E2E encrypted)
+    let undecryptableDropped = 0;
     relayClient.on('unknown-sender', async (envelope: Record<string, unknown>) => {
       if (!inboundGate || !envelope) return;
 
@@ -692,13 +701,23 @@ export async function bootstrapThreadline(
       let textContent: string;
       let msgType: string | undefined;
       let resend = false;
+      // a2a-required-acknowledgment D1: the kinded-ack field and the capability stamp survive the rebuild.
+      let ack: KindedAckWire | undefined;
+      let ackKinds: number | undefined;
       const decoded = decodePlaintextPayload(envelope.payload);
       if (decoded) {
         textContent = decoded.text;
         msgType = decoded.type;
         resend = decoded.resend;
+        ack = decoded.ack;
+        ackKinds = decoded.ackKinds;
       } else {
-        textContent = `[undecryptable relay message from ${String(envelope.from).slice(0, 16)}]`;
+        // a2a-required-acknowledgment: a body we cannot read may be a kinded ack from a
+        // peer whose keys we lost, and a receipt must never start a session. So it is not
+        // routed. The sender's ledger keeps the message unacknowledged, which is true.
+        undecryptableDropped++;
+        console.warn(`[relay] Dropped undecryptable message from ${String(envelope.from).slice(0, 16)} (${undecryptableDropped} since boot): no keys for this sender yet`);
+        return;
       }
 
       const received: ReceivedMessage = {
@@ -710,8 +729,11 @@ export async function bootstrapThreadline(
         messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
         // No `type` key when the payload carries none: a present-but-undefined
         // key reads as an operation name downstream.
-        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}) },
+        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}), ...(ack ? { ack } : {}), ...(ackKinds !== undefined ? { ackKinds } : {}) },
         timestamp: String(envelope.timestamp ?? new Date().toISOString()),
+        // The fill-in above is this end's receive time, not a sender stamp: mark it so
+        // canonical history records it with receive-time provenance (relayIngressHistory).
+        ...(envelope.timestamp === undefined || envelope.timestamp === null ? { timestampSynthesized: true as const } : {}),
         envelope: envelope as never,
       };
 

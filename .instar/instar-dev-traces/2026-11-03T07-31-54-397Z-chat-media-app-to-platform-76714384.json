@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "chat-media-app-to-platform",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T07:31:54.397Z",
+  "artifactPath": "upgrades/side-effects/chat-media-app-to-platform.md",
+  "artifactSha256": "06151bf51785dd825f558b51e1c39570c15fe2ac8a927a3171784deb32f3fbbf",
+  "coveredFiles": [
+    "src/messaging/slack/FileHandler.ts",
+    "upgrades/side-effects/chat-media-app-to-platform.eli16.md",
+    "upgrades/side-effects/chat-media-app-to-platform.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "comment-only exemption marker plus artifact notes on an already-reviewed change",
+  "eli16Path": "upgrades/side-effects/chat-media-app-to-platform.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chat-media-app-to-platform.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only change"
+  }
+}

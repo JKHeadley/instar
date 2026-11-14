@@ -9,6 +9,7 @@
  *  - an invite opened after it expired: refused;
  *  - the inviter restarts between the accept and the Finish: Finish still works.
  */
+import { createInvite, inviteMessage } from '../../../src/threadline/PairingInvite.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
@@ -36,11 +37,11 @@ describe('invite pairing — failure paths (production path)', () => {
   const live: Side[] = [];
   const projects: TempProject[] = [];
 
-  async function boot(name: string, port: number, project?: TempProject): Promise<Side> {
+  async function boot(name: string, port: number, project?: TempProject, ownerName: string = `${name}-owner`): Promise<Side> {
     const p = project ?? createTempProject();
     if (!project) projects.push(p);
     const b = await bootstrapThreadline({
-      agentName: name, ownerName: `${name}-owner`, stateDir: p.stateDir, projectDir: p.dir, port, relayEnabled: true, relayUrl,
+      agentName: name, ownerName, stateDir: p.stateDir, projectDir: p.dir, port, relayEnabled: true, relayUrl,
       getVerifiedPairingConfig: () => ({ enabled: true, dryRun: true, credentialShareEnforced: false }),
     });
     expect(b.relayClient?.connectionState).toBe('connected');
@@ -82,6 +83,23 @@ describe('invite pairing — failure paths (production path)', () => {
     for (const p of projects) p.cleanup();
     await relay?.stop();
     relayData?.cleanup();
+  });
+
+  it('owner info is required: an agent with no owner name cannot make an invite, and an ownerless invite is refused', async () => {
+    const A = await boot('scout', 4178, undefined, '');
+    const B = await boot('carl', 4179);
+    const refused = A.boot.pairingInvites!.handshake.createInvite({});
+    expect(refused).toMatchObject({ ok: false });
+    expect(String(refused.reason)).toMatch(/owner/);
+
+    const ownerless = inviteMessage(createInvite({ identityPubHex: 'ab'.repeat(32), owner: '', agent: 'scout' }));
+    const incoming = await B.boot.pairingInvites!.handshake.receiveInvite(ownerless);
+    expect(incoming).toMatchObject({ ok: false });
+    expect(String(incoming.reason)).toMatch(/who owns/);
+    expect(B.events.filter((e) => e.kind === 'accept-prompt')).toEqual([]);
+
+    const made = B.boot.pairingInvites!.handshake.createInvite({});
+    expect(String(made.message)).toContain("carl-owner's agent");
   });
 
   it('a leaked invite used again after Finish: the first acceptor is paused, the inviter alarmed, the late acceptor told', async () => {

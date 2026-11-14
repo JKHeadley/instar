@@ -23,6 +23,8 @@ import type {
   UserChannel,
 } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { recordDeletionPending, recordDeletionDone } from './DeletionIntentLog.js';
+import { deriveRelationshipRecordKey, RELATIONSHIP_STORE_KEY } from './RelationshipsReplicatedStore.js';
 
 /** Maximum number of channels per relationship record. */
 const MAX_CHANNELS = 50;
@@ -66,6 +68,8 @@ export interface RelationshipPeerReadSeam {
    *  dark / no peer knows them. The result is quoted untrusted data, never authoritative. */
   peerContextForChannels(channels: UserChannel[]): string[];
 }
+
+const RELATIONSHIP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export class RelationshipManager {
   private relationships: Map<string, RelationshipRecord> = new Map();
@@ -145,8 +149,53 @@ export class RelationshipManager {
   }
 
   /** Validate a record ID is a valid UUID format to prevent path traversal. */
+  /** Phase 1 of a deletion intent (before removal). Returns the record key, or null when
+   *  intents are not configured or the record has no channel identity. Never throws. */
+  private intentPending(channels: UserChannel[], deletedAt: string): string | null {
+    const stateDir = this.config.deletionIntentStateDir;
+    if (!stateDir) return null;
+    const key = deriveRelationshipRecordKey(channels);
+    if (key === null) return null;
+    recordDeletionPending(stateDir, RELATIONSHIP_STORE_KEY, key, deletedAt);
+    return key;
+  }
+
+  /** Phase 2 of a deletion intent (after the removal is durable). Never throws. */
+  private intentDone(key: string | null, deletedAt: string): void {
+    const stateDir = this.config.deletionIntentStateDir;
+    if (!stateDir || key === null) return;
+    recordDeletionDone(stateDir, RELATIONSHIP_STORE_KEY, key, deletedAt);
+  }
+
+  /**
+   * Read every relationship record from disk WITHOUT constructing a manager (no
+   * mkdir, no index, no write). Same acceptance rules as `loadAll`: a file whose
+   * name does not match its record id, an invalid id, or a file that does not parse
+   * is counted in `skipped`, never returned. A missing directory ⇒ `present: false`.
+   * An unreadable directory THROWS. Used by the replicated-store reconciler.
+   */
+  static readAllFromDisk(dir: string): { records: RelationshipRecord[]; skipped: number; present: boolean } {
+    if (!existsSync(dir)) return { records: [], skipped: 0, present: false };
+    const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const records: RelationshipRecord[] = [];
+    let skipped = 0;
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(join(dir, file), 'utf-8')) as RelationshipRecord;
+        if (!data || typeof data.id !== 'string' || file !== `${data.id}.json` || !RELATIONSHIP_ID_RE.test(data.id)) {
+          skipped++;
+          continue;
+        }
+        records.push(data);
+      } catch { /* @silent-fallback-ok: an unparseable record file is COUNTED in `skipped`; the reconciler then refuses to infer any deletion from this snapshot. */
+        skipped++;
+      }
+    }
+    return { records, skipped, present: true };
+  }
+
   private validateId(id: string): void {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
+    if (!RELATIONSHIP_ID_RE.test(id)) {
       throw new Error(`RelationshipManager: invalid record ID format: ${id}`);
     }
   }
@@ -680,10 +729,15 @@ Respond with ONLY: YES or NO`;
     keep.significance = this.calculateSignificance(keep);
     this.save(keep); // emits the survivor `put` (now carrying the consolidated channel set)
 
-    // Delete the merged record and clean up name index
+    // Delete the merged record and clean up name index. The deletion intent brackets the
+    // file removal (pending before, done after) so the merge's delete half replicates even
+    // from a CLI process with no emitter attached (writer-agnostic reconciler §4 step 4).
+    const mergedDeletedAt = new Date().toISOString();
+    const mergedKey = this.intentPending(mergedChannelsBefore, mergedDeletedAt);
     this.unindexName(mergeId, merge.name);
     this.relationships.delete(mergeId);
     this.deleteFile(mergeId);
+    this.intentDone(mergedKey, mergedDeletedAt);
 
     // WS2.3: emit the merged record's TOMBSTONE keyed on its OLD standalone channel
     // set so peers retire its standalone replica — the `delete` half of the coherent
@@ -692,7 +746,7 @@ Respond with ONLY: YES or NO`;
     // tombstone can never suppress the survivor (no dangling tombstone, no loop).
     if (this.replication) {
       try {
-        this.replication.emitDelete(mergedChannelsBefore, new Date().toISOString());
+        this.replication.emitDelete(mergedChannelsBefore, mergedDeletedAt);
       } catch {
         // @silent-fallback-ok — additive replication never breaks the local merge.
       }
@@ -721,8 +775,11 @@ Respond with ONLY: YES or NO`;
     // Remove name index entry
     this.unindexName(id, record.name);
 
+    const deletedAt = new Date().toISOString();
+    const intentKey = this.intentPending(channels, deletedAt);
     this.relationships.delete(id);
     this.deleteFile(id);
+    this.intentDone(intentKey, deletedAt);
 
     // WS2.3 (§4.2 REQ-D4): a delete propagates as a `relationship-record` `op:'delete'`
     // TOMBSTONE keyed on the channel-set identity surface so it reaches the same human's
@@ -731,7 +788,7 @@ Respond with ONLY: YES or NO`;
     // AFTER the durable local delete; best-effort; strict no-op when dark.
     if (this.replication) {
       try {
-        this.replication.emitDelete(channels, new Date().toISOString());
+        this.replication.emitDelete(channels, deletedAt);
       } catch {
         // @silent-fallback-ok — additive replication never breaks the local delete.
       }

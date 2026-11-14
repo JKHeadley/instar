@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-06T06:00:58.135Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "evidence": "tests/unit/notification-selectivity.test.ts",
+    "howCaught": "The zero-stray provenance and actual receipt/concurrency guards remain unchanged. The313 feature/golden/ladder/gate checks verify latest-main semantics and tests/unit/self-action-convergence settling conventions."
+  },
+  "verdict": "blocked"
+}

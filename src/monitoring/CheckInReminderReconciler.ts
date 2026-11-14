@@ -19,10 +19,12 @@
 import {
   selectDueCommitments,
   buildCheckInReminderText,
+  buildPromisedUpdateOverdueText,
   CHECK_IN_MAX_ATTEMPTS,
   type NotDueReason,
 } from './checkInReminderCore.js';
 import type { Commitment, CommitmentTracker } from './CommitmentTracker.js';
+import { isPromisedUpdateCommitment } from './PromisedUpdateCapture.js';
 
 export interface CheckInReminderDeps {
   tracker: Pick<CommitmentTracker, 'getAll' | 'mutate'>;
@@ -38,6 +40,13 @@ export interface CheckInReminderDeps {
   send: (topicId: number, text: string, identity: { commitmentId: string; checkInAt: string }) => Promise<unknown>;
   now?: () => number;
   log?: (line: string) => void;
+  /**
+   * After a PROMISED-UPDATE reminder is delivered and stamped, hand the promise
+   * back to the topic's session so the update actually gets written
+   * (docs/specs/promised-update-capture.md). Absent → the reminder says only
+   * that the update is late, never that a pickup is happening.
+   */
+  resumePromisedUpdate?: (commitment: Commitment) => void | Promise<void>;
 }
 
 export interface CheckInReminderConfig {
@@ -46,6 +55,8 @@ export interface CheckInReminderConfig {
   dryRun: boolean;
   /** Hard ceiling on reminders per pass — a bounded blast radius. */
   maxPerPass?: number;
+  /** This machine's id; see DuePredicateInput.selfMachineId. */
+  selfMachineId?: string | null;
 }
 
 export interface CheckInReminderPassReport {
@@ -57,6 +68,8 @@ export interface CheckInReminderPassReport {
   failed: number;
   wouldSend: number;
   capped: number;
+  /** Ids in this pass's batch (ids only — the soak ledger reads them). */
+  dueIds: string[];
   /** Retries exhausted this pass — genuinely undelivered reminders. */
   gaveUp: number;
   skippedByReason: Partial<Record<NotDueReason, number>>;
@@ -75,6 +88,7 @@ function emptyReport(over: Partial<CheckInReminderPassReport> = {}): CheckInRemi
     failed: 0,
     wouldSend: 0,
     capped: 0,
+    dueIds: [],
     gaveUp: 0,
     skippedByReason: {},
     errors: [],
@@ -97,7 +111,11 @@ export class CheckInReminderReconciler {
 
     const now = (this.deps.now ?? Date.now)();
     const all = this.deps.tracker.getAll();
-    const { due, skipped } = selectDueCommitments(all as Array<Commitment & { id: string }>, now);
+    const { due, skipped } = selectDueCommitments(
+      all as Array<Commitment & { id: string }>,
+      now,
+      this.config.selfMachineId,
+    );
 
     const skippedByReason: Partial<Record<NotDueReason, number>> = {};
     for (const s of skipped) skippedByReason[s.reason] = (skippedByReason[s.reason] ?? 0) + 1;
@@ -117,6 +135,7 @@ export class CheckInReminderReconciler {
       scanned: all.length,
       due: due.length,
       capped,
+      dueIds: batch.map((c) => c.id),
       skippedByReason,
     });
 
@@ -161,10 +180,17 @@ export class CheckInReminderReconciler {
     const topicId = commitment.topicId;
     if (typeof topicId !== 'number') return false; // excluded by the predicate; belt-and-braces
 
-    const text = buildCheckInReminderText({
-      userRequest: commitment.userRequest ?? '',
-      checkInAt: commitment.checkInAt ?? '',
-    });
+    const promisedUpdate = isPromisedUpdateCommitment(commitment);
+    const text = promisedUpdate
+      ? buildPromisedUpdateOverdueText({
+        userRequest: commitment.userRequest ?? '',
+        agentResponse: commitment.agentResponse ?? '',
+        resuming: !!this.deps.resumePromisedUpdate,
+      })
+      : buildCheckInReminderText({
+        userRequest: commitment.userRequest ?? '',
+        checkInAt: commitment.checkInAt ?? '',
+      });
 
     // Count the attempt BEFORE trying. If the process dies mid-send, the
     // attempt is still on record, so a crash-loop cannot buy infinite retries.
@@ -212,7 +238,20 @@ export class CheckInReminderReconciler {
     } catch (err) {
       // The user HAS the reminder; only the bookkeeping failed. Report it, and
       // let the next pass re-send — the relay's content dedup absorbs that.
+      // The handoff waits for that pass too: it runs only after a stamp, so a
+      // re-send can never hand the same promise to the session twice.
       report.errors.push({ id: commitment.id, error: `sent-but-unstamped: ${err}` });
+      return true;
+    }
+    if (promisedUpdate && this.deps.resumePromisedUpdate) {
+      try {
+        await this.deps.resumePromisedUpdate(commitment);
+      } catch (err) {
+        // The user already has the honest line; a failed handoff is logged and
+        // reported, never retried as a second reminder.
+        report.errors.push({ id: commitment.id, error: `resume-handoff-failed: ${err}` });
+        this.log(`[check-in-reminder] could not hand ${commitment.id} back to topic ${topicId}: ${err}`);
+      }
     }
     return true;
   }

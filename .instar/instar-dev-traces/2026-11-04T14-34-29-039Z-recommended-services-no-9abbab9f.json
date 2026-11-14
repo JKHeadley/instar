@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "recommended-services-no",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T14:34:29.039Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-no.md",
+  "artifactSha256": "07867b8e731056585445af460d2241ee1acbe61b3fa4bbcf0f081ba280b1482b",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "dashboard-pair/service-yes.js",
+    "dashboard/console/allowed.js",
+    "dashboard/console/services-model.js",
+    "docs/specs/recommended-services.eli16.md",
+    "docs/specs/recommended-services.md",
+    "src/recommended/confirmTokens.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-confirm-wiring.test.ts",
+    "tests/integration/recommended-services-confirm.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "upgrades/next/recommended-services-no.md",
+    "upgrades/side-effects/recommended-services-no.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Records a person's decision through a route with no bearer token. Driven by the approved recommended-services spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Records a person's confirmation. The agent takes no action from these routes, and setup is not built."
+  }
+}

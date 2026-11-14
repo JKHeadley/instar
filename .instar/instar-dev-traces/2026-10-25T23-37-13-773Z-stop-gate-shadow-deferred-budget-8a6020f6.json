@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "stop-gate-shadow-deferred-budget",
+  "sessionId": "372d72c0-dc9f-466a-bac6-77357825a447",
+  "timestamp": "2026-10-25T23:37:13.773Z",
+  "artifactPath": "upgrades/side-effects/stop-gate-shadow-deferred-budget.md",
+  "artifactSha256": "e9c43947cc6f483d04050b66811ea9a388f5b4109cf13bc06aed52b89cbdc9b0",
+  "coveredFiles": [
+    "docs/specs/reports/stop-gate-shadow-deferred-budget-convergence.md",
+    "docs/specs/stop-gate-shadow-deferred-budget.eli16.md",
+    "docs/specs/stop-gate-shadow-deferred-budget.md",
+    "src/core/UnjustifiedStopGate.ts",
+    "src/server/routes.ts",
+    "tests/integration/stop-gate-shadow-deferred-budget.test.ts",
+    "tests/unit/UnjustifiedStopGate-call-budget.test.ts",
+    "upgrades/next/stop-gate-shadow-deferred-budget.md",
+    "upgrades/side-effects/stop-gate-shadow-deferred-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two source files, ~110 lines, shadow-only telemetry path scoped to the dev gate; a revert fully undoes it, no persisted state or installed-file change.",
+  "eli16Path": "docs/specs/stop-gate-shadow-deferred-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stop-gate-shadow-deferred-budget.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

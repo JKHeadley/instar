@@ -14,6 +14,11 @@ gate: "curl -sf -H \"Authorization: Bearer $INSTAR_AUTH_TOKEN\" -H \"X-Instar-Ag
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: feedback-factory-action-list.mjs
+scriptTimeoutMinutes: 1
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Ask the server to send today's feedback triage action list. The server composes and delivers it (or decides there is nothing new); do NOT write or send any message yourself.
 

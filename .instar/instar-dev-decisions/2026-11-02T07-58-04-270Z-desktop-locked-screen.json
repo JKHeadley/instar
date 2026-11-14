@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-02T07:58:04.270Z",
+  "slug": "desktop-locked-screen",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 58,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopAccessAudit.ts",
+      "src/core/DesktopLockedController.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "mobile-unread-messages-docs",
+  "sessionId": "5a92626a-1dde-4009-973d-506c6a78b5ee",
+  "timestamp": "2026-11-08T11:12:17.044Z",
+  "artifactPath": "upgrades/side-effects/mobile-unread-messages-docs.md",
+  "artifactSha256": "3e0bdf7f0fe9787238b86347e506b5b98eebd679f0a34783a152fa6ff9866bf0",
+  "specPath": "docs/specs/mobile-unread-messages.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/multi-machine.md",
+    "site/src/content/docs/features/unread-messages.md",
+    "upgrades/side-effects/mobile-unread-messages-docs.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation-only follow-up under the approved unread spec: restores the Docs Coverage class floor that PR 2958's three new classes tipped; no runtime surface.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

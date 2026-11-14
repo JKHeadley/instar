@@ -16,6 +16,9 @@
  * throws, no subprocess — a subprocess inside a messaging-path helper would
  * consume queued child_process mock values in downstream test suites).
  */
+import { randomInt } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { SecretStore } from './SecretStore.js';
 
 /** The internal placeholder that must NEVER reach a user as a PIN value. */
@@ -86,4 +89,54 @@ export function pickDashboardPin(
     }
   }
   return resolveDashboardPinFromVault(stateDir, options);
+}
+
+/**
+ * Give the agent a dashboard PIN when it has none, whatever messaging it uses.
+ *
+ * The PIN gates every dashboard operator route, so an agent without one (an
+ * agent with no Telegram, before this) could never unlock its own dashboard.
+ * Anything already set is kept untouched, including an unresolved vault
+ * reference: a transient vault read failure must never replace the operator's
+ * PIN. The value is returned to the caller, never logged here.
+ */
+export function ensureDashboardPin(
+  config: { dashboardPin?: unknown },
+  persist: (pin: string) => void,
+  draw: () => number = () => randomInt(100000, 1000000),
+): { generated: boolean } {
+  if (config.dashboardPin) return { generated: false };
+  const pin = String(draw());
+  config.dashboardPin = pin;
+  persist(pin);
+  return { generated: true };
+}
+
+/**
+ * Store a newly minted PIN where this agent keeps its secrets: in the
+ * encrypted vault (config gets the `{secret:true}` reference) when the agent
+ * has one, else in config.json as before. setConfig must be the durable PIN
+ * writer (LiveConfig.set), which reserves a new generation before vault mutation.
+ * A vault write/flush failure falls back through that same config authority.
+ */
+export function persistDashboardPin(
+  stateDir: string,
+  pin: string,
+  setConfig: (value: unknown) => void,
+  openStore: () => Pick<SecretStore, 'set'|'syncDurably'> = () => new SecretStore({ stateDir }),
+): 'vault' | 'config' {
+  if (fs.existsSync(path.join(stateDir, 'secrets', 'config.secrets.enc'))) {
+    // Refuse before touching the vault if its new revocation generation cannot
+    // be durably reserved. Identical placeholders still require a new UUID.
+    setConfig({ secret: true });
+    try {
+      const store=openStore();store.set(DASHBOARD_PIN_VAULT_KEY, pin);store.syncDurably();
+      return 'vault';
+    } catch (err) {
+      // @silent-fallback-ok — the PIN still has to exist; config.json is where it lived before vaults
+      console.warn(`[dashboardPin] vault write failed, keeping the new PIN in config.json: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  setConfig(pin);
+  return 'config';
 }

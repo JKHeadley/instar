@@ -163,6 +163,73 @@ test('publish treats any other status as a failure and names it', async () => {
   await assert.rejects(run(['publish', recFile, '--binding', bFile, '--registry', base]), /registry answered 500 to publish: boom/);
 });
 
+test('publish prints the reason the registry returned for a non-422 error, not the raw JSON', async (t) => {
+  const me = issuer();
+  const rec = record(me);
+  const [recFile, bFile] = files(rec, me.binding);
+  const reason = 'x'.repeat(400); // longer than the raw-text cap, so a truncated body cannot pass
+  const cases = [
+    [400, { ok: false, reason: `bad DID ${reason}` }, `bad DID ${reason}`],
+    [413, { ok: false, reason: `body too large ${reason}` }, `body too large ${reason}`],
+    [429, { error: { code: 'rate_limited', message: `slow down ${reason}` } }, `slow down ${reason}`],
+    [500, { ok: false, reason: `store failed ${reason}` }, `store failed ${reason}`],
+    [500, { error: { message: `store failed ${reason}` } }, `store failed ${reason}`],
+  ];
+  for (const [status, body, printed] of cases) {
+    await t.test(`${status} ${Object.keys(body).join(',')}`, async () => {
+      const { base } = await fakeRegistry({ 'POST /witness/records': () => [status, body] });
+      await assert.rejects(run(['publish', recFile, '--binding', bFile, '--registry', base]), (err) => {
+        assert.equal(err.message, `registry answered ${status} to publish: ${printed}`);
+        return true;
+      });
+    });
+  }
+});
+
+test('publish still names a non-422 error whose body carries no usable reason', async (t) => {
+  const me = issuer();
+  const rec = record(me);
+  const [recFile, bFile] = files(rec, me.binding);
+  const long = JSON.stringify({ detail: 'y'.repeat(400) });
+  const cases = [
+    ['not JSON', 'upstream down', 'upstream down'],
+    ['empty', '', '(empty body)'],
+    ['JSON without a reason', '{"detail":"nope"}', '{"detail":"nope"}'],
+    ['a blank reason', '{"ok":false,"reason":"  "}', '{"ok":false,"reason":"  "}'],
+    ['a reason that is not text', '{"reason":{"a":1},"error":{"message":7}}', '{"reason":{"a":1},"error":{"message":7}}'],
+    ['a JSON array', '[1]', '[1]'],
+    ['long JSON without a reason (capped at 300)', long, long.slice(0, 300)],
+  ];
+  for (const [name, body, printed] of cases) {
+    await t.test(name, async () => {
+      const { base } = await fakeRegistry({ 'POST /witness/records': () => [500, body] });
+      await assert.rejects(run(['publish', recFile, '--binding', bFile, '--registry', base]), (err) => {
+        assert.equal(err.message, `registry answered 500 to publish: ${printed}`);
+        return true;
+      });
+    });
+  }
+});
+
+test('publish exits 1 on a non-422 error and puts the reason on stderr', async () => {
+  const me = issuer();
+  const rec = record(me);
+  const [recFile, bFile] = files(rec, me.binding);
+  const { base } = await fakeRegistry({ 'POST /witness/records': () => [429, { error: { message: 'slow down' } }] });
+  const r = await spawnCli(['publish', recFile, '--binding', bFile, '--registry', base]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /registry answered 429 to publish: slow down/);
+  assert.doesNotMatch(r.stderr, /"message"/);
+});
+
+test('lookup, get and stats print the same returned reason on an error (they share the path)', async () => {
+  const { base } = await fakeRegistry({ 'GET *': () => [429, { error: { message: 'slow down' } }] });
+  await assert.rejects(run(['lookup', '--subject', SUBJECT, '--registry', base]), /^Error: registry answered 429 to lookup: slow down$/);
+  await assert.rejects(run(['get', 'a'.repeat(64), '--registry', base]), /^Error: registry answered 429 to get: slow down$/);
+  await assert.rejects(run(['stats', '--registry', base]), /^Error: registry answered 429 to stats: slow down$/);
+});
+
 // ── lookup ──────────────────────────────────────────────────────────────
 
 test('lookup re-verifies every record: genuine → verified, tampered → failed(reason), lapsed → expired; each line leads with the issuer', async () => {

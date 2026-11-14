@@ -12,7 +12,7 @@
 # enforce. (ACT-1264; convergence-towards-coherence Tier 1 item 0.)
 set -e
 
-npm run lint
+npm run lint:parallel
 node scripts/lint-migration-consumer-completeness.js --staged
 
 # Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).

@@ -3,6 +3,7 @@
 import { isRfc1918, isTailscaleCgnat } from './PeerEndpointResolver.js';
 import type { PeerEndpointRecorder } from './PeerEndpointRecorder.js';
 import type { MeshEndpoint } from './types.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 interface Observation {
   address: string;
@@ -70,6 +71,23 @@ export class ObservedEndpointTracker {
   }
 
   async observe(input: DirectEndpointObservation): Promise<ObservationResult> {
+    const result = await this.observeInner(input);
+    const kind = result === 'promoted' || result === 'would-promote' ? 'fired'
+      : result === 'dialback-failed' ? 'error'
+      : result === 'shared-egress' || result === 'would-retract-shared-egress' || result === 'rotation-quarantine' ? 'held'
+      : null;
+    if (kind) {
+      // Every authenticated peer request lands here, so one row per outcome and peer per hour.
+      featureEvidence.recordAtMostEvery('multiMachine.observedEndpoints', `${input.machineId}|${result}`, 60 * 60_000, {
+        kind,
+        reason: `observed endpoint: ${result}`,
+        context: { result, machineId: input.machineId, address: normalizeAddress(input.remoteAddress), keyEpoch: input.keyEpoch, dryRun: this.d.config().dryRun },
+      });
+    }
+    return result;
+  }
+
+  private async observeInner(input: DirectEndpointObservation): Promise<ObservationResult> {
     const cfg = this.d.config();
     if (!cfg.enabled) return 'disabled';
     if (!input.direct) return 'not-direct';

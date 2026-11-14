@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cb-idle-gated-fallback",
+  "sessionId": "8678c84d-037f-4b82-a432-297906c6bdba",
+  "timestamp": "2026-11-10T06:52:05.567Z",
+  "artifactPath": "upgrades/side-effects/cb-idle-gated-fallback.md",
+  "artifactSha256": "161994ff28dcc9ac6c9b09d901f24eb01ecb98da4fd0bb6d6b8363d671976512",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PendingInjectStore.ts",
+    "src/monitoring/CompactionSentinel.ts",
+    "src/monitoring/compactionFallbackStore.ts",
+    "tests/e2e/compaction-idle-gated-fallback-lifecycle.test.ts",
+    "tests/integration/compaction-idle-gated-fallback-wiring.test.ts",
+    "tests/unit/CompactionSentinel-idle-gated-fallback.test.ts",
+    "upgrades/next/cb-idle-gated-fallback.md",
+    "upgrades/side-effects/cb-idle-gated-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes when and how the server injects post-compaction recovery into live sessions, fleet-wide under the switch; converged and approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

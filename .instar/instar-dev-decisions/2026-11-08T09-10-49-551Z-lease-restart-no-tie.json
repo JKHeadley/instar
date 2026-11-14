@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-08T09:10:49.551Z",
+  "slug": "lease-restart-no-tie",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 120,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/LeaseCoordinator.ts",
+      "src/core/LocalLeaseStore.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 110,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -3,10 +3,13 @@
 // switch stay in the legacy Spend tab until their native sheets ship. Every value
 // reaches the DOM through textContent; the model (costs-model.js) decides everything.
 
-import { buildCostsPage, WINDOWS, DEFAULT_WINDOW, GRAINS, windowParams, spendQuery, committedLine, basisWord, fmtTokens, fmtUsd, modelWord, doorWord } from './costs-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
+import { buildCostsPage, WINDOWS, DEFAULT_WINDOW, GRAINS, windowParams, spendQuery, committedLine, basisWord, fmtTokens, fmtUsd, modelWord, doorWord, spendingNeed } from './costs-model.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { sessionLabel } from './home-model.js';
+import { buildUsageSection, grainFor, drillQuery, ledgerOff } from './usage-model.js';
+import { usageSection } from './usage.js';
+import { topicNameMap } from './topic-names.js';
 
 const EYEBROW = 'Capacity · What thinking costs';
 const COST_KEYS = ['door', 'modelId', 'doorClass', 'priceBasis', 'costBasis', 'tokensIn', 'tokensOut', 'tokensCached', 'grossUsd', 'subsidyUsd', 'netUsd', 'committedUsd', 'providerReportedUsd', 'providerDriftPct', 'unpricedTokensIn', 'unpricedTokensOut', 'priceStale', 'notLiveYet'];
@@ -15,11 +18,12 @@ const CHECK_KEYS = ['feature', 'calls', 'realCalls', 'fired', 'noop', 'unclassif
 const SESSION_KEYS = ['sessionId', 'projectPath', 'model', 'totalTokens', 'eventCount', 'firstTs', 'lastTs'];
 
 // One time control for the whole page, and the grain under "More detail"; both kept across refreshes.
-const view = { window: DEFAULT_WINDOW, grain: 'day' };
+// The usage section's split and drill path are kept across refreshes too.
+const view = { window: DEFAULT_WINDOW, grain: 'day', usage: { split: 'model', path: [] } };
 
 export async function renderCosts(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.costs-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading what thinking costs' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading what thinking costs' })));
   const w = windowParams(view.window);
   const [spend, caps, status, metrics, insights, tokens, claude, codex, orphans, chains, sessions] = await Promise.all([
     get(`/routing-spend/summary?${spendQuery(view.grain, w.sinceHours)}`), get('/routing-spend/caps'), get('/routing-spend/enable-status'),
@@ -27,6 +31,25 @@ export async function renderCosts(main, ctx) {
     get(`/tokens/summary?since=${w.sinceMs}`), get(`/tokens/sessions?since=${w.sinceMs}&limit=20`), get(`/tokens/codex-sessions?since=${w.sinceMs}&limit=20`), get('/tokens/orphans?idleMs=1800000'),
     get('/intelligence/routing/chains'), get('/sessions'),
   ]);
+  // Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 5). A 503 (switched off on
+  // this agent) hides the section entirely; the reads above are unchanged.
+  const uSince = Math.floor(w.sinceMs);
+  const uGrain = grainFor(w.key);
+  const usageSummaryRes = await get(`/usage/summary?since=${uSince}&grain=${uGrain}`);
+  let usageModel = { off: true };
+  if (!ledgerOff(usageSummaryRes)) {
+    const [uSeries, uTree, uTopic, uJob, uFeature, uCoverage, uTopics] = await Promise.all([
+      get(`/usage/series?since=${uSince}&grain=${uGrain}&split=${view.usage.split}`),
+      get(drillQuery(view.usage.path, uSince)),
+      get(`/usage/top?dim=topic&limit=8&since=${uSince}`), get(`/usage/top?dim=job&limit=8&since=${uSince}`), get(`/usage/top?dim=feature&limit=8&since=${uSince}`),
+      get('/usage/coverage'), get('/telegram/topics?scope=pool'),
+    ]);
+    const topicNames = topicNameMap(uTopics);
+    usageModel = buildUsageSection(
+      { summary: usageSummaryRes, series: uSeries, tree: uTree, topTopic: uTopic, topJob: uJob, topFeature: uFeature, coverage: uCoverage },
+      { split: view.usage.split, phrase: w.phrase, path: view.usage.path, namesOf: (k) => topicNames[k] || `Conversation ${k}` },
+    );
+  }
   // Conversation names: the session list carries each live session's Claude conversation id.
   const names = {};
   if (sessions.ok && Array.isArray(sessions.data && sessions.data.sessions)) for (const s of sessions.data.sessions) if (s && s.claudeSessionId) names[s.claudeSessionId] = sessionLabel(s);
@@ -43,9 +66,13 @@ export async function renderCosts(main, ctx) {
   timeControl.classList.add('time-control');
   hero.insertBefore(timeControl, hero.querySelector('.facts'));
 
+  const spending = spendingNeed(status);
   setKids(main, el('div', { class: 'costs-page' },
     hero,
+    spending ? markNeed(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: spending.title }), el('span', { class: 'need-sub', text: spending.why }),
+      el('a', { class: 'btn-primary btn-inline', href: legacyHref('spend'), text: 'Open the spending controls' })), 'spending') : null,
     el('div', { class: 'page-controls' }, routingLink),
+    usageSection(usageModel, { get, sinceMs: uSince, state: view.usage, repaint }),
     el('div', { class: 'page-sections' },
       recordedSection(page, repaint),
       checksSection(page.checks),
@@ -75,7 +102,7 @@ function recordedSection(page, repaint) {
     const more = el('details', { class: 'raw more-detail' }, el('summary', { text: 'More detail' }),
       el('p', { class: 'card-line', text: 'How the ledger is grouped. By hour and by day follow the time window above; by month and all time cover every retained day.' }), grainChips,
       r.horizonNote ? el('p', { class: 'card-note', text: r.horizonNote }) : null,
-      el('p', { class: 'card-note', text: `Source: ${r.source || 'the feature-metrics ledger'}${r.lastReconcileAt ? `, reconciled ${new Date(r.lastReconcileAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}${r.rollupMaintained ? '' : ' · rollup not maintained'}. Reporting figures are recomputed at current prices; the committed figures below are what a limit enforces.` }));
+      el('p', { class: 'card-note', text: `Source: ${r.source || 'the feature-metrics ledger'}${r.lastReconcileAt ? `, reconciled ${new Date(r.lastReconcileAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}${r.rollupMaintained ? '' : ' · rollup not maintained'}. Reporting figures are recomputed at current prices; the committed figures are what a limit enforces.` }));
     wrap.append(more);
   }
   // Paid routes: committed limits and committed spend, visibly apart from the reporting rows.

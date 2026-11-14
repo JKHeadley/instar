@@ -176,6 +176,17 @@ describe('§2.3 classifyTargetedRun — verify the MATCHED set, never argv exist
     expect(cls).toEqual({ targeted: true, matchedCount: 1, reason: 'exact-match-set' });
   });
 
+  it('a JSON report output flag keeps a single-file run targeted (CMT-1117: the failover runner writes one per run)', () => {
+    const root = fixtureRoot(['e.test.ts', 'core.test.ts']);
+    const included = resolveIncludedTestFiles(INCLUDE, root);
+    const argv = argvOf('run', '--config', 'vitest.e2e.config.ts', 'core.test.ts', '--reporter=dot', '--reporter=json', '--outputFile.json=/tmp/r.json');
+    expect(argv.unknownFlags).toEqual([]);
+    expect(classifyTargetedRun(argv, included, root)).toEqual({ targeted: true, matchedCount: 1, reason: 'exact-match-set' });
+    // The space-separated form consumes its value, never reading it as a positional.
+    const spaced = argvOf('run', 'core.test.ts', '--outputFile', '/tmp/r.json');
+    expect(spaced.positionals).toEqual(['core.test.ts']);
+  });
+
   it('a DIRECTORY positional routes suite-class', () => {
     const root = fixtureRoot(['a.test.ts']);
     const included = resolveIncludedTestFiles(INCLUDE, root);
@@ -396,7 +407,20 @@ describe('§2.5 checkNestedUnderHolder — the ancestry+holders check is the AUT
       shelteringPid: 39_100,
       shelteringSlotId: 'slot-a',
       anyLaneAncestorHolder: true,
+      ownSuiteOnly: false,
     });
+  });
+
+  it('own suite (Local Verify, 2026-11-12): the declared holder of the suite slot above is the ONLY held ancestor ⇒ ownSuiteOnly (no clamp)', () => {
+    const rows = [holderRow({ pid: 39_200, lane: 'suite' })];
+    expect(checkNestedUnderHolder(rows, 'targeted', { ancestors: [39_200], ownSuiteHolder: '39200' }).ownSuiteOnly).toBe(true);
+    // A different declared pid, a non-suite slot, or a second (foreign) held ancestor keeps the clamp.
+    expect(checkNestedUnderHolder(rows, 'targeted', { ancestors: [39_200], ownSuiteHolder: '39201' }).ownSuiteOnly).toBe(false);
+    expect(checkNestedUnderHolder([holderRow({ pid: 39_200, lane: 'targeted' })], 'targeted', { ancestors: [39_200], ownSuiteHolder: '39200' }).ownSuiteOnly).toBe(false);
+    const two = [holderRow({ pid: 39_200, lane: 'suite' }), holderRow({ pid: 39_300, lane: 'suite', id: 'slot-b' })];
+    expect(checkNestedUnderHolder(two, 'targeted', { ancestors: [39_300, 39_200], ownSuiteHolder: '39200' }).ownSuiteOnly).toBe(false);
+    // No declaration: never own-suite.
+    expect(checkNestedUnderHolder(rows, 'targeted', { ancestors: [39_200] }).ownSuiteOnly).toBe(false);
   });
 
   it('LANE-SCOPED (round 4): a suite-class child under a TARGETED-only ancestor does NOT skip — but the any-lane flag still drives the unconditional clamp', () => {

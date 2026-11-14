@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "plain-user-notices",
+  "sessionId": "ebfa6d9c-3146-453c-be44-d14fcb3552f3",
+  "timestamp": "2026-11-03T21:30:47.572Z",
+  "artifactPath": "upgrades/side-effects/plain-user-notices.md",
+  "artifactSha256": "2b264ebc9ca092eca500104904833ec3f497b91630c5f5be218fd48e25d6f85e",
+  "coveredFiles": [
+    "tests/unit/lint-chain-completeness.test.ts",
+    "upgrades/side-effects/plain-user-notices.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Registers the new lint in the protected lint list; test-only",
+  "eli16Path": "upgrades/side-effects/plain-user-notices.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/plain-user-notices.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "test-only follow-up: registers a lint; no runtime action"
+  }
+}

@@ -273,6 +273,12 @@ describe('GET /sessions — pool-wide aggregation', () => {
       expect(lost.emptyState.text).toMatch(/^unreachable \(last seen /);
       // Still degrades to a named pool.failed entry (back-compat) — never a 500.
       expect(res.body.pool.failed.some((f: { machineId: string }) => f.machineId === 'm_lost')).toBe(true);
+      // CMT-1541: the unanswered machine carries its /pool reachability facts for the page's words.
+      // This stub registry carries no liveness and no re-dialer is wired, so the facts are empty:
+      // the page then says "not known", never an invented duration.
+      expect(lost.reach).toEqual({});
+      const laptop = res.body.pool.machines.find((m: { machineId: string }) => m.machineId === 'm_a');
+      expect(laptop.reach).toBeUndefined();
     });
 
     it('the self (serving) machine, when idle, reads online — no active sessions', async () => {

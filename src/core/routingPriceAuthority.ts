@@ -42,6 +42,11 @@ export interface RoutingPricePoint {
   outPerMtok: number;
   /** OPTIONAL cache-read rate; absent ⇒ cached bills as full input (the over-booking safe direction, FD-19). */
   cachedInPerMtok?: number;
+  /** OPTIONAL cache-write rate (unified usage ledger, list-equivalent doors). */
+  cacheWritePerMtok?: number;
+  /** Where a list-equivalent price was copied from, and when (unified usage ledger, Slice 3). */
+  sourceUrl?: string;
+  retrievedAt?: string;
   /** UTC-day-aligned ISO (T00:00:00Z), ALWAYS (FD-18). */
   effectiveAt: string;
   recordedAt?: string;
@@ -69,6 +74,12 @@ export interface RoutingPriceManifest {
   version?: number;
   doors?: Record<string, RoutingDoorMeta>;
   points?: RoutingPricePoint[];
+  /**
+   * Unified usage ledger (Slice 3): maps a REPORTED model id to its list-equivalent
+   * door and priced model id by longest prefix, so a corrected mapping applies to all
+   * history (pricing happens on read).
+   */
+  modelFamilies?: Array<{ prefix: string; door: string; modelId: string }>;
 }
 
 /** Global default freshness SLA when a door declares none (spec Layer 1). */
@@ -81,7 +92,8 @@ export type PriceBasis =
   | 'no-matching-point'
   | 'subscription-zero';
 
-export type DoorClass = 'cli' | 'metered' | 'unknown';
+/** list-equivalent: a provider's published list price, used only to value usage as if bought by the token (unified usage ledger). */
+export type DoorClass = 'cli' | 'metered' | 'list-equivalent' | 'unknown';
 
 export interface PriceResolution {
   door: string;
@@ -124,9 +136,15 @@ export function canonicalModelId(modelId: string): string {
 }
 
 function doorClassOf(door: string): DoorClass {
+  if (isListEquivalentDoor(door)) return 'list-equivalent';
   if (CLI_ROUTING_DOORS.has(door as never)) return 'cli';
   if (METERED_ROUTING_DOORS.has(door as never)) return 'metered';
   return 'unknown';
+}
+
+/** A list-equivalent door is named `<provider>-list` (e.g. `anthropic-list`, `openai-list`). */
+export function isListEquivalentDoor(door: string): boolean {
+  return /^[a-z0-9]+-list$/.test(door);
 }
 
 /** Fail-closed point validation (spec A-M5/S-F1): a violating point is DROPPED from the index. */
@@ -143,6 +161,10 @@ export function isValidPricePoint(p: unknown): p is RoutingPricePoint {
     const c = pt.cachedInPerMtok;
     // cachedInPerMtok ≥ 0 AND ≤ inPerMtok (so a typo can never make cost exceed the full-input rate).
     if (typeof c !== 'number' || !Number.isFinite(c) || c < 0 || c > inP) return false;
+  }
+  if (pt.cacheWritePerMtok !== undefined) {
+    const w = pt.cacheWritePerMtok;
+    if (typeof w !== 'number' || !Number.isFinite(w) || w < 0) return false;
   }
   if (typeof pt.effectiveAt !== 'string') return false;
   const ms = Date.parse(pt.effectiveAt);
@@ -255,6 +277,7 @@ export class RoutingPriceAuthority {
   private loadManifest(): void {
     this.canonicalIndex = new Map();
     this.doorMeta = {};
+    this.modelFamilies = [];
     this.manifestPresent = false;
     let raw: unknown;
     try {
@@ -282,6 +305,39 @@ export class RoutingPriceAuthority {
       this.canonicalIndex.set(key, arr);
     }
     for (const arr of this.canonicalIndex.values()) arr.sort(cmpPoint);
+    for (const f of Array.isArray(m.modelFamilies) ? m.modelFamilies : []) {
+      if (f && typeof f.prefix === 'string' && f.prefix.trim() && typeof f.door === 'string' && typeof f.modelId === 'string') {
+        this.modelFamilies.push({ prefix: canonicalModelId(f.prefix), door: f.door, modelId: canonicalModelId(f.modelId) });
+      }
+    }
+    this.modelFamilies.sort((a, b) => b.prefix.length - a.prefix.length);
+  }
+
+  private modelFamilies: Array<{ prefix: string; door: string; modelId: string }> = [];
+
+  /**
+   * Unified usage ledger (Slice 3): the list-equivalent door and priced model for a
+   * reported model id (longest manifest prefix wins); null when no family matches.
+   */
+  listEquivalentFor(reportedModel: string | null | undefined): { door: string; modelId: string } | null {
+    if (!reportedModel) return null;
+    this.reloadIfChanged();
+    const m = canonicalModelId(reportedModel);
+    const f = this.modelFamilies.find(x => m.startsWith(x.prefix));
+    return f ? { door: f.door, modelId: f.modelId } : null;
+  }
+
+  /**
+   * The CANONICAL manifest point in force at `ms` for a door+model — never the overlay
+   * or the observed cache, so the same usage is valued identically on every machine.
+   */
+  canonicalPointAt(door: string, modelId: string, ms: number): RoutingPricePoint | null {
+    this.reloadIfChanged();
+    const arr = this.canonicalIndex.get(RoutingPriceAuthority.key(door, canonicalModelId(modelId)));
+    if (!arr) return null;
+    let best: RoutingPricePoint | null = null;
+    for (const p of arr) if (Date.parse(p.effectiveAt) <= ms) best = p;
+    return best;
   }
 
   private loadObserved(): void {

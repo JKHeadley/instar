@@ -162,6 +162,22 @@ functions are passed to the resume queue.
 
 ## Hub and Telegram surfaces
 
+### Pairing and user-facing topics
+
+`PairingInviteFlow` keeps an incoming invite in memory until the user accepts or
+declines it. `PairingPendingAcceptMarkers` stores a secret-free reminder so a
+restart can tell the user that a waiting invite must be forwarded again.
+`PairingInviteTelegram` handles the Telegram side of the invitation flow, while
+`PairingTopicStore` remembers the topic where each invitation began so later
+pairing notices return to the same conversation.
+
+After pairing, `PeerUserMeantJudge` examines each peer message to decide whether
+the server should also post it in that peer's dedicated topic for the user. It
+excludes protocol traffic, and when no classifier can decide, it posts the copy
+so a user-facing message is not silently missed. `ThreadlineMcpHttpService`
+serves the agent's local Threadline tools over authenticated loopback HTTP; its
+spawn plan decides which new sessions use that transport.
+
 ### HubIntentClassifier
 
 `src/threadline/HubIntentClassifier.ts` decides whether a message typed in the

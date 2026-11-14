@@ -18,7 +18,9 @@ Before activating the stop hook, you MUST:
 2. **Present the task list** to the user with clear completion criteria
 3. **Propose a measurable `completion_condition`** synthesized from those tasks — an
    artifact-grounded end-state an INDEPENDENT judge can verify from what you SURFACE
-   (a commit SHA, a file's content, a CI run id, a test-count delta). This is the
+   (a commit SHA, a file's content, a CI run id, a test-count delta). It covers EVERY
+   deliverable the goal needs, including pieces in another repo, the app or another
+   owner's code (see "The cross-boundary form" below) — not only the repo you are in. This is the
    PRIMARY completion mechanism. Only fall back to a self-declared promise when no
    verifiable condition can be expressed — and then record `completion_mode:
    promise-fallback` + a one-line `promise_fallback_reason:`.
@@ -298,12 +300,30 @@ run. Do the asked-for work first; an unrelated fix never goes ahead of it.
 | "Future improvement" | Your future self has no advantage over you |
 | "Remaining work" | Work you're choosing not to do |
 | "Deferred" | Abdication disguised as planning |
+| "This will need X in the app / another repo" · "outside this repository" · "recorded for the owner" | A deferral dressed as a scope fact — work with no owner, no plan and no place on your list |
 
 **The test:** Can you do this task right now with the tools and knowledge you have?
 - **Yes** → Do it. Not later. Now.
 - **No** → Document exactly WHY (missing dependency, needs external access, etc.)
 
 **"Phase 2" is only valid when the current phase genuinely cannot contain the work** — not when you're tired, not when it's complex, not when it's 2 AM.
+
+<!-- CROSS_BOUNDARY_OWNER (topic 10000002523) -->
+**The cross-boundary form.** When the goal needs a piece that lives somewhere else — another
+repo, the app, another machine, a session or team that owns that code — writing "X will need
+Y" or "that is outside this repository" into a spec, a progress message or a report is NOT
+scoping. It is a claim with no plan. Every such piece gets, in the same step:
+
+1. **A route:** pull the code to your machine and build it yourself, OR hand it to the
+   session/conversation that owns it (named) with a concrete handoff — a brief sent, a tracked
+   commitment, and how you will check it landed.
+2. **A place on your completion bar:** a `- [ ]` task in the state file, and the
+   `completion_condition` covers it (e.g. "app build with the button installed and the proof
+   passing in the app"), so the run cannot finish "done" without it.
+
+Find the owner before writing the sentence (your memory, the project map, a grep). If you
+genuinely cannot find a route, that is a stop condition (a) to report with what you tried —
+not a sentence in an "Open questions" list.
 
 ---
 

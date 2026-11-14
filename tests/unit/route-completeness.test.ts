@@ -127,7 +127,10 @@ describe('Route completeness and safety', () => {
     // (Narrowing the regex to `Error` exactly produced a false-negative once a
     // route added an `instanceof InvalidCursorError` + re-throw handler.)
     const instanceofChecks = routesSource.match(/err instanceof [A-Za-z]*Error\b/g) || [];
-    // Every catch block should have a typed-error check.
-    expect(instanceofChecks.length).toBeGreaterThanOrEqual(catchBlocks.length);
+    // operatorError accepts unknown and performs the same narrowing centrally.
+    const sharedChecks = routesSource.match(/operatorError\(err(?:,|\))/g) || [];
+    const helper = fs.readFileSync(path.resolve(__dirname, '../../src/core/storageMachineName.ts'), 'utf-8');
+    expect(helper).toContain('error instanceof Error ? error.message : String(error)');
+    expect(instanceofChecks.length + sharedChecks.length).toBeGreaterThanOrEqual(catchBlocks.length);
   });
 });

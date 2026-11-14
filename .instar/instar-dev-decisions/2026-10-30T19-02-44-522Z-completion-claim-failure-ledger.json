@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-30T19:02:44.522Z",
+  "slug": "completion-claim-failure-ledger",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 293,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/ClaimClauseArbiter.ts",
+      "src/monitoring/ClaimObservationAdmissionQueue.ts",
+      "src/monitoring/CompletionClaimFailureLedger.ts",
+      "src/monitoring/CompletionClaimVerifier.ts",
+      "src/monitoring/LlmQueue.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 253,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

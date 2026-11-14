@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "whole-agent-threadline-status",
+  "sessionId": "a7817f74-6b0c-4a81-9c98-6bcac06e6834",
+  "timestamp": "2026-11-04T06:23:06.396Z",
+  "artifactPath": "upgrades/side-effects/whole-agent-threadline-status.md",
+  "artifactSha256": "379fcbc5dedaeb4d08f1013a83cd3fc137f2bebf6cccbcd1d3c47b9013a53c73",
+  "specPath": "docs/specs/a2a-cross-machine-route.md",
+  "coveredFiles": [
+    "upgrades/next/whole-agent-threadline-status.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Release note required sections for the reviewed status repair.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

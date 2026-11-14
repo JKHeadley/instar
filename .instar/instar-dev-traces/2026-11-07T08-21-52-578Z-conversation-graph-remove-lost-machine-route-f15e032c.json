@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-remove-lost-machine-route",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T08:21:52.578Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-remove-lost-machine-route.md",
+  "artifactSha256": "6e6676a58f0f3a6daf993bd2c4f4449c5a394feb4abd7eb791d7cf40aeb74d7c",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "dashboard/console/conversation-machines.js",
+    "dashboard/console/conversations.js",
+    "src/core/GraphCustodyPeerFrontier.ts",
+    "src/core/GraphCustodyProfileAuthority.ts",
+    "src/server/ConversationGraphDefaultSurface.ts",
+    "src/server/ConversationGraphMemberLossSurface.ts",
+    "tests/e2e/conversation-graph-normal-cli-owned-boot.test.ts",
+    "tests/helpers/graph-member-loss-production-entry.ts",
+    "tests/integration/conversation-graph-replication-runtime.test.ts",
+    "tests/integration/graph-member-loss-historical-execution.test.ts",
+    "tests/integration/graph-member-loss-surface.test.ts",
+    "tests/unit/console-conversation-machines.test.ts",
+    "upgrades/side-effects/conversation-graph-remove-lost-machine-route.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

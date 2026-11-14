@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "job-grade-pass-idle-proof",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T13:16:09.424Z",
+  "artifactPath": "upgrades/side-effects/job-grade-pass-idle-proof.md",
+  "artifactSha256": "063852c1cd6c95325a1119a73cdcb374b9678f08298cdd85e73482244ee4ba88",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/core/JobGradePassIdleVerifier.ts",
+    "upgrades/side-effects/job-grade-pass-idle-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This documents the fail-closed behavior in the reviewed outcome proof.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

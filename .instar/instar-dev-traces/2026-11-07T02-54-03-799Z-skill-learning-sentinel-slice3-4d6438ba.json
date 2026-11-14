@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "skill-learning-sentinel-slice3",
+  "sessionId": "f1d7515b-8a10-4206-94b6-7c0f689d2d22",
+  "timestamp": "2026-11-07T02:54:03.799Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-sentinel-slice3.md",
+  "artifactSha256": "61e454a1b4bfce8a34c5e80a3bd58e39cd5fa3a1e4ff3193ac69aa8e4e411db9",
+  "specPath": "docs/specs/skill-learning-sentinel.md",
+  "coveredFiles": [
+    "src/monitoring/skillLearning/Ledger.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/side-effects/skill-learning-sentinel-slice3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI follow-up: SqliteRegistry wiring for the ledger cache; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "guard-evidence-records",
+  "sessionId": "6c30652f-f9be-44d6-a353-eeabebbc4a08",
+  "timestamp": "2026-10-28T18:44:56.105Z",
+  "artifactPath": "upgrades/side-effects/guard-evidence-records.md",
+  "artifactSha256": "95e49b7ee20d496c04ca38bc16bf085508dea4fad43f8bb6b711b78cdd638e8b",
+  "coveredFiles": [
+    "docs/specs/guard-evidence-records.eli16.md",
+    "src/commands/server.ts",
+    "src/core/IdentityDivergenceMonitor.ts",
+    "src/core/LeaseHandbackReconciler.ts",
+    "src/core/guardEvidenceLog.ts",
+    "tests/unit/guard-evidence-records-cmt1119.test.ts",
+    "upgrades/next/guard-evidence-records.md",
+    "upgrades/side-effects/guard-evidence-records.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Observability-only: two guards gain bounded durable records and /guards runtime getters; no decision logic changes and a revert fully undoes it.",
+  "eli16Path": "docs/specs/guard-evidence-records.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/guard-evidence-records.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

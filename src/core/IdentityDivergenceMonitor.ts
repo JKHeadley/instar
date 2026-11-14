@@ -22,6 +22,22 @@ export interface IdentityDivergence {
   sources: string[];
 }
 
+/** CMT-1119: one durable record per completed check (logs/identity-divergence-monitor.jsonl). */
+export interface IdentityDivergenceRunRecord {
+  at: string;
+  /** Views read this run (self + every peer that answered). */
+  sourcesRead: number;
+  sources: string[];
+  /** Distinct machine identities compared across those views. */
+  machinesCompared: number;
+  /** Divergence ids active after this run. */
+  active: string[];
+  /** Newly-seen episodes this run and what `raise` did with each. */
+  raised: Array<{ id: string; disposition: string }>;
+  /** Episodes that were active last run and are gone now. */
+  cleared: string[];
+}
+
 interface PersistedState {
   version: 1;
   checkedAt: string;
@@ -73,12 +89,16 @@ export function detectIdentityDivergences(views: IdentityProjectionView[]): Iden
 export class IdentityDivergenceMonitor {
   private readonly statePath: string;
   private running = false;
+  private lastTickAt = 0;
 
   constructor(private readonly deps: {
     stateDir: string;
     readViews: () => Promise<IdentityProjectionView[]>;
-    raise: (row: IdentityDivergence) => void | Promise<void>;
+    /** Returns an optional disposition label (e.g. 'raised', 'dry-run'). */
+    raise: (row: IdentityDivergence) => void | string | Promise<void | string>;
     now?: () => number;
+    /** Durable per-run record sink (CMT-1119). Best-effort; never gates. */
+    record?: (row: IdentityDivergenceRunRecord) => void;
   }) {
     this.statePath = path.join(deps.stateDir, 'state', 'identity-divergence-monitor.json');
   }
@@ -88,12 +108,35 @@ export class IdentityDivergenceMonitor {
     this.running = true;
     try {
       const previous = this.load();
-      const next = detectIdentityDivergences(await this.deps.readViews());
+      const views = await this.deps.readViews();
+      const next = detectIdentityDivergences(views);
       const priorIds = new Set(previous.active.map((row) => row.id));
+      const raised: IdentityDivergenceRunRecord['raised'] = [];
       for (const row of next) {
-        if (!priorIds.has(row.id)) await this.deps.raise(row);
+        if (priorIds.has(row.id)) continue;
+        const disposition = await this.deps.raise(row);
+        raised.push({ id: row.id, disposition: typeof disposition === 'string' ? disposition : 'raised' });
       }
-      this.save({ version: 1, checkedAt: new Date((this.deps.now ?? Date.now)()).toISOString(), active: next });
+      const nowMs = (this.deps.now ?? Date.now)();
+      const checkedAt = new Date(nowMs).toISOString();
+      this.save({ version: 1, checkedAt, active: next });
+      this.lastTickAt = nowMs;
+      if (this.deps.record) {
+        const nextIds = new Set(next.map((row) => row.id));
+        const machines = new Set<string>();
+        for (const view of views) for (const p of view.projections) if (p?.machineId) machines.add(p.machineId);
+        try {
+          this.deps.record({
+            at: checkedAt,
+            sourcesRead: views.length,
+            sources: views.map((view) => view.sourceMachineId),
+            machinesCompared: machines.size,
+            active: [...nextIds],
+            raised,
+            cleared: previous.active.map((row) => row.id).filter((id) => !nextIds.has(id)),
+          });
+        } catch { /* @silent-fallback-ok — the record is observability only; the persisted state above is authoritative */ }
+      }
       return next;
     } finally {
       this.running = false;
@@ -102,6 +145,11 @@ export class IdentityDivergenceMonitor {
 
   status(): PersistedState {
     return this.load();
+  }
+
+  /** GET /guards runtime getter: lastTickAt is the last COMPLETED check. */
+  guardStatus(dryRun: boolean): { enabled: true; dryRun: boolean; lastTickAt: number } {
+    return { enabled: true, dryRun, lastTickAt: this.lastTickAt };
   }
 
   private load(): PersistedState {

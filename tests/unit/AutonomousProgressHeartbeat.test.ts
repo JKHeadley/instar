@@ -15,7 +15,8 @@
  *   generic; no "still working" assertion), and the widening backoff + cap.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import {
   AutonomousProgressHeartbeat,
   type AutonomousHeartbeatDeps,
@@ -52,7 +53,7 @@ interface Harness {
 
 function makeHarness(
   overrides: Partial<Harness['state']> = {},
-  cfg: { dryRun?: boolean; enabled?: boolean; silenceThresholdMinutes?: number; maxHeartbeatsPerRun?: number; recentOutputChangeWindowMs?: number } = {},
+  cfg: { dryRun?: boolean; enabled?: boolean; guaranteedReporting?: boolean; silenceThresholdMinutes?: number; maxHeartbeatsPerRun?: number; recentOutputChangeWindowMs?: number } = {},
   depsOverrides: Partial<AutonomousHeartbeatDeps> = {},
 ): Harness {
   let now = 100 * MIN;
@@ -91,12 +92,88 @@ function makeHarness(
   const hb = new AutonomousProgressHeartbeat(deps, {
     enabled: cfg.enabled ?? true,
     dryRun: cfg.dryRun ?? false,
+    guaranteedReporting: cfg.guaranteedReporting,
     silenceThresholdMinutes: cfg.silenceThresholdMinutes ?? 25,
     maxHeartbeatsPerRun: cfg.maxHeartbeatsPerRun,
     recentOutputChangeWindowMs: cfg.recentOutputChangeWindowMs,
   });
   return { hb, proxy, sent, state, setNow: (ms) => { now = ms; } };
 }
+
+describe('fleet autonomous reporting', () => {
+  const fleet = { guaranteedReporting: true, silenceThresholdMinutes: 30, maxHeartbeatsPerRun: 1 };
+
+  it('reports a live run even when its output snapshot is unavailable', async () => {
+    const h = makeHarness({ sharedLastOutputAt: null }, fleet);
+    await h.hb.tick();
+    expect(h.sent[0].text).toContain('cannot verify recent session activity');
+  });
+
+  it('says why a run is paused when the session is gone', async () => {
+    const h = makeHarness({ alive: false }, fleet);
+    await h.hb.tick();
+    expect(h.sent[0].text).toContain('session is not running');
+  });
+
+  it('reports an explicit pause and a suspended move', async () => {
+    const paused = makeHarness({ runs: [{ topicId: TOPIC, sessionName: null, remainingSeconds: 3600, paused: true }] }, fleet);
+    await paused.hb.tick();
+    expect(paused.sent[0].text).toContain('paused in its local run state');
+
+    const move = makeHarness(
+      { markers: { movedTo: 'm_destination', moveSuspended: true, startedAtMs: 0, runId: 'run-1' } },
+      fleet,
+      { isLocalTopicOwner: () => true },
+    );
+    await move.hb.tick();
+    expect(move.sent[0].text).toContain('move to another machine was suspended');
+
+    const movedAway = makeHarness(
+      { markers: { movedTo: 'm_destination', moveSuspended: true, startedAtMs: 0, runId: 'run-1' } },
+      fleet,
+      { isLocalTopicOwner: () => false },
+    );
+    await movedAway.hb.tick();
+    expect(movedAway.sent).toHaveLength(0);
+  });
+
+  it('holds a suspended move when ownership is unknown', async () => {
+    const h = makeHarness(
+      { markers: { movedTo: 'm_destination', moveSuspended: true, startedAtMs: 0, runId: 'run-1' } },
+      fleet,
+      { isLocalTopicOwner: () => null },
+    );
+    await h.hb.tick();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it.each([true, false])('reports a failed history read and preserves guaranteedReporting=%s behavior', async (guaranteedReporting) => {
+    const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+    try {
+      const h = makeHarness({}, { ...fleet, guaranteedReporting }, {
+        getTopicHistory: () => { throw new Error('history-read-failed'); },
+      });
+      await h.hb.tick();
+      expect(report).toHaveBeenCalledWith(expect.objectContaining({
+        feature: 'AutonomousProgressHeartbeat.history',
+        reason: 'history-read-failed',
+        internalOnly: true,
+      }));
+      expect(h.sent).toHaveLength(guaranteedReporting ? 1 : 0);
+    } finally {
+      report.mockRestore();
+    }
+  });
+
+  it('keeps reporting after the legacy per-run budget is exhausted', async () => {
+    const h = makeHarness({}, fleet);
+    await h.hb.tick();
+    h.setNow(140 * MIN);
+    h.state.sharedLastOutputAt = 139 * MIN;
+    await h.hb.tick();
+    expect(h.sent).toHaveLength(2);
+  });
+});
 
 class MemoryRunStateStore implements AutonomousHeartbeatRunStateStoreLike {
   readonly runs = new Map<string, AutonomousHeartbeatRunState>();

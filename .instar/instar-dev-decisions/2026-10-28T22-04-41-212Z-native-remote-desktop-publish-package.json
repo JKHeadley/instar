@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-28T22:04:41.212Z",
+  "slug": "native-remote-desktop-publish-package",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/check-native-desktop-release.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 58,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/check-native-desktop-release.mjs"
+    ],
+    "addedLines": 52,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

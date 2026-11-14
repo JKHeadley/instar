@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-10T19:57:10.241Z",
+  "slug": "cb-layer-store",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/contextLayers/liveSecrets.ts matches SecretDrop / never-on-disk invariant",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 1081,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/DiskStewardPoster.ts",
+      "src/monitoring/contextLayers/LayerStore.ts",
+      "src/monitoring/contextLayers/TranscriptArchive.ts",
+      "src/monitoring/contextLayers/contextLayersBoot.ts",
+      "src/monitoring/contextLayers/liveSecrets.ts",
+      "src/monitoring/diskSteward/pruneCategories.ts",
+      "src/monitoring/diskSteward/pruneContextArchive.ts",
+      "src/monitoring/diskStewardMain.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1065,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "New capability, not a defect fix"
+  },
+  "verdict": "pass"
+}

@@ -53,7 +53,7 @@ describe('scan-state read-validation funnel (§1.3) — untrusted-on-every-read'
       doorways: [
         {
           id: 'codex-cli',
-          reachable: 'yes',                        // non-boolean → false
+          reachable: 'yes',                        // non-boolean → null (unknown)
           probeStatus: 'totally-made-up',          // → malformed-response
           topModels: ['ok-id', 'bad id; rm', '<script>'],
           lastScannedAt: 'nope',
@@ -76,7 +76,7 @@ describe('scan-state read-validation funnel (§1.3) — untrusted-on-every-read'
     expect(s.doorways).toHaveLength(1);
     const d = s.doorways[0];
     expect(d.id).toBe('codex-cli');
-    expect(d.reachable).toBe(false);               // non-boolean coerced
+    expect(d.reachable).toBe(null);                // non-boolean is unknown, not down
     expect(d.probeStatus).toBe('malformed-response');
     expect(d.topModels).toEqual(['ok-id']);        // bad ids dropped
     expect(d.lastScannedAt).toBeNull();

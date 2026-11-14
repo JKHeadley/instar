@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "desktop-assertion-clock-skew",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T10:31:43.431Z",
+  "artifactPath": "upgrades/side-effects/desktop-assertion-clock-skew.md",
+  "artifactSha256": "e7a64150a476770d42d0fc7e6aa4d799a9d7c66cdb592c16089c5cfa8dd157da",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.eli16.md",
+    "src/core/DesktopAssertionReplayStore.ts",
+    "src/core/DesktopOperatorAssertion.ts",
+    "tests/unit/desktop-assertion-replay-store.test.ts",
+    "upgrades/next/desktop-assertion-clock-skew.md",
+    "upgrades/side-effects/desktop-assertion-clock-skew.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive desktop replay admission repair aligning ledger with already-approved signed assertion clock skew",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

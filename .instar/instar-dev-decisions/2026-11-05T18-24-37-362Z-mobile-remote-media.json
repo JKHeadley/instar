@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-05T18:24:37.362Z",
+  "slug": "mobile-remote-media",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileMediaHolderProxy.ts"
+    ],
+    "addedLines": 48,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A bounded read with slots and deadlines; adds no loop or self-action."
+  },
+  "verdict": "pass"
+}

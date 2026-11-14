@@ -26,6 +26,23 @@ afterAll(() => {
 });
 
 describe('realSeams().holdSuiteSlot', () => {
+  it('claims priority only while seeking the lane slot, then clears it on acquisition', async () => {
+    const { realSeams } = await import('../../../src/localVerify/orchestratorSeams.js');
+    const { getHostTestRunnerSemaphore } = await import('../../../src/core/hostTestRunnerSemaphore.js');
+    const sem = getHostTestRunnerSemaphore();
+    const ordinary = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(ordinary.kind).toBe('acquired');
+    if (ordinary.kind !== 'acquired') return;
+    const seams = realSeams(() => {}, path.join(base, 'verify'));
+    const waiting = seams.holdSuiteSlot!();
+    expect(sem.hasMergeGatePriority()).toBe(true);
+    sem.release(ordinary.id);
+    const release = await waiting;
+    expect(typeof release).toBe('function');
+    expect(sem.hasMergeGatePriority()).toBe(false);
+    (release as () => void)();
+  }, 15_000);
+
   it('holds one suite slot as this process; a child process is nested under it; release frees it', async () => {
     // Imported after the env is set: the bound's singleton reads its base dir once.
     const { realSeams } = await import('../../../src/localVerify/orchestratorSeams.js');

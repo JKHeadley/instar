@@ -1,0 +1,39 @@
+{
+  "ts": "2026-10-31T21:41:31.353Z",
+  "slug": "peer-homebase-per-message",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/peerHomebaseRelay.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 781,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/peerHomebaseAwareness.ts",
+      "src/server/routes.ts",
+      "src/threadline/PeerUserMeantJudge.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/peerHomebaseRelay.ts"
+    ],
+    "addedLines": 725,
+    "deletedLines": 56
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot reaction per inbound peer message: one model decision (daily-capped) and one post plus at most two bounded retries (max 50 pending); nothing re-triggers it"
+  },
+  "verdict": "pass"
+}

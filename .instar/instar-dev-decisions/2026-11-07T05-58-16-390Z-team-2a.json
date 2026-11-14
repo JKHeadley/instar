@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-07T05:58:16.390Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 296,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AppConversationStore.ts",
+      "src/core/BackupManager.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePairing.ts",
+      "src/core/MobilePeople.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 247,
+    "deletedLines": 49
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "mobile-native-proposals-inside",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T00:11:29.642Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-proposals-inside.md",
+  "artifactSha256": "800b5c29f573a069052aa17950e4839d1595fb168fac5b5cf83f28caf53f695f",
+  "specPath": "docs/specs/mobile-native-proposals-inside.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-proposals-inside.eli16.md",
+    "docs/specs/mobile-native-proposals-inside.md",
+    "docs/specs/reports/mobile-native-proposals-inside-convergence.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobileProposalsInsideRoutes.ts",
+    "src/server/routes.ts",
+    "src/server/routes/remediation-proposals.ts",
+    "tests/e2e/mobile-native-proposals-inside-alive.test.ts",
+    "tests/integration/mobile-native-proposals-inside.test.ts",
+    "tests/unit/mobile-native-proposals-inside-claudemd.test.ts",
+    "tests/unit/mobile-native-proposals-inside.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/next/mobile-native-proposals-inside.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Widens device-key read access: two owner-only reads, so auth-adjacent; read-only and fully reverted by a revert.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only routes; no self-action, loop or write."
+  }
+}

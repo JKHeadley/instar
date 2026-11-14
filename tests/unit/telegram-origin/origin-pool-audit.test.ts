@@ -123,6 +123,13 @@ describe('origin pool audit frozen shard merge', () => {
     expect(missing).toMatchObject({ coverage: 'incomplete', stale: true, unavailableShards: ['studio'], counts: healthy.counts });
     expect(missing.shards.find(shard => shard.machineId === 'studio')).toMatchObject({ stale: true, coverage: 'unknown' });
   });
+  it('carries the newest shard audit horizon so a pool read never hides dropped history', async () => {
+    const a = await store(), b = await store();
+    const first = admission('horizon-a'); first.record.machineId = 'a'; await a.putEvidence(first.record);
+    const pool = new OriginPoolAudit({ shardIds: () => ['a', 'b'], readShard: async (id, query) => id === 'a'
+      ? { ...await a.listOrigins(query), historyExpiredBefore: 1000 } : { ...await b.listOrigins(query), historyExpiredBefore: 2000 } });
+    expect((await pool.list()).historyExpiredBefore).toBe(2000);
+  });
   it('refuses production federation outside the verified operator call scope', async () => {
     const a = await store(); await a.admit(admission('scoped'));
     const pool = new OriginPoolAudit({ shardIds: () => ['a'], readShard: (_, query) => a.listOrigins(query), operatorScopeRequired: true });

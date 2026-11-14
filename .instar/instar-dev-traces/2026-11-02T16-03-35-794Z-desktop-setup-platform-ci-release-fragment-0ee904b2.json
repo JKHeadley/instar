@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "desktop-setup-platform-ci-release-fragment",
+  "sessionId": "fe73d863-f6e2-4dbf-9f8b-dc2bf1d50fd4",
+  "timestamp": "2026-11-02T16:03:35.794Z",
+  "artifactPath": "upgrades/side-effects/desktop-setup-platform-ci-release-fragment.md",
+  "artifactSha256": "432c6abfd7d870b07357ebb5ee526be27da52fe0bc4d9d0cf34cfdeed69a3dd0",
+  "specPath": "docs/specs/desktop-guided-setup.md",
+  "coveredFiles": [
+    "upgrades/next/desktop-setup-platform-ci-repair.md",
+    "upgrades/side-effects/desktop-setup-platform-ci-release-fragment.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -265,3 +265,27 @@ describe('SpendAlertResolver — rung 2 pool half (FD-6)', () => {
     expect(persisted).toBe(500);
   });
 });
+
+
+describe('quiet spend receipt', () => {
+  it('returns recorded separately and does not invoke a lifeline fallback', async () => {
+    let calls = 0;
+    const { channel } = mkChannel({ sendToTopic: async () => { calls++; return { delivered: false, recorded: true, quietId: 'quiet-id' }; } });
+    expect(await channel.deliver('routine spend report', false)).toBe('quiet-recorded');
+    expect(calls).toBe(1);
+  });
+});
+
+
+describe('quiet spend resolver receipt', () => {
+  it('records a terminal quiet result without sent audit or lifeline retry', async () => {
+    let calls = 0; const audit: unknown[] = [];
+    const resolver = new SpendAlertResolver({ configuredTopicId: () => 42, readPersistedTopicId: () => undefined, persistTopicId: () => {}, servingLeaseConfirmedAgoMs: () => 0,
+      createTopic: async () => 42, lifelineTopicId: () => 99, audit: row => audit.push(row),
+      sendToTopic: async () => { calls++; return { delivered: false, recorded: true, quietId: 'quiet-id' }; } });
+    const alert = { kind: 'stale-price' as const, dedupeKey: 'test-quiet', text: 'A retained spend report' };
+    expect(await resolver.emit(alert)).toBe('quiet-recorded');
+    expect(await resolver.emit(alert)).toBe('suppressed'); expect(calls).toBe(1);
+    expect(audit).toEqual([expect.objectContaining({ decision: 'quiet-recorded', quietId: 'quiet-id' }), expect.objectContaining({ decision: 'suppressed' })]);
+  });
+});

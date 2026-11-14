@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "verified-display-names",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T05:27:15.656Z",
+  "artifactPath": "upgrades/side-effects/verified-display-names.md",
+  "artifactSha256": "865a32279dac8a601a2b882df438e774d42f761beb7d100054b43c7b2d4e4e20",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible migration ordering fixes a released update path without changing public API",
+  "eli16Path": "upgrades/verified-display-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verified-display-names.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

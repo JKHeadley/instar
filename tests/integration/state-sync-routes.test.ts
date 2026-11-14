@@ -134,4 +134,34 @@ describe('replicated-store conflict + rollback routes', () => {
     expect(body.droppedOrigins).toHaveLength(1);
     expect(body.droppedOrigins[0].origin).toBe('B');
   });
+
+  it('FAIL-SAFE: a damaged excluded-machines file is reported damaged, keeps recovered exclusions, and is never clobbered (fb-26f128ae-7fa)', async () => {
+    const docPath = path.join(dir, 'state', 'state-sync', 'dropped-origins.json');
+    fs.mkdirSync(path.dirname(docPath), { recursive: true });
+    const damaged = '{"version":1,"dropped":[{"store":"pairing","origin":"revoked-peer","droppedAt":"t1"},{"store":"pref","orig';
+    fs.writeFileSync(docPath, damaged, 'utf-8');
+    const dropped = new DroppedOriginRegistry({ stateDir: dir, reportDegradation: () => {} });
+    expect(() => dropped.add('pref', 'NEW', new Date().toISOString())).toThrow();
+    await start({ droppedOriginRegistry: dropped, conflictStore: new ConflictStore({ stateDir: dir, now: () => new Date() }) });
+
+    const res = await fetch(`${server.url}/state/quarantine`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.droppedOriginsHealth.status).toBe('damaged');
+    expect(body.droppedOriginsHealth.preservedAt).toContain('dropped-origins.json.damaged-');
+    expect(body.droppedOrigins.map((d: { origin: string }) => d.origin)).toEqual(expect.arrayContaining(['revoked-peer', 'NEW']));
+    // The damaged bytes on disk are exactly as they were.
+    expect(fs.readFileSync(docPath, 'utf-8')).toBe(damaged);
+  });
+
+  it('HEALTHY: GET /state/quarantine reports healthy for a normal file and mutations persist', async () => {
+    const dropped = new DroppedOriginRegistry({ stateDir: dir, reportDegradation: () => {} });
+    dropped.add('pref', 'B', new Date().toISOString());
+    dropped.add('pref', 'C', new Date().toISOString());
+    dropped.remove('pref', 'C');
+    await start({ droppedOriginRegistry: new DroppedOriginRegistry({ stateDir: dir, reportDegradation: () => {} }) });
+    const body = await (await fetch(`${server.url}/state/quarantine`)).json();
+    expect(body.droppedOriginsHealth.status).toBe('healthy');
+    expect(body.droppedOrigins.map((d: { origin: string }) => d.origin)).toEqual(['B']);
+  });
 });

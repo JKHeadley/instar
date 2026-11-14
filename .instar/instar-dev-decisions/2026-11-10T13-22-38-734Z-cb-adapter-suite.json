@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-10T13:22:38.734Z",
+  "slug": "cb-adapter-suite",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 545,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/ContextBudgetSentinel.ts",
+      "src/monitoring/adapterSuiteCli.ts",
+      "src/monitoring/adapterVerificationSuite.ts",
+      "src/monitoring/contextBudgetSentinelBoot.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 542,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "context-budget-adapter-suite is registered in selfActionRegistry: at most 3 suite runs per engine version ever (durable attempt count stamped before each run, 24 h floor), one at a time; a recorded version never re-runs"
+    }
+  },
+  "verdict": "pass"
+}

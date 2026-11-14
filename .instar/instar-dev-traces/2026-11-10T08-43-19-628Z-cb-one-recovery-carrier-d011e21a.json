@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "cb-one-recovery-carrier",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T08:43:19.628Z",
+  "artifactPath": "upgrades/side-effects/cb-one-recovery-carrier.md",
+  "artifactSha256": "88e37e5a244668d115c226a455c91655d02b26b6ad7f8479bf61dd1d88bab870",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/CompactionSentinel.ts",
+    "src/monitoring/compactionSeedMarker.ts",
+    "upgrades/side-effects/cb-one-recovery-carrier.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only @silent-fallback-ok markers on five fail-safe catches of the approved slice-2 change (spec-driven); no behaviour change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

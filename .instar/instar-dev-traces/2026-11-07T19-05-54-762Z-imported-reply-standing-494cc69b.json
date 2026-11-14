@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "imported-reply-standing",
+  "sessionId": "52836c24-96eb-4745-87bf-f47450b4a4da",
+  "timestamp": "2026-11-07T19:05:54.762Z",
+  "artifactPath": "upgrades/side-effects/imported-reply-standing.md",
+  "artifactSha256": "d294f8b06a372f11aa09703ae7365e1fb282bed1376f761058206183b1c80b32",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/imported-reply-standing.eli16.md",
+    "upgrades/next/imported-reply-standing.md",
+    "upgrades/side-effects/imported-reply-standing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two conditions in the existing envelope decision plus one entry label; a revert fully undoes it; the quiet default is unchanged for every row without a verified session author",
+  "eli16Path": "upgrades/imported-reply-standing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/imported-reply-standing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

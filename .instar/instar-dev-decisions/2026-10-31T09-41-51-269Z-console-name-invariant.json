@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-31T09:41:51.269Z",
+  "slug": "console-name-invariant",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/MaturationBoard.ts",
+      "src/server/maturationBoardRoutes.ts",
+      "src/server/queuePaceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 44,
+    "deletedLines": 39
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

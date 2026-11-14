@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-31T08:27:19.852Z",
+  "slug": "publish-propagation-window",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/post-publish-smoke.mjs touches publish script (fleet publish path)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/post-publish-smoke.mjs"
+    ],
+    "addedLines": 6,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

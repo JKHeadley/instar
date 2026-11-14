@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-sandbox-setup",
+  "sessionId": "069d8714-773f-40a7-a50f-80cff9c0c17d",
+  "timestamp": "2026-11-04T11:38:16.458Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-sandbox-setup.md",
+  "artifactSha256": "dc79eb523a103348971c62eff56b4a69b67c9c26c40fffa85c5f9fc361228aeb",
+  "coveredFiles": [
+    "docs/specs/memory-privacy.eli16.md",
+    "docs/specs/memory-privacy.md",
+    "src/core/memorySandboxProbe.ts",
+    "src/users/MemoryPrivacy.ts",
+    "src/users/wireMemoryPrivacy.ts",
+    "tests/unit/memory-privacy.test.ts",
+    "tests/unit/memory-sandbox-probe.test.ts",
+    "upgrades/next/memory-privacy-sandbox-setup.md",
+    "upgrades/side-effects/memory-privacy-sandbox-setup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Widens an existing best-effort boot step and fixes a boot-window count; no new gate or lifecycle logic.",
+  "eli16Path": "docs/specs/memory-privacy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/memory-privacy-sandbox-setup.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

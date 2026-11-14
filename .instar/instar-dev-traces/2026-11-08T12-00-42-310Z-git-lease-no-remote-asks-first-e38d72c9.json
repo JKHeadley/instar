@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "git-lease-no-remote-asks-first",
+  "sessionId": "75bd727f-c027-42f4-9efd-421e5438ca50",
+  "timestamp": "2026-11-08T12:00:42.310Z",
+  "artifactPath": "upgrades/side-effects/git-lease-no-remote-asks-first.md",
+  "artifactSha256": "a5ed6994c320a98d3f6ba406a52cb95314048126cd715881f18f2cbafedb209c",
+  "coveredFiles": [
+    "docs/specs/git-lease-no-remote-asks-first.eli16.md",
+    "src/commands/server.ts",
+    "src/core/GitLeaseStore.ts",
+    "tests/unit/lease-restart-no-tie.test.ts",
+    "upgrades/next/git-lease-no-remote-asks-first.md",
+    "upgrades/side-effects/git-lease-no-remote-asks-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One store method plus one wiring line; applies #2912's existing no-shared-medium rules to a git home with no remote; a revert fully undoes it",
+  "eli16Path": "docs/specs/git-lease-no-remote-asks-first.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/git-lease-no-remote-asks-first.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

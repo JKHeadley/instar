@@ -54,10 +54,11 @@ function mockFetch(behavior: (url: string) => string, foldEpoch = () => 7) {
   return { fn, calls };
 }
 
-function mkTransport(peer: LeasePeer, fetchImpl: typeof fetch, opts: { meshOn?: boolean } = {}) {
+function mkTransport(peer: LeasePeer, fetchImpl: typeof fetch, opts: { meshOn?: boolean; onSignedConfirmation?: (id: string, kind: string, url: string) => void } = {}) {
   const resolver = new PeerEndpointResolver({ config: resolverCfg() });
   return new HttpLeaseTransport({
     selfMachineId: 'm_self',
+    onSignedConfirmation: opts.onSignedConfirmation,
     signingKeyPem: generateSigningKeyPair().privateKey,
     peers: () => [peer],
     nextSequence: () => 1,
@@ -79,6 +80,23 @@ describe('HttpLeaseTransport — hedged mesh broadcast (accept-ack)', () => {
     const { fn } = mockFetch(() => 'ok');
     const t = mkTransport(ackPeer, fn);
     expect(await t.broadcast(mkLease(7))).toBe(true);
+  });
+
+  it.each([['a signed answer', 'ok', 1], ['a bare 200', 'bare', 0], ['a forged signature', 'stranger', 0], ['a failure', 'fail', 0]] as const)(
+    '%s is proof that this address reaches the peer only when the peer signed it', async (_label, behaviour, expected) => {
+      const proofs: string[] = [];
+      const { fn } = mockFetch(() => behaviour);
+      await mkTransport({ ...ackPeer, endpoints: [TS] }, fn, { onSignedConfirmation: (id, kind, url) => proofs.push(`${id} ${kind} ${url}`) }).broadcast(mkLease(7));
+      expect(proofs.length).toBe(expected);
+      if (expected) expect(proofs[0]).toBe(`${PEER_ID} tailscale ${TS.url}`);
+    });
+
+  it('a peer too old to sign proves nothing, though its 200 still counts as reachable', async () => {
+    const proofs: string[] = [];
+    const { fn } = mockFetch(() => 'bare');
+    const old: LeasePeer = { ...ackPeer, endpoints: [TS], meshAckCapable: false };
+    expect(await mkTransport(old, fn, { onSignedConfirmation: (id) => proofs.push(id) }).broadcast(mkLease(7))).toBe(true);
+    expect(proofs).toEqual([]);
   });
 
   it('a bare-200 (no ack) from an ack-capable peer is NOT confirmed (fail-closed)', async () => {
@@ -123,6 +141,16 @@ describe('HttpLeaseTransport — hedged mesh broadcast (accept-ack)', () => {
 });
 
 describe('HttpLeaseTransport — hedged mesh pull (identity ack)', () => {
+  it.each([['a signed pull answer', 'ok', 1], ['a bare 200', 'bare', 0], ['a forged signature', 'stranger', 0]] as const)(
+    '%s on a pull is proof only when the peer signed it (the joiner proves its link by pulling)', async (_label, behaviour, expected) => {
+      const proofs: string[] = [];
+      const { fn } = mockFetch(() => behaviour);
+      const peer: LeasePeer = { machineId: PEER_ID, url: 'https://peer.dawn-tunnel.dev', endpoints: [TS], publicKeyPem: peerKeys.publicKey, meshAckCapable: true };
+      await mkTransport(peer, fn, { onSignedConfirmation: (id, kind, url) => proofs.push(`${id} ${kind} ${url}`) }).pullPeer(peer);
+      expect(proofs.length).toBe(expected);
+      if (expected) expect(proofs[0]).toBe(`${PEER_ID} tailscale ${TS.url}`);
+    });
+
   const ackPeer: LeasePeer = { machineId: PEER_ID, url: 'https://peer.dawn-tunnel.dev', endpoints: [TS, CF], publicKeyPem: peerKeys.publicKey, meshAckCapable: true };
 
   it('pull confirms via identity ack and folds the returned lease', async () => {

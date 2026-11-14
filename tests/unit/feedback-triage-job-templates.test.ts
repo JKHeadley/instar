@@ -24,11 +24,11 @@ describe('feedback triage job templates', () => {
       expect(gate).toContain('X-Instar-AgentId: $INSTAR_AGENT_ID');
     });
   }
-  it('the triage job runs every 15 minutes under tier-1 supervision; the action list at 08:00', () => {
-    expect(frontmatter('feedback-factory-triage.md')).toMatchObject({ schedule: '*/15 * * * *', supervision: 'tier1' });
+  it('the triage job runs every 15 minutes with Jev triage; the action list at 08:00', () => {
+    expect(frontmatter('feedback-factory-triage.md')).toMatchObject({ schedule: '*/15 * * * *', runner: 'script', supervision: 'tier0', scriptSupervision: 'triage' });
     expect(frontmatter('feedback-factory-action-list.md')).toMatchObject({ schedule: '0 8 * * *' });
-    // The executor job: every 30 minutes, tier-1 supervised; its body drives the execute tick and treats 503 as a silent exit.
-    expect(frontmatter('feedback-factory-execute.md')).toMatchObject({ schedule: '17,47 * * * *', supervision: 'tier1' });
+    // The executor keeps its cadence and routes non-trivial outcomes through Jev.
+    expect(frontmatter('feedback-factory-execute.md')).toMatchObject({ schedule: '17,47 * * * *', runner: 'script', supervision: 'tier0', scriptSupervision: 'triage' });
     const body = fs.readFileSync(path.join(DIR, 'feedback-factory-execute.md'), 'utf8');
     expect(body).toContain('/feedback-factory/execute/tick');
     expect(body).toContain("if code == 503:");

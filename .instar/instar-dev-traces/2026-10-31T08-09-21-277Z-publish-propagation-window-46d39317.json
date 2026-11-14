@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "publish-propagation-window",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T08:09:21.277Z",
+  "artifactPath": "upgrades/side-effects/publish-propagation-window.md",
+  "artifactSha256": "aab9b5ff53d76ca0de1c0430d78298e4f7eae08ee48ceb24a20bfb2ae58c8ef2",
+  "coveredFiles": [
+    "scripts/post-publish-smoke.mjs",
+    "upgrades/next/publish-propagation-window.md",
+    "upgrades/publish-propagation-window.eli16.md",
+    "upgrades/side-effects/publish-propagation-window.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded retry and per-lookup timeout in one post-publish smoke script; exact package verification remains unchanged.",
+  "eli16Path": "upgrades/publish-propagation-window.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/publish-propagation-window.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

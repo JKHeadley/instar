@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "job-claim-cutover-readiness",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T08:38:54.746Z",
+  "artifactPath": "upgrades/side-effects/job-claim-cutover-readiness.md",
+  "artifactSha256": "ba8e41ce251c8f21ac8fcfeb283e4a3726574779fb0a95ade4f57c4e8832bec0",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/scheduler/JobLeaseClaimStore.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/e2e/scheduler-journal-lease-cutover-alive.test.ts",
+    "tests/integration/scheduler-journal-lease-cutover.test.ts",
+    "tests/unit/seamlessness-dev-gate-wiring.test.ts",
+    "upgrades/next/job-claim-cutover-readiness.md",
+    "upgrades/side-effects/job-claim-cutover-readiness.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Distributed claim ownership is a safety invariant; a wrong cutover can double-run scheduled work, so this uses the approved spec and full verification.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-result-supervision-v2-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

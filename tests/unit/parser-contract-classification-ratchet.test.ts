@@ -64,18 +64,18 @@ const PENDING_BASELINE = [
   'CompletionEvaluator',
   'InputClassifier',
   // wave-2
-  'ProfileIntentClassifier',
   'MessageSentinel',
   'ExternalHogClassifier',
   'LLMSanitizer',
   'WarrantsReplyGate',
-  'MoveIntentClassifier', // parses a closed move-intent verdict (isCommand + intent/target enums + confidence); 2026-07-04
+  'AttributionJudge', // parses closed own|relayed|unclear + faithful verdicts; 2026-11-05
   'HubIntentClassifier', // parses a closed hub-intent verdict (intent open/tie/null + targetTopicId enum + confidence); 2026-07-04
 
   'InputGuard',
   'StallTriageNurse',
   'CommitmentSentinel',
   'PresenceProxy',
+  'ChiefOfStaffLoop', // chief-of-staff-topic.md §2.5: closed project verdict, parsed fail-closed to unknown
   'ProjectDriftChecker',
   'TemporalCoherenceChecker',
   'SessionWatchdog',
@@ -109,6 +109,7 @@ const ARGUED_FALSE_BASELINE = [
   'IntegrationGate',
   'CoherenceGate',
   'JobReflector',
+  'JobAnomalyNarrator', // wording-only narration; no verdict is parsed from its output
   'crossModelReviewer',
   'SelfKnowledgeTree',
   'TreeTriage',
@@ -120,6 +121,7 @@ const ARGUED_FALSE_BASELINE = [
   'Usher',
   'TopicIntentExtractor',
   'PreCompactionFlush',
+  'ContextLayerChunk',
   'TreeSynthesis',
   'LLMConflictResolver',
   'openConversationBrief',
@@ -128,7 +130,6 @@ const ARGUED_FALSE_BASELINE = [
   'mentor-stage-b',
   'PipeSessionSpawner',
   'CartographerSweep',
-  'StandardsCoverageEnrichment',
 ].sort();
 
 // ── Pinned REVIEWED-false gate/sentinel allowlist. A gate or sentinel marked

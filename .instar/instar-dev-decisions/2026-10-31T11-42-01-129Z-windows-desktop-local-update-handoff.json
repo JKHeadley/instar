@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-31T11:42:01.129Z",
+  "slug": "windows-desktop-local-update-handoff",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 126,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/install-windows-desktop-companion.mjs",
+      "scripts/install-windows-desktop-companion.ps1",
+      "src/core/WindowsDesktopBootstrapStatus.ts"
+    ],
+    "addedLines": 120,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

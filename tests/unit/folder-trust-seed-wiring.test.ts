@@ -24,10 +24,14 @@ function src(rel: string): string {
 /** The `ensureInteractiveReady(` call plus enough of what follows to see its options. */
 function callsWithProjectDir(source: string): boolean[] {
   const results: boolean[] = [];
-  let idx = source.indexOf('ensureInteractiveReady(');
-  while (idx !== -1) {
-    results.push(source.slice(idx, idx + 400).includes('projectDir'));
-    idx = source.indexOf('ensureInteractiveReady(', idx + 1);
+  // ensureClaudeFirstRunAnswered(configHome, projectDir) wraps ensureInteractiveReady and
+  // takes the agent directory as its second argument.
+  for (const name of ['ensureInteractiveReady(', 'ensureClaudeFirstRunAnswered(']) {
+    let idx = source.indexOf(name);
+    while (idx !== -1) {
+      results.push(source.slice(idx, idx + 400).includes('projectDir'));
+      idx = source.indexOf(name, idx + 1);
+    }
   }
   return results;
 }

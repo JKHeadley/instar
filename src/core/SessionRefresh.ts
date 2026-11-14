@@ -34,7 +34,8 @@
 import fs from 'node:fs';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import path from 'node:path';
-import { ensureInteractiveReady } from './ensureInteractiveReady.js';
+import os from 'node:os';
+import { ensureBypassPromptSkipped, ensureInteractiveReady } from './ensureInteractiveReady.js';
 import {
   slackConversationKey,
   slackRoutingKeySyntheticId,
@@ -680,6 +681,12 @@ export class SessionRefresh {
         const ready = ensureInteractiveReady(accountSwap.configHome, {
           ...(projectDir ? { projectDir } : {}),
         });
+        // The bypass-permissions warning is answered in the login's settings.json, not
+        // .claude.json, and defaults to "No, exit" (fresh Linux server, 2026-11-02).
+        const bypass = ensureBypassPromptSkipped(accountSwap.configHome.startsWith('~')
+          ? path.join(os.homedir(), accountSwap.configHome.slice(1))
+          : accountSwap.configHome);
+        if (bypass.patched) console.log(`[SessionRefresh] account-swap: ${bypass.reason} in ${accountSwap.configHome}`);
         console.log(
           `[SessionRefresh] account-swap onboarding-readiness: ${accountSwap.configHome} ` +
           `${ready.patched ? `patched (${ready.reason})` : ready.reason} (sessionName=${sessionName})`,

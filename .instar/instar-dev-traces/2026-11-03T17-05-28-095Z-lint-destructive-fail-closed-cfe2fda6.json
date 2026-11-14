@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "lint-destructive-fail-closed",
+  "sessionId": "faa4d5d0-a08d-49d6-991c-e8c97ca9c619",
+  "timestamp": "2026-11-03T17:05:28.095Z",
+  "artifactPath": "upgrades/side-effects/lint-destructive-fail-closed.md",
+  "artifactSha256": "117b4bef0127fdaafd694d053225de9929bb55c425fd6072cd767978226e7eda",
+  "coveredFiles": [
+    "docs/specs/lint-destructive-fail-closed.eli16.md",
+    "scripts/lint-no-direct-destructive.js",
+    "tests/unit/lint-no-direct-destructive.test.ts",
+    "upgrades/next/lint-destructive-fail-closed.md",
+    "upgrades/side-effects/lint-destructive-fail-closed.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction to scanner completeness for enumerated paths; revert fully restores prior behavior without state migration. The existing deterministic safety lint policy is unchanged; independent second pass reviewed remaining gaps.",
+  "eli16Path": "docs/specs/lint-destructive-fail-closed.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lint-destructive-fail-closed.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

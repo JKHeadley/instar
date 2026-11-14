@@ -1,3 +1,4 @@
+import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../data/accountPageSafetyScript.js';
 /**
  * `instar init` — Initialize agent infrastructure.
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
@@ -29,6 +30,8 @@
  * Existing project adds .instar/ and appends to CLAUDE.md.
  */
 
+import { isBlankAgentHome, markNewAgent } from '../recommended/offerPrerequisites.js';
+import { applyInitPosture, decideInitPosture, parseTtl } from '../core/ThrowawayAgentGuard.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
+import { ensureClaudeFirstRunAnswered } from '../core/ensureInteractiveReady.js';
 import {
   assertNotTccProtected,
   describeTccProtectedPath,
@@ -48,13 +52,16 @@ import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { packageInstallCommand } from '../core/packageInstall.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
-import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, ensureInstarWritePreToolUseHooks, INSTAR_WRITE_PRETOOLUSE_HOOKS, INSTAR_WRITE_PRETOOLUSE_MATCHER, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
-import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
+import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
+import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { ContextHierarchy } from '../core/ContextHierarchy.js';
 import { CanonicalState } from '../core/CanonicalState.js';
@@ -76,6 +83,8 @@ import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
+import { ensureAppReplyRelay } from '../core/AppReplyRelayInstaller.js';
+import { ensureThreadlineReplyRelay } from '../core/ThreadlineReplyRelayInstaller.js';
 import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
@@ -114,6 +123,16 @@ interface InitOptions {
    * dual-runtime use.
    */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | 'both';
+  /** Test-agent leak guard: allow self-installed autostart despite a non-interactive init. */
+  autostart?: boolean;
+  /** Test-agent leak guard: record an expiry (e.g. "30m", "6h", "2d"). */
+  expiresIn?: string;
+  /** Test-agent leak guard: never expire, even in a temporary folder. */
+  keep?: boolean;
+  /** Installer: what this agent is for, in the person's own words. */
+  role?: string;
+  /** Installer: don't ask about cloud backup. The agent offers it later, when wanted. */
+  skipCloudBackup?: boolean;
 }
 
 /**
@@ -203,6 +222,15 @@ export function refuseIfTccProtected(projectDir: string, what: string): void {
  * Main init entry point. Handles both fresh and existing project modes.
  */
 export async function initProject(options: InitOptions): Promise<void> {
+  if (options.keep && options.expiresIn) {
+    console.log(pc.red('  --keep and --expires-in contradict each other; pass one.'));
+    process.exit(1);
+  }
+  if (options.expiresIn && parseTtl(options.expiresIn) === null) {
+    console.log(pc.red(`  --expires-in must look like 30m, 6h or 2d (got "${options.expiresIn}").`));
+    process.exit(1);
+  }
+
   // Standalone mode: create at ~/.instar/agents/<name>/
   if (options.standalone) {
     const agentName = options.name;
@@ -211,7 +239,8 @@ export async function initProject(options: InitOptions): Promise<void> {
       console.log(`  Usage: ${pc.cyan('instar init --standalone my-agent')}`);
       process.exit(1);
     }
-    return initStandaloneAgent(agentName, options);
+    const projectDir = path.join(standaloneAgentsDir(), agentName);
+    return withProvisioningPosture(projectDir, options, () => initStandaloneAgent(agentName, options));
   }
 
   // Detect mode: if a project name argument was passed, it's fresh install
@@ -219,9 +248,40 @@ export async function initProject(options: InitOptions): Promise<void> {
   const isFresh = !!projectName && !options.dir;
 
   if (isFresh) {
-    return initFreshProject(projectName!, options);
+    const projectDir = path.resolve(process.cwd(), projectName!);
+    return withProvisioningPosture(projectDir, options, () => initFreshProject(projectName!, options));
   } else {
-    return initExistingProject(options);
+    const projectDir = path.resolve(options.dir || process.cwd());
+    return withProvisioningPosture(projectDir, options, () => initExistingProject(options));
+  }
+}
+
+/**
+ * Test-agent leak guard (docs/specs/test-agent-leak-guard.md). After an init
+ * that CREATED this agent's config.json (never a re-run over an existing
+ * agent), record the provisioning posture: autostart.autoInstall:false for a
+ * non-interactive or throwaway init (unless --autostart), and a throwawayAgent
+ * expiry for a throwaway location or --expires-in (or a keep record).
+ */
+async function withProvisioningPosture(projectDir: string, options: InitOptions, run: () => Promise<void>): Promise<void> {
+  const configFile = path.join(projectDir, '.instar', 'config.json');
+  const existedBefore = fs.existsSync(configFile);
+  await run();
+  if (existedBefore || !fs.existsSync(configFile)) return;
+  const interactive = options.interactive ?? !!(process.stdin.isTTY && process.stdout.isTTY);
+  const posture = decideInitPosture({
+    projectDir,
+    interactive,
+    autostartFlag: options.autostart === true,
+    keep: options.keep === true,
+    expiresIn: options.expiresIn,
+  });
+  applyInitPosture(projectDir, posture);
+  if (posture.throwawayAgent?.expiresAt) {
+    console.log(pc.yellow(`  Throwaway agent: it will remove its own auto-start and stop at ${posture.throwawayAgent.expiresAt} (pass --keep to never expire).`));
+  }
+  if (posture.autostart) {
+    console.log(pc.dim(`  Auto-start will not install itself (${posture.autostart.reason}); run \`instar autostart install\` to add it.`));
   }
 }
 
@@ -300,6 +360,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
 
   // Create .instar/ state directory
   const stateDir = path.join(projectDir, '.instar');
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(`  ${pc.green('✓')} Created .instar/`);
 
@@ -478,6 +540,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
+  installAppRelay(projectDir);
   installSecretDropRetrieve(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
   installSecretGet(projectDir);
@@ -485,7 +548,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
   installBrowserScripts(projectDir);
-  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)`);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -514,7 +577,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   if (claudeEnabled) {
     const claudeMd = generateClaudeMd(projectName, identity.name, port, false);
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMd);
-    console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+    applyClaudeMdReferenceLayout(projectDir, stateDir, port, projectName);
+    console.log(`  ${pc.green('✓')} Created CLAUDE.md (+ ${CLAUDE_MD_REFERENCE_DIR_REL}/ reference files)`);
   }
 
   // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
@@ -686,6 +750,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
 
   // Create state directory
   const stateDir = path.join(projectDir, '.instar');
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(pc.green('  Created:') + ' .instar/');
 
@@ -883,12 +949,13 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/serendipity-capture.sh');
+  installAppRelay(projectDir);
   installSecretDropRetrieve(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
   installBrowserScripts(projectDir);
-  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)');
+  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -923,11 +990,12 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     console.log(pc.dim('  Exists:') + ' machine identity (preserved)');
   }
 
-  // Append agency principles to CLAUDE.md if it exists
+  // Append agency principles to CLAUDE.md if it exists (not when the instar
+  // block of the reference layout is already there — it carries them).
   const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
   if (fs.existsSync(claudeMdPath)) {
     const content = fs.readFileSync(claudeMdPath, 'utf-8');
-    if (!content.includes('## Agent Infrastructure')) {
+    if (!content.includes('## Agent Infrastructure') && findCoreRegion(content) === null) {
       fs.appendFileSync(claudeMdPath, getAgencyPrinciples(projectName, undefined));
       console.log(pc.green('  Updated:') + ' CLAUDE.md (added agency principles)');
     }
@@ -1044,11 +1112,14 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
 
   // Create directory structure
   fs.mkdirSync(projectDir, { recursive: true });
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(`  ${pc.green('✓')} Created ${projectDir}`);
 
   // Generate identity
   const identity = defaultIdentity(agentName);
+  if (options.role) identity.role = options.role;
   const authToken = randomUUID();
 
   // Write identity files
@@ -1129,7 +1200,8 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
       path.join(projectDir, 'CLAUDE.md'),
       generateClaudeMd(agentName, agentName, port, false),
     );
-    console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+    applyClaudeMdReferenceLayout(projectDir, stateDir, port, agentName);
+    console.log(`  ${pc.green('✓')} Created CLAUDE.md (+ ${CLAUDE_MD_REFERENCE_DIR_REL}/ reference files)`);
   }
 
   // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
@@ -1204,7 +1276,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   }
 
   // Cloud backup setup (recommended — protects agent data from machine loss)
-  await setupCloudBackup(projectDir, stateDir, agentName);
+  if (!options.skipCloudBackup) await setupCloudBackup(projectDir, stateDir, agentName);
 
   // Generate manifest signing key
   const standaloneIntegrity = new ManifestIntegrity(path.join(stateDir, 'state'));
@@ -1499,9 +1571,11 @@ async function autoInstallPackage(pkg: string): Promise<string | null> {
         console.log(pc.dim('  Homebrew not found. Install it first: https://brew.sh'));
       }
     } else if (platform === 'linux') {
-      // Linux — try apt
-      console.log(pc.dim(`  Running: sudo apt install -y ${pkg}`));
-      execFileSync('sudo', ['apt', 'install', '-y', pkg], { stdio: 'inherit' });
+      // Linux — whichever package manager this computer has (apt, dnf, yum or pacman).
+      const command = packageInstallCommand([pkg]);
+      if (!command) return null;
+      console.log(pc.dim(`  Running: ${command.join(' ')}`));
+      execFileSync(command[0], command.slice(1), { stdio: 'inherit' });
       const installed = execFileSync('which', [pkg], { encoding: 'utf-8', stdio: 'pipe' }).trim();
       if (installed) {
         console.log(`  ${pc.green('✓')} Installed ${pkg}`);
@@ -1716,6 +1790,17 @@ curl http://localhost:\${INSTAR_PORT:-${port}}/evolution
  * Install built-in skills for evolution system.
  * Only writes skill files that don't already exist (preserves customizations).
  */
+/**
+ * The canonical skills root (`<agent-home>/.instar/skills`) for a Claude skills
+ * dir (`<agent-home>/.claude/skills`), or null when `skillsDir` is not that
+ * shape (test fixtures pass arbitrary dirs; those keep the legacy behaviour).
+ */
+export function canonicalSkillsRootFor(skillsDir: string): string | null {
+  const resolved = path.resolve(skillsDir);
+  if (path.basename(resolved) !== 'skills' || path.basename(path.dirname(resolved)) !== '.claude') return null;
+  return path.join(path.dirname(path.dirname(resolved)), '.instar', 'skills');
+}
+
 export function installBuiltinSkills(skillsDir: string, port: number): void {
   const skills: Record<string, { name: string; description: string; content: string }> = {
     'iterative-converging-audit': {
@@ -3023,7 +3108,29 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
     },
   };
 
+  // Canonical-first (specs/instar-concepts/skill.md; skill-learning-sentinel
+  // slice 0): the master copy of each built-in skill is written to
+  // `.instar/skills/<slug>/SKILL.md` when absent. The Claude rendering below is
+  // still written when absent so a fresh install is usable before the first
+  // async migration pass; every other enabled framework's rendering is produced
+  // from canonical by PostUpdateMigrator.migrateBuiltinSkillRenderings (via the
+  // parity rule's remediate). Nothing on disk is ever overwritten.
+  const canonicalRoot = canonicalSkillsRootFor(skillsDir);
   for (const [slug, skill] of Object.entries(skills)) {
+    if (canonicalRoot) {
+      const canonicalFile = path.join(canonicalRoot, slug, 'SKILL.md');
+      if (!fs.existsSync(canonicalFile)) {
+        // Canonical must parse under the parity rule's YAML schema: an unquoted
+        // `description:` holding ": " (e.g. "Trigger words: …") is re-quoted with the
+        // same content; a skill that still cannot parse gets no canonical (its Claude
+        // rendering below is unaffected).
+        const normalized = normalizeSkillFrontmatter(skill.content);
+        if (normalized !== null) {
+          fs.mkdirSync(path.dirname(canonicalFile), { recursive: true });
+          fs.writeFileSync(canonicalFile, normalized.text);
+        }
+      }
+    }
     const skillDir = path.join(skillsDir, slug);
     const skillFile = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(skillFile)) {
@@ -3253,6 +3360,55 @@ export function getDefaultJobs(port: number): object[] {
         value: `Run a quick health check: verify the instar server is responding (curl http://localhost:\${INSTAR_PORT:-${port}}/health), check disk space (df -h), and report any issues. Only send a message if something needs attention — silence means healthy. IMPORTANT: If you find issues, describe them in plain conversational language. Never dump raw JSON, field names, error codes, or structured data. The user reads these on their phone — write like you're texting them a quick heads-up. If the health response includes a degradationSummary array, relay those narrative strings directly.`,
       },
       tags: ['cat:guardian'],
+      mcpAccess: 'none',
+      // Script runner (docs/specs/job-cost-reduction.md §5): the shipped
+      // scripts/health-check.mjs does this check with zero LLM calls. The prompt
+      // body above stays complete and unchanged: it is the narrator's context and
+      // the rollback path (§8.4).
+      runner: 'script',
+      script: 'health-check.mjs',
+      scriptTimeoutMinutes: 1,
+      supervision: 'tier0',
+      scriptSupervision: 'triage',
+      triageEvidence: 'full',
+      triageFields: ['disk_free_pct', 'sessions_current', 'sessions_max', 'degradations', 'llm_status'],
+      triageBareOk: ['healthy'],
+      triageBareSkipped: ['feature-dark'],
+      anomalies: [
+        { kind: 'disk-low', class: 'recoverable' },
+        { kind: 'disk-critical', class: 'critical' },
+        { kind: 'sessions-exhausted', class: 'recoverable' },
+        { kind: 'llm-unreliable', class: 'recoverable' },
+        { kind: 'degradation:*', class: 'recoverable' },
+      ],
+    },
+    {
+      slug: 'script-job-supervisor',
+      name: 'Script Job Supervisor',
+      description: 'One daily high-level review across every script job: triage decisions, sessions, backup-check disagreements, canaries and missing machines (docs/specs/job-cost-reduction.md §5.6.5). Advisory: raises or clears its own low-priority attention items.',
+      schedule: '23 7 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 5,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `Run the daily script-job supervision pass once, then stop. Do NOT message the user: the server makes the one bounded review call and raises or clears its own low-priority attention items.
+
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+
+curl -sS -m 300 -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H "X-Instar-Request: 1" -H 'Content-Type: application/json' -d '{}' http://localhost:\${INSTAR_PORT:-${port}}/jobs/script-supervision/pass
+
+A 503 means the pass is dark on this agent; a 409 means another machine holds the run. Both are nothing to do. Never retry in the same run. Exit silently.`,
+      },
+      tags: ['cat:guardian', 'role:worker'],
+      mcpAccess: 'none',
+      runner: 'script',
+      script: 'script-job-supervisor.mjs',
+      scriptTimeoutMinutes: 6,
+      supervision: 'tier0',
+      scriptSupervision: 'deterministic',
     },
     {
       slug: 'reflection-trigger',
@@ -3379,17 +3535,14 @@ If no actionable patterns found, exit silently.`,
 AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 PORT="\${INSTAR_PORT:-${port}}"
 
-Check for overdue commitments: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
+Report only. Do not complete, cancel or edit any action, and do not message the user: this job keeps ONE dashboard row current, and the agent works the actions themselves in its normal sessions.
 
-For each overdue action:
-1. Assess: Can this be completed now? Is it still relevant?
-2. If actionable, attempt to complete it or advance it
-3. If no longer relevant, cancel it: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
-4. If blocked, escalate to the user via Telegram (if configured)
+Check for overdue actions: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
 
-Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
+Also count pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
-Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue": curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue: <ids>","priority":"medium","source":"agent"}'
+Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue". Write the body in exactly this shape and nothing else: "<count> overdue, <stale> pending over 48h". The source is this job's name, never "agent": a scheduled job's row stays on the dashboard and is held back from the user's Attention topic.
+curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue, <stale> pending over 48h","priority":"medium","source":"evolution-overdue-check"}'
 When the overdue list is EMPTY, close that row instead: curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"evolution-overdue","resolution":"no evolution actions are overdue"}'
 
 If no overdue or stale items, exit silently (after the clear above).`,
@@ -3555,7 +3708,7 @@ If no overdue or stale items, exit silently (after the clear above).`,
       priority: 'high',
       expectedDurationMinutes: 5,
       model: 'haiku',
-      enabled: true,
+      enabled: false,
       gate: 'bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/git-sync-gate.sh',
       execute: {
         type: 'skill',
@@ -3683,6 +3836,23 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
     },
     {
+      slug: 'attribution-review',
+      name: 'Attribution Review',
+      description: 'Works through the attribution report: fixes notes that credit someone without a source. Each fix is a normal edit that passes the write gate. Runs only while attribution is in enforce mode and the report holds something.',
+      schedule: '0 9 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 15,
+      model: 'sonnet',
+      enabled: true,
+      // Zero-token gate. The route answers 503 where the feature is dark, so this job is inert on the fleet.
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/attribution/status | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('mode')=='enforce' and d.get('sessionLine') else 1)" 2>/dev/null`,
+      execute: {
+        type: 'prompt',
+        value: `Work through the attribution report.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')")}"\ncurl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/attribution/status\n\nFor each item in report.unsourced and report.falseCitations, open the note and fix it with a normal edit, which passes the same write gate. If a listed suggestion really is the source, read it first, then quote the exact words with its marker. Otherwise remove the credit and label it, for example: X. An earlier note credited this to Name; source unknown. [source unknown]. Never write a marker you did not read, and never credit a person to get past a refusal. report.notFoundOnLiveMachines and report.cannotCheckNow need no edit unless the note is also wrong: a machine may be down. Stop after 20 fixes. Do not message anyone.`,
+      },
+      tags: ['cat:maintenance', 'role:worker', 'exec:prompt'],
+    },
+    {
       slug: 'dashboard-link-refresh',
       name: 'Dashboard Link Refresh',
       description: 'Refresh the pinned dashboard link in Telegram so it never goes stale.',
@@ -3710,7 +3880,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
+        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nQuiet by Default: keep routine findings in internal records and [HANDOFF]. Own bounded checks and recovery before escalating. Post to the Bugs hub only when a concrete remaining impact needs one operator-only decision or action; use one short plain notice. Never label a scheduled report as a conversational reply. Write your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3726,7 +3896,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
+        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3742,7 +3912,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
+        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3758,7 +3928,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
+        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3774,7 +3944,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
+        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3920,23 +4090,9 @@ function refreshJobs(stateDir: string): void {
     }
     if (repaired > 0) added++; // force write
 
-    // Auto-enable git-sync if git + remote are available (migration from disabled default)
-    const gitSyncJob = existingJobs.find(j => j.slug === 'git-sync') as Record<string, unknown> | undefined;
-    if (gitSyncJob && !gitSyncJob.enabled) {
-      const projectDir = path.dirname(stateDir);
-      const hasGit = fs.existsSync(path.join(projectDir, '.git'));
-      let hasRemote = false;
-      if (hasGit) {
-        try {
-          const remote = SafeGitExecutor.readSync(['remote'], { cwd: projectDir, stdio: 'pipe', operation: 'src/commands/init.ts:3331' }).toString().trim();
-          hasRemote = remote.length > 0;
-        } catch { /* no git or no remote */ }
-      }
-      if (hasGit && hasRemote) {
-        gitSyncJob.enabled = true;
-        added++; // force write
-      }
-    }
+    // Git synchronization can stage token-bearing local config. Never infer
+    // consent from a remote or an existing disabled job; only the operator
+    // may enable it explicitly.
 
     if (added > 0) {
       fs.writeFileSync(jobsPath, JSON.stringify(existingJobs, null, 2));
@@ -4028,6 +4184,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   }
 
   refreshSlackRelay(projectDir, stateDir, port, claudeEnabled);
+  installAppRelay(projectDir, stateDir);
 
   // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
   // are Claude-Code-specific (the agentic-web fetch script and the
@@ -4053,7 +4210,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
  * of bugs where scaffold-time and migration-time versions drift out of sync.
  * PostUpdateMigrator.getTelegramReplyScript() uses the same loading pattern.
  */
-function loadRelayTemplate(filename: string, port: number): string {
+export function loadRelayTemplate(filename: string, port: number): string {
   const modDir = __dirname;
   const candidates = [
     // dev: src/commands → ../templates/scripts
@@ -4084,6 +4241,17 @@ function installTelegramRelay(projectDir: string, port: number): void {
 }
 
 /**
+ * A machine that joined got Telegram after its install step, so it has no reply script and
+ * no session on it can answer. Both locations, as PostUpdateMigrator.migrateScripts keeps them.
+ */
+export function installTelegramRelayForJoinedMachine(projectDir: string, stateDir: string, port: number): void {
+  installTelegramRelay(projectDir, port);
+  const neutralDir = path.join(stateDir, 'scripts');
+  fs.mkdirSync(neutralDir, { recursive: true });
+  fs.writeFileSync(path.join(neutralDir, 'telegram-reply.sh'), loadRelayTemplate('telegram-reply.sh', port), { mode: 0o755 });
+}
+
+/**
  * Install the WhatsApp relay script that Claude uses to send responses
  * back to WhatsApp JIDs via the instar server API.
  */
@@ -4099,6 +4267,25 @@ function installWhatsAppRelay(projectDir: string, port: number): void {
  * Reads config.json for port, checks for known section headers, appends if missing.
  * Also adds Telegram relay section if Telegram is configured.
  */
+/**
+ * Split a freshly written full CLAUDE.md into the small instar block + the
+ * `.instar/reference/` files (docs/specs/claude-md-reference-layout.md), so the
+ * very first session already loads the small file. Same code path as the
+ * update migrator. Never fails init: on error the full file stays and the next
+ * update converts it.
+ */
+function applyClaudeMdReferenceLayout(projectDir: string, stateDir: string, port: number, projectName: string): void {
+  try {
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir, port, hasTelegram: false, projectName });
+    const result = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] };
+    migrator.migrateClaudeMdReferenceLayout(result, { freshInit: true });
+    for (const e of result.errors) console.log(`  ${pc.yellow('!')} CLAUDE.md reference layout: ${e} (the next update converts it)`);
+  } catch (err) {
+    // @silent-fallback-ok: reported on the console; the full CLAUDE.md stays and the next update converts it.
+    console.log(`  ${pc.yellow('!')} CLAUDE.md reference layout skipped: ${err instanceof Error ? err.message : String(err)} (the next update converts it)`);
+  }
+}
+
 function refreshClaudeMd(projectDir: string, stateDir: string): void {
   const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
   if (!fs.existsSync(claudeMdPath)) return;
@@ -4107,6 +4294,9 @@ function refreshClaudeMd(projectDir: string, stateDir: string): void {
   const port = (config?.port as number) || 4040;
 
   const content = fs.readFileSync(claudeMdPath, 'utf-8');
+  // Reference layout: the instar block is regenerated by PostUpdateMigrator;
+  // appending here would land outside it as if the operator wrote it.
+  if (findCoreRegion(content) !== null) return;
   const additions: string[] = [];
 
   // Check for Self-Diagnosis section
@@ -4266,6 +4456,12 @@ function installHooks(stateDir: string): void {
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
+  // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
+  fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
+  // PostCompact hook (context-budget-layered-summaries §9.1): stores the compaction summary.
+  fs.writeFileSync(path.join(hooksDir, 'post-compact.sh'), migrator.getHookContent('post-compact'), { mode: 0o755 });
+  // PreCompact steering hook (§9.1/§9.5): prints staged keep-instructions into the compaction prompt.
+  fs.writeFileSync(path.join(hooksDir, 'pre-compact-steer.sh'), migrator.getHookContent('pre-compact-steer'), { mode: 0o755 });
 
   // Auto-restart-on-MCP-inaccessible — fired backgrounded by session-start.sh.
   // Dark by default; enabled on development agents. Install on fresh init too so
@@ -4323,8 +4519,8 @@ if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "\$INPUT" | grep -qi "\$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "\$INPUT" | grep -qiE "\$pattern"; then
     if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
@@ -4432,6 +4628,8 @@ fi
 
   // Compaction recovery — shared from PostUpdateMigrator (single source of truth).
   fs.writeFileSync(path.join(hooksDir, 'compaction-recovery.sh'), migrator.getHookContent('compaction-recovery'), { mode: 0o755 });
+  // The recovery-output fitter the session-start hook pipes the block through (§9.1: hook output over 10,000 chars reaches the model only as a preview).
+  fs.writeFileSync(path.join(hooksDir, 'fit-recovery-output.mjs'), PostUpdateMigrator.getFitRecoveryOutput(), { mode: 0o755 });
 
 
   // Deferral detector, post-action reflection, external communication guard
@@ -4450,6 +4648,8 @@ fi
   // deferred-install gap widening). Dev-gated dark + fail-open on every
   // uncertainty, so on a fresh fleet agent it is one config read per tool call.
   fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'fold-marker-guard.js'), migrator.getHookContent('fold-marker-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'signin-profile-guard.js'), migrator.getHookContent('signin-profile-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'telegram-origin-guard.js'), migrator.getHookContent('telegram-origin-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
@@ -4470,6 +4670,10 @@ fi
   // Unjustified Stop Gate router — Stop hook that calls the server-side gate.
   // Shadow-mode by default; enforcement is controlled server-side.
   fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
+
+  // Attribution write gate — PreToolUse on Write|Edit|MultiEdit. Thin: the decision is server-side, and
+  // the route answers 503 on an agent where the feature is dark, so the hook passes.
+  fs.writeFileSync(path.join(hooksDir, 'attribution-gate.js'), migrator.getHookContent('attribution-gate'), { mode: 0o755 });
 
   // Verify-Before-Done observer — structural client-side TurnEvidence, always
   // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
@@ -4562,14 +4766,18 @@ process.stdin.on('end', async () => {
       },
       timeout: 3000,
     }, (res) => {
-      res.resume(); // drain response
+      // Exit as soon as the server has answered (it does in ~7 ms): this hook
+      // runs after every tool call and Claude Code waits for it, so the old
+      // fixed 50 ms wait was added to every action.
+      res.resume();
+      res.on('end', () => process.exit(0));
     });
 
-    req.on('error', () => {}); // silent failure
+    req.on('error', () => process.exit(0)); // silent failure
     req.write(payload);
     req.end();
 
-    // Don't wait for response — exit immediately
+    // Upper bound: never wait longer than before for a slow server.
     setTimeout(() => process.exit(0), 50);
   } catch (e) {
     process.exit(0);
@@ -4955,6 +5163,26 @@ if __name__ == '__main__':
  * than embedding it inline (345 lines). Handles JSON construction, HMAC signing,
  * atomic writes, rate limiting, secret scanning, and patch file validation.
  */
+/**
+ * Install the native app conversation reply relay (docs/specs/mobile-native-conversations.md §4.3).
+ * Framework-neutral and inert outside an app-conversation session, so every agent gets it.
+ */
+function installAppRelay(projectDir: string, stateDir: string = path.join(projectDir, '.instar')): void {
+  const outcome = ensureAppReplyRelay({
+    projectDir, stateDir,
+    template: loadRelayTemplate('app-reply.sh', 4040),
+    claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
+  });
+  if (outcome.errors.length > 0) throw new Error(`App reply relay install failed: ${outcome.errors.join('; ')}`);
+  // Peer-place reply relay (docs/specs/memory-privacy-agent-places.md §5): inert outside a peer place.
+  const peerOutcome = ensureThreadlineReplyRelay({
+    projectDir, stateDir,
+    template: loadRelayTemplate('threadline-reply.sh', 4040),
+    claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
+  });
+  if (peerOutcome.errors.length > 0) throw new Error(`Peer-place reply relay install failed: ${peerOutcome.errors.join('; ')}`);
+}
+
 function installSerendipityCapture(projectDir: string): void {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts');
   fs.mkdirSync(scriptsDir, { recursive: true });
@@ -5060,12 +5288,22 @@ function installSecretGet(projectDir: string): void {
 
 /**
  * The normal-Chrome helper scripts shipped in src/templates/scripts/browser/: the three macOS tools
- * (Apple Events) and the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
- * with its WSL wrapper (ndrive.sh). All five install everywhere; each refuses the wrong platform itself.
+ * (Apple Events), the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
+ * with its WSL wrapper (ndrive.sh), and the Linux driver (x-drive.py, AT-SPI + XTEST on an agent-private
+ * display) with its wrapper (xdrive.sh). All install everywhere; each refuses the wrong platform itself.
  */
-export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh'] as const;
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'account-page-safety.js', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
+/** Started by the agent's own boot, never by a person or the skill, so the skill does not name it. */
+export const BROWSER_PROVISION_SCRIPT_NAMES = ['xdrive-provision.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
 export const MACOS_BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
+/**
+ * Browser-care helpers (machine self-maintenance, Part B): the instance ledger the launch and JS
+ * helpers keep current, and the close, renew and unsaved-input tools. Installed beside the helpers
+ * above by the same always-overwrite installer. The three user-facing ones refuse off macOS;
+ * chrome-ledger.sh is called by the others with an already-resolved profile.
+ */
+export const BROWSER_CARE_SCRIPT_NAMES = ['chrome-ledger.sh', 'chrome-close.sh', 'chrome-renew.sh', 'chrome-unsaved.sh'] as const;
 
 /**
  * Install the normal-Chrome helper scripts (.instar/scripts/browser/) used by the
@@ -5079,7 +5317,15 @@ export function installBrowserScripts(projectDir: string): string[] {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
   const modDir = __dirname;
   const written: string[] = [];
-  for (const name of BROWSER_SCRIPT_NAMES) {
+  for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, ...BROWSER_PROVISION_SCRIPT_NAMES]) {
+    if (name === 'account-page-safety.js') {
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      const target = path.join(scriptsDir, name);
+      fs.writeFileSync(target, ACCOUNT_PAGE_SAFETY_SCRIPT, { mode: 0o755 });
+      fs.chmodSync(target, 0o755);
+      written.push(name);
+      continue;
+    }
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),
@@ -5164,6 +5410,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       { matcher: 'Bash', hooks: instarBashHooks },
       { matcher: 'mcp__.*', hooks: instarMcpHooks },
       { matcher: '*', hooks: instarWildcardHooks },
+      { matcher: INSTAR_WRITE_PRETOOLUSE_MATCHER, hooks: INSTAR_WRITE_PRETOOLUSE_HOOKS.map((h) => ({ ...h })) },
     ];
   } else {
     const preToolUse = hooks.PreToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -5201,11 +5448,13 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     // existing-agent migrator calls — so the two paths cannot drift (an anti-drift
     // test asserts both consume it).
     ensureInstarWildcardPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+    ensureInstarWritePreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
   }
 
   // SessionStart: identity injection on all lifecycle events
   // Uses the correct Claude Code hook type (not PostToolUse or Notification)
-  // The session-start.sh hook handles event routing internally via CLAUDE_HOOK_MATCHER
+  // The session-start.sh hook routes on the "source" field Claude Code passes in its stdin JSON
+  // (context-budget-layered-summaries §9.1; CLAUDE_HOOK_MATCHER is only a legacy fallback).
   const sessionStartHook = {
     type: 'command',
     command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
@@ -5217,6 +5466,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       { matcher: 'startup', hooks: [sessionStartHook] },
       { matcher: 'resume', hooks: [sessionStartHook] },
       { matcher: 'compact', hooks: [sessionStartHook] },
+      { matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] },
     ];
   } else {
     // Merge: ensure all matchers are covered
@@ -5225,6 +5475,25 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       if (!sessionStart.some(e => e.matcher === matcher)) {
         sessionStart.push({ matcher, hooks: [sessionStartHook] });
       }
+    }
+    if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {
+      sessionStart.push({ matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PostCompact (context-budget-layered-summaries §9.1): store Claude's compaction summary.
+  {
+    const postCompact = (hooks.PostCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!postCompact.some(e => e.hooks?.some(h => h.command?.includes('post-compact.sh')))) {
+      postCompact.push({ matcher: '', hooks: [{ ...POST_COMPACT_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PreCompact steering (§9.1): its own entry, separate from the reporter's.
+  {
+    const preCompact = (hooks.PreCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!preCompact.some(e => e.hooks?.some(h => h.command?.includes('pre-compact-steer.sh')))) {
+      preCompact.push({ matcher: '', hooks: [{ ...PRE_COMPACT_STEER_SETTINGS_HOOK }] });
     }
   }
 
@@ -5420,6 +5689,14 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // MCP Servers: Register Playwright in the correct locations
   // Claude Code reads MCP servers from ~/.claude.json and .mcp.json, NOT .claude/settings.json
   registerPlaywrightMcp(projectDir);
+
+  // Pre-answer Claude Code's first-run screens (welcome, folder trust, project
+  // MCP picker, bypass-permissions warning) for the login this agent will use.
+  // On a machine that never ran Claude Code they otherwise end every session.
+  const firstRun = ensureClaudeFirstRunAnswered(process.env.CLAUDE_CONFIG_DIR || null, path.resolve(projectDir));
+  if (!firstRun.patched && firstRun.reason !== 'already interactive-ready') {
+    console.log(pc.yellow(`  Could not pre-answer Claude Code's first-run screens: ${firstRun.reason}`));
+  }
 }
 
 /**

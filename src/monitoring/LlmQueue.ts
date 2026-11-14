@@ -66,6 +66,15 @@ interface Waiter {
   reject: (e: Error) => void;
 }
 
+/**
+ * A call refused before any provider ran. Typed so a caller can tell "the model
+ * answered badly" from "the model was never asked" without matching error text.
+ */
+export type LlmQueueAdmissionCode = 'daily-spend-cap' | 'lane-reserve' | 'component-budget';
+export class LlmQueueAdmissionError extends Error {
+  constructor(readonly code: LlmQueueAdmissionCode, message: string) { super(message); }
+}
+
 export class LlmQueue {
   private maxConcurrent: number;
   private interactiveReservePct: number;
@@ -113,7 +122,7 @@ export class LlmQueue {
 
     // Daily cap check.
     if (this.dailySpendCents + costCents > this.maxDailyCents) {
-      throw new Error('LLM daily spend cap exceeded');
+      throw new LlmQueueAdmissionError('daily-spend-cap', 'LLM daily spend cap exceeded');
     }
     // Per-lane reserve: interactive lane is guaranteed ≥ reservePct; background
     // lane cannot push total into the reserved portion once interactive floor
@@ -122,7 +131,7 @@ export class LlmQueue {
     if (lane === 'background') {
       const remainingAfter = this.maxDailyCents - (this.dailySpendCents + costCents);
       if (remainingAfter < reservedForInteractive - this.dailyInteractiveCents) {
-        throw new Error('LLM background lane would breach interactive reserve');
+        throw new LlmQueueAdmissionError('lane-reserve', 'LLM background lane would breach interactive reserve');
       }
     }
 
@@ -144,7 +153,7 @@ export class LlmQueue {
       || rows.reduce((sum, row) => sum + row.inputTokens, 0) + request.estimatedInputTokens > request.daily.inputTokens
       || rows.reduce((sum, row) => sum + row.outputTokens, 0) + request.maxOutputTokens > request.daily.outputTokens
       || rows.reduce((sum, row) => sum + row.costCents, 0) + request.estimatedCostCents > request.daily.costCents) {
-      throw new Error('LLM metered component budget exhausted');
+      throw new LlmQueueAdmissionError('component-budget', 'LLM metered component budget exhausted');
     }
     const reservation = { at: now, ...(request.hourly.topic ? { topic: request.hourly.topic } : {}),
       inputTokens: request.estimatedInputTokens, outputTokens: request.maxOutputTokens, costCents: request.estimatedCostCents };

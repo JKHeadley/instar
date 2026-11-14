@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "internal-codex-account-room",
+  "sessionId": "f6ecfb0d-aae9-445a-90af-0610b94dfcfd",
+  "timestamp": "2026-11-08T09:09:38.154Z",
+  "artifactPath": "upgrades/side-effects/internal-codex-account-room.md",
+  "artifactSha256": "b91a65871ba4e7be9acafcf5aac0a667fa49bb41e0f760534f216ec96153caa8",
+  "coveredFiles": [
+    "docs/specs/internal-codex-account-room.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SubscriptionPool.ts",
+    "src/core/intelligenceProviderFactory.ts",
+    "src/core/internalCodexAccount.ts",
+    "src/core/types.ts",
+    "tests/integration/internal-codex-account-room.test.ts",
+    "tests/unit/internal-codex-account-room.test.ts",
+    "upgrades/next/internal-codex-account-room.md",
+    "upgrades/side-effects/internal-codex-account-room.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Routing choice for internal calls with an ambient fallback at every step and an off switch; a revert or intelligence.codexAccountSelection.enabled=false restores the old behavior; no state migration.",
+  "eli16Path": "docs/specs/internal-codex-account-room.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-codex-account-room.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

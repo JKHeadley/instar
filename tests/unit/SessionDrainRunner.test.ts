@@ -90,6 +90,16 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     expect(h.casCalls.at(-1)).toEqual({ type: 'claim', machineId: 'm_mini' });
   });
 
+  it('the forced-close notice carries no internal reason text; the bound stays in the audit row (Rule 8)', async () => {
+    const h = harness({ quietAfterPolls: Infinity });
+    await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    // Only the topic and the target cross the seam — the 2026-11-03 notice pasted
+    // "drain bound (30000ms) reached — final turn may be partial" into user text.
+    expect(h.notifyInterrupted.mock.calls[0]).toEqual(['13481', 'm_mini']);
+    const done = h.audits.find((a: Record<string, unknown>) => a.event === 'drain-completed-interrupted' || a.type === 'drain-completed-interrupted' || JSON.stringify(a).includes('drain-completed-interrupted'));
+    expect(JSON.stringify(done)).toContain('drainBoundMs');
+  });
+
   it('requires encrypted ledger custody before closing or claiming and restores custody on refusal', async () => {
     let rec = activeRec();
     const transferDeliveryLedger = vi.fn(async () => ({ ok: false, reason: 'target-storage-full' }));
@@ -254,4 +264,89 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
       expect(h.casCalls.at(-1)).toEqual({ type: 'claim', machineId: 'm_mini' });
     });
   }
+});
+
+describe("SessionDrainRunner — onNotQuiet: 'abort' (an unrequested move)", () => {
+  const req = { sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4, onNotQuiet: 'abort' as const };
+  const transferring = activeRec({ status: 'transferring', transferTo: 'm_mini', ownershipEpoch: 5 });
+  /** Record reads: active before the transfer CAS, then whatever `after` says. */
+  function reads(after: () => SessionOwnershipRecord | null) {
+    let started = false;
+    return {
+      readOwnership: () => (started ? after() : activeRec()),
+      mark: (a: OwnershipAction) => { if (a.type === 'transfer') started = true; },
+    };
+  }
+  function rig(over: { idle?: boolean | 'throws'; quiet?: boolean; after?: () => SessionOwnershipRecord | null; casOk?: (a: OwnershipAction) => boolean } = {}) {
+    const r = reads(over.after ?? (() => transferring));
+    const h = harness({
+      quietAfterPolls: over.quiet === false ? Infinity : 0,
+      casOk: (a) => { r.mark(a); return over.casOk ? over.casOk(a) : true; },
+      deps: {
+        readOwnership: r.readOwnership,
+        sessionIdleNow: async () => { if (over.idle === 'throws') throw new Error('tmux'); return over.idle ?? true; },
+      },
+    });
+    return h;
+  }
+
+  it('an idle session is closed and the claim lands', async () => {
+    const h = rig();
+    const o = await h.runner.run(req);
+    expect(o).toMatchObject({ status: 'drained', claimLanded: true });
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([['working', false], ['unreadable', 'throws']] as const)('a %s session is left running and the transfer aborted', async (_n, idle) => {
+    const h = rig({ idle, after: () => activeRec() });
+    const o = await h.runner.run(req);
+    expect(o.status).toBe('aborted-not-quiet');
+    expect(h.terminate).not.toHaveBeenCalled();
+    expect(h.suspend).not.toHaveBeenCalled();
+    expect(h.casCalls.map((c) => c.type)).toEqual(['transfer', 'abort-transfer']);
+  });
+
+  it('a session that starts working after the read never waits for the bound and is never forced', async () => {
+    const h = rig({ quiet: false, after: () => activeRec() });
+    const o = await h.runner.run(req);
+    expect(o.status).toBe('aborted-not-quiet');
+    expect(h.terminate).not.toHaveBeenCalled();
+    expect(h.markInterrupted).not.toHaveBeenCalled();
+  });
+
+  it('the target claimed first: the move happened, so the local copy closes and no second claim is sent', async () => {
+    const h = rig({ after: () => activeRec({ ownerMachineId: 'm_mini', ownershipEpoch: 6 }) });
+    const o = await h.runner.run(req);
+    expect(o).toMatchObject({ status: 'drained', claimLanded: false });
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    expect(h.casCalls.map((c) => c.type)).toEqual(['transfer']);
+  });
+
+  it('a late runner whose record went anywhere else is fenced and closes nothing', async () => {
+    const h = rig({ after: () => activeRec({ ownershipEpoch: 7 }) });
+    const o = await h.runner.run(req);
+    expect(o.status).toBe('refused-fenced');
+    expect(h.terminate).not.toHaveBeenCalled();
+    expect(h.casCalls.map((c) => c.type)).toEqual(['transfer']);
+  });
+
+  it('a lost abort with the target now the active owner closes the local copy: one owner, one session', async () => {
+    const h = rig({ idle: false, after: () => activeRec({ ownerMachineId: 'm_mini', ownershipEpoch: 6 }), casOk: (a) => a.type !== 'abort-transfer' });
+    await h.runner.run(req);
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lost abort for any other reason leaves the session alone, because the claim is not established', async () => {
+    const h = rig({ idle: false, after: () => transferring, casOk: (a) => a.type !== 'abort-transfer' });
+    await h.runner.run(req);
+    expect(h.terminate).not.toHaveBeenCalled();
+  });
+
+  it("today's operator path is unchanged: default mode never reads the work state", async () => {
+    const idle = vi.fn(async () => false);
+    const h = harness({ quietAfterPolls: 1, deps: { sessionIdleNow: idle } });
+    await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    expect(idle).not.toHaveBeenCalled();
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+  });
 });

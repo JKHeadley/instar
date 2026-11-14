@@ -7,7 +7,7 @@ parent-principle: "Structure beats Willpower — a quality bar that lives only i
 created: "2026-07-08"
 topic: 29723
 approved: true
-approved-provenance: "F1–F9: operator (Justin), topic 29723, 2026-07-08 — 'Yes, please proceed as you see fit'. F10–F11 (glance floors): operator (Justin), topic 29836, 2026-07-10 18:10 PDT — 'Perfect, yes approved', reacting to the three-layer / two-floor / 4-phase proposal (APPROVED-PROPOSAL.md)."
+approved-provenance: "F12 (refresh keeps place): operator (Justin), topic 136706, 2026-11-03. F1–F9: operator (Justin), topic 29723, 2026-07-08 — 'Yes, please proceed as you see fit'. F10–F11 (glance floors): operator (Justin), topic 29836, 2026-07-10 18:10 PDT — 'Perfect, yes approved', reacting to the three-layer / two-floor / 4-phase proposal (APPROVED-PROPOSAL.md)."
 decisions: "FD-1=grouped nav (operator); FD-2=viewport smoke test as a browser-gated CI job, SKIP-honest when no browser; FD-3=F7 soft-lint-first; FD-4=purpose line is the floor, inline help nice-to-have; FD-5=F10 glance floor = one headline + ≤5 tiles + ≤150 words + no insider vocab; FD-6=F11 universal drill-down = every tile/count/row/badge opens a detail layer (list → record), no dead-end summaries; FD-7=floors gate NEW/RETROFIT work, existing tabs grandfathered against the survey-scorecard baseline (ratchet: the grandfather list only shrinks)"
 review-convergence: "2026-07-11T01:45:40.702Z"
 review-iterations: 3
@@ -138,6 +138,22 @@ by tab; a floor never blocks an unrelated change.
   primitives — and promoting F9 to a static lint over `dashboard/*.js` — is a tracked
   follow-up <!-- tracked: topic-29836 --> ; until then F9 is a hard floor for the
   Subscriptions tab and the rule of record for every NEW polling surface.
+
+- **F12 — A refresh keeps the operator's place (added 2026-11-03, topic 136706).** A
+  page that repaints in the background MUST NOT move the page, close a fold the operator
+  opened, reopen one they closed, take focus, or show a placeholder over real content. A
+  deep link scrolls once per arrival, never on a repaint. Evidence: the console's
+  Development page went from scroll position 1048 to 479 about 25 seconds after arrival,
+  and Permission slips, Passwords & keys, Under the hood, Plans, Maturation, Machines and
+  Promises each jumped or blanked in the same measurement. Shared primitives in
+  `dashboard/console/ui.js`: `setKids` (repaints `<main>` and restores the place in one
+  task, so no gap is ever painted), `firstPaint` (a placeholder before the first real
+  paint only), `arrivalScroll` (the one way to scroll to a deep link) and `refreshHeld`
+  (F9 at the shell: the refresh waits for a focused or typed field, an open-interaction
+  marker, or selected text). Enforced by `tests/unit/dashboard-refresh-keeps-place.test.ts`:
+  every page parsed from `NATIVE` is rendered twice, with a population floor so a regressed
+  parser fails loudly, a negative control per predicate, and a static scan so no page
+  calls `main.replaceChildren`, `scrollIntoView` or `window.scrollTo` around the helpers.
 
 ## The glance floors — readable at a glance, details one click down (added 2026-07-10, topic 29836)
 

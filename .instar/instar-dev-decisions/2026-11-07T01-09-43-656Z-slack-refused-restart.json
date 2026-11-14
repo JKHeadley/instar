@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-07T01:09:43.656Z",
+  "slug": "slack-refused-restart",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 608,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SlackRefusedHold.ts",
+      "src/core/SlackReplyRelayInstaller.ts",
+      "src/server/AgentServer.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 542,
+    "deletedLines": 66
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

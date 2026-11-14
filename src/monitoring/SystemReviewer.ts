@@ -216,7 +216,7 @@ function formatDoctorAlert(result: ProbeResult): string {
     'Lifeline Process':
       `My crash-recovery process isn't running. If I stop unexpectedly, I won't restart automatically. Reply "fix lifeline" to fix this.`,
     'Session Health':
-      `One of my sessions might be stuck. Reply "restart sessions" and I'll check and fix them.`,
+      `A session health check found a problem. I recorded the result.`,
     'Scheduler':
       `The job scheduler isn't working properly, so scheduled tasks might not run. Reply "fix scheduler" to investigate.`,
     'Telegram Messaging':

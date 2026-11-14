@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "dashboard-chats-phone-layout",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T18:15:43.320Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "artifactSha256": "4a6423bb5eadddc384579e226a6a3769d6383a609e02214bf371ad950d2d4cf4",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/dashboard-chats-phone-layout.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "upgrades/next/dashboard-chats-phone-layout.md",
+    "upgrades/side-effects/dashboard-chats-phone-layout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Client wording: the read-only note names the right reason; a revert undoes it.",
+  "eli16Path": "docs/specs/dashboard-chats-phone-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-09T17:21:58.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:codex-cli-gpt-6-astra"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 0
+  },
+  "convergenceReport": "docs/specs/reports/improvement-observability-amendment6-combined-building-2026-11-09.md",
+  "convergenceSha256": "e3d39518b91c665beec09e5c0ab728983d133cf98b53749d96f0abb63c64807c",
+  "areas": {
+    "Building": {
+      "areaSha256": "b70f1c24f14908d9f0ec4d3d611e5a9b8627ed86e8435465397a89e0251da292",
+      "verdict": "accepted"
+    }
+  }
+}

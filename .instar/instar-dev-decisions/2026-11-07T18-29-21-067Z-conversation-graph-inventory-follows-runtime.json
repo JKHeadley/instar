@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-07T18:29:21.067Z",
+  "slug": "conversation-graph-inventory-follows-runtime",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/GraphSourceInventoryBinding.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One worker per runtime, started only by a runtime replacement; no new trigger or loop."
+  },
+  "verdict": "blocked"
+}

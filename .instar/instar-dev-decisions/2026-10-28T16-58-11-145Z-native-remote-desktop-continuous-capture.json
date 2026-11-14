@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-28T16:58:11.145Z",
+  "slug": "native-remote-desktop-continuous-capture",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 232,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DirectDesktopAccess.ts",
+      "src/scaffold/templates.ts",
+      "src/server/DesktopStreamManager.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 196,
+    "deletedLines": 36
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

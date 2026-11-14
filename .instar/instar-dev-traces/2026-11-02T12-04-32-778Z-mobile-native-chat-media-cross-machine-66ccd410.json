@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-cross-machine",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T12:04:32.778Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-cross-machine.md",
+  "artifactSha256": "5413c3961d84850dd1db6818efef5191b1ccf647bb9feee5114e612858e6535b",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/mobile-native-chat-media-cross-machine.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fix for PR 2580: the /health pool branch read req.query without a guard.",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

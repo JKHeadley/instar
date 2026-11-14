@@ -18,9 +18,23 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {durableStamp,isDurablyUnchanged,rememberDurable} from './GraphDurableFileMemo.js';
 import { execFileSync } from 'node:child_process';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+
+/** Opt-in durability barrier for callers that publish cryptographic receipts.
+ * It never creates a key, changes keychain enrollment or silently ignores I/O. */
+function syncSecretFileAndParents(file:string):void{
+ if(isDurablyUnchanged(file))return;
+ const stamp=durableStamp(file),before=fs.lstatSync(file);if(!before.isFile()||before.isSymbolicLink())throw new Error('secret-durability-file-invalid');
+ const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{const opened=fs.fstatSync(descriptor);if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino)throw new Error('secret-durability-file-changed');fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+ for(let directory=path.dirname(file);;directory=path.dirname(directory)){
+  const descriptor=fs.openSync(directory,'r');try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}if(path.dirname(directory)===directory)break;
+ }
+ rememberDurable(file,stamp);
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -98,6 +112,32 @@ export interface EncryptedSecretPayload {
 // ── Master Key Management ────────────────────────────────────────────
 
 /**
+ * On macOS a keychain read launches a child process and blocks the thread for
+ * tens of milliseconds, and every secret read asks for two accounts. A long
+ * operation reading secrets in a loop can block the agent for a minute. A found key
+ * and a genuine "not found" are remembered briefly in this process. A failure is
+ * never remembered, because acting on a false "no key" could overwrite a real one,
+ * and anything that might write re-reads the keychain first.
+ */
+const KEYCHAIN_READ_TTL_MS = 60_000;
+const KEYCHAIN_NOT_FOUND_EXIT = 44;
+const keychainReads = new Map<string, { value: Buffer | null; at: number }>();
+let keychainReadSaidNotFound = false;
+export function readKeychainMemoized(service: string, account: string, read: () => Buffer | null): Buffer | null {
+  const key = service + '\u0000' + account, now = Date.now(), known = keychainReads.get(key);
+  if (known && now - known.at >= 0 && now - known.at < KEYCHAIN_READ_TTL_MS) return known.value ? Buffer.from(known.value) : null;
+  if (known) { known.value?.fill(0); keychainReads.delete(key); }
+  keychainReadSaidNotFound = false;
+  const value = read();
+  if (value || keychainReadSaidNotFound) keychainReads.set(key, { value: value ? Buffer.from(value) : null, at: now });
+  return value;
+}
+/** Test seam: what the macOS read does when `security` says the item is absent. */
+export function noteKeychainNotFound(): void { keychainReadSaidNotFound = true; }
+/** Before anything that may write a key, and after any keychain write. */
+export function forgetKeychainReads(): void { for (const entry of keychainReads.values()) entry.value?.fill(0); keychainReads.clear(); }
+
+/**
  * Store/retrieve the master key from the OS keychain.
  * Falls back to file-based storage if keychain is unavailable.
  */
@@ -119,8 +159,8 @@ export class MasterKeyManager {
     this.forceFile = forceFile || inTestRun;
     this.keyFilePath = path.join(stateDir, 'machine', 'secrets-master.key');
     this.kc = keychainOps ?? (inTestRun ? { read: () => null, write: () => false } : {
-      read: (service, account) => this.readOsKeychain(service, account),
-      write: (service, account, key) => this.writeOsKeychain(service, account, key),
+      read: (service, account) => readKeychainMemoized(service, account, () => this.readOsKeychain(service, account)),
+      write: (service, account, key) => { forgetKeychainReads(); const written = this.writeOsKeychain(service, account, key); forgetKeychainReads(); return written; },
     });
   }
 
@@ -139,6 +179,10 @@ export class MasterKeyManager {
       const account = perAgentKeychainAccount(this.stateDir);
       const own = this.tryRead(account);
       if (own) return own;
+      // Everything below can write a key, so it must not act on a remembered answer.
+      forgetKeychainReads();
+      const fresh = this.tryRead(account);
+      if (fresh) return fresh;
       const legacy = this.tryRead(KEYCHAIN_ACCOUNT_LEGACY);
       if (legacy) {
         // Adoption: persist under the per-agent account so this agent's key
@@ -185,6 +229,13 @@ export class MasterKeyManager {
     return out;
   }
 
+  /** Flush an existing fallback key. A successful OS-keychain persistence/read
+   * uses that platform's durability contract; this method never enrolls a key. */
+  syncDurably():void {
+    if(fs.existsSync(this.keyFilePath)){syncSecretFileAndParents(this.keyFilePath);return;}
+    if(!this.isKeychainBacked)throw new Error('secret-durability-master-key-missing');
+  }
+
   /** Whether the master key is stored in the OS keychain (vs file fallback). */
   get isKeychainBacked(): boolean {
     if (this.forceFile) return false;
@@ -216,8 +267,9 @@ export class MasterKeyManager {
           '-w', // Print password only
         ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
         return Buffer.from(result, 'base64');
-      } catch {
+      } catch (error) {
         // @silent-fallback-ok — platform keychain read
+        if ((error as { status?: unknown }).status === KEYCHAIN_NOT_FOUND_EXIT) noteKeychainNotFound();
         return null;
       }
     } else if (process.platform === 'linux') {
@@ -423,6 +475,13 @@ export class SecretStore {
     const tmpPath = `${this.encryptedPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
     fs.renameSync(tmpPath, this.encryptedPath);
+  }
+
+  /** Explicit barrier for newly stored receipt/signing keys. Existing writes
+   * retain their behavior; receipt-producing callers must await this success. */
+  syncDurably():void {
+    // Verify existing ciphertext/key coherence before publishing any durability claim.
+    this.read();this.keyManager.syncDurably();syncSecretFileAndParents(this.encryptedPath);
   }
 
   /** Get a specific secret by dot-notation path (e.g., 'telegram.token'). */

@@ -18,6 +18,7 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import {
   BASELINE_PROCESS_PATTERNS,
   MCP_STACK_ROOT_PATTERNS,
+  isMcpLauncherShell,
   isToolShellCommand,
 } from '../../src/core/baselineProcessPatterns.js';
 import { drainProcessShape } from '../../src/core/standDownDrain.js';
@@ -109,5 +110,68 @@ describe('a Codex tool shell is work even when its text mentions mcp (second-pas
       CODEX_SHELL_MCP.replace('72900 70298', '  402   200'),
       '  403   402 node /x/node_modules/vitest/dist/worker.js',
     )))).toEqual({ working: true });
+  });
+});
+
+describe('a shell under an MCP root is its launcher, not work (Mama PC, Linux, 2026-11-04)', () => {
+  // The real tree: on Linux `npm exec` starts the server through `sh -c playwright-mcp`.
+  const PANE = '3554423';
+  const LINUX = [
+    HEADER,
+    '3554423 694 /home/echo/.instar/state/claude-bin/2.1.310/claude --dangerously-skip-permissions --resume 0a37',
+    '3554602 3554423 npm exec @playwright/mcp@latest',
+    '3554603 3554423 node /home/echo/.instar/shadow-install/node_modules/instar/dist/threadline/mcp-stdio-entry.js --state-dir /home/echo',
+    '3554672 3554602 sh -c playwright-mcp',
+    '3554673 3554672 node /home/echo/.npm/_npx/9833c18b2d85bc59/node_modules/.bin/playwright-mcp',
+  ];
+  const active = (rows: string[]) => (SessionManager.prototype as unknown as { computeHasActiveProcesses(p: string, o: string): boolean })
+    .computeHasActiveProcesses.call({}, PANE, rows.join('\n'));
+
+  it('computeHasActiveProcesses: the Linux launcher shell is idle', () => {
+    expect(active(LINUX)).toBe(false);
+  });
+  it('drainProcessShape: the Linux launcher shell is idle', () => {
+    expect(drainProcessShape(PANE, LINUX.join('\n'))).toEqual({ working: false });
+  });
+  it('the same shell with no MCP root above it is still work', () => {
+    const rows = [HEADER, LINUX[1], '3554672 3554423 sh -c playwright-mcp'];
+    expect(active(rows)).toBe(true);
+    expect(drainProcessShape(PANE, rows.join('\n'))).toEqual({ working: true });
+  });
+  it("the agent's own shell beside the MCP stack is still work", () => {
+    const rows = [...LINUX, '3560000 3554423 /bin/bash -c source /home/echo/.claude/shell-snapshots/snapshot-bash-1.sh && eval vitest'];
+    expect(active(rows)).toBe(true);
+    expect(drainProcessShape(PANE, rows.join('\n'))).toEqual({ working: true });
+  });
+  it('a browser under the MCP stays as each check had it: active here, resident for the drain', () => {
+    const rows = [...LINUX, '3554700 3554673 /opt/chrome/chrome --headless'];
+    expect(active(rows)).toBe(true);
+    expect(drainProcessShape(PANE, rows.join('\n'))).toEqual({ working: false });
+  });
+  it('second-pass review: a framework started with --mcp-config hides nothing below it', () => {
+    const rows = [
+      HEADER, '3554423 694 zsh',
+      '3554500 3554423 claude --dangerously-skip-permissions --mcp-config /tmp/config.json',
+      '3560000 3554500 /bin/bash -c source /home/echo/.claude/shell-snapshots/snapshot-bash-1.sh && eval while true; do :; done',
+    ];
+    expect(active(rows)).toBe(true);
+    expect(drainProcessShape(PANE, rows.join('\n'))).toEqual({ working: true });
+  });
+  it('second-pass review: a command-running MCP keeps its shells as work', () => {
+    const rows = [...LINUX, '3554800 3554673 sh -c while true; do :; done'];
+    expect(active(rows)).toBe(true);
+    expect(drainProcessShape(PANE, rows.join('\n'))).toEqual({ working: true });
+  });
+  it.each([
+    ['sh -c playwright-mcp', 'npm exec @playwright/mcp@latest', true],
+    ['/bin/sh -c playwright-mcp --headless', 'npm exec @playwright/mcp@latest', true],
+    ['sh -c playwright-mcp', 'claude --mcp-config /tmp/c.json', false],
+    ['sh -c playwright-mcp', undefined, false],
+    ['sh -c playwright-mcp && rm -rf build', 'npm exec @playwright/mcp@latest', false],
+    ['sh -c vitest run mcp.test.ts', 'npm exec @playwright/mcp@latest', false],
+    ['zsh -lc playwright-mcp', 'npm exec @playwright/mcp@latest', false],
+    ['sh -c mcp=1 read value', 'npm exec mcp=1 read value', false],
+  ])('isMcpLauncherShell(%s, %s) is %s', (cmd, parent, want) => {
+    expect(isMcpLauncherShell(cmd, parent)).toBe(want);
   });
 });

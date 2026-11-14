@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-inbound-files",
+  "sessionId": "f0098237-0360-40a7-942a-e7fd661e1afc",
+  "timestamp": "2026-11-04T19:38:36.542Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-inbound-files.md",
+  "artifactSha256": "8f3deb2d24eabf2541d1572245eb0b38c262c085853d208faf5db35065f88f1c",
+  "specPath": "docs/specs/memory-privacy.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/memorySessionPolicy.ts",
+    "src/core/types.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "tests/integration/memory-privacy-spawn.test.ts",
+    "tests/unit/memory-session-inbound-claims.test.ts",
+    "tests/unit/memory-session-policy.test.ts",
+    "upgrades/next/memory-privacy-inbound-files.md",
+    "upgrades/side-effects/memory-privacy-inbound-files.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Privacy-boundary file staging is security-sensitive, so use the converged approved spec and independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

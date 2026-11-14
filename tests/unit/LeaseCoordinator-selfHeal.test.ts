@@ -185,6 +185,28 @@ describe('LeaseCoordinator Layer 3 — solo-captain hold', () => {
     expect(lc.effectiveView().epoch).toBe(epochBefore); // SAME epoch, no inflation
   });
 
+  it('logs a hold once, not on every renewal, and again only after the hold ends', async () => {
+    const lines: string[] = [];
+    const store = new FakeStore();
+    const tunnel = new FailingTunnel();
+    let reachable = false;
+    tunnel.broadcast = async () => reachable;
+    const lc = new LeaseCoordinator({
+      lease: flA(), store, tunnel, presumedDeadHolders: () => new Set(), now: () => 1000, monotonicNow: () => 1000,
+      soloCaptainHold: () => ({ enabled: true }), isPreferredAwakeAgreed: () => true, allPeersPresumedGone: () => true,
+      logger: (m: string) => lines.push(m),
+    });
+    await lc.acquireIfEligible();
+    const holds = () => lines.filter((l) => l.includes('solo-captain hold')).length;
+    for (let i = 0; i < 5; i++) await lc.renew();
+    expect(holds()).toBe(1);
+    reachable = true;
+    await lc.renew();
+    reachable = false;
+    await lc.renew();
+    expect(holds()).toBe(2);
+  });
+
   it('characterises a stale forged receipt engaging enabled solo hold', async () => {
     let mono = 0;
     const router = new MachinePoolRegistry({ listMachines: () => [{ machineId: 'B' }], clockSkewToleranceMs: 10,

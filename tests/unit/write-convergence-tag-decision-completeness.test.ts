@@ -77,6 +77,7 @@ function writeFixture(openQuestionsSection: string): { spec: string; report: str
       '- **fleet:** after operator review',
       '- **graduation criterion:** stated',
       '- **dark-window:** 14d',
+      '- **ladder:** monitoring.example',
       '',
       '## Non-goals',
       'nothing',
@@ -185,7 +186,7 @@ describe('gate heading recognition is SYMMETRIC across both sections', () => {
    * future variance fix cannot land on one and miss the other.
    */
   it('recognises a numbered Decision points touched heading', () => {
-    const body = '## 6. Decision points touched\n- routing choice — invariant (deterministic)\n';
+    const body = '## 6. Decision points touched\n- routing choice — judgment-candidate (floor: declared; arbiter: owner)\n';
     expect(findDecisionPointGaps(body, 'x')).toEqual({ ok: true });
   });
 

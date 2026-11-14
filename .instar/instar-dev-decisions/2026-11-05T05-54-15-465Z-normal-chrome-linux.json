@@ -1,0 +1,62 @@
+{
+  "ts": "2026-11-05T05:54:15.465Z",
+  "slug": "normal-chrome-linux",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/SecretDrop.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/templates/scripts/secret-drop-retrieve.mjs matches SecretDrop / never-on-disk invariant",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 27,
+  "loc": 2607,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/lint-blocking-decisions-declared.mjs",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/linuxBrowserProvision.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/data/state-coherence-registry.json",
+      "src/recommended/offerPrerequisites.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/SecretDrop.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/browser/chrome-close.sh",
+      "src/templates/scripts/browser/chrome-js.sh",
+      "src/templates/scripts/browser/chrome-launch.sh",
+      "src/templates/scripts/browser/chrome-mainworld.sh",
+      "src/templates/scripts/browser/chrome-renew.sh",
+      "src/templates/scripts/browser/chrome-unsaved.sh",
+      "src/templates/scripts/browser/ndrive.sh",
+      "src/templates/scripts/browser/x-drive.py",
+      "src/templates/scripts/browser/xdrive-provision.sh",
+      "src/templates/scripts/browser/xdrive.sh",
+      "src/templates/scripts/secret-drop-retrieve.mjs",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2533,
+    "deletedLines": 74
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "linux-browser-install-retry: the hourly check starts the installer through decideProvision, paced 1 h, 6 h, 24 h, with a hard stop after MAX_INSTALL_ATTEMPTS and the count on disk; steady state is zero until an operator says yes"
+    }
+  },
+  "verdict": "pass"
+}

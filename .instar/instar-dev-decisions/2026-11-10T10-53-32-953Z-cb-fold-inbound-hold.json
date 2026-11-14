@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-10T10:53:32.953Z",
+  "slug": "cb-fold-inbound-hold",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 261,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PendingInboundStore.ts",
+      "src/core/QueueDrainLoop.ts",
+      "src/core/inboundQueueBootSweep.ts",
+      "src/monitoring/foldInboundHold.ts"
+    ],
+    "addedLines": 243,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

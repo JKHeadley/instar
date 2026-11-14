@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/TriageOrchestrator.ts');
 /**
  * TriageOrchestrator — Intelligent, persistent session monitoring with
  * resumable Claude Code triage sessions and structural follow-through.
@@ -131,6 +133,7 @@ export interface TriageOrchestratorDeps extends TriageDeps {
   /** Trusted runtime lookup for the actual spawned tmux session, never model output. */
   readTriageAuthor?: (sessionName: string) => Promise<OriginAutomationAuthor>;
   /** Spawn a scoped triage session, returns tmux session name */
+  isMemoryScopedTopic?: (topicId: number) => boolean;
   spawnTriageSession: (name: string, options: {
     allowedTools: string[];
     permissionMode: string;
@@ -250,6 +253,12 @@ export class TriageOrchestrator extends EventEmitter {
       return { resolved: false, checkCount: 0, followUpScheduled: false };
     }
 
+    // Memory privacy: triage runs with owner reach, so it stays out of a place whose
+    // readers must not see owner memory.
+    if (this.deps.isMemoryScopedTopic?.(topicId)) {
+      return { resolved: false, checkCount: 0, followUpScheduled: false };
+    }
+
     // Cooldown check
     const lastTriaged = this.cooldowns.get(topicId);
     if (lastTriaged && (Date.now() - lastTriaged) < this.config.cooldownMs) {
@@ -329,10 +338,13 @@ export class TriageOrchestrator extends EventEmitter {
             };
           }
 
+          // A suggestion stays internal, so it changes nothing. Report it as
+          // unresolved and the caller's live-stall check-in still reaches the person.
+          const acted = heuristic.action !== 'suggest_interrupt' && heuristic.action !== 'suggest_restart';
           this.resolveTriageForTopic(topicId, 'heuristic_resolved');
-          this.logDecision(topicId, trigger, 'heuristic', true, heuristic.classification, heuristic.action, heuristic.confidence);
+          this.logDecision(topicId, trigger, 'heuristic', acted, heuristic.classification, heuristic.action, heuristic.confidence);
           return {
-            resolved: true,
+            resolved: acted,
             classification: heuristic.classification,
             action: heuristic.action,
             checkCount: triageState.checkCount,
@@ -971,8 +983,8 @@ export class TriageOrchestrator extends EventEmitter {
     const prefixedMessage = userMessage.startsWith(TRIAGE_MESSAGE_PREFIX)
       ? userMessage
       : TRIAGE_MESSAGE_PREFIX + userMessage;
-    const send = () => originAuthor ? this.deps.sendToTopic(topicId, prefixedMessage, originAuthor)
-      : this.deps.sendToTopic(topicId, prefixedMessage);
+    const send = () => originAuthor ? withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, prefixedMessage, { ...(originAuthor) }))
+      : withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, prefixedMessage));
 
     switch (action) {
       case 'none':
@@ -995,11 +1007,11 @@ export class TriageOrchestrator extends EventEmitter {
       }
 
       case 'suggest_interrupt':
-        await send().catch(() => {});
+        // A stalled session is an internal recovery concern, not a command
+        // for the person to operate.
         break;
 
       case 'suggest_restart':
-        await send().catch(() => {});
         break;
 
       case 'auto_interrupt':
@@ -1014,7 +1026,6 @@ export class TriageOrchestrator extends EventEmitter {
         break;
 
       case 'auto_restart':
-        await send().catch(() => {});
         await this.deps.respawnSession(sessionName, topicId, { silent: true });
         break;
     }

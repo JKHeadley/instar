@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-10-26T06:56:11.162Z",
+  "slug": "reaper-pressure-signals",
+  "carriers": {
+    "CMT-1021": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Fix the class: the same `os.loadavg()[0]/cores` grading that misread a 36-44%-idle laptop as critical also lives in src/core/cpuStarvation.ts (DEFAULT_MAX_LOAD_RATIO 1.5 → SleepWakeDetector/watchdogs), src/core/MachineLoadBroker.ts (placement weight), src/server/PoolPollCache.ts (loadShedPerCore 1.5 → every pool view stale on the laptop), src/core/PoolViewProxy.ts, and DegradedTmuxGuard. Migrate e"
+    }
+  }
+}

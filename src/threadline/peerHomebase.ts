@@ -308,3 +308,96 @@ export function peerHomebaseEnabled(config: unknown): boolean {
     ?.threadline?.peerHomebase?.enabled;
   return enabled !== false;
 }
+
+// ── Where a message meant for the user lands (operator rule 2026-10-31) ─────
+
+/**
+ * Which topic a peer message MEANT FOR THE USER goes to. Spec §2.6.
+ *
+ * The operator's rule, verbatim: "the whole point of the agent specific topic is that all
+ * messages from an agent that are intended for the user show up in that topic". So:
+ *
+ *  1. the conversation was bound by the OPERATOR (`boundTopicSource: 'operator'`) → that topic;
+ *  2. else the peer has a homebase → the homebase (whatever topic the thread started in);
+ *  3. else the existing routing (`existingTopicId`, possibly none).
+ *
+ * This decides only where a user-meant message is POSTED. It writes nothing: no binding is
+ * changed, so an unknown-provenance binding is still preserved as a record (§2.2) — it just no
+ * longer decides where the operator reads a peer's message.
+ */
+export type UserTopicVia = 'operator-binding' | 'homebase' | 'existing';
+
+export interface UserTopicInput {
+  boundTopicId?: number;
+  boundTopicSource?: BoundTopicSource;
+  homebaseTopicId?: number;
+  existingTopicId?: number | null;
+}
+
+export function resolvePeerUserTopic(i: UserTopicInput): { topicId: number | null; via: UserTopicVia } {
+  if (i.boundTopicSource === 'operator' && typeof i.boundTopicId === 'number') {
+    return { topicId: i.boundTopicId, via: 'operator-binding' };
+  }
+  if (typeof i.homebaseTopicId === 'number') return { topicId: i.homebaseTopicId, via: 'homebase' };
+  return { topicId: typeof i.existingTopicId === 'number' ? i.existingTopicId : null, via: 'existing' };
+}
+
+/** The slice of the trust store and conversation store the resolver reads. */
+export interface PeerUserTopicResolverDeps {
+  /** Read live, so `threadline.peerHomebase.enabled: false` takes effect without a restart. */
+  enabled: () => boolean;
+  /**
+   * The trust profile for a FINGERPRINT, or null. Looked up by fingerprint only: a display
+   * name is whatever the sender says it is, so a name match would let an unpaired agent that
+   * calls itself "scout" post into `🤝 scout`.
+   */
+  profileFor: (fingerprint: string) => { pairingState?: string; homebaseTopicId?: number; fingerprint?: string } | null | undefined;
+  /** The conversation record for a thread, or null. */
+  conversationFor: (threadId: string) => { boundTopicId?: number; boundTopicSource?: BoundTopicSource } | null | undefined;
+}
+
+export interface PeerUserTopicQuery {
+  threadId?: string;
+  /**
+   * The sender's FINGERPRINT(S) as established by the transport (relay-authenticated, signed,
+   * or the fingerprint a send was addressed to). Never a self-asserted display name: a value
+   * that does not equal the matched profile's own fingerprint is ignored.
+   */
+  peers: Array<string | undefined | null>;
+  existingTopicId?: number | null;
+}
+
+/**
+ * Build the live resolver used at every delivery point. Only a MUTUAL-VERIFIED peer's
+ * homebase counts (the same rule that lets a homebase exist at all). Never throws: any
+ * read error resolves to the existing routing.
+ */
+export function makePeerUserTopicResolver(d: PeerUserTopicResolverDeps) {
+  return (q: PeerUserTopicQuery): { topicId: number | null; via: UserTopicVia } => {
+    const existing = { topicId: typeof q.existingTopicId === 'number' ? q.existingTopicId : null, via: 'existing' as const };
+    try {
+      if (!d.enabled()) return existing;
+      let homebaseTopicId: number | undefined;
+      for (const p of q.peers) {
+        if (!p) continue;
+        const prof = d.profileFor(p);
+        const sameFp = !!prof?.fingerprint && prof.fingerprint.toLowerCase() === p.toLowerCase();
+        if (prof && sameFp && prof.pairingState === 'mutual-verified' && typeof prof.homebaseTopicId === 'number') {
+          homebaseTopicId = prof.homebaseTopicId;
+          break;
+        }
+      }
+      const conv = q.threadId ? d.conversationFor(q.threadId) : null;
+      return resolvePeerUserTopic({
+        boundTopicId: conv?.boundTopicId,
+        boundTopicSource: conv?.boundTopicSource,
+        homebaseTopicId,
+        existingTopicId: q.existingTopicId,
+      });
+    } catch {
+      return existing; // @silent-fallback-ok — an unreadable store routes as before; delivery is never blocked
+    }
+  };
+}
+
+export type PeerUserTopicResolver = ReturnType<typeof makePeerUserTopicResolver>;
