@@ -2177,9 +2177,13 @@ export class AgentServer {
           const teamId = this.config.mobilePairing?.push?.teamId;
           return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
         },
+        // Android (docs/specs/mobile-android-app.md §2.3): the Firebase service-account key, read before each send.
+        fcmKey: () => pushKeys.get('fcm_service_account_json'),
+        // An approval notice reaches an Android phone only when it can approve: active owner phone with a presence key.
+        canApprove: (deviceId) => { const d = mp.devices.get(deviceId); return !!d?.presenceKey && activeOwnerPhone(mp, deviceId); },
         fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
         reportDegradation: (what, err) => DegradationReporter.getInstance().report({
-          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          feature: what, primary: 'send a push notification to a paired phone', fallback: "no push for this event; the item is still in the app and the agent's other channels",
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
         }),
       });

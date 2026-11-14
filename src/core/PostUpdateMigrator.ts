@@ -1684,10 +1684,25 @@ A weekly review of a watchlist of similar projects, each idea checked against ou
 }
 
 /**
- * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md).
- * Unique content-sniff marker: `Mobile push notifications`.
+ * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md, docs/specs/mobile-android-app.md §2.5).
+ * Unique content-sniff marker: `Mobile push notifications` (kept in the heading, so the add-if-missing guard never adds a second copy).
  */
 export function MOBILE_PUSH_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile push notifications — the Instar app (iPhone and Android) buzzes when something needs the operator
+
+When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push. Phone notifications go to iPhones through Apple and to Android phones through Google's Firebase. The iPhone key is the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). The Android key is the vault entry \`fcm_service_account_json\` (a Firebase service-account key that can only send notifications). Apple and Google only see "Something needs you" or "New reply"; the phone fetches the real text from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice. A problem with one provider never pauses the other.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, fcmConfigured, pausedReasons: { apns, fcm }, fcmTrials, devices: [{ provider, sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple or Google accepted it, not that the phone showed it.
+- \`keyConfigured: false\` / \`fcmConfigured: false\` → that provider's key is not in my vault; nothing is sent to those phones, and a phone registering is told \`ready: false\`. \`pausedReasons.apns\` clears by itself when the APNs key, key id or team id changes. \`pausedReasons.fcm\` (Google refused the Firebase key, permission or project) is mine to fix: a new key clears it within 30 minutes; after fixing an Android pause any other way (turning the API or role back on), call \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/push/recheck -d '{"provider":"fcm"}'\`, which re-arms the check on every machine.
+- Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
+`;
+}
+
+/**
+ * The pre-Android wording of the section above, kept so a marker-less CLAUDE.md holding it byte-exact
+ * is swapped for the two-provider text (mobile-android-app §2.5). An edited old section is left alone.
+ */
+export function MOBILE_PUSH_CLAUDEMD_SECTION_V1(port: number): string {
   return `\n### Mobile push notifications — the Instar iPhone app buzzes when something needs the operator
 
 When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push, sent straight from me to Apple with the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). Apple only sees "Something needs you"; the phone fetches the title from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice.
@@ -11278,6 +11293,18 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.
+    // Android (mobile-android-app §2.5): the exact pre-Android section is swapped for the two-provider
+    // one; an operator-edited old section is left alone with one REVIEW line. Runs before add-if-missing.
+    {
+      const v1 = MOBILE_PUSH_CLAUDEMD_SECTION_V1(port);
+      if (content.includes(v1)) {
+        content = content.replace(v1, MOBILE_PUSH_CLAUDEMD_SECTION(port));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile push notifications section now covers Android phones too');
+      } else if (content.includes('### Mobile push notifications — the Instar iPhone app buzzes') && !content.includes('/mobile/push/recheck')) {
+        result.upgraded.push('REVIEW: CLAUDE.md: the Mobile push notifications section was edited, so instar left it alone; it still describes iPhone-only push. Android phones now get notifications through Firebase (vault fcm_service_account_json; GET /mobile/push shows fcmConfigured and pausedReasons; POST /mobile/push/recheck after fixing an Android pause).');
+      }
+    }
     if (!content.includes('Mobile push notifications')) {
       content += MOBILE_PUSH_CLAUDEMD_SECTION(port);
       patched = true;
