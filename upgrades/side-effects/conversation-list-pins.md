@@ -108,5 +108,6 @@ Not required: no messaging block/allow, session lifecycle, gate, sentinel or wat
 
 - `tests/unit/conversation-list-pins.test.ts` — fold, order, cap, idempotency, validation, landing, outbox re-send, wiring.
 - `tests/integration/conversation-list-pins.test.ts` — the HTTP contract through the production auth middleware.
+- `tests/integration/team-access-guards.test.ts` — on a real signed team log: a member pins a shared topic, is refused (404) on an unshared one, never sees an unshared pin row in pinnedRefs/pinnedRows, can clear it, and a read-only grant may pin; her pins and the owner's stay separate.
 - `tests/e2e/conversation-list-pins-alive.test.ts` — a production-booted AgentServer: a phone pins, the owner's browser sees it.
 - `tests/unit/console-chats-model.test.ts` — the dashboard view model.
