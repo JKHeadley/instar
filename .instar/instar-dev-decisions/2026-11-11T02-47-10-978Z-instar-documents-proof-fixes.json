@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-11T02:47:10.978Z",
+  "slug": "instar-documents-proof-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 1854,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/documents-dev-agent.ts",
+      "scripts/documents-live-proof-lib.ts",
+      "scripts/documents-live-proof.ts",
+      "src/documents/originCheck.ts",
+      "src/documents/service.ts",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts"
+    ],
+    "addedLines": 1831,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

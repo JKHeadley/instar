@@ -393,7 +393,11 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     const open = DEVICE_ALLOWLIST.filter((r) => r.tier === 'guest' || r.tier === 'member').length;
     // 27: mobile-unread-messages §3.5 opened POST /mobile/conversations/read to guests (reading is guest).
     // 31: conversation-pinned-messages opened the app and Telegram pin list (guest) and pin/unpin (member).
-    expect(open).toBe(31);
+    // 35: instar-document-viewer §4.2 opened the document list, a document's summary and text, and the
+    //     single-use page code to guests (each document is still checked against its conversation's audience).
+    // 38: instar-document-viewer §3.6a opened linking a computer, listing and forgetting linked computers (each is the person's own).
+    // 39: §3.6a item 6 opened the link-code lookup (who asked for this code), so the phone shows it before Face ID.
+    expect(open).toBe(39);
   });
 
   it.each([

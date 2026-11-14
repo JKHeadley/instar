@@ -40,6 +40,7 @@ function sample(re: RegExp): string {
     .replace(/^\^/, '').replace(/\$$/, '')
     .replace(/\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-[^)]*?\{12\}/g, UUID)
     .replace(/\[0-9a-f\]\{64\}/g, 'a'.repeat(64))
+    .replace(/\[0-9a-f-\]\{36\}/g, UUID)
     .replace(/\(\?:/g, '(');
   // Innermost groups first, repeated until none is left, so a group that holds groups is read too.
   for (let prev = ''; prev !== s;) { prev = s; s = s.replace(/\(([^()|]+)(\|[^()]*)?\)\??/g, '$1'); }
@@ -103,6 +104,9 @@ type Phone = ReturnType<Env['makePhone']> & { presence?: ReturnType<typeof makeD
 
 let tick = 0;
 async function hit(e: Env, p: Phone, method: string, url: string, body: string | undefined): Promise<number> {
+  // This table is about who passes which route, not rate limits: shared per-device buckets (e.g.
+  // 'permission-actions', 12 a minute across several routes) would otherwise run out mid-table.
+  (e.svc as unknown as { deviceBucket: Map<string, number[]> }).deviceBucket.clear();
   const octet = body === 'octet';
   const raw = body === 'json' ? Buffer.from('{}') : octet ? Buffer.from('x') : undefined;
   const time = String(Date.now() + (tick++ % 1000));

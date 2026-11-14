@@ -49,6 +49,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/attributionRoutes.ts',
   'src/server/recommendedServiceRoutes.ts',
   'src/server/emailRoutes.ts',
+  'src/server/documentRoutes.ts',
   'src/server/usageRoutes.ts',
 ];
 const routesSource = ROUTE_SOURCE_FILES

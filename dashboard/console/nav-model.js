@@ -43,6 +43,8 @@ export const GROUPS = [
       { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, which one has gone quiet, and a live terminal you can watch and type into.' },
       // Shown only when GET /mobile/browser-devices/status answers 200 (the switch is on): the probe.
       { id: 'chats', label: 'Conversations', icon: 'chat', desc: 'Your app conversations, Telegram topics and Slack conversations, like the iPhone app: read, send, photos and files.', probe: '/mobile/browser-devices/status' },
+      // Shown only when GET /docs/health answers 200 (documents are switched on): the probe.
+      { id: 'documents', label: 'Documents', icon: 'folder', desc: 'Longer writing people comment on: open comments first, each opening on its own page.', probe: '/docs/health' },
       { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
@@ -101,13 +103,14 @@ export function allTabIds() {
 
 /** Features rebuilt natively in the console, by legacy tab id. */
 /** Tiles with no legacy dashboard tab: new pages are built in the console only. */
-export const CONSOLE_ONLY_TABS = ['reach', 'chats'];
+export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'documents'];
 
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
   sessions: '#/work/sessions',
   chats: '#/work/chats',
+  documents: '#/work/documents',
   // Sending text or files now happens in each session's own message box.
   dropzone: '#/work/sessions',
   projects: '#/work/plans',
@@ -172,6 +175,7 @@ export const PHONE_PAGE_ALIASES = {
   ideas: 'work/ideas',
   sessions: 'work/sessions',
   chats: 'work/chats',
+  documents: 'work/documents',
   pace: 'work/pace',
   machines: 'capacity/machines',
   health: 'capacity/health',

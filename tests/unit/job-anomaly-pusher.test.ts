@@ -470,6 +470,28 @@ describe('JobAnomalyPusher — anomaly path (§5.4, §12)', () => {
     expect(h.detSends[0].text).not.toContain('monitoring.burnDetection');
   });
 
+  it('while documents replace pages (§3.9b) the details are a document in the job topic, linked by its own url', async () => {
+    const made: Array<{ topicId?: number }> = [];
+    const h = harness({
+      sendImpl: () => resp(422, { error: 'tone-gate-blocked', rule: 'B3_CONFIG_KEY' }),
+      createPrivateView: (_t, _m, topicId) => { made.push({ topicId }); return { id: 'doc-1', url: 'https://echo.example.dev/docs/doc-1' }; },
+    });
+    const r = await h.doRun(run('success', [an('disk-critical', 'critical', configKeyEvidence)]));
+    expect(r.push?.outcome).toBe('delivered');
+    expect(made).toEqual([{ topicId: 100 }]);
+    expect(h.detSends).toEqual([{ topicId: 100, text: 'Health Check on the mini: disk-critical. Details: https://echo.example.dev/docs/doc-1' }]);
+  });
+
+  it('while documents replace pages, a shared job topic gets no link (the document could not live there): the Jobs-tab sentence', async () => {
+    const h = harness({
+      sendImpl: () => resp(422, { error: 'tone-gate-blocked', rule: 'B3_CONFIG_KEY' }),
+      createPrivateView: () => null,
+    });
+    const r = await h.doRun(run('success', [an('disk-critical', 'critical', configKeyEvidence)]));
+    expect(r.push?.path).toBe('jobs-tab');
+    expect(h.detSends).toEqual([{ topicId: 100, text: 'Health Check on the mini: disk-critical; details on the Jobs tab.' }]);
+  });
+
   it('advisory ack that still blocks falls to the view path', async () => {
     let n = 0;
     const h = harness({ sendImpl: () => (++n === 1 ? resp(422, { error: 'tone-gate-advisory', rule: 'B2_FILE_PATH', decisionRef: 'd' }) : resp(422, { error: 'tone-gate-blocked', advisoryUnavailable: 'no-decision-ref' })) });

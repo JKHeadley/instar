@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-12T03:26:31.720Z",
+  "slug": "instar-documents-old-link-guarantee",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 67,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/core/PostUpdateMigrator.ts",
+      "src/documents/service.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/hooks/session-start.sh"
+    ],
+    "addedLines": 49,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
