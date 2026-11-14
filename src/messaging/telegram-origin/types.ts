@@ -61,6 +61,11 @@ export interface TelegramOriginRecord extends TelegramOriginProducer {
   operationId: string;
   deliveryId: string;
   createdAt: number;
+  /** native-conversation-base §3a item 2 — a replacement's original draft time.
+   * Sealed in the envelope (never the admission, which the store rebuilds from
+   * fixed columns); the execution owner's content check looks back to it. An
+   * older receiver keeps the envelope bytes whole and ignores the field. */
+  firstPreparedAt?: number;
   operationKind: string;
   destination: OriginDestination;
   contentDigest: string;

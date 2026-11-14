@@ -18,7 +18,11 @@ export function originContentDedup(dedup: OutboundContentDedup, configuredChatId
       // Editing an existing message is a distinct user action, not a duplicate
       // new message. Include the target identity for edits and other namespaces.
       const destination = destinationOf(record);
-      const result = dedup.reserveOrigin(destination, input.text, record.operationId, ownerToken, deadlineAt, record.createdAt);
+      // native-conversation-base §3a item 2 — a replacement looks back to the
+      // original's first draft, so the whole life of the reply is covered.
+      const since = Number.isSafeInteger(record.firstPreparedAt) && record.firstPreparedAt! > 0 && record.firstPreparedAt! <= record.createdAt
+        ? record.firstPreparedAt! : record.createdAt;
+      const result = dedup.reserveOrigin(destination, input.text, record.operationId, ownerToken, deadlineAt, since);
       if (result === 'reserved') return { ok: true };
       // Another send of this text is still in flight: nothing is delivered yet,
       // so this operation stays queued for the outbox's own retry.
