@@ -380,10 +380,16 @@ export class UserManager {
     // Merge initial users (config takes precedence for initial setup)
     if (initialUsers) {
       for (const user of initialUsers) {
+        if (!user || typeof user !== 'object') {
+          console.error(`[UserManager] Skipped non-object config.users entry: ${JSON.stringify(user)}`);
+          continue;
+        }
         if (!this.users.has(user.id)) {
-          // upsertUser → validateProfile refuses a fixture initialUsers entry
-          // (typed throw). Guard so a fixture in config.users can't fail boot;
-          // a real initialUsers merge below sets the high-water marker.
+          // upsertUser → validateProfile refuses a fixture or malformed initialUsers
+          // entry (throw). Guard so a bad config.users entry can't fail boot — the
+          // constructor runs on the server boot path (skillLearningEnv) before port
+          // bind, so a throw here crash-loops the agent. The entry is refused (never
+          // repaired with an invented id); the operator sees a loud diagnostic.
           try {
             this.upsertUser(user);
           } catch (err) {
@@ -391,7 +397,12 @@ export class UserManager {
               console.error(`[UserManager] Skipped fixture identity from initialUsers: ${err.message}`);
               continue;
             }
-            throw err;
+            const summary = JSON.stringify({ id: user.id, name: (user as { name?: unknown }).name }).slice(0, 120);
+            console.error(
+              `[UserManager] Skipped invalid config.users entry ${summary}: ${err instanceof Error ? err.message : String(err)}. ` +
+              `Legacy entries need id, channels and permissions — fix config.users or register the user via the dashboard.`,
+            );
+            continue;
           }
         }
       }
