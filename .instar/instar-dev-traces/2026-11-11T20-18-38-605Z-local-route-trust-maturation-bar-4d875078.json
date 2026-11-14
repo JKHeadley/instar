@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "local-route-trust-maturation-bar",
+  "sessionId": "3163e10c-7ce0-462d-a080-5ec20f729d11",
+  "timestamp": "2026-11-11T20:18:38.605Z",
+  "artifactPath": "upgrades/side-effects/local-route-trust-maturation-bar.md",
+  "artifactSha256": "e4ce501e6240ae354f3b5ecb414a0e3ad77a7d6b0c77aa0dd78325859d99abdb",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-11T20-17-31-708Z-local-route-trust-maturation-bar.json",
+    ".instar/instar-dev-decisions/2026-11-11T20-17-51-480Z-local-route-trust-maturation-bar.json",
+    ".instar/instar-dev-decisions/2026-11-11T20-18-19-484Z-local-route-trust-maturation-bar.json",
+    ".instar/instar-dev-traces/2026-11-11T20-15-32-076Z-local-route-trust-maturation-bar-7b43daa0.json",
+    ".instar/instar-dev-traces/2026-11-11T20-17-13-456Z-local-route-trust-maturation-bar-d2ac9239.json",
+    "docs/specs/local-route-trust-maturation-bar.eli16.md",
+    "scripts/drills/local-route-trust-drill.mjs",
+    "src/data/feature-ladders.json",
+    "src/monitoring/FeatureEvidenceLog.ts",
+    "src/server/routes.ts",
+    "src/threadline/localRouteTrust.ts",
+    "tests/integration/threadline/a2a-local-route-trust.test.ts",
+    "tests/unit/local-route-trust-maturation-bar.test.ts",
+    "upgrades/next/local-route-trust-maturation-bar.md",
+    "upgrades/side-effects/local-route-trust-maturation-bar.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Evidence rows and an advisory ladder bar for a dry-run feature; delivery behaviour unchanged; a revert fully undoes it",
+  "eli16Path": "docs/specs/local-route-trust-maturation-bar.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-route-trust-maturation-bar.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

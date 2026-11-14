@@ -1,4 +1,7 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
+import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
+import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { buildContextLayers, contextLayersEnabled, CONTEXT_LAYERS_FEATURE_ID, type LayerEmitter } from '../monitoring/contextLayers/contextLayersBoot.js';
 import { observeRecoveryPeer } from '../recovery/RecoveryPoolHealth.js';
@@ -112,8 +115,10 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { resolveWriteAdmissionGate } from '../core/writeAdmissionGate.js';
 import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
 import { chiefOfStaffStoreEnabled } from '../core/ChiefOfStaffStore.js';
+import { workBoardEnabled } from '../core/WorkCardStore.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -372,10 +377,10 @@ import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
 import { ConversationStore } from '../threadline/ConversationStore.js';
 import { ThreadLog } from '../threadline/ThreadLog.js';
-import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
+import { classifyRelayIngress, recordGatePassedIngress } from '../threadline/relayIngressHistory.js';
+import { createThreadMessageRecorder } from '../threadline/createThreadMessageRecorder.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler, describeUndeliveredRouterResult } from '../threadline/autoAck.js';
-import { parseKindedAck } from '../threadline/requiredAck.js';
 import { type LiveInjectOutcome } from '../threadline/TopicLinkageHandler.js';
 import type { InjectionConfirmation } from '../core/SessionManager.js';
 
@@ -1403,6 +1408,10 @@ let _appPoolStatusRows: () => { appOwned: Array<{ key: string; epoch: number; st
 let _slackConversationRespawner: ((sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }) => Promise<string>) | null = null;
 /** Whether the app reply relay is installed and current (null until app conversations are wired). */
 let _appRelayReady: (() => { ready: true } | { ready: false; reason: string }) | null = null;
+/** Work Board (docs/specs/work-board-asks.md): the runtime, null while off or before app conversations are wired. */
+let _workBoardRuntime: import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null = null;
+/** Late-bound seams the Work Board reads from parts built after it (the shared ledger) or in AgentServer (the team owner). */
+const _workBoardLate: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null } = { ledgerNote: null, ownerPersonKey: null, displayName: null };
 /** The last reason a message-free start refused, per conversation (words for the create answer). */
 const _appStartRefusals = new Map<string, import('../core/appInboundDispatch.js').AppStartRefusal>();
 let _appSessionStarter: ((conversationKey: string, resolved: import('../core/appInboundDispatch.js').AppProfile, opts?: import('../core/appInboundDispatch.js').AppStartOptions) => Promise<import('../core/appInboundDispatch.js').AppProfile | null>) | null = null;
@@ -2616,6 +2625,7 @@ function wireTelegramCallbacks(
  * the new typed pipeline contracts. The types enforce that sender identity,
  * topic context, and message content are all present and accounted for.
  */
+
 function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
   return {
     id: msg.id,
@@ -2627,10 +2637,8 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
     topicId: (msg.metadata?.messageThreadId as number) ?? 1,
     topicName,
     content: msg.content,
-    type: msg.content.startsWith('[voice]') ? 'voice'
-      : msg.content.startsWith('[image:') ? 'photo'
-      : msg.content.startsWith('[document:') ? 'document'
-      : 'text',
+    // native-conversation-base §3c: the type comes from the structured field, never from text.
+    type: messageTypeOf(Array.isArray(msg.metadata?.media) ? msg.metadata!.media as InboundMediaRef[] : null, msg.content),
     timestamp: msg.receivedAt,
   };
 }
@@ -2915,6 +2923,13 @@ export function wireTelegramRouting(
     if (!topicId) return;
 
     const text = msg.content;
+    // native-conversation-base §3c: a file travels as `media[]`; `text` carries only the path-free
+    // sentence and the person's text, escaped. The session's own file lines are built from the field
+    // on the machine that serves the session, never read out of text.
+    const inboundMedia = Array.isArray(msg.metadata?.media) ? (msg.metadata!.media as InboundMediaLocal[]) : null;
+    // The local form (with this machine's own download path) stays in process and in this machine's
+    // queue; every send to another machine strips it to ids (SessionRouter, the spawn hop).
+    const sessionTextFor = (): Promise<string> => buildTelegramSessionText(topicId, text, inboundMedia, resolveInboundTelegramMessageId(msg));
 
     // Resolve user profile for context injection (Gap 8)
     // An inbound the lifeline-secret gate accepted WITHOUT proof of the
@@ -3264,7 +3279,7 @@ export function wireTelegramRouting(
             const ord = _inboundQueue.enqueueLive({
               sessionKey: String(topicId),
               messageId: String(msg.id),
-              payload: text,
+              payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
             }, 'ordering-behind-queued');
@@ -3281,7 +3296,7 @@ export function wireTelegramRouting(
         const outcome = await _sessionRouter.route({
           sessionKey: String(topicId),
           messageId: String(msg.id),
-          payload: text,
+          payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
           ...(_routingOnly ? { routingOnly: true } : {}),
           topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
           // §2.2: sender identity captured at ingress, persisted with custody.
@@ -3401,7 +3416,7 @@ export function wireTelegramRouting(
             const q = _inboundQueue.enqueueLive({
               sessionKey: String(topicId),
               messageId: String(msg.id),
-              payload: text,
+              payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'spawn-admission-refusal');
@@ -3440,8 +3455,9 @@ export function wireTelegramRouting(
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
+        const sessionText = await sessionTextFor();
         const injected = sessionManager.injectTelegramMessage(
-          targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
+          targetSession, topicId, sessionText, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
           parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
           // W21: the ONE place the re-delivery flag exists in-process. Set by
           // `reinjectStuck` (the no-loss recovery re-injection) and read here so
@@ -3513,7 +3529,7 @@ export function wireTelegramRouting(
           if (_topicResumeMap) {
             _topicResumeMap.remove(topicId);
           }
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
+          sessionTextFor().then((sessionText) => respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, sessionText, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true }))
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
@@ -3544,7 +3560,7 @@ export function wireTelegramRouting(
               impact: 'The notice may be held or uncertain; no replacement send is authorized',
             });
           });
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
+          sessionTextFor().then((sessionText) => respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, sessionText, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true }))
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
@@ -3596,7 +3612,7 @@ export function wireTelegramRouting(
         // reinvent). _sessionRouter is non-null here (forwardAvailable gated it).
         if (_sessionRouter) {
           _sessionRouter
-            .route({ sessionKey: String(topicId), messageId: String(msg.id), payload: text })
+            .route({ sessionKey: String(topicId), messageId: String(msg.id), payload: text, ...(inboundMedia ? { media: inboundMedia } : {}) })
             .catch((err) => console.error(`[g3-spawn-gate] forward route failed for topic ${topicId}:`, err));
         }
         return;
@@ -3633,7 +3649,7 @@ export function wireTelegramRouting(
             } else movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING;
           } catch { movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING; }
         }
-        return spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined, movedContext);
+        return spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, await sessionTextFor(), topicMemory, resolvedUser ?? undefined, movedContext);
       })().then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
         confirmLocalSessionPoolClaim();
@@ -3660,7 +3676,7 @@ export function wireTelegramRouting(
             const q = _inboundQueue.enqueueLive({
               sessionKey: String(topicId),
               messageId: String(msg.id),
-              payload: text,
+              payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'work-admission-refusal');
@@ -3756,6 +3772,7 @@ export function wireTelegramRouting(
       sessionKey: dmsg.sessionKey,
       messageId: dmsg.messageId,
       payload: dmsg.payload,
+      ...(dmsg.media ? { media: dmsg.media } : {}),
       ...(drainRoutingOnly ? { routingOnly: true } : {}),
       topicMetadata: (dmsg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined)
         ?? (_pinPlacementMetadata ? _pinPlacementMetadata(dmsg.sessionKey) : _topicPinStore?.asTopicMetadata(dmsg.sessionKey)), // U4.1 §2D
@@ -3790,11 +3807,14 @@ export function wireTelegramRouting(
       // Direct inject: receipt FIRST (the §3.4 handover point), stop re-check,
       // then the inject. A caught inject error AFTER the receipt is
       // local-delivered+injectError (never silent loss).
+      // native-conversation-base §3c item 4: the file lines are resolved before the receipt, with no
+      // network wait, so receipt-then-inject stays adjacent.
+      const drainSessionText = await buildTelegramSessionText(topicId, dmsg.payload, dmsg.media ?? null, dmsg.messageId);
       if (!handover.commitReceipt()) return { kind: 'handover-refused' };
       if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
       try {
         const injected = sessionManager.injectTelegramMessage(
-          targetSession, topicId, dmsg.payload, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
+          targetSession, topicId, drainSessionText, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
           Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
         );
         if (injected === false) {
@@ -3830,6 +3850,10 @@ export function wireTelegramRouting(
     if (spawningTopics.has(topicId)) {
       return { kind: 'un-routable', reason: 'spawn-in-progress' };
     }
+    // §3c: the bootstrap carries the file lines built here, once, before the receipt; the
+    // pending-inject ledger stores this output, whose paths are local to this machine.
+    const drainSpawnText = await buildTelegramSessionText(topicId, dmsg.payload, dmsg.media ?? null, dmsg.messageId);
+    if (spawningTopics.has(topicId)) return { kind: 'un-routable', reason: 'spawn-in-progress' };
     if (!handover.commitReceipt()) return { kind: 'handover-refused' };
     if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
     const _spawnTokD = spawningTopics.add(topicId);
@@ -3837,9 +3861,9 @@ export function wireTelegramRouting(
       if (targetSession) {
         // Dead session — respawn, AWAITED through the spawn+inject (the PIS
         // record is written inside, AFTER our receipt — the round-7 order pin).
-        await respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, dmsg.payload, topicMemory, resolvedUser ?? undefined);
+        await respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, drainSpawnText, topicMemory, resolvedUser ?? undefined);
       } else {
-        const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, dmsg.payload, topicMemory, resolvedUser ?? undefined);
+        const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, drainSpawnText, topicMemory, resolvedUser ?? undefined);
         telegram.registerTopicSession(topicId, newSessionName, topicName);
       }
       return { kind: 'local-delivered' };
@@ -4107,33 +4131,9 @@ function wireIMessageRouting(
     // files via the Read tool. Attachments are auto-hardlinked into
     // .instar/imessage/attachments/ by the user-context sync script, avoiding
     // the need for FDA on node.
-    let text = msg.content;
-    const attachments = (msg.metadata?.attachments as Array<{
-      filename?: string;
-      mimeType?: string;
-      path?: string;
-    }>) ?? [];
-    if (attachments.length > 0) {
-      // If text has no placeholders but has attachments, append refs at the end.
-      // Otherwise replace each \uFFFC with an [image:/path] tag sequentially.
-      const tags = attachments.map((a) => {
-        if (!a.path) return '[attachment path unavailable]';
-        // For images/PDFs/etc., use [image:...] so Claude's existing handling applies.
-        // The path will be the hardlinked one if the sync script ran; otherwise
-        // the TCC-protected original (which Claude may or may not be able to read).
-        const isImage = (a.mimeType || '').startsWith('image/');
-        const kind = isImage ? 'image' : 'file';
-        return `[${kind}:${a.path}]`;
-      });
-      if (text.includes('\uFFFC')) {
-        // Replace each placeholder with the next tag
-        let i = 0;
-        text = text.replace(/\uFFFC/g, () => tags[i++] ?? '[image:missing]');
-      } else {
-        // No inline placeholders — append tags at the end
-        text = (text ? text + ' ' : '') + tags.join(' ');
-      }
-    }
+    // native-conversation-base §3c / FD-12: a path tag the person typed is inert before the adapter
+    // inlines its own attachment tags (see inlineIMessageAttachments).
+    const text = inlineIMessageAttachments(msg.content, (msg.metadata?.attachments as IMessageAttachmentRef[] | undefined) ?? []);
 
     const senderName = (msg.metadata?.senderName as string) ?? undefined;
     const senderNorm = sender.toLowerCase();
@@ -5969,6 +5969,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // feature ships (PR 2/3) and `multiMachine.stateSync.chiefOfStaff` is on.
     const { CHIEF_OF_STAFF_KIND_REGISTRATION } = await import('../core/ChiefOfStaffStore.js');
     replicatedKindRegistry.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
+    // Work Board (docs/specs/work-board-asks.md §3): register `work-card-record`. Registration is
+    // INERT — nothing emits until `workBoard.enabled` resolves on, which forces the store on below.
+    const { WORK_CARD_KIND_REGISTRATION } = await import('../core/WorkCardStore.js');
+    replicatedKindRegistry.register(WORK_CARD_KIND_REGISTRATION);
     // Context Budget layers (docs/specs/context-budget-layered-summaries.md §14): register
     // `context-layer-record`. Registration is INERT — nothing emits until the layer store
     // (Phase 1) writes through it and `multiMachine.stateSync.contextLayers` is on. Its presence
@@ -6063,11 +6067,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           conversationGraphReplicationRuntime?.onJournalCommit(kind, entries);
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
           if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, entry.machine);
+          // Work Board: this machine's own committed records (a no-op for those already folded at write time).
+          if (kind === 'work-card-record') _workBoardRuntime?.onCommitted(entries, null);
         });
         journalSyncApplier?.setReplicatedRecordCommitObserver((senderMachineId, kind, entries) => {
           conversationGraphReplicationRuntime?.onPeerJournalCommit(senderMachineId, kind, entries);
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
           if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, senderMachineId);
+          // Work Board: a peer's records land in the index, and may cause or stop a pickup here.
+          if (kind === 'work-card-record') _workBoardRuntime?.onCommitted(entries, senderMachineId);
           // Merge path for replicated pairings (step 5b): null unless the gate is on.
           _threadlinePairingWiring?.onRecordsCommitted(kind);
           // Native app conversations: land peers' events in the local conversation store.
@@ -6217,6 +6225,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _appUnreadOn = _isMobileUnreadEnabled(config);
     const _chiefOfStaffStoreOn = chiefOfStaffStoreEnabled(config);
+    const _workBoardOn = workBoardEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
       s = { ...s, failureCallout: { enabled: !!coherenceJournal && resolveCorrectionLearningMode(config).failureCalloutsEnabled && (config.multiMachine?.stateSync?.failureCallout as { enabled?: boolean } | undefined)?.enabled !== false } };
@@ -6235,7 +6244,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       // bindings, last-tick — must be agent-wide, never machine-local. The store follows the feature
       // switch; without it every record was refused 'disabled' and a check-in never counted anywhere.
       if (_chiefOfStaffStoreOn) s = { ...s, chiefOfStaff: { enabled: true } };
-      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      // Work Board (docs/specs/work-board-asks.md, Multi-machine posture): cards are the agent's, never
+      // one machine's, so the store is forced on with the feature.
+      if (_workBoardOn) s = { ...s, workBoard: { enabled: true } };
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -7726,6 +7738,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             description: input.publicTransportAlternative ? 'Two distinct browser builds failed. An independently authorized MTProto client is an alternative to repairing the browser integration.' : undefined }, { hubOnly: true });
         },
       }).catch(error => { releaseOriginLeaseRenewal(); throw error; });
+      // A peer's reply this machine delivered as lease holder joins this machine's
+      // topic history, so an "acceptance unknown" answer at the peer can no longer
+      // leave the reply in no history at all (topic 141868, 2026-11-11).
+      {
+        const { forwardedDeliveryHistoryTopic } = await import('../messaging/telegram-origin/ForwardedDeliveryHistory.js');
+        const { recoveredForwardProvenance } = await import('../messaging/telegram-origin/OriginForwardToHolder.js');
+        telegramOriginBoot.runtime.options.onForwardedDelivered = row => {
+          if (!telegram) return;
+          const chats = originTelegramConfig.config as { chatId?: unknown; issuesChatId?: unknown };
+          const historyTopicId = forwardedDeliveryHistoryTopic(row, { mainChatId: chats.chatId, issuesChatId: chats.issuesChatId });
+          if (historyTopicId === null) return;
+          telegram.recordRecoveredOutbound(historyTopicId, row.text, row.messageId, recoveredForwardProvenance(null, row.producerKind));
+        };
+      }
       const enrollment = await sessionManager.enrollExistingOriginSessions();
       if (enrollment.unavailable.length) console.warn('[telegram-origin] existing sessions require origin enrollment', enrollment.unavailable);
     }
@@ -8700,10 +8726,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { InputClassifier } = await import('../monitoring/InputClassifier.js');
       const { AutoApprover } = await import('../core/AutoApprover.js');
 
+      // Jev-first prompt-detect point — SHADOW ONLY (the incumbent decides every case);
+      // same factory pattern as buildCommitmentJevFirst (CommitmentSentinel below).
+      const { buildPromptJevFirst, promptDetectState } = await import('../core/JevFirstPrompt.js');
+      const { gateway: promptJevFirst, getPoint: getPromptJevPoint } = buildPromptJevFirst({
+        stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey,
+        developmentAgent: config.developmentAgent,
+        readConfig: () => liveConfig.get('intelligence.jevFirstPrompt', undefined as never),
+        provenance: () => _judgmentProvenance,
+      });
       const detector = new InputDetector({
         detectionWindowLines: promptGateConfig.detectionWindowLines ?? 50,
         enabled: true,
         intelligence: sharedIntelligence ?? undefined,
+        jevFirst: promptJevFirst,
+        getJevPoint: getPromptJevPoint,
+        jevState: promptDetectState,
       });
       promptDetector = detector;
 
@@ -10518,6 +10556,135 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (err) { console.warn(`  [app-conversations] boot replication read failed: ${err instanceof Error ? err.message : String(err)}`); }
         }
         _appConversationService = appSvc;
+        // ── Work Board, phase 1 (docs/specs/work-board-asks.md) ──
+        // Dev-gated: `workBoard.enabled` omitted ⇒ live on a development agent, dark on the fleet.
+        // A card owns one app conversation, so the board is built here, where that service exists.
+        if (_workBoardOn && coherenceJournal && replicatedRecordEmitter && replicatedPeerStreamReader && cjOwnMachineId) {
+          const wbSelf: string = cjOwnMachineId;
+          try {
+            const wbStore = await import('../core/WorkCardStore.js');
+            const { WorkBoardRuntime } = await import('../core/WorkBoardRuntime.js');
+            const { detectOutboundCredential } = await import('../messaging/outbound-credential-guard.js');
+            const { derivedEventId } = await import('../core/appConversationText.js');
+            const { createAppFollowUpInjector } = await import('../core/appInboundDispatch.js');
+            const { getActiveWorkAdmission } = await import('../core/workAdmission.js');
+            const wbJournal = coherenceJournal;
+            const wbEmitter = replicatedRecordEmitter;
+            const wbStreams = replicatedPeerStreamReader;
+            const wbInjectLive = createAppFollowUpInjector({ sessions: sessionManager as unknown as Parameters<typeof createAppFollowUpInjector>[0]['sessions'], channels: appSvc.channels });
+            const wbRuntime = new WorkBoardRuntime({
+              machineId: wbSelf,
+              enabled: () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('workBoard.enabled', undefined), config),
+              rawSettings: () => liveConfig.get<unknown>('workBoard', undefined),
+              saveSettings: (patch) => {
+                try {
+                  const walk = (o: Record<string, unknown>, prefix: string) => {
+                    for (const [k, v] of Object.entries(o)) {
+                      if (v && typeof v === 'object' && !Array.isArray(v)) walk(v as Record<string, unknown>, `${prefix}.${k}`);
+                      else liveConfig.set(`${prefix}.${k}`, v);
+                    }
+                  };
+                  walk(patch, 'workBoard');
+                  return true;
+                } catch (err) { // @silent-fallback-ok: warned; false makes the route answer `settings-not-saved`
+                  console.warn(`  [work-board] settings not saved: ${err instanceof Error ? err.message : String(err)}`);
+                  return false;
+                }
+              },
+              emit: (recordKey, build) => {
+                const r = wbEmitter.emit(wbStore.WORK_BOARD_STORE_KEY, recordKey, build);
+                return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) };
+              },
+              awaitDurable: (seq) => wbJournal.awaitDurableSeq(wbStore.WORK_CARD_RECORD_KIND as import('../core/CoherenceJournal.js').JournalKind, seq, 5_000),
+              // Own stream and every peer stream, the live file and every archive (approval, evidence and the
+              // carrier trail fold from the whole stream).
+              loadUnion: () => {
+                const out: Array<{ data: Record<string, unknown>; origin: string }> = [];
+                for (const byOrigin of wbStreams.loadAllOriginRecords(wbStore.WORK_BOARD_STORE_KEY).values()) {
+                  for (const r of byOrigin) out.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
+                }
+                return out;
+              },
+              journalBytes: () => {
+                let n = 0;
+                for (const f of wbJournal.enumerateStreams()) {
+                  if (f.kind !== wbStore.WORK_CARD_RECORD_KIND) continue;
+                  try { n += fs.statSync(f.file).size; } catch { /* @silent-fallback-ok: a file rotated away between the listing and the stat counts as zero */ }
+                }
+                return n;
+              },
+              conversation: {
+                create: (cardId, conversationKey, title) => {
+                  // Device id `work-board`, request id = the card id: the event id is stable, so a second create is a no-op.
+                  const r = appSvc.applyCreate('work-board', cardId, conversationKey, title.slice(0, 80) || 'Work card', null);
+                  if (r.status !== 200) throw new Error(String((r.body as { error?: string }).error ?? 'conversation-not-created'));
+                },
+                exists: (conversationKey) => !!appSvc.liveConversation(conversationKey),
+                appendSystemLine: (conversationKey, lineId, text) => {
+                  const eventId = derivedEventId('wb', conversationKey, lineId);
+                  if (appSvc.store.hasEvent(conversationKey, eventId)) return;
+                  appSvc.store.append({ eventId, conversationKey, messageId: lineId, role: 'agent', text, at: new Date().toISOString(), machineId: wbSelf, kind: 'message', systemSource: 'work-board' });
+                },
+                remove: (conversationKey) => {
+                  if (!appSvc.liveConversation(conversationKey)) return;
+                  appSvc.applyDelete('work-board', `redact:${conversationKey}`, conversationKey);
+                },
+                serves: (conversationKey) => appSvc.serves(conversationKey),
+                aliasFor: (conversationKey) => conversationRegistry.appAliasFor(conversationKey),
+                hasLiveSession: (conversationKey) => {
+                  const name = appSvc.sessionFor(conversationKey);
+                  return !!name && sessionManager.listRunningSessions().some((x) => x.tmuxSession === name);
+                },
+                dispatchSystem: async (input) => {
+                  const d = appSvc.deps.dispatch();
+                  if (!d?.detailed) return { outcome: 'refused' as const, reason: 'app conversations cannot deliver here yet' };
+                  const out = await d.detailed({ ...input, ownerName: appOwnerName(config), originVerdict: 'none', origin: 'system', systemSource: 'work-board' });
+                  // Maturation evidence (workBoard.asks): one `fired` per card handed to the agent.
+                  if (out.outcome !== 'refused') featureEvidence.record('workBoard.asks', { kind: 'fired', reason: `pickup-${out.outcome}` });
+                  return out;
+                },
+                injectLive: (alias, line) => wbInjectLive(alias, line),
+                attachment: (attachmentId) => {
+                  const ref = appSvc.store.mediaRef(attachmentId);
+                  return ref ? { sha256: ref.sha256, conversationKey: ref.canonicalKey.replace(/^app:/, ''), purged: !!ref.purged || !!ref.tombstoned } : null;
+                },
+                lastPersonMessageAt: (conversationKey) => {
+                  const m = appSvc.store.browseMessages(conversationKey, null, 20).messages.filter((x) => x.role === 'operator');
+                  return m.length ? m.reduce((a, b) => (a.at > b.at ? a : b)).at : null;
+                },
+              },
+              relayReady: () => (_appRelayReady ? _appRelayReady().ready : false),
+              capacityProbe: () => sessionManager.interactiveSpawnCapacity(() => getActiveWorkAdmission()?.check()),
+              ownerPersonKey: () => _workBoardLate.ownerPersonKey?.() ?? null,
+              displayName: (personKey) => _workBoardLate.displayName?.(personKey) ?? appOwnerName(config),
+              timezone: () => (config as { timezone?: string }).timezone || undefined,
+              detectCredential: (text) => { const c = detectOutboundCredential(text); return c.detected && c.kind ? String(c.kind) : null; },
+              ledgerNote: (cardId, causeId) => { _workBoardLate.ledgerNote?.(cardId, causeId); },
+              degradation: (event, detail) => {
+                if (event === 'work-board-pickup-parked') featureEvidence.record('workBoard.asks', { kind: 'error', reason: 'pickup-parked' });
+                DegradationReporter.getInstance().report({
+                  feature: `WorkBoard.${event}`,
+                  primary: event === 'work-board-journal-large' ? 'the work board journal stays small' : 'an approved card is handed to the agent',
+                  fallback: event === 'work-board-journal-large' ? 'cards keep working; the journal keeps growing until compaction ships' : 'the card waits in "Waiting on you" with Try again',
+                  reason: String(detail.reason ?? event),
+                  impact: event === 'work-board-journal-large' ? 'The work board journal has passed 64 MB (docs/specs/work-board-asks.md).' : 'A work card could not be handed to the agent and is waiting on the owner.',
+                });
+              },
+              leaseHolder: () => leaseCoordinatorRef?.currentHolder() ?? (appSvc.deps.holdsLease() ? wbSelf : null),
+              log: (event, detail) => console.log(pc.dim(`  [work-board] ${event} ${JSON.stringify(detail)}`)),
+            });
+            // Conversations of archived or removed cards are left out of every conversation list (§2).
+            appSvc.store.hiddenConversationKeys = () => wbRuntime.hiddenConversationKeys();
+            wbRuntime.start();
+            const wbLeaseWatch = setInterval(() => { try { wbRuntime.noteLeaseHolder(); } catch { /* @silent-fallback-ok: a lease read fault is retried on the next 15 s tick */ } }, 15_000);
+            wbLeaseWatch.unref();
+            _workBoardRuntime = wbRuntime;
+            console.log(pc.dim(`  [work-board] live: ${wbRuntime.svc.cardIds().length} card(s), ${wbRuntime.svc.totalRecords()} record(s)`));
+          } catch (err) { // @silent-fallback-ok: not silent — warned and reported through DegradationReporter just below
+            console.warn(`  [work-board] not started: ${err instanceof Error ? err.message : String(err)}`);
+            DegradationReporter.getInstance().report({ feature: 'WorkBoard.boot', primary: 'the work board starts with the server', fallback: 'the board answers "starting" until the next restart', reason: err instanceof Error ? err.name : 'unknown error', impact: 'Work cards cannot be read or written on this machine until the server restarts.' });
+          }
+        }
         // Unread (mobile-unread-messages §3.3): the read-marker store on the same replication path. Its
         // service (counts, reports, badge) is built by AgentServer, which has the pairing and sources.
         _readMarkerStore = (await import('../core/ConversationReadMarkersWiring.js')).wireReadMarkerStoreSafe({
@@ -20510,23 +20677,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Late-bound: the trust manager the homebase backfill needs is built further down
     // (Threadline bootstrap). Until then a contact is simply a no-op.
     let _peerHomebaseBackfill: import('../threadline/peerHomebaseBackfill.js').PeerHomebaseBackfill | null = null;
-    const threadMessageRecorder = new ThreadMessageRecorder({
+    // One production composition (createThreadMessageRecorder): real log + store,
+    // the MessageStore as the resolvable over-cap body backing, and the peer-contact
+    // hook. The relay-ingress E2E calls the same function.
+    const threadMessageRecorder = createThreadMessageRecorder({
+      config,
       threadLog,
       conversationStore,
+      messageStore,
       attention: telegram ?? null,
-      logDir: path.join(config.stateDir, 'logs'),
-      headCacheCoalesceMs: _canonHist.headCacheCoalesceMs,
-      appendFailureAlertThreshold: _canonHist.appendFailureAlertThreshold,
-      inlineMaxBytes: _canonHist.inlineMaxBytes,
+      onContact: (peer) => _peerHomebaseBackfill?.onContact(peer),
     });
-    {
-      const { attachPeerContactHook } = await import('../threadline/peerHomebaseBackfill.js');
-      attachPeerContactHook(threadMessageRecorder, (peer) => _peerHomebaseBackfill?.onContact(peer));
-    }
-    // SA5/E1: close-only canonical-log retention — a non-pinned conversation
-    // transitioning INTO resolved/failed deletes its log (via SafeFsExecutor inside
-    // ThreadLog.deleteThread); a COLD archive/LRU eviction never fires this seam.
-    conversationStore.setLogRetentionSeam((threadId) => threadLog.deleteThread(threadId));
+    // SA5/E1: close-only canonical retention (log + that thread's body partition)
+    // is installed by createThreadMessageRecorder (installCanonicalRetentionSeam);
+    // a COLD archive/LRU eviction never fires the seam.
     const warrantsReplyGate = new WarrantsReplyGate({ intelligence: sharedIntelligence });
     // CMT-509 §2: surface PARENTLESS Threadline conversations into a single
     // dedicated topic so a peer reaching out cold is visible (not an invisible
@@ -22111,7 +22275,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         const { runRelayInboundWithLedger } = await import('../threadline/inboundIdLedgerWiring.js');
         const { InboundMessageGate: InboundGateStatics } = await import('../threadline/InboundMessageGate.js');
-        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string; notice?: string }) => {
+        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string; timestamp?: string; timestampSynthesized?: true }; trustLevel?: string; reason?: string; notice?: string }) => {
           // Inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md §1) — THE
           // COMMIT POINT: runRelayInboundWithLedger commits as the first statement
           // after the null-check and the probe exclusion, BEFORE every side effect
@@ -22134,7 +22298,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
 
         async function handleGatePassedRelayMessage(
-          decision: { message: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string },
+          decision: { message: { from: string; content: unknown; threadId?: string; messageId?: string; timestamp?: string; timestampSynthesized?: true }; trustLevel?: string; reason?: string },
           ledgerTicket: import('../threadline/InboundIdLedger.js').AdmissionTicket | null,
           ledgerNotice: string | null,
         ): Promise<void> {
@@ -22149,22 +22313,20 @@ export async function startServer(options: StartOptions): Promise<void> {
           // The relay-authenticated sender; a probe never opens a place.
           const memoryPeerFingerprint = decision.reason === 'probe' ? undefined : senderFingerprint;
 
-          // Extract text content
-          let textContent: string;
-          if (typeof msg.content === 'string') { textContent = msg.content; }
-          else if (typeof msg.content === 'object' && msg.content !== null) {
-            const c = msg.content as Record<string, unknown>;
-            textContent = String(c.content ?? c.text ?? JSON.stringify(msg.content));
-          } else { textContent = JSON.stringify(msg.content); }
-
-          // Check if this message resolves a pending waitForReply request.
-          // Skip auto-ack messages (they're from us, not a real reply).
-          // PR-3: Waiters are now keyed by threadId (unique per conversation)
-          // rather than sender fingerprint or agent name. Fall back to the
-          // legacy fingerprint/name lookup only if no threadId is present,
-          // for compatibility with older senders.
-          const msgType = typeof msg.content === 'object' && msg.content !== null ? (msg.content as Record<string, unknown>).type : undefined;
-          const isAutoAck = isAutoAckInbound({ type: msgType, text: textContent });
+          // Extract text content + ack classification — ONE shared classification
+          // (classifyRelayIngress) used by the history step, the waiter and the ack
+          // stage below, so the history exclusion cannot drift from what the ack stage consumes.
+          // Waiter note: skip auto-ack messages (they're from us, not a real reply).
+          // PR-3: Waiters are keyed by threadId (unique per conversation).
+          const relayIngress = classifyRelayIngress(msg);
+          const { textContent, msgType, isAutoAck } = relayIngress;
+          // Canonical history (Robustness Phase 2 D-B, the relay-socket inbound leg):
+          // record this ALREADY-AUTHORIZED inbound through the one recordThreadMessage
+          // funnel BEFORE the waiter and every routing branch, and only for messages
+          // the ack stage below does not consume (kinded acks / auto-acks) and never
+          // for probes. Observer only: never throws, never gates delivery, and a row
+          // is history — not proof the message was read or delivered.
+          recordGatePassedIngress(threadMessageRecorder, decision, relayIngress, msg.threadId ?? getSyntheticThreadId(senderFingerprint));
           // Waiters are keyed by thread id only (PR-3); the old by-name fallback could never
           // match one, so it is gone (memory-privacy-agent-places §3).
           const waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
@@ -22212,7 +22374,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           const relayAckInput = {
             isAutoAck, trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket: ledgerTicket,
-            kindedAck: parseKindedAck(msg.content),
+            kindedAck: relayIngress.kindedAck,
             deferSend: true,
           };
           const relayAck = createRelayAckSettler(relayAckDeps, relayAckInput);
@@ -23311,6 +23473,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           salt,
           degradationReporter,
         });
+        // Work Board §6: one note per card handed to the agent, by card id only (the ledger is shown to
+        // sessions that may serve people who cannot see the card). Best-effort; never fails a pickup.
+        {
+          const wbLedger = sharedStateLedger;
+          const wbAgentName = String((config as { agentName?: string; projectName?: string }).agentName ?? (config as { projectName?: string }).projectName ?? 'agent').replace(/[^a-zA-Z0-9\-_.:]/g, '-').slice(0, 64) || 'agent';
+          _workBoardLate.ledgerNote = (cardId, causeId) => {
+            void wbLedger.append({
+              kind: 'note', provenance: 'subsystem-asserted',
+              emittedBy: { subsystem: 'work-board', instance: 'WorkBoardPickupController' },
+              counterparty: { type: 'self', name: wbAgentName, trustTier: 'trusted' },
+              subject: 'work-card-handed-over', summary: `a work card was handed to the agent: ${cardId}`,
+              dedupKey: `work-card:${cardId}:${causeId}`,
+            }).catch(() => { /* @silent-fallback-ok: the ledger is off or refused; the pickup is unaffected (work-board-asks §6) */ });
+          };
+        }
         // Wire emitters (single call-site; revert = delete this block).
         const { registerLedgerEmitters } = await import('../core/registerLedgerEmitters.js');
         // Note: dispatchExecutor is scoped inside the dispatches.enabled block.
@@ -28665,6 +28842,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
                 ? String((cmd.payload as { text: unknown }).text)
                 : undefined;
+            // native-conversation-base §3c: files arrive by attachment id in `media`; the session's
+            // file lines are built here, on the machine that serves it. A forward from an older
+            // poller has no `media` at all and is resolved by its own platform message id.
+            const fwdMedia = parseInboundMediaField((cmd as { media?: unknown }).media);
+            const sessionTextP = (): Promise<string> => buildTelegramSessionText(topicId, text ?? '', fwdMedia, cmd.messageId);
             // This machine judges a team person for itself: it may know of a removal the sender did not.
             const teamSender = (cmd as { senderEnvelope?: { personKey?: string } }).senderEnvelope?.personKey;
             if (teamSender && !_teamMayDeliver?.(teamSender, `telegram:${topicId}`)) {
@@ -28695,17 +28877,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Loss window 6 (Durable Inbound Message Queue §3.4 remote):
                 // flip the receipt's injected marker on success; a CAUGHT
                 // failure reports at error time — never silent.
-                try {
-                  const injected = sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                void sessionTextP().then((sessionText) => {
+                  const injected = sessionManager.injectTelegramMessage(existing, topicId, sessionText, tg.getTopicName?.(topicId) ?? undefined);
                   if (injected === false) {
                     _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'inject-returned-false');
                     return;
                   }
                   tg.trackMessageInjection(topicId, existing, text);
                   _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
-                } catch (err) {
+                }).catch((err) => {
                   _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
-                }
+                });
               }
               return;
             }
@@ -28740,7 +28922,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }, topicId);
                 // A bounded pull cannot prove that no older messages lived on a prior machine.
                 const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
-                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
+                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text ? await sessionTextP() : text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
                   tg.registerTopicSession(topicId, name, spawnName);
@@ -28774,7 +28956,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (bound && sessionManager.isSessionAlive(bound)) {
                   if (!text) return;
                   try {
-                    const injected = sessionManager.injectTelegramMessage(bound, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                    const injected = sessionManager.injectTelegramMessage(bound, topicId, await sessionTextP(), tg.getTopicName?.(topicId) ?? undefined);
                     if (injected !== false) {
                       tg.trackMessageInjection(topicId, bound, text);
                       _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
@@ -29865,7 +30047,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                 gather, judge, protocol,
                 mirrorInitiativeStatus: (id, status) => { try { (initiativeTracker as unknown as { update?: (id: string, patch: Record<string, unknown>) => unknown }).update?.(id, { status }); } catch { /* @silent-fallback-ok: the binding is the authority; the mirror retries next tick (§1.2) */ } },
                 sendNote: sendToCos, sendImmediate: sendToCos,
-                statusUrl: () => `http://localhost:${config.port}/chief-of-staff`,
+                // §3 links open on a phone: the public tunnel origin into the console's Chief of Staff page, never localhost.
+                // No public link yet (no tunnel, or not up) ⇒ no link; the note still names every project.
+                statusUrl: () => { const o = operatorLinkOrigin(); return o.kind === 'public' ? `${o.origin}/dashboard/console/#/work/chats` : null; },
+                projectUrl: (conversationKey) => { const o = operatorLinkOrigin(); return o.kind === 'public' && /^(app|telegram|slack):[A-Za-z0-9-]+$/.test(conversationKey) ? `${o.origin}/dashboard/console/#/work/chats?c=${encodeURIComponent(conversationKey)}` : null; },
+                // A real short name: the linked initiative's title, else the conversation's own name, else (null) the loop derives one from the goal.
+                projectTitle: (p) => {
+                  const fromInitiative = p.initiativeId ? initiativeTracker.get(p.initiativeId)?.title : undefined;
+                  if (typeof fromInitiative === 'string' && fromInitiative.trim()) return fromInitiative;
+                  const t = /^telegram:(\d+)$/.exec(p.conversationKey);
+                  const fromTopic = t ? telegram?.getTopicName(Number(t[1])) ?? null : null;
+                  return typeof fromTopic === 'string' && fromTopic.trim() ? fromTopic : null;
+                },
                 localHour: (ms) => { try { return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: (config as { timezone?: string }).timezone || undefined }).format(new Date(ms))) % 24; } catch { /* @silent-fallback-ok: an invalid timezone falls back to the machine's local hour */ return new Date(ms).getHours(); } },
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
@@ -31166,7 +31359,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // senderEnvelope (Durable Inbound Message Queue §2.2): a drained
               // forward carries the STORED sender frame; an old peer ignores
               // the extra field (version skew named in the spec).
-              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}), ...(env.row != null ? { row: env.row } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
+              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}), ...(env.row != null ? { row: env.row } : {}), ...(env.media ? { media: toWireMedia(env.media) } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -31181,7 +31374,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             spawnOnMachine: async (machineId, msg, ownershipEpoch, row) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}), ...(row != null ? { row } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}), ...(row != null ? { row } : {}), ...(msg.media ? { media: toWireMedia(msg.media) } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -31209,6 +31402,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 payload: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload ?? ''),
                 senderEnvelope: msg.senderEnvelope ?? null,
                 topicMetadata: msg.topicMetadata,
+                // native-conversation-base §3c: the files ride with the row (never a path).
+                media: msg.media ?? null,
               }, reason);
               return out.result;
             },
@@ -32023,6 +32218,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                   },
                   localAdvertFor: (machineId: string): Record<string, { incarnation: string; lastSeq: number }> =>
                     journalSyncApplier?.getAdvertState()[machineId] ?? {},
+                  // Work Board §6: when an exchange with a peer completed and what it advertised.
+                  onJournalExchange: (machineId: string, peerAdvert: Record<string, { incarnation: string; lastSeq: number }>) => {
+                    _workBoardRuntime?.noteJournalExchange(machineId, peerAdvert, journalSyncApplier?.getAdvertState()[machineId] ?? {});
+                  },
                 }
               : {};
           if (_replicationEnabled) {
@@ -33463,7 +33662,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // is constructed just after), so no HTTP mutating route can ever observe a
     // half-attached state (§3.2 pre-construction window).
     let writeAdmission: import('../core/WriteAdmission.js').WriteAdmission | null = null;
-    if (resolveDevAgentGate(config.multiMachine?.writeAdmission?.enabled, config)) {
+    // Conversations needs this layer on every machine of a multi-machine agent
+    // (src/core/writeAdmissionGate.ts); its mode still follows `dryRun`.
+    const writeAdmissionGate = resolveWriteAdmissionGate(config);
+    if (writeAdmissionGate.enabled) {
       try {
         const waMod = await import('../core/WriteAdmission.js');
         const regMod = await import('../core/WriteDomainRegistry.js');
@@ -33536,7 +33738,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           /* @silent-fallback-ok — the legacy key is inert and self-draining (6h max age);
              a failed cleanup only delays its disappearance and retries at the next boot. */
         }
-        console.log(pc.dim(`  Write-admission: live (${writeAdmission.mode()}) — machine ${waMachineId ?? 'local'}, legacy guard ${writeAdmission.isLive ? 'subsumed' : 'still enforcing'}`));
+        console.log(pc.dim(`  Write-admission: live (${writeAdmission.mode()}) — machine ${waMachineId ?? 'local'}, legacy guard ${writeAdmission.isLive ? 'subsumed' : 'still enforcing'}, on by ${writeAdmissionGate.reason}`));
       } catch (err) {
         // @silent-fallback-ok — reported via console.warn; init failure leaves the
         // layer null → route 503s + the legacy blanket guard keeps enforcing
@@ -34154,7 +34356,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only now: a retry must see the session router, spawn admission and the operator routes.
     _slackRefusedHold?.start();
     activeUsageLimitWatch()?.start();
-    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
+    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, workBoard: () => _workBoardRuntime, workBoardLate: _workBoardLate, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
     conversationGraphReplicationRuntime?.start();
     // Unread (mobile-unread-messages §3.3): the retry and gc timers, and the boot catch-up from any reachable
     // peer once the pool registry has had a moment to name them. Phones get no baseline until it settles.

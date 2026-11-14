@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "disk-steward-whole-disk",
+  "sessionId": "9c96d0a0-dfc9-48fd-8608-5be889fc9ffd",
+  "timestamp": "2026-11-14T05:39:32.907Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-whole-disk.md",
+  "artifactSha256": "e509cd75fa24f4d746044a859390208c0490f97b8720f7f0f654fbfe57015df8",
+  "coveredFiles": [
+    "docs/specs/disk-steward-whole-disk.eli16.md",
+    "docs/specs/disk-steward.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/DiskSteward.ts",
+    "src/monitoring/DiskStewardPoster.ts",
+    "src/monitoring/diskSteward/pruneCategories.ts",
+    "src/monitoring/diskSteward/pruneRunner.ts",
+    "src/monitoring/diskSteward/wholeDisk.ts",
+    "src/monitoring/diskStewardMain.ts",
+    "src/scaffold/templates.ts",
+    "tests/integration/disk-steward-routes.test.ts",
+    "tests/unit/diskSteward-wholeDisk.test.ts",
+    "tests/unit/diskSteward.test.ts",
+    "upgrades/next/disk-steward-whole-disk.md",
+    "upgrades/side-effects/disk-steward-whole-disk.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only measurement added to an existing post, once a day; nothing is deleted or moved, and a revert fully undoes it.",
+  "eli16Path": "docs/specs/disk-steward-whole-disk.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-whole-disk.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
