@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Live-User-Channel Proof Before Done*
+
 /**
  * LiveTestHarness — the user-role live-test runner (spec
  * docs/specs/live-user-channel-proof-standard.md §5). It drives a feature

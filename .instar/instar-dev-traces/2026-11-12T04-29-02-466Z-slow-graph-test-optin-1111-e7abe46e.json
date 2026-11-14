@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "slow-graph-test-optin-1111",
+  "sessionId": "7cda0de3-1be7-4c63-b352-d728cccc24e6",
+  "timestamp": "2026-11-12T04:29:02.466Z",
+  "artifactPath": "upgrades/side-effects/slow-graph-test-optin-1111.md",
+  "artifactSha256": "8bb5d236cee0f53e9bf33c887e29c4173005337184a294b911835f9895add091",
+  "coveredFiles": [
+    "docs/specs/slow-graph-test-optin-1111.eli16.md",
+    "tests/integration/conversation-graph-replication-contexts.test.ts",
+    "upgrades/side-effects/slow-graph-test-optin-1111.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-selection-only change: one integration test wrapped in an existing opt-in flag; no production code.",
+  "eli16Path": "docs/specs/slow-graph-test-optin-1111.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slow-graph-test-optin-1111.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
