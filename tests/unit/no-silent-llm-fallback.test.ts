@@ -82,7 +82,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'providers/uxConfirm/OverrideDetector.ts': 'returns NO_OVERRIDE — fail-closed direction (no override = safe default)',
   'knowledge/TreeTriage.ts': 'falls back to deterministic scoreNodes() — advisory knowledge retrieval with a deterministic floor',
   'knowledge/TreeSynthesis.ts': 'returns {synthesis:null} — advisory knowledge synthesis',
-  'monitoring/PromptGate.ts': 'returns/skips on malformed output — advisory prompt observation, no gated action',
   'monitoring/InputClassifier.ts': 'conservative default is "relay" (route to human) with a deterministic destructive-op floor BEFORE the LLM — never auto-approves on failure',
 };
 
