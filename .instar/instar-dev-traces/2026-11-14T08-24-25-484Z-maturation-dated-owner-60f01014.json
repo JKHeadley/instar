@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "maturation-dated-owner",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T08:24:25.484Z",
+  "artifactPath": "upgrades/side-effects/maturation-dated-owner.md",
+  "artifactSha256": "f1c6b75993061e94768e30e79f4c8050a0b0d3f3ff6e1bbe8f1be87c8e657138",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/maturation-dated-owner-shipping-family-2026-11-14.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/reports/maturation-dated-owner-shipping-family-2026-11-14.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/next/maturation-dated-owner.md",
+    "upgrades/side-effects/maturation-dated-owner.eli16.md",
+    "upgrades/side-effects/maturation-dated-owner.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs-only constitution text: Maturation Path clause (h), its Shipping family audit record, alignment-map row, upgrade notes; independently reviewed over four passes, final pass concurred",
+  "eli16Path": "upgrades/side-effects/maturation-dated-owner.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-dated-owner.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
