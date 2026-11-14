@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { IntelligenceProvider } from '../core/types.js';
 import { classifyActionClaim, type ActionClaimResult } from '../core/action-claim.js';
-import { buildTranscriptSliceIdentityContext } from '../core/JudgmentProvenanceLog.js';
+import { buildStructuredSha256Identity, buildTranscriptSliceIdentityContext, CONTENT_FULL_KEY } from '../core/JudgmentProvenanceLog.js';
 import { DP_COMPLETION_CLAIM_VERIFY } from '../data/provenanceCoverage.js';
 import { scrubSecrets } from './scrubSecrets.js';
 import type { EvidenceActionKind, TurnEvidence } from './TurnEvidence.js';
@@ -68,7 +68,25 @@ export interface ClaimClauseArbiterOptions {
    * install is byte-identical and an unknown framework fails toward the old behavior.
    */
   resolveFramework?: () => string | undefined;
+  /**
+   * Record the exact replay input on the provenance row (CMT-1679,
+   * `monitoring.completionClaimVerification.recordReplayInput`, dev-gated).
+   *
+   * The arbiter's prompt is a pure function of the already-scrubbed message, the
+   * already-bounded structured evidence, and `includeGeneral`. When this is on, the
+   * row's served context gains content-free replay identity (prompt sha, variant,
+   * scrub version, capture version) and the two inputs go under the machine-local
+   * CONTENT_FULL_KEY, so a later replay can rebuild the prompt byte-for-byte and
+   * prove it with the sha. Off (the fleet default) ⇒ the row is byte-identical to
+   * before. Never changes the prompt, model, timeout, or routing.
+   */
+  recordReplayInput?: boolean;
 }
+
+/** Version of the replay-input capture shape written under CONTENT_FULL_KEY. */
+export const CLAIM_REPLAY_CAPTURE_VERSION = 'claim-replay-input-v1';
+/** The scrub the verifier applies before arbitration (prepareClaimObservation). */
+export const CLAIM_REPLAY_SCRUB_VERSION = 'claim-scrub-v1';
 
 const LABELS = new Set<ClaimClauseLabel>(['future-commitment', 'completed-or-in-progress-assertion', 'neither']);
 const KINDS = new Set<EvidenceActionKind>(['sent', 'deployed', 'handed-off', 'committed', 'pushed', 'merged', 'restarted', 'fixed', 'other']);
@@ -117,7 +135,15 @@ export class ClaimClauseArbiter {
       } catch {
         includeGeneral = true;
       }
-      const raw = await this.opts.intelligence.evaluate(buildClaimArbiterPrompt(clauses, evidence, message, { includeGeneral }), {
+      // Built once: the exact string sent is the one whose sha the capture records.
+      const prompt = buildClaimArbiterPrompt(clauses, evidence, message, { includeGeneral });
+      const context = buildCompletionClaimDecisionContext({ message, clauses, evidence,
+        ...(this.opts.recordReplayInput === true ? { extra: buildClaimReplayIdentity(prompt, includeGeneral) } : {}) });
+      // Machine-local by construction (stripped before contextRedacted is built, never
+      // served, never on the cross-machine allowlist). Attached AFTER the bounded
+      // builder so the 300-char string clamp cannot cut the replay input.
+      if (this.opts.recordReplayInput === true) context[CONTENT_FULL_KEY] = { message, evidence };
+      const raw = await this.opts.intelligence.evaluate(prompt, {
         model: 'fast', temperature: 0, maxTokens: 1_800, timeoutMs: 60_000,
         onModel: (info) => { resolvedModel = { model: info.model, ...(info.framework ? { framework: info.framework } : {}) }; },
         onUsage: (info) => { usage = { inputTokens: info.inputTokens, outputTokens: info.outputTokens }; },
@@ -133,7 +159,7 @@ export class ClaimClauseArbiter {
         attribution: { component: 'completion-claim-verify', injectionExposed: true },
         provenance: {
           decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
-          context: buildCompletionClaimDecisionContext({ message, clauses, evidence }),
+          context,
           optionsPresented: ['future-commitment', 'completed-or-in-progress-assertion', 'neither'],
           promptId: includeGeneral ? CLAIM_ARBITER_PROMPT_ID : CLAIM_ARBITER_PROMPT_ID_LEGACY_ONLY,
         },
@@ -295,6 +321,64 @@ export function buildCompletionClaimDecisionContext(input: {
     evidenceTruncated: input.evidence.truncated,
     ...input.extra,
   });
+}
+
+/**
+ * Content-free replay identity for the served context (CMT-1679). Every field is a
+ * code-authored label, a boolean, or a structured digest — never message text.
+ * `incumbentLabelsRecorded: false` says plainly that the decision row does not carry
+ * the incumbent's per-clause labels (they are parsed after the call), so a grader
+ * can tell candidate, incumbent and final apart instead of assuming they are here.
+ */
+export function buildClaimReplayIdentity(prompt: string, includeGeneral: boolean): Record<string, unknown> {
+  return {
+    promptSha256: buildStructuredSha256Identity(prompt),
+    includeGeneral,
+    scrubVersion: CLAIM_REPLAY_SCRUB_VERSION,
+    captureVersion: CLAIM_REPLAY_CAPTURE_VERSION,
+    incumbentLabelsRecorded: false,
+  };
+}
+
+/** Rebuild the exact arbiter prompt from a captured replay input. Pure. */
+export function rebuildClaimArbiterPromptFromCapture(
+  contentFull: { message: string; evidence: TurnEvidence },
+  includeGeneral: boolean,
+): string {
+  return buildClaimArbiterPrompt(splitClaimClauses(contentFull.message), contentFull.evidence, contentFull.message, { includeGeneral });
+}
+
+export type ClaimReplayEligibility =
+  | { eligible: true; prompt: string; includeGeneral: boolean }
+  | { eligible: false; reason: 'row-truncated' | 'no-capture' | 'unknown-capture-version' | 'malformed-capture' | 'sha-mismatch' };
+
+/**
+ * Decide whether a stored completion-claim decision row can be replayed. A row is
+ * eligible ONLY when its capture rebuilds a prompt whose sha equals the recorded
+ * `promptSha256`. Truncation by the 64 KB row clamp, a missing or malformed capture,
+ * or any sha mismatch is reported as not eligible — never silently accepted.
+ */
+export function assessClaimReplayEligibility(contextFull: unknown, opts: { rowTruncated?: boolean } = {}): ClaimReplayEligibility {
+  if (opts.rowTruncated === true) return { eligible: false, reason: 'row-truncated' };
+  if (!contextFull || typeof contextFull !== 'object' || Array.isArray(contextFull)) return { eligible: false, reason: 'no-capture' };
+  const ctx = contextFull as Record<string, unknown>;
+  if (ctx.truncated === true) return { eligible: false, reason: 'row-truncated' };
+  if (ctx.captureVersion === undefined && ctx[CONTENT_FULL_KEY] === undefined) return { eligible: false, reason: 'no-capture' };
+  if (ctx.captureVersion !== CLAIM_REPLAY_CAPTURE_VERSION) return { eligible: false, reason: 'unknown-capture-version' };
+  const captured = ctx[CONTENT_FULL_KEY] as Record<string, unknown> | undefined;
+  const evidence = captured?.evidence as TurnEvidence | undefined;
+  if (!captured || typeof captured.message !== 'string' || typeof ctx.includeGeneral !== 'boolean'
+    || typeof ctx.promptSha256 !== 'string' || !evidence || typeof evidence !== 'object' || !Array.isArray(evidence.toolCalls)) {
+    return { eligible: false, reason: 'malformed-capture' };
+  }
+  let prompt: string;
+  try {
+    prompt = rebuildClaimArbiterPromptFromCapture({ message: captured.message, evidence }, ctx.includeGeneral);
+  } catch { /* @silent-fallback-ok — an unrebuildable capture is reported as malformed, never accepted */
+    return { eligible: false, reason: 'malformed-capture' };
+  }
+  if (buildStructuredSha256Identity(prompt) !== ctx.promptSha256) return { eligible: false, reason: 'sha-mismatch' };
+  return { eligible: true, prompt, includeGeneral: ctx.includeGeneral };
 }
 
 /**
