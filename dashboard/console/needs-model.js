@@ -12,6 +12,7 @@ import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
+import { contextNeeds } from './context-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -105,6 +106,17 @@ export const NEED_SOURCES = [
       const p = buildPending(status);
       if (!p.ok) return p.off ? [] : UNREADABLE;
       return p.rows.map((r) => row(`learned-pending:${r.name}`, `A new skill waits for your OK: ${r.body}`, 'Confirm or reject it on the Learned page', '#/settings/learned?s=pending', [r.name]));
+    } },
+  // Context budget (context-budget-layered-summaries.md §11): a memory refresh stuck past the watcher's own
+  // settling time, an unreadable refresh record, or compression recovery that stopped working (one row per
+  // machine). 503 = off here; a stale watcher heartbeat is "can't tell", never "nothing".
+  // Read from the watcher's status only (cheap); the conversation names stay on the page itself.
+  { id: 'context', page: 'settings/context', reads: { sentinel: '/context-budget/sentinel' },
+    rows: ({ sentinel }, now) => {
+      const needs = contextNeeds(sentinel.data, {}, now);
+      if (needs === null) return UNREADABLE;
+      // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
+      return needs.map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
     } },
 ];
 

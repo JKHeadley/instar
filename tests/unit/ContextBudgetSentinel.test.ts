@@ -319,6 +319,8 @@ describe('ContextBudgetSentinel', () => {
       const rec = quarantined(); tear(rec.foldId);
       await make().tick(); await make().tick(); // two sentinel lifetimes
       expect(attention.filter((a) => a.id === `context-budget-torn-record-${T}-${rec.foldId}`)).toHaveLength(1);
+      // The title names the fold, as the quarantine notices do, so the console's Home count dedupes it by fold id.
+      expect(attention.find((a) => a.id === `context-budget-torn-record-${T}-${rec.foldId}`)!.title).toContain(`(fold ${rec.foldId})`);
       fs.writeFileSync(path.join(store.dirFor(T), `${rec.foldId}.json`), JSON.stringify({ ...rec, state: 'rolled-back' }));
       await make().tick();
       tear(rec.foldId);

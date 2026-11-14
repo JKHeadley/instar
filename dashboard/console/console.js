@@ -30,6 +30,7 @@ import { renderLearned } from './learned.js';
 import { topicNameMap } from './topic-names.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
+import { renderContext } from './context.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
@@ -727,6 +728,7 @@ const NATIVE = {
   'settings/learned': renderLearned,
   'settings/inside': renderInside,
   'settings/files': renderFiles,
+  'settings/context': renderContext,
 };
 
 // Pages that exist only in phone mode: the Work page's Pace card, on its own.
