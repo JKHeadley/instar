@@ -11,13 +11,13 @@ export const notificationCategories = [
   ['update-announcement', 'Software updates'], ['selectivity-digest', 'Quiet notification digest'],
   ['presence-standby', 'Waiting for a reply'], ['cold-start-fallback', 'Conversation availability'],
   ['message-loss-notice', 'Message delivery problems'], ['command-response', 'Command responses'],
-  ['disk-steward', 'Disk space'],
+  ['disk-steward', 'Disk space'], ['never-silent-notice', 'Unanswered message notices'],
   ['uncategorized', 'Other automated notices'],
 ] as const;
 export type NotificationCategoryId = typeof notificationCategories[number][0];
 export type SignificantClass = 'security-incident' | 'data-loss' | 'agent-cannot-operate';
 export const CONVERSATION_CATEGORIES = new Set<NotificationCategoryId>([
-  'presence-standby', 'cold-start-fallback', 'message-loss-notice', 'command-response',
+  'presence-standby', 'cold-start-fallback', 'message-loss-notice', 'command-response', 'never-silent-notice',
 ]);
 export const SIGNIFICANT_TABLE: Readonly<Partial<Record<NotificationCategoryId, readonly SignificantClass[]>>> = {
   // These classes require trusted wiring; arbitrary HTTP metadata cannot grant them.
@@ -65,6 +65,7 @@ export const PRODUCER_NOTIFICATION_CATEGORIES: Readonly<Record<string, Notificat
   'session-monitor': 'reap-notice',
   'quota-notifier': 'spend-alert',
   'reap-notifier': 'reap-notice',
+  'never-silent': 'never-silent-notice',
 };
 export function categoryForProducer(producerId: string | undefined, jobSlug?: string): NotificationCategoryId {
   return producerId && PRODUCER_NOTIFICATION_CATEGORIES[producerId] || (jobSlug ? 'job-status' : 'uncategorized');

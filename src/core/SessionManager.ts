@@ -50,6 +50,7 @@ import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStart
 const squash = (text: string): string => text.replace(/\s+/g, '');
 import { extractGeminiFinalAssistantBlock, meaningfulTail, meaningfulNonBlankTail } from './paneText.js';
 import { ensureClaudeFirstRunAnswered } from './ensureInteractiveReady.js';
+import { ensureCodexProjectTrusted } from './ensureCodexProjectTrusted.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
 
@@ -8293,6 +8294,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
+    // Never-Silent Conversation §1.5: a Codex session in a folder its home never trusted stops
+    // at "Trust this folder?" and never answers. Record the agent's own launch folder first.
+    // (Skipped under vitest for the default home: that is the operator's real ~/.codex.)
+    if (framework === 'codex-cli') {
+      const codexHome = launchSpec.envOverrides.CODEX_HOME
+        ?? (process.env.VITEST ? undefined : (process.env.CODEX_HOME || path.join(os.homedir(), '.codex')));
+      const trust = ensureCodexProjectTrusted(codexHome, options?.cwd ?? this.config.projectDir);
+      if (trust.patched) console.log(`[SessionManager] codex: trusted the launch folder in ${codexHome}`);
+      else if (trust.reason !== 'already-recorded' && trust.reason !== 'no-home') {
+        console.warn(`[SessionManager] codex: could not record folder trust in ${codexHome} — ${trust.reason}`);
+      }
+    }
     const memoryScoped = Boolean(memoryPlan?.scopeDir && memoryPlan.settingsPath);
     if (memoryScoped) {
       applyMemorySessionLaunch(launchSpec.argv, memoryPlan!.settingsPath!, memoryPlan!.scopeDir!);

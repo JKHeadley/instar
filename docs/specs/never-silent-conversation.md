@@ -2,7 +2,10 @@
 title: "Never-Silent Conversation — an unanswered message is judged, acted on, and always told"
 slug: "never-silent-conversation"
 author: "echo"
-status: "draft"
+status: "approved"
+approved: true
+approved-by: "justin"
+approval-note: "topic 141385, 2026-11-14 13:39 PST — answered Frontloaded Decision 2: ask, as long as it is robust and minimally interrupting for the user"
 created: 2026-11-13
 parent-principle: "No Silent Degradation"
 sibling-principles: "Intelligent Prompts — An LLM Gate Must Not String-Match; Signal vs Authority; Structure > Willpower; Verify the State, Not Its Symbol; Framework-Agnostic — and Framework-Optimizing; Close the Loop"
@@ -350,6 +353,14 @@ operator review — and only those grades feed recalibration (§3.7).
 
 0. Verify the §1.4 hypothesis from Inspec's logs (did StallTriage/PresenceProxy fire 06:01–10:40,
    on which engine, with what outcome?) and record the answer here before building.
+   **Result (2026-11-14, read from Inspec's `logs/` on the laptop, window 2026-11-13 14:00–18:45Z):**
+   no StallTriage, PresenceProxy, triage or standby record exists anywhere in the window, and no
+   standby line reached any of the three conversations. Over the same window every scheduled job
+   session ended `process-exited-during-startup` (`logs/reap-log.jsonl`, about every 5 minutes),
+   which is the dead login killing every Claude spawn. So the watchers either never fired or failed
+   without leaving a trace; either way they were no protection. The hypothesis stands as stated,
+   and the build treats it as confirmed: the notice path (§3.4) uses no LLM, and the judge (§3.2)
+   never runs on the stuck engine.
 1. §3.6 pool rule.
 2. Obligation records + §3.4 telling (judge-off ⇒ `undetermined` notices) — closes "nothing" as
    an outcome on its own; route existing CMT-1008 failure outcomes into it; independence selector
@@ -357,6 +368,71 @@ operator review — and only those grades feed recalibration (§3.7).
 3. Judge in shadow + the held-out corpus measurement (§3.7).
 4. Actions per class as each passes its measurement; Codex startup-dialog policy.
 5. Cross-engine repair driver (§3.5).
+
+## 5a. As built — first version (2026-11-14)
+
+Everything below that this version leaves for later is tracked as one commitment. <!-- tracked: CMT-1781 -->
+
+> **CMT-1781** — "After the first never-silent PR merges: (1) run the held-out pane corpus measurement and turn actions on per class (spec 3.7); (2) move the other recovery producers onto one shared per-conversation lease (Phase 2); (3) add the every-poll claude auth status read; (4) engine moves and the one-tap ask on Slack and app conversations; (5) the bounded probe rung on the stuck account."
+
+What the first build does differently from §3, and why. Each item is the smaller version of the
+same rule, not a dropped rule.
+
+- **"Answered" (§3.1).** The turn-consumption ledger does not exist yet: SessionManager keeps one
+  in-memory pending injection per session, and the delivery journal covers only Codex with Stage B.
+  So a message is answered when a real agent message is delivered in that conversation after it
+  (the agent's own row, not a standby line, not a lifecycle notice and not Instar's own notice).
+  No wording list decides what counts as a real message: a short acknowledgement counts as an
+  answer, which can miss "said 'on it' and then died" but never sends a false "not answered".
+- **Notice deadline (§3.1).** `monitoring.neverSilent.noticeAfterSeconds`, default 120 — the
+  PresenceProxy second-tier delay, its existing "a person has waited" point. A delivered standby
+  line still counts as the waiting notice.
+- **Never held quiet.** Notices go through a new `never-silent-notice` conversation category whose
+  selectivity rule always delivers when the notice names its waiting inbound message (the producer
+  is internal; the category comes from `categoryForProducer`, never from request metadata). The
+  existing `message-loss-notice` floor holds anything older than 15 minutes, which would have made
+  a "repair worked" notice silent.
+- **Judge (§3.2).** Jev answers two choice questions (the silence class, and what the session did
+  after the message) with a probability each; at or above 0.7 Jev decides, otherwise the referee —
+  a Codex account for a stuck Claude session, a different Claude account for a stuck Codex session —
+  answers the same two questions as JSON. The stuck framework+account is never asked; with no
+  independent route the verdict is `undetermined` and the person is told. The bounded probe rung on
+  the stuck account is not built (no route ⇒ tell). The held-out corpus measurement (§3.7) is not
+  run yet; that is why actions ship off. <!-- tracked: CMT-1781 -->
+- **Replay boundary (§3.3).** "Side-effecting tool call since the message" is read from the judge's
+  second answer, not from a transcript parse: `none`/`read-only` allow an automatic move, `some` or
+  `unknown` turn the move into the one-tap ask.
+- **Engine move (§3.3c).** The topic-profile store is written as `system:never-silent` (keeping the
+  previous profile as the undo target) and the session is restarted through the same path as the
+  `/route` switch, carrying the waiting messages and the instruction to open with one line on why
+  the reply is late. `intendedProfile` is not used (it is the §14 dry-run shadow); the incident
+  records where it moved from, and the move is undone once that account's sign-in works again and
+  the conversation is idle, only if nobody changed the profile since. Moves and the ask are
+  Telegram-only in this version (topic profiles are keyed on Telegram topics); Slack conversations
+  get plain notices (no button), and only top-level Slack channel messages are tracked, because an
+  agent's Slack reply is logged without its thread. Known limit: an agent reply in an unrelated
+  thread of the same channel also counts as the answer to a top-level message. <!-- tracked: CMT-1781 -->
+- **Moving back.** Only after the original account passes its sign-in check (`loginCheck: ok` and
+  `active` — never "not known to be broken"), only when the conversation is idle, and only if the
+  profile still carries this feature's label. It applies at the conversation's next restart (the
+  notice says so). An operator pin comes back under `system:never-silent:restored-pin:<who>`,
+  which still counts as a pin; writing it in the operator's own name would count as a fresh
+  operator write. A new silence within 6 hours of a move back asks instead of moving (the repair
+  did not hold). A failed restart undoes the move, and nothing is written when there is no session
+  to restart.
+- **Spend bound.** Judge calls for one incident back off: 60 s, doubling, up to 10 minutes,
+  whatever changes on screen.
+- **Startup dialog (§3.3, §1.5).** Instead of a judged keypress, the agent's own launch folder is
+  recorded as trusted in the Codex home before an interactive Codex launch
+  (`ensureCodexProjectTrusted`), so "Trust this folder?" never appears. Any other startup dialog is
+  told, never answered.
+- **Pool health (§3.6).** Claude Code's own `auth status` is read for the session's home when a
+  silent Claude conversation is judged (with the empty-home canary), and a judged `engine-login` at
+  or above the floor goes through `QuotaPoller.observeCliLoginExpired` — the existing funnel that
+  moves the account to `needs-reauth` and holds it there, so the pool stops saying "active". The
+  every-poll read is not added. <!-- tracked: CMT-1781 -->
+- **Recovery lease (§3.3).** Recovery is serialized per conversation inside the watcher; moving the
+  other recovery producers onto one shared lease is Phase 2 and not in this build. <!-- tracked: CMT-1781 -->
 
 ## 6. Tests (three tiers + live proof)
 
@@ -403,7 +479,7 @@ holder acts; status notices for diagnosis → recovery started → exhausted; ov
 - **dark-window:** at most 30 days from merge to the fleet decision for telling; action classes that
   have not met the criterion by then get the reason and a new date recorded on the tracking action —
   never left dark silently.
-- **ladder:** monitoring.never-silent
+- **ladder:** monitoring.neverSilent
 
 ## 7. Decision points touched
 
@@ -431,10 +507,17 @@ holder acts; status notices for diagnosis → recovery started → exhausted; ov
 ## 9. Frontloaded Decisions
 
 1. **Confidence floor for acting:** starts at 0.8 after the cascade (Jev's 0.3–0.7 band escalates to the Luna referee) and is recalibrated per class from the §3.7 held-out measurement. Cheap-to-change-after: a live config value; actions are off until that measurement passes, and the feature is dev-gated.
-2. **Automatic framework fallback scope:** conversations with NO topic-profile pin fall back automatically; a conversation with an explicit framework or model pin is told and asked (the notice carries a one-tap "move to Codex" proposal through the existing topic-profile propose route), because the pin is an operator choice. The automatic move is recorded as `intendedProfile` so the conversation returns to its original framework once the original login is repaired.
+2. **Automatic framework fallback scope — operator-decided 2026-11-14.** Justin, topic 141385, 2026-11-14 13:39 PST, answering "if you've pinned a conversation to Claude, should it ask you before moving it to Codex?":
+   > "ask, as long as it is robust and minimally interrupting for the user"
+
+   So: conversations with NO topic-profile pin fall back automatically; a conversation with an explicit framework or model pin is told and asked. The ask is built to his two conditions:
+   - *Minimally interrupting:* the ask is the status notice itself — one message, one tap ("Move to Codex"), on the conversation's own surface (a Telegram inline button, a Slack button, an app action) through the existing topic-profile propose route. No second message, no typed reply, no dashboard trip. One open ask per conversation per incident; a later message in the same incident joins it rather than asking again.
+   - *Robust:* the ask never gates the notice (the person is told what happened in the same message); a tap is applied idempotently (a second tap or a stale tap after the incident closed does nothing and says so); a tap on another machine is routed to the session owner by the existing propose route. **No tap is a sane outcome, not silence:** the conversation stays on its pinned engine, the sign-in repair (§3.5) keeps running, the obligation stays `told-pending`, and the next status notice (repair succeeded ⇒ the waiting message is re-driven on the original engine; repair exhausted) goes out as usual. The ask is never re-sent on a timer.
+
+   The automatic move (unpinned) is recorded as `intendedProfile` so the conversation returns to its original framework once the original login is repaired.
 3. **Fast-path trigger scope:** only conversation-bound sessions (Telegram, Slack, app) with a pending inbound message. Job sessions and internal helpers are out of scope — they have their own rerouted-session login handling.
 4. **Notice wording owner:** fixed per-class templates in code (no LLM), reviewed in the PR; the judge's evidence is not shown to the user.
 
 ## 10. Open questions
 
-*(none)*
+*(none — the pinned-conversation question was answered by the operator on 2026-11-14 13:39 PST; see Frontloaded Decision 2.)*

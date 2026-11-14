@@ -20,3 +20,16 @@ So this design changes three things:
    wasn't answered and I'm looking into why".
 
 The account list also stops showing a signed-out account as "active".
+
+**If you chose the engine yourself.** Some conversations are set to Claude on purpose. For those,
+Justin decided on 2026-11-14: "ask, as long as it is robust and minimally interrupting for the
+user". So the message that tells you what went wrong also carries one button, "Move to Codex".
+You don't have to type anything or open another page. If you tap it, the conversation moves and
+answers you. If you don't tap it, it stays on Claude while the sign-in repair keeps going, and you
+hear back once the repair works or fails. The button is never sent again on a timer, and a second
+tap does nothing harmful. Conversations nobody set to a particular engine move on their own.
+
+**What stays off at first.** The notices and the honest account status turn on first. Automatic
+moves and keypresses stay off for each kind of failure until the judge has been tested against
+real screens from past failures and made no wrong calls. The first proof runs on a throwaway test
+agent, never on Justin's own conversations.
