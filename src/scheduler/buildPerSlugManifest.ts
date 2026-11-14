@@ -31,6 +31,8 @@ export interface BuildPerSlugManifestInput {
   framework?: IntelligenceFramework;
   frameworkModel?: string;
   leanContext?: boolean;
+  /** Per-job thinking mode (job-launch-intent-record §1); validateManifest checks the enum. */
+  thinkingMode?: PerSlugManifest['thinkingMode'];
   // Optional pass-throughs the loader reads from the MANIFEST (manifestToJobDefinition),
   // not the body frontmatter — so they must be carried here or they're silently dropped.
   tags?: string[];
@@ -75,6 +77,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.framework !== undefined) m.framework = input.framework;
   if (input.frameworkModel !== undefined) m.frameworkModel = input.frameworkModel;
   if (input.leanContext !== undefined) m.leanContext = input.leanContext;
+  if (input.thinkingMode !== undefined) m.thinkingMode = input.thinkingMode;
   if (input.tags !== undefined) m.tags = input.tags;
   if (input.unrestrictedTools !== undefined) m.unrestrictedTools = input.unrestrictedTools;
   if (input.gate !== undefined) m.gate = input.gate;

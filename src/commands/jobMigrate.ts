@@ -174,6 +174,9 @@ function writeManifest(scheduleDir: string, slug: string, origin: 'instar' | 'us
     unrestrictedTools: coerceBool(entry.unrestrictedTools),
     gate: entry.gate != null ? String(entry.gate) : undefined,
     telegramNotify: typeof entry.telegramNotify === 'boolean' ? entry.telegramNotify : entry.telegramNotify === 'on-alert' ? 'on-alert' : undefined,
+    // Per-job thinking mode (job-launch-intent-record §1): carried as written; the
+    // producer self-check below refuses an out-of-enum value by name.
+    thinkingMode: entry.thinkingMode !== undefined ? entry.thinkingMode : undefined,
   });
   // Producer self-check — fail loud at migrate time, not silently at load.
   validateManifest(manifest, slug);

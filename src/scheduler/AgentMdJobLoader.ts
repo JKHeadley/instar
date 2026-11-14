@@ -26,6 +26,7 @@ import type {
   ModelTier,
 } from '../core/types.js';
 import { validJobDependencyPath } from '../core/JobDependency.js';
+import { THINKING_MODES, type ThinkingMode } from '../core/topicProfileValidation.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import {
   readLockFile,
@@ -97,6 +98,8 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'framework',
   'frameworkModel',
   'leanContext',
+  // Per-job thinking mode (job-launch-intent-record §1) — decorative here; the manifest is authority.
+  'thinkingMode',
   'enabled',
   'tags',
   'unrestrictedTools',
@@ -169,6 +172,8 @@ export interface PerSlugManifest {
   framework?: IntelligenceFramework;
   frameworkModel?: string;
   leanContext?: boolean;
+  /** Per-job thinking mode (job-launch-intent-record §1). Validated against the closed enum. */
+  thinkingMode?: ThinkingMode;
   expectedDurationMinutes: number;
   enabled: boolean;
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
@@ -810,6 +815,9 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   }
   if ((j.framework === undefined) !== (j.frameworkModel === undefined)) {
     throw new Error(`${prefix}: "framework" and "frameworkModel" must be set together`);
+  }
+  if (j.thinkingMode !== undefined && !(THINKING_MODES as readonly unknown[]).includes(j.thinkingMode)) {
+    throw new Error(`${prefix}: "thinkingMode" must be one of ${THINKING_MODES.join(', ')}`);
   }
   if (j.leanContext !== undefined && typeof j.leanContext !== 'boolean') {
     throw new Error(`${prefix}: "leanContext" must be a boolean`);
@@ -1536,6 +1544,7 @@ function manifestToJobDefinition(
     framework: manifest.framework,
     frameworkModel: manifest.frameworkModel,
     leanContext: manifest.leanContext,
+    ...(manifest.thinkingMode !== undefined ? { thinkingMode: manifest.thinkingMode } : {}),
     enabled: manifest.enabled,
     catchUpPolicy: manifest.catchUpPolicy,
     requiredPaths: manifest.requiredPaths,
