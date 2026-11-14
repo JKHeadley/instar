@@ -529,6 +529,24 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // POST /work-board/* and POST /mobile/work-board/* — the Work Board (docs/specs/work-board-asks.md §4/§7):
+  // card create, records (edit / waiting-on / evidence / claimed-done), the owner's taps and settings.
+  // Each writes an immutable record to THIS machine's own work-card journal stream, which journal sync
+  // replicates to every peer; every reader folds the union.
+  for (const pathPrefix of ['/work-board/', '/mobile/work-board/']) {
+    reg.add({
+      kind: 'route',
+      method: 'POST',
+      pathPrefix,
+      domain: 'machine-local',
+      story: {
+        logical: 'ws2x-replicated',
+        onSharedGitSyncedPath: false,
+        note: 'per-origin coherence-journal stream (work-card-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+      },
+    });
+  }
+
   // POST /topic-profile/new-topic-default — the "default for dashboard-created
   // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).
   // Machine-local in v1 by declared posture: migrating-to-unified, tracked in

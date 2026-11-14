@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-13T08:23:14.359Z",
+  "slug": "telegram-topic-known-for-app-sends",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegramTopicKnown.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

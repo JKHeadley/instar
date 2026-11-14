@@ -34,7 +34,7 @@ afterAll(() => {
 
 interface Spies { routed: Array<{ content: string; metadata: Record<string, unknown>; userId: string }>; logged: Array<Record<string, unknown>>; mirrors: Array<{ text: string; opts: Record<string, unknown> }>; killed: string[]; bound: unknown[] }
 
-function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill' } = {}) {
+function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill'; owner?: 'configured' | 'verified-only' | 'none' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mchat-'));
   dirs.push(dir);
   const spies: Spies = { routed: [], logged: [], mirrors: [], killed: [], bound: [] };
@@ -52,7 +52,8 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined },
     topicOperatorStore: { setAuthenticatedOperator: (...a: unknown[]) => { spies.bound.push(a); } },
     telegram: {
-      getOwnerUserId: () => OWNER,
+      getOwnerUserId: () => ((opts.owner ?? 'configured') === 'configured' ? OWNER : undefined),
+      getVerifiedOwner: () => ((opts.owner ?? 'configured') === 'none' ? undefined : OWNER),
       getTopicHistory: () => opts.history ?? [],
       getAllTopicMappings: () => [{ topicId: TOPIC, topicName: 'Instar App', sessionName: 'sess-a' }],
       isAuthorizedSender: () => true,
@@ -127,6 +128,22 @@ describe('mobile operator chat', () => {
     } finally { vi.unstubAllGlobals(); await gate.close(); }
   });
 
+  it('accepts a topic this machine holds history for but never named (a job topic named on another machine)', async () => {
+    // Justin, 2026-11-12: a job topic named only on the laptop showed its whole history on the
+    // serving machine, but every send into it came back "This conversation no longer exists".
+    const c = setup();
+    const JOB_TOPIC = 534;
+    (c.ctx.telegram as unknown as { getTopicHistory: (t: number) => unknown[] }).getTopicHistory = (t: number) =>
+      (t === JOB_TOPIC ? [{ messageId: 1, topicId: JOB_TOPIC, text: 'Scheduled job notice', fromUser: false, timestamp: new Date().toISOString() }] : []);
+    const ok = await chat(c, { text: 'please fix email checking', requestId: rid() }, JOB_TOPIC);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(c.spies.routed.at(-1)?.content).toBe('please fix email checking');
+    // A topic with no name, no session and no history here is still refused.
+    const unknown = await chat(c, { text: 'into nowhere', requestId: rid() }, 9999);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('unknown-topic');
+  });
+
   it('delivers an app message through the inbound core as the owner, labelled, with one history row and a mirror', async () => {
     const c = setup();
     const r = await chat(c, { text: 'hello from the phone', requestId: rid() });
@@ -145,6 +162,16 @@ describe('mobile operator chat', () => {
     expect(c.spies.mirrors[0]!.opts).toMatchObject({ operatorMirror: true, skipStallClear: true });
     expect(c.spies.bound).toHaveLength(0); // never binds the topic operator
     expect(fs.existsSync(path.join(c.dir, 'serve-progress.json'))).toBe(false);
+  });
+
+  it('speaks as the one verified operator when no owner is configured (an agent set up without ownerUserId)', async () => {
+    const c = setup({ owner: 'verified-only' });
+    const r = await chat(c, { text: 'what does this warning mean?', requestId: rid() });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ok: true, outcome: 'delivered' });
+    expect(c.spies.routed[0]!.userId).toBe(String(OWNER));
+    const none = setup({ owner: 'none' });
+    expect((await chat(none, { text: 'x', requestId: rid() })).body.error).toBe('chat-unavailable');
   });
 
   it('a retried requestId gets the stored answer and is delivered once; a different payload is refused', async () => {

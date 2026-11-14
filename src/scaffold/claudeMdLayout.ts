@@ -29,12 +29,19 @@ export const REFERENCE_FILE_HEADER = '<!-- instar:generated-reference — rewrit
 export const CLAUDE_MD_LEGACY_BACKUP_REL = '.instar/CLAUDE.md.before-reference-layout.md';
 
 /**
- * Size budget for the generated core (CLAUDE.md), argued from its content: the
- * always-applied rules plus a one-line list naming every capability measure
- * ~65k. Claude Code warns above 150,000 (measured, Claude Code 2.1.317); the
- * margin leaves room for an agent's own kept sections.
+ * Size budget for the generated core (CLAUDE.md). Claude Code warns above 150,000
+ * (measured, Claude Code 2.1.317); the margin leaves room for an agent's own kept
+ * sections (real agents keep 19-26k).
+ *
+ * Raised 80,000 -> 84,000 on 2026-11-14. Measured that day: core 79,266 (65.4k on
+ * 2026-11-03). The growth is rows features add under core headings; the largest are
+ * "Registry First" (12.5k) and "Feature Proactivity" (6.4k). That left 734 characters,
+ * and twelve open changes each add a row (measured alone, each brought the core to
+ * between 79,280 and 79,375), so the later ones to merge would fail on size alone.
+ * 84,000 leaves room for that queue and 66k under the warning. The lasting fix is to
+ * keep rows short (detail belongs in the reference section), not to raise this again.
  */
-export const CLAUDE_MD_CORE_BUDGET_CHARS = 80_000;
+export const CLAUDE_MD_CORE_BUDGET_CHARS = 84_000;
 
 /**
  * Headings whose sections stay in CLAUDE.md (prefix match on the heading text

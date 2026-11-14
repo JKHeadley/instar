@@ -78,9 +78,49 @@ export class ConversationGraphReadModel {
   private readonly pageSize: number;
   private readonly ttlMs: number;
 
-  constructor(private readonly source: GraphReadSource, opts: { pageSize?: number; snapshotTtlMs?: number } = {}) {
+  private readonly rootConversation: () => ConversationRef | null;
+
+  constructor(private readonly source: GraphReadSource, opts: {
+    pageSize?: number; snapshotTtlMs?: number;
+    /**
+     * The agent's Chief of Staff conversation, the root of the owner's Overview
+     * (docs/specs/conversation-graph-suggestions.md §2). Presentation only: it is returned as
+     * `root` beside the root efforts, offered no move destinations, and left out of suggestions.
+     */
+    rootConversation?: () => ConversationRef | null;
+  } = {}) {
     this.pageSize = opts.pageSize ?? 50;
     this.ttlMs = opts.snapshotTtlMs ?? 120_000;
+    this.rootConversation = opts.rootConversation ?? (() => null);
+  }
+
+  /** The root conversation, validated, or null. A throwing lookup reads as "none". */
+  rootRef(): ConversationRef | null {
+    let raw: ConversationRef | null = null;
+    try { raw = this.rootConversation(); } catch {
+      // @silent-fallback-ok: no readable Chief of Staff topic means no root row; the Overview is exactly as before.
+      return null;
+    }
+    const ref = raw ? validateNodeRef(raw) : null;
+    return ref && ref.kind === 'conversation' ? ref : null;
+  }
+
+  isRootConversation(ref: NodeRef): boolean {
+    const root = this.rootRef();
+    return root !== null && validateNodeRef(ref) !== null && nodeKey(ref) === nodeKey(root);
+  }
+
+  /**
+   * The viewer's unassigned conversations (no visible parent), for the suggestion builder.
+   * The root conversation is never offered. Null while the graph is not ready.
+   */
+  unassignedConversations(viewer: GraphViewer): ProjectionItem[] | null {
+    if (!this.source.readiness().ready) return null;
+    const { projection } = this.project(viewer);
+    return projection.list('all', null)
+      .filter((ref) => ref.kind === 'conversation' && !this.isRootConversation(ref))
+      .map((ref) => projection.item(ref))
+      .filter((item): item is ProjectionItem => item !== null && item.role === 'unassigned' && item.state !== 'unavailable');
   }
 
   roots(viewer: GraphViewer, q: { view: 'overview' | 'all'; q?: string | null; cursor?: string | null }): ReadResult {
@@ -94,7 +134,10 @@ export class ConversationGraphReadModel {
     });
     if ('status' in page) return page;
     const items = page.refs.map((r) => projection.item(r)).filter((x): x is ProjectionItem => x !== null);
-    return { status: 200, body: { ...this.envelope(revision, partialReasons), items, nextCursor: page.nextCursor } };
+    // The Overview opens with the root conversation; every root effort sits under it.
+    const rootRef = q.view === 'overview' && !(q.q ?? '').trim() ? this.rootRef() : null;
+    const root = rootRef ? projection.item(rootRef) : null;
+    return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(root ? { root } : {}), items, nextCursor: page.nextCursor } };
   }
 
   node(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
@@ -113,7 +156,9 @@ export class ConversationGraphReadModel {
     // to this viewer: a hidden parent leaves no trace here either.
     const placedUnder = graph.parentOf.get(nodeKey(valid)) ?? null;
     const src = placedUnder && projection.has(placedUnder) ? graph.placementSource.get(nodeKey(valid)) : undefined;
-    const eligibility = moveEligibility(this.source.certifiedEvents(), {verify:event=>this.source.verify(event)}, valid, null, this.source.now().toISOString());
+    const eligibility: { eligible: boolean; reason?: string } = this.isRootConversation(valid)
+      ? { eligible: false, reason: 'chief-of-staff-is-root' }
+      : moveEligibility(this.source.certifiedEvents(), {verify:event=>this.source.verify(event)}, valid, null, this.source.now().toISOString());
     const header = valid.kind === 'effort' ? this.source.headerMetadata?.(valid) : null;
     return {
       status: 200,
@@ -146,6 +191,8 @@ export class ConversationGraphReadModel {
     if (!valid) return { status: 404, body: { code: 'not-found' } };
     const { projection, graph, revision, partialReasons } = this.project(viewer);
     if (!projection.has(valid)) return { status: 404, body: { code: 'not-found' } };
+    // The root conversation stays the root: it has nowhere to move to.
+    if (this.isRootConversation(valid)) return { status: 200, body: { ...this.envelope(revision, partialReasons), items: [], nextCursor: null } };
     const subjectKey = nodeKey(valid);
     const descendant = (candidate: NodeRef): boolean => {
       let cursor: NodeRef | null = candidate;
