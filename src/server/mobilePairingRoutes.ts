@@ -2180,6 +2180,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['GET', /^\/mobile\/conversations$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
   ['POST', /^\/mobile\/conversations\/read$/.source],
+  // Pinning a conversation to the top of the list (conversation-list-pins): the same per-person pins as the phone.
+  ['POST', /^\/mobile\/conversations\/pins$/.source],
   ['POST', /^\/mobile\/conversations$/.source],
   ['PATCH', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['DELETE', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
@@ -2227,6 +2229,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/mobile\/conversations$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
+  // Pinning a conversation orders the person's own list; the route checks they may see it.
+  ['POST', /^\/mobile\/conversations\/pins$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
@@ -2303,6 +2307,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
     { method: 'POST', re: /^\/mobile\/conversations\/read$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 60, bucket: 'read-marks' },
+    // Conversation-list pins (conversation-list-pins): a person's own list order, its own bucket.
+    { method: 'POST', re: /^\/mobile\/conversations\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'list-pins' },
     { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },

@@ -177,6 +177,8 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     'GET /mobile/conversations/session', 'GET /mobile/conversations/<uuid>/placement',
     // mobile-unread-messages §3.5: a read report names conversations in its body.
     'POST /mobile/conversations/read',
+    // conversation-list-pins: a pin names its conversation in the body; the route runs the shared check.
+    'POST /mobile/conversations/pins',
     // conversation-pinned-messages: list and pin/unpin in each kind of conversation.
     'GET /mobile/chat/app/<uuid>/pins', 'POST /mobile/chat/app/<uuid>/pins', 'GET /mobile/chat/7/pins', 'POST /mobile/chat/7/pins',
     'GET /mobile/chat/slack/-1/pins', 'POST /mobile/chat/slack/-1/pins',
@@ -393,7 +395,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     const open = DEVICE_ALLOWLIST.filter((r) => r.tier === 'guest' || r.tier === 'member').length;
     // 27: mobile-unread-messages §3.5 opened POST /mobile/conversations/read to guests (reading is guest).
     // 31: conversation-pinned-messages opened the app and Telegram pin list (guest) and pin/unpin (member).
-    expect(open).toBe(31);
+    // 32: conversation-list-pins opened POST /mobile/conversations/pins to guests (it orders the person's own list).
+    expect(open).toBe(32);
   });
 
   it.each([

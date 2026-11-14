@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "conversation-list-pins",
+  "sessionId": "281a0ff5-07f5-4b12-a1fe-e89b1451fdc4",
+  "timestamp": "2026-11-14T11:07:31.261Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-pins.md",
+  "artifactSha256": "d9a52822c7bcded3a7f8bdd3078595e85b94242bde37c7cfe2c86a432edcf80a",
+  "coveredFiles": [
+    "tests/integration/team-access-guards.test.ts",
+    "upgrades/side-effects/conversation-list-pins.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only addition (team-member access proof for conversation-list pins) plus artifact evidence line; no runtime change",
+  "eli16Path": "docs/specs/conversation-list-pins.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-pins.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
