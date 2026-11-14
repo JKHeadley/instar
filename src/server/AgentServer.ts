@@ -132,6 +132,7 @@ import type { SessionManager, SessionTerminateAuthority } from '../core/SessionM
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { InstarConfig } from '../core/types.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -7172,7 +7173,7 @@ export class AgentServer {
         telegram: telegram ? {
           history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
-          exists: (topicId) => telegram.getAllTopicMappings().some((m) => m.topicId === topicId),
+          exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
         slack: slackBridge ? slackUnreadSource(() => slackBridge) : null,
         ownerIdentity: () => mp.ownerIdentity(),
@@ -7245,7 +7246,7 @@ export class AgentServer {
       // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
       // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
       const pinTelegram = options.telegram ? {
-        exists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId),
+        exists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId),
         serving: () => this.mobilePairing!.holdsLease(),
         textOf: (topicId: number, messageId: string) => {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
@@ -7284,7 +7285,7 @@ export class AgentServer {
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
         // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
-        ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
+        ...(options.telegram ? { telegramTopicExists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId) } : {}),
       }));
       // "Open session" (GET /mobile/conversations/session): the session driving a conversation on
       // this machine and a dashboard link focused on it. The same "held here" checks as media.
@@ -7295,7 +7296,7 @@ export class AgentServer {
         pairing: this.mobilePairing,
         conversationKnown: (ref) => {
           if (ref.kind === 'app') return !!appSvcForSession?.liveConversation(ref.key);
-          if (ref.kind === 'telegram') return !!options.telegram && options.telegram.getAllTopicMappings().some((m) => m.topicId === ref.topicId);
+          if (ref.kind === 'telegram') return !!options.telegram && telegramTopicKnown(options.telegram, ref.topicId);
           return !!slackRegistry && slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, ref.ref);
         },
         sessionNameFor: (ref) => {

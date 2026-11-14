@@ -128,6 +128,22 @@ describe('mobile operator chat', () => {
     } finally { vi.unstubAllGlobals(); await gate.close(); }
   });
 
+  it('accepts a topic this machine holds history for but never named (a job topic named on another machine)', async () => {
+    // Justin, 2026-11-12: a job topic named only on the laptop showed its whole history on the
+    // serving machine, but every send into it came back "This conversation no longer exists".
+    const c = setup();
+    const JOB_TOPIC = 534;
+    (c.ctx.telegram as unknown as { getTopicHistory: (t: number) => unknown[] }).getTopicHistory = (t: number) =>
+      (t === JOB_TOPIC ? [{ messageId: 1, topicId: JOB_TOPIC, text: 'Scheduled job notice', fromUser: false, timestamp: new Date().toISOString() }] : []);
+    const ok = await chat(c, { text: 'please fix email checking', requestId: rid() }, JOB_TOPIC);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(c.spies.routed.at(-1)?.content).toBe('please fix email checking');
+    // A topic with no name, no session and no history here is still refused.
+    const unknown = await chat(c, { text: 'into nowhere', requestId: rid() }, 9999);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('unknown-topic');
+  });
+
   it('delivers an app message through the inbound core as the owner, labelled, with one history row and a mirror', async () => {
     const c = setup();
     const r = await chat(c, { text: 'hello from the phone', requestId: rid() });
