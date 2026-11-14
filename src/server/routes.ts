@@ -3907,8 +3907,13 @@ export function createRoutes(ctx: RouteContext): Router {
   } catch {
     // @silent-fallback-ok: this check only reports, so it must never stop the server's routes from loading
   }
+  // Every "use the dashboard" pairing message carries a direct link: the tunnel when up, localhost
+  // only with no tunnel, and a plain "no link yet" while a tunnel starts (topic 10000002573).
+  const pairingDashboardOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+  ctx.telegram?.setPairingDashboardOrigin?.(pairingDashboardOrigin);
   const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
     ? new PairingInviteTelegram({
+      dashboardOrigin: pairingDashboardOrigin,
       // Operator acts go through the handshake (spec §11): both sides are told how a pairing ended.
       flow: ctx.pairingInvites.handshake,
       events: ctx.pairingInvites.events,
@@ -29943,14 +29948,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (PairingInviteTelegram.carriesInvite(text)) {
+      // `refused` reaches the lifeline's existing readForwardRefused, so a turned-away invite never
+      // gets a "✓ Delivered". Only a valid invite now waiting on Approve/Decline clears it; no
+      // handler, or a failure, stays refused (consumed either way: HTTP 200, never re-queued).
+      let inviteRefused = true;
       try {
         if (pairingInviteTelegram) {
-          await pairingInviteTelegram.onForwardedInvite({ text, topicId: Number(topicId), fromUserId, verified: ingressDecision.verified });
+          inviteRefused = (await pairingInviteTelegram.onForwardedInvite({ text, topicId: Number(topicId), fromUserId, verified: ingressDecision.verified })).refused !== false;
         } else {
           await withNotificationEnvelope(stampForwardResponse(), async () => ctx.telegram?.sendToTopic(Number(topicId), 'I got a pairing invite, but pairing by invite is not turned on for this agent.'));
         }
       } catch { /* the invite is still consumed: it must never fall through to a session */ }
-      res.json({ ok: true, pairingInvite: true });
+      res.json({ ok: true, pairingInvite: true, ...(inviteRefused ? { refused: true } : {}) });
       return;
     }
 
