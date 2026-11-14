@@ -107,6 +107,7 @@ export function promptGateResponseIsBlocking(response: string): boolean {
     const parsed = JSON.parse(trimmed.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')) as { type?: unknown };
     return ['plan', 'permission', 'question', 'confirmation', 'selection'].includes(parsed?.type as string);
   } catch {
+    // @silent-fallback-ok — a pure classifier, not a fallback: a response that is not JSON is not a blocking prompt, the same reading llmDetect gives it.
     return false;
   }
 }

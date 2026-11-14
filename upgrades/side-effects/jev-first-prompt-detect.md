@@ -104,3 +104,11 @@ Safe to ship as a shadow instrument: PromptGate's behaviour is provably independ
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable: this adds a shadow instrument, it does not fix a defect.
+
+## Addendum (2026-11-13): silent-fallback scanner marker
+
+After merging current main, the no-silent-fallbacks ratchet counted the `catch` in
+`promptGateResponseIsBlocking` (495 against the 494 baseline). It is a pure classifier: a
+response that is not JSON is not a blocking prompt, which is the same reading `llmDetect` gives a
+malformed response ("Malformed response — skip"). The catch now carries `@silent-fallback-ok`
+with that reason. Comment-only; no behaviour or baseline change. Rollback: revert the comment.
