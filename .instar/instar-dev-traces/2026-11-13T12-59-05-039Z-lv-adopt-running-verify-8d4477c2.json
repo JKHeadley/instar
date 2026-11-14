@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "lv-adopt-running-verify",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T12:59:05.039Z",
+  "artifactPath": "upgrades/side-effects/lv-adopt-running-verify.md",
+  "artifactSha256": "7a2d431a499182b813700562b0473949a3096da9822417bc236ed6a37dae14d0",
+  "coveredFiles": [
+    "docs/specs/lv-adopt-running-verify.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-adopt-running-verify.md",
+    "upgrades/side-effects/lv-adopt-running-verify.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A third outcome for the boot-time orphan reap in LocalVerifyService, behind a live switch (on); no stored data changes shape; the switch or a revert undoes it. The file is the merge gate's coordinator, so it had an independent second-pass review (two reads, concur on the second; a blocker from the first is fixed and held by tests) that examined the false-green question specifically.",
+  "eli16Path": "docs/specs/lv-adopt-running-verify.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-adopt-running-verify.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "No new controller. An adopted run that ends without a result (crash, past its ceiling, record mismatch) re-drives through the existing handleErrorRetry and decideVerifyRetry, the registered local-verify retry controller: bounded error retries, then an error record with no re-run. The past-ceiling stop fires at most once per run (the settled latch in onExit). stopUnadopted is the existing boot-time kill of a live orphan, once per boot; the tick-time reap repeats it only while the group is still alive and never adopts."
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-13T13:03:27.058Z",
+  "slug": "lv-adopt-running-verify",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 205,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/serviceSeams.ts"
+    ],
+    "addedLines": 194,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "No new controller. An adopted run that ends without a result (crash, past its ceiling, record mismatch) re-drives through the existing handleErrorRetry and decideVerifyRetry, the registered local-verify retry controller: bounded error retries, then an error record with no re-run. The past-ceiling stop fires at most once per run (the settled latch in onExit). stopUnadopted is the existing boot-time kill of a live orphan, once per boot; the tick-time reap repeats it only while the group is still alive and never adopts."
+    }
+  },
+  "verdict": "pass"
+}
