@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // safe-git-allow: CI-only gate script — single read-only `git diff --name-status`
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Capacity Safety — No Unbounded Self-Action*
+
 //   against the Actions checkout; runs on ubuntu runners where the TS
 //   SafeGitExecutor is not importable from a standalone .mjs.
 /**

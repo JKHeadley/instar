@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // safe-git-allow: CI-only lint — single read-only `git diff --cached --name-only`
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Capacity Safety — No Unbounded Self-Action*
+
 //   to list staged files; runs on runners where the TS SafeGitExecutor is not
 //   importable from a standalone .js.
 /**
