@@ -131,15 +131,15 @@ describe('T8 checkRatchet', () => {
 });
 
 /**
- * FROZEN pre-implementation counts, computed from unmodified main 3ae8208a6 (src/ unchanged at
- * 351dab98e) with the reference counter below (TypeScript AST: StringLiteral and
+ * FROZEN pre-implementation counts, re-captured 2026-11-14 from unmodified main 9a8f921ca (the
+ * PR rebased onto a main that gained 5 literals: SessionManager.ts 95->98, UsageWallRescue.ts 9->11) with the reference counter below (TypeScript AST: StringLiteral and
  * NoSubstitutionTemplateLiteral nodes whose cooked text is a framework id; comments never parsed
  * as literals). These numbers live in the test, not in a file the PR can edit, so raising the
  * checked-in baseline together with the source cannot pass. Do not regenerate them to make a
  * change pass: D7 says this PR adds zero literals outside the adapters.
  */
 const FROZEN_MAIN: Counts = {
-  "total": 1130,
+  "total": 1135,
   "perFile": {
     "src/cli.ts": 1,
     "src/commands/init.ts": 35,
@@ -183,7 +183,7 @@ const FROZEN_MAIN: Counts = {
     "src/core/PreCompactionFlush.ts": 8,
     "src/core/QuotaPoller.ts": 7,
     "src/core/ResumeValidator.ts": 6,
-    "src/core/SessionManager.ts": 95,
+    "src/core/SessionManager.ts": 98,
     "src/core/StuckInputSentinel.ts": 2,
     "src/core/SubscriptionPool.ts": 1,
     "src/core/SubscriptionReloginHelper.ts": 2,
@@ -192,7 +192,7 @@ const FROZEN_MAIN: Counts = {
     "src/core/TopicProfileOrchestrator.ts": 17,
     "src/core/TopicProfileResolver.ts": 4,
     "src/core/TopicResumeMap.ts": 11,
-    "src/core/UsageWallRescue.ts": 9,
+    "src/core/UsageWallRescue.ts": 11,
     "src/core/accountFollowMeCooperativeWipe.ts": 3,
     "src/core/classifyProfileChange.ts": 3,
     "src/core/claudeForbiddenGuard.ts": 1,
