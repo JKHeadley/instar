@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lv-deadline-forensics",
+  "sessionId": "7b94e0ef-44cd-400d-9bb3-977c21954026",
+  "timestamp": "2026-11-12T16:28:32.863Z",
+  "artifactPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "artifactSha256": "c4bb6f540236bdace94a94afbfe9b66a3afa8528241ea5b17781e15beafe2e88",
+  "coveredFiles": [
+    "docs/specs/lv-deadline-forensics.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/orchestrator.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/lv-deadline-forensics.md",
+    "upgrades/side-effects/lv-deadline-forensics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Per-machine unit-lane worker count, a scheduling setting read at run start like the existing shard counts; no verdict or policy change.",
+  "eli16Path": "docs/specs/lv-deadline-forensics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

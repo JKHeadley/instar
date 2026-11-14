@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "docs-coverage-conversations",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T17:31:15.375Z",
+  "artifactPath": "upgrades/side-effects/docs-coverage-conversations.md",
+  "artifactSha256": "4441074b85f0c12f07761c1fea5b4877ce525e46cb2dba8d5648cb46be19c272",
+  "coveredFiles": [
+    "upgrades/side-effects/docs-coverage-conversations.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Metadata-only correction of an inaccurate merge-policy statement, verified directly against live main rules. The independently reviewed pages/sidebar and all executable code are unchanged. Actions coverage is advisory; required Local Verify and applicable code-owner rules are preserved.",
+  "eli16Path": "upgrades/side-effects/docs-coverage-conversations.md",
+  "sideEffectsPath": "upgrades/side-effects/docs-coverage-conversations.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "lv-shutdown-settles-finished-run",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T19:09:28.468Z",
+  "artifactPath": "upgrades/side-effects/lv-shutdown-settles-finished-run.md",
+  "artifactSha256": "676d11fae6ec1cface851d9cc3b6985ff1efbe3f2ad92eb1f652625b39d69206",
+  "coveredFiles": [
+    "docs/specs/lv-shutdown-settles-finished-run.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-shutdown-settles-finished-run.md",
+    "upgrades/side-effects/lv-shutdown-settles-finished-run.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix inside the same change: a non-object result file is treated as no result instead of throwing from the exit handler; revert undoes it",
+  "eli16Path": "docs/specs/lv-shutdown-settles-finished-run.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-shutdown-settles-finished-run.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

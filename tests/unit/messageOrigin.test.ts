@@ -129,6 +129,14 @@ describe('the Slack footer (§5)', () => {
     expect(slackOriginFooter('echo', e, { ...ALL_ON, enabled: false })).toBe('');
     expect(slackOriginFooter('echo', e, { enabled: true, machine: false, harness: false, model: true })).toBe('_echo · claude-opus-5-5_');
   });
+  it('leaves unknown fields out instead of printing the word unknown (operator report 2026-11-12)', () => {
+    const none = originEvidenceWithoutSession({ machineId: 'm', machineName: 'Indra Laptop', at: 1, kind: 'unknown' });
+    expect(slackOriginFooter('indra', none, ALL_ON)).toBe('_indra · Indra Laptop_');
+    const noMachine = originEvidenceWithoutSession({ machineId: 'm', machineName: 'Machine 4851af00', at: 1, kind: 'unknown' });
+    expect(slackOriginFooter('indra', noMachine, ALL_ON)).toBe('_indra_');
+    const launch = originEvidenceFromLaunchRecord({ machineId: 'm', machineName: 'Mini', sessionId: 's', framework: 'claude-code', model: null, at: 1 });
+    expect(slackOriginFooter('echo', launch, ALL_ON)).toBe('_echo · Mini · Claude Code (configured)_');
+  });
   it('a nickname can never become a mention or formatting', () => {
     expect(escapeSlackLabel('<!channel> *bold*')).not.toMatch(/<!channel>/);
     expect(escapeSlackLabel('<!channel>')).toBe('&lt;!channel&gt;');

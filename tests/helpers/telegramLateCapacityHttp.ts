@@ -1,3 +1,4 @@
+import { allowSlowOriginRecording } from './telegramOriginStore.js';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import express from 'express';
@@ -36,6 +37,7 @@ export async function lateCapacityHttpHarness(workerUrl: URL, useIpc: boolean) {
       workerUrl, holdsLease: () => ownsLease, isSessionLive: () => true,
       attachSessionLifecycle: value => { lifecycle = value; },
       diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
+    allowSlowOriginRecording(boot.runtime.service);
     if (useIpc) {
       const socketPath = boot.runtime.options.noticeProcess?.socketPath;
       if (!socketPath) throw new Error('actual Boot capacity socket was not wired');
