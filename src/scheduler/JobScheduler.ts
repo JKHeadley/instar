@@ -12,7 +12,7 @@ import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } fro
  * no JSONL discovery, no machine coordination.
  */
 
-import { readJobDeclaredFailure } from './jobDeclaredFailure.js';
+import { readJobDeclaredFailure, readJobDeclaredSkip } from './jobDeclaredFailure.js';
 import { jobGateReceiptPath, readJobGateReceipt, consumeJobGateReceipt, restoreJobGateReceipt } from './JobGateReceipt.js';
 import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
@@ -3509,6 +3509,9 @@ export class JobScheduler {
     // §B). Read synchronously, before any await, from the file named by this
     // run's unique tmux session.
     const declaredFailure = readJobDeclaredFailure(this.stateDir, tmuxSession);
+    // A declared skip (the job could not do its work for a reason outside it, such as its own
+    // server too busy to answer) is recorded `skipped`. Always consumed; a failure wins.
+    const declaredSkip = readJobDeclaredSkip(this.stateDir, tmuxSession);
 
     // Update job state with completion result
     const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
@@ -3516,6 +3519,7 @@ export class JobScheduler {
       : session.status === 'failed' || session.status === 'killed'
         ? `Session ${session.status} (${session.name})${session.endedReason === 'codex-rate-limited' ? ' — Codex 429 Too Many Requests' : ''}${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
         : `Declared failure: ${declaredFailure}`;
+    const skipped = !failed && declaredSkip !== null;
 
     // Capture session output FIRST — needed for both history and notifications
     let output = '';
@@ -3529,9 +3533,11 @@ export class JobScheduler {
     const jobState: JobState = {
       slug: job.slug,
       lastRun: existingState?.lastRun ?? new Date().toISOString(),
-      lastResult: failed ? 'failure' : 'success',
-      lastError: failureError,
-      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
+      lastResult: failed ? 'failure' : skipped ? 'skipped' : 'success',
+      // A skip keeps the last error, as the script runner does (§5.2).
+      lastError: skipped ? existingState?.lastError : failureError,
+      // A skip is neither: it leaves the failure streak where it was.
+      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : skipped ? (existingState?.consecutiveFailures ?? 0) : 0,
       nextScheduled: this.getNextRun(job.slug),
     };
     this.state.saveJobState(jobState);
@@ -3545,8 +3551,8 @@ export class JobScheduler {
     if (runId) {
       this.runHistory.recordCompletion({
         runId,
-        result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
-        error: failureError,
+        result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : skipped ? 'skipped' : 'success'),
+        error: failureError ?? (skipped ? `Declared skip: ${declaredSkip}` : undefined),
         outputSummary: output ? output.slice(-1000) : undefined,
         ...(emailOutboxId ? { emailOutboxId } : {}),
       });
@@ -3567,13 +3573,14 @@ export class JobScheduler {
         // session jobs. The transcript holds what the job actually did — hand
         // the audit that, falling back to the pane capture when unavailable.
         let auditOutput = output;
-        if (this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
+        // A skipped run did no work to audit (same as the script runner).
+        if (!skipped && this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
           const evidence = readJobTranscriptEvidence(
             findClaudeJobTranscript(session.claudeSessionId, session.cwd ?? path.dirname(this.stateDir)),
           );
           if (evidence) auditOutput = output.trim() ? `${evidence}\n[pane tail]\n${output}` : evidence;
         }
-        this.jevAudit?.capture({
+        if (!skipped) this.jevAudit?.capture({
           runId,
           slug: job.slug,
           goal: job.description ?? job.slug,
@@ -3598,7 +3605,9 @@ export class JobScheduler {
       this.state.delete('active-job');
     }
 
-    if (!failed) {
+    // A skip is not a success: it must not clear a pending failure alert or feed the
+    // silence watch (a server busy for days would otherwise look healthy).
+    if (!failed && !skipped) {
       this.clearFailureAlertState(job.slug);
       this.noteContinuitySuccess(job.slug);
     }
@@ -3706,7 +3715,7 @@ export class JobScheduler {
       : `${duration}s`;
 
     let summary = `*Job Complete: ${job.name}*\n`;
-    summary += `Status: ${failed ? 'Failed' : 'Done'}`;
+    summary += `Status: ${failed ? 'Failed' : skipped ? 'Skipped' : 'Done'}`;
     if (deathCause && deathCause !== 'unknown') summary += ` (${deathCause})`;
     summary += '\n';
     if (duration > 0) summary += `Duration: ${durationStr}\n`;

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Stall Coverage Is Enumerated, Not Discovered*
+
 /**
  * Stall-class registry codemod — offline-first, idempotent.
  *

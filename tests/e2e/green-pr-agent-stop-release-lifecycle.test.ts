@@ -36,6 +36,7 @@ describe('agent stop release (production wiring)', () => {
       if (args[0] === 'pr' && args[1] === 'list' && args.includes('merged')) return { stdout: JSON.stringify(merged), stderr: '', code: 0 };
       if (args[0] === 'api' && String(args[1]).includes('/compare/')) return { stdout: `${compare}\n`, stderr: '', code: 0 };
       if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]', stderr: '', code: 0 };
+      if (args[0] === 'api' && args[1] === 'graphql') return { stdout: JSON.stringify({ data: { viewer: { login: 'me' }, repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } }), stderr: '', code: 0 };
       return { stdout: '', stderr: '', code: 0 };
     };
     const opts = {

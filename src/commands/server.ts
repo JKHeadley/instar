@@ -17,7 +17,7 @@ import { resolveFailureReplicationTransport, isFailureReplicationKindAllowed, fi
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
-import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { configureClaudeChildAuth, configureClaudeReviewerLogin, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
@@ -174,7 +174,7 @@ import {
   LIFELINE_INGRESS_CALLER_HEADER,
   LIFELINE_INGRESS_CALLER_SERVER_SELF,
 } from '../core/LifelineIngressSecret.js';
-import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { configureSyncOpMarker, defaultInflightMarkerReader, flushSyncOpMirror } from '../core/InFlightSyncOpMarker.js';
 import { StateManager, SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
@@ -9422,6 +9422,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -9562,6 +9563,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -13000,6 +13002,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           tmuxSession: e.session.tmuxSession,
           reason: e.reason,
           ...(e.session.framework ? { framework: e.session.framework } : {}),
+          ...(e.session.subscriptionAccountId ? { subscriptionAccountId: e.session.subscriptionAccountId } : {}),
           ...(e.uptimeSeconds !== undefined ? { uptimeSeconds: e.uptimeSeconds } : {}),
           ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
           ...(e.lastTail ? { lastTail: e.lastTail } : {}),
@@ -14811,6 +14814,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // The per-poll check of every session goes through the non-blocking tmux
+          // path where that path is on (the same gate as the rest of the async hot path).
+          ...(_tmuxAsyncEnabled ? {
+            isSessionAliveAsync: (name: string) => sessionManager.isSessionAliveNonBlocking(name),
+            captureSessionOutputAsync: (name: string, lines: number) => sessionManager.captureOutputAsync(name, lines),
+          } : {}),
           isSessionStarting: (topicId) => {
             const slackKey = slackProxyChannelMap.get(topicId);
             if (slackKey) {
@@ -19660,6 +19669,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // confidence band: do the minimum and return before any recovery cascade.
       if (_tmuxAsyncHotPathWakeGuard) {
         try {
+          flushSyncOpMirror(); // same process as the writer: settle a queued idle write first
           const marker = defaultInflightMarkerReader(config.stateDir)();
           if (marker?.inFlight) {
             console.log(
@@ -24375,14 +24385,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        sessionManager.setSpawnAccountResolver(() => {
+        const pinnedAccount = () => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
-        });
+        };
+        sessionManager.setSpawnAccountResolver(pinnedAccount);
+        // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
+        // the default login, which is signed out on a machine whose logins all live in the pool.
+        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
         sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
       }
+      // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
+      // never launch on a Codex account the pool reads at its wall; tag the
+      // session with one that has room, or refuse when none does. Same switch
+      // and walled predicate as the rescue; no Codex accounts → unchanged.
+      sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware

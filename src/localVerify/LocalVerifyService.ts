@@ -48,20 +48,20 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
+import { MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
 import { FailedFileDiagnosisPeerService } from './FailedFileDiagnosisPeerService.js';
 import type { DiagnosisMode } from './failedFileDiagnosis.js';
 import type { DiagnosisPeerClient, DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
-import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
+import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { WaitingList, type Waiter } from './waitingList.js';
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
-import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
+import { MAX_LANE_SHARDS, MAX_UNIT_WORKERS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
 import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
@@ -157,10 +157,15 @@ export function prPriority(view: Pick<PrView, 'labels'> | null | undefined): num
   return Array.isArray(labels) && labels.some((l) => !!l && l.name === MERGE_THROUGHPUT_LABEL) ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary;
 }
 
-/** The priority the queue is sorted by: stored priority, raised to the throughput level once an ordinary PR has aged. Pure. */
-export function effectivePriority(e: { priority: number; kind?: 'main'; firstQueuedAt: number; pausedMs?: number }, now: number, agingMs: number = THROUGHPUT_AGING_MS): number {
+/**
+ * The priority the queue is sorted by: stored priority, raised to the throughput level once an
+ * ordinary PR has aged. The wait counts from its first queue-full refusal when it had one, so a
+ * PR that already waited outside the queue is not made to wait the window again inside it. Pure.
+ */
+export function effectivePriority(e: { priority: number; kind?: 'main'; firstQueuedAt: number; firstRefusedAt?: number; pausedMs?: number }, now: number, agingMs: number = THROUGHPUT_AGING_MS): number {
   if (e.kind === 'main') return e.priority;
-  const waited = now - e.firstQueuedAt - (e.pausedMs ?? 0);
+  const since = e.firstRefusedAt !== undefined ? Math.min(e.firstRefusedAt, e.firstQueuedAt) : e.firstQueuedAt;
+  const waited = now - since - (e.pausedMs ?? 0);
   return waited >= agingMs ? Math.max(e.priority, QUEUE_PRIORITY.mergeThroughput) : e.priority;
 }
 
@@ -347,13 +352,17 @@ export type MergeHandoff = (record: LocalVerifyRecord, ctx: MergeHandoffContext)
 /**
  * Should a PR entry re-read its base head before it starts? Yes when `main` moved
  * after the entry's base was resolved (a merge landed, or the reconcile loop saw a
- * new head), or when the entry has waited `baseRefreshAfterMs` since then. Pure.
+ * new head), or when the entry has waited `baseRefreshAfterMs` since then, or when the
+ * entry was restored after a restart (`baseResolvedAt: 0`): what merged while the server was
+ * down is unknown. Pure.
  */
 export function decideBaseRefresh(
   entry: { baseRefName: string; firstQueuedAt: number; baseResolvedAt?: number },
   i: { now: number; mainMovedAt: number | null },
   limits: { baseRefreshAfterMs: number } = MERGE_LINE,
 ): boolean {
+  // 0 = restored from the durable queue and not resolved by this process yet: always re-read.
+  if (entry.baseResolvedAt === 0) return true;
   const resolvedAt = entry.baseResolvedAt ?? entry.firstQueuedAt;
   if (i.mainMovedAt !== null && entry.baseRefName === 'main' && i.mainMovedAt > resolvedAt) return true;
   return i.now - resolvedAt >= limits.baseRefreshAfterMs;
@@ -519,6 +528,8 @@ interface InFlight {
   startedAt: number;
   /** Latched at spawn: a live setting change cannot shorten this child's restart hold. */
   preflightAllowanceMs: number;
+  /** Latched once this run's exit has been handled, so it is handled exactly once (see shutdown()). */
+  settled?: boolean;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -868,15 +879,19 @@ export class LocalVerifyService {
   /** The live setting for processes per slow lane (read at each start; invalid values are ignored). */
   setLaneShards(fn: (() => unknown) | null): void { this.laneShardsSetting = fn; }
 
-  private laneShards(): { integration?: number; e2e?: number } | null {
+  private laneShards(): { integration?: number; e2e?: number; unitWorkers?: number } | null {
     let v: unknown;
     try { v = this.laneShardsSetting ? this.laneShardsSetting() : null; } catch { return null; } // @silent-fallback-ok: an unreadable setting means the policy defaults
     if (!v || typeof v !== 'object') return null;
-    const out: { integration?: number; e2e?: number } = {};
+    const out: { integration?: number; e2e?: number; unitWorkers?: number } = {};
     for (const k of ['integration', 'e2e'] as const) {
       const n = (v as Record<string, unknown>)[k];
       if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_LANE_SHARDS) out[k] = n;
     }
+    // Per-machine unit-lane worker count (hardware differs; 2026-11-12 the M5 sat 45-90 % idle
+    // while its 4-worker unit lane hit the 20-min deadline). Which files run never changes.
+    const u = (v as Record<string, unknown>).unitWorkers;
+    if (typeof u === 'number' && Number.isInteger(u) && u >= 1 && u <= MAX_UNIT_WORKERS) out.unitWorkers = u;
     return Object.keys(out).length ? out : null;
   }
 
@@ -1061,6 +1076,16 @@ export class LocalVerifyService {
         reason: `a peer verify of PR #${a.pr} is running`,
       });
     }
+    // A green run's merge in progress: a restart now loses the merge (the hand-off fails while the
+    // server stops, and a changed verifier no longer counts the record). Short and bounded.
+    const m = this.mergeHold;
+    if (m && m.since + MERGE_HANDOFF_RESTART_HOLD_MS > now) {
+      holds.push({
+        name: `local-verify:merge-pr-${m.pr}`,
+        until: Math.min(m.since + MERGE_HANDOFF_RESTART_HOLD_MS, now + maxDeferralMs),
+        reason: `PR #${m.pr} passed its verify and its merge is in progress`,
+      });
+    }
     return holds;
   }
 
@@ -1114,8 +1139,13 @@ export class LocalVerifyService {
       if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
+        // The saved base, never the PR view's `baseRefOid`: that is the base as of the PR's last
+        // update and can be hours or days stale (see LocalVerifyServiceSeams.baseHead). Restoring it
+        // put two runs on a main from seven hours earlier (2026-11-13 18:50Z, PRs 3137 and 3096:
+        // both failed, one on a flake fixed on main that morning). The saved base is the newest this
+        // service resolved, and the pre-start refresh below re-reads today's head before any run.
         // A reserved entry keeps the base it was dispatched with (the marker's snapshot decides import).
-        baseSha: e.remote ? e.baseSha : (view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha),
+        baseSha: e.baseSha,
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
@@ -1123,7 +1153,11 @@ export class LocalVerifyService {
         priority: restoredPriority,
         files: view ? viewFiles(view) : null, text: view ? prMatchText(view.title, view.body) : '',
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
-        ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+        // A reserved entry keeps when its base was resolved (it is not re-read: see above). Any other
+        // entry comes back as "never resolved" (0), so decideBaseRefresh re-reads its base before it
+        // starts, whatever its branch: this process cannot know what merged while it was down. The
+        // next resolution (a pre-start refresh or a new request) writes a real time.
+        ...(e.remote ? (e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}) : { baseResolvedAt: 0 }),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
         ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
@@ -1334,6 +1368,9 @@ export class LocalVerifyService {
     }
     this.writeClosedSeen(closedSeen);
     this.audit({ event: 'index-rebuilt', loaded: this.index.size, skippedVersion, skippedClosed, kept: capped.length });
+    // A merge-hold marker left by the previous process describes a hand-off that died with it.
+    try { SafeFsExecutor.safeRmSync(mergeHoldPath(this.cfg.stateDir), { force: true, operation: 'local-verify:merge-hold-clear' }); }
+    catch { /* @silent-fallback-ok: the marker's own short bound releases the restart */ }
     return { loaded: this.index.size, skippedVersion, skippedClosed, kept: capped.length };
   }
 
@@ -1510,7 +1547,13 @@ export class LocalVerifyService {
       const hold = this.holdDecision();
       const repair = hold.active && repairVerdict({ files: prFiles, text: prText }, hold.failingFiles).candidate;
       // A merge-throughput PR gets a bounded overflow (LOCAL_VERIFY_LIMITS.throughputOverflow).
-      const throughput = !replayPriority && !repair && requestedPriority === QUEUE_PRIORITY.mergeThroughput
+      // An ordinary PR that has waited THROUGHPUT_AGING_MS since its first refusal shares that
+      // overflow, the rule effectivePriority already applies inside the queue: without it a steady
+      // stream of labelled PRs keeps every ordinary waiter out for good (2026-11-13: PR 3108 waited
+      // 18 h while ten labelled PRs opened after it were admitted).
+      const agedWaiter = !replayPriority && !repair && requestedPriority !== QUEUE_PRIORITY.mergeThroughput
+        && this.waiterAged(pr);
+      const throughput = !replayPriority && !repair && (requestedPriority === QUEUE_PRIORITY.mergeThroughput || agedWaiter)
         && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
       if (!repair && !throughput) {
         // fb-7fde7f49-8ee: the refusal keeps a place in line (replays keep their own durable admission).
@@ -1520,7 +1563,7 @@ export class LocalVerifyService {
         return { ok: false, code: 'queue-full' };
       }
       if (repair) this.audit({ event: 'queue-full-repair-admitted', pr, headSha, redHead: hold.active ? hold.redHead : null });
-      else this.audit({ event: 'queue-full-throughput-admitted', pr, headSha });
+      else this.audit({ event: 'queue-full-throughput-admitted', pr, headSha, ...(agedWaiter ? { agedWaiter: true } : {}) });
     } else if (!keptPlace && !replayPriority && !opts.rerunAfterGreen && requestedPriority !== QUEUE_PRIORITY.mergeThroughput) {
       // fb-7fde7f49-8ee: below the cap, the PRs refused earlier go first. Only LIVE waiters
       // (offered within WAITING_LIST_LIMITS.staleAfterMs) reserve a slot, only while `main` is
@@ -1558,6 +1601,18 @@ export class LocalVerifyService {
     const position = this.queue.indexOf(entry);
     this.pump();
     return { ok: true, status: 'queued', position, ...this.holdFor(pr) };
+  }
+
+  /**
+   * A live waiting PR first refused at least THROUGHPUT_AGING_MS ago, with no older live aged
+   * waiter ahead of it: it then shares the throughput overflow. Oldest first among aged waiters,
+   * and a stale waiter (no longer offered) never counts. The wait outside the queue is not
+   * reduced for update pauses, so it can only overcount: the PR reaches the overflow sooner.
+   */
+  private waiterAged(pr: number): boolean {
+    const w = this.waiting.get(pr);
+    const aged = (x: Waiter) => this.now() - x.firstRefusedAt >= THROUGHPUT_AGING_MS;
+    return !!w && this.waiting.isLive(w) && aged(w) && !this.waiting.liveAhead(pr).some(aged);
   }
 
   /** A `recorded` answer: the PR has nothing left to queue for this head, so it leaves the waiting list. */
@@ -1859,6 +1914,13 @@ export class LocalVerifyService {
     this.peerState.results = [...this.peerState.results.filter((x) => x.attemptId !== id), { attemptId: id, record }].slice(-PEER_RESULTS_KEPT);
     this.persistPeerState();
     this.audit({ event: 'peer-attempt-done', attemptId: id, pr: record.pr, outcome: record.outcome });
+    // Why it went red, in THIS machine's audit log. The coordinator imports only the record, so
+    // until now a peer failure named no file on either machine: "unit 65,816 passed / 0 failed,
+    // failure" could not be told apart from a real fault (2026-11-13: PRs 3139, 3096, 3133).
+    if (record.outcome !== 'success' || record.flakyRetried) {
+      const run = r && r.kind === 'record' ? r as { reasons?: string[]; failures?: FailureDetail[] } : undefined;
+      this.audit({ event: 'run-detail', source: 'peer-run', attemptId: id, ...runDetail(record, run) });
+    }
   }
 
   /** Coordinator: after any pump, try to hand one more entry to an idle peer (never blocks the pump). */
@@ -2279,10 +2341,15 @@ export class LocalVerifyService {
   }
 
   /**
-   * Server shutdown: stop the in-flight run's group and start nothing else. The
-   * cancelled entry goes back to the head of the durable queue (not as an attempt),
-   * so the next boot resumes it. No timer is armed (the process is exiting); a group
-   * that survives SIGTERM is found by the next boot's orphan reap.
+   * Server shutdown: start nothing else, and deal with the run in flight.
+   *
+   * A run whose result is already on disk has finished: it is settled here, as its
+   * exit handler would have settled it (see finishedResultAtShutdown()).
+   *
+   * Any other run is stopped. The cancelled entry goes back to the head of the durable
+   * queue (not as an attempt), so the next boot resumes it. No timer is armed (the
+   * process is exiting); a group that survives SIGTERM is found by the next boot's
+   * orphan reap.
    */
   shutdown(): void {
     if (this.stopped) return;
@@ -2290,7 +2357,10 @@ export class LocalVerifyService {
     void this.failedFileDiagnosisPeer?.preempt('shutdown');
     this.publishSuitePriority(false);
     const f = this.inFlight;
-    if (f && !f.cancelled) {
+    if (f && !f.cancelled && this.finishedResultAtShutdown(f)) {
+      this.audit({ event: 'settled-at-shutdown', ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }), headSha: f.entry.headSha, ranMs: this.now() - f.startedAt });
+      this.onExit(f, { status: null, signal: null });
+    } else if (f && !f.cancelled) {
       this.cancelInFlight('shutdown', { armKillTimer: false });
       if (f.entry.kind !== 'main') {
         // The stop killed a real run: it stays counted as an attempt, it is recorded as an
@@ -2302,6 +2372,25 @@ export class LocalVerifyService {
       }
     }
     this.persistQueue();
+  }
+
+  /**
+   * Has the in-flight run already reached its verdict? The child writes its result with a
+   * temporary name and a rename as its last act (after its own worktree cleanup and suite-slot
+   * release), so a result file that holds a result object is a finished run. What may not have
+   * happened yet is this process handling the child's exit: a planned restart is released the
+   * moment the child is no longer alive, and on a busy event loop the stop request can arrive
+   * before the exit event does (2026-11-13: a 24-minute run was cancelled 121 ms after it
+   * finished, its result discarded, and it ran again from the start).
+   *
+   * Not settled when the verifier on disk has changed: the restart then loads a verifier whose
+   * index ignores a record this one writes, so the run has to happen again anyway, and the
+   * interruption path keeps the entry at the head of the queue for that.
+   */
+  private finishedResultAtShutdown(f: InFlight): boolean {
+    if (this.verifierChangedOnDisk()) return false;
+    const result = this.readResult(f.resultPath) as { kind?: unknown } | null;
+    return !!result && typeof result === 'object' && typeof result.kind === 'string';
   }
 
   // ---- internals ----
@@ -2639,6 +2728,7 @@ export class LocalVerifyService {
     const baseIsCurrentMain = record.baseRefName !== 'main' || currentMainHead === null ? null : currentMainHead === record.baseSha;
     const hold = { pr: record.pr, headSha: record.headSha, since: this.now() };
     this.mergeHold = hold;
+    this.writeMergeHold('handoff'); // a planned restart waits (bounded) for this merge attempt
     this.mergeLineStats.handoffs++;
     this.mergeLineStats.lastPr = record.pr;
     this.audit({ event: 'merge-handoff', pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, baseIsCurrentMain, currentMainHead });
@@ -2654,7 +2744,7 @@ export class LocalVerifyService {
         return;
       }
       settled = true;
-      if (this.mergeHold === hold) this.mergeHold = null;
+      if (this.mergeHold === hold) { this.mergeHold = null; this.clearMergeHold(); }
       this.mergeLineStats.lastOutcome = outcome;
       if (acted) {
         this.mergeLineStats.merged++;
@@ -2775,14 +2865,25 @@ export class LocalVerifyService {
   }
 
   private onExit(f: InFlight, exit: { status: number | null; signal: string | null }): void {
+    // Handled exactly once: shutdown() settles a run whose result is already on disk, and the
+    // child's real exit event may still arrive afterwards. Handling it again would find the
+    // result file gone and record a crash over the real verdict.
+    if (f.settled) return;
+    f.settled = true;
     // Sweep leftovers of the group right away (step processes the child left behind).
     if (this.seams.isGroupAlive(f.pgid)) {
       try { this.seams.killGroup(f.pgid, 'SIGKILL'); } catch { /* @silent-fallback-ok: best-effort */ }
     }
+    // A PR run that may be handed to the merge line keeps a short restart hold across the gap
+    // between its child exiting and the hand-off being offered (written BEFORE the in-flight
+    // marker goes, so a waiting restart never sees neither).
+    const settling = !f.cancelled && !f.entry.peerAttempt && f.entry.kind !== 'main' && this.mergeHandoff !== null && this.mergeLineOn() && !this.stopped;
+    if (settling && this.mergeHoldFile !== 'handoff') this.writeMergeHold('settling'); // never replace another PR's open hand-off marker
     this.clearInFlight();
     if (this.inFlight === f) this.inFlight = null;
     // The restart hold this run held is gone: let a waiting update restart now, not at its next re-check.
-    try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ }
+    // (also when the settling marker could not be written: nothing would announce the end later)
+    if (!settling || this.mergeHoldFile === null) { try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ } }
     const result = this.readResult(f.resultPath);
     this.removeRunFiles(f);
     for (const d of (result && 'degradations' in result && Array.isArray(result.degradations)) ? result.degradations : []) {
@@ -2836,12 +2937,54 @@ export class LocalVerifyService {
         this.audit({ event: 'run-detail', ...runDetail(rec, result) });
       }
       if (rec) this.noteFlaky(rec);
+      if (rec && rec.outcome === 'success' && f.entry.kind !== 'main') this.rearmMainAfterGreen(rec.pr);
       if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry, rec.errorStep);
     }
+    // No hand-off was opened for this run (red, error, re-queued, or the line held by another
+    // PR): the settling hold ends here and a waiting restart may go.
+    if (settling && this.mergeHoldFile === 'settling') this.clearMergeHold();
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const w of waiters) w();
     this.pump();
+  }
+
+  /** A green PR run after `main`'s error retries ran out re-arms one `main` verify (see decideMainRearmAfterGreen). */
+  private rearmMainAfterGreen(pr: number): void {
+    const head = this.mainObs.head;
+    if (head === null) return;
+    const target = this.releaseAlias.get(head) ?? head;
+    const rearm = decideMainRearmAfterGreen({
+      priorRetries: this.mainErrorRetries.get(target) ?? 0,
+      mainPending: this.queue.some((e) => e.kind === 'main'),
+      mainInFlight: this.inFlight?.entry.kind === 'main' && !this.inFlight.cancelled,
+      healthState: this.health.snapshot().state,
+    });
+    if (!rearm) return;
+    this.mainErrorRetries.set(target, 0);
+    this.audit({ event: 'main-retry-rearmed-after-green', headSha: target, afterPr: pr });
+    this.enqueueMain(target, 'rerun');
+  }
+
+  /** The restart guard's view of a merge in progress (`PlannedRestartVerifyGuard`): a short, bounded marker. */
+  private mergeHoldFile: 'settling' | 'handoff' | null = null;
+  private writeMergeHold(phase: 'settling' | 'handoff'): void {
+    try {
+      SafeFsExecutor.atomicWriteJsonSync(mergeHoldPath(this.cfg.stateDir), { v: 1, phase, since: this.now() },
+        { operation: 'local-verify:merge-hold', mode: 0o600 });
+      this.mergeHoldFile = phase;
+    } catch (e) {
+      // @silent-fallback-ok: no marker means no merge hold; the restart proceeds as before this feature.
+      this.audit({ event: 'merge-hold-write-failed', phase, detail: String(e).slice(0, 200) });
+    }
+  }
+  private clearMergeHold(): void {
+    if (this.mergeHoldFile === null) return;
+    this.mergeHoldFile = null;
+    try { SafeFsExecutor.safeRmSync(mergeHoldPath(this.cfg.stateDir), { force: true, operation: 'local-verify:merge-hold-clear' }); }
+    catch { /* @silent-fallback-ok: the marker's own short bound releases the restart */ }
+    // The hold is gone: let a waiting restart go now, not at its next re-check.
+    try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ }
   }
 
   /* @self-action-controller: local-verify-error-rerun */
@@ -3114,7 +3257,14 @@ export class LocalVerifyService {
   }
 
   private readResult(p: string): (VerifyRunResult | { kind: 'crash'; detail: string }) | null {
-    try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+    // Only a JSON object can be a result. A file holding a bare string, number or `null` parses
+    // without error, and the exit handler's `'degradations' in result` then threw on it: an
+    // unhandled rejection in the server, and no record for the run.
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as VerifyRunResult | { kind: 'crash'; detail: string } : null;
+    } catch { return null; } // @silent-fallback-ok: an absent or unparseable result file is "no result"; the caller records the crash
   }
 
   private removeRunFiles(f: InFlight): void {
