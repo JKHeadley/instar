@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-14T19:30:06.871Z",
+  "slug": "awareness-entry-registry",
+  "carriers": {
+    "CMT-1775": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "After the awareness entry registry merges: (1) offer and make the conversion of the first open feature that needs awareness text to an entry file, with the Chief of Staff; (2) two weeks after merge, read the merged diffs that touched patchClaudeMdContent or generateClaudeMd and fix the skill text or the notice if any awareness was added the old way; (3) give rows under core headings (Registry Firs"
+    }
+  }
+}
