@@ -121,6 +121,28 @@ describe('DiskSteward', () => {
     expect(s.status().level).toBe('ok');
   });
 
+  it('critical with nothing to clear: repeats back off to once a day, and a 2% drop posts again at once (2026-11-12)', async () => {
+    const h = harness({ prune: true, freeAfterPrune: 30 * GiB });
+    const s = h.make();
+    await s.tick();
+    h.setFree(30); h.advance(15 * MIN);
+    await h.tickAll(s);
+    expect(h.sent.filter((p) => p.kind === 'alert')).toHaveLength(1);
+    expect(h.sent[0].critical).toBe(true);
+    // Four days with the disk steady: the old fixed 2 h repeat posted 48 times.
+    for (let i = 0; i < 4 * 96; i++) { h.advance(15 * MIN); await h.tickAll(s); }
+    const steady = h.sent.filter((p) => p.kind === 'alert').length;
+    expect(steady).toBeLessThanOrEqual(9);
+    expect(steady).toBeGreaterThanOrEqual(4);
+    const times = h.sent.slice(-2).map((p) => p.createdAt);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(23 * 60 * MIN);
+    // Free space falls by 2% of the disk: the next post comes at the base 2 h.
+    h.setFree(10);
+    const before = h.sent.length;
+    for (let i = 0; i < 9; i++) { h.advance(15 * MIN); await h.tickAll(s); }
+    expect(h.sent.length).toBeGreaterThan(before);
+  });
+
   it('a restart restores the level and does not post again', async () => {
     const h = harness();
     const s = h.make();

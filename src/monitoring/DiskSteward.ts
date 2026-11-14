@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  thresholdsFor, forecast, stepLevel, healCleared, repeatDue, gapAllows, sendRetryDelay,
+  thresholdsFor, forecast, stepLevel, healCleared, repeatDue, gapAllows, sendRetryDelay, nextRepeatBackoff, REPEAT_RESET_FRACTION,
   type Sample, type LevelState, type CadenceState, type Level, type DiskStewardThresholdConfig, type Forecast, type Thresholds,
 } from './diskSteward/levels.js';
 import type { PruneChildResult, WorktreePlan } from './diskStewardMain.js';
@@ -256,6 +256,9 @@ export class DiskSteward {
         const firstCritical = step.criticalEntered && !this.state.criticalFirstDone;
         const urgentRise = (step.rose && step.level === 'escalate') || firstCritical;
         const rising = step.rose || firstCritical;
+        // A real drop since the last post ends the backoff now, not after the long wait (§3.5).
+        const lpf = this.state.cadence.lastPostFree;
+        if (lpf != null && lpf - m.free >= REPEAT_RESET_FRACTION * m.total) this.state.cadence.warnBackoff = 1;
         const repeat = !rising && this.state.episodePosted && repeatDue(this.state.cadence, step.level, step.critical, now);
         // Healed without a post, but still in the episode once the cleanup interval has passed: try again.
         const unposted = !rising && !this.state.episodePosted && !!this.state.healedAt && now - this.state.healedAt >= this.deps.pruneMinIntervalMs();
@@ -388,9 +391,12 @@ export class DiskSteward {
 
   private queueAlert(now: number, _firstCritical: boolean, kind: DuePost['kind'] = 'alert'): void {
     const post = this.basePost(now, kind);
-    if (kind === 'alert' && post.level === 'warn' && !post.critical && post.cacheReclaimableBytes < 0.01 * post.total && this.state.episodePosted) {
-      // Nothing clearable and nothing changed: the warn repeat backs off (§3.5).
-      this.state.cadence.warnBackoff = Math.min(this.state.cadence.warnBackoff * 2, 7);
+    if (kind === 'alert' && this.state.episodePosted) {
+      // Nothing clearable and no real drop since the last post: the repeat backs off;
+      // a drop of 2% of the disk resets it (§3.5).
+      this.state.cadence.warnBackoff = nextRepeatBackoff(this.state.cadence.warnBackoff, {
+        lastPostFree: this.state.cadence.lastPostFree, free: post.free, total: post.total, reclaimable: post.cacheReclaimableBytes,
+      });
     }
     this.state.due = post;
   }
@@ -411,7 +417,7 @@ export class DiskSteward {
     if (outcome === 'posted') {
       this.state.lastPost = { at: now, postId, level: due.level, critical: due.critical };
       this.state.cadence.lastPostAt = now;
-      if (due.kind === 'alert') { this.state.episodePosted = true; this.state.cadence.stage += 1; }
+      if (due.kind === 'alert') { this.state.episodePosted = true; this.state.cadence.stage += 1; this.state.cadence.lastPostFree = due.free; }
       this.state.due = null;
       this.sendFailureReported = false;
     } else {

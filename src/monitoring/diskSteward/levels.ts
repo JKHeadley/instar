@@ -128,17 +128,38 @@ export interface CadenceState {
   lastPostAt: number | null;
   /** Repeat stage within the episode (0 = the rising post). */
   stage: number;
-  /** Doubling factor for the warn repeat while nothing is clearable. */
+  /**
+   * Doubling factor for the repeat while nothing is clearable and free space has
+   * not dropped by `REPEAT_RESET_FRACTION` of the disk since the last post (§3.5).
+   * Applies at every level; the name is kept for persisted-state compatibility.
+   */
   warnBackoff: number;
+  /** Free bytes reported by the last delivered alert, for the change test (§3.5). */
+  lastPostFree?: number | null;
 }
+
+/** A drop of this share of the disk since the last post resets the repeat backoff (§3.5). */
+export const REPEAT_RESET_FRACTION = 0.02;
 
 const HOUR = 3_600_000;
 
 /** Repeat interval for the current level (§3.5). */
 export function repeatInterval(level: Level, critical: boolean, warnBackoff: number): number {
-  if (critical) return 2 * HOUR;
-  if (level === 'escalate') return 6 * HOUR;
-  return Math.min(24 * HOUR * Math.max(1, warnBackoff), 7 * 24 * HOUR);
+  const b = Math.max(1, warnBackoff);
+  if (critical) return Math.min(2 * HOUR * b, 24 * HOUR);
+  if (level === 'escalate') return Math.min(6 * HOUR * b, 24 * HOUR);
+  return Math.min(24 * HOUR * b, 7 * 24 * HOUR);
+}
+
+/**
+ * The repeat backoff after an alert is queued (§3.5): a drop of at least
+ * `REPEAT_RESET_FRACTION` of the disk since the last post resets it to 1;
+ * otherwise, when nothing is clearable, it doubles (up to 12, so 2 h → 24 h).
+ */
+export function nextRepeatBackoff(prev: number, opts: { lastPostFree: number | null | undefined; free: number; total: number; reclaimable: number }): number {
+  if (opts.lastPostFree != null && opts.lastPostFree - opts.free >= REPEAT_RESET_FRACTION * opts.total) return 1;
+  if (opts.reclaimable < 0.01 * opts.total) return Math.min(Math.max(1, prev) * 2, 12);
+  return prev;
 }
 
 /** Whether a repeat post is due now (the rising post and recovery are handled by the caller). */
