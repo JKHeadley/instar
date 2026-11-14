@@ -674,4 +674,52 @@ export class UsageWallRescue {
       .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
     return pick ? { configHome: pick.configHome, accountId: pick.id } : null;
   }
+
+  /**
+   * The spawn-account resolver for a NEW headless Codex session
+   * (fb-39e55b95-f00, fb-fb4d0e68-3a2). Before this, a `codex-cli` spawn never
+   * asked the pool: it launched on the default `CODEX_HOME` login untagged, so
+   * a login the pool read at 100% weekly took every spawn and each died at its
+   * first turn.
+   *
+   * Same posture as `spawnAccount` (the Claude resolver), with one difference:
+   * the Codex default login cannot be matched to a pool account (only claude
+   * logins have a resolvable default slot), so the guard steers away from the
+   * default whenever ANY usable Codex account is known walled.
+   *  - Switch off, or no usable Codex account → null: the default login.
+   *  - Every usable Codex account known walled → refuse, with a plain reason
+   *    naming the soonest reset, instead of launching into the wall.
+   *  - Rescue effective (2+ usable) and pinning not explicitly off → tag the
+   *    spawn; otherwise act only when some Codex account is known walled.
+   *  - Pick: not walled, a FRESH reading under the soft threshold (a recent
+   *    successful read is evidence the login works; unread accounts are never
+   *    picked), most room first. Nothing qualifies → null: the default login.
+   * "Walled" is the SAME predicate the rescue uses (`isKnownWalled`): a reading
+   * at or above 100% in either window counts until that window's resetsAt.
+   */
+  codexSpawnAccount(): { configHome: string; accountId: string } | { refused: string } | null {
+    const cfg = this.deps.readConfig();
+    if (!wallRescueSwitchOn(cfg)) return null;
+    const accounts = this.deps.listAccounts();
+    const usable = usableAccounts(accounts, 'codex-cli');
+    if (usable.length === 0) return null;
+    const nowMs = this.now();
+    const walled = usable.filter((a) => this.isKnownWalled(a.id));
+    if (walled.length === usable.length) {
+      const resets = walled
+        .map((a) => this.walledWindowResetMs(a, 100))
+        .filter((t): t is number => t !== null && t > nowMs);
+      const when = resets.length ? ` The soonest limit resets at ${new Date(Math.min(...resets)).toISOString()}.` : '';
+      return {
+        refused: `codex-accounts-walled: every Codex account on this machine is at its usage limit, so the session was not started.${when}`,
+      };
+    }
+    const tagAll = cfg?.pinSessionsToPool !== false && wallRescueEffective(cfg, accounts, 'codex-cli');
+    if (!tagAll && walled.length === 0) return null;
+    const soft = this.soft(cfg);
+    const pick = usable
+      .filter((a) => !this.isKnownWalled(a.id) && this.isFresh(a, nowMs) && bindingUtilization(a.lastQuota) < soft)
+      .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
+    return pick ? { configHome: pick.configHome, accountId: pick.id } : null;
+  }
 }

@@ -17,7 +17,7 @@ import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
 import { guardChildStdin } from './pipeErrorGuard.js';
-import { applyClaudeChildAuth, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
+import { applyClaudeChildAuth, applyClaudeReviewerLogin, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -151,7 +151,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       // The configured sign-in key goes on after the allowlist: it is what `claude -p` itself needs
       // on an agent with no stored login (spec cloud-key-internal-calls).
       const childEnv = applyClaudeChildAuth(hardened
-        ? buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema))
+        ? applyClaudeReviewerLogin(buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema)))
         : (() => {
             const e = { ...process.env };
             delete e.CLAUDECODE;

@@ -141,7 +141,16 @@ describe('vault key coherence', () => {
     const raw = fs.readFileSync(p);
     raw[raw.length - 1] ^= 0xff; // flip a ciphertext byte
     fs.writeFileSync(p, raw);
-    expect(() => store.read()).toThrowError(/Unsupported state|unable to authenticate/i);
+    // The wording is OpenSSL's and Node's, and it changed: Node 24 says "Unsupported state or
+    // unable to authenticate data", Node 26 says "error:1C800064:Provider routines::bad decrypt".
+    // What this case pins is that corruption under the RIGHT key surfaces as the cipher's own
+    // failure, never as the wrong-key diagnosis the case above pins ("encrypted with key id").
+    let thrown: unknown;
+    try { store.read(); } catch (err) { thrown = err; }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/Unsupported state|unable to authenticate|bad decrypt/i);
+    expect(message).not.toMatch(/encrypted with key id|NOT empty/);
   });
 
   // ── v1 back-compat + dual-key fallback ────────────────────────────

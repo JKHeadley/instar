@@ -153,6 +153,9 @@ export interface ReapLogEntry {
   uptimeSeconds?: number;
   /** Exited entries: the framework the session was launched on, when known. */
   framework?: string;
+  /** Exited entries: the subscription-pool account the session was launched
+   *  under, when it was tagged (so a death at a usage wall names the account). */
+  subscriptionAccountId?: string;
   /** Exited entries: the last pane tail instar SAW before the process ended —
    *  REDACTED through the live-tail credential scrubber and clamped (see
    *  `recordExited`). Present only when the monitor had sampled the pane (it
@@ -285,6 +288,7 @@ export class ReapLog {
     /** e.g. 'process-exited' / 'process-exited-during-startup'. */
     reason: string;
     framework?: string;
+    subscriptionAccountId?: string;
     uptimeSeconds?: number;
     launchLane?: 'headless' | 'rerouted-interactive';
     /** Raw last-seen pane tail; redacted + clamped here, never stored raw. */
@@ -306,6 +310,7 @@ export class ReapLog {
       disposition: 'terminal',
       machine: this.machineId?.(),
       ...(e.framework ? { framework: e.framework } : {}),
+      ...(e.subscriptionAccountId ? { subscriptionAccountId: e.subscriptionAccountId } : {}),
       ...(typeof e.uptimeSeconds === 'number' && Number.isFinite(e.uptimeSeconds)
         ? { uptimeSeconds: Math.max(0, Math.round(e.uptimeSeconds)) }
         : {}),
@@ -545,6 +550,7 @@ export class ReapLog {
         ? { uptimeSeconds: entry.uptimeSeconds }
         : {}),
       ...(typeof entry.framework === 'string' ? { framework: entry.framework } : {}),
+      ...(typeof entry.subscriptionAccountId === 'string' ? { subscriptionAccountId: entry.subscriptionAccountId.slice(0, 200) } : {}),
       // Re-clamp on read too: a row written by a future/foreign writer can never
       // hand an unbounded blob to a consumer of this log.
       ...(typeof entry.lastTail === 'string'

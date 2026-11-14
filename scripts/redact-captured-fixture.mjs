@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Scrape/Parser Fixture Realness — feed the parser the REAL bytes*
+
 /**
  * redact-captured-fixture.mjs — same-SHAPE, grammar-valid secret redaction for
  * captured parser fixtures.

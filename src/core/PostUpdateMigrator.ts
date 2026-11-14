@@ -1,3 +1,7 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -2030,6 +2034,8 @@ export interface MigratorConfig {
   hasTelegram: boolean;
   projectName: string;
   identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
+  /** Test seam: this machine's friendly name (default: macOS ComputerName / Linux pretty hostname). */
+  detectFriendlyMachineName?: () => string | null;
   /**
    * The configured claude-code binary (native-hook-events D4 version gate).
    * Absent ⇒ read from `<stateDir>/config.json` (never PATH).
@@ -3076,6 +3082,7 @@ export class PostUpdateMigrator {
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateMachineIdentityEpochs(result);
+    this.migrateMachineNicknames(result);
     this.migrateLegacyMaxSessions(result);
     this.migrateRetireDeadMentorConfig(result);
     this.migrateRetireStagedFeaturesCmt1004(result);
@@ -18107,6 +18114,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
   /** Backfill legacy identity epochs before the recovery runtime can read them.
    * Existing monotonic/tombstone state always wins; corrupt authority is never
    * overwritten with a fabricated epoch-zero file. */
+  /**
+   * Every machine carries a human name (operator report 2026-11-12: a footer read
+   * "bob · Machine m_4851af"). Registries written before nicknames existed, or rebuilt by a
+   * path that skipped them, leave machines unnamed. Idempotent; never replaces a name a person
+   * chose (MachineIdentityManager.ensureNicknames). The server boot runs the same backfill.
+   */
+  private migrateMachineNicknames(result: MigrationResult): void {
+    try {
+      const mgr = new MachineIdentityManager(this.config.stateDir,
+        this.config.detectFriendlyMachineName ? { detectFriendlyName: this.config.detectFriendlyMachineName } : {});
+      if (!mgr.hasIdentity() || !fs.existsSync(mgr.registryPath)) { result.skipped.push('machine nicknames (no machine identity yet)'); return; }
+      const named = mgr.ensureNicknames();
+      if (named.length) result.upgraded.push(`machine nicknames: named ${named.length} machine(s)`);
+      else result.skipped.push('machine nicknames (every machine already named)');
+    } catch (err) {
+      result.errors.push(`machine nicknames: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateMachineIdentityEpochs(result: MigrationResult): void {
     const epochPath = path.join(this.config.stateDir, 'state', 'identity-epochs.json');
     const attestationPath = path.join(this.config.stateDir, 'state', 'machine-identity-migration-attestation.json');

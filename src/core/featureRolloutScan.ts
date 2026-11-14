@@ -56,7 +56,7 @@ const MATURATION_SOURCE_REFS: Readonly<Record<MaturationMetricSource, ReadonlySe
   ]),
   'blocker-trend': new Set(['request-to-persist.ratio', 'clear-latency.ratio']),
   'feature-summary': new Set([
-    'feedback-factory.completed-runs', 'autonomous-throughput.observed-runs',
+    'feedback-factory.completed-runs', 'feedback-factory.run-success-share-7d', 'feedback-factory.finished-runs-7d', 'autonomous-throughput.observed-runs',
     'claim-verification.classified-claims', 'blocker-lifecycle.completed-transitions',
     'mutual-ssh.ready-peers', 'context-recovery.successful-recoveries',
     'slack-decision-gate.considered-acknowledgments', 'self-heal-gate.successful-repairs',

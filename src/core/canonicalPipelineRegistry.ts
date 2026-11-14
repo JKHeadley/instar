@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Canonical Pipeline Operational Completeness — Accepted Intake Must Drain*
+
 /**
  * Closed structural registry for canonical accepted-intake pipelines.
  *
