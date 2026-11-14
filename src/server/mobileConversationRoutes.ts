@@ -15,6 +15,7 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
  *   GET    /mobile/chat/app/:key/events?cursor=      sync (this machine's ingest order)
  *   POST   /mobile/conversations/read                 read report {marks:[{ref,id,atMs,machine?}]} (mobile-unread-messages §3.5)
  *   GET    /mobile/conversations/read-markers?cursor= this machine's merged read markers (Bearer only; the catch-up between machines)
+ *   POST   /mobile/conversations/pins             pin a whole conversation to the top of the list {ref, pinned} (conversation-list-pins)
  *
  * Every mutation is idempotent through MobileChatRequestStore keyed on (deviceId, requestId)
  * with an operation-specific payload hash. The send keeps the order of §4.2: authenticate →
@@ -38,7 +39,7 @@ import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
 import { conversationOwnerFor, validConversationOwner, type ConversationOwner } from '../core/MobilePeople.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { transcriptForDelivery } from '../core/AppConversationService.js';
@@ -65,7 +66,9 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { deviceTextForRow } from '../core/appPlatformMedia.js';
 import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { ConversationUnreadService, type Reader, type UnreadFields } from '../core/ConversationUnreadService.js';
-import { isMessagePosition, isReaderKey, CATCH_UP_PAGE } from '../core/ConversationReadMarkers.js';
+import { isMessagePosition, isReaderKey, CATCH_UP_PAGE, accessRefOf, canonicalConversationRef, readerKeyFor } from '../core/ConversationReadMarkers.js';
+import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type ConversationListPinStore, type PinnedRef } from '../core/ConversationListPins.js';
+import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
@@ -267,6 +270,8 @@ export interface MobileConversationRouteDeps {
   originDisplay?: () => OriginDisplaySettings;
   /** Unread counts and read markers (mobile-unread-messages). Absent or off ⇒ no read fields, the read routes 503. */
   unread?: ConversationUnreadService | null;
+  /** Conversations pinned to the top of the list, per person (conversation-list-pins). Absent ⇒ the pin route 503s and the list carries no pin fields. */
+  listPins?: ConversationListPinStore | null;
   now?: () => number;
 }
 
@@ -555,6 +560,39 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return u.resolveReader({ person: devicePersonOf(req), viaDevice: principalOf(req).kind === 'device', readerParam: req.query.reader });
   };
 
+  // ── Conversation-list pins (docs/specs/conversation-list-pins.md) ──
+  /** The pin store when the feature is on (`mobilePairing.native.listPins.enabled`, read live), else null. */
+  const listPinsOn = (): ConversationListPinStore | null => (deps.listPins && isConversationListPinsEnabled(deps.config) ? deps.listPins : null);
+  /** Whose pins: the phone's or browser's person, or the person a Bearer call names with `reader=` (the unread reader identity). */
+  const pinReaderOf = (req: Request): { key: string; person: ResolvedPerson | null; viaDevice: boolean } | null => {
+    const p = principalOf(req);
+    if (p.kind === 'device') {
+      const person = devicePersonOf(req);
+      const key = readerKeyFor(person, deps.pairing.machineId());
+      return key && person ? { key, person, viaDevice: true } : null;
+    }
+    if (p.kind === 'token' && isReaderKey(req.query.reader)) {
+      let person: ResolvedPerson | null = null;
+      try { person = personOfReaderKey(deps.pairing, req.query.reader); } catch { person = null; } // @silent-fallback-ok — fail closed: an unresolvable reader may see and pin nothing
+      return { key: req.query.reader, person, viaDevice: false };
+    }
+    return null;
+  };
+  /** May this reader see the conversation? The phone's own check, or the named person's (fail closed). */
+  const pinReaderMay = (req: Request, reader: { person: ResolvedPerson | null; viaDevice: boolean }, accessRef: string): boolean => {
+    if (reader.viaDevice) return deviceMayUse(deps.pairing, req, accessRef);
+    if (!reader.person) return false;
+    try { return deps.pairing.mayUse(reader.person, accessRef, 'read'); } catch { return false; } // @silent-fallback-ok — fail closed: an unanswerable check hides the conversation
+  };
+  /** The canonical ref of a list row (the same one unread uses). */
+  const canonicalRefOfRow = (r: ConversationListRow): string | null => {
+    if (r.platform === 'app') return canonicalConversationRef(String(r.id));
+    if (r.platform === 'telegram') return canonicalConversationRef(`telegram:${String(r.id)}`);
+    return canonicalConversationRef(`slack:${r.machine ?? deps.machineId()}:${String(r.id)}`);
+  };
+  /** The access ref the shared check takes for a canonical ref (Slack: the `slack:` grant). */
+  const pinAccessRef = (ref: string): string => (ref.startsWith('slack:') ? 'slack:' : accessRefOf(ref));
+
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
@@ -620,10 +658,44 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const fromLocal = inPage ?? visible(localRowsAfter(null)).map((r) => ({ ...r, machine: self })).find((r) => rowKey(r) === cosView.pinnedKey);
       return fromLocal ? { pinned: withTree(withFields([fromLocal], false))[0] } : {};
     };
+    /**
+     * Conversation-list pins: on the first page only, for a resolvable reader, the reader's pinned refs
+     * (newest pin first) and a full list row for each one found here or on an answering peer, so a pinned
+     * conversation older than the page still leads the list. A ref with no row stays in `pinnedRefs` only.
+     */
+    const listPinsOut = (rows: ConversationListRow[], peerRows: ConversationListRow[]): Record<string, unknown> => {
+      const store = listPinsOn();
+      if (!store || cursor !== null) return {};
+      const pinReader = pinReaderOf(req);
+      if (!pinReader) return {};
+      let refs: PinnedRef[] = [];
+      try { refs = store.pinnedFor(pinReader.key); } catch { return {}; } // @silent-fallback-ok — no pin fields rather than a failed list
+      const shown = refs.filter((p) => pinReaderMay(req, pinReader, pinAccessRef(p.ref)));
+      const byRef = new Map<string, ConversationListRow>();
+      const offer = (r: ConversationListRow) => { const k = canonicalRefOfRow(r); if (k && !byRef.has(k)) byRef.set(k, r); };
+      for (const r of rows) offer(r);
+      const missing = () => shown.some((p) => !byRef.has(p.ref));
+      if (missing()) for (const r of withTree(withFields(visible(peerRows), true))) offer(r);
+      if (missing()) {
+        try { for (const r of withTree(withFields(visible(localConversationListPage(deps, 200, null).rows.map((x) => ({ ...x, machine: self }))), false))) offer(r); } catch { /* @silent-fallback-ok — a pinned row not found stays in pinnedRefs only */ }
+      }
+      // An app conversation older than every page is read straight from the store (every machine holds it).
+      for (const p of shown) {
+        if (byRef.has(p.ref) || !p.ref.startsWith('app:')) continue;
+        try {
+          const c = svc!.store.getConversation(p.ref.slice(4));
+          if (!c || c.tombstoned) continue;
+          const raw: ConversationListRow = { id: c.conversationKey, platform: 'app', title: c.title, lastActivity: c.lastActivity ?? c.createdAt, lastPreview: c.lastPreview, machine: self, ...(c.ownerPerson ? { ownerPerson: c.ownerPerson } : {}) };
+          for (const r of withTree(withFields(visible([raw]), false))) offer(r);
+        } catch { /* @silent-fallback-ok — a pinned row not found stays in pinnedRefs only */ }
+      }
+      const pinnedRows = shown.map((p) => byRef.get(p.ref)).filter((r): r is ConversationListRow => !!r);
+      return { pinnedRefs: shown, pinnedRows };
+    };
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       const rows = withTree(withFields(visible(m.rows), false));
-      res.json({ conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      res.json({ conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -659,7 +731,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const all = mergeConversationPages([{ rows: localRows, more: false }, ...peerPages.map((p) => ({ ...p, more: false }))], 10_000).rows;
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
-    res.json({ conversations: withTree(rows), ...pinnedOut(rows), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
+    const treeRows = withTree(rows);
+    res.json({ conversations: treeRows, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
   });
 
   // ── Read reports (mobile-unread-messages §3.5) ──
@@ -681,6 +754,39 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
     const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
     res.json({ results });
+  });
+
+  // ── Conversation-list pins (docs/specs/conversation-list-pins.md) ──
+  const pinRate = new Map<string, number[]>();
+  router.post('/mobile/conversations/pins', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!deps.pairing.enabled() || !svc) { off(res); return; }
+    const store = listPinsOn();
+    if (!store) { res.status(503).json({ error: 'list-pins-off', detail: 'Pinning conversations is turned off on this agent.' }); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device' && p.kind !== 'token') { res.status(403).json({ error: 'operator-device-required' }); return; }
+    // The agent itself pins nothing of its own: a Bearer call names the person it acts for.
+    if (p.kind === 'token' && !isReaderKey(req.query.reader)) { res.status(400).json({ error: 'reader-required', detail: 'A Bearer pin must name the reader it is made for.' }); return; }
+    const reader = pinReaderOf(req);
+    if (!reader) { res.status(403).json({ error: 'operator-device-required' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ref = canonicalConversationRef(body.ref);
+    if (!ref || typeof body.pinned !== 'boolean') { res.status(400).json({ error: 'bad-pin', detail: 'Send ref (app:<id>, telegram:<topic>, or slack:<machine>:<id>) and pinned (true or false).' }); return; }
+    const pinned = body.pinned;
+    // Unpinning what you already pinned is always allowed (a conversation you lost access to can still be cleared).
+    if (pinned || !store.isPinned(reader.key, ref)) {
+      if (!pinReaderMay(req, reader, pinAccessRef(ref))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+      if (ref.startsWith('app:') && !svc.liveConversation(ref.slice(4))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    }
+    if (!rateIn(pinRate, p.kind === 'device' ? p.deviceId : `token:${reader.key}`)) { res.status(429).json({ error: 'too-many-requests' }); return; }
+    let r: ReturnType<ConversationListPinStore['setPinned']>;
+    try { r = store.setPinned(reader.key, ref, pinned); } catch (err) {
+      DegradationReporter.getInstance().report({ feature: 'ConversationListPins.set', primary: 'Pin a conversation to the top of the list', fallback: 'Answer 503; nothing changed', reason: err instanceof Error ? err.message : String(err), impact: 'A pin did not save.', internalOnly: true });
+      res.status(503).json({ error: 'list-pins-unavailable', detail: 'The pin could not be saved. Try again.' });
+      return;
+    }
+    if (r.outcome === 'pin-limit') { res.status(409).json({ error: 'pin-limit', detail: `You already have ${MAX_LIST_PINS_PER_READER} pinned conversations. Unpin one first.`, pinned: r.pinned }); return; }
+    res.json({ ok: true, changed: r.outcome === 'changed', pinned: r.pinned });
   });
 
   // ── Catch-up between my machines (§3.3): Bearer only, never a phone (not on the device allowlist) ──

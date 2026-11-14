@@ -20,6 +20,7 @@ import {
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
+  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords,
 } from './chats-model.js';
 import { chiefOfStaffNeedRows } from './needs-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
@@ -341,6 +342,7 @@ class ChatsPage {
     this.moreBtn = el('button', { class: 'btn-quiet chat-more', type: 'button', text: 'Show more', hidden: true });
     this.moreBtn.addEventListener('click', () => this.loadList(true));
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
+    this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
     newBtn.addEventListener('click', () => this.newConversation());
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
@@ -352,7 +354,7 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.listEl, this.moreBtn, this.failedEl),
+        this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
@@ -377,6 +379,8 @@ class ChatsPage {
   applyList(data, more) {
     const rows = listRows(data);
     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
+    // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
+    if (!more) this.listPins = listPinnedRows(data);
     if (more) { this.pagedMore = true; this.rows = mergeListPages(this.rows, rows); }
     // A refresh of the first page replaces it; pages the operator opened with "Show more" are kept below.
     else this.rows = this.pagedMore ? mergeListPages(rows, this.rows) : rows;
@@ -393,19 +397,49 @@ class ChatsPage {
     }
     if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
-      setKids(this.listEl, orderWithTree(this.rows, this.pinnedKey).map((r) => el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem' },
-        el('span', { class: 'chat-row-main' },
-          el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: r.title }), el('span', { class: `chat-kind chat-kind-${r.kind}`, text: r.kindLabel })),
-          el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
-        el('span', { class: 'chat-row-side' },
-          r.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(r.lastActivity) }) : null,
-          // The conversation on screen is being read (and reported read, which clears the count on the phone too): no badge for it.
-          r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null))));
+      const pinsOn = Array.isArray(this.listPins);
+      const { pinned, rest } = splitPinned(this.rows, pinsOn ? this.listPins : []);
+      const rowEl = (r, isPinned) => {
+        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem' },
+          el('span', { class: 'chat-row-main' },
+            el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: r.title }), el('span', { class: `chat-kind chat-kind-${r.kind}`, text: r.kindLabel })),
+            el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
+          el('span', { class: 'chat-row-side' },
+            r.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(r.lastActivity) }) : null,
+            // The conversation on screen is being read (and reported read, which clears the count on the phone too): no badge for it.
+            r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null));
+        if (!pinsOn || !listPinRefOf(r)) return link;
+        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
+        btn.addEventListener('click', () => this.setListPin(r, !isPinned, btn));
+        return el('div', { class: 'chat-row-wrap' }, link, btn);
+      };
+      const kids = [];
+      if (pinned.length) {
+        kids.push(el('div', { class: 'chat-group-label chat-pinned-group', text: 'Pinned' }));
+        for (const r of pinned) kids.push(rowEl(r, true));
+        kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
+      }
+      for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+      setKids(this.listEl, kids);
     }
     this.moreBtn.hidden = !this.meta.nextCursor;
     const failed = this.meta.failed || [];
     this.failedEl.hidden = failed.length === 0;
     this.failedEl.textContent = failed.length ? `Not shown: conversations on ${failed.map((f) => f.machineId).join(', ')} (that machine did not answer).` : '';
+  }
+
+  /** Pin or unpin a whole conversation for this person (conversation-list-pins), then refresh the first page. */
+  async setListPin(row, pinned, btn) {
+    const ref = listPinRefOf(row);
+    if (!ref) return;
+    if (btn) btn.disabled = true;
+    this.listPinNoteEl.hidden = true;
+    const r = await this.call('POST', '/mobile/conversations/pins', { json: { ref, pinned } });
+    if (btn) btn.disabled = false;
+    if (!this.live || r.gone) return;
+    const words = listPinOutcomeWords(r);
+    if (words) { this.listPinNoteEl.textContent = words; this.listPinNoteEl.hidden = false; return; }
+    await this.loadList(false);
   }
 
   async newConversation() {

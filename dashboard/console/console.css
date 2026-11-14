@@ -1316,6 +1316,12 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-rows { display: flex; flex-direction: column; }
 .chat-row { display: flex; gap: var(--s-3); align-items: center; text-decoration: none; color: inherit; padding: var(--s-3) var(--s-2); border-radius: var(--r-md); }
 .chat-row.open { background: var(--accent-wash); }
+/* Conversations pinned to the top of the list (conversation-list-pins) */
+.chat-row-wrap { display: flex; align-items: center; gap: var(--s-1); }
+.chat-row-wrap > .chat-row { flex: 1; min-width: 0; }
+.chat-list-pin { flex: none; font-size: 12.5px; padding: 4px 8px; opacity: 0.55; }
+.chat-row-wrap:hover .chat-list-pin, .chat-list-pin:focus-visible, .chat-list-unpin { opacity: 1; }
+.chat-group-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); padding: var(--s-3) var(--s-2) var(--s-1); }
 /* Chief of Staff tree (chief-of-staff-topic.md §1.4): the pinned row leads; children indent under their parent. */
 .chat-row.chat-pinned .chat-row-title { font-weight: 600; }
 .chat-row.chat-depth-1 { padding-left: calc(var(--s-2) + var(--s-5)); }

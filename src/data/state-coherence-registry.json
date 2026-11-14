@@ -2271,6 +2271,24 @@
       }
     },
     {
+      "category": "conversation-list-pins",
+      "description": "Conversations each person pinned to the top of their conversation list (docs/specs/conversation-list-pins.md): immutable pin and unpin rows, the latest per person per conversation wins. Written atomically on each change, mode 0600. Replicated through the conversation-list-pin kind wherever native chat is on; a row whose share was refused is sent again at the next boot.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "conflictNote": "latest row per person x conversation by (atMs, eventId); order-independent union of immutable rows",
+      "transport": "peer-http",
+      "paths": [
+        "state/conversation-list-pins.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "One current row per person x conversation ever pinned (an unpin row stays as the tombstone that stops an older pin from returning); at most 50 pinned per person."
+      }
+    },
+    {
       "category": "conversation-read-markers",
       "description": "Read markers and baselines per person per conversation for the app's unread counts (docs/specs/mobile-unread-messages.md §3.2-§3.3): the position of the newest message each reader has seen, forward-only, plus one baseline time per reader. Held in memory, flushed atomically at most every 5 s and on shutdown, mode 0600. Replicated through the conversation-read-marker kind wherever native chat is on; a machine that missed the journal window catches up from any peer's GET /mobile/conversations/read-markers. Also holds the per-peer catch-up cursor and the refs this machine removed.",
       "scope": "must-be-coherent",
