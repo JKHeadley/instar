@@ -113,6 +113,7 @@ export interface MobilePairingDeps {
    * Send the owner's private chat a message, with a Decline button and (mobile-pairing-approve §3.2)
    * an Approve button when their data is given; resolves to the Telegram message id, or null.
    */
+  /** The owner's private message; a message id, null (not sent), or OWNER_DM_HELD (-1: held by the send queue, may still land). */
   ownerDM?: (text: string, declineData: string, approveData?: string) => Promise<number | null>;
   /**
    * Whether a Telegram owner is known (mobile-native-conversations §4.4): with one, the code goes
@@ -966,7 +967,8 @@ export class MobilePairingService {
     this.declineNonces.set(nonce, device.id);
     const canApprove = isPairingApproveEnabled(this.deps.config) && this.approvable(device);
     const codeLine = `Your code to set up a browser with ${this.deps.config.projectName} is ${displayCode(code)}.`;
-    const delivered = await deliverOwnerDM(this, browserApprovalText(this.deps.config.projectName, device, codeLine, canApprove), nonce, canApprove);
+    const dm = await deliverOwnerDM(this, browserApprovalText(this.deps.config.projectName, device, codeLine, canApprove), nonce, canApprove);
+    const delivered = typeof dm === 'number' ? dm : null;
     if (!delivered) { this.confirm.drop(device.id); this.declineNonces.delete(nonce); }
     return !!delivered;
   }
@@ -1268,13 +1270,27 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
       `Phone name: ${device.deviceName ?? '(none given)'}`,
     ]).join('\n\n');
-    const delivered = await deliverOwnerDM(svc, text, nonce, canApprove);
+    const dm = await deliverOwnerDM(svc, text, nonce, canApprove);
+    const delivered = typeof dm === 'number' ? dm : null;
     if (!delivered || !svc.deps.ownerDM) {
       // An owner phone may have approved during the wait (mobile-pairing-approve §3.4): that stands.
       const now = svc.devices.get(device.id);
       if (now?.status === 'active') { res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'active', approval: 'telegram', codeFormat }); return; }
-      svc.confirm.drop(device.id);
+      // The message did not go out within the wait (a held or slow Telegram send), which says nothing
+      // about the owner's private chat, and a held message may still land later (2026-11-14: one did,
+      // and the owner approved from it). When native conversations are on, keep the phone pending:
+      // its Approve/Decline nonce stays live for that late message, and the owner's phones are told so
+      // the owner can approve with Face ID. Nothing new is granted to a dashboard PIN session: on an
+      // agent with a Telegram owner the PIN still never approves a phone (fb-e6b7ee2b-a8c).
+      // Only a slow or held send waits: a definite failure (no private chat, bot blocked) keeps the 409, whose words say how to fix it.
+      if (dm === 'pending' && svc.nativeOn) {
+        featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: owner DM not confirmed, kept pending for a late DM or an owner phone', context: { deviceId: device.id, approval: 'telegram', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
+        svc.notifyOwnerPhones(device);
+        res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat, ...svc.waitingFields(device) });
+        return;
+      }
       svc.declineNonces.delete(nonce);
+      svc.confirm.drop(device.id);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the pending device expires on its own
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: confirmation code not delivered', context: { deviceId: device.id, routeKind: eligible.kind } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
@@ -1290,13 +1306,15 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
  * The owner's private approval message, delivered within 10 s or not at all (shared by phone
  * redeem and browser setup). Resolves to the Telegram message id, or null when not delivered.
  */
-async function deliverOwnerDM(svc: MobilePairingService, text: string, nonce: string, canApprove: boolean): Promise<number | null> {
+async function deliverOwnerDM(svc: MobilePairingService, text: string, nonce: string, canApprove: boolean): Promise<number | null | 'pending'> {
   if (!svc.deps.ownerDM) return null;
   try {
-    return await Promise.race([
+    const r = await Promise.race([
       svc.deps.ownerDM(text, `md:d:${nonce}`, ...(canApprove ? [`md:a:${nonce}`] : [])),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 10_000)),
     ]);
+    // -1: the send queue holds the message and retries it, so it may still land (a slow or held send, not a refusal).
+    return r === -1 ? 'pending' : r;
   } catch { return null; } // @silent-fallback-ok — treated as not delivered: the pending device is removed and the caller gets 409
 }
 

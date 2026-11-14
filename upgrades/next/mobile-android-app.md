@@ -18,3 +18,5 @@ Android phones with the Instar app can now get notifications from me, just like 
 | Phone told whether notifications can arrive | `ready` in the `POST /mobile/device/push` answer |
 | Re-check an Android pause after a fix | `POST /mobile/push/recheck` with `{"provider":"fcm"}` |
 | Android App Links for pairing | instar.sh `/.well-known/assetlinks.json` |
+
+- Pairing no longer fails when the owner's private Telegram message is slow or held (for example during a Telegram send outage). The phone keeps waiting: the message's Approve, Decline and code still work when it arrives late, and the owner can approve from an owner phone instead (fb-e6b7ee2b-a8c).

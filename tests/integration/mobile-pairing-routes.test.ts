@@ -16,7 +16,7 @@ const HOST = 'echo.example.dev';
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-pairing-routes.test.ts' }); });
 
-function setup(opts: { enabled?: boolean; tunnelState?: string; provider?: string; hostname?: string | null; siblings?: MobilePairingDeps['siblings']; foreignPing?: boolean; dmFails?: boolean; lease?: { held: boolean } } = {}) {
+function setup(opts: { enabled?: boolean; tunnelState?: string; provider?: string; hostname?: string | null; siblings?: MobilePairingDeps['siblings']; foreignPing?: boolean; dmFails?: boolean; dmHeld?: boolean; lease?: { held: boolean } } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-int-'));
   dirs.push(dir);
   const config = {
@@ -40,7 +40,7 @@ function setup(opts: { enabled?: boolean; tunnelState?: string; provider?: strin
   const lease = opts.lease ?? { held: true };
   const deps: MobilePairingDeps = {
     config, stateDir: dir, tunnel: () => ({ lifecycleState: lifecycle }), selfMachineId: 'm_self', siblings: opts.siblings, fetchFn,
-    ownerDM: async (text, decline) => { if (opts.dmFails) return null; dms.push({ text, decline }); return 4242; },
+    ownerDM: async (text, decline) => { if (opts.dmFails) return null; if (opts.dmHeld) return -1; dms.push({ text, decline }); return 4242; },
     holdsLease: () => lease.held,
   };
   const svc = new MobilePairingService(deps);
@@ -112,6 +112,30 @@ describe('mobile pairing routes', () => {
     const failing = setup({ dmFails: true });
     const m2 = await mint(failing.app);
     const r = await redeem(failing.app, m2.body.code);
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('approval-unavailable');
+    expect(failing.svc.devices.list()).toHaveLength(0);
+  });
+
+  it('a HELD owner DM keeps the phone pending when native conversations are on (no refusal, no PIN approval)', async () => {
+    const held = setup({ dmHeld: true });
+    held.svc.nativeOn = true;
+    const m = await mint(held.app);
+    const r = await redeem(held.app, m.body.code);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ agentName: 'echo', status: 'pending', approval: 'telegram' });
+    expect(r.body.codePageUrl).toBeUndefined();
+    expect(held.svc.devices.list()).toHaveLength(1);
+    expect(held.svc.devices.list()[0].status).toBe('pending');
+    // The late message's Approve/Decline still work: its nonce was kept.
+    expect([...held.svc.declineNonces.keys()]).toHaveLength(1);
+  });
+
+  it('a DEFINITE owner DM failure still refuses with the actionable 409, even with native conversations on', async () => {
+    const failing = setup({ dmFails: true });
+    failing.svc.nativeOn = true;
+    const m = await mint(failing.app);
+    const r = await redeem(failing.app, m.body.code);
     expect(r.status).toBe(409);
     expect(r.body.error).toBe('approval-unavailable');
     expect(failing.svc.devices.list()).toHaveLength(0);
