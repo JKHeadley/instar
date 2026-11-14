@@ -1,3 +1,7 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
