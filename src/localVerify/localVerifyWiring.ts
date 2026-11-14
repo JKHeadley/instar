@@ -44,6 +44,8 @@ export interface LocalVerifyConfigBlock {
   peer?: { enabled?: boolean };
   /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
   peers?: Array<{ machineId: string; url: string }>;
+  /** macOS: run each verify as an Interactive launchd job so it uses the performance cores (default true). */
+  performanceCores?: boolean;
 }
 
 /** Late-bound hooks: the service is built before the reconciler that consumes these. */
@@ -131,6 +133,17 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
   const seams = buildDefaultServiceSeams({
     repo: opts.repo,
     priorityKey: `${opts.stateDir}:${opts.machineId}`,
+    // Default on (macOS only); `localVerify.performanceCores: false` turns it off.
+    ...(opts.config.performanceCores !== false ? {
+      performanceCores: {
+        stateDir: opts.stateDir,
+        onFallback: (reason: string) => DegradationReporter.getInstance().report({
+          feature: 'LocalVerify.performanceCores', primary: 'run on the performance cores (launchd Interactive job)',
+          fallback: 'plain detached spawn (efficiency cores under a session-started server)', reason,
+          impact: 'verify lanes may run several times slower and hit their deadlines while sessions are busy',
+        }),
+      },
+    } : {}),
     resolveGitHubEnv: () => {
       try { return githubRuntime().env; } catch { return null; } // @silent-fallback-ok — no explicit GitHub identity makes every request refuse as pr-unreadable
     },

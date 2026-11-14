@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "docs-coverage-conversations",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T22:32:38.283Z",
+  "artifactPath": "upgrades/side-effects/docs-coverage-conversations.md",
+  "artifactSha256": "2a1083061cf72ad0295e7f752467ce145e2a73b962068a6da6f655cbc6852cfe",
+  "coveredFiles": [
+    "site/src/content/docs/reference/api.md",
+    "upgrades/next/docs-coverage-conversations.md",
+    "upgrades/side-effects/docs-coverage-conversations.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: explain two existing published job-supervision endpoints and correct current-base coverage evidence. No runtime, permission, configuration, tests or coverage floors changed; a revert removes only prose.",
+  "eli16Path": "upgrades/side-effects/docs-coverage-conversations.md",
+  "sideEffectsPath": "upgrades/side-effects/docs-coverage-conversations.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-opus-docs-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

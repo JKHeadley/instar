@@ -274,8 +274,12 @@ const REASON_TEXT_INVITER: Record<RefusalReason, string> = {
   'owner-required': 'it did not say who owns it, so I refused it; ask them to update their agent and use a new invite',
 };
 
-/** The plain sentence the operator sees for a notice (§11.7). Host-neutral: no buttons, no commands. */
-export function pairingNoticeText(n: PairingNotice): string {
+/**
+ * The plain sentence the operator sees for a notice (§11.7). Host-neutral: no buttons, no commands.
+ * `unpairLine` lets a host put its own "where to unpair" sentence (with a direct link) in the
+ * one notice that sends the operator elsewhere.
+ */
+export function pairingNoticeText(n: PairingNotice, opts: { unpairLine?: string } = {}): string {
   const peer = quoted('peerName' in n ? n.peerName : '');
   switch (n.kind) {
     case 'approved':
@@ -294,7 +298,7 @@ export function pairingNoticeText(n: PairingNotice): string {
         : `An agent that calls itself ${peer} tried to use your invite, and I turned it down: ${REASON_TEXT_INVITER[n.reason]}.${n.told === false ? ' It runs an older version, so I couldn\'t tell it why.' : ' I told it why.'}`;
     case 'finishing':
       return n.auto
-        ? `${peer} accepted your invite. You said it's one of your own agents, so I'm finishing by myself and checking we can talk… If that isn't your agent, unpair it on the dashboard's Threadline tab.`
+        ? `${peer} accepted your invite. You said it's one of your own agents, so I'm finishing by myself and checking we can talk… If that isn't your agent, ${opts.unpairLine ?? 'unpair it on the dashboard\'s Threadline tab.'}`
         : `Finishing — checking we can talk with ${peer}…`;
     case 'finish-received':
       return `${peer} finished its side. Checking we can talk…`;

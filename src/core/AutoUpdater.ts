@@ -29,6 +29,7 @@ import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
 import type { SessionManagerLike, SessionMonitorLike, SessionInfo, RestartHold } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { ProcessIntegrity } from './ProcessIntegrity.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
 import type { UpdateRestartHandshake } from './UpdateRestartHandshake.js';
@@ -283,6 +284,7 @@ export class AutoUpdater {
     // restart, or any path that clears an in-memory timer, must not strand an
     // already-installed update forever. Re-arm from the persisted deadline;
     // an overdue retry runs immediately.
+    this.dropSatisfiedRestartDeferral();
     this.ensureDeferredRestartRetry();
 
     // Then run periodically
@@ -1086,6 +1088,33 @@ export class AutoUpdater {
     if (!(deferral.currentBlockers ?? []).some((b) => b.startsWith('local-verify'))) return;
     if (this.gate.getActiveHolds().length > 0) return;
     this.scheduleDeferredRestartRetry(deferral.targetVersion, RESTART_HOLD_ENDED_RETRY_MS, 'restart hold ended');
+  }
+
+  /**
+   * A restart deferral asks for a restart ONTO `targetVersion`. When this process already runs
+   * that version (or a newer one), the restart it was waiting for has happened: something other
+   * than this updater restarted the server while the deferral waited (a planned restart request,
+   * the supervisor, a crash). Nothing cleared the durable record then, so the next boot resumed
+   * it and restarted the server a second time, pausing Local Verify dispatch until it could
+   * (Studio 2026-11-13: booted onto 1.3.1758 at 19:20:45Z, "durable deferral resumed —
+   * attempting restart for v1.3.1758" at 19:21:31Z).
+   *
+   * Only the version frozen at process boot (ProcessIntegrity) can answer "what is running":
+   * the on-disk version moves the moment an update is installed. Without that record, or with a
+   * version that does not parse, the deferral is kept.
+   */
+  private dropSatisfiedRestartDeferral(): void {
+    const deferral = this.restartDeferral;
+    if (!deferral?.active) return;
+    const running = ProcessIntegrity.getInstance()?.runningVersion;
+    const semver = /^\d+\.\d+\.\d+/;
+    if (!running || !semver.test(running) || !semver.test(deferral.targetVersion)) return;
+    if (isNewerVersion(deferral.targetVersion, running)) return;
+    console.log(
+      `[AutoUpdater] Restart deferral for v${deferral.targetVersion} dropped: this process already runs v${running}`,
+    );
+    this.clearRestartDeferral();
+    this.saveState();
   }
 
   /**

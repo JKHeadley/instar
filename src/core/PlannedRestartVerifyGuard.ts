@@ -38,6 +38,13 @@ export interface PlannedRestartVerifyState {
 
 const deferredMarkerPath = (stateDir: string) => path.join(stateDir, 'state', 'restart-local-verify-deferred.json');
 export const peerHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'peer-hold.json');
+/**
+ * A green run's merge is in progress. `settling` covers the moment between the run child exiting
+ * and the hand-off being offered; `handoff` covers the watcher's merge attempt itself.
+ */
+export const mergeHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'merge-hold.json');
+export const MERGE_SETTLE_RESTART_HOLD_MS = 60_000;
+export const MERGE_HANDOFF_RESTART_HOLD_MS = 10 * 60_000;
 const requestKey = (request: PlannedRestartFlag) => crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
 
 function processExists(pid: number): boolean {
@@ -69,12 +76,14 @@ export function plannedRestartVerifyState(
   if (pendingSinceMs === null || now - pendingSinceMs >= VERIFY_RESTART_HOLD_MS) return fallback;
   const localUntil = localVerifyHoldUntil(stateDir, now, pidExists);
   const peerUntil = peerAttemptHoldUntil(stateDir, now);
-  if (localUntil === null && peerUntil === null) return fallback;
-  // A local child alone keeps its own bound. Once a peer attempt is involved the later bound
-  // wins, and a peer hold never reaches past the request's own three-hour ceiling.
-  const holdUntilMs = peerUntil === null
+  const mergeUntil = mergeHandoffHoldUntil(stateDir, now);
+  const afterRunUntil = peerUntil === null ? mergeUntil : mergeUntil === null ? peerUntil : Math.max(peerUntil, mergeUntil);
+  if (localUntil === null && afterRunUntil === null) return fallback;
+  // A local child alone keeps its own bound. Once a peer attempt or a merge in progress is
+  // involved the later bound wins, and neither reaches past the request's own three-hour ceiling.
+  const holdUntilMs = afterRunUntil === null
     ? localUntil!
-    : Math.min(Math.max(localUntil ?? 0, peerUntil), pendingSinceMs + VERIFY_RESTART_HOLD_MS);
+    : Math.min(Math.max(localUntil ?? 0, afterRunUntil), pendingSinceMs + VERIFY_RESTART_HOLD_MS);
   return { pending: true, pendingSinceMs, hold: true, holdUntilMs };
 }
 
@@ -124,6 +133,29 @@ function peerAttemptHoldUntil(stateDir: string, now: number): number | null {
     if (bound > now && (until === null || bound > until)) until = bound;
   }
   return until;
+}
+
+/**
+ * When a green run's merge in progress stops holding a restart; null = no merge hold. A restart
+ * between "tests passed" and "merged" loses the merge: the hand-off fails while the server stops,
+ * and a restart that loads a changed verifier no longer counts the green record (2026-11-12,
+ * PR 3109). A missing, unreadable, future or malformed marker never defers, and the bound is
+ * short, so a marker left behind by a crash cannot hold a restart for long.
+ */
+function mergeHandoffHoldUntil(stateDir: string, now: number): number | null {
+  let marker: { v?: unknown; phase?: unknown; since?: unknown };
+  try {
+    marker = JSON.parse(fs.readFileSync(mergeHoldPath(stateDir), 'utf8')) as typeof marker;
+  } catch {
+    // @silent-fallback-ok — no readable marker means no merge hold.
+    return null;
+  }
+  if (!marker || typeof marker !== 'object' || marker.v !== 1) return null;
+  if (marker.phase !== 'settling' && marker.phase !== 'handoff') return null;
+  const since = marker.since;
+  if (typeof since !== 'number' || !Number.isFinite(since) || since > now + FUTURE_CLOCK_SKEW_MS) return null;
+  const bound = since + (marker.phase === 'handoff' ? MERGE_HANDOFF_RESTART_HOLD_MS : MERGE_SETTLE_RESTART_HOLD_MS);
+  return bound > now ? bound : null;
 }
 
 /** The pending request's explicit hold bypass (operator force, or the updater's ceiling); false when there is no request. */

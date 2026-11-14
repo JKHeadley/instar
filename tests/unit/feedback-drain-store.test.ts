@@ -30,6 +30,26 @@ describe('FeedbackDrainStore', () => {
 
   afterEach(() => store.close());
 
+  // CMT-1613: the fleet bar reads finished runs from the durable run table, not the last run alone.
+  it('runOutcomes counts finished runs since a time, succeeded and no-op as success, in-flight runs left out', () => {
+    expect(store.runOutcomes(0)).toEqual({ succeeded: 0, finished: 0 });
+    const finishAs = (to: 'succeeded' | 'no-op' | 'degraded' | 'failed' | 'abandoned') => {
+      const run = store.startRun({ ownerHost: 'machine-a', ownerEpoch: 7, leaseMs: 60_000 });
+      store.transitionRun(run.runId, 'accepted', 'running');
+      store.transitionRun(run.runId, 'running', to);
+      now += 1_000;
+    };
+    finishAs('succeeded'); // created at 10_000: before the window below
+    const since = now;
+    finishAs('succeeded');
+    finishAs('no-op');
+    finishAs('degraded');
+    finishAs('abandoned');
+    store.startRun({ ownerHost: 'machine-a', ownerEpoch: 7, leaseMs: 60_000 }); // still accepted
+    expect(store.runOutcomes(since)).toEqual({ succeeded: 2, finished: 4 });
+    expect(store.runOutcomes(0)).toEqual({ succeeded: 3, finished: 5 });
+  });
+
   function authority(action: 'create' | 'replace' | 'revoke' | 'restore' = 'create') {
     return store.mutateAuthority({
       action,

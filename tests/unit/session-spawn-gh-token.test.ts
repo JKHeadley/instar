@@ -183,6 +183,7 @@ describe('spawn-time GH_TOKEN injection (P3b)', () => {
     expect(argv).toContain('200');
     const env = envAssignments(argv);
     expect(env).toContain(`INSTAR_JOB_FAILURE_FILE=${path.join(tmpDir, 'state', 'state', 'job-declared-failures', `${session.tmuxSession}.txt`)}`);
+    expect(env).toContain(`INSTAR_JOB_SKIP_FILE=${path.join(tmpDir, 'state', 'state', 'job-declared-failures', `${session.tmuxSession}.skip.txt`)}`);
     expect(fs.existsSync(path.join(tmpDir, 'state', 'state', 'job-declared-failures'))).toBe(true);
   });
 });

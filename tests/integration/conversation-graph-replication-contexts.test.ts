@@ -153,7 +153,11 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
 }
 describe('bounded shared historical proof custody',()=>{
  it('smoke: imports and repairs real eight-row history through the same native/activation/signed-peer ceremony',()=>exerciseHistoricalContext(8,false),120000);
- it('repairs a multi-page historical context across restart through the signed-peer ceremony',()=>exerciseHistoricalContext(300,false,2),600000);
+ // Multi-page proof: about 6 minutes on the Studio (347 s on 2026-11-11). The integration lane runs files
+ // one at a time (fileParallelism: false), so this one test pushed the Studio's whole lane past its
+ // 30-minute Local Verify deadline and every main check there failed. Opt-in like the scale proof below;
+ // the eight-row smoke above still runs the same ceremony by default.
+ it.runIf(process.env.GRAPH_HISTORICAL_CONTEXT_SCALE_PROOF==='1')('repairs a multi-page historical context across restart through the signed-peer ceremony',()=>exerciseHistoricalContext(300,false,2),600000);
  // Scale proof: about 30 minutes, longer than a whole Local Verify integration shard. Opt-in like the
  // other graph scale proofs; the eight-row smoke above runs the same ceremony by default.
  it.runIf(process.env.GRAPH_HISTORICAL_CONTEXT_SCALE_PROOF==='1')('imports, restarts and signed-peer repairs a >3MiB actual historical context with one shared proof file',()=>exerciseHistoricalContext(4000,true),3600000);

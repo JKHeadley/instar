@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { MainHealth, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
+import { MainHealth, decideMainRearmAfterGreen, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
 import { LocalVerifyService, MAIN_FAIR_SHARE_MS, MAIN_VERIFY_LIMITS, decideFlakyEscalation, decideStart, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import { validateRecord, type LocalVerifyRecord } from '../../../src/localVerify/record.js';
@@ -360,6 +360,32 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.svc.mainHealth().state).toBe('healthy');
   });
 
+  it('after the error retries run out, a green PR run re-arms one main verify (the waiting-line wedge, 2026-11-12)', async () => {
+    const s = svcSetup({ views: { 7: view(7, sha('7')) } });
+    s.svc.noteMainHead(sha('1'));
+    for (let n = 0; n <= MAIN_VERIFY_LIMITS.errorRetries; n++) {
+      await s.finish(n, ok(mainRecord(sha('1'), 'error')));
+      s.advance(MAIN_VERIFY_LIMITS.errorBackoffMs * (n + 1));
+      await s.svc.tick();
+    }
+    const exhausted = s.spawned.length;
+    expect(exhausted).toBe(MAIN_VERIFY_LIMITS.errorRetries + 1);
+    // main stays unverified long enough to become suspect; nothing re-queues it on its own.
+    s.advance(4 * 60 * MIN); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('main-suspect');
+    expect(s.spawned).toHaveLength(exhausted);
+    // A PR run on this machine goes green: one main verify is queued again.
+    await s.svc.request(7, { explicit: true });
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(exhausted + 1);
+    expect(s.inputOf(exhausted).pr).toBe(7);
+    await s.finish(exhausted, ok(record({ pr: 7, headSha: sha('7'), baseSha: sha('b') })));
+    await s.svc.tick();
+    expect(s.auditLines().some((l) => l.event === 'main-retry-rearmed-after-green' && l.afterPr === 7)).toBe(true);
+    expect(s.spawned).toHaveLength(exhausted + 2);
+    expect(s.inputOf(exhausted + 1)).toMatchObject({ kind: 'main', headSha: sha('1') });
+  });
+
   it('a main record never enters the PR index or journal', async () => {
     const s = svcSetup();
     s.svc.noteMainHead(sha('1'));
@@ -563,5 +589,19 @@ describe('green main record feeds PR isolation; repeat flakes escalate', () => {
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(8)], escalatedAt: null }, now)).toEqual({ escalate: false, count: 2 }); // outside the window
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(2) }, now).escalate).toBe(false);
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(8) }, now).escalate).toBe(true);
+  });
+});
+
+describe('decideMainRearmAfterGreen', () => {
+  const base = { priorRetries: MAIN_VERIFY_LIMITS.errorRetries + 1, mainPending: false, mainInFlight: false, healthState: 'main-suspect' as const };
+  it('re-arms only once the error retries are spent, with nothing main queued or running', () => {
+    expect(decideMainRearmAfterGreen(base)).toBe(true);
+    expect(decideMainRearmAfterGreen({ ...base, priorRetries: MAIN_VERIFY_LIMITS.errorRetries })).toBe(false);
+    expect(decideMainRearmAfterGreen({ ...base, mainPending: true })).toBe(false);
+    expect(decideMainRearmAfterGreen({ ...base, mainInFlight: true })).toBe(false);
+  });
+  it('never for a healthy main (nothing to do) or a red one (the red-main hold owns it)', () => {
+    expect(decideMainRearmAfterGreen({ ...base, healthState: 'healthy' })).toBe(false);
+    expect(decideMainRearmAfterGreen({ ...base, healthState: 'main-red' })).toBe(false);
   });
 });

@@ -31,7 +31,9 @@ export const LOCAL_VERIFY_DEADLINES: Readonly<LocalVerifyDeadlines> = Object.fre
   fetchMs: 5 * MIN,
   npmCiMs: 10 * MIN,
   buildLintMs: 15 * MIN,
-  lanes: Object.freeze({ unit: 20 * MIN, integration: 30 * MIN, e2e: 45 * MIN }),
+  // Hang limits, not speed targets: about twice the measured normal (2026-11-12: the unit lane
+  // had grown to ~19 of its 20 min and the limit was killing healthy runs).
+  lanes: Object.freeze({ unit: 40 * MIN, integration: 45 * MIN, e2e: 60 * MIN }),
   totalActiveMs: 120 * MIN,
   gitStepMs: 2 * MIN,
 });

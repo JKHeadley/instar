@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain ES module from the dashboard
-import { buildAutoRepair, configurePayload, resultWords, confirmation } from '../../dashboard/console/auto-repair-model.js';
+import { buildAutoRepair, configurePayload, resultWords, resultLines, confirmation } from '../../dashboard/console/auto-repair-model.js';
 
 // spec one-tap-unattended-repair §6 — the Accounts page section model.
 const cfg = (machineId: string, mode: string, ids: string[], pool: string[] | null, extra: Record<string, unknown> = {}) => ({
@@ -98,5 +98,22 @@ describe('auto-repair section model', () => {
     expect(confirmation({ revision: 'r2', activationPending: false }, { revision: 'r2' })).toBe('confirmed');
     expect(confirmation({ revision: 'r2', activationPending: true }, { revision: 'r2' })).toBe('pending');
     expect(confirmation({ revision: 'r3', activationPending: false }, { revision: 'r2' })).toBe('superseded');
+  });
+});
+
+// fb-8c4c5d83-759: the result sheet ran every machine's result together in one paragraph.
+describe('auto-repair result lines', () => {
+  it('gives one line per machine, in the server order, with its name and outcome', () => {
+    const rows = [{ machineId: 'm1', name: 'Studio' }, { machineId: 'm2', name: 'Laptop' }];
+    const lines = resultLines([
+      { machineId: 'm2', ok: false, error: 'target-unreachable' },
+      { machineId: 'm1', ok: true, mode: 'unattended' },
+      { machineId: 'm9', ok: false, error: 'stale-config' },
+    ], rows);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toEqual({ ok: false, name: 'Laptop', words: resultWords({ ok: false, error: 'target-unreachable' }) });
+    expect(lines[1]).toMatchObject({ ok: true, name: 'Studio' });
+    expect(lines[2].name).toBe('A machine');
+    expect(resultLines(null, rows)).toEqual([]);
   });
 });

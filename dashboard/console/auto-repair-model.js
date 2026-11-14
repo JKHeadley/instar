@@ -46,6 +46,19 @@ export function resultWords(r) {
   }
 }
 
+/**
+ * The result sheet after a tap: one line per machine, in the server's order (this is what keeps
+ * the results from running together into one paragraph). `rows` gives each machine its name.
+ */
+export function resultLines(results, rows) {
+  const names = new Map((Array.isArray(rows) ? rows : []).map((r) => [r.machineId, r.name]));
+  return (Array.isArray(results) ? results : []).map((x) => ({
+    ok: Boolean(x && x.ok),
+    name: names.get(x && x.machineId) || 'A machine',
+    words: resultWords(x),
+  }));
+}
+
 function emailsOf(list) {
   return Array.isArray(list) ? list.filter((e) => typeof e === 'string' && e.includes('@')) : null;
 }

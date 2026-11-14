@@ -12,7 +12,7 @@ import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } fro
  * no JSONL discovery, no machine coordination.
  */
 
-import { readJobDeclaredFailure } from './jobDeclaredFailure.js';
+import { readJobDeclaredFailure, readJobDeclaredSkip } from './jobDeclaredFailure.js';
 import { jobGateReceiptPath, readJobGateReceipt, consumeJobGateReceipt, restoreJobGateReceipt } from './JobGateReceipt.js';
 import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
@@ -257,6 +257,10 @@ export class JobScheduler {
   private catchUpAlertsInFlight = new Set<string>();
   private silenceCheckTimer: ReturnType<typeof setInterval> | null = null;
   private silenceAlertsInFlight = new Set<string>();
+  /** Jobs whose gate just answered "nothing to do" (a clean exit 1): a healthy check, not lost coverage. */
+  private gateNoWork = new Set<string>();
+  /** Origin for operator links (tunnel URL when up); null = the public link is not ready yet. */
+  private operatorLinkOrigin: (() => string | null) | null = null;
   private silenceAlertEpoch = new Map<string, number>();
 
   /** Retry delays in ms: 1min, 5min, 15min, 30min, 1h, 2h */
@@ -3509,6 +3513,9 @@ export class JobScheduler {
     // §B). Read synchronously, before any await, from the file named by this
     // run's unique tmux session.
     const declaredFailure = readJobDeclaredFailure(this.stateDir, tmuxSession);
+    // A declared skip (the job could not do its work for a reason outside it, such as its own
+    // server too busy to answer) is recorded `skipped`. Always consumed; a failure wins.
+    const declaredSkip = readJobDeclaredSkip(this.stateDir, tmuxSession);
 
     // Update job state with completion result
     const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
@@ -3516,6 +3523,7 @@ export class JobScheduler {
       : session.status === 'failed' || session.status === 'killed'
         ? `Session ${session.status} (${session.name})${session.endedReason === 'codex-rate-limited' ? ' — Codex 429 Too Many Requests' : ''}${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
         : `Declared failure: ${declaredFailure}`;
+    const skipped = !failed && declaredSkip !== null;
 
     // Capture session output FIRST — needed for both history and notifications
     let output = '';
@@ -3529,9 +3537,11 @@ export class JobScheduler {
     const jobState: JobState = {
       slug: job.slug,
       lastRun: existingState?.lastRun ?? new Date().toISOString(),
-      lastResult: failed ? 'failure' : 'success',
-      lastError: failureError,
-      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
+      lastResult: failed ? 'failure' : skipped ? 'skipped' : 'success',
+      // A skip keeps the last error, as the script runner does (§5.2).
+      lastError: skipped ? existingState?.lastError : failureError,
+      // A skip is neither: it leaves the failure streak where it was.
+      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : skipped ? (existingState?.consecutiveFailures ?? 0) : 0,
       nextScheduled: this.getNextRun(job.slug),
     };
     this.state.saveJobState(jobState);
@@ -3545,8 +3555,8 @@ export class JobScheduler {
     if (runId) {
       this.runHistory.recordCompletion({
         runId,
-        result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
-        error: failureError,
+        result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : skipped ? 'skipped' : 'success'),
+        error: failureError ?? (skipped ? `Declared skip: ${declaredSkip}` : undefined),
         outputSummary: output ? output.slice(-1000) : undefined,
         ...(emailOutboxId ? { emailOutboxId } : {}),
       });
@@ -3567,13 +3577,14 @@ export class JobScheduler {
         // session jobs. The transcript holds what the job actually did — hand
         // the audit that, falling back to the pane capture when unavailable.
         let auditOutput = output;
-        if (this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
+        // A skipped run did no work to audit (same as the script runner).
+        if (!skipped && this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
           const evidence = readJobTranscriptEvidence(
             findClaudeJobTranscript(session.claudeSessionId, session.cwd ?? path.dirname(this.stateDir)),
           );
           if (evidence) auditOutput = output.trim() ? `${evidence}\n[pane tail]\n${output}` : evidence;
         }
-        this.jevAudit?.capture({
+        if (!skipped) this.jevAudit?.capture({
           runId,
           slug: job.slug,
           goal: job.description ?? job.slug,
@@ -3598,7 +3609,9 @@ export class JobScheduler {
       this.state.delete('active-job');
     }
 
-    if (!failed) {
+    // A skip is not a success: it must not clear a pending failure alert or feed the
+    // silence watch (a server busy for days would otherwise look healthy).
+    if (!failed && !skipped) {
       this.clearFailureAlertState(job.slug);
       this.noteContinuitySuccess(job.slug);
     }
@@ -3706,7 +3719,7 @@ export class JobScheduler {
       : `${duration}s`;
 
     let summary = `*Job Complete: ${job.name}*\n`;
-    summary += `Status: ${failed ? 'Failed' : 'Done'}`;
+    summary += `Status: ${failed ? 'Failed' : skipped ? 'Skipped' : 'Done'}`;
     if (deathCause && deathCause !== 'unknown') summary += ` (${deathCause})`;
     summary += '\n';
     if (duration > 0) summary += `Duration: ${durationStr}\n`;
@@ -4014,7 +4027,11 @@ export class JobScheduler {
     const exitCode = errShape?.signal ?? errShape?.code ?? errShape?.status ?? null;
     const gateCmd = job.gate!.length > 200 ? job.gate!.slice(0, 200) + '…' : job.gate!;
 
-    this.skipLedger.recordSkip(job.slug, 'gate');
+    // A gate that ran and exited 1 answered "nothing to do this time" (the shell's false), which is
+    // how polling jobs work. Only an error, a timeout or another exit code means the check is broken.
+    const answeredNoWork = !errShape?.signal && errShape?.code === 1;
+    if (answeredNoWork) this.gateNoWork.add(job.slug);
+    try { this.skipLedger.recordSkip(job.slug, 'gate'); } finally { this.gateNoWork.delete(job.slug); }
     if (!this.state.readOnly) this.state.appendEvent({
       type: 'job_gate_skip',
       summary: `Job "${job.slug}" skipped — gate returned exit ${exitCode} after ${maxAttempts} attempts${stderr ? `: ${stderr.slice(0, 200)}` : ''}`,
@@ -4180,8 +4197,12 @@ export class JobScheduler {
     }
   }
 
-  /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
+  /**
+   * A broken gate or a machine pin is evidence of lost job coverage. A gate that answered "nothing to
+   * do" is the job working as designed (a poller with an empty inbox), so it counts as a healthy check.
+   */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
+    if (reason === 'gate' && this.gateNoWork.has(slug)) { this.noteContinuitySuccess(slug); return; }
     if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'machine-too-small' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
@@ -4194,7 +4215,11 @@ export class JobScheduler {
     if (count >= 3) {
       const detail = reason === 'machine-too-small'
         ? `${count} scheduled runs were skipped because this job is marked heavy and the machine running jobs is too small for heavy work. To run it, name this machine in the job's machines list, or let a larger machine take over running jobs`
-        : `${count} scheduled attempts were skipped (${reason})`;
+        : reason === 'gate'
+          ? `the check that decides whether it should run has failed ${count} times in a row (an error or a timeout, not "nothing to do"), so it has not run`
+          : reason === 'machine-scope'
+            ? `${count} scheduled runs were skipped because the job is set to run only on another machine, and this machine is the one running jobs`
+            : `${count} scheduled runs were skipped because its definition changed while it was due`;
       this.raiseContinuityAlert(job, detail, key);
     }
   }
@@ -4209,6 +4234,7 @@ export class JobScheduler {
       this.state.delete(key);
     } catch (error) {
       // Alert bookkeeping must never turn a completed job into a failed run.
+      // @silent-fallback-ok — logged; the next success retries the close
       console.error(`[scheduler] Could not close silence alert for ${slug}:`, error);
     }
   }
@@ -4222,7 +4248,16 @@ export class JobScheduler {
     if (previous?.lastAttemptAt && now - Date.parse(previous.lastAttemptAt) < 60 * 60_000) return;
     if (this.silenceAlertsInFlight.has(key)) return;
     const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
-    const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
+    // Every warning carries a direct path to act (operator rule): the job's own page in the console,
+    // which shows its runs, skips and a Run now button. Wait for the public link rather than send none.
+    let link: string | null = null;
+    if (this.operatorLinkOrigin) {
+      let origin: string | null = null;
+      try { origin = this.operatorLinkOrigin(); } catch { /* @silent-fallback-ok — an unreadable origin waits for the next five-minute check */ origin = null; }
+      if (!origin) return;
+      link = `${origin}/dashboard/console/#/work/schedule?job=${encodeURIComponent(job.slug)}`;
+    }
+    const message = `Scheduled job "${job.name}" is not running: ${detail}.${link ? `\nOpen the job (its runs, skips and Run now): ${link}` : ''}`;
     const send = this.telegram && topicId
       ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(topicId!, message))
       : !this.telegram && this.messenger
@@ -4249,6 +4284,11 @@ export class JobScheduler {
     }).finally(() => this.silenceAlertsInFlight.delete(key));
   }
 
+  /** Where operator links point (the tunnel's public URL when up). Return null while it is not ready. */
+  setOperatorLinkOrigin(resolve: () => string | null): void {
+    this.operatorLinkOrigin = resolve;
+  }
+
   /** Check every enabled job, including machine-pinned jobs with no local cron task. */
   private checkSilentJobs(): void {
     if (!this.running || this.state.readOnly || this.paused) return;
@@ -4259,7 +4299,7 @@ export class JobScheduler {
       // Keep silence alerts focused on jobs that stopped being attempted.
       if (this.state.get(this.failureAlertStateKey(job.slug))) continue;
       if (!this.isJobScopedToThisMachine(job)) {
-        this.raiseContinuityAlert(job, 'this machine holds the scheduler but the job is pinned elsewhere', `job-silence-${job.slug}`);
+        this.raiseContinuityAlert(job, 'it is set to run only on another machine, and this machine is the one running jobs', `job-silence-${job.slug}`);
         continue;
       }
       const state = this.state.getJobState(job.slug);
@@ -4285,7 +4325,7 @@ export class JobScheduler {
         const intervalMs = next[1].getTime() - next[0].getTime();
         const graceMs = Math.max(5 * 60_000, Math.min(intervalMs * 0.5, 60 * 60_000));
         if (now > next[0].getTime() + graceMs) {
-          this.raiseContinuityAlert(job, `no successful completion after its scheduled time`, `job-silence-${job.slug}`);
+          this.raiseContinuityAlert(job, `it has not finished a run since ${new Date(last).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}, and it was due again by now`, `job-silence-${job.slug}`);
         }
       } catch (error) {
         console.error(`[scheduler] Could not check silence for ${job.slug}:`, error);

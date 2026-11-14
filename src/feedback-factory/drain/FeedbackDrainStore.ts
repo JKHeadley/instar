@@ -1058,6 +1058,19 @@ export class FeedbackDrainStore {
     };
   }
 
+  /**
+   * Finished drain runs created since `sinceMs`, from the durable run table (it survives
+   * restarts, unlike any in-memory counter). `succeeded` counts `succeeded` and `no-op`;
+   * `degraded`, `failed` and `abandoned` count against it. Runs still in flight are left out.
+   */
+  runOutcomes(sinceMs: number): { succeeded: number; finished: number } {
+    const row = this.db.prepare(`SELECT
+        SUM(CASE WHEN state IN ('succeeded','no-op') THEN 1 ELSE 0 END) ok,
+        COUNT(*) total
+      FROM drain_runs WHERE created_at>=? AND state NOT IN ('accepted','running')`).get(sinceMs) as { ok: number | null; total: number };
+    return { succeeded: Number(row.ok ?? 0), finished: Number(row.total ?? 0) };
+  }
+
   mutateAuthority(input: Omit<AuthorityRecord, 'generation' | 'revoked'> & { action: 'create' | 'replace' | 'revoke' | 'restore'; operatorDecisionRef: string }): AuthorityRecord {
     if (!input.operatorDecisionRef.trim()) throw new Error('operatorDecisionRef is required');
     for (const [name, value, max] of [

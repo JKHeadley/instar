@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "lv-restore-keeps-fresh-base",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T19:46:22.966Z",
+  "artifactPath": "upgrades/side-effects/lv-restore-keeps-fresh-base.md",
+  "artifactSha256": "07ffca4499ffaeff2100f0775c4e0b9c51eed5db3a98b4b21fafa2c3b23377ee",
+  "coveredFiles": [
+    "docs/specs/lv-restore-keeps-fresh-base.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-restore-keeps-fresh-base.md",
+    "upgrades/side-effects/lv-restore-keeps-fresh-base.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Restore now feeds the existing pre-start base refresh instead of using a field the service documents as stale; no gate or format change; revert undoes it",
+  "eli16Path": "docs/specs/lv-restore-keeps-fresh-base.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-restore-keeps-fresh-base.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

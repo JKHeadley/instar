@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "backup-snapshot-off-main-thread",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T14:10:51.197Z",
+  "artifactPath": "upgrades/side-effects/backup-snapshot-off-main-thread.md",
+  "artifactSha256": "12ed5ec397ebe8c01e8dd01f880291cc9e4936ce6d5c021d5d54735ad52f7e0a",
+  "coveredFiles": [
+    "docs/specs/backup-snapshot-off-main-thread.eli16.md",
+    "src/core/BackupManager.ts",
+    "upgrades/side-effects/backup-snapshot-off-main-thread.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only follow-up: marks two new leftover-sweep catch blocks with their reasons so the silent-fallback scanner stays at its baseline; no behaviour change.",
+  "eli16Path": "docs/specs/backup-snapshot-off-main-thread.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backup-snapshot-off-main-thread.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

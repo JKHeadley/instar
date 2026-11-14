@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "codex-rollout-test-shared-archive",
+  "sessionId": "e4a36ea2-d62d-43fe-9740-b8654a0fda13",
+  "timestamp": "2026-11-13T00:03:35.277Z",
+  "artifactPath": "upgrades/side-effects/codex-rollout-test-shared-archive.md",
+  "artifactSha256": "f1df42a4a478f316f819f2cbb89bc24533cf07b6cb58c2936ac6256ef4506f60",
+  "coveredFiles": [
+    "docs/specs/codex-rollout-test-shared-archive.eli16.md",
+    "tests/unit/codexRolloutLookup-bounded.test.ts",
+    "upgrades/next/codex-rollout-test-shared-archive.md",
+    "upgrades/side-effects/codex-rollout-test-shared-archive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: one unit test file shares a fixture; no product code; a revert restores it exactly.",
+  "eli16Path": "docs/specs/codex-rollout-test-shared-archive.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-rollout-test-shared-archive.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

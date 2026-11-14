@@ -50,7 +50,25 @@ export function listModel(data, view = 'overview') {
     hasMore: Boolean(data.nextCursor) || (view === 'overview' && normalized.length > 5),
     nextCursor: typeof data.nextCursor === 'string' && data.nextCursor ? data.nextCursor : null,
     revision: data.revision, asOf: data.asOf, sync: syncWords(data), canCorrect: data.capabilities?.ownerCorrections === true,
+    // The Chief of Staff conversation: the Overview's top row, every effort under it.
+    root: view === 'overview' && data.root ? itemModel(data.root) : null,
   };
+}
+
+/** GET /conversation-graph/suggestions → the cards to show, or { ok:false } when malformed. */
+export function suggestionsModel(data) {
+  if (!data || !Array.isArray(data.items) || !['ready', 'building', 'unavailable'].includes(data.state)) return { ok: false };
+  const items = [];
+  for (const raw of data.items) {
+    if (!raw || typeof raw.id !== 'string' || !/^sg-[0-9a-f]{20}$/.test(raw.id) || typeof raw.title !== 'string' || !Array.isArray(raw.members)) return { ok: false };
+    const members = raw.members.map((m) => {
+      const key = encodeNodeRef(m?.ref);
+      return key && m.ref.kind === 'conversation' && typeof m.title === 'string' ? { ref: m.ref, key, title: m.title.trim() || 'Conversation' } : null;
+    });
+    if (members.some((m) => m === null) || members.length < 2) return { ok: false };
+    items.push({ id: raw.id, title: raw.title.trim(), reason: typeof raw.reason === 'string' ? raw.reason : '', members, accepting: raw.accepting === true });
+  }
+  return { ok: true, state: data.state, builtAt: typeof data.builtAt === 'string' ? data.builtAt : null, failure: data.failure || null, items };
 }
 
 export function nodeModel(data) {

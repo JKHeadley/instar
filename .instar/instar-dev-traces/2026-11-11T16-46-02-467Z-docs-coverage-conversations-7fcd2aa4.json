@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "docs-coverage-conversations",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T16:46:02.467Z",
+  "artifactPath": "upgrades/side-effects/docs-coverage-conversations.md",
+  "artifactSha256": "1cda8529bb2de130148ef5e60b8f488c4262d4f31ae82e94d49ea189592005a1",
+  "coveredFiles": [
+    "site/astro.config.mjs",
+    "site/src/content/docs/architecture/conversations-custody.md",
+    "site/src/content/docs/architecture/conversations-recovery-privacy.md",
+    "upgrades/next/docs-coverage-conversations.md",
+    "upgrades/side-effects/docs-coverage-conversations.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Developer documentation and two website sidebar links only. Reversible reference content repairs the actual unchanged main documentation gate; no installed agent runtime, authority, permissions, data or migration changes. One independent native Opus review; membership/degradation wording findings corrected and actual site build plus unchanged coverage check pass.",
+  "eli16Path": "upgrades/side-effects/docs-coverage-conversations.md",
+  "sideEffectsPath": "upgrades/side-effects/docs-coverage-conversations.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "native-opus",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

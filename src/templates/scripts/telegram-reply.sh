@@ -644,10 +644,15 @@ d=json.load(sys.stdin)
 print(d.get("outcome") or "")
 print(d.get("detail") or "")
 ids=d.get("messageIds") or []
-print(",".join(str(i) for i in ids))' 2>/dev/null)
+print(",".join(str(i) for i in ids))
+print("yes" if d.get("safeToResend") is True else "no")' 2>/dev/null)
     VERDICT=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '1p')
     VERDICT_DETAIL=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '2p')
     VERDICT_IDS=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '3p')
+    VERDICT_SAFE=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '4p')
+    # Only `safeToResend: true` permits a resend. A not-delivered reply that
+    # was ended on purpose (safeToResend false) must never be sent again.
+    [ "$VERDICT" = "not-delivered" ] && [ "$VERDICT_SAFE" != "yes" ] && VERDICT="ended-on-purpose"
     [ -z "$HELD_MSG_ID" ] && HELD_MSG_ID="$VERDICT_IDS"
   fi
   [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "accepted-unrecorded" ] && VERDICT="delivered"
@@ -671,6 +676,11 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
       echo "  It is safe to send it again." >&2
       exit 1
       ;;
+    ended-on-purpose)
+      echo "NOT SENT — this message was ended on purpose and will not be sent (operation ${HELD_OP:-unknown}). Do NOT resend it." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      exit 1
+      ;;
     refused-attempt)
       echo "NOT DELIVERED — Telegram refused this attempt (${HELD_REASON:-unknown}, operation ${HELD_OP:-unknown})." >&2
       echo "  The server may still retry it, so check before sending it again." >&2
@@ -690,7 +700,7 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
       [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
       echo "  Absence from the conversation is not proof of non-delivery." >&2
       echo "$CHECK_LINE" >&2
-      echo "  Resend only if that check answers \"not-delivered\"." >&2
+      echo "  Resend only if that check answers \"safeToResend\": true." >&2
       echo "AMBIGUOUS (HTTP 409 held): outcome unknown — do not resend; check the operation outcome"
       exit 0
       ;;

@@ -1095,7 +1095,9 @@ export class OriginStoreBackend {
     return { sequence: row.sequence, record: storedRecord, ...(recovery ? { recovery } : {}), ...(verification ? { acceptanceVerification: JSON.parse(verification.evidence_json) } : {}), ...(diagnostic ? { diagnostic: {
       ...diagnostic, state: diagnostic.state === 'pending' && diagnostic.createdAt + 30_000 < Date.now() ? 'unavailable' : diagnostic.state,
     } } : {}), operation: op ? { operationId: op.operation_id, preparedAt: op.prepared_at, deadlineAt: op.deadline_at, maxAttempts: op.max_attempts, state: op.state,
-      ...(op.hold_reason ? { holdReason: op.hold_reason, holdDetail: op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : null } : {}) } : null,
+      ...(op.hold_reason ? { holdReason: op.hold_reason, holdDetail: op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : null }
+        // native-conversation-base §3b — a superseded row always names its successor, with or without a hold reason.
+        : op.state === 'superseded' && op.hold_detail_json ? { holdDetail: JSON.parse(op.hold_detail_json) as Record<string, unknown> } : {}) } : null,
       children: children.map(child => ({ childId: child.child_id, deliveryId: child.delivery_id, destinationJson: child.destination_json, generation: child.generation, state: child.state, attempts: this.entry(child.delivery_id)?.attempts ?? 0 })),
       attempts: attempts.map(a => ({ attemptId: a.attempt_id, childId: a.child_id, materializationId: a.materialization_id, ownerBootId: a.owner_boot_id,
         ...(this.db.prepare('SELECT reason,next_attempt_at nextAttemptAt FROM telegram_origin_outcome_details WHERE attempt_id=?').get(a.attempt_id) ?? {}),

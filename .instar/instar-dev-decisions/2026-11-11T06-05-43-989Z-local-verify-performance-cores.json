@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-11T06:05:43.989Z",
+  "slug": "local-verify-performance-cores",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 216,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/launchdSpawn.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/serviceSeams.ts"
+    ],
+    "addedLines": 216,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

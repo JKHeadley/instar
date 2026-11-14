@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-store-deadline-test-default",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-14T06:01:55.551Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-store-deadline-test-default.md",
+  "artifactSha256": "3d2967e997d026e79bd2b714ac85fb1dad7625759b9c8d3416eac3fbab334bbe",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-store-deadline-test-default.eli16.md",
+    "src/messaging/telegram-origin/OriginStageDeadlines.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "tests/e2e/telegram-origin-transient-config-read.test.ts",
+    "tests/helpers/telegramOriginStore.ts",
+    "tests/unit/telegram-origin/origin-store-request-default.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/telegram-origin-store-deadline-test-default.md",
+    "upgrades/side-effects/telegram-origin-store-deadline-test-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-harness default plus one widened e2e wait; production deadline and hold logic unchanged; revert undoes it",
+  "eli16Path": "docs/specs/telegram-origin-store-deadline-test-default.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-store-deadline-test-default.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
