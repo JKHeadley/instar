@@ -239,19 +239,19 @@ export function escapeSlackLabel(value: string): string {
  */
 export function slackOriginFooter(agentName: string, evidence: MessageOriginEvidence, display: OriginDisplaySettings): string {
   if (!display.enabled || (!display.machine && !display.harness && !display.model)) return '';
+  // A field that cannot be known is left out, never shown as "unknown" (same rule as the Telegram footer).
   const label = (e: OriginEvidence, preferred?: string | null): string | null => {
-    if (e.status === 'not-applicable') return null;
-    if (e.value === null || e.status === 'unknown') return 'unknown';
+    if (e.status === 'not-applicable' || e.value === null || e.status === 'unknown') return null;
     const v = preferred ?? e.value;
     return e.status === 'configured' ? `${v} (configured)` : v;
   };
   const parts = [agentName];
-  if (display.machine) parts.push(label(evidence.machine) === 'unknown' ? 'unknown machine' : label(evidence.machine) ?? 'unknown machine');
+  if (display.machine) { const m = label(evidence.machine); if (m) parts.push(m); }
   if (display.harness) {
     const h = label(evidence.harness, evidence.harness.value ? HARNESS_NAMES[evidence.harness.value] ?? evidence.harnessName : null);
-    if (h) parts.push(h === 'unknown' ? 'unknown harness' : h);
+    if (h) parts.push(h);
   }
-  if (display.model) { const m = label(evidence.model); if (m) parts.push(m === 'unknown' ? 'unknown model' : m); }
+  if (display.model) { const m = label(evidence.model); if (m) parts.push(m); }
   if (parts.some((p) => !safeText(p, 160))) return '';
   return `_${parts.map(escapeSlackLabel).join(' · ')}_`;
 }

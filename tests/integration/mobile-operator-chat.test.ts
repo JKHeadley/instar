@@ -34,7 +34,7 @@ afterAll(() => {
 
 interface Spies { routed: Array<{ content: string; metadata: Record<string, unknown>; userId: string }>; logged: Array<Record<string, unknown>>; mirrors: Array<{ text: string; opts: Record<string, unknown> }>; killed: string[]; bound: unknown[] }
 
-function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill' } = {}) {
+function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill'; owner?: 'configured' | 'verified-only' | 'none' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mchat-'));
   dirs.push(dir);
   const spies: Spies = { routed: [], logged: [], mirrors: [], killed: [], bound: [] };
@@ -52,7 +52,8 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined },
     topicOperatorStore: { setAuthenticatedOperator: (...a: unknown[]) => { spies.bound.push(a); } },
     telegram: {
-      getOwnerUserId: () => OWNER,
+      getOwnerUserId: () => ((opts.owner ?? 'configured') === 'configured' ? OWNER : undefined),
+      getVerifiedOwner: () => ((opts.owner ?? 'configured') === 'none' ? undefined : OWNER),
       getTopicHistory: () => opts.history ?? [],
       getAllTopicMappings: () => [{ topicId: TOPIC, topicName: 'Instar App', sessionName: 'sess-a' }],
       isAuthorizedSender: () => true,
@@ -145,6 +146,16 @@ describe('mobile operator chat', () => {
     expect(c.spies.mirrors[0]!.opts).toMatchObject({ operatorMirror: true, skipStallClear: true });
     expect(c.spies.bound).toHaveLength(0); // never binds the topic operator
     expect(fs.existsSync(path.join(c.dir, 'serve-progress.json'))).toBe(false);
+  });
+
+  it('speaks as the one verified operator when no owner is configured (an agent set up without ownerUserId)', async () => {
+    const c = setup({ owner: 'verified-only' });
+    const r = await chat(c, { text: 'what does this warning mean?', requestId: rid() });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ok: true, outcome: 'delivered' });
+    expect(c.spies.routed[0]!.userId).toBe(String(OWNER));
+    const none = setup({ owner: 'none' });
+    expect((await chat(none, { text: 'x', requestId: rid() })).body.error).toBe('chat-unavailable');
   });
 
   it('a retried requestId gets the stored answer and is delivered once; a different payload is refused', async () => {

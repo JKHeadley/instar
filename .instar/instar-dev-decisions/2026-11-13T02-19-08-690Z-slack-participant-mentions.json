@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-13T02:19:08.690Z",
+  "slug": "slack-participant-mentions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 209,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/messaging/slack/SlackMrkdwnFormatter.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 192,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
