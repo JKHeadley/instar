@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Expected Capacity Enforcement Is an Outcome, Not a Degradation*
+
 /** Mechanically enumerable outcomes for a declared bounded-storage contract. */
 export type CapacityEnforcementResult<T> =
   | { kind: 'within-budget'; value: T; originalBytes: number; storedBytes: number; capBytes: number }
