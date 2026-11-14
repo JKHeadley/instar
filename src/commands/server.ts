@@ -1,4 +1,7 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
+import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
+import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { buildContextLayers, contextLayersEnabled, CONTEXT_LAYERS_FEATURE_ID, type LayerEmitter } from '../monitoring/contextLayers/contextLayersBoot.js';
 import { observeRecoveryPeer } from '../recovery/RecoveryPoolHealth.js';
@@ -2616,6 +2619,7 @@ function wireTelegramCallbacks(
  * the new typed pipeline contracts. The types enforce that sender identity,
  * topic context, and message content are all present and accounted for.
  */
+
 function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
   return {
     id: msg.id,
@@ -2627,10 +2631,8 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
     topicId: (msg.metadata?.messageThreadId as number) ?? 1,
     topicName,
     content: msg.content,
-    type: msg.content.startsWith('[voice]') ? 'voice'
-      : msg.content.startsWith('[image:') ? 'photo'
-      : msg.content.startsWith('[document:') ? 'document'
-      : 'text',
+    // native-conversation-base §3c: the type comes from the structured field, never from text.
+    type: messageTypeOf(Array.isArray(msg.metadata?.media) ? msg.metadata!.media as InboundMediaRef[] : null, msg.content),
     timestamp: msg.receivedAt,
   };
 }
@@ -2915,6 +2917,13 @@ export function wireTelegramRouting(
     if (!topicId) return;
 
     const text = msg.content;
+    // native-conversation-base §3c: a file travels as `media[]`; `text` carries only the path-free
+    // sentence and the person's text, escaped. The session's own file lines are built from the field
+    // on the machine that serves the session, never read out of text.
+    const inboundMedia = Array.isArray(msg.metadata?.media) ? (msg.metadata!.media as InboundMediaLocal[]) : null;
+    // The local form (with this machine's own download path) stays in process and in this machine's
+    // queue; every send to another machine strips it to ids (SessionRouter, the spawn hop).
+    const sessionTextFor = (): Promise<string> => buildTelegramSessionText(topicId, text, inboundMedia, resolveInboundTelegramMessageId(msg));
 
     // Resolve user profile for context injection (Gap 8)
     // An inbound the lifeline-secret gate accepted WITHOUT proof of the
@@ -3264,7 +3273,7 @@ export function wireTelegramRouting(
             const ord = _inboundQueue.enqueueLive({
               sessionKey: String(topicId),
               messageId: String(msg.id),
-              payload: text,
+              payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
             }, 'ordering-behind-queued');
@@ -3281,7 +3290,7 @@ export function wireTelegramRouting(
         const outcome = await _sessionRouter.route({
           sessionKey: String(topicId),
           messageId: String(msg.id),
-          payload: text,
+          payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
           ...(_routingOnly ? { routingOnly: true } : {}),
           topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
           // §2.2: sender identity captured at ingress, persisted with custody.
@@ -3401,7 +3410,7 @@ export function wireTelegramRouting(
             const q = _inboundQueue.enqueueLive({
               sessionKey: String(topicId),
               messageId: String(msg.id),
-              payload: text,
+              payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'spawn-admission-refusal');
@@ -3440,8 +3449,9 @@ export function wireTelegramRouting(
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
+        const sessionText = await sessionTextFor();
         const injected = sessionManager.injectTelegramMessage(
-          targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
+          targetSession, topicId, sessionText, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
           parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
           // W21: the ONE place the re-delivery flag exists in-process. Set by
           // `reinjectStuck` (the no-loss recovery re-injection) and read here so
@@ -3513,7 +3523,7 @@ export function wireTelegramRouting(
           if (_topicResumeMap) {
             _topicResumeMap.remove(topicId);
           }
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
+          sessionTextFor().then((sessionText) => respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, sessionText, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true }))
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
@@ -3544,7 +3554,7 @@ export function wireTelegramRouting(
               impact: 'The notice may be held or uncertain; no replacement send is authorized',
             });
           });
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
+          sessionTextFor().then((sessionText) => respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, sessionText, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true }))
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
@@ -3596,7 +3606,7 @@ export function wireTelegramRouting(
         // reinvent). _sessionRouter is non-null here (forwardAvailable gated it).
         if (_sessionRouter) {
           _sessionRouter
-            .route({ sessionKey: String(topicId), messageId: String(msg.id), payload: text })
+            .route({ sessionKey: String(topicId), messageId: String(msg.id), payload: text, ...(inboundMedia ? { media: inboundMedia } : {}) })
             .catch((err) => console.error(`[g3-spawn-gate] forward route failed for topic ${topicId}:`, err));
         }
         return;
@@ -3633,7 +3643,7 @@ export function wireTelegramRouting(
             } else movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING;
           } catch { movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING; }
         }
-        return spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined, movedContext);
+        return spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, await sessionTextFor(), topicMemory, resolvedUser ?? undefined, movedContext);
       })().then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
         confirmLocalSessionPoolClaim();
@@ -3660,7 +3670,7 @@ export function wireTelegramRouting(
             const q = _inboundQueue.enqueueLive({
               sessionKey: String(topicId),
               messageId: String(msg.id),
-              payload: text,
+              payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'work-admission-refusal');
@@ -3756,6 +3766,7 @@ export function wireTelegramRouting(
       sessionKey: dmsg.sessionKey,
       messageId: dmsg.messageId,
       payload: dmsg.payload,
+      ...(dmsg.media ? { media: dmsg.media } : {}),
       ...(drainRoutingOnly ? { routingOnly: true } : {}),
       topicMetadata: (dmsg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined)
         ?? (_pinPlacementMetadata ? _pinPlacementMetadata(dmsg.sessionKey) : _topicPinStore?.asTopicMetadata(dmsg.sessionKey)), // U4.1 §2D
@@ -3790,11 +3801,14 @@ export function wireTelegramRouting(
       // Direct inject: receipt FIRST (the §3.4 handover point), stop re-check,
       // then the inject. A caught inject error AFTER the receipt is
       // local-delivered+injectError (never silent loss).
+      // native-conversation-base §3c item 4: the file lines are resolved before the receipt, with no
+      // network wait, so receipt-then-inject stays adjacent.
+      const drainSessionText = await buildTelegramSessionText(topicId, dmsg.payload, dmsg.media ?? null, dmsg.messageId);
       if (!handover.commitReceipt()) return { kind: 'handover-refused' };
       if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
       try {
         const injected = sessionManager.injectTelegramMessage(
-          targetSession, topicId, dmsg.payload, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
+          targetSession, topicId, drainSessionText, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
           Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
         );
         if (injected === false) {
@@ -3830,6 +3844,10 @@ export function wireTelegramRouting(
     if (spawningTopics.has(topicId)) {
       return { kind: 'un-routable', reason: 'spawn-in-progress' };
     }
+    // §3c: the bootstrap carries the file lines built here, once, before the receipt; the
+    // pending-inject ledger stores this output, whose paths are local to this machine.
+    const drainSpawnText = await buildTelegramSessionText(topicId, dmsg.payload, dmsg.media ?? null, dmsg.messageId);
+    if (spawningTopics.has(topicId)) return { kind: 'un-routable', reason: 'spawn-in-progress' };
     if (!handover.commitReceipt()) return { kind: 'handover-refused' };
     if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
     const _spawnTokD = spawningTopics.add(topicId);
@@ -3837,9 +3855,9 @@ export function wireTelegramRouting(
       if (targetSession) {
         // Dead session — respawn, AWAITED through the spawn+inject (the PIS
         // record is written inside, AFTER our receipt — the round-7 order pin).
-        await respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, dmsg.payload, topicMemory, resolvedUser ?? undefined);
+        await respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, drainSpawnText, topicMemory, resolvedUser ?? undefined);
       } else {
-        const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, dmsg.payload, topicMemory, resolvedUser ?? undefined);
+        const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, drainSpawnText, topicMemory, resolvedUser ?? undefined);
         telegram.registerTopicSession(topicId, newSessionName, topicName);
       }
       return { kind: 'local-delivered' };
@@ -4107,33 +4125,9 @@ function wireIMessageRouting(
     // files via the Read tool. Attachments are auto-hardlinked into
     // .instar/imessage/attachments/ by the user-context sync script, avoiding
     // the need for FDA on node.
-    let text = msg.content;
-    const attachments = (msg.metadata?.attachments as Array<{
-      filename?: string;
-      mimeType?: string;
-      path?: string;
-    }>) ?? [];
-    if (attachments.length > 0) {
-      // If text has no placeholders but has attachments, append refs at the end.
-      // Otherwise replace each \uFFFC with an [image:/path] tag sequentially.
-      const tags = attachments.map((a) => {
-        if (!a.path) return '[attachment path unavailable]';
-        // For images/PDFs/etc., use [image:...] so Claude's existing handling applies.
-        // The path will be the hardlinked one if the sync script ran; otherwise
-        // the TCC-protected original (which Claude may or may not be able to read).
-        const isImage = (a.mimeType || '').startsWith('image/');
-        const kind = isImage ? 'image' : 'file';
-        return `[${kind}:${a.path}]`;
-      });
-      if (text.includes('\uFFFC')) {
-        // Replace each placeholder with the next tag
-        let i = 0;
-        text = text.replace(/\uFFFC/g, () => tags[i++] ?? '[image:missing]');
-      } else {
-        // No inline placeholders — append tags at the end
-        text = (text ? text + ' ' : '') + tags.join(' ');
-      }
-    }
+    // native-conversation-base §3c / FD-12: a path tag the person typed is inert before the adapter
+    // inlines its own attachment tags (see inlineIMessageAttachments).
+    const text = inlineIMessageAttachments(msg.content, (msg.metadata?.attachments as IMessageAttachmentRef[] | undefined) ?? []);
 
     const senderName = (msg.metadata?.senderName as string) ?? undefined;
     const senderNorm = sender.toLowerCase();
@@ -7726,6 +7720,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             description: input.publicTransportAlternative ? 'Two distinct browser builds failed. An independently authorized MTProto client is an alternative to repairing the browser integration.' : undefined }, { hubOnly: true });
         },
       }).catch(error => { releaseOriginLeaseRenewal(); throw error; });
+      // A peer's reply this machine delivered as lease holder joins this machine's
+      // topic history, so an "acceptance unknown" answer at the peer can no longer
+      // leave the reply in no history at all (topic 141868, 2026-11-11).
+      {
+        const { forwardedDeliveryHistoryTopic } = await import('../messaging/telegram-origin/ForwardedDeliveryHistory.js');
+        const { recoveredForwardProvenance } = await import('../messaging/telegram-origin/OriginForwardToHolder.js');
+        telegramOriginBoot.runtime.options.onForwardedDelivered = row => {
+          if (!telegram) return;
+          const chats = originTelegramConfig.config as { chatId?: unknown; issuesChatId?: unknown };
+          const historyTopicId = forwardedDeliveryHistoryTopic(row, { mainChatId: chats.chatId, issuesChatId: chats.issuesChatId });
+          if (historyTopicId === null) return;
+          telegram.recordRecoveredOutbound(historyTopicId, row.text, row.messageId, recoveredForwardProvenance(null, row.producerKind));
+        };
+      }
       const enrollment = await sessionManager.enrollExistingOriginSessions();
       if (enrollment.unavailable.length) console.warn('[telegram-origin] existing sessions require origin enrollment', enrollment.unavailable);
     }
@@ -28665,6 +28673,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
                 ? String((cmd.payload as { text: unknown }).text)
                 : undefined;
+            // native-conversation-base §3c: files arrive by attachment id in `media`; the session's
+            // file lines are built here, on the machine that serves it. A forward from an older
+            // poller has no `media` at all and is resolved by its own platform message id.
+            const fwdMedia = parseInboundMediaField((cmd as { media?: unknown }).media);
+            const sessionTextP = (): Promise<string> => buildTelegramSessionText(topicId, text ?? '', fwdMedia, cmd.messageId);
             // This machine judges a team person for itself: it may know of a removal the sender did not.
             const teamSender = (cmd as { senderEnvelope?: { personKey?: string } }).senderEnvelope?.personKey;
             if (teamSender && !_teamMayDeliver?.(teamSender, `telegram:${topicId}`)) {
@@ -28695,17 +28708,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Loss window 6 (Durable Inbound Message Queue §3.4 remote):
                 // flip the receipt's injected marker on success; a CAUGHT
                 // failure reports at error time — never silent.
-                try {
-                  const injected = sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                void sessionTextP().then((sessionText) => {
+                  const injected = sessionManager.injectTelegramMessage(existing, topicId, sessionText, tg.getTopicName?.(topicId) ?? undefined);
                   if (injected === false) {
                     _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'inject-returned-false');
                     return;
                   }
                   tg.trackMessageInjection(topicId, existing, text);
                   _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
-                } catch (err) {
+                }).catch((err) => {
                   _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
-                }
+                });
               }
               return;
             }
@@ -28740,7 +28753,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }, topicId);
                 // A bounded pull cannot prove that no older messages lived on a prior machine.
                 const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
-                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
+                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text ? await sessionTextP() : text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
                   tg.registerTopicSession(topicId, name, spawnName);
@@ -28774,7 +28787,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (bound && sessionManager.isSessionAlive(bound)) {
                   if (!text) return;
                   try {
-                    const injected = sessionManager.injectTelegramMessage(bound, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                    const injected = sessionManager.injectTelegramMessage(bound, topicId, await sessionTextP(), tg.getTopicName?.(topicId) ?? undefined);
                     if (injected !== false) {
                       tg.trackMessageInjection(topicId, bound, text);
                       _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
@@ -29865,7 +29878,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                 gather, judge, protocol,
                 mirrorInitiativeStatus: (id, status) => { try { (initiativeTracker as unknown as { update?: (id: string, patch: Record<string, unknown>) => unknown }).update?.(id, { status }); } catch { /* @silent-fallback-ok: the binding is the authority; the mirror retries next tick (§1.2) */ } },
                 sendNote: sendToCos, sendImmediate: sendToCos,
-                statusUrl: () => `http://localhost:${config.port}/chief-of-staff`,
+                // §3 links open on a phone: the public tunnel origin into the console's Chief of Staff page, never localhost.
+                // No public link yet (no tunnel, or not up) ⇒ no link; the note still names every project.
+                statusUrl: () => { const o = operatorLinkOrigin(); return o.kind === 'public' ? `${o.origin}/dashboard/console/#/work/chats` : null; },
+                projectUrl: (conversationKey) => { const o = operatorLinkOrigin(); return o.kind === 'public' && /^(app|telegram|slack):[A-Za-z0-9-]+$/.test(conversationKey) ? `${o.origin}/dashboard/console/#/work/chats?c=${encodeURIComponent(conversationKey)}` : null; },
+                // A real short name: the linked initiative's title, else the conversation's own name, else (null) the loop derives one from the goal.
+                projectTitle: (p) => {
+                  const fromInitiative = p.initiativeId ? initiativeTracker.get(p.initiativeId)?.title : undefined;
+                  if (typeof fromInitiative === 'string' && fromInitiative.trim()) return fromInitiative;
+                  const t = /^telegram:(\d+)$/.exec(p.conversationKey);
+                  const fromTopic = t ? telegram?.getTopicName(Number(t[1])) ?? null : null;
+                  return typeof fromTopic === 'string' && fromTopic.trim() ? fromTopic : null;
+                },
                 localHour: (ms) => { try { return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: (config as { timezone?: string }).timezone || undefined }).format(new Date(ms))) % 24; } catch { /* @silent-fallback-ok: an invalid timezone falls back to the machine's local hour */ return new Date(ms).getHours(); } },
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
@@ -31166,7 +31190,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // senderEnvelope (Durable Inbound Message Queue §2.2): a drained
               // forward carries the STORED sender frame; an old peer ignores
               // the extra field (version skew named in the spec).
-              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}), ...(env.row != null ? { row: env.row } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
+              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}), ...(env.row != null ? { row: env.row } : {}), ...(env.media ? { media: toWireMedia(env.media) } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -31181,7 +31205,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             spawnOnMachine: async (machineId, msg, ownershipEpoch, row) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}), ...(row != null ? { row } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}), ...(row != null ? { row } : {}), ...(msg.media ? { media: toWireMedia(msg.media) } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -31209,6 +31233,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 payload: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload ?? ''),
                 senderEnvelope: msg.senderEnvelope ?? null,
                 topicMetadata: msg.topicMetadata,
+                // native-conversation-base §3c: the files ride with the row (never a path).
+                media: msg.media ?? null,
               }, reason);
               return out.result;
             },

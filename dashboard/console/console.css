@@ -1239,6 +1239,12 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .conversation-row { text-decoration: none; min-height: 48px; }
 .conversation-row .row-main { min-width: 0; }
 .conversation-row .row-title { overflow-wrap: anywhere; }
+.conversation-root-row .row-title { font-weight: 600; }
+.conversation-under-root { margin-left: 16px; padding-left: 12px; border-left: 2px solid var(--accent); }
+.conversation-suggestion { margin: 12px 0; min-width: 0; }
+.conversation-suggestion .row-title { font-weight: 600; }
+.conversation-suggestion-members { margin: 8px 0; padding-left: 20px; overflow-wrap: anywhere; }
+.conversation-suggestion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .conversation-details { margin-top: 24px; }
 .conversation-details summary { cursor: pointer; padding: 12px 0; }
 .conversation-correction-sheet .sheet-title,

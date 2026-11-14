@@ -34,6 +34,11 @@ export interface FeatureEvidenceInput {
   gradedBy?: string;
   rung?: string;
   flagState?: string;
+  /**
+   * Who or what this event is about (a sender, a topic), top level so a ladder
+   * metric can count distinct values with `dedupe: "subject"`. Bounded, scrubbed.
+   */
+  subject?: string;
   context?: FeatureEvidenceContext;
 }
 
@@ -94,6 +99,7 @@ export class FeatureEvidenceLog {
         ...(input.gradedBy ? { gradedBy: clean(input.gradedBy).slice(0, 64) } : {}),
         ...(input.rung ? { rung: input.rung.slice(0, 32) } : {}),
         ...(input.flagState ? { flagState: input.flagState.slice(0, 32) } : {}),
+        ...(input.subject ? { subject: clean(input.subject).slice(0, 96) } : {}),
       };
       const context = cleanContext(input.context);
       if (context) row.context = context;

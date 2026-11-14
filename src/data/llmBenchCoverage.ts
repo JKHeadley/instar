@@ -134,6 +134,9 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   SelfKnowledgeTree: { pending: 'wave-3' },
   TreeTriage: { pending: 'wave-3' },
   TopicSummarizer: { pending: 'wave-3' },
+  // Conversations suggestion step (conversation-graph-suggestions.md): advice only, graded by the owner's
+  // Accept/Reject on every card until a bench task lands.
+  ConversationGraphSuggestions: { pending: 'wave-3' },
   ContextualEvaluator: { pending: 'wave-3' },
   RelationshipManager: { pending: 'wave-3' },
   StandardsConformanceReviewer: { pending: 'wave-3' },
@@ -244,6 +247,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   SelfKnowledgeTree: true,
   TreeTriage: true,
   TopicSummarizer: true,
+  ConversationGraphSuggestions: true, // conversation titles (owner/agent-authored) and topic summaries
   ContextualEvaluator: true,
   RelationshipManager: true,
   StandardsConformanceReviewer: true,
@@ -440,6 +444,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   SelfKnowledgeTree: false, // extracts self-knowledge
   TreeTriage: false, // triages tree fragments
   TopicSummarizer: false, // summarizes a topic
+  ConversationGraphSuggestions: false, // proposes groupings; judges no claim
   ContextualEvaluator: false, // evaluates context relevance
   RelationshipManager: false, // extracts relationship facts
   StandardsConformanceReviewer: false, // reviews artifact-vs-standard conformance, not a session completion claim
@@ -620,6 +625,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
     false:
       'produces a free-text topic summary — the prose is the product; there is no closed vocabulary the prompt teaches and a parser gates on',
   },
+  ConversationGraphSuggestions: { contractTest: 'tests/unit/conversation-graph-suggestions.test.ts' },
   ContextualEvaluator: {
     false:
       'evaluates context relevance into content — no closed taught verdict vocabulary that a parser accepts a promised form of',
@@ -916,6 +922,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   SelfKnowledgeTree: exposed(EXPOSED_MODEL_TOOL), // extracts over transcripts
   TreeTriage: exposed(EXPOSED_TOOL),
   TopicSummarizer: exposed(EXPOSED_USER_MODEL),
+  ConversationGraphSuggestions: exposed(EXPOSED_USER_MODEL), // owner titles + model-written topic summaries; output is validated groupings only
   ContextualEvaluator: exposed(EXPOSED_USER_MODEL),
   RelationshipManager: exposed(EXPOSED_USER_MODEL), // extracts relationship facts from conversation
   StandardsConformanceReviewer: exposed(EXPOSED_TOOL), // artifact-vs-standard over files
