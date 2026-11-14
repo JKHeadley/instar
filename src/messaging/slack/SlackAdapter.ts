@@ -42,7 +42,7 @@ import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
 import { conversationsPointer } from '../shared/conversationGraphChat.js';
 import type { SlackChannelKind, SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId } from './sanitize.js';
-import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
+import { applySlackFormatter, candidateUserMentionIds, SLACK_SEND_METHODS, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
 import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
@@ -53,6 +53,12 @@ import { ORIGIN_OUTAGE_NOTICE_TEXT, RECORDED_SLACK_METHODS, SlackOriginLedger, S
 export const SLACK_STALL_CONFIRM_PROMPT_ID = 'slack-stall-confirm-v1';
 
 const RING_BUFFER_CAPACITY = 50;
+/** How long a conversation's member list is reused before it is read again. */
+const MEMBER_CACHE_TTL_MS = 5 * 60 * 1000;
+/** After a failed member read, mentions in that conversation stay literal this long before another try. */
+const MEMBER_LOOKUP_RETRY_MS = 60 * 1000;
+/** The participant lookup never holds a send longer than this; on timeout every mention stays literal. */
+const PARTICIPANT_LOOKUP_TIMEOUT_MS = 2500;
 const SLACK_MAX_TEXT_LENGTH = 4000;
 const AUTO_ARCHIVE_DAYS = 7;
 const LOG_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000; // Daily
@@ -235,7 +241,11 @@ export class SlackAdapter implements MessagingAdapter {
   private pendingPrompts: Map<string, PendingPrompt> = new Map();
   private seenMessageTs: Set<string> = new Set();
   private seenMessageTsCleanupTimer: ReturnType<typeof setInterval> | null = null;
-  private userCache: Map<string, { name: string; fetchedAt: number }> = new Map();
+  private userCache: Map<string, { name: string; fetchedAt: number; isBot?: boolean; deleted?: boolean }> = new Map();
+  /** Member ids of a conversation (conversations.members), for participant mentions. */
+  private memberCache: Map<string, { members: Set<string>; fetchedAt: number }> = new Map();
+  private memberLookupFailedAt: Map<string, number> = new Map();
+  private memberLookupsInFlight: Map<string, Promise<Set<string>>> = new Map();
   /** Channel names from conversations.info, for titles (fb-4db533fa-9d9). */
   private channelNameCache: Map<string, { name: string; fetchedAt: number }> = new Map();
   /** What kind of conversation a channel id is (from conversations.info), so titles can show '#' only for channels. */
@@ -560,6 +570,8 @@ export class SlackAdapter implements MessagingAdapter {
   private async formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
     // The origin footer is already-escaped mrkdwn: appended after formatting, never re-processed.
     const { _originFooter: footer, ...rest } = params;
+    const participants = await this.participantMentionIds(method, rest);
+    if (participants.length) rest._participantUserIds = participants;
     const { outgoingParams } = applySlackFormatter(method, rest, this.config.formatMode);
     if (typeof footer === 'string' && footer && typeof outgoingParams.text === 'string') {
       outgoingParams.text = `${outgoingParams.text}\n${footer}`;
@@ -579,6 +591,103 @@ export class SlackAdapter implements MessagingAdapter {
       : typeof result.ts === 'string' ? result.ts : null;
     this.originLedger.completeReceipt(intent, ts);
     return result;
+  }
+
+  /**
+   * The person ids written as `<@U…>` in an outgoing message that are human participants of the
+   * target conversation: a member of the channel or DM, or someone who posted in the thread. Their
+   * mentions are sent active; every other id stays literal (the formatter escapes it). Bots, this
+   * agent itself, deactivated accounts and Slackbot are not participants here (list them with
+   * `nativeReferences` to activate them deliberately). Fails closed: any lookup error or timeout
+   * returns no ids, logs at debug level, and never blocks or fails the send.
+   */
+  private async participantMentionIds(method: string, params: Record<string, unknown>): Promise<string[]> {
+    if (!SLACK_SEND_METHODS.has(method) || typeof params.text !== 'string' || params.blocks !== undefined) return [];
+    if ((params._formatMode ?? this.config.formatMode) === 'legacy-passthrough' || params.mrkdwn === false) return [];
+    const candidates = candidateUserMentionIds(params.text);
+    const channel = typeof params.channel === 'string' ? params.channel : '';
+    if (!candidates.length || !channel) return [];
+    const threadTs = typeof params.thread_ts === 'string' ? params.thread_ts : null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`participant lookup took over ${PARTICIPANT_LOOKUP_TIMEOUT_MS} ms`)), PARTICIPANT_LOOKUP_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      return await Promise.race([this.resolveParticipantMentions(channel, threadTs, candidates), timeout]);
+    } catch (err) {
+      console.debug(`[slack] mentions in ${channel} sent as plain text; participant lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async resolveParticipantMentions(channel: string, threadTs: string | null, candidates: string[]): Promise<string[]> {
+    const present = new Set<string>();
+    if (threadTs) {
+      for (const m of this.getChannelMessages(channel, RING_BUFFER_CAPACITY)) {
+        if (m.user && (m.thread_ts === threadTs || m.ts === threadTs)) present.add(m.user);
+      }
+    }
+    if (candidates.some((id) => !present.has(id))) {
+      for (const id of await this.conversationMembers(channel)) present.add(id);
+    }
+    const checks = await Promise.all(candidates.map(async (id) => {
+      if (!present.has(id) || id === this.botUserId || id === 'USLACKBOT') return null;
+      try {
+        return (await this.isActiveHuman(id)) ? id : null;
+      } catch (err) {
+        console.debug(`[slack] mention of ${id} sent as plain text; users.info failed: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      }
+    }));
+    return checks.filter((id): id is string => id !== null);
+  }
+
+  /** A conversation's member ids, cached for five minutes. Throws when Slack cannot be read. */
+  private async conversationMembers(channel: string): Promise<Set<string>> {
+    const cached = this.memberCache.get(channel);
+    if (cached && Date.now() - cached.fetchedAt < MEMBER_CACHE_TTL_MS) return cached.members;
+    const failedAt = this.memberLookupFailedAt.get(channel);
+    if (failedAt !== undefined && Date.now() - failedAt < MEMBER_LOOKUP_RETRY_MS) {
+      throw new Error('the member list could not be read a moment ago');
+    }
+    // Concurrent sends to an uncached conversation share one read.
+    const inFlight = this.memberLookupsInFlight.get(channel);
+    if (inFlight) return inFlight;
+    const read = this.readConversationMembers(channel).finally(() => this.memberLookupsInFlight.delete(channel));
+    this.memberLookupsInFlight.set(channel, read);
+    return read;
+  }
+
+  private async readConversationMembers(channel: string): Promise<Set<string>> {
+    try {
+      const members = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const result = await this.apiClient.call('conversations.members', { channel, limit: 1000, ...(cursor ? { cursor } : {}) });
+        for (const id of (result.members as string[] | undefined) ?? []) members.add(id);
+        cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+        if (!cursor) break;
+      }
+      this.memberCache.set(channel, { members, fetchedAt: Date.now() });
+      this.memberLookupFailedAt.delete(channel);
+      return members;
+    } catch (err) {
+      this.memberLookupFailedAt.set(channel, Date.now());
+      throw err;
+    }
+  }
+
+  /** True only when users.info says the id is a person (not a bot) with an active account. */
+  private async isActiveHuman(userId: string): Promise<boolean> {
+    let cached = this.userCache.get(userId);
+    if (!cached || cached.isBot === undefined || Date.now() - cached.fetchedAt >= 5 * 60 * 1000) {
+      await this.getUserInfo(userId, { refresh: true });
+      cached = this.userCache.get(userId);
+    }
+    return cached?.isBot === false && cached.deleted !== true;
   }
 
   /** The pre-recorded reachability notice for a conversation whose send was refused (§3). Never throws. */
@@ -960,16 +1069,21 @@ export class SlackAdapter implements MessagingAdapter {
     console.warn(`[slack] could not resolve the ${kind} name of ${id}; showing the id instead: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  async getUserInfo(userId: string): Promise<{ id: string; name: string }> {
+  async getUserInfo(userId: string, opts?: { refresh?: boolean }): Promise<{ id: string; name: string }> {
     const cached = this.userCache.get(userId);
-    if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+    if (!opts?.refresh && cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
       return { id: userId, name: cached.name };
     }
 
     const result = await this.apiClient.call('users.info', { user: userId });
-    const user = result.user as { id: string; real_name?: string; name: string };
+    const user = result.user as { id: string; real_name?: string; name: string; is_bot?: boolean; deleted?: boolean };
     const name = user.real_name || user.name;
-    this.userCache.set(userId, { name, fetchedAt: Date.now() });
+    // is_bot is recorded only when Slack states it, so a partial answer never counts as a person.
+    this.userCache.set(userId, {
+      name, fetchedAt: Date.now(),
+      ...(typeof user.is_bot === 'boolean' ? { isBot: user.is_bot } : {}),
+      deleted: user.deleted === true,
+    });
     return { id: userId, name };
   }
 

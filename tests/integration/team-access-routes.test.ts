@@ -1092,6 +1092,16 @@ describe('team settings for the whole agent (team-switches-agent-wide)', () => {
     expect(e.spy.privacy).toBe(0);
   });
 
+  it('the owner turns files on for every machine with Face ID (the media-off notice\'s one-tap path), and team-access never includes it', async () => {
+    const { e, asked, machines } = await rig();
+    const owner = phone(e);
+    const r = await faceIdSwitch(e, owner, 'files');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ ok: true, setting: 'files', restarting: true, machines });
+    expect(asked).toEqual(['files']);
+    expect((await bearer(e, '/mobile/team/switches/turn-on', { setting: 'files' })).status).toBeGreaterThanOrEqual(401);
+  });
+
   it('one Face ID turns on everything team access needs (team-access), and a team-access signature is not a single-setting one', async () => {
     // Operator 2026-11-09: "it should be one single thing for the whole agent".
     const { e, asked } = await rig();
