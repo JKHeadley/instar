@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// canonical-migration-validator: threadline-inbound-canonical-store@3
+// canonical-migration-validator: threadline-inbound-canonical-store@4
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -26,6 +26,7 @@ describe('canonical-history wiring integrity (F3)', () => {
   const PERSIST_SITES = [
     'src/server/routes.ts',                  // outbound relay-send (local + relay) + inbound relay-agent
     'src/threadline/ThreadlineEndpoints.ts', // inbound POST /threadline/messages/receive (the verified E2E path)
+    'src/threadline/relayIngressHistory.ts', // inbound relay-socket gate-passed (server.ts delegates here)
   ];
 
   it('every message-persisting site calls the recordThreadMessage funnel', () => {
@@ -55,6 +56,42 @@ describe('canonical-history wiring integrity (F3)', () => {
     const endpoints = read('src/threadline/ThreadlineEndpoints.ts');
     expect(routes).toMatch(/direction: 'inbound'/);
     expect(endpoints).toMatch(/direction: 'inbound'/);
+  });
+
+  it('the relay-SOCKET inbound path (server.ts gate-passed handler) records through the funnel via the shared step, after classification and BEFORE the waiter and every routing branch', () => {
+    // The cross-machine relay consumer is the site the original enumeration missed
+    // (Luna 1.3.1725: 8 decrypted inbound rows in the HMAC inbox, 0 in the log).
+    // Behavior of the shared step + factory is proven by the unit, integration and
+    // E2E tiers (relay-ingress-canonical-history*); this pins that server.ts USES them.
+    const server = read('src/commands/server.ts');
+    const step = read('src/threadline/relayIngressHistory.ts');
+    const factory = read('src/threadline/createThreadMessageRecorder.ts');
+    expect(step).toContain('recordThreadMessage(');
+    expect(step).toMatch(/recordThreadMessage.*from '\.\/recordThreadMessage\.js'/s);
+    expect(step).toMatch(/direction: 'inbound'/);
+    expect(server).toMatch(/import \{ classifyRelayIngress, recordGatePassedIngress \} from '\.\.\/threadline\/relayIngressHistory\.js'/);
+    const start = server.indexOf('async function handleGatePassedRelayMessage(');
+    expect(start).toBeGreaterThan(-1);
+    const body = server.slice(start);
+    const cls = body.indexOf('const relayIngress = classifyRelayIngress(msg);');
+    const call = body.indexOf('recordGatePassedIngress(threadMessageRecorder, decision, relayIngress,');
+    const waiter = body.indexOf('waiter.resolve(textContent)');
+    const ackStage = body.indexOf('runRelayAckStage(relayAckDeps, relayAckInput)');
+    const inbox = body.indexOf('listenerManager.appendCanonicalInboxEntry(');
+    expect(cls).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(cls);
+    expect(call).toBeLessThan(waiter);
+    expect(call).toBeLessThan(ackStage);
+    expect(call).toBeLessThan(inbox);
+    // The ack stage reuses the SAME classification (no second inline parse that could drift).
+    expect(body.slice(0, inbox)).toContain('kindedAck: relayIngress.kindedAck,');
+    expect(body.slice(0, inbox)).not.toContain('parseKindedAck(');
+    // The ONE recorder the server builds comes from the shared factory, which backs
+    // over-cap bodies with the real MessageStore and attaches the contact hook.
+    expect(server).toMatch(/const threadMessageRecorder = createThreadMessageRecorder\(\{[\s\S]*?messageStore,[\s\S]*?onContact:[\s\S]*?\}\);/);
+    expect(server).not.toMatch(/new ThreadMessageRecorder\(/);
+    expect(factory).toMatch(/bodyStore: opts\.messageStore/);
+    expect(factory).toMatch(/attachPeerContactHook\(recorder, opts\.onContact\)/);
   });
 
   it('the placeholder hard-`messageCount:0` thread route is DELETED (the second F3 hard-zero source)', () => {
