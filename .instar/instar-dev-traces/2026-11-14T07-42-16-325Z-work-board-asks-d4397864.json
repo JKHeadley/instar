@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-board-asks",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T07:42:16.325Z",
+  "artifactPath": "upgrades/side-effects/work-board-asks.md",
+  "artifactSha256": "31f30460190e2a96741a9d3f5a4763da1daf1399028762219470233d7a758245",
+  "coveredFiles": [
+    "docs/specs/work-board-claude-md-size.eli16.md",
+    "src/scaffold/templates.ts",
+    "upgrades/side-effects/work-board-asks.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves this PR's own CLAUDE.md template text into a reference paragraph to fit the unchanged core budget; text only, a revert fully undoes it.",
+  "eli16Path": "docs/specs/work-board-claude-md-size.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-board-asks.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

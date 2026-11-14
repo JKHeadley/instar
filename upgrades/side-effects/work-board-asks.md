@@ -191,3 +191,15 @@ Each of these is a choice inside the spec's words, recorded so a reader can chec
 - Integration: `tests/integration/work-board-routes.test.ts` (production auth middleware, device authenticator, session guard, real pairing service).
 - E2E: `tests/e2e/work-board-alive.test.ts` (real AgentServer, real journal, emitter and stream reader, including a rotation).
 - iPhone screen: commit `97040ec` on branch `work-board-cards` in the app repository on the Mac Studio; app builds for the simulator, 576 unit tests run with 0 failures.
+
+## Addendum (2026-11-13): CLAUDE.md size
+
+Local Verify failed `tests/e2e/claude-md-reference-layout-init-lifecycle.test.ts`: a standalone init
+plus the first migration produced a 80,009-character CLAUDE.md against the 80,000 core budget. Main
+alone measured 79,214 after migration; this PR added about 780 characters to the always-loaded core.
+The detail now lives in a `**Work Board**` paragraph that the layout files under
+`.instar/reference/autonomy-and-commitments.md` (listed in INDEX.md and the capability list). The core
+keeps a shorter registry row and a one-line proactive trigger that still says only a person's tap
+approves a card; the full never-approve sentence is in the reference paragraph. Measured after
+merging main (standalone init, then the migrator): 79,540, i.e. 460 under the budget. The budget is
+unchanged. Rollback: revert the commit.
