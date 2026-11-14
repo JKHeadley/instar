@@ -100,6 +100,10 @@ const OTHER_CAPACITY_ALERT_MS = 30 * 60_000;
 interface SchedulerStatus {
   running: boolean;
   paused: boolean;
+  /** Why the scheduler is paused (set by the pauser), null when not paused. */
+  pauseReason: string | null;
+  /** ISO time the current pause began, null when not paused. */
+  pausedAt: string | null;
   jobCount: number;
   enabledJobs: number;
   queueLength: number;
@@ -211,6 +215,8 @@ export class JobScheduler {
   private promotionCatchUpStore: PromotionCatchUpStore;
   private promotionLeaseProvider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null = null;
   private paused = false;
+  private pauseReason: string | null = null;
+  private pausedAt: string | null = null;
 
   /** Last on-disk drift fingerprint warned for each agentmd job. */
   private bodyDriftWarnings: Map<string, string> = new Map();
@@ -1546,8 +1552,10 @@ export class JobScheduler {
   /**
    * Pause — cron tasks keep ticking but triggers are skipped.
    */
-  pause(): void {
+  pause(reason?: string): void {
+    if (!this.paused) this.pausedAt = new Date().toISOString();
     this.paused = true;
+    this.pauseReason = reason ?? this.pauseReason ?? 'paused';
   }
 
   /**
@@ -1565,6 +1573,8 @@ export class JobScheduler {
    */
   resume(): void {
     this.paused = false;
+    this.pauseReason = null;
+    this.pausedAt = null;
     if (this.failureAlertDeliveryActive) this.activateFailureAlertDelivery();
     this.processQueue();
   }
@@ -1582,6 +1592,8 @@ export class JobScheduler {
     return {
       running: this.running,
       paused: this.paused,
+      pauseReason: this.paused ? this.pauseReason : null,
+      pausedAt: this.paused ? this.pausedAt : null,
       jobCount: this.jobs.length,
       enabledJobs: this.jobs.filter(j => j.enabled).length,
       queueLength: this.queue.length,
