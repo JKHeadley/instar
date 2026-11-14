@@ -100,3 +100,5 @@ An unplanned server restart no longer costs the PR run in flight. The change add
 
 **Reviewer concurred:** yes (round 2). The changes made after its second read (the `isPidAlive` seam and the nits above) are covered by tests and were not re-read.
 
+**Re-read after merging main (2026-11-14).** Main gained PR 3170 in the same file (`mainRunOnCurrentHead` and the unverified-clock rule). The same kind of independent reviewer (read-only, no test run) read the merge result for the interaction only: a `main` run is never adopted (`whyNotAdoptable` returns `not-a-pr-run`), adoption happens only at boot before any start so the new field is still null, and even an adopted `main` run would leave the clock untouched; the branch's changed lines are identical before and after the merge; no completion-path signature changed. "Concur with the review". After the merge: `tsc --noEmit` clean; `tests/unit/localVerify/LocalVerifyService.test.ts` and `mainHealth.test.ts` pass (238).
+

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lv-adopt-running-verify",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-14T23:24:11.818Z",
+  "artifactPath": "upgrades/side-effects/lv-adopt-running-verify.md",
+  "artifactSha256": "3d2e4c6f15926b1193be0aaf58d5a8c3a238a904618ee8f71e271bb2b0fa0f5e",
+  "coveredFiles": [
+    "docs/specs/lv-adopt-running-verify.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-adopt-running-verify.md",
+    "upgrades/side-effects/lv-adopt-running-verify.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace after merging main (PR 3170 touched the same file): adoption of a still-running verify after a restart; no path to green added. Independent second pass concurred on 2026-11-13 and again on the merge result on 2026-11-14.",
+  "eli16Path": "docs/specs/lv-adopt-running-verify.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-adopt-running-verify.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
