@@ -8708,10 +8708,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { InputClassifier } = await import('../monitoring/InputClassifier.js');
       const { AutoApprover } = await import('../core/AutoApprover.js');
 
+      // Jev-first prompt-detect point — SHADOW ONLY (the incumbent decides every case);
+      // same factory pattern as buildCommitmentJevFirst (CommitmentSentinel below).
+      const { buildPromptJevFirst, promptDetectState } = await import('../core/JevFirstPrompt.js');
+      const { gateway: promptJevFirst, getPoint: getPromptJevPoint } = buildPromptJevFirst({
+        stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey,
+        developmentAgent: config.developmentAgent,
+        readConfig: () => liveConfig.get('intelligence.jevFirstPrompt', undefined as never),
+        provenance: () => _judgmentProvenance,
+      });
       const detector = new InputDetector({
         detectionWindowLines: promptGateConfig.detectionWindowLines ?? 50,
         enabled: true,
         intelligence: sharedIntelligence ?? undefined,
+        jevFirst: promptJevFirst,
+        getJevPoint: getPromptJevPoint,
+        jevState: promptDetectState,
       });
       promptDetector = detector;
 

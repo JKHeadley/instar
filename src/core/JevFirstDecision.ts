@@ -25,6 +25,8 @@ export interface JevPoint {
   benchmarkTaskId?: string;
   /** Describes why this incumbent was selected; recorded for every call. */
   fallbackSelection: 'benchmark' | 'incumbent-no-benchmark';
+  /** Why rows from this point cannot yet be graded against an outcome. */
+  gradingGap?: string;
 }
 export interface JevAnswer { model: string; probability: number; ms: number; tokensIn?: number }
 export interface FallbackAnswer { answer: boolean; model: string; ms?: number; tokensIn?: number; tokensOut?: number }
@@ -130,7 +132,7 @@ export class JevFirstDecision {
       component: 'JevFirstDecision', decisionPoint: point.id, promptId: point.promptId,
       context: {
         stateSha256: stateHash, stateBytes: bytes, stage: point.stage, band: point.band,
-        promptVersion: point.promptId, gradingGap: 'no-linked-outcome-for-commitment-prefilter',
+        promptVersion: point.promptId, gradingGap: point.gradingGap ?? 'no-linked-outcome-for-commitment-prefilter',
         jevModel: point.model, jevProbability: jev?.probability ?? null, jevMs: jev?.ms ?? null,
         jevTokensIn: jev?.tokensIn ?? null, fallbackModel: incumbent?.model ?? null,
         fallbackSelection: point.fallbackSelection, benchmarkTaskId: point.benchmarkTaskId ?? null,

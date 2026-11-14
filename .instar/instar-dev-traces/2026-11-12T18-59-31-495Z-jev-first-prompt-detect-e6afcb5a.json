@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "jev-first-prompt-detect",
+  "sessionId": "5bd89d08-ed99-4be1-8e46-2c7071de1da5",
+  "timestamp": "2026-11-12T18:59:31.495Z",
+  "artifactPath": "upgrades/side-effects/jev-first-prompt-detect.md",
+  "artifactSha256": "6f15efae312ab410ab470d4646c5772cd4201ce0754cbe400d401c66a8336354",
+  "coveredFiles": [
+    "docs/specs/jev-first-prompt-detect.eli16.md",
+    "src/commands/server.ts",
+    "src/core/JevFirstDecision.ts",
+    "src/core/JevFirstPrompt.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/data/feature-ladders.json",
+    "src/monitoring/PromptGate.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/decision-quality-alive.test.ts",
+    "tests/integration/jev-first-summary-routes.test.ts",
+    "tests/unit/PromptGate-jevFirst.test.ts",
+    "upgrades/next/jev-first-prompt-detect.md",
+    "upgrades/side-effects/jev-first-prompt-detect.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Shadow-only observation point, dev-gated (off on fleet), stage clamped to shadow in code, live kill switch; a revert or config flip fully undoes it",
+  "eli16Path": "docs/specs/jev-first-prompt-detect.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-prompt-detect.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -86,6 +86,30 @@ export interface InputDetectorConfig {
   enabled: boolean;
   /** LLM provider for intelligent prompt detection (falls back to regex-only if not set) */
   intelligence?: import('../core/types.js').IntelligenceProvider;
+  /**
+   * Shared Jev-first gateway (jev-first-decision-path.md), SHADOW ONLY here:
+   * Jev is asked the frozen blocking-prompt question in parallel with the
+   * incumbent and the row is logged for later grading. The incumbent's
+   * response is always the one PromptGate acts on; a Jev error, timeout or
+   * any gateway failure cannot change what PromptGate does.
+   */
+  jevFirst?: import('../core/JevFirstDecision.js').JevFirstDecision;
+  getJevPoint?: () => import('../core/JevFirstDecision.js').JevPoint;
+  /** Frames the terminal tail as the Jev state (the replay's framing). */
+  jevState?: (terminalTail: string) => string;
+}
+
+/** True when the incumbent's raw response would make PromptGate act on a blocking prompt. */
+export function promptGateResponseIsBlocking(response: string): boolean {
+  const trimmed = response.trim();
+  if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) return false;
+  try {
+    const parsed = JSON.parse(trimmed.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')) as { type?: unknown };
+    return ['plan', 'permission', 'question', 'confirmation', 'selection'].includes(parsed?.type as string);
+  } catch {
+    // @silent-fallback-ok — a pure classifier, not a fallback: a response that is not JSON is not a blocking prompt, the same reading llmDetect gives it.
+    return false;
+  }
 }
 
 // ── ANSI Stripping ─────────────────────────────────────────────────
@@ -690,8 +714,12 @@ If it IS a genuine blocking system prompt, respond with JSON (no markdown fences
 
 When in doubt, respond NO_PROMPT. False positives cause spam.`;
 
+    const incumbentStarted = Date.now();
+    // A synchronous throw must still reach the silent catch below, exactly as
+    // when this call sat inside it.
+    let incumbent: Promise<string>;
     try {
-      const response = await intelligence.evaluate(prompt, {
+      incumbent = Promise.resolve(intelligence.evaluate(prompt, {
         model: 'fast',
         maxTokens: 500,
         temperature: 0,
@@ -702,7 +730,14 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
           optionsPresented: ['no-prompt', 'plan', 'permission', 'question', 'confirmation', 'selection'],
           promptId: PROMPT_GATE_LLM_DETECT_PROMPT_ID,
         },
-      });
+      }));
+    } catch (err) {
+      incumbent = Promise.reject(err);
+    }
+    this.shadowJev(context, incumbent, incumbentStarted);
+
+    try {
+      const response = await incumbent;
 
       const trimmed = response.trim();
       if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) {
@@ -748,6 +783,33 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
       // LLM call failed — silent fallback (regex-only detection continues)
     }
   }
+
+  /**
+   * Shadow-only Jev comparison. Runs beside the incumbent (no added latency),
+   * is never awaited by detection, and swallows every failure: the incumbent
+   * response above is what PromptGate acts on in every case.
+   */
+  private shadowJev(context: string, incumbent: Promise<string>, startedAt: number): void {
+    try {
+      const { jevFirst, getJevPoint } = this.config;
+      if (!jevFirst || !getJevPoint) return;
+      const point = getJevPoint();
+      if (point.stage === 'off') return;
+      const state = this.config.jevState ? this.config.jevState(context) : context;
+      this.lastJevShadow = jevFirst.decide({
+        point: point.stage === 'live' ? { ...point, stage: 'shadow' } : point,
+        state,
+        fallback: () => incumbent.then((response) => ({
+          answer: promptGateResponseIsBlocking(response), model: 'fast', ms: Date.now() - startedAt,
+        })),
+      }).then(() => undefined, () => undefined);
+    } catch {
+      // @silent-fallback-ok — the Jev shadow is observation only; the incumbent decides.
+    }
+  }
+
+  /** Test seam: the latest shadow comparison (always resolves, never rejects). */
+  lastJevShadow: Promise<void> | null = null;
 
   /**
    * Called when input is sent to a session — clears dedup cache
