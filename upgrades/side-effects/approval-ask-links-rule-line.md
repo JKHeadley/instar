@@ -3,7 +3,7 @@
 **Version / slug:** `approval-ask-links-rule-line`
 **Date:** `2026-11-11`
 **Author:** `echo`
-**Second-pass reviewer:** `not required (Tier 1 awareness line); an independent read of the registry change was taken for the Interaction-family audit record`
+**Second-pass reviewer:** `independent reviewer subagent, 2026-11-13 (whole-PR read, concur); an earlier independent read of the registry change is the Interaction-family audit record`
 
 ## Summary of the change
 
@@ -19,7 +19,7 @@ Adds one awareness line to the agent CLAUDE.md: "**Every ask carries its links.*
 
 ## 1. Over-block
 
-No block/allow surface — over-block not applicable. The one thing the migration "rejects" is a hand-added variant paragraph, which it rewrites to the canonical text; that is the requested behaviour (owner asked that variants converge). A variant inside a bullet list (`- **Every ask carries its links…`) is not matched (the regex is anchored at line start) and is left alone; the canonical line is then inserted as well, which is a harmless duplicate in meaning, not a loss.
+No block/allow surface — over-block not applicable. The one thing the migration "rejects" is a hand-added variant paragraph, which it rewrites to the canonical text; that is the intended behaviour, my design choice so every agent converges on one text (the owner's words in topic 141868 ask for the rule, not for this convergence step). A variant inside a bullet list (`- **Every ask carries its links…`) is not matched (the regex is anchored at line start) and is left alone; the canonical line is then inserted as well, which is a harmless duplicate in meaning, not a loss.
 
 ---
 
@@ -100,7 +100,19 @@ The review confirmed the change is awareness-only with no block/allow surface, m
 
 ## Second-pass review (if required)
 
-Not required at this tier. An independent reviewer read the registry clause and the migration helper for the Interaction-family area audit; its findings are recorded in `docs/specs/reports/ask-links-clause-interaction-review-2026-11-11.md`.
+**Reviewer:** independent reviewer subagent (fresh Claude Code session, Opus 5.5), 2026-11-13
+**Independent read of the whole PR diff, this artifact and the migration + test: concur**
+
+The reviewer read `git diff origin/main...HEAD` in full after merging current main, and checked the code rather than this artifact's claims:
+
+- **Template and migrator cannot drift.** `generateClaudeMd` interpolates the exported `ASK_LINKS_CLAUDEMD_SECTION` right before `SURFACE_REFERRAL_CLAUDEMD_SECTION`; the migration writes the same constant. The unit test pins the exact ratified text, the single occurrence and the order.
+- **Migration is idempotent and safe on real files.** `migrateAskLinksParagraph` returns early on the canonical text; it runs after the surface-referral step in `patchClaudeMdContent`, so its insert anchor always exists for a legacy-layout file. A reference-layout agent rebuilds its core from the canonical document, which already holds the line. Run here on a CLAUDE.md built from the template with the line removed: one copy lands in the core, no errors.
+- **Framework shadows.** The marker sits in the `migrateFrameworkShadowCapabilities` list; because `**Sending the operator to a page...` is also a marker and follows the line in CLAUDE.md, the copied slice is exactly the one paragraph (run here on a minimal AGENTS.md: one copy, no neighbouring text pulled in). The marker list puts it after the surface-referral marker, which differs from document order; that only affects the order in a shadow that lacked both, and the test pins it. Cosmetic, not changed.
+- **Registry clause.** The quote and time match Justin's message in topic 141868 (2026-11-12 01:16Z = 2026-11-11 17:16 PST). The clause widens "end-of-run/done" to any message with an ask; the review report records that (F6). His follow-up the same evening chose the awareness route with escalation for repeat misses, which matches "Applied through" naming the helper and ladder as tracked initiatives.
+- **One wording fix applied in this artifact.** Section 1 said the owner asked for variants to converge; no such words of his were found, so it now says it is the author's design choice.
+- **Non-blocking notes.** Only the first variant paragraph is replaced (a second hand variant would stay). The variant's continuation lines stop at headings, list items, tables and bold leads but not at a code fence, numbered list or quote line directly under it; a hand variant written that way is unlikely and the worst case is that line being replaced. Credential asks (F1 in the audit report) remain the owner's call.
+
+No must-fix. Clear to ship; the registry edit still needs the owner's approving review on the final head.
 
 ---
 
