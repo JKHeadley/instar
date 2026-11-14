@@ -144,7 +144,7 @@ export function readTranscriptPage(filePath: string, opts: { before?: number; be
       for (let i = lines.length - 1; i >= 0; i--) {
         if (found.length >= limit) { stoppedAt = lines[i + 1].off; break; }
         let rec: unknown;
-        try { rec = JSON.parse(lines[i].text); } catch { continue; }
+        try { rec = JSON.parse(lines[i].text); } catch { continue; } // @silent-fallback-ok — a line that is not a whole record (a partial write) yields no entries; the next page and the forward read skip it the same way
         const es = extractEntries(rec, lines[i].off, opts.clean, extract);
         for (let j = es.length - 1; j >= 0; j--) found.push(es[j]);
       }

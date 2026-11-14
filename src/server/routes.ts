@@ -12553,8 +12553,8 @@ export function createRoutes(ctx: RouteContext): Router {
       const clean = (t: string) => redactForDevice(t, secrets);
       const page = readTranscriptAnswer(filePath, { ...q, clean, maxBytes: q.row || q.full ? SESSION_TRANSCRIPT_PULL_MAX_BYTES : Number.MAX_SAFE_INTEGER });
       res.json({ ok: true, ...page, conversations });
-    } catch (err) {
-      if (err instanceof RangeError) { res.status(400).json({ error: `That page cannot be read: ${err.message}`, reason: err.message }); return; }
+    } catch (err) { // @silent-fallback-ok — not a fallback: every failure is answered to the caller (400 for a cursor that does not line up, 500 naming the machine for a storage failure)
+      if (err instanceof RangeError) { const reason = operatorError(err, ctx.config.stateDir); res.status(400).json({ error: `That page cannot be read: ${reason}`, reason }); return; }
       res.status(500).json(storageErrorResponse({ error: `Could not read the conversation record: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
     }
   });
@@ -21894,7 +21894,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const msgs = Array.isArray(b.messages) ? (b.messages as Array<Record<string, unknown>>).map((m) => ({ ...m, machine })) : [];
         res.json({ topicId, machine, via: 'signed', messages: isDevice ? stripViewSignatures(msgs) : msgs, rowTruncated: b.rowTruncated });
       } catch (err) {
-        res.status(502).json({ error: `That machine did not answer: ${err instanceof Error ? err.message : String(err)}`, ...asleepEntry(machine, String(err), true) });
+        const reason = operatorError(err, ctx.config.stateDir);
+        res.status(502).json({ error: `That machine did not answer: ${reason}`, ...asleepEntry(machine, reason, true) });
       }
       return;
     }
