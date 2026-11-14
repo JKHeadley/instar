@@ -174,7 +174,7 @@ import {
   LIFELINE_INGRESS_CALLER_HEADER,
   LIFELINE_INGRESS_CALLER_SERVER_SELF,
 } from '../core/LifelineIngressSecret.js';
-import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { configureSyncOpMarker, defaultInflightMarkerReader, flushSyncOpMirror } from '../core/InFlightSyncOpMarker.js';
 import { StateManager, SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
@@ -15159,6 +15159,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const operatorLinkOrigin = createOperatorLinkOriginResolver({
       port: config.port, tunnelConfigured: () => !!tunnel, tunnelUrl: () => tunnel?.url,
     });
+    // Scheduler warnings link to the job's page; they wait for the public link like other notices.
+    scheduler?.setOperatorLinkOrigin(() => { const o = operatorLinkOrigin(); return o.kind === 'pending' ? null : o.origin; });
     if (tunnelEnabled) {
       // Persist tunnel config if it wasn't in config.json yet (existing agents)
       if (!config.tunnel) {
@@ -19665,6 +19667,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // confidence band: do the minimum and return before any recovery cascade.
       if (_tmuxAsyncHotPathWakeGuard) {
         try {
+          flushSyncOpMirror(); // same process as the writer: settle a queued idle write first
           const marker = defaultInflightMarkerReader(config.stateDir)();
           if (marker?.inFlight) {
             console.log(

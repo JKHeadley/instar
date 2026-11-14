@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 /**
  * lint-dev-agent-dark-gate.js — enforces the developmentAgent dark-feature gate
  * standard (standard_development_agent_dark_feature_gate).

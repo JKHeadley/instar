@@ -17,15 +17,15 @@ export const hash = (text: string): string => createHash('sha256').update(text).
  * OriginStore instances, whose every request has its own deadline (`requestTimeoutMs`, 2 s by
  * default). A fixture that passes storage options should also set
  * SLOW_DISK_STORE_REQUEST_TIMEOUT_MS (below); then the 20 s stage budget is the bound. A
- * fixture built through `bootTelegramOrigin` cannot, and for it the effective allowance is
- * about 2 s (8x and 4x the 250 and 500 ms budgets). A sink that REJECTS still fails at once, so
- * tests of real outages keep their meaning.
+ * fixture built through `bootTelegramOrigin` cannot pass one; it gets the suite-wide default
+ * that tests/vitest-setup.ts sets (20 s, `setOriginStoreRequestTimeoutProcessDefault`). A sink
+ * that REJECTS still fails at once, so tests of real outages keep their meaning.
  */
 /**
  * The store's own per-request deadline for fixtures that can set storage options (the maximum
  * the store accepts; production default 2 s). With `allowSlowOriginRecording` it lets a healthy
  * commit take as long as a saturated disk needs. Fixtures built through `bootTelegramOrigin`
- * cannot set it and keep the 2 s request deadline.
+ * cannot set it and get the suite-wide 20 s default instead.
  */
 export const SLOW_DISK_STORE_REQUEST_TIMEOUT_MS = 30_000;
 export function allowSlowOriginRecording(service: { options: { stageDeadlines?: Partial<Record<'storeEvidenceMs' | 'spoolEvidenceMs' | 'peerEvidenceMs' | 'verifiedEvidenceMs' | 'admitMs', number>> } }): void {

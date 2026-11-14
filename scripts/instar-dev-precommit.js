@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Tiered Development*
+//   *Constitutional Traceability — No Unconstitutional Work*
+//   *Capacity Safety — No Unbounded Self-Action*
+//   *Iterative Audit to Convergence*
+//   *Operator-Surface Quality*
+
 /**
  * instar-dev-precommit.js — pre-commit gate enforcing /instar-dev skill usage.
  *
