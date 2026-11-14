@@ -182,10 +182,15 @@ describe('MessagingToneGate — B17 REACH sub-clause', () => {
     expect(getPrompt()).not.toContain('REACH sub-clause');
   });
 
-  it('renders no AGENT REACH section when the errand signal is absent (byte-identical path)', async () => {
+  it('without the errand signal the REACH sub-clause stays out; the reach data goes only to APPROVAL-NOT-ERRAND', async () => {
+    // Since topic 10000002731 the reach DATA also feeds the always-on B17
+    // APPROVAL-NOT-ERRAND sub-clause; the REACH sub-clause itself is still
+    // errand-gated.
     const { provider, getPrompt } = captureProvider({ pass: true, rule: '', issue: '', suggestion: '' });
     await new MessagingToneGate(provider).review('Merged it.', { channel: 'telegram', agentReach: REACH });
-    expect(getPrompt()).not.toContain('=== AGENT REACH');
+    expect(getPrompt()).not.toContain('REACH sub-clause');
+    expect(getPrompt().split('=== AGENT REACH')).toHaveLength(2);
+    expect(getPrompt()).toContain('=== B17 APPROVAL-NOT-ERRAND ===');
   });
 
   it('renders the AGENT REACH section, boundary-quoted, when the errand signal fired', async () => {
