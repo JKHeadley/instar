@@ -25,6 +25,10 @@ The unfinished job had two halves. The first, the 27 files, is done. The second 
 
 So the rule still has an open half, and it needs a date. This change proposes 27 November 2026. The check's own message says a date like this may only be moved by the operator, on purpose. The standards list is a file only Justin can approve changes to, so approving this change is that decision. If he wants a different date, it is one number.
 
+## The review record
+
+Whenever the wording of the standards list changes, the project requires a written review of the part that changed, stored next to it, so the list cannot drift without someone having looked. The first test of this change failed because that record was missing. It is now included: who reviewed the change, the two problems the independent reviewer found (this missing record, and a comment that had landed in the wrong place in two files), and that both are fixed.
+
 ## What could go wrong
 
 The added lines are comments; they change nothing the code does. The risk is a wrong name in a comment, and the check now verifies that every name is a real standard.

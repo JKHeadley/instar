@@ -52,3 +52,17 @@ Not applicable: source comments, a lint and a document; nothing runs per machine
 ## 8. Rollback cost
 
 Revert the commit. The lint chain then fails again on the expired date until it is re-dated.
+
+---
+
+## Second-pass review
+
+**Reviewer:** independent reviewer subagent (general-purpose), read-only, 2026-11-13.
+
+It re-derived the file-to-article mapping and confirmed all 27 headers name only articles whose enforcement field cites that path, spelled as the headings, with none missing; shebangs and `safe-git-allow` markers intact; the lint change only widens acceptance and no passing file relied on a short title; the new registry sentences are true of the diff.
+
+Two concerns raised, both resolved in this change: (1) the Building area audit was stale: `docs/audits/standards-backreference-completion-building-family-2026-11-13.json`, its report under `docs/specs/reports/`, and the ledger entry are added (floor unchanged, 34 of 40); `tests/unit/standards-coverage-ratchet.test.ts` failed the first Local Verify run on exactly this and passes now; (2) the header split a multi-line `safe-git-allow` comment in two scripts: moved below it. Its remaining note (no unit test for the lint's short-title branch) is tracked as CMT-1748.
+
+`node scripts/standards-coverage.mjs --check` now reports only the direction guard for this article, which the operator's approving review clears by design.
+
+**Reviewer concurred:** yes, once the two concerns were resolved.
