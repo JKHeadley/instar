@@ -438,7 +438,7 @@ export class EnrollmentWizard {
     if (!login.expectedEmail || !login.configHome || !this.oracle) return false;
     if (this.completionSweepInFlight.has(login.id)) return false;
     let healthy = false;
-    try { healthy = deps.accountIsHealthy(login) === true; } catch { healthy = false; }
+    try { healthy = deps.accountIsHealthy(login) === true; } catch { healthy = false; /* @silent-fallback-ok: an unreadable health check counts as not signed in, so the login is re-driven as before */ }
     if (!healthy) return false;
     this.completionSweepInFlight.add(login.id);
     try {

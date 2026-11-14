@@ -34,3 +34,5 @@ One identity read replaces an endless stream of sign-in processes. Automation st
 ## What the reader needs to decide
 
 Nothing. This is a narrow fix with a plain revert path.
+
+**Follow-up (2026-11-14):** one existing error check now carries a short note saying why it quietly treats a failed check as "not signed in". Nothing behaves differently.

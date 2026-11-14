@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "stale-followme-login-reissue",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T18:21:08.490Z",
+  "artifactPath": "upgrades/side-effects/stale-followme-login-reissue.md",
+  "artifactSha256": "61e5b9081929d82f6ba1be9b50ddb681ff2e1f0466926fcc44c563d49e253df2",
+  "coveredFiles": [
+    "docs/specs/stale-followme-login-reissue.eli16.md",
+    "src/commands/server.ts",
+    "src/core/EnrollmentWizard.ts",
+    "tests/e2e/subscription-enrollment-lifecycle.test.ts",
+    "tests/unit/enrollment-already-signed-in-server-wiring.test.ts",
+    "tests/unit/enrollment-wizard.test.ts",
+    "upgrades/next/stale-followme-login-reissue.md",
+    "upgrades/side-effects/stale-followme-login-reissue.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds a reason marker comment to one intended catch in the existing narrow enrollment fix; no behaviour change, a revert fully undoes it.",
+  "eli16Path": "docs/specs/stale-followme-login-reissue.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stale-followme-login-reissue.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

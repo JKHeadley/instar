@@ -133,3 +133,7 @@ Narrow, reversible fix to a self-triggered loop that never converged for a login
 - **`defectClass`**: `unbounded-self-action`
 - **`closure`**: `guard`
 - **`guardEvidence`**: `{enforcementType: ratchet, citation: tests/unit/enrollment-wizard.test.ts "expired Claude login, healthy account, slot answers as expected → closed, no new code, loop over", howCaught: "control-loop edge: reissue tick → re-drive → new pending login → next expiry → re-drive. Steady-state bound: for a login whose slot answers as the expected account, the loop now ends after ONE identity read (the test asserts drives=0 and probes stays 1 on the next sweep). Settling brake: completing the login removes it from the expired set, so the trigger input is gone. An account that is not healthy, or a slot that does not answer as the expected account keeps the existing 15-minute TTL cadence (one re-drive per TTL), which is the pre-existing bound for a genuinely needed sign-in."}`
+
+## Follow-up 2026-11-14: fallback marker
+
+`tests/unit/no-silent-fallbacks.test.ts` counted 495 against its baseline of 494: the `healthy = false` catch in `completeIfAlreadySignedIn` had no reason marker. That catch is intended (an unreadable health check counts as not signed in, so the login is re-driven exactly as before this PR), so it now carries `@silent-fallback-ok` with that reason. Comment only; no behaviour change. Main merged in at the same time (clean).
