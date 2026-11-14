@@ -1516,6 +1516,8 @@ export class AgentServer {
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
+    /** native-conversation-any-machine-access §3d: one signed read of a peer — see RouteContext.meshSignedRead. */
+    meshSignedRead?: (machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<import('../core/MeshRpcClient.js').MeshRpcClientResult>;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -6339,6 +6341,7 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      meshSignedRead: options.meshSignedRead ?? null,
       mutualSshHealth: options.mutualSshHealth ?? (() => {
         if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
         const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;

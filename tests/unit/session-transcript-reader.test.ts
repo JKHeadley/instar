@@ -35,8 +35,8 @@ describe('extractEntries', () => {
   });
   it('reads Claude text and tool calls, and skips meta, sidechain and tool results', () => {
     expect(extractEntries(asst('hello'), 7)).toEqual([
-      { offset: 7, role: 'assistant', text: 'hello', at: null },
-      { offset: 7, role: 'tool', text: 'Bash: List files', at: null },
+      { offset: 7, index: 0, role: 'assistant', text: 'hello', at: null },
+      { offset: 7, index: 1, role: 'tool', text: 'Bash: List files', at: null },
     ]);
     expect(extractEntries({ ...user('x', 1), isMeta: true }, 0)).toEqual([]);
     expect(extractEntries({ ...user('x', 1), isSidechain: true }, 0)).toEqual([]);

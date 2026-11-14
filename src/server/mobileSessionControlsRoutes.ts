@@ -521,6 +521,8 @@ export function mountMobileSessionControlsRoutes(router: Router, deps: MobileSes
     const r = await deps.call('GET', `/sessions/${encodeURIComponent(name)}/transcript?${q}&redact=device`);
     const b = rec(r.body);
     if (r.status !== 200 || !Array.isArray(b.entries)) {
+      // A refusal of who may read it (native-conversation-any-machine-access §3d item 2) keeps its fixed sentence.
+      if (r.status === 403 && typeof b.error === 'string') return { status: 403, body: { error: 'history-unavailable', reason: b.error } };
       const reason = b.reason === 'no-transcript' ? 'This session has no conversation record yet.'
         : r.status === 404 ? 'This session has no conversation record here.'
           : `Can't read it: ${couldNotReach(r.status)}.`;

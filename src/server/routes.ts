@@ -174,7 +174,10 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 }
 
 import fs from 'node:fs';
-import { readTranscriptPage } from '../core/SessionTranscriptReader.js';
+import { findSessionTranscriptFile, sessionConversations, readTranscriptAnswer, parseTranscriptQuery, SESSION_TRANSCRIPT_PULL_MAX_BYTES, SESSION_TRANSCRIPT_PULL_TIMEOUT_MS } from '../core/sessionTranscriptPull.js';
+import { resolveTranscriptAudience, TRANSCRIPT_AUDIENCE_SENTENCES, type TranscriptAudienceVerdict } from '../core/transcriptAudience.js';
+import { SignedReadCapability, signedThenBearer, BearerReadRefused } from '../core/poolSignedReads.js';
+import { TOPIC_HISTORY_POOL_MAX_MESSAGES, TOPIC_HISTORY_POOL_TIMEOUT_MS, poolRowId } from '../core/topicHistoryPull.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import { boundedHead } from '../core/boundedInput.js';
 import os from 'node:os';
@@ -374,6 +377,7 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { TeamConfinement } from '../users/TeamConfinement.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
@@ -2187,6 +2191,12 @@ export interface RouteContext {
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
+  /**
+   * native-conversation-any-machine-access §3d: send one signed mesh command to a peer and return
+   * its answer. Throws on a transport error or timeout. Null/absent: no mesh on this machine, and
+   * pool reads go by the bearer hop as before.
+   */
+  meshSignedRead?: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<import('../core/MeshRpcClient.js').MeshRpcClientResult>) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?:
@@ -2334,27 +2344,13 @@ export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, Subsc
   });
 
 // Validation patterns for route parameters
-/** The transcript file for a session: its own account's config home first, then the
- *  default home, then every pool account's (a swap can move a session between homes). */
+/** The transcript file for a session (see findSessionTranscriptFile). */
 function findSessionTranscript(session: import('../core/types.js').Session, ctx: RouteContext): string | null {
-  const sessionId = session.claudeSessionId;
-  if (!sessionId) return null;
-  const framework = session.framework ?? 'claude-code';
-  const projectDir = session.cwd ?? ctx.config.projectDir;
-  const homes: Array<string | undefined> = [];
-  const own = session.subscriptionAccountId ? ctx.subscriptionPool?.get(session.subscriptionAccountId)?.configHome : undefined;
-  homes.push(own, session.confinedConfigHome, undefined);
-  for (const a of ctx.subscriptionPool?.list() ?? []) homes.push(a.configHome);
-  const seen = new Set<string>();
-  for (const home of homes) {
-    const candidate = framework === 'codex-cli'
-      ? resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { rootOverride: path.join(home, 'sessions') } : {}) })
-      : resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { configHome: home } : {}) });
-    if (!candidate || seen.has(candidate)) continue;
-    seen.add(candidate);
-    try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* @silent-fallback-ok — try the next home */ }
-  }
-  return null;
+  return findSessionTranscriptFile(session, {
+    projectDir: ctx.config.projectDir,
+    accountHome: (id) => ctx.subscriptionPool?.get(id)?.configHome,
+    accountHomes: () => (ctx.subscriptionPool?.list() ?? []).map((a) => a.configHome),
+  });
 }
 
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
@@ -2940,6 +2936,38 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
 ];
 
 export function createRoutes(ctx: RouteContext): Router {
+  // ── Signed pool reads (native-conversation-any-machine-access §3d) ──
+  // Per machine, per kind of read and per version: what each peer has answered in signed form.
+  const signedReads = new SignedReadCapability();
+  const peerVersionOf = (machineId: string): string | null => {
+    const cap = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
+    return cap?.coherenceAdvert?.instarVersion ?? cap?.hardware?.instarVersion ?? null;
+  };
+  /** A machine that did not answer, named plainly with its last-seen time (§3d item 5). */
+  const asleepEntry = (machineId: string, error: string, unreachable: boolean): Record<string, unknown> => {
+    if (!unreachable) return {};
+    const cap = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
+    return { machine: { machineId, name: verifiedEntityName(machineId, cap?.nickname) ?? null, lastSeen: cap?.selfReportedLastSeen ?? cap?.routerReceivedAt ?? null, asleepOrUnreachable: true, error } };
+  };
+  /** The owner's read of a transcript, decided from THIS machine's team record at read time. */
+  const transcriptAudience = (principal: 'owner' | 'device', conversations: readonly string[] | undefined): TranscriptAudienceVerdict => {
+    const confinement = new TeamConfinement(ctx.config.stateDir);
+    const svc = ctx.mobilePairingService ?? null;
+    const log = svc?.teamLog() ?? null;
+    const teamOn = svc ? svc.teamOn() : confinement.signsOfTeamUse();
+    let record: { ownerPersonKey: string | null; grants: ReadonlyMap<string, ReadonlyMap<string, unknown>> } | null = null;
+    let gaps = 0;
+    try {
+      if (log && log.healthState() !== 'unreadable') { const st = log.state(); record = { ownerPersonKey: st.ownerPersonKey, grants: st.grants }; }
+      // No team log can open and no sign of team use: there are no grants, and none is unreadable.
+      else if (!log && !teamOn) record = { ownerPersonKey: null, grants: new Map() };
+      gaps = log?.gaps().length ?? 0;
+    } catch { record = null; } // @silent-fallback-ok — an unreadable record resolves to `unreadable`, the strict direction
+    return resolveTranscriptAudience({
+      principal, conversations, teamOn, teamEver: teamOn || confinement.signsOfTeamUse(),
+      confined: confinement.entries(), record, gaps, pullerRefusing: !!(teamOn && svc?.teamPuller?.refusing()),
+    });
+  };
   // ── CMT-810: action-derived activity notes (Parallel-Work Awareness) ──────
   // Called from EVERY path that observes a finished outbound turn for a topic.
   // Writes ONE durable note when the turn makes a concrete action claim
@@ -12085,18 +12113,44 @@ export function createRoutes(ctx: RouteContext): Router {
       // one class on ?status=). explicitStatus comes from the validated
       // allowlist above, so it is URL-safe by construction.
       const peerQuery = includeAll ? '?include=all' : explicitStatus ? `?status=${explicitStatus}` : '';
+      const listVia: Record<string, 'signed' | 'bearer'> = {};
+      const listAsleep: Array<Record<string, unknown>> = [];
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/sessions${peerQuery}`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
-            signal: AbortSignal.timeout(5000),
+          // native-conversation-any-machine-access §3d: the peer's own list over the signed mesh
+          // first; the bearer hop only on a definite "cannot serve", never after a timeout.
+          const listCommand = { type: 'session-transcript-pull' as const, mode: 'list' as const, ...(includeAll ? { include: 'all' as const } : explicitStatus ? { status: explicitStatus } : {}) };
+          const outcome = await signedThenBearer<Record<string, unknown>[] | { httpStatus: number }>({
+            machineId: p.machineId, kind: 'list', peerVersion: peerVersionOf(p.machineId), capability: signedReads,
+            signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, listCommand, 5000) : null,
+            accept: (result) => {
+              const b = result as { ok?: unknown; sessions?: unknown; reason?: unknown } | null;
+              return b && b.ok === true && Array.isArray(b.sessions) ? b.sessions as Record<string, unknown>[] : String(b?.reason ?? 'refused');
+            },
+            bearer: async () => {
+              const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/sessions${peerQuery}`, {
+                headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (!r.ok) return { httpStatus: r.status };
+              return (await r.json()) as Record<string, unknown>[];
+            },
           });
-          if (!r.ok) {
-            failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
-            peerFetchReason.set(p.machineId, r.status === 401 || r.status === 403 ? 'unauthorized' : 'error');
+          if (outcome.via === null) {
+            failed.push({ machineId: p.machineId, error: outcome.error });
+            peerFetchReason.set(p.machineId, 'error');
+            const a = asleepEntry(p.machineId, outcome.error, outcome.unreachable).machine;
+            if (a) listAsleep.push(a as Record<string, unknown>);
             return;
           }
-          const list = (await r.json()) as Record<string, unknown>[];
+          if (!Array.isArray(outcome.value)) {
+            const status = outcome.value.httpStatus;
+            failed.push({ machineId: p.machineId, error: `HTTP ${status}` });
+            peerFetchReason.set(p.machineId, status === 401 || status === 403 ? 'unauthorized' : 'error');
+            return;
+          }
+          listVia[p.machineId] = outcome.via;
+          const list = outcome.value;
           peerFetchReason.set(p.machineId, null);
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const s of list) {
@@ -12282,6 +12336,10 @@ export function createRoutes(ctx: RouteContext): Router {
           peersQueried: peers.length,
           peersOk: peers.length - failed.length,
           failed,
+          // native-conversation-any-machine-access §3d item 5: how each machine was read, and any
+          // machine that did not answer, named with its last-seen time.
+          via: listVia,
+          asleepOrUnreachable: listAsleep,
           // WS4.2: every registered machine with its session count and, when
           // idle, an explicit classified empty-state. >=2 machines is the
           // multi-machine case the dashboard renders; single-machine installs
@@ -12402,44 +12460,110 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Console History: a session's own conversation record, newest page first. tmux keeps
   // no scrollback for a full-screen (alternate-screen) session, so the transcript is the
-  // only deep history. Read-only; served for sessions recorded on THIS machine.
+  // only deep history. Read-only. A session on another machine is read over the signed
+  // mesh (native-conversation-any-machine-access §3d), so no shared API token is needed.
+  // Who is answered (§3d item 2): the owner only, and only where the owner may see every
+  // conversation the session served, decided on THIS machine from its own team record.
   router.get('/sessions/:name/transcript', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.name)) { res.status(400).json({ error: 'Invalid session name' }); return; }
+    // Allowlist: only the API-token holder (no device principal of any kind) is the owner here.
+    const principal = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal ? 'device' as const : 'owner' as const;
+    // A phone, a member or a guest never reads a transcript; no device rule lists this route either.
+    if (principal === 'device') { res.status(403).json({ error: TRANSCRIPT_AUDIENCE_SENTENCES['not-owner'], reason: 'not-owner' }); return; }
+    const num = (v: unknown): unknown => (v === undefined ? undefined : /^\d{1,16}$/.test(String(v)) ? Number(v) : NaN);
+    const rowQ = req.query.rowOffset !== undefined || req.query.rowIndex !== undefined
+      ? { offset: num(req.query.rowOffset), index: num(req.query.rowIndex) } : undefined;
+    const q = parseTranscriptQuery({
+      before: num(req.query.before), beforeIndex: num(req.query.beforeIndex),
+      limit: req.query.limit === undefined ? undefined : Number.isSafeInteger(Number(req.query.limit)) ? Number(req.query.limit) : NaN,
+      full: req.query.full === '1' || req.query.full === 'true', row: rowQ, byteFrom: num(req.query.byteFrom),
+    });
+    if (typeof q === 'string') { res.status(400).json({ error: `"${q}" is not a valid paging value` }); return; }
+    const refuse = (v: TranscriptAudienceVerdict): boolean => {
+      if (v.ok) return false;
+      res.status(403).json({ error: TRANSCRIPT_AUDIENCE_SENTENCES[v.reason], reason: v.reason });
+      return true;
+    };
     // A session on another machine: ask that machine (its disk holds the record).
     const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
     if (machineId && machineId !== ctx.meshSelfId) {
       const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
       if (!peer) { res.status(404).json({ error: 'That machine is not reachable from here', reason: 'peer-unknown' }); return; }
-      const qs = new URLSearchParams();
-      if (req.query.before !== undefined) qs.set('before', String(req.query.before));
-      if (req.query.limit !== undefined) qs.set('limit', String(req.query.limit));
-      try {
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/transcript?${qs}`, {
-          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(15_000),
-        });
-        const body = await r.json().catch(() => ({ error: `The other machine answered ${r.status}` }));
-        res.status(r.status).json(body);
-      } catch (err) {
-        res.status(502).json({ error: `The other machine did not answer: ${operatorError(err, res.app?.locals?.stateDir)}`, reason: 'peer-unreachable' });
+      type Remote = { status: number; body: Record<string, unknown> };
+      const command = {
+        type: 'session-transcript-pull' as const, mode: 'transcript' as const, session: req.params.name,
+        ...(q.before !== undefined ? { before: q.before } : {}), ...(q.beforeIndex ? { beforeIndex: q.beforeIndex } : {}),
+        limit: q.limit, ...(q.full ? { full: true } : {}), ...(q.row ? { row: q.row, byteFrom: q.byteFrom ?? 0 } : {}),
+      };
+      const outcome = await signedThenBearer<Remote>({
+        machineId, kind: 'transcript', peerVersion: peerVersionOf(machineId), capability: signedReads,
+        signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(machineId, command, SESSION_TRANSCRIPT_PULL_TIMEOUT_MS) : null,
+        accept: (result) => {
+          const b = result as Record<string, unknown> | null;
+          if (!b || typeof b !== 'object' || typeof b.ok !== 'boolean') return 'unreadable answer';
+          if (b.ok) return { status: 200, body: b };
+          const reason = String(b.reason ?? 'refused');
+          const status = reason === 'unknown-session' || reason === 'no-transcript' ? 404 : reason === 'malformed' || reason === 'bad-cursor' || reason === 'bad-byte-range' || reason === 'row-gone' ? 400 : 502;
+          const words = reason === 'unknown-session' ? `Session "${req.params.name}" is not recorded on that machine`
+            : reason === 'no-transcript' ? 'This session has no conversation record yet' : `That machine could not read it (${reason})`;
+          return { status, body: { error: words, reason, ...(Array.isArray(b.conversations) ? { conversations: b.conversations } : {}) } };
+        },
+        // The older peer's route: forwards redact=device and full, which the old proxy dropped.
+        bearer: peer.url ? async () => {
+          const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allowlist).ok) throw new BearerReadRefused('peer URL refused');
+          const qs = new URLSearchParams();
+          if (q.before !== undefined) qs.set('before', String(q.before));
+          qs.set('limit', String(q.limit));
+          if (q.full) qs.set('full', '1');
+          // An older machine removes its own token and PIN only when asked: always ask (§3d item 2, Redaction).
+          qs.set('redact', 'device');
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/transcript?${qs}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(15_000), redirect: 'manual',
+          });
+          const body = await r.json().catch(() => ({ error: `The other machine answered ${r.status}` })) as Record<string, unknown>;
+          return { status: r.status, body };
+        } : null,
+      });
+      if (outcome.via === null) {
+        res.status(502).json({ error: `The other machine did not answer: ${outcome.error}`, reason: outcome.unreachable ? 'peer-unreachable' : 'peer-refused', ...asleepEntry(machineId, outcome.error, outcome.unreachable) });
+        return;
       }
+      const { status, body } = outcome.value;
+      if (status === 200) {
+        // The audience is resolved HERE, from this machine's own team record (§3d item 2). An
+        // older machine reached by bearer sends no `conversations`; the rule says what then.
+        const conversations = Array.isArray(body.conversations) ? body.conversations.filter((c): c is string => typeof c === 'string') : undefined;
+        if (refuse(transcriptAudience(principal, conversations))) return;
+      }
+      res.status(status).json({ ...body, via: outcome.via, machineId });
       return;
     }
     const session = ctx.state.findSessionByTmux(req.params.name);
     if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
+    // An app conversation's session is named by its channel alias; look its key up too.
+    const conversations = sessionConversations(session, [conversationRefForSession(session.tmuxSession, { platform: 'app' })]);
+    if (refuse(transcriptAudience(principal, conversations))) return;
     const filePath = findSessionTranscript(session, ctx);
     if (!filePath) { res.status(404).json({ error: 'This session has no conversation record yet', reason: 'no-transcript' }); return; }
-    const before = req.query.before === undefined ? undefined : Number(req.query.before);
-    const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
-    if ((before !== undefined && !Number.isSafeInteger(before)) || (limit !== undefined && !Number.isSafeInteger(limit))) {
-      res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
-    }
     try {
-      // `redact=device`: the phone's read. Secrets go before each entry is cut, so no cut can leave part of one.
-      const clean = req.query.redact === 'device' ? (s: string) => redactForDevice(s, [ctx.config.authToken, ctx.config.dashboardPin]) : undefined;
-      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit, clean }) });
-    } catch (err) {
+      // Secrets go before each entry is clipped or cut, so no cut can leave part of one. The
+      // local read always removes this machine's own token and PIN (§3d item 2, Redaction).
+      const secrets = [ctx.config.authToken, ctx.config.dashboardPin];
+      const clean = (t: string) => redactForDevice(t, secrets);
+      const page = readTranscriptAnswer(filePath, { ...q, clean, maxBytes: q.row || q.full ? SESSION_TRANSCRIPT_PULL_MAX_BYTES : Number.MAX_SAFE_INTEGER });
+      res.json({ ok: true, ...page, conversations });
+    } catch (err) { // @silent-fallback-ok — not a fallback: every failure is answered to the caller (400 for a cursor that does not line up, 500 naming the machine for a storage failure)
+      if (err instanceof RangeError) { const reason = operatorError(err, ctx.config.stateDir); res.status(400).json({ error: `That page cannot be read: ${reason}`, reason }); return; }
       res.status(500).json(storageErrorResponse({ error: `Could not read the conversation record: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
     }
+  });
+
+  // native-conversation-any-machine-access §3d item 5: which kinds of pool read each member machine
+  // has answered in signed form, and which still need the bearer fallback (FD-18, CMT-051).
+  router.get('/pool/signed-reads', (_req, res) => {
+    const members = (ctx.resolvePeerUrls?.() ?? []).map((p) => p.machineId);
+    res.json(signedReads.status(members));
   });
 
   // Model-Tier Escalation §5.3 (FABLE-MODEL-ESCALATION-SPEC): the ONE narrow
@@ -21749,32 +21873,91 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
     // machine, one row per event (eventId when present, else direction + Telegram message id).
     const self = ctx.meshSelfId ?? null;
+    // native-conversation-any-machine-access §3d item 6: the rest of one row that a machine returned
+    // cut (`rowTruncated`). The same page request plus `machine`, `row` and `byteFrom`.
+    if (req.query.row !== undefined || req.query.byteFrom !== undefined) {
+      const machine = typeof req.query.machine === 'string' ? req.query.machine : '';
+      const rawRow = typeof req.query.row === 'string' ? req.query.row : '';
+      const byteFrom = /^\d{1,12}$/.test(String(req.query.byteFrom ?? '')) ? Number(req.query.byteFrom) : NaN;
+      if (!machine || machine === self || !rawRow || !Number.isSafeInteger(byteFrom)) {
+        res.status(400).json({ error: 'A continuation needs machine (another machine), row and byteFrom' }); return;
+      }
+      if (!ctx.meshSignedRead) { res.status(503).json({ error: 'This machine has no signed link to read that row with' }); return; }
+      const row = /^\d{1,15}$/.test(rawRow) ? Number(rawRow) : rawRow;
+      try {
+        const r = await ctx.meshSignedRead(machine, {
+          type: 'topic-history-pull', topic: topicId, limit, shape: 'pool', row, byteFrom,
+          ...(beforeMs === null ? {} : { before: beforeMs }), ...(beforeMessageId === null ? {} : { beforeMessageId }),
+        }, TOPIC_HISTORY_POOL_TIMEOUT_MS);
+        const b = (r.ok ? r.result : null) as Record<string, unknown> | null;
+        if (!b || b.ok !== true) { res.status(r.ok ? 400 : 502).json({ error: `That machine could not return the row (${String(b?.reason ?? r.reason ?? 'refused')})` }); return; }
+        const msgs = Array.isArray(b.messages) ? (b.messages as Array<Record<string, unknown>>).map((m) => ({ ...m, machine })) : [];
+        res.json({ topicId, machine, via: 'signed', messages: isDevice ? stripViewSignatures(msgs) : msgs, rowTruncated: b.rowTruncated });
+      } catch (err) {
+        const reason = operatorError(err, ctx.config.stateDir);
+        res.status(502).json({ error: `That machine did not answer: ${reason}`, ...asleepEntry(machine, reason, true) });
+      }
+      return;
+    }
     const rows: Array<Record<string, unknown>> = local.map(m => ({ ...m, machine: self }));
     const failed: Array<{ machineId: string; error: string }> = [];
     const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
-    await Promise.all(peers.map(async p => {
-      try {
-        const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${beforeMessageId === null ? '' : `&beforeMessageId=${beforeMessageId}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
-          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
-        });
-        if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
-        const payload = await r.text();
-        if (Buffer.byteLength(payload) > 512 * 1024) { failed.push({ machineId: p.machineId, error: 'too-large' }); return; }
-        const body = JSON.parse(payload) as { messages?: unknown; historyCursorVersion?: unknown };
-        if (beforeMessageId !== null && body.historyCursorVersion !== 2) {
-          failed.push({ machineId: p.machineId, error: 'history-cursor-upgrade-needed' }); return;
-        }
-        for (const raw of Array.isArray(body.messages) ? body.messages.slice(0, 100) : []) {
-          if (!raw || typeof raw !== 'object') continue;
-          const m = raw as Record<string, unknown>;
-          if (typeof m.text !== 'string' || typeof m.timestamp !== 'string' || Number.isNaN(Date.parse(m.timestamp))) continue;
-          rows.push({ ...m, machine: p.machineId });
-        }
-      } catch (error) {
-        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+    // native-conversation-any-machine-access §3d items 3-5: each machine is asked over the signed
+    // mesh first (pool shape: whole rows, ids, provenance, origin join). The bearer hop is used only
+    // when that machine says definitely that it cannot serve the pool shape; a timeout never is.
+    const via: Record<string, 'signed' | 'bearer'> = {};
+    const asleepOrUnreachable: Array<Record<string, unknown>> = [];
+    const truncatedBy: Array<{ machineId: string; oldest?: unknown; rowTruncated?: unknown }> = [];
+    const takeRows = (machineId: string, list: unknown, cut?: { row?: unknown }): void => {
+      for (const raw of Array.isArray(list) ? list.slice(0, TOPIC_HISTORY_POOL_MAX_MESSAGES) : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        const m = raw as Record<string, unknown>;
+        if (typeof m.text !== 'string' || typeof m.timestamp !== 'string' || Number.isNaN(Date.parse(m.timestamp))) continue;
+        const row: Record<string, unknown> = { ...m, machine: machineId };
+        // A row that came cut says so on the row itself, never shown as the whole text.
+        if (cut && cut.row !== undefined && poolRowId(m) === cut.row) row.rowTruncated = cut;
+        else delete row.rowTruncated;
+        if (!withOrigin) delete row.origin;
+        rows.push(row);
       }
+    };
+    await Promise.all(peers.map(async p => {
+      const command = {
+        type: 'topic-history-pull' as const, topic: topicId, limit, shape: 'pool' as const,
+        ...(beforeMs === null ? {} : { before: beforeMs }), ...(beforeMessageId === null ? {} : { beforeMessageId }),
+      };
+      const outcome = await signedThenBearer<{ messages: unknown; truncated?: unknown; oldest?: unknown; rowTruncated?: unknown }>({
+        machineId: p.machineId, kind: 'historyPool', peerVersion: peerVersionOf(p.machineId), capability: signedReads,
+        signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, command, TOPIC_HISTORY_POOL_TIMEOUT_MS) : null,
+        accept: (result) => {
+          const b = result as Record<string, unknown> | null;
+          if (!b || b.ok !== true) return String(b?.reason ?? 'refused');
+          return { messages: b.messages, truncated: b.truncated, oldest: b.oldest, rowTruncated: b.rowTruncated };
+        },
+        bearer: async () => {
+          const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+          if (!p.url || !isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) throw new BearerReadRefused('peer URL refused');
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${beforeMessageId === null ? '' : `&beforeMessageId=${beforeMessageId}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+          });
+          if (!r.ok) throw new BearerReadRefused(`HTTP ${r.status}`);
+          const payload = await r.text();
+          if (Buffer.byteLength(payload) > 512 * 1024) throw new BearerReadRefused('too-large');
+          const body = JSON.parse(payload) as { messages?: unknown; historyCursorVersion?: unknown };
+          if (beforeMessageId !== null && body.historyCursorVersion !== 2) throw new BearerReadRefused('history-cursor-upgrade-needed');
+          return { messages: body.messages };
+        },
+      });
+      if (outcome.via === null) {
+        failed.push({ machineId: p.machineId, error: outcome.error });
+        const a = asleepEntry(p.machineId, outcome.error, outcome.unreachable).machine;
+        if (a) asleepOrUnreachable.push(a as Record<string, unknown>);
+        return;
+      }
+      via[p.machineId] = outcome.via;
+      const v = outcome.value;
+      if (v.truncated === true || v.rowTruncated) truncatedBy.push({ machineId: p.machineId, ...(v.oldest ? { oldest: v.oldest } : {}), ...(v.rowTruncated ? { rowTruncated: v.rowTruncated } : {}) });
+      takeRows(p.machineId, v.messages, v.rowTruncated && typeof v.rowTruncated === 'object' ? v.rowTruncated as { row?: unknown } : undefined);
     }));
     const keyOf = (m: Record<string, unknown>) => typeof m.eventId === 'string' && m.eventId ? `e:${m.eventId}` : `m:${m.fromUser ? 'in' : 'out'}:${m.messageId}`;
     if (withOrigin) {
@@ -21794,6 +21977,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // This machine's own rows win a key collision; a peer's row is untrusted display data.
     const seen = new Set<string>(rows.filter(m => m.machine === self).map(keyOf));
+    // A machine that stopped at the size cap returned nothing older than its own oldest row. Rows
+    // older than that from other machines are left for the next page, so a caller paging by the
+    // oldest row it received cannot skip the rows that machine still holds.
+    const cutoffs = truncatedBy.map((t) => Number((t.oldest as { before?: unknown } | undefined)?.before)).filter((n) => Number.isFinite(n));
+    if (cutoffs.length) {
+      const cutoff = Math.max(...cutoffs);
+      for (let i = rows.length - 1; i >= 0; i--) if (Date.parse(String(rows[i].timestamp)) < cutoff) rows.splice(i, 1);
+    }
     const merged = rows
       .sort((a, b) => (Date.parse(String(a.timestamp)) - Date.parse(String(b.timestamp)))
         || (Number(a.messageId) || 0) - (Number(b.messageId) || 0))
@@ -21806,7 +21997,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────

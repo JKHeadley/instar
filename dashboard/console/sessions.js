@@ -464,7 +464,7 @@ async function loadHistory(view) {
   const marker = el('p', { class: 'sess-history-note', text: h.count ? 'Loading earlier messages…' : 'Loading the conversation…' });
   box.prepend(marker);
   const topicPhase = h.phase === 'topic';
-  const res = await send('GET', topicPhase ? topicHistoryUrl(topicOf(view.s), h.topicBefore) : historyUrl(view.s, h.before));
+  const res = await send('GET', topicPhase ? topicHistoryUrl(topicOf(view.s), h.topicBefore) : historyUrl(view.s, h.before, h.beforeIndex));
   marker.remove();
   h.loading = false;
   if (st.view !== view) return;
@@ -497,6 +497,7 @@ async function loadHistory(view) {
     if (list.length < TOPIC_HISTORY_PAGE || entries.length === 0 || h.topicBefore == null) { h.done = true; frag.prepend(el('p', { class: 'sess-history-note', text: 'The start of this conversation.' })); }
   } else {
     h.before = res.data.nextBefore;
+    h.beforeIndex = res.data.nextBeforeIndex || null;
     if (h.before == null) {
       // This session's own record ends here. A conversation keeps going back
       // through its earlier sessions: continue with the topic's messages.
