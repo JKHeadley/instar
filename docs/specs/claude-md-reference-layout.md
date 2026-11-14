@@ -137,8 +137,9 @@ before concluding (Recall by Meaning).
 - Every reference file starts with a generated header saying it is rewritten on every
   update and must not be edited. `.instar/reference/` is on the dashboard file editor's
   never-editable list for the same reason.
-- A size budget test asserts the generated `CLAUDE.md` stays under **80,000
-  characters**. Measured: 63.6k without Telegram, 65.4k with it (core sections ~58k, the
+- A size budget test asserts the generated `CLAUDE.md` stays under **84,000
+  characters** (80,000 until 2026-11-14; raised when the core measured 79,266 and twelve
+  queued changes each added a row). Measured: 63.6k without Telegram, 65.4k with it (core sections ~58k, the
   dispatch table and capability list ~7k). New awareness added to `generateClaudeMd()`
   lands in a reference file automatically; growing the core requires deliberately
   raising the budget.
@@ -342,9 +343,9 @@ removes the re-appended instar sections from below the end marker (2.4).
 
 - Reference location `.instar/reference/` (not `.claude/rules/`, which Claude Code would
   auto-load and defeat the purpose).
-- Core size budget 80,000 characters, argued from content: the always-applied rules
+- Core size budget 84,000 characters (80,000 until 2026-11-14), argued from content: the always-applied rules
   (~58k) plus the dispatch table and capability list (~7k) measure 65.4k; the margin
-  leaves ~70k under Claude Code's 150k warning for an agent's own kept sections (real
+  leaves 66k under Claude Code's 150k warning for an agent's own kept sections (real
   agents keep 19–26k).
 - Reference file cap 40,000 characters per file (about 10k tokens, one Read call).
 - Ownership thresholds: 60% verbatim lines for any unit; 40% for a title match on a
@@ -366,7 +367,7 @@ removes the re-appended instar sections from below the end marker (2.4).
 
 - Unit (`tests/unit/claude-md-reference-layout.test.ts`): the parser round-trips the
   document exactly; every canonical unit lands in exactly one output; the generated
-  CLAUDE.md is under 80,000; the core holds each always-applied section and the dispatch
+  CLAUDE.md is under the budget; the core holds each always-applied section and the dispatch
   table; the core names every reference capability; INDEX lists every reference title and
   every dispatch row points at a written file; big topics are cut into parts under the
   cap; a generic sub-heading follows its parent; no heading in the canonical document is
@@ -408,14 +409,14 @@ removes the re-appended instar sections from below the end marker (2.4).
   (Echo, Groky, Luna, with their real ports and AGENT.md) convert cleanly, keep each
   agent's own sections, and change nothing on a second run.
 - **dev-agent-live:** live on the development agent (Echo) from the release that carries
-  it. After its update, check that CLAUDE.md is under the 80k budget, that Claude Code no
+  it. After its update, check that CLAUDE.md is under the budget, that Claude Code no
   longer prints the over-limit warning at session start, and read the REVIEW lines and
   `.instar/CLAUDE.md.differing-lines.md`.
 - **fleet:** the same release, on by default (`claudeMd.layout` absent = reference).
   Every agent's file is backed up before conversion, and `claudeMd.layout: "full"` brings
   the whole document back on the next update.
 - **graduation criterion:** on the development agent and one fresh `instar init` agent,
-  CLAUDE.md under 80k after the update, no Claude Code size warning, no lost operator
+  CLAUDE.md under the budget after the update, no Claude Code size warning, no lost operator
   section (every kept title listed in the REVIEW line is present), and a second migrate
   that changes nothing.
 - **dark-window:** none. Every session of every agent pays the 570k load today, and
