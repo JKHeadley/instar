@@ -20,7 +20,7 @@ import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
-import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import { signLeaseAck } from '../../src/server/machineAuth.js';
 import type { LeasePeer } from '../../src/core/HttpLeaseTransport.js';
@@ -72,6 +72,7 @@ async function sendAfter70s(opts: Parameters<typeof originLeaseDependencyFixture
     noticeOwner: true, holdsLease: () => lease.coordinator.holdsLease(), isSessionLive: () => true,
     attachSessionLifecycle: value => { lifecycle = value; }, diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
   cleanup.push(() => boot.close());
+  allowSlowOriginRecording(boot.runtime.service);
   const token = await lifecycle!.issue({ sessionId: 'session', harnessId: 'codex-cli', projectDir: lease.root, configuredModel: 'fixture-model' });
   const telegram = new TelegramAdapter(telegramConfig, lease.stateDir, { suppressLifelineAutoCreate: true });
   const app = express(); app.use(express.json());

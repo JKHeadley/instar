@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Live-User-Channel Proof Before Done*
+
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -107,6 +110,7 @@ import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/Fe
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
 import { createUsageLedgerTick } from '../monitoring/usageLedgerTick.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
@@ -128,6 +132,7 @@ import type { SessionManager, SessionTerminateAuthority } from '../core/SessionM
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { InstarConfig } from '../core/types.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -392,6 +397,8 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { PlatformMediaForSession, getPlatformMediaForSession, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
+import { telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
@@ -505,6 +512,8 @@ export class AgentServer {
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
+  platformMedia: PlatformMediaForSession | null = null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
   conversationUnread: ConversationUnreadService | null = null;
   private attribution: AttributionRuntime | null = null;
@@ -640,6 +649,11 @@ export class AgentServer {
       ensure('mobilePairing.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.enabled', undefined), options.config));
       ensure('mobilePairing.native.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.enabled', undefined), options.config));
       running = isMobileNativeEnabled(options.config);
+      if (setting === 'files') {
+        // Files in app conversations ride on app conversations; the media gate is read at boot.
+        ensure('mobilePairing.native.media.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.media.enabled', undefined), options.config));
+        running = isMobileMediaEnabled(options.config);
+      }
     }
     console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
     if (running && !changed) return { changed: false, restarting: false };
@@ -1765,6 +1779,9 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
+    workBoard?: () => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null;
+    workBoardLate?: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null };
     /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel (CMT-1901). Powers
      *  GET /external-hog + the PIN-gated arm/disarm routes. */
     externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel;
@@ -4287,7 +4304,19 @@ export class AgentServer {
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {
             if (!isCanonicalOwner()) return;
-            backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
+            // The bulk copy runs in a worker thread: on a disk busy with a test run the
+            // synchronous copy held the event loop for over a minute and the supervisor
+            // killed the server (2026-11-13). The checkpoint and the staging of the
+            // database files stay here, back to back, on this thread.
+            const tick = backupCadence.maybeHourlyOffThread(
+              (trigger) => createBackupSnapshotInWorker({ stateDir: options.config.stateDir, config: options.config.backup, trigger }),
+              () => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch),
+            );
+            if (tick.started) {
+              tick.done.catch((error) => { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); });
+            } else if (tick.reason === 'in-flight' && tick.runningMs >= 30 * 60 * 1000) {
+              console.warn(`[feedback-factory] hourly checkpoint has been copying for ${Math.round(tick.runningMs / 60000)} minutes; no new one starts until it ends`);
+            }
           };
           setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
           this.feedbackDrainBackupTimer = setInterval(() => {
@@ -6298,6 +6327,8 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      workBoard: options.workBoard ?? null,
+      workBoardLate: options.workBoardLate ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
@@ -7151,7 +7182,7 @@ export class AgentServer {
         telegram: telegram ? {
           history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
-          exists: (topicId) => telegram.getAllTopicMappings().some((m) => m.topicId === topicId),
+          exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
         slack: slackBridge ? slackUnreadSource(() => slackBridge) : null,
         ownerIdentity: () => mp.ownerIdentity(),
@@ -7224,7 +7255,7 @@ export class AgentServer {
       // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
       // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
       const pinTelegram = options.telegram ? {
-        exists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId),
+        exists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId),
         serving: () => this.mobilePairing!.holdsLease(),
         textOf: (topicId: number, messageId: string) => {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
@@ -7263,7 +7294,7 @@ export class AgentServer {
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
         // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
-        ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
+        ...(options.telegram ? { telegramTopicExists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId) } : {}),
       }));
       // "Open session" (GET /mobile/conversations/session): the session driving a conversation on
       // this machine and a dashboard link focused on it. The same "held here" checks as media.
@@ -7274,7 +7305,7 @@ export class AgentServer {
         pairing: this.mobilePairing,
         conversationKnown: (ref) => {
           if (ref.kind === 'app') return !!appSvcForSession?.liveConversation(ref.key);
-          if (ref.kind === 'telegram') return !!options.telegram && options.telegram.getAllTopicMappings().some((m) => m.topicId === ref.topicId);
+          if (ref.kind === 'telegram') return !!options.telegram && telegramTopicKnown(options.telegram, ref.topicId);
           return !!slackRegistry && slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, ref.ref);
         },
         sessionNameFor: (ref) => {
@@ -7323,9 +7354,36 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. A session on this machine can still read it; a session on another machine is told it has not arrived there.`);
           }
         });
+      }
+      // native-conversation-base §3c items 4 to 7: a Telegram file is readable on the machine that runs
+      // the session. File lines are built from `media[]` on the serving machine; a file that has not
+      // arrived yet gets a durable waiter that the append listener, the start-up sweep and the
+      // periodic sweep reconcile. With native media off here, sessions are told the file is on another
+      // machine (or given this machine's own download).
+      if (options.telegram) {
+        const tg = options.telegram;
+        const sm = options.sessionManager;
+        const pm = new PlatformMediaForSession({
+          service: () => (isMobileMediaEnabled(options.config) ? this.appConversations ?? null : null),
+          downloadDirs: () => telegramDownloadDirs(options.config.stateDir),
+          injectToTopic: (topicId, line) => {
+            const name = tg.getSessionForTopic(topicId);
+            if (!name || !sm.isSessionAlive(name)) return false;
+            return sm.injectMessage(name, `[telegram:${topicId}] ${line}`, { firstParty: { source: 'platform-media' } }) !== false;
+          },
+          report: (what, err) => DegradationReporter.getInstance().report({
+            feature: 'PlatformMediaForSession', primary: 'give the session a Telegram file on its own machine',
+            fallback: 'the session is told the file is still copying or on another machine',
+            reason: `${what}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A file line may arrive late.',
+          }),
+        });
+        setPlatformMediaForSession(pm);
+        this.platformMedia = pm;
+        routeCtx.platformMedia = pm;
+        pm.start();
       }
       // Slack media in the app's history (media spec §4.9, the Slack half): each file the Slack
       // adapter downloads for an inbound message is also copied in, under the conversation's
@@ -7365,6 +7423,8 @@ export class AgentServer {
         applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
         reportsOn: (setting, machineId) => {
           const s = peerStanding(machineId);
+          // A machine's standing carries no files flag, so a files request is settled only by the peer's own answer.
+          if (setting === 'files') return false;
           return !!s && (setting === 'memory-privacy' ? s.privacy : s.native);
         },
         file: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'switch-requests.json'),
@@ -7440,11 +7500,28 @@ export class AgentServer {
     // actual runtime readiness and current owner admission.
     const graphSurfaceConfig=options.config.multiMachine?.conversationGraph;
     let graphSurfaceMounted=false;
+    // Conversations suggestion step + Chief of Staff root (docs/specs/conversation-graph-suggestions.md).
+    const graphChiefOfStaffTopicId=():number|null=>{
+      if(!options.chiefOfStaffLoop)return null;
+      const t=this.state.get<number>('chief-of-staff-topic');
+      return typeof t==='number'&&Number.isSafeInteger(t)&&t>1?t:null;
+    };
+    const graphSuggestions={intelligence:options.intelligence??null,evidence:(ref:import('../core/conversationGraph.js').ConversationRef)=>{
+      if(ref.platform!=='telegram')return{project:null,text:''};
+      const id=ref.topicId;
+      const binding=options.coherenceGate?.currentTopicBindings?.()[String(id)];
+      const summary=options.topicMemory?.getTopicSummary(id)??null;
+      const goals=Object.values(options.topicIntentStore?.read(id)?.refs??{})
+        .filter(r=>r.status==='live'&&r.kind==='goal').slice(-2).map(r=>r.text.slice(0,200));
+      const text=[summary?.purpose??'',goals.join(' / '),summary?.summary??''].filter(part=>part.trim()).join(' — ').slice(0,600);
+      return{project:binding?.projectName??null,text};
+    }};
     if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
       graphSurfaceMounted=true;
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -7455,6 +7532,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
@@ -9393,6 +9471,10 @@ export class AgentServer {
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
     this.appConversations?.stop();
+    if (this.platformMedia) {
+      this.platformMedia.stop();
+      if (getPlatformMediaForSession() === this.platformMedia) setPlatformMediaForSession(null);
+    }
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);

@@ -82,7 +82,13 @@ for (const rel of [...cited].sort()) {
   let body;
   try { body = fs.readFileSync(abs, 'utf8'); } catch { gone.push(rel); continue; }
   const head = body.slice(0, 4000); // the header is where a governing reference belongs
-  const namesArticle = titles.some((t) => t.length > 12 && (head.includes(t) || head.includes(t.split(' — ')[0])));
+  // A title of 12 characters or fewer ("Self-Hosting") is too short to trust as a bare substring:
+  // it can appear in ordinary prose. It counts only in the emphasised form the registry itself
+  // uses for an article name (`*Self-Hosting*`). Before this, a file governed only by a
+  // short-titled article could never leave the baseline, whatever it wrote.
+  const namesArticle = titles.some((t) => (t.length > 12
+    ? head.includes(t) || head.includes(t.split(' — ')[0])
+    : head.includes(`*${t}*`)));
   if (namesArticle) { ok++; continue; }
   if (MARKER.test(head)) markerWithoutArticle.push(rel); // a marker naming nothing real
   missing.push(rel);

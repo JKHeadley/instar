@@ -9,7 +9,7 @@ import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.j
 import { signMessage, verifyMessage } from '../../src/core/agentSignatureProvenance.js';
 import { TelegramOriginRuntime } from '../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 import { OriginBrowserExecutor } from '../../src/messaging/telegram-origin/OriginBrowserExecutor.js';
-import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../helpers/telegramOriginStore.js';
 import type { PreparedBrowserChild } from '../../src/messaging/telegram-origin/BrowserTypes.js';
 import { browserOperationDigest } from '../../src/messaging/telegram-origin/BrowserTypes.js';
 import { canonicalOrigin, wireDigest } from '../../src/messaging/telegram-origin/CanonicalOrigin.js';
@@ -22,12 +22,13 @@ afterEach(async () => { for (const close of cleanups.splice(0)) await close(); }
 async function boot() {
   const asp = generateIdentityKeyPair();
   const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo' }, workerUrl: worker,
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS }, workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio', keyEpoch: 1 }, bot: { accountId: 'bot-1', token: `bot:${Math.random()}` },
     display: () => ({ agent: { enabled: false } }), authorize: () => true,
     isSessionLive: () => true, attachSessionLifecycle: () => undefined,
     diagnoseUnknown: vi.fn(async () => undefined), alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined });
+  allowSlowOriginRecording(runtime.service);
   runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }), ...fixtureOriginContentDedup(runtime.options.storage.stateDir) });
   let owned = true, supported = true;
   const invoke = vi.fn(async (child: Readonly<PreparedBrowserChild>): Promise<unknown> => {

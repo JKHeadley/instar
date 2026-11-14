@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Observable Intelligence — No Autonomous LLM Action Is Unauditable*
+
 /**
  * Core type definitions for instar.
  *
@@ -5872,6 +5875,8 @@ export interface IntegratedBeingConfig {
 /** Ledger entry subsystem (who emitted). Always bound server-side. */
 export type LedgerEntrySubsystem =
   | 'threadline'
+  /** Work Board §6: one note per card handed to the agent (the card id only, never its title). */
+  | 'work-board'
   | 'outbound-classifier'
   | 'session-manager'
   | 'compaction-sentinel'

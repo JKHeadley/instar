@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 /**
  * Pure WARN-stage structural detector for `## Maturation plan`.
  * Semantic adequacy belongs to spec-converge's lessons-aware reviewer.

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "disk-steward-quiet-repeats",
+  "sessionId": "9c96d0a0-dfc9-48fd-8608-5be889fc9ffd",
+  "timestamp": "2026-11-14T05:33:32.223Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-quiet-repeats.md",
+  "artifactSha256": "a9039cb2210ea859ce0f9f1be380d72ec66b5397231afefab5c210b0409357fe",
+  "coveredFiles": [
+    "docs/specs/disk-steward-quiet-repeats.eli16.md",
+    "docs/specs/disk-steward.md",
+    "src/monitoring/DiskSteward.ts",
+    "src/monitoring/diskSteward/levels.ts",
+    "tests/unit/diskSteward-levels.test.ts",
+    "tests/unit/diskSteward.test.ts",
+    "upgrades/next/disk-steward-quiet-repeats.md",
+    "upgrades/side-effects/disk-steward-quiet-repeats.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Notification cadence only, bounded at every level; a revert fully undoes it and no stored data needs repair.",
+  "eli16Path": "docs/specs/disk-steward-quiet-repeats.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-quiet-repeats.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "standards-backreference-completion",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-14T00:45:08.610Z",
+  "artifactPath": "upgrades/side-effects/standards-backreference-completion.md",
+  "artifactSha256": "9fa7e5252385b7d77be29835f7552d8d9e449d0003291c6390b74ac7e741455e",
+  "coveredFiles": [
+    "docs/audits/standards-backreference-completion-building-family-2026-11-13.json",
+    "docs/specs/reports/standards-backreference-completion-building-family-2026-11-13.md",
+    "docs/specs/standards-backreference-completion.eli16.md",
+    "docs/standards-registry-area-audits.json",
+    "scripts/class-closure-lint.mjs",
+    "scripts/lint-no-unregistered-self-action.js",
+    "upgrades/next/standards-backreference-completion.md",
+    "upgrades/side-effects/standards-backreference-completion.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Completes the same change: the family audit record the registry edit requires, and two comment placements; no runtime behaviour",
+  "eli16Path": "docs/specs/standards-backreference-completion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standards-backreference-completion.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

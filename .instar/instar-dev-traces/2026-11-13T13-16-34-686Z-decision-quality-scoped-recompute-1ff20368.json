@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "decision-quality-scoped-recompute",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T13:16:34.686Z",
+  "artifactPath": "upgrades/side-effects/decision-quality-scoped-recompute.md",
+  "artifactSha256": "5a8f23421a4e5801f877b271595e6d552ef887da485dd39672e5c42bacadfe96",
+  "coveredFiles": [
+    "docs/specs/decision-quality-scoped-recompute.eli16.md",
+    "src/monitoring/FeatureMetricsLedger.ts",
+    "tests/unit/FeatureMetricsLedger-scopedRecompute.test.ts",
+    "upgrades/next/decision-quality-scoped-recompute.md",
+    "upgrades/side-effects/decision-quality-scoped-recompute.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two SQL statements in the feature-metrics ledger, an observability store that gates nothing; no schema or stored-data change; a revert undoes it. Held to the view's answer by random-data and real-data equivalence and three caught faults.",
+  "eli16Path": "docs/specs/decision-quality-scoped-recompute.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/decision-quality-scoped-recompute.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

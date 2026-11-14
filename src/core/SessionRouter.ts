@@ -18,6 +18,7 @@
  * timeout (it throws on timeout) — the router owns the retry/backoff/fallback loop.
  */
 
+import { toWireMedia, type InboundMediaLocal } from './inboundMedia.js';
 import type { PlacementDecision, PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
 import type { MachineCapacity } from './types.js';
 import { isAppOwnershipKey } from './SessionOwnership.js';
@@ -64,6 +65,14 @@ export interface InboundMessage {
   sessionKey: string;
   messageId: string;
   payload: unknown;
+  /**
+   * Files by attachment id (native-conversation-base §3c). An entry may carry this machine's own
+   * download path in process and in this machine's queue; it is stripped (`toWireMedia`) before any
+   * send to another machine, so the wire never carries a path. The payload text also
+   * carries one path-free sentence per file, so an older receiver that ignores this still says a
+   * file was sent.
+   */
+  media?: ReadonlyArray<InboundMediaLocal>;
   topicMetadata?: TopicPlacement;
   senderEnvelope?: InboundSenderEnvelope | null;
   /** A pool stepped down to dark: reach a peer that owns this conversation, never place one.
@@ -191,7 +200,7 @@ export interface SessionRouterDeps {
   /** SYNCHRONOUS per-session CAS-claim (the §L−1 single-ref fast-forward push). */
   casClaimOwnership: (sessionKey: string, machineId: string, expectedEpoch: number) => { ok: boolean; epoch: number };
   /** ONE deliverMessage attempt over MeshRpc; throws on transport error/timeout. */
-  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null; row?: unknown }) => Promise<DeliverAck>;
+  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null; row?: unknown; media?: ReadonlyArray<InboundMediaLocal> }) => Promise<DeliverAck>;
   /**
    * The message's TopicMemory row to carry to the owner (context-budget §14 relay-path
    * row carrier): read on this machine, numbered in its stream, idempotent per message.
@@ -386,7 +395,7 @@ export class SessionRouter {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
       if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
       try {
-        const ack = await this.deps.deliverMessage(target, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: targetEpoch, senderEnvelope: msg.senderEnvelope ?? null });
+        const ack = await this.deps.deliverMessage(target, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: targetEpoch, senderEnvelope: msg.senderEnvelope ?? null, ...(msg.media ? { media: toWireMedia(msg.media) } : {}) });
         this.deps.onOwnerResponsive?.(target);
         if (ack.accepted === 'duplicate') return { action: 'duplicate', owner: target, acked: true };
         if (ack.accepted === 'queued') return { action: 'forwarded', owner: target, acked: true };
@@ -465,7 +474,7 @@ export class SessionRouter {
       // Read per attempt: the seq is idempotent per message, and a row stored after the first try still rides the retry.
       const row = this.carriedRow(msg);
       try {
-        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null, ...(row != null ? { row } : {}) });
+        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null, ...(row != null ? { row } : {}), ...(msg.media ? { media: toWireMedia(msg.media) } : {}) });
         // ANY ack (queued/duplicate/stale) proves the peer answered — close its
         // suspect window before interpreting the ack.
         this.deps.onOwnerResponsive?.(owner);

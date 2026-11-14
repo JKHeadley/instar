@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "automerge-paged-pr-list",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T14:25:07.743Z",
+  "artifactPath": "upgrades/side-effects/automerge-paged-pr-list.md",
+  "artifactSha256": "ddd9650aef0db634a65e27c7d6a5ace10d0952dc67a830a11f66f2a5232e2bcf",
+  "coveredFiles": [
+    "docs/specs/automerge-paged-pr-list.eli16.md",
+    "src/monitoring/greenPrAutomergeWiring.ts",
+    "src/monitoring/greenPrOpenPrList.ts",
+    "tests/e2e/green-pr-agent-stop-release-lifecycle.test.ts",
+    "tests/e2e/merge-line-author-eligibility-lifecycle.test.ts",
+    "tests/unit/green-pr-automerge-wiring.test.ts",
+    "tests/unit/green-pr-open-pr-list.test.ts",
+    "upgrades/next/automerge-paged-pr-list.md",
+    "upgrades/side-effects/automerge-paged-pr-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to one GitHub read (the auto-merger's open-PR list): fetched in small pages, same rows out; no state, config or decision logic changes; a revert undoes it. It feeds the merge gate, so it had an independent review (concur).",
+  "eli16Path": "docs/specs/automerge-paged-pr-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/automerge-paged-pr-list.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

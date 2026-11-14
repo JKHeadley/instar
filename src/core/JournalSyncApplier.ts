@@ -252,6 +252,7 @@ const STATE_SYNC_FEATURE_BY_KIND: Readonly<Record<string, string>> = {
   'pref-record': 'multiMachine.stateSync.preferences',
   'topic-pin-record': 'multiMachine.seamlessness.ws13PinReplicate',
   'chief-of-staff-record': 'multiMachine.stateSync.chiefOfStaff',
+  'work-card-record': 'multiMachine.stateSync.workBoard',
   'context-layer-record': 'multiMachine.stateSync.contextLayers',
 };
 /** A peer retries a refused batch every sync, so one row per stream and verdict per hour. */

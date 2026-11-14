@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "forwarded-reply-holder-history",
+  "sessionId": "81a1c571-4d82-407f-bc26-786e5c48bb29",
+  "timestamp": "2026-11-12T00:41:49.331Z",
+  "artifactPath": "upgrades/side-effects/forwarded-reply-holder-history.md",
+  "artifactSha256": "03b992a14b70bb2e256e6f9f0fe26e254b588ca19c03cb4a0c4a4c386ec50854",
+  "coveredFiles": [
+    "docs/specs/forwarded-reply-holder-history.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/telegram-origin/ForwardedDeliveryHistory.ts",
+    "src/messaging/telegram-origin/OriginMesh.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/integration/telegram-origin-mesh.test.ts",
+    "tests/unit/telegram-origin/forwarded-delivery-history.test.ts",
+    "upgrades/next/forwarded-reply-holder-history.md",
+    "upgrades/side-effects/forwarded-reply-holder-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "History-only recorder on the holder's successful forwarded-submit path using the existing writer; no send, gate, config or migration; a revert fully undoes it.",
+  "eli16Path": "docs/specs/forwarded-reply-holder-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/forwarded-reply-holder-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

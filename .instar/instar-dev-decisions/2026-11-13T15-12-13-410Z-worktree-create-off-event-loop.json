@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-13T15:12:13.410Z",
+  "slug": "worktree-create-off-event-loop",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 107,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SafeGitExecutor.ts",
+      "src/core/WorktreeManager.ts"
+    ],
+    "addedLines": 95,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

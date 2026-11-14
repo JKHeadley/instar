@@ -23,12 +23,14 @@
  *    never inside a synchronous per-message CAS (FD-2).
  */
 
-// canonical-migration-producer: threadline-inbound-canonical-store@3
+// canonical-migration-producer: threadline-inbound-canonical-store@4
 
 import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ThreadLog, ThreadLogAuthor, ThreadDirection, ThreadTextRef } from './ThreadLog.js';
+import { createHash } from 'node:crypto';
+import type { ThreadLog, ThreadLogAuthor, ThreadDirection, ThreadTextRef, ThreadLogEntry } from './ThreadLog.js';
+import type { MessageEnvelope } from '../messaging/types.js';
 import type { ConversationStore } from './ConversationStore.js';
 import { contentDigest, DIGEST_VERSION } from './threadDigest.js';
 
@@ -58,6 +60,36 @@ export interface ThreadMessageRecorderDeps {
   appendFailureAlertThreshold?: number;
   /** Inline body cap before a `store` reference (FD-4). Default 8 KB. */
   inlineMaxBytes?: number;
+  /**
+   * The resolvable backing for over-cap bodies (the server passes its real
+   * MessageStore). Without it an over-cap body is NOT logged with a dangling
+   * reference — the record fails observably through the append-failure path.
+   */
+  bodyStore?: ThreadBodyStore | null;
+}
+
+/** The subset of MessageStore the recorder uses to back a `textRef: {kind:'store'}`. */
+export interface ThreadBodyStore {
+  saveThreadBodySync(storeId: string, envelope: MessageEnvelope): void;
+  getThreadBodySync(storeId: string): MessageEnvelope | null;
+  /** Close-only retention: remove exactly this thread's body partition. */
+  deleteThreadBodiesSync(threadId: string): void;
+}
+
+/**
+ * The store id for an over-cap body: `tlbody-<sha256(threadId)>-<digest>`. The
+ * first part is the thread's body partition (so close-only retention removes one
+ * thread's bodies without a scan or index); the second is namespaced by
+ * direction + verified peer + thread + original message id + local content
+ * digest. Both are hashed so no raw wire value ever becomes a path, and a
+ * same-id/different-body replay gets a DIFFERENT id — it can never overwrite.
+ */
+export function threadBodyStoreId(parts: { direction: ThreadDirection; peerFingerprint?: string; threadId: string; messageId: string; contentDigest: string }): string {
+  const partition = createHash('sha256').update(parts.threadId).digest('hex');
+  const h = createHash('sha256')
+    .update(JSON.stringify([parts.direction, parts.peerFingerprint ?? '', parts.threadId, parts.messageId, parts.contentDigest]))
+    .digest('hex');
+  return `tlbody-${partition}-${h}`;
 }
 
 export interface RecordThreadMessageInput {
@@ -75,7 +107,17 @@ export interface RecordThreadMessageInput {
   peerFingerprint?: string;
   subject?: string;
   backfilled?: true;
-  /** The message-store id to reference when the body exceeds inlineMaxBytes. */
+  /**
+   * Legacy compatibility: the inbound carried no wire timestamp, so `createdAt` is
+   * this end's receive time. Recorded as provenance (never presented as a sender
+   * stamp); a retry of an already-logged leg is a `duplicate`, never re-hashed
+   * with a fresh time (which would read as a collision).
+   */
+  createdAtSource?: 'receive-time';
+  /**
+   * @deprecated Ignored: the store id is always the recorder-minted namespaced id
+   * (a caller-supplied id could point at a record that was never written).
+   */
   messageStoreId?: string;
 }
 
@@ -155,10 +197,37 @@ export class ThreadMessageRecorder {
   }
 
   /**
+   * Resolve an entry's body: inline text, or the backing record verified against
+   * the entry (id, thread, createdAt, and the locally recomputed digest). Returns
+   * null when the reference cannot be resolved or does not match — never a guess.
+   */
+  resolveText(entry: Pick<ThreadLogEntry, 'threadId' | 'messageId' | 'createdAt' | 'contentDigest' | 'textRef'>): string | null {
+    if (entry.textRef.kind === 'inline') return entry.textRef.text;
+    const env = this.d.bodyStore?.getThreadBodySync(entry.textRef.messageStoreId);
+    const m = env?.message;
+    if (!m || m.id !== entry.messageId || m.threadId !== entry.threadId || m.createdAt !== entry.createdAt || typeof m.body !== 'string') return null;
+    const digest = contentDigest({ threadId: m.threadId, messageId: m.id, body: m.body, createdAt: m.createdAt });
+    return digest === entry.contentDigest ? m.body : null;
+  }
+
+  /**
    * Append one message to its canonical log. Returns synchronously (off the send
    * critical path); never throws into the caller.
    */
   record(input: RecordThreadMessageInput): RecordThreadMessageResult {
+    if (input.createdAtSource === 'receive-time') {
+      // No sender stamp: this end's receive time differs on every retry, so the
+      // candidate is compared against the ALREADY-LOGGED leg using THAT entry's
+      // createdAt (the digest input). Same body → duplicate; a different body →
+      // collision through the normal path below. The first row/time is kept
+      // (append() never overwrites). Bounded live-segment lookup, only on a hit.
+      try {
+        if (this.d.threadLog.has(input.threadId, input.messageId, input.direction)) {
+          const existing = this.d.threadLog.findLiveEntry(input.threadId, input.messageId, input.direction);
+          if (existing) input = { ...input, createdAt: existing.createdAt };
+        }
+      } catch { /* @silent-fallback-ok: fall through — append() re-checks and reports */ }
+    }
     const digest = contentDigest({
       threadId: input.threadId,
       messageId: input.messageId,
@@ -168,11 +237,28 @@ export class ThreadMessageRecorder {
     const wireDigestMismatch = input.wireDigest !== undefined && input.wireDigest !== digest;
 
     const bytes = Buffer.byteLength(input.body, 'utf-8');
-    const textRef: ThreadTextRef = bytes <= this.inlineMaxBytes
-      ? { kind: 'inline', text: input.body }
-      : { kind: 'store', messageStoreId: input.messageStoreId ?? input.messageId };
 
     try {
+      let textRef: ThreadTextRef;
+      if (bytes <= this.inlineMaxBytes) {
+        textRef = { kind: 'inline', text: input.body };
+      } else {
+        // Over-cap: write the resolvable backing record FIRST, so a logged row can
+        // never reference a body that was not written. No backing store → throw
+        // into the observable append-failure path below (never a dangling ref).
+        const store = this.d.bodyStore;
+        if (!store) throw new Error(`body of ${bytes} bytes exceeds the ${this.inlineMaxBytes}-byte inline cap and no body store is wired`);
+        const storeId = threadBodyStoreId({
+          direction: input.direction, peerFingerprint: input.peerFingerprint,
+          threadId: input.threadId, messageId: input.messageId, contentDigest: digest,
+        });
+        // An already-logged key resolves to duplicate/collision in append(); skip
+        // writing a backing record that no row will reference.
+        if (!this.d.threadLog.has(input.threadId, input.messageId, input.direction)) {
+          store.saveThreadBodySync(storeId, bodyEnvelope(input, this.now()));
+        }
+        textRef = { kind: 'store', messageStoreId: storeId };
+      }
       const res = this.d.threadLog.append({
         threadId: input.threadId,
         messageId: input.messageId,
@@ -180,6 +266,7 @@ export class ThreadMessageRecorder {
         contentDigest: digest,
         digestVersion: DIGEST_VERSION,
         createdAt: input.createdAt,
+        ...(input.createdAtSource ? { createdAtSource: input.createdAtSource } : {}),
         ...(input.backfilled ? { backfilled: true as const } : {}),
         ...(input.author ? { author: input.author } : {}),
         ...(input.peerFingerprint ? { peerFingerprint: input.peerFingerprint } : {}),
@@ -317,6 +404,30 @@ export class ThreadMessageRecorder {
     }
     return result;
   }
+}
+
+/** The backing record for an over-cap body — history text, not a delivery claim. */
+function bodyEnvelope(input: RecordThreadMessageInput, nowMs: number): MessageEnvelope {
+  const peer = input.peerFingerprint ?? input.author?.agentFingerprint ?? 'peer';
+  const local = { agent: 'local', session: input.author?.sessionName ?? 'threadline', machine: input.author?.machineId ?? 'local' };
+  const remote = { agent: peer, session: 'threadline', machine: 'relay' };
+  return {
+    schemaVersion: 1,
+    message: {
+      id: input.messageId,
+      from: input.direction === 'inbound' ? remote : local,
+      to: input.direction === 'inbound' ? local : remote,
+      type: 'info',
+      priority: 'medium',
+      subject: input.subject ?? '',
+      body: input.body,
+      threadId: input.threadId,
+      createdAt: input.createdAt,
+      ttlMinutes: 0,
+    },
+    transport: { relayChain: [], originServer: 'threadline-canonical-history', nonce: input.messageId, timestamp: new Date(nowMs).toISOString() },
+    delivery: { phase: 'created', transitions: [], attempts: 0 },
+  };
 }
 
 /**

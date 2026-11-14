@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "feedback-already-fixed",
+  "sessionId": "c7ebcf37-5ca7-419f-a005-cf4c9107a40b",
+  "timestamp": "2026-11-12T23:18:21.276Z",
+  "artifactPath": "upgrades/side-effects/feedback-already-fixed.md",
+  "artifactSha256": "761bd5479db87426b8eaae29bcc3df3eb432715f5321670a5137bb9d372e78cf",
+  "coveredFiles": [
+    "docs/specs/feedback-triage-and-execution.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executorPorts.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-github-runtime.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-already-fixed.md",
+    "upgrades/side-effects/feedback-already-fixed.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One retry branch in the executor plus an optional local git read; the only new authority is a reversible hold. Revert fully undoes it.",
+  "eli16Path": "docs/specs/feedback-triage-and-execution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-already-fixed.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
