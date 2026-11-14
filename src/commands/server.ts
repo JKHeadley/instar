@@ -7726,6 +7726,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             description: input.publicTransportAlternative ? 'Two distinct browser builds failed. An independently authorized MTProto client is an alternative to repairing the browser integration.' : undefined }, { hubOnly: true });
         },
       }).catch(error => { releaseOriginLeaseRenewal(); throw error; });
+      // A peer's reply this machine delivered as lease holder joins this machine's
+      // topic history, so an "acceptance unknown" answer at the peer can no longer
+      // leave the reply in no history at all (topic 141868, 2026-11-11).
+      {
+        const { forwardedDeliveryHistoryTopic } = await import('../messaging/telegram-origin/ForwardedDeliveryHistory.js');
+        const { recoveredForwardProvenance } = await import('../messaging/telegram-origin/OriginForwardToHolder.js');
+        telegramOriginBoot.runtime.options.onForwardedDelivered = row => {
+          if (!telegram) return;
+          const chats = originTelegramConfig.config as { chatId?: unknown; issuesChatId?: unknown };
+          const historyTopicId = forwardedDeliveryHistoryTopic(row, { mainChatId: chats.chatId, issuesChatId: chats.issuesChatId });
+          if (historyTopicId === null) return;
+          telegram.recordRecoveredOutbound(historyTopicId, row.text, row.messageId, recoveredForwardProvenance(null, row.producerKind));
+        };
+      }
       const enrollment = await sessionManager.enrollExistingOriginSessions();
       if (enrollment.unavailable.length) console.warn('[telegram-origin] existing sessions require origin enrollment', enrollment.unavailable);
     }

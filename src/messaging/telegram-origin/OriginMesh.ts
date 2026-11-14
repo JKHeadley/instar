@@ -15,8 +15,21 @@ import { verify as verifySignature } from 'node:crypto';
 import { verifyPoolLinkAssertion, type PoolLinkAssertion } from '../../core/PoolLinkAssertion.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import { originAuditDeliveryConfirmed } from './OriginDeliveryResolution.js';
+import { forwardedDeliveryRow } from './ForwardedDeliveryHistory.js';
 
 export const ORIGIN_MESH_PROTOCOL = 'instar-telegram-origin-v1';
+
+/** History only: the delivery outcome is already decided, so a failing
+ * recorder can never turn a delivered reply into a refusal the peer retries. */
+function recordForwardedDelivery(runtime: TelegramOriginRuntime, operation: OriginPreparedBotOperation, messageId: unknown): void {
+  if (!runtime.options.onForwardedDelivered) return;
+  try {
+    const row = forwardedDeliveryRow(operation, messageId);
+    if (row) runtime.options.onForwardedDelivered(row);
+  } catch (error) {
+    console.warn('[telegram-origin] forwarded delivery history not recorded', error instanceof Error ? error.name : 'unknown-error');
+  }
+}
 export type OriginMeshCommand = { type: 'telegram-origin'; protocol: typeof ORIGIN_MESH_PROTOCOL } & (
   { action: 'capabilities' } | { action: 'receipt'; operationId: string; reader?: boolean } | { action: 'evidence'; record: StoredOriginInput } |
   { action: 'submit'; operation: OriginPreparedBotOperation } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
@@ -169,6 +182,7 @@ export async function handleOriginMesh(options: {
           networkTimeoutMs: 10_000 }, undefined, operation);
     });
     const body = await response.json() as { result?: { message_id?: number } };
+    recordForwardedDelivery(runtime, operation, body.result?.message_id);
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
       deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
   } catch (error) {
@@ -178,6 +192,7 @@ export async function handleOriginMesh(options: {
     // Telegram accepted it; only the receipt write failed. Answering a refusal
     // here would let the forwarding standby re-forward a delivered message.
     if (error instanceof TelegramOriginHoldError && error.outcome === 'accepted-unrecorded' && error.delivered?.messageId && /^\d+$/.test(error.delivered.messageId)) {
+      recordForwardedDelivery(runtime, operation, Number(error.delivered.messageId));
       return { ok: true, originId: record.originId, messageId: Number(error.delivered.messageId), originReceiptConfirmed: true,
         deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId, receiptRecorded: false };
     }
