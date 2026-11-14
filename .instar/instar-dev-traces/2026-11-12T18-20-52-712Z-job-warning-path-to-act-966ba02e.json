@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "job-warning-path-to-act",
+  "sessionId": "fae45c71-c6f0-4b7a-b514-bd6cf44815d9",
+  "timestamp": "2026-11-12T18:20:52.712Z",
+  "artifactPath": "upgrades/side-effects/job-warning-path-to-act.md",
+  "artifactSha256": "1a8d913e4100cb8bed0f3a2a5b7149448a95c94d1a87dc55c1c83fabd62b64aa",
+  "coveredFiles": [
+    "docs/specs/job-warning-path-to-act.eli16.md",
+    "src/scheduler/JobScheduler.ts",
+    "upgrades/side-effects/job-warning-path-to-act.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves and adds exemption comment markers in two catch blocks; no behaviour change",
+  "eli16Path": "docs/specs/job-warning-path-to-act.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-warning-path-to-act.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
