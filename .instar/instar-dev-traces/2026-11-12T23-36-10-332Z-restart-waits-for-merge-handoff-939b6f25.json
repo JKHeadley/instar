@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "slug": "restart-waits-for-merge-handoff",
+  "sessionId": "e4a36ea2-d62d-43fe-9740-b8654a0fda13",
+  "timestamp": "2026-11-12T23:36:10.332Z",
+  "artifactPath": "upgrades/side-effects/restart-waits-for-merge-handoff.md",
+  "artifactSha256": "89b6798fe8c7bc8db79620efc7b71d2727ca64b15267158d8c6e46aeb96a0542",
+  "coveredFiles": [
+    "docs/specs/restart-waits-for-merge-handoff.eli16.md",
+    "src/core/PlannedRestartVerifyGuard.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/planned-restart-verify-guard.test.ts",
+    "upgrades/next/restart-waits-for-merge-handoff.md",
+    "upgrades/side-effects/restart-waits-for-merge-handoff.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: one bounded restart hold, 2 source files; a revert fully undoes it; no migration or new authority beyond a 10-minute delay.",
+  "eli16Path": "docs/specs/restart-waits-for-merge-handoff.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/restart-waits-for-merge-handoff.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

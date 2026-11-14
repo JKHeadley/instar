@@ -596,9 +596,13 @@ describe('with the feature off', () => {
     const start = await signed(e, 'POST', '/mobile/media/uploads', { conversationRef: `app:${key}`, ...describeFile(png()), requestId: rid() });
     expect(start.status).toBe(503);
     expect(start.body.error).toBe('media-off');
+    // Every warning carries a path to act: the one-tap turn-on the app shows under the refusal.
+    const action = { kind: 'team-switch-on', setting: 'files', label: 'Turn on files', method: 'POST', path: '/mobile/team/switches/turn-on', configPath: 'mobilePairing.native.media.enabled' };
+    expect(start.body.action).toEqual(action);
     const send = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'x', requestId: rid(), attachments: [{ uploadId: 'u' }] });
     expect(send.status).toBe(400);
     expect(send.body.error).toBe('media-off');
+    expect(send.body.action).toEqual(action);
     expect((await signed(e, 'POST', '/mobile/media/purge', { conversationKeys: ['telegram:5'], requestId: rid() })).status).toBe(200);
   });
 });

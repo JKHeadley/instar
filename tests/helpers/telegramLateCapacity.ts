@@ -4,7 +4,7 @@ import { TelegramOriginRuntime } from '../../src/messaging/telegram-origin/Teleg
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { fixtureOriginContentDedup } from './originContentDedup.js';
-import { temporaryState } from './telegramOriginStore.js';
+import { temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from './telegramOriginStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
@@ -14,13 +14,14 @@ const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkc
 export async function lateCapacityHarness(workerUrl: URL) {
   const stateDir = temporaryState(), token = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo' }, workerUrl,
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS }, workerUrl,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 },
     bot: { token, accountId: '123', chatId: '-100123' },
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
     display: () => ({}), authorize: () => true, diagnoseUnknown: async () => undefined,
     alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined });
+  allowSlowOriginRecording(runtime.service);
   const sessionToken = await lifecycle!.issue({ sessionId: 'capacity-session', harnessId: 'codex-cli',
     projectDir: process.cwd(), configuredModel: 'fixture-model' });
   runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }),

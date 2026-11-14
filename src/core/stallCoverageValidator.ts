@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Stall Coverage Is Enumerated, Not Discovered*
+
 /**
  * stallCoverageValidator — the single validator for framework stall-coverage
  * matrices (docs/frameworks/<framework>-stall-coverage.md).

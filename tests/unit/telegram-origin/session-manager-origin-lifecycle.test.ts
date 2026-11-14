@@ -156,6 +156,35 @@ describe('SessionManager origin lifecycle production callback wiring', () => {
     expect(registry.getBinding(session.id)).toBeUndefined();
     expect(tmux.calls.some(args => args[0] === 'set-environment')).toBe(false);
   });
+  // Live 2026-11-12: worktree sessions re-enrolled after a restart were bound to the agent home,
+  // because the headless record never kept its spawn tree; the transcript was never found.
+  it('a headless session keeps its spawn tree, and re-enrollment binds that tree', async () => {
+    const tree = path.join(dir, '.worktrees', 'topic-42');
+    fs.mkdirSync(tree, { recursive: true });
+    const session = await manager.spawnSession({ name: 'tree', prompt: 'fixture', cwd: tree });
+    expect(state.getSession(session.id)?.cwd).toBe(tree);
+    expect(registry.getBinding(session.id)?.projectDir).toBe(tree);
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 1, unavailable: [] });
+    expect(registry.getBinding(session.id)?.projectDir).toBe(tree);
+  });
+  // Live 2026-11-12: a first reply 13 s after spawn read "native-session-unbound" (no hook yet).
+  it('resolves an unreported Claude session id from Claude Code\'s own per-process record', async () => {
+    const session = await manager.spawnSession({ name: 'first-reply', prompt: 'fixture' });
+    const home = path.join(dir, 'claude-home');
+    fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+    const nativeId = '44444444-4444-4444-8444-444444444444';
+    fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId: nativeId, tmux: `${session.tmuxSession}:@1.%1`, startedAt: Date.now() }));
+    vi.spyOn(manager, 'configHomeForSession').mockReturnValue(home);
+    expect(manager.resolveOriginNativeSession(session.id)).toBe(nativeId);
+    expect(state.getSession(session.id)?.claudeSessionId).toBe(nativeId);
+    expect(bindNative).toHaveBeenLastCalledWith(session.id, nativeId);
+    // Already known: re-tells the observer without another lookup.
+    bindNative.mockClear();
+    expect(manager.resolveOriginNativeSession(session.id)).toBe(nativeId);
+    expect(bindNative).toHaveBeenCalledWith(session.id, nativeId);
+    expect(manager.resolveOriginNativeSession('not-a-session')).toBeNull();
+  });
   it('native registration is scoped to an existing running Instar session', async () => {
     const session = await manager.spawnSession({ name: 'bind-control', prompt: 'fixture' });
     manager.setClaudeSessionId('foreign', 'native-wrong');

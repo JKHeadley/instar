@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "slack-participant-mentions",
+  "sessionId": "259c62aa-2b68-485c-8146-ca101d0809b9",
+  "timestamp": "2026-11-13T03:02:43.083Z",
+  "artifactPath": "upgrades/side-effects/slack-participant-mentions.md",
+  "artifactSha256": "d3c54c1634722f1924dd17665e72c437179ffe4a7886878c88279347ffea9700",
+  "coveredFiles": [
+    "tests/integration/slack-session-reply-route.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test fixture fix: reuse the minted conversation registry in the real-adapter integration case",
+  "eli16Path": "docs/specs/slack-participant-mentions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-participant-mentions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

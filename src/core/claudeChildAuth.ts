@@ -32,6 +32,7 @@ const OAUTH_KEY_PREFIX = 'sk-ant-oat';
 
 let keySource: (() => string | undefined) | null = null;
 let baseUrlSource: (() => string | undefined) | null = null;
+let reviewerLoginSource: (() => string | null) | null = null;
 
 /** Called once per process, right after loadConfig. Read per call, so a restored key applies at once. */
 export function configureClaudeChildAuth(
@@ -62,6 +63,29 @@ export function applyClaudeChildAuth<T extends NodeJS.ProcessEnv>(env: T): T {
     const baseUrl = baseUrlSource?.();
     if (baseUrl) target.ANTHROPIC_BASE_URL = baseUrl;
   }
+  return env;
+}
+
+/**
+ * Where a locked-down reviewer call finds a stored login when the agent has none of its own. A
+ * machine whose logins all live in the subscription pool leaves the default login signed out, so
+ * a reviewer started from the server answered "Not logged in" on every call (2026-11-07: no
+ * feedback PR could pass its review). Read per call, so quota and sign-in changes apply at once.
+ */
+export function configureClaudeReviewerLogin(source: (() => string | null) | null): void {
+  reviewerLoginSource = source;
+}
+
+/**
+ * Point a reviewer child at a pool login. A configured key and an inherited login both win, so an
+ * agent that already says which login to use is unchanged. With no source or no account with room
+ * the env is left alone, the call fails, and the review stays refused: it never runs unreviewed.
+ */
+export function applyClaudeReviewerLogin<T extends NodeJS.ProcessEnv>(env: T): T {
+  if (configuredClaudeOauthKey() || env.CLAUDE_CONFIG_DIR) return env;
+  let home: string | null = null;
+  try { home = reviewerLoginSource?.() ?? null; } catch { /* @silent-fallback-ok: no pick means the call fails and the review stays refused */ }
+  if (home) (env as NodeJS.ProcessEnv).CLAUDE_CONFIG_DIR = home;
   return env;
 }
 

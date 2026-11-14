@@ -656,6 +656,38 @@ function ghJson(args) {
   }
 }
 
+const VERCEL_FORK_DESCRIPTION = 'Authorization required to deploy.';
+const VERCEL_FORK_TARGET_PREFIX = 'https://vercel.com/git/authorize?';
+
+/**
+ * Vercel refuses to build a preview for a fork's commit until a team member grants it, and reports that
+ * as a failed status. Nothing was built or tested, so it says nothing about the change, and every fork
+ * PR (all feedback executor PRs) would otherwise be refused forever. Drop that one row only when the PR
+ * is a verified fork and every Vercel status on the head is exactly that refusal; anything else about
+ * a Vercel row, such as a real build failure, still refuses.
+ */
+export function dropForkVercelAuthorizationRefusal(rows, { isCrossRepository, statuses }) {
+  if (isCrossRepository !== true) return rows;
+  const vercel = (statuses ?? []).filter((st) => st?.context === 'Vercel');
+  const onlyRefusal = vercel.length > 0 && vercel.every((st) => st.state === 'failure'
+    && st.description === VERCEL_FORK_DESCRIPTION
+    && typeof st.target_url === 'string' && st.target_url.startsWith(VERCEL_FORK_TARGET_PREFIX));
+  if (!onlyRefusal) return rows;
+  // A commit status has no workflow. A GitHub Actions job that happens to be named Vercel does, and stays red.
+  return rows.filter((row) => !(String(row?.name ?? '') === 'Vercel' && !row?.workflow && String(row?.bucket ?? '').toLowerCase() === 'fail'));
+}
+
+function fetchHeadStatusDetails(repo, headSha) {
+  return ghJson(['api', `repos/${repo}/commits/${headSha}/status?per_page=100`])?.statuses ?? [];
+}
+
+function checksWithoutForkVercelRefusal(rows, view, repo, headSha) {
+  if (view?.isCrossRepository !== true || !rows.some((row) => String(row?.name ?? '') === 'Vercel')) return rows;
+  const kept = dropForkVercelAuthorizationRefusal(rows, { isCrossRepository: true, statuses: fetchHeadStatusDetails(repo, headSha) });
+  if (kept.length !== rows.length) console.error('safe-merge: ignoring Vercel "Authorization required to deploy" on this fork PR; nothing was built.');
+  return kept;
+}
+
 function fetchChecksRows(pr, repo) {
   // gh pr checks exits non-zero when checks are failing/pending; capture either way.
   // The run times are what lets classifyChecks keep only the latest run per name.
@@ -1206,7 +1238,7 @@ async function main() {
     let checksState;
     let evaluation;
     try {
-      checksState = classifyChecks(fetchChecksRows(pr, repo));
+      checksState = classifyChecks(checksWithoutForkVercelRefusal(fetchChecksRows(pr, repo), view, repo, pinnedHead));
       if (!checksState.settled) {
         result({ result: 'deferred:checks-pending', pr: Number(pr), pending: checksState.pending.slice(0, 20), noChecks: checksState.noChecks });
         console.error('safe-merge: CI checks are still pending; merge deferred.');
@@ -1313,7 +1345,7 @@ async function main() {
       console.error(`safe-merge: REFUSING — ${e.message}`);
       process.exit(1);
     }
-    checksState = classifyChecks(rows);
+    checksState = classifyChecks(checksWithoutForkVercelRefusal(rows, view, repo, pinnedHead));
     if (checksState.settled) break;
     if (Date.now() > deadline) {
       result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10), ...(checksState.noChecks ? { noChecksReported: true } : {}) });

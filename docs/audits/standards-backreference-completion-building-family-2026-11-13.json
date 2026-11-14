@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-14T00:43:20.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code-subagent"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 2
+  },
+  "convergenceReport": "docs/specs/reports/standards-backreference-completion-building-family-2026-11-13.md",
+  "convergenceSha256": "1e0fcdc012b91735459c29e5aa5ea11a9d5ff6586a10efef079c9e83dde9ca32",
+  "areas": {
+    "Building": {
+      "areaSha256": "64edd8878c3d67257177b1850c7abd21dd94676d18ab3e096de0e1dc21045723",
+      "verdict": "accepted"
+    }
+  }
+}

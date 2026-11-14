@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "feedback-last-mile",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T17:08:05.159Z",
+  "artifactPath": "upgrades/side-effects/feedback-last-mile.md",
+  "artifactSha256": "969d1f641044ea58a8c49b2247edde65389777b7745c180c53601690d6248aa0",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/core/durableSecretScrub.ts",
+    "src/feedback-factory/execute/changeSet.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/side-effects/feedback-last-mile.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the review prompt, the secret hold, the reviewer's login and the merge script path; two independent reviewers iterated to concurrence.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

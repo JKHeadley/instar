@@ -12,6 +12,9 @@ import {
   VERIFY_RESTART_HOLD_MS,
   peerHoldPath,
   plannedRestartBypassesHolds,
+  mergeHoldPath,
+  MERGE_HANDOFF_RESTART_HOLD_MS,
+  MERGE_SETTLE_RESTART_HOLD_MS,
 } from '../../src/core/PlannedRestartVerifyGuard.js';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
 import { ServerSupervisor } from '../../src/lifeline/ServerSupervisor.js';
@@ -246,5 +249,59 @@ describe('planned restart / accepted peer attempts', () => {
     expect(plannedRestartBypassesHolds(dir)).toBe(false);
     fs.writeFileSync(path.join(dir, 'state', 'restart-requested.json'), JSON.stringify({ ...flag(), bypassHolds: true }));
     expect(plannedRestartBypassesHolds(dir)).toBe(true);
+  });
+});
+
+describe('planned restart / a green run whose merge is in progress', () => {
+  let dir: string;
+  const NOW = Date.parse('2026-11-12T20:24:42.000Z');
+  const flag = (requestedAt = NOW - 60_000, extra: Record<string, unknown> = {}) => ({
+    requestedAt: new Date(requestedAt).toISOString(), requestedBy: 'setting-change', plannedRestart: true,
+    expiresAt: new Date(requestedAt + 60 * 60_000).toISOString(), ...extra,
+  });
+  const hold = (o: { phase?: unknown; since?: unknown; v?: unknown; raw?: string } = {}) => {
+    fs.mkdirSync(path.dirname(mergeHoldPath(dir)), { recursive: true });
+    fs.writeFileSync(mergeHoldPath(dir), o.raw ?? JSON.stringify({ v: o.v ?? 1, phase: o.phase ?? 'handoff', since: 'since' in o ? o.since : NOW - 1_000 }));
+  };
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'planned-restart-merge-')); fs.mkdirSync(path.join(dir, 'state'), { recursive: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'planned-restart-verify-guard.test.ts' }); });
+
+  it('with no run child left, a hand-off in progress still holds the restart, for ten minutes and no longer', () => {
+    hold({ since: NOW - 1_000 });
+    expect(plannedRestartVerifyState(dir, flag(), NOW)).toMatchObject({ hold: true, holdUntilMs: NOW - 1_000 + MERGE_HANDOFF_RESTART_HOLD_MS });
+    hold({ since: NOW - MERGE_HANDOFF_RESTART_HOLD_MS });
+    expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+  });
+
+  it('the settling gap between the child exiting and the hand-off holds for one minute only', () => {
+    hold({ phase: 'settling', since: NOW - 59_000 });
+    expect(plannedRestartVerifyState(dir, flag(), NOW)).toMatchObject({ hold: true, holdUntilMs: NOW - 59_000 + MERGE_SETTLE_RESTART_HOLD_MS });
+    hold({ phase: 'settling', since: NOW - 61_000 });
+    expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+  });
+
+  it('a missing, malformed, future, wrong-version or unknown-phase marker never defers', () => {
+    expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+    for (const o of [{ raw: '{not json' }, { raw: 'null' }, { since: 'soon' }, { since: NOW + 60_000 }, { v: 2 }, { phase: 'merging' }]) {
+      hold(o);
+      expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+    }
+  });
+
+  it('an explicit bypass ignores the merge hold, and the hold never outlasts the request ceiling', () => {
+    hold();
+    expect(plannedRestartVerifyState(dir, flag(NOW - 60_000, { bypassHolds: true }), NOW).hold).toBe(false);
+    const requestedAt = NOW - VERIFY_RESTART_HOLD_MS + 30_000;
+    expect(plannedRestartVerifyState(dir, flag(requestedAt), NOW)).toMatchObject({ hold: true, holdUntilMs: requestedAt + VERIFY_RESTART_HOLD_MS });
+    expect(plannedRestartVerifyState(dir, flag(NOW - VERIFY_RESTART_HOLD_MS), NOW).hold).toBe(false);
+  });
+
+  it('takes the later of a peer attempt and a merge in progress, and marks the request deferred', () => {
+    hold({ since: NOW - 1_000 });
+    fs.writeFileSync(peerHoldPath(dir), JSON.stringify({ v: 1, writtenAt: NOW, leaseEpoch: 7, attempts: [{ attemptId: 'a', pr: 1, sentAt: NOW - 20 * 60_000 }] }));
+    expect(plannedRestartVerifyState(dir, flag(), NOW).holdUntilMs).toBe(NOW - 1_000 + MERGE_HANDOFF_RESTART_HOLD_MS);
+    fs.writeFileSync(peerHoldPath(dir), JSON.stringify({ v: 1, writtenAt: NOW, leaseEpoch: 7, attempts: [{ attemptId: 'a', pr: 1, sentAt: NOW - 60_000 }] }));
+    expect(plannedRestartVerifyState(dir, flag(), NOW).holdUntilMs).toBe(NOW - 60_000 + PEER_RESTART_HOLD_MS);
+    expect(markPlannedRestartDeferred(dir, flag(), NOW)).toBe(true);
   });
 });

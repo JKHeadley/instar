@@ -194,6 +194,36 @@ describe('recoverForwardedHold on a token-less machine (§2, §4)', () => {
     expect(h.submit).toHaveBeenCalledTimes(1);
     expect(h.sendLocal).not.toHaveBeenCalled();
   });
+  // Merge with native-conversation-base 3a: a reply held through an outage is usually late,
+  // so the re-seal and 3a's late first line happen in the one supersede.
+  it('a late placeholder-sealed session reply: one supersede carries the live account AND the late line, under its own id', async () => {
+    const late = (holder: string): OriginPreparedBotOperation => {
+      const o = op(holder, 'op-1', UNRESOLVED_TOKENLESS_ACCOUNT);
+      Object.assign(o.record, { producerKind: 'session', operationKind: 'sendMessage' });
+      return o;
+    };
+    const h = rdeps({ ok: true, capabilities: LIVE }, { now: () => 20 * 60_000 });
+    const r = { ...row('holder', UNRESOLVED_TOKENLESS_ACCOUNT), deadlineAt: 10 ** 12, producerKind: 'session' } as HeldOperationRow;
+    expect(await recoverForwardedHold(h.d, r, late('holder'))).toBe('sent');
+    expect(h.prepare).toHaveBeenCalledTimes(1);
+    const [holder, prepared, id, account] = h.prepare.mock.calls[0] as unknown as [string, { text: string }, string, string];
+    expect(holder).toBe('holder');
+    expect(account).toBe(LIVE.accountId);
+    expect(prepared.text).toMatch(/^Late reply/);
+    expect(prepared.text).toContain('The root cause.');
+    const unmarked = supersedingOperationId('op-1', { contentDigest: 'c0ffee', accountId: LIVE.accountId, owner: 'holder',
+      destination: { chatId: '-100123', topicId: '9210' }, children: 1 });
+    expect(id).toMatch(/^op-1~r1-[0-9a-f]{8}$/);
+    expect(id).not.toBe(unmarked);
+    expect(h.supersede).toHaveBeenCalledTimes(1);
+    expect(h.submit).toHaveBeenCalledTimes(1);
+    expect(h.submit.mock.calls[0][2]).toEqual(LIVE);
+  });
+  it('no review retires a held reply: a later message in the topic is never consulted (3a removed the overtaken rule)', async () => {
+    const h = rdeps({ ok: true, capabilities: LIVE });
+    expect('reviewQueuedReply' in h.d).toBe(false);
+    expect(await recoverForwardedHold(h.d, row('holder', LIVE.accountId), op('holder', 'op-1', LIVE.accountId))).toBe('sent');
+  });
 });
 
 describe('relayNothingPrepared — a relay failure before any operation existed (reporting only)', () => {

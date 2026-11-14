@@ -1298,6 +1298,11 @@ export interface SafeGitOptions {
   encoding?: BufferEncoding;
   /** Timeout in ms, default 30000. */
   timeout?: number;
+  /**
+   * `spawn` only: start git as the leader of its own process group, so a caller that gives up on
+   * it can stop git's helper processes too (`git worktree add` checks out in a child).
+   */
+  detached?: boolean;
   /** Env passthrough — denylist for git-redirection variables applied. */
   env?: NodeJS.ProcessEnv;
   /** Optional: input string for the subprocess stdin. */
@@ -1488,6 +1493,7 @@ export class SafeGitExecutor {
       cwd: opts.cwd,
       stdio: opts.stdio ?? 'pipe',
       env,
+      ...(opts.detached === true ? { detached: true } : {}),
     };
     audit('git', opts.operation, verb, targets[0], 'allowed');
     return nodeSpawn('git', args as string[], spawnOpts);

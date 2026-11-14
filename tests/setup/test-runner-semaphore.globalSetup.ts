@@ -288,13 +288,17 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
     }
     const nested = checkNestedUnderHolder(readHoldersRaw(sem), lane, {
       envMarker: process.env['INSTAR_TEST_SEMAPHORE_HELD'],
+      ownSuiteHolder: process.env['INSTAR_HOST_TEST_OWN_SUITE_HOLDER'],
     });
     if (nested.nested) {
       const helperRan = process.env['__INSTAR_TRB_CONFIG'] !== undefined;
       const clampStash = process.env['__INSTAR_TRB_CLAMPED'];
       const clampActive = context.clampActive;
       const bound = resolvedPoolBound(ctx.config as Parameters<typeof resolvedPoolBound>[0]);
-      const poolOverride = clampActive && helperRan && (bound === null || bound > 4);
+      // A Local Verify run's own lane under its own suite slot was deliberately left unclamped
+      // by config-eval ('own-suite'): a pool above 4 there is expected, not a novel pool flag.
+      const ownSuite = nested.ownSuiteOnly && clampStash === 'own-suite';
+      const poolOverride = clampActive && helperRan && !ownSuite && (bound === null || bound > 4);
       // `clamped` per §2.5 = "this child went through the GUARDED config-eval
       // path" (true) vs an unguarded config that skipped without the clamp
       // (false + WARN). It is NOT the "a reshape physically happened" dimension —

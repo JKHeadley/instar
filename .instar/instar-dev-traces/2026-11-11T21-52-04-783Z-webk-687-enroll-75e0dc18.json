@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "webk-687-enroll",
+  "sessionId": "74f3dca9-b2b4-4c04-ad50-b9a595d8daea",
+  "timestamp": "2026-11-11T21:52:04.783Z",
+  "artifactPath": "upgrades/side-effects/webk-687-enroll.md",
+  "artifactSha256": "373d1268ec434ac32b9e3b3aab31749e98b42222779e5f290c65a7276d298a96",
+  "coveredFiles": [
+    "docs/specs/reports/telegram-message-origin-evidence/web-k-2.3-687-review.md",
+    "docs/specs/webk-687-enroll.eli16.md",
+    "src/messaging/telegram-origin/ReviewedWebKBuilds.ts",
+    "tests/unit/telegram-origin/browser-reenrollment.test.ts",
+    "upgrades/next/webk-687-enroll.md",
+    "upgrades/side-effects/webk-687-enroll.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One reviewed data row in an existing allowlist plus a pinning unit test; a revert fully undoes it",
+  "eli16Path": "docs/specs/webk-687-enroll.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/webk-687-enroll.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

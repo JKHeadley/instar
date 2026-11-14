@@ -93,5 +93,24 @@ describe.skipIf(!tmuxBinary)('Resume Follows the Account — real tmux dead pane
     expect(map.getEntryRaw(1)).toBeNull();
     expect(map.getEntryRaw(3)).toBeNull();
     expect(map.get(2)).toBe(other);
+
+    // The same read from a server with a bare environment (no TMUX, no UTF-8
+    // locale: launchd or a container starting the server directly). A tmux
+    // client in that state replaces non-printable characters in its output, so a
+    // tab-separated format would read every session as not live, silently.
+    const bareWrapper = path.join(dir, 'tmux-bare-env.sh');
+    // TMUX_TMPDIR is carried through: a test lane gives tmux its own socket directory,
+    // and without it this wrapper would look for the server on the wrong socket.
+    fs.writeFileSync(bareWrapper, `#!/bin/sh\nexec /usr/bin/env -i PATH="$PATH" \${TMUX_TMPDIR:+TMUX_TMPDIR="$TMUX_TMPDIR"} "${tmuxBinary}" -L ${socket} "$@"\n`);
+    fs.chmodSync(bareWrapper, 0o755);
+    const bareStateDir = path.join(dir, 'resume-state-bare-env');
+    fs.mkdirSync(bareStateDir, { recursive: true });
+    const bareMap = new TopicResumeMap(bareStateDir, projectDir, bareWrapper);
+    bareMap.refreshResumeMappings(new Map([
+      [1, { sessionName: 'crashed', claudeSessionId: UUID }],
+      [2, { sessionName: 'running', claudeSessionId: other }],
+    ]));
+    expect(bareMap.getEntryRaw(1)).toBeNull();
+    expect(bareMap.get(2)).toBe(other);
   });
 });

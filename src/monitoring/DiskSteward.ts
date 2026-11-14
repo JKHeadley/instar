@@ -14,13 +14,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  thresholdsFor, forecast, stepLevel, healCleared, repeatDue, gapAllows, sendRetryDelay,
+  thresholdsFor, forecast, stepLevel, healCleared, repeatDue, gapAllows, sendRetryDelay, nextRepeatBackoff, REPEAT_RESET_FRACTION,
   type Sample, type LevelState, type CadenceState, type Level, type DiskStewardThresholdConfig, type Forecast, type Thresholds,
 } from './diskSteward/levels.js';
 import type { PruneChildResult, WorktreePlan } from './diskStewardMain.js';
 import type { PruneRequest, RunRecord } from './diskSteward/pruneRunner.js';
+import type { WholeDiskResult } from './diskSteward/wholeDisk.js';
 
 const HOUR = 3_600_000;
+/** §3.7a: how often the whole home folder is measured by owner. */
+export const WHOLE_DISK_INTERVAL_MS = 24 * HOUR;
 const DAY = 24 * HOUR;
 const RETENTION_MS = 8 * DAY;
 const MAX_SAMPLES = 768;
@@ -46,6 +49,7 @@ export interface DuePost {
   biggest?: Array<{ name: string; bytes: number }>;
   sizesAt?: number;
   sizesPartial?: boolean;
+  wholeDisk?: WholeDiskResult;
   pruneEnabled: boolean;
   cleanupNotHelping: boolean;
   failures: number;
@@ -102,6 +106,7 @@ interface PersistedState {
   lastPost: { at: number; postId: string; level: Level; critical: boolean } | null;
   sizes?: { at: number; partial: boolean; folders: Array<{ name: string; bytes: number }> };
   worktrees?: WorktreePlan;
+  wholeDisk?: WholeDiskResult;
   lastMeasureFailedAt?: number | null;
   /** When this episode's last cycle healed the disk without a post. */
   healedAt?: number | null;
@@ -132,6 +137,7 @@ export interface DiskStewardStatus {
   prune: { enabled: boolean; dryRun: boolean; lastRun: PruneSummary | null; running: RunRecord | null; breaker: number };
   sizes: PersistedState['sizes'] | null;
   worktrees: WorktreePlan | null;
+  wholeDisk: WholeDiskResult | null;
 }
 
 function emptyState(): PersistedState {
@@ -256,6 +262,9 @@ export class DiskSteward {
         const firstCritical = step.criticalEntered && !this.state.criticalFirstDone;
         const urgentRise = (step.rose && step.level === 'escalate') || firstCritical;
         const rising = step.rose || firstCritical;
+        // A real drop since the last post ends the backoff now, not after the long wait (§3.5).
+        const lpf = this.state.cadence.lastPostFree;
+        if (lpf != null && lpf - m.free >= REPEAT_RESET_FRACTION * m.total) this.state.cadence.warnBackoff = 1;
         const repeat = !rising && this.state.episodePosted && repeatDue(this.state.cadence, step.level, step.critical, now);
         // Healed without a post, but still in the episode once the cleanup interval has passed: try again.
         const unposted = !rising && !this.state.episodePosted && !!this.state.healedAt && now - this.state.healedAt >= this.deps.pruneMinIntervalMs();
@@ -301,16 +310,18 @@ export class DiskSteward {
       const belowWarn = th !== null && free0 !== null && free0 < th.warnBelow;
       const breakerTripped = this.state.breaker >= 3;
       const wantsMeasure = !this.state.sizes || now - this.state.sizes.at > 6 * HOUR;
+      // §3.7a: the whole home folder is slower to walk, so at most once a day.
+      const wantsWholeDisk = !this.state.wholeDisk || now - this.state.wholeDisk.at > WHOLE_DISK_INTERVAL_MS;
       let dryRun: boolean;
       let trigger: 'auto' | 'manual';
       if (opts.manual) { dryRun = opts.manual.dryRun; trigger = 'manual'; }
       else { dryRun = !(enabled && !this.deps.pruneDryRun() && dueForPrune && belowWarn && !breakerTripped); trigger = 'auto'; }
-      if (!opts.manual && dryRun && !wantsMeasure && this.state.lastPrune && now - this.state.lastPrune.at < 6 * HOUR) {
+      if (!opts.manual && dryRun && !wantsMeasure && !wantsWholeDisk && this.state.lastPrune && now - this.state.lastPrune.at < 6 * HOUR) {
         // A recent plan is fresh enough: post from it without another child run.
         this.queueAlert(now, opts.firstCritical);
         return { runId: null };
       }
-      const started = this.deps.runner.start({ trigger, dryRun, measure: wantsMeasure || !!opts.manual, requestedBy: opts.manual?.requestedBy ?? null });
+      const started = this.deps.runner.start({ trigger, dryRun, measure: wantsMeasure || !!opts.manual, wholeDisk: wantsWholeDisk, requestedBy: opts.manual?.requestedBy ?? null });
       if (!started) { this.deps.log({ event: 'prune-busy' }); if (!opts.manual) this.queueAlert(now, opts.firstCritical); return { runId: null }; }
       this.deps.evidence?.('fired', `${trigger}${dryRun ? ' dry-run' : ''}`);
       const backstop = new Promise<'timeout'>((r) => { const t = setTimeout(() => r('timeout'), 45 * 60_000); t.unref?.(); });
@@ -360,6 +371,7 @@ export class DiskSteward {
     }
     if (r.sizes) this.state.sizes = r.sizes;
     if (r.worktrees) this.state.worktrees = r.worktrees;
+    if (r.wholeDisk) this.state.wholeDisk = r.wholeDisk;
     if (r.categories.some((c) => c.error)) this.deps.evidence?.('error', 'a cleanup category failed');
   }
 
@@ -380,6 +392,7 @@ export class DiskSteward {
       ...(this.state.worktrees ? { worktrees: this.state.worktrees } : {}),
       reaperArmed: this.deps.reaperArmed(),
       ...(this.state.sizes ? { biggest: this.state.sizes.folders.slice(0, 3), sizesAt: this.state.sizes.at, sizesPartial: this.state.sizes.partial } : {}),
+      ...(this.state.wholeDisk ? { wholeDisk: this.state.wholeDisk } : {}),
       pruneEnabled: this.deps.pruneEnabled(),
       cleanupNotHelping: this.state.breaker >= 3,
       failures: 0, nextAttemptAt: now,
@@ -388,9 +401,12 @@ export class DiskSteward {
 
   private queueAlert(now: number, _firstCritical: boolean, kind: DuePost['kind'] = 'alert'): void {
     const post = this.basePost(now, kind);
-    if (kind === 'alert' && post.level === 'warn' && !post.critical && post.cacheReclaimableBytes < 0.01 * post.total && this.state.episodePosted) {
-      // Nothing clearable and nothing changed: the warn repeat backs off (§3.5).
-      this.state.cadence.warnBackoff = Math.min(this.state.cadence.warnBackoff * 2, 7);
+    if (kind === 'alert' && this.state.episodePosted) {
+      // Nothing clearable and no real drop since the last post: the repeat backs off;
+      // a drop of 2% of the disk resets it (§3.5).
+      this.state.cadence.warnBackoff = nextRepeatBackoff(this.state.cadence.warnBackoff, {
+        lastPostFree: this.state.cadence.lastPostFree, free: post.free, total: post.total, reclaimable: post.cacheReclaimableBytes,
+      });
     }
     this.state.due = post;
   }
@@ -411,7 +427,7 @@ export class DiskSteward {
     if (outcome === 'posted') {
       this.state.lastPost = { at: now, postId, level: due.level, critical: due.critical };
       this.state.cadence.lastPostAt = now;
-      if (due.kind === 'alert') { this.state.episodePosted = true; this.state.cadence.stage += 1; }
+      if (due.kind === 'alert') { this.state.episodePosted = true; this.state.cadence.stage += 1; this.state.cadence.lastPostFree = due.free; }
       this.state.due = null;
       this.sendFailureReported = false;
     } else {
@@ -492,6 +508,7 @@ export class DiskSteward {
       lastPost: this.state.lastPost,
       prune: { enabled: this.deps.pruneEnabled(), dryRun: this.deps.pruneDryRun(), lastRun: this.state.lastPrune, running: this.deps.runner.running(), breaker: this.state.breaker },
       sizes: this.state.sizes ?? null,
+      wholeDisk: this.state.wholeDisk ?? null,
       worktrees: this.state.worktrees ?? null,
     };
   }

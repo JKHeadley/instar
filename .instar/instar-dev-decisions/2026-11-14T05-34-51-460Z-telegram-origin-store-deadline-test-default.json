@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-14T05:34:51.460Z",
+  "slug": "telegram-origin-store-deadline-test-default",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/OriginStageDeadlines.ts",
+      "src/messaging/telegram-origin/OriginStore.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

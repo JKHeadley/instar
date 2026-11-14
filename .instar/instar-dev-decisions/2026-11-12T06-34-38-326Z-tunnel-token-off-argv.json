@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-12T06:34:38.326Z",
+  "slug": "tunnel-token-off-argv",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/tunnel/CloudflareNamedProvider.ts",
+      "src/tunnel/TunnelManager.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

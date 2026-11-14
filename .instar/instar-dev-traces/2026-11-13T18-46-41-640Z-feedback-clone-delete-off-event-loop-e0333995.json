@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "feedback-clone-delete-off-event-loop",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T18:46:41.640Z",
+  "artifactPath": "upgrades/side-effects/feedback-clone-delete-off-event-loop.md",
+  "artifactSha256": "696032cb9c0cc2652ab1acfd113d042d653aa67a4da07f660336d7e68338fe43",
+  "coveredFiles": [
+    "docs/specs/feedback-clone-delete-off-event-loop.eli16.md",
+    "src/core/SafeFsExecutor.ts",
+    "src/feedback-factory/execute/attemptFs.ts",
+    "tests/unit/SafeFsExecutor.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-clone-delete-off-event-loop.md",
+    "upgrades/side-effects/feedback-clone-delete-off-event-loop.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible fix: moves an existing delete off the main thread; no gate, state format, config or migration; revert restores previous behaviour",
+  "eli16Path": "docs/specs/feedback-clone-delete-off-event-loop.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-clone-delete-off-event-loop.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

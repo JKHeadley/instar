@@ -105,6 +105,8 @@ interface FakeDrain {
   /** The run reports `running` until this long after the tick (a slow tick); never terminal when Infinity. */
   runningForMs?: number;
   after?: Record<string, unknown>;
+  /** The first N status reads never answer (a server too busy to answer itself). */
+  hangStatus?: number;
 }
 
 describe('feedback-factory-process job script — honest outcomes against a drain server', () => {
@@ -123,8 +125,9 @@ describe('feedback-factory-process job script — honest outcomes against a drai
     SafeFsExecutor.safeRmSync(workspace, { recursive: true, force: true, operation: 'tests/integration/feedback-factory-process-job-body.test.ts' });
   });
 
-  async function runAgainst(fake: FakeDrain, pollSeconds = '5'): Promise<{ failure: string | null; stdout: string; ticks: number }> {
+  async function runAgainst(fake: FakeDrain, pollSeconds = '5'): Promise<{ failure: string | null; skip: string | null; stdout: string; ticks: number; statusReads: number }> {
     let ticks = 0;
+    let statusReads = 0;
     let tickedAt = 0;
     const server = http.createServer((req, res) => {
       const send = (code: number, payload: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(payload)); };
@@ -137,6 +140,8 @@ describe('feedback-factory-process job script — honest outcomes against a drai
         send(fake.tick.code, fake.tick.body); return;
       }
       if (req.method === 'GET' && req.url === '/feedback-factory/drain/status') {
+        statusReads++;
+        if (statusReads <= (fake.hangStatus ?? 0)) return; // never answers
         if (ticks > 0 && fake.run) {
           if (Date.now() - tickedAt < (fake.runningForMs ?? 0)) {
             send(200, { ...(fake.status.body as object), lastRun: { runId: 'run:1', state: 'running', reason: '' } }); return;
@@ -152,11 +157,12 @@ describe('feedback-factory-process job script — honest outcomes against a drai
     // Ephemeral ports can be reused across cases; a prior failure must not
     // make a later successful run look failed.
     const failureFile = path.join(workspace, `failure-${randomUUID()}.txt`);
+    const skipFile = path.join(workspace, `skip-${randomUUID()}.txt`);
     try {
       const stdout = await new Promise<string>((resolve, reject) => {
         const child = spawn('python3', ['-'], {
           cwd: workspace,
-          env: { ...process.env, INSTAR_AUTH_TOKEN: 'job-token', INSTAR_AGENT_ID: 'echo', INSTAR_PORT: String(port), INSTAR_JOB_FAILURE_FILE: failureFile, FEEDBACK_DRAIN_POLL_SECONDS: pollSeconds },
+          env: { ...process.env, INSTAR_AUTH_TOKEN: 'job-token', INSTAR_AGENT_ID: 'echo', INSTAR_PORT: String(port), INSTAR_JOB_FAILURE_FILE: failureFile, INSTAR_JOB_SKIP_FILE: skipFile, FEEDBACK_DRAIN_POLL_SECONDS: pollSeconds, FEEDBACK_DRAIN_STATUS_WAIT_SCALE: '0.02' },
         });
         let out = '';
         child.stdout.on('data', (chunk) => { out += String(chunk); });
@@ -165,8 +171,10 @@ describe('feedback-factory-process job script — honest outcomes against a drai
         child.on('close', (code) => { if (code === 0) resolve(out); else reject(new Error(`script exited ${code}: ${out}`)); });
         child.stdin.end(script);
       });
-      return { failure: fs.existsSync(failureFile) ? fs.readFileSync(failureFile, 'utf8') : null, stdout, ticks };
+      return { failure: fs.existsSync(failureFile) ? fs.readFileSync(failureFile, 'utf8') : null,
+        skip: fs.existsSync(skipFile) ? fs.readFileSync(skipFile, 'utf8') : null, stdout, ticks, statusReads };
     } finally {
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }
@@ -205,6 +213,23 @@ describe('feedback-factory-process job script — honest outcomes against a drai
     expect((await runAgainst({ status: { code: 503, body: { posture: { state: 'unavailable', reason: 'initialization-failure' } } }, tick: accepted })).failure)
       .toBe('drain posture unavailable: initialization-failure');
     expect((await runAgainst({ status: { code: 401, body: { error: 'nope' } }, tick: accepted })).failure).toBe('drain status unreadable: HTTP 401');
+  });
+
+  // Live 2026-11-04..11 (CMT-1613): about 9% of runs "failed" with "drain status unreadable:
+  // HTTP unreachable (timeout)" — the job's own server was too busy to answer in 10 s and no
+  // drain run ever started. That is a skipped run, not a failed one.
+  it('a status read that times out three times is a skipped run: skip file, no failure, no tick', async () => {
+    const result = await runAgainst({ status: live, tick: accepted, hangStatus: 3 });
+    expect(result.failure).toBeNull();
+    expect(result.skip).toMatch(/^server too busy to answer its drain status \(3 tries/);
+    expect(result).toMatchObject({ ticks: 0, statusReads: 3 });
+    expect(result.stdout).toContain('FEEDBACK_DRAIN_RESULT skipped:');
+  });
+
+  it('a status read that times out once, then answers, runs the drain normally', async () => {
+    const result = await runAgainst({ status: live, tick: accepted, run: { state: 'succeeded' }, hangStatus: 1 });
+    expect(result).toMatchObject({ failure: null, skip: null, ticks: 1 });
+    expect(result.stdout).toContain('FEEDBACK_DRAIN_RESULT succeeded run:1');
   });
 
   it('a tick proxied to the owner finishes at once instead of polling a run it cannot see', async () => {

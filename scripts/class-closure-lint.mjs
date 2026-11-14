@@ -2,6 +2,9 @@
 // safe-git-allow: CI-only gate script — single read-only `git diff --name-status`
 //   against the Actions checkout; runs on ubuntu runners where the TS
 //   SafeGitExecutor is not importable from a standalone .mjs.
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Capacity Safety — No Unbounded Self-Action*
+
 /**
  * class-closure-lint — the REPORT-ONLY CI lint for the Class-Closure Gate
  * (docs/specs/class-closure-gate.md → Rollout step 1). Increment 1.

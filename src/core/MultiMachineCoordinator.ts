@@ -446,6 +446,11 @@ export class MultiMachineCoordinator extends EventEmitter {
     // corruption, disk glitch, or manual cleanup hard-crashes the server
     // on boot because updateRole throws on unknown machineIds.
     this.identityManager.ensureSelfRegistered(this._identity, 'standby');
+    // Every machine carries a human name (operator report 2026-11-12: footers read
+    // "Machine m_4851af"). Backfills this machine's own friendly name and names peers that have
+    // none; never replaces a name a person chose. Best-effort: naming never blocks boot.
+    try { this.identityManager.ensureNicknames(this._identity.machineId); }
+    catch { /* @silent-fallback-ok — an unwritable registry keeps the current names; the next boot retries */ }
 
     // Integrated-Being v1 — per-machine ledger warning.
     // Emit exactly once per startup when the registry shows >1 machine.

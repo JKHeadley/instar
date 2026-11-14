@@ -73,12 +73,27 @@ export function approveHint(fingerprint) {
 }
 
 /**
- * A browser device's extra words (dashboard-conversations-browser-device.md §4.9): the "Browser" tag,
- * when it was last used on this machine, or that browsers are switched off on this agent. Null for a phone.
+ * The paired devices, split for display (docs/specs/dashboard-ui-quality-standard.md): phones and
+ * browsers are separate groups, so neither heading lists the other kind and no row repeats its kind.
+ * Each row is a name line and one short detail line. Only active and pending devices are shown.
+ * `personText` (optional) adds whose device it is to the name.
  */
-export function browserWords(d, { browserOff = false } = {}) {
-  if (!d || d.client !== 'browser') return null;
-  if (browserOff) return 'Browser · Switched off on this agent';
-  const t = Date.parse(d.lastSeenAt || '');
-  return Number.isFinite(t) ? `Browser · last used on this machine ${new Date(t).toLocaleString()}` : 'Browser · not used yet';
+export function pairedGroups(devices, { browserOff = false, personText = () => '' } = {}) {
+  const phones = [], browsers = [];
+  for (const d of Array.isArray(devices) ? devices : []) {
+    if (!d || (d.status !== 'active' && d.status !== 'pending')) continue;
+    const isBrowser = d.client === 'browser';
+    const name = `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')}${personText(d)}`;
+    let detail;
+    if (d.status === 'pending') detail = 'Waiting to confirm';
+    else if (isBrowser) {
+      const t = Date.parse(d.lastSeenAt || '');
+      detail = browserOff ? 'Switched off on this agent' : Number.isFinite(t) ? `Last used on this machine ${new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not used yet';
+    } else {
+      const t = Date.parse(d.approvedAt || '');
+      detail = Number.isFinite(t) ? `Paired since ${new Date(t).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : 'Paired';
+    }
+    (isBrowser ? browsers : phones).push({ id: d.id, name, detail, removable: d.status === 'active', what: isBrowser ? 'browser' : 'phone' });
+  }
+  return { phones, browsers };
 }

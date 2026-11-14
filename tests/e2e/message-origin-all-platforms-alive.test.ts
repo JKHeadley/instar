@@ -50,7 +50,9 @@ async function boot(developmentAgent: boolean) {
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   // Every agent gets a machine identity at `instar init`; the receipt signer reads it.
-  await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
+  // The machine names itself after the computer's own name (macOS ComputerName / Linux pretty
+  // hostname); a fixed name here keeps the expected footer independent of the host running the test.
+  await new MachineIdentityManager(stateDir, { detectFriendlyName: () => "Test Lab's Mac" }).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
     mobilePairing: { multiRoute: { enabled: false } }, // the single-host path; multi-route has its own e2e
@@ -121,7 +123,7 @@ describe('message origin — production wiring', () => {
     const agentRow = (hist.body.messages as Array<{ role: string; origin?: unknown }>).find((x) => x.role === 'agent')!;
     expect(agentRow.origin).toEqual({
       recorded: true,
-      machine: { value: 'E2e Machine', status: 'observed' }, // the registry nickname, title-cased from 'e2e machine'
+      machine: { value: "Test Lab's Mac", status: 'observed' }, // the registry nickname: the computer's own name at init
       harness: { value: 'Claude Code', id: 'claude-code', status: 'configured' },
       model: { value: 'claude-opus-5-5', status: 'configured' },
       display: { enabled: true, machine: true, harness: true, model: true },

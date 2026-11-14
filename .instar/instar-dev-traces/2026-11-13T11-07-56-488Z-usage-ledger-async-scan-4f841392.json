@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "usage-ledger-async-scan",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T11:07:56.488Z",
+  "artifactPath": "upgrades/side-effects/usage-ledger-async-scan.md",
+  "artifactSha256": "e0303331d0fe3d00263447c8e872c0b35993ba1b01bd3282406f35be37083d76",
+  "coveredFiles": [
+    "docs/specs/usage-ledger-async-scan.eli16.md",
+    "src/monitoring/UsageLedger.ts",
+    "src/monitoring/usageLedgerTick.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/UsageLedger.asyncScan.test.ts",
+    "tests/unit/usageLedgerTick.test.ts",
+    "upgrades/next/usage-ledger-async-scan.md",
+    "upgrades/side-effects/usage-ledger-async-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves the usage ledger's once-a-minute file listing from synchronous to fs.promises calls with identical rules (held by a parity test); no stored data, schema or config changes; a revert undoes it. Independent review: two reads, concur.",
+  "eli16Path": "docs/specs/usage-ledger-async-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-ledger-async-scan.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

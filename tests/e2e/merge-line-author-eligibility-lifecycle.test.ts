@@ -22,11 +22,14 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'merge-line-author-eligibility-lifecycle.test.ts' }); });
 
-const green = [{ __typename: 'CheckRun', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-10-25T00:00:00Z', workflowName: 'ci' }];
+// One PR as a node of the paged GraphQL listing the production wiring reads.
+const green = [{ __typename: 'CheckRun', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-10-25T00:00:00Z',
+  checkSuite: { workflowRun: { workflow: { name: 'ci' } } } }];
 const row = (number: number, headRefName: string, login: string, isCrossRepository: boolean) => ({
-  number, title: `chore: ${number}`, labels: [], isDraft: false, headRefName, headRefOid: `sha${number}`,
-  baseRefName: 'main', mergeable: 'MERGEABLE', statusCheckRollup: green, autoMergeRequest: null,
-  reviewDecision: '', createdAt: '2026-10-25T00:00:00Z', author: { login, is_bot: false }, isCrossRepository,
+  number, title: `chore: ${number}`, labels: { nodes: [] }, isDraft: false, headRefName, headRefOid: `sha${number}`,
+  baseRefName: 'main', mergeable: 'MERGEABLE', autoMergeRequest: null,
+  commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: green } } } }] },
+  reviewDecision: null, createdAt: '2026-10-25T00:00:00Z', author: { __typename: 'User', login }, isCrossRepository,
 });
 
 describe('merge line accepts own PRs by author (production wiring)', () => {
@@ -37,9 +40,10 @@ describe('merge line accepts own PRs by author (production wiring)', () => {
     fs.mkdirSync(stateDir);
     const listArgs: string[][] = [];
     const ghExec = async (args: string[]) => {
-      if (args[0] === 'pr' && args[1] === 'list') {
+      if (args[0] === 'api' && args[1] === 'graphql') {
         listArgs.push(args);
-        return { stdout: JSON.stringify([row(2360, 'chore/model-registry-review', 'EchoOfDawn', false), row(9, 'echo/from-fork', 'EchoOfDawn', true)]), stderr: '', code: 0 };
+        return { stdout: JSON.stringify({ data: { viewer: { login: 'EchoOfDawn' }, repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [row(2360, 'chore/model-registry-review', 'EchoOfDawn', false), row(9, 'echo/from-fork', 'EchoOfDawn', true), row(77, 'someone/else', 'another-author', false)] } } } }), stderr: '', code: 0 };
       }
       if (args[0] === 'api' && String(args[1]).includes('/contents/.github/CODEOWNERS')) return { stdout: '', stderr: '', code: 0 };
       if (args[0] === 'api' && String(args[1]).includes('/files')) return { stdout: 'src/x.ts\n', stderr: '', code: 0 };
@@ -67,9 +71,10 @@ describe('merge line accepts own PRs by author (production wiring)', () => {
 
     expect((await request(app).post('/green-pr-automerge/tick')).status).toBe(200); // warm-up tick: observe
     // The production list projection asks GitHub for the two ownership fields.
-    const fields = listArgs[0][listArgs[0].indexOf('--json') + 1].split(',');
-    expect(fields).toEqual([...LIST_PR_JSON_FIELDS]);
-    expect(fields).toEqual(expect.arrayContaining(['author', 'isCrossRepository']));
+    const query = listArgs[0].find((a) => a.startsWith('query='))!;
+    expect(query).toContain('author { __typename login }');
+    expect(query).toContain('isCrossRepository');
+    expect([...LIST_PR_JSON_FIELDS]).toEqual(expect.arrayContaining(['author', 'isCrossRepository']));
 
     const res = await request(app).get('/green-pr-automerge');
     expect(res.status).toBe(200);
