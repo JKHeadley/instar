@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "console-dated-preferences",
+  "sessionId": "281a0ff5-07f5-4b12-a1fe-e89b1451fdc4",
+  "timestamp": "2026-11-14T22:47:47.275Z",
+  "artifactPath": "upgrades/side-effects/console-dated-preferences.md",
+  "artifactSha256": "f7182cbb02bd0a1d8efd426f8012c0a14390258feb431bdf608febf7e316ad4e",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/learned-model.js",
+    "dashboard/console/learned.js",
+    "docs/specs/console-dated-preferences.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/PreferencesListView.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/preferences-list-alive.test.ts",
+    "tests/integration/preferences-list-route.test.ts",
+    "tests/unit/console-dated-preferences.test.ts",
+    "tests/unit/console-learned-attention.test.ts",
+    "tests/unit/console-learned-retired.test.ts",
+    "tests/unit/console-learned-skills-model.test.ts",
+    "upgrades/side-effects/console-dated-preferences.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only route plus a dashboard display change; no writes, no gates; a revert fully undoes it and the page falls back on a 404.",
+  "eli16Path": "docs/specs/console-dated-preferences.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-dated-preferences.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

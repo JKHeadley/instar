@@ -134,7 +134,7 @@ describe('the Learned page in a DOM', () => {
     (globalThis as any).fetch = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}), text: async () => '' }));
     w.scrollTo = vi.fn();
     w.HTMLElement.prototype.scrollIntoView = vi.fn();
-    reads = { '/preferences/session-context': ok({ present: false }), '/corrections?limit=20': ok({ records: [], count: 0, totalRecords: 0, nextBefore: null }), '/state/conflicts': off(), '/pool': ok({ enabled: false, machines: [] }) };
+    reads = { '/preferences': ok({ entries: [], total: 0, truncated: false, scope: 'local' }), '/preferences/session-context': ok({ present: false }), '/corrections?limit=20': ok({ records: [], count: 0, totalRecords: 0, nextBefore: null }), '/state/conflicts': off(), '/pool': ok({ enabled: false, machines: [] }) };
     posts = [];
   });
   async function render(skillsRes: unknown, postResult: unknown = { ok: true, data: { ok: true } }) {

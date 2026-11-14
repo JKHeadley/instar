@@ -1362,6 +1362,15 @@ export function MOBILE_PLANS_PEOPLE_LINE(port: number): string {
 }
 export const MOBILE_PLANS_PEOPLE_MARKER = 'GET /mobile/plans';
 /**
+ * GET /preferences — the structured learned-preference list the console's Learned page reads.
+ * One bullet, shared by generateClaudeMd (new agents) and migrateClaudeMd (existing agents).
+ * Sniff: PREFERENCES_LIST_MARKER.
+ */
+export function PREFERENCES_LIST_CLAUDEMD_LINE(port: number): string {
+  return `- See every learned preference with its date: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences\` → \`{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }], total, truncated, scope }\` (read only; newest first; the learning text is credential-scrubbed; 503 when disabled). Use it when the user asks "what have you learned about me, and when?" — it is what the console's "What I've learned about you" page reads.`;
+}
+export const PREFERENCES_LIST_MARKER = '/preferences` → `{ entries:';
+/**
  * The native Messages to you / Insights reads and owner-phone removal (docs/specs/mobile-native-phones-messages.md),
  * one bullet in the Mobile app routes block after the plans-people bullet. Sniff: `GET /mobile/messages`.
  */
@@ -11019,6 +11028,22 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD, MOBILE_CAPACITY_SCREENS_RESOURCES_NEW);
       patched = true;
       result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
+    }
+
+    // GET /preferences (structured, dated learned preferences): one bullet after the
+    // session-context bullet of the Preferences section (a "- " line, never the Registry
+    // First table row that also names that route); appended when no such bullet exists.
+    if (content.includes('/preferences/session-context') && !content.includes(PREFERENCES_LIST_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/preferences/session-context'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, PREFERENCES_LIST_CLAUDEMD_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${PREFERENCES_LIST_CLAUDEMD_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added GET /preferences (dated learned preferences) line');
     }
 
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
