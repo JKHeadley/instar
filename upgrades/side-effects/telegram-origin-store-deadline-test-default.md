@@ -52,6 +52,10 @@ Machine-local by design: an in-process default in a test runner.
 
 Revert the commit. No state, config or migration.
 
+## Addendum: one e2e wait widened
+
+`tests/e2e/telegram-origin-transient-config-read.test.ts`: the wait for `authorize()` to turn false after a refused read goes from 2 s to 20 s. Test-only. What the test proves is unchanged in kind: a refusal stops sending without waiting for the 30 s snapshot bound (20 s < 30 s, and the next test covers the bound itself). Under-block: a regression that delayed the stop to between 2 s and 20 s would no longer fail this test; none of the code involved has a timer in that range. Added after the second-pass read below.
+
 ---
 
 ## Second-pass review

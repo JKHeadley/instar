@@ -8,6 +8,8 @@
 
 Production behaviour is unchanged: nothing under `src/` calls the setter (pinned by a source scan), and the store validates an explicit option exactly as before.
 
+Also in this change: `tests/e2e/telegram-origin-transient-config-read.test.ts` ("stops sending at once when the source refuses") waited 2 s for `authorize()` to turn false. "At once" there means without waiting out the 30 s bound on a kept snapshot; on a loaded machine one `authorize()` round trip can exceed 2 s, and the test failed PR 3146 (2026-11-13 19:42Z) and PR 3072 (2026-11-14 05:52Z), neither of which touches it. The wait is now 20 s, still inside the 30 s bound the next test covers.
+
 ## What to Tell Your User
 
 Nothing changes that you will see. One more family of tests stops failing unrelated changes when the test machine is busy.

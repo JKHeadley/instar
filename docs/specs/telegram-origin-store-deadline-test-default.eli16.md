@@ -24,6 +24,10 @@ The two-second limit gets the same treatment as the limits above it. There is no
 
 A test whose helper is truly hung, and which did not set its own wait, now fails after twenty seconds instead of two. That costs time in a failing test, not correctness.
 
+## One more test in the same family
+
+A related test checks that the agent stops sending "at once" when its settings source refuses a read. It gave the agent two seconds to do so. On a busy machine one round trip can take longer than that, and the test failed two changes that had nothing to do with it, one of them a feature. It now allows twenty seconds, which still proves the point: the agent must not wait out the thirty-second grace period that a different test covers.
+
 ## What you need to decide
 
 Nothing. This is a change to how tests run.
