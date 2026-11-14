@@ -107,6 +107,8 @@ const PENDING_BASELINE = [
   'a2a-checkin-summarize::a2a-checkin::backlog:decision-quality-enrolment',
   'coherence-review::CoherenceReviewer::backlog:decision-quality-enrolment',
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
+  // conversation-graph-suggestions (2026-11-13): advice-only groupings, graded by owner Accept/Reject until enrolled.
+  'conversation-graph-suggestions::ConversationGraphSuggestions::backlog:decision-quality-enrolment',
   // context-budget-layered-summaries Phase 1 S8 (2026-11-10): chunk/C2 summaries; enrolment queued with the Phase 2 fold probes.
   'context-layer-chunk::ContextLayerChunk::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',

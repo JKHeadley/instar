@@ -3,6 +3,9 @@
 //   *Live-User-Channel Proof Before Done*
 
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
+import { historyTextFor } from '../core/inboundMedia.js';
+import { buildTelegramSessionText } from '../core/platformMediaForSession.js';
 import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
@@ -291,6 +294,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
+import { mediaOffBody } from './mobileMediaOff.js';
 import { mountMobileOpsRoutes, machineKey, summarizeMachines } from './mobileOpsRoutes.js';
 import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
@@ -723,6 +727,7 @@ import {
 import {
   createLocalRouteTrustCounters,
   localRouteTrustLogLine,
+  localRouteTrustEvidence,
   resolveLocalRouteTrust,
   resolveLocalRouteTrustMode,
   statedLocalTrustLevel,
@@ -1189,6 +1194,8 @@ export interface RouteContext {
   mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); absent/null when off. */
   appConversations?: import('../core/AppConversationService.js').AppConversationService | null;
+  /** native-conversation-base §3c: Telegram file resolution on this machine (null when Telegram is off). */
+  platformMedia?: import('../core/platformMediaForSession.js').PlatformMediaForSession | null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
   conversationUnread?: import('../core/ConversationUnreadService.js').ConversationUnreadService | null;
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
@@ -3943,8 +3950,13 @@ export function createRoutes(ctx: RouteContext): Router {
   } catch {
     // @silent-fallback-ok: this check only reports, so it must never stop the server's routes from loading
   }
+  // Every "use the dashboard" pairing message carries a direct link: the tunnel when up, localhost
+  // only with no tunnel, and a plain "no link yet" while a tunnel starts (topic 10000002573).
+  const pairingDashboardOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+  ctx.telegram?.setPairingDashboardOrigin?.(pairingDashboardOrigin);
   const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
     ? new PairingInviteTelegram({
+      dashboardOrigin: pairingDashboardOrigin,
       // Operator acts go through the handshake (spec §11): both sides are told how a pairing ended.
       flow: ctx.pairingInvites.handshake,
       events: ctx.pairingInvites.events,
@@ -23407,7 +23419,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       for (const f of replyFiles as Array<{ path: string }>) filePaths.push(f.path);
       if (filePaths.length > 0 && !isMobileMediaEnabled(ctx.config)) {
-        res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' });
+        res.status(503).json({ ...mediaOffBody(), detail: 'Files in app conversations are turned off on this agent. The owner can turn them on with one tap (Turn on files, under the refused message in the app), or set mobilePairing.native.media.enabled to true in .instar/config.json and restart.' });
         return;
       }
     }
@@ -23550,6 +23562,64 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       console.warn(`[app-media] copy refused: ${err instanceof Error ? err.message : String(err)}`);
       res.status(409).json({ error: 'copy-refused', detail: 'This file could not be placed where the session can read it.' });
     }
+  });
+
+  // native-conversation-base §3c item 7: a session's manual fetch of a Telegram file on this machine,
+  // by platform message id or attachment id. Bearer plus the conversation bind check of
+  // /app/media-path (a bind token is required wherever bind auth runs: this is conversation content).
+  router.get('/conversation-media/path', async (req, res) => {
+    const app = ctx.appConversations;
+    if (!app || !isMobileMediaEnabled(ctx.config)) { res.status(503).json({ error: 'native-media-off', detail: 'Files from Telegram are not copied between machines on this agent, so only a file downloaded on this machine can be read here.' }); return; }
+    const conversationKey = typeof req.query.conversationKey === 'string' ? req.query.conversationKey : '';
+    const km = /^telegram:(\d{1,15})$/.exec(conversationKey);
+    if (!km) { res.status(400).json({ error: 'bad-conversation', detail: 'conversationKey must be telegram:<topicId>.' }); return; }
+    const topicId = Number(km[1]);
+    const platformMessageId = typeof req.query.platformMessageId === 'string' ? req.query.platformMessageId : undefined;
+    const attachmentId = typeof req.query.attachmentId === 'string' ? req.query.attachmentId : undefined;
+    if ((platformMessageId === undefined) === (attachmentId === undefined)) { res.status(400).json({ error: 'one-id-required', detail: 'Give exactly one of platformMessageId or attachmentId.' }); return; }
+    if (platformMessageId !== undefined && !/^[0-9A-Za-z._:-]{1,64}$/.test(platformMessageId)) { res.status(400).json({ error: 'bad-message-id' }); return; }
+    if (attachmentId !== undefined && !/^[0-9A-Za-z._:-]{1,128}$/.test(attachmentId)) { res.status(400).json({ error: 'bad-attachment-id' }); return; }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    if (ctx.conversationBindAuth && typeof rawToken !== 'string') { res.status(403).json({ error: 'conversation-bind-refused', detail: 'This file needs the session bind token (X-Instar-Bind-Token).' }); return; }
+    const verdict = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: topicId, rawToken: typeof rawToken === 'string' ? rawToken : undefined, attention: ctx.telegram });
+    if (!verdict.ok) { res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail }); return; }
+    let messageId: string | null = null;
+    let attachment: import('../core/appMediaTypes.js').AppAttachment | undefined;
+    if (attachmentId !== undefined) {
+      const ref = app.store.mediaRef(attachmentId);
+      if (!ref || ref.canonicalKey !== conversationKey) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
+      if (ref.purged || ref.tombstoned) { res.status(404).json({ error: 'file-removed', detail: 'This file was permanently removed.' }); return; }
+      messageId = ref.messageId;
+      attachment = app.store.getMediaAttachments(conversationKey, ref.messageId)?.[ref.idx];
+    } else {
+      const ev = app.store.getPlatformMedia(conversationKey, platformMessageId!);
+      if (!ev) { res.status(404).json({ error: 'not-on-this-machine', detail: 'The record of this file has not reached this machine yet. It may still come.' }); return; }
+      messageId = ev.messageId;
+      attachment = ev.attachments[0];
+      if (attachment && app.store.isAttachmentPurged(attachment.attachmentId)) { res.status(404).json({ error: 'file-removed', detail: 'This file was permanently removed.' }); return; }
+    }
+    if (!attachment || !messageId) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
+    let copied = await app.media.sessionCopy(messageId, attachment);
+    // A file not here yet is pulled for at most MEDIA_PATH_WAIT_MS; the helper never hangs.
+    if (!copied && !app.media.locateBlob(attachment.sha256) && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
+      copied = await app.media.sessionCopy(messageId, attachment);
+    }
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
+    try {
+      res.json({ path: app.intoConfinedInbox(conversationKey, copied), kind: attachment.kind, name: attachment.filename });
+    } catch (err) {
+      console.warn(`[conversation-media] copy refused: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(409).json({ error: 'copy-refused', detail: 'This file could not be placed where the session can read it.' });
+    }
+  });
+
+  // native-conversation-base §3c item 5: this machine's file waiters and the event lag it observed
+  // (the 2026-11-25 review sets the 300 s tell-time from the measured p99).
+  router.get('/conversation-media/status', (_req, res) => {
+    const pm = ctx.platformMedia;
+    if (!pm) { res.status(503).json({ error: 'telegram-off', detail: 'Telegram is not configured on this machine.' }); return; }
+    res.json({ mediaOn: !!ctx.appConversations && isMobileMediaEnabled(ctx.config), ...pm.stats() });
   });
 
   router.post('/internal/slack-forward', async (req, res) => {
@@ -30009,7 +30079,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // The lifeline route passes no trust (unchanged behavior); an app message passes
   // `{ kind: 'mobile-device' }` and the steps that differ are named where they branch.
   const telegramForwardHandler = async (req: any, res: any, trust?: MobileInboundTrust): Promise<void> => {
-    const { topicId, text, messageId, lifelineVersion } = req.body;
+    const { topicId, messageId, lifelineVersion } = req.body;
+    // native-conversation-base §3c: rewritten once below, after validation, into the path-free form.
+    let text = req.body.text;
     // The sender-identity fields are `let`: a request accepted WITHOUT proof of
     // the lifeline has them removed below, in one place, before any use.
     let {
@@ -30173,10 +30245,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    if (!topicId || !text) {
+    // A message of files alone (an app photo with no caption) has no text of its own (§3c).
+    const carriesMedia = Array.isArray(req.body?.media) && req.body.media.length > 0;
+    if (!topicId || (!text && !carriesMedia)) {
       res.status(400).json({ error: 'topicId and text required' });
       return;
     }
+
+    // ── Media by attachment id (native-conversation-base §3c) ──
+    // A local path is taken only from a lifeline-proven forward, realpath-checked inside the download
+    // directories; an app file arrives by attachment id. From here on `text` is one path-free
+    // sentence per file plus the person's text with every typed path tag inert, and the file travels
+    // in `metadata.media` — before anything is logged, forwarded or queued.
+    const fwdMedia = normalizeForwardedInbound({
+      text: typeof text === 'string' ? text : '', bodyMedia: req.body?.media, messageId,
+      acceptLocalPaths: !trust && ingressDecision.senderTrusted === true,
+      downloadDirs: telegramDownloadDirs(ctx.config.stateDir),
+    });
+    for (const m of fwdMedia.media) {
+      // A lifeline-downloaded file is captured into the media store like a polled one, so it can follow
+      // the session to another machine.
+      if (m.localPath && m.platformMessageId && ctx.telegram?.captureForwardedMedia) {
+        m.capture = ctx.telegram.captureForwardedMedia({
+          topicId: Number(topicId), platformMessageId: Number(m.platformMessageId), filePath: m.localPath,
+          declaredKind: m.kind === 'photo' ? 'photo' : 'file', filename: m.filename,
+          declaredType: m.kind === 'photo' ? 'image/jpeg' : 'application/octet-stream',
+          at: typeof req.body.timestamp === 'string' ? req.body.timestamp : new Date().toISOString(),
+        });
+      } else if (m.localPath) {
+        m.capture = 'off';
+      }
+    }
+    text = fwdMedia.text;
 
     // ── Pairing invite (docs/specs/a2a-pairing-invite-link.md §6.1) ──
     // A message carrying `tlinv1:` holds a one-time secret. It is handled HERE and goes no
@@ -30189,14 +30289,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (PairingInviteTelegram.carriesInvite(text)) {
+      // `refused` reaches the lifeline's existing readForwardRefused, so a turned-away invite never
+      // gets a "✓ Delivered". Only a valid invite now waiting on Approve/Decline clears it; no
+      // handler, or a failure, stays refused (consumed either way: HTTP 200, never re-queued).
+      let inviteRefused = true;
       try {
         if (pairingInviteTelegram) {
-          await pairingInviteTelegram.onForwardedInvite({ text, topicId: Number(topicId), fromUserId, verified: ingressDecision.verified });
+          inviteRefused = (await pairingInviteTelegram.onForwardedInvite({ text, topicId: Number(topicId), fromUserId, verified: ingressDecision.verified })).refused !== false;
         } else {
           await withNotificationEnvelope(stampForwardResponse(), async () => ctx.telegram?.sendToTopic(Number(topicId), 'I got a pairing invite, but pairing by invite is not turned on for this agent.'));
         }
       } catch { /* the invite is still consumed: it must never fall through to a session */ }
-      res.json({ ok: true, pairingInvite: true });
+      res.json({ ok: true, pairingInvite: true, ...(inviteRefused ? { refused: true } : {}) });
       return;
     }
 
@@ -30329,7 +30433,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ctx.telegram.logInboundMessage({
         messageId,
         topicId,
-        text,
+        // §3c: history carries `[photo]` / `[file: <name>]` and the caption, never a path.
+        text: fwdMedia.media.length > 0 ? historyTextFor(fwdMedia.personText, fwdMedia.media) : text,
         timestamp: req.body.timestamp || new Date().toISOString(),
         senderName: fromFirstName,
         senderUsername: fromUsername,
@@ -30517,6 +30622,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: !trust,
+          // §3c: the files, in process (a confined local path never leaves this machine). Absent for an
+          // older lifeline's plain text, so the receiver can tell; a new sender always sets it.
+          ...(fwdMedia.legacy && fwdMedia.media.length === 0 ? {} : { media: fwdMedia.media }),
           ...(!trust && ingressDecision.verified && req.body.sourceChatType === 'private'
             && Number.isSafeInteger(req.body.sourceChatId) && req.body.sourceChatId > 0
             && req.body.sourceChatId === fromUserId
@@ -30593,7 +30701,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         } catch { /* fall through without name */ }
         injectedTopicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, injectedTopicName) ? injectedTopicName : undefined);
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId, typeof messageId === 'number' ? messageId : undefined);
+        const fallbackSessionText = await buildTelegramSessionText(Number(topicId), text, fwdMedia.media, messageId);
+        const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, fallbackSessionText, injectedTopicName, fromFirstName, fromUserId, typeof messageId === 'number' ? messageId : undefined);
 
         if (injected === false) {
           // Injection failed — save message under stateDir (not /tmp) to avoid world-readable exposure
@@ -30701,7 +30810,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
         const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
         const relayBlock = buildTelegramRelayBlock({ topicId, framework: 'claude-code' });
-        const bootstrapMessage = `[telegram:${topicId}] ${text} (Thread history at ${ctxPath} — read it before responding.)\n\n${relayBlock}`;
+        const bootstrapSessionText = await buildTelegramSessionText(Number(topicId), text, fwdMedia.media, messageId);
+        const bootstrapMessage = `[telegram:${topicId}] ${bootstrapSessionText} (Thread history at ${ctxPath} — read it before responding.)\n\n${relayBlock}`;
 
         // Check for a resume UUID from a previously-killed session.
         // TopicResumeMap is authoritative — skip LLM validation for this source.
@@ -42658,15 +42768,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
           if (verdict) {
             localRouteTrustCounters.evaluated++;
-            // Per message, so one row per sender, operation and verdict per hour. A refusal of
-            // a registry-known same-machine agent is the failure this rollout watches for.
-            const localTrustEvidenceVerdict = verdict.allowed ? 'allowed' : trustMode.dryRun ? 'would-refuse' : 'refuse';
-            const localTrustEvidenceFailure = !verdict.allowed && verdict.identitySource === 'registry';
-            featureEvidence.recordAtMostEvery('threadline.localRouteTrust', `${verdict.fingerprint ?? 'no-fp'}|${verdict.identitySource}|${verdict.operation.slice(0, 48)}|${localTrustEvidenceVerdict}`, 60 * 60 * 1000, {
-              kind: localTrustEvidenceFailure ? 'error' : 'fired',
-              reason: localTrustEvidenceFailure ? `${localTrustEvidenceVerdict}-registered-sender` : localTrustEvidenceVerdict,
-              context: { level: verdict.level, operation: verdict.operation.slice(0, 48), identitySource: verdict.identitySource, fingerprint: verdict.fingerprint, dryRun: trustMode.dryRun },
-            });
+            // One row per verdict (bounded per sender + operation); every would-refuse
+            // keeps its sender and reason — the evidence the next rung's bar reads.
+            const ev = localRouteTrustEvidence(relayFromAgent, verdict, trustMode.dryRun);
+            featureEvidence.recordAtMostEvery('threadline.localRouteTrust', ev.key, ev.windowMs, ev.input);
             if (verdict.allowed) {
               localRouteTrustCounters.allowed++;
               // Enforcing: the router is told the resolved level instead of the

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-12T23:18:39.311Z",
+  "slug": "feedback-already-fixed",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/executorPorts.ts",
+      "src/feedback-factory/execute/executorSession.ts"
+    ],
+    "addedLines": 43,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

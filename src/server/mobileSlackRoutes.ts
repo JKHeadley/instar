@@ -57,6 +57,7 @@ import { slackDeviceText, slackPlatformMediaFor } from '../core/appPlatformMedia
 import type { OriginVerdict } from '../core/AppRecordSignatures.js';
 import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
 import type { HolderRead } from './mobileSlackHolderProxy.js';
+import { MEDIA_OFF_ACTION } from './mobileMediaOff.js';
 
 /** A Slack conversation as this machine knows it (a local registry entry). */
 export interface SlackAppConversation {
@@ -343,7 +344,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     // as before: a message is never stored without its files. An exact stop never waits on files.
     // The media flag is read live per request, as on the Telegram send route.
     const mediaOn = deps.pairing.nativeOn && isMobileMediaEnabled(deps.config);
-    if (body.attachments !== undefined && !mediaOn) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into Slack is not available yet.' }); return; }
+    if (body.attachments !== undefined && !mediaOn) { res.status(400).json(isMobileMediaEnabled(deps.config) ? { error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into Slack is not available yet.' } : { error: 'media-target-unsupported', detail: 'Files are turned off on this agent.', action: MEDIA_OFF_ACTION }); return; }
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     let signedFiles: SignedAttachment[] | null = null;
     if (body.attachments !== undefined && !isExactStopMessage(text)) {

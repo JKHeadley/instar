@@ -91,7 +91,7 @@ describe('job continuity alerts', () => {
     scheduler.setMachineIdentity('this-machine', 'This Machine');
     scheduler.start();
     await vi.waitFor(() => expect(raise).toHaveBeenCalledTimes(1));
-    expect(raise.mock.calls[0][1]).toContain('pinned elsewhere');
+    expect(raise.mock.calls[0][1]).toContain('set to run only on another machine');
   });
 
   it('does not send a queued alert after demotion', async () => {
@@ -109,5 +109,37 @@ describe('job continuity alerts', () => {
     for (let i = 0; i < 3; i++) scheduler.getSkipLedger().recordSkip(job.slug, 'gate');
     expect(raise).not.toHaveBeenCalled();
     project.state.setReadOnly(false);
+  });
+
+  it('treats a gate that answers "nothing to do" (exit 1) as a healthy check, not lost coverage', async () => {
+    (scheduler as any).config.gateRetries = 1;
+    scheduler.start();
+    const polling: JobDefinition = { ...job, gate: 'exit 1' };
+    for (let i = 0; i < 4; i++) await (scheduler as any).runGateAsync(polling);
+    expect(raise).not.toHaveBeenCalled();
+    expect(project.state.get('job-silence-gci-review')).toBeNull();
+    expect(project.state.get('job-last-success-gci-review')).toBeTruthy();
+  }, 60_000);
+
+  it('still warns when the gate itself is broken, in plain words with a direct link to the job', async () => {
+    scheduler.setOperatorLinkOrigin(() => 'https://agent.example.dev');
+    (scheduler as any).config.gateRetries = 1;
+    project.state.set('job-last-success-gci-review', new Date().toISOString());
+    scheduler.start();
+    const broken: JobDefinition = { ...job, gate: 'exit 127' };
+    for (let i = 0; i < 3; i++) await (scheduler as any).runGateAsync(broken);
+    await vi.waitFor(() => expect(raise).toHaveBeenCalledTimes(1));
+    const text = String(raise.mock.calls[0][1]);
+    expect(text).toContain('"GCI review" is not running');
+    expect(text).toContain('has failed 3 times in a row');
+    expect(text).toContain('https://agent.example.dev/dashboard/console/#/work/schedule?job=gci-review');
+    expect(text).not.toContain('Check its gate');
+  }, 60_000);
+
+  it('waits for the public link instead of sending a warning with no link', async () => {
+    scheduler.setOperatorLinkOrigin(() => null);
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review');
+    await Promise.resolve();
+    expect(raise).not.toHaveBeenCalled();
   });
 });

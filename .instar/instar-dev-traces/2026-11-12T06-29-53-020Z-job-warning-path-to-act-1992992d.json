@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "job-warning-path-to-act",
+  "sessionId": "6fe3453d-a340-423f-bf2f-db8ab16fe753",
+  "timestamp": "2026-11-12T06:29:53.020Z",
+  "artifactPath": "upgrades/side-effects/job-warning-path-to-act.md",
+  "artifactSha256": "cb287f5d81742fe2815d922011035a3e810a27666f8b99af1c54043f1f0053c4",
+  "coveredFiles": [
+    "docs/specs/job-warning-path-to-act.eli16.md",
+    "src/commands/server.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-operator-chat.test.ts",
+    "tests/unit/job-continuity-alert.test.ts",
+    "tests/unit/job-failure-alert-escalation.test.ts",
+    "upgrades/next/job-warning-path-to-act.md",
+    "upgrades/side-effects/job-warning-path-to-act.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows one notice rule, adds a link, and reuses the existing verified-owner lookup in one route; a revert fully undoes it",
+  "eli16Path": "docs/specs/job-warning-path-to-act.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-warning-path-to-act.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

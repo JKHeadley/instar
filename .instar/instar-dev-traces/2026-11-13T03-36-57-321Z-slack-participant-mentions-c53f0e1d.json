@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "slack-participant-mentions",
+  "sessionId": "259c62aa-2b68-485c-8146-ca101d0809b9",
+  "timestamp": "2026-11-13T03:36:57.321Z",
+  "artifactPath": "upgrades/side-effects/slack-participant-mentions.md",
+  "artifactSha256": "f0d254ae2333e1c08012803f215386710ed17cf7f6a4012bcb940b196bd1b654",
+  "coveredFiles": [
+    "upgrades/side-effects/slack-participant-mentions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Evidence line in the side-effects review",
+  "eli16Path": "docs/specs/slack-participant-mentions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-participant-mentions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
