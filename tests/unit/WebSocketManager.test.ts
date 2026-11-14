@@ -71,6 +71,7 @@ function createTestManager(options: {
   selfMachineId?: string;
   resolveSessionPlatform?: (tmuxSession: string) => any;
   sessionPresentationSources?: () => any;
+  poolStreamAllowRemoteInput?: boolean;
 } = {}) {
   const sessionManager = options.sessionManager ?? createMockSessionManager();
   const httpServer = createMockHttpServer();
@@ -88,6 +89,7 @@ function createTestManager(options: {
     selfMachineId: options.selfMachineId,
     resolveSessionPlatform: options.resolveSessionPlatform,
     sessionPresentationSources: options.sessionPresentationSources,
+    poolStreamAllowRemoteInput: options.poolStreamAllowRemoteInput,
   });
 
   /**
@@ -805,6 +807,221 @@ describe('WebSocketManager — remote session routing (requesting side)', () => 
       const err = ws.sentMessages.find(m => m.type === 'error' && m.session === 'gone-sess');
       expect(err).toBeDefined();
       expect(err!.code).toBe('session-not-found');
+    });
+  });
+});
+
+describe('WebSocketManager — dashboard input durability (native-conversation-any-machine-access §3e)', () => {
+  const ID = 'abcdefghij0123456789';
+  const ID2 = 'ZYXWVUTSRQ0123456789';
+  const running = (names: string[]) => createMockSessionManager({ listRunningSessions: vi.fn(() => names.map((tmuxSession) => ({ tmuxSession, name: tmuxSession }) as any)) });
+  function fakeConnector() {
+    const state: { handlers?: any; sent: any[] } = { sent: [] };
+    return { state, connector: { connect: (_m: string, handlers: any) => { state.handlers = handlers; return { send: (f: any) => state.sent.push(f), close: () => {} }; } } };
+  }
+
+  describe('serving side', () => {
+    it('input_caps comes first on every subscribe: inputAck 2, remote input as configured for a peer, always on for a local browser', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm, poolStreamAllowRemoteInput: false });
+      const local = connectClient();
+      sendMessage(local.client, { type: 'subscribe', session: 's1' });
+      expect(local.ws.sentMessages[0]).toEqual({ type: 'input_caps', session: 's1', inputAck: 2, remoteInput: true });
+      const peer = connectClient();
+      (peer.client as any).isPeer = true;
+      sendMessage(peer.client, { type: 'subscribe', session: 's1' });
+      expect(peer.ws.sentMessages[0]).toEqual({ type: 'input_caps', session: 's1', inputAck: 2, remoteInput: false });
+    });
+
+    it('echoes the id on the acknowledgement and on each refusal', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm, poolStreamAllowRemoteInput: false });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID });
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'input_ack', session: 's1', success: true, clientInputId: ID });
+      sendMessage(client, { type: 'input', session: 'gone', text: 'hi', clientInputId: ID2 });
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'error', code: 'session-not-found', session: 'gone', clientInputId: ID2 });
+      sendMessage(client, { type: 'input', session: 'bad name!', text: 'hi', clientInputId: ID2 });
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'error', code: 'invalid-session', session: 'bad name!', clientInputId: ID2 });
+      const peer = connectClient();
+      (peer.client as any).isPeer = true;
+      sendMessage(peer.client, { type: 'input', session: 's1', text: 'hi', clientInputId: 'peerpeerpeerpeer01' });
+      expect(peer.ws.sentMessages.at(-1)).toEqual({ type: 'error', code: 'input-not-allowed', session: 's1', clientInputId: 'peerpeerpeerpeer01' });
+      expect(sm.sendInput).toHaveBeenCalledTimes(1);
+    });
+
+    it('a malformed id is refused and never echoed or typed', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi', clientInputId: '<script>' });
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'error', code: 'invalid-input-id', session: 's1' });
+      expect(sm.sendInput).not.toHaveBeenCalled();
+    });
+
+    it('a repeated id is written once and answered with the original acknowledgement', () => {
+      const sm = running(['s1']);
+      sm.sendInput.mockReturnValue(false);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID });
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID, retry: true });
+      expect(sm.sendInput).toHaveBeenCalledTimes(1);
+      expect(ws.sentMessages.filter((m) => m.type === 'input_ack')).toEqual([
+        { type: 'input_ack', session: 's1', success: false, clientInputId: ID },
+        { type: 'input_ack', session: 's1', success: false, clientInputId: ID },
+      ]);
+    });
+
+    it('a repeat arriving mid-write is not written again and gets the original acknowledgement when the write ends', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage, manager } = createTestManager({ sessionManager: sm }) as any;
+      const a = connectClient();
+      const b = connectClient();
+      sm.sendInput.mockImplementation(() => {
+        // The same id arrives (on another connection) while the first write is in progress.
+        if (sm.sendInput.mock.calls.length === 1) (manager as any).handleMessage(b.client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID });
+        return true;
+      });
+      sendMessage(a.client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID });
+      expect(sm.sendInput).toHaveBeenCalledTimes(1);
+      expect(a.ws.sentMessages.at(-1)).toEqual({ type: 'input_ack', session: 's1', success: true, clientInputId: ID });
+      expect(b.ws.sentMessages.at(-1)).toEqual({ type: 'input_ack', session: 's1', success: true, clientInputId: ID });
+    });
+
+    it('a repeated id arriving on a different connection is still recognised and answered on that connection', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm });
+      const first = connectClient();
+      sendMessage(first.client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID });
+      const second = connectClient();
+      sendMessage(second.client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID, retry: true });
+      expect(sm.sendInput).toHaveBeenCalledTimes(1);
+      expect(second.ws.sentMessages).toEqual([{ type: 'input_ack', session: 's1', success: true, clientInputId: ID }]);
+    });
+
+    it('an unknown flagged retry is refused and not typed, and counted', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage, manager } = createTestManager({ sessionManager: sm }) as any;
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi', clientInputId: ID, retry: true });
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'error', code: 'input-retry-unknown', session: 's1', clientInputId: ID });
+      expect(sm.sendInput).not.toHaveBeenCalled();
+      expect(manager.inputDurabilityStats()).toMatchObject({ inputRetryUnknown: 1, inputIdsEvicted: 0, sessions: { s1: { retryUnknown: 1 } } });
+    });
+
+    it('an evicted id refuses its retry (never a second write) and the eviction is counted', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage, manager } = createTestManager({ sessionManager: sm }) as any;
+      const { ws, client } = connectClient();
+      const id = (i: number) => `idididididid${String(i).padStart(6, '0')}`;
+      for (let i = 0; i < 257; i++) sendMessage(client, { type: 'input', session: 's1', text: 'x', clientInputId: id(i) });
+      expect(sm.sendInput).toHaveBeenCalledTimes(257);
+      sendMessage(client, { type: 'input', session: 's1', text: 'x', clientInputId: id(0), retry: true });
+      expect(ws.sentMessages.at(-1)).toMatchObject({ code: 'input-retry-unknown', clientInputId: id(0) });
+      expect(sm.sendInput).toHaveBeenCalledTimes(257);
+      expect(manager.inputDurabilityStats()).toMatchObject({ inputIdsEvicted: 1, inputRetryUnknown: 1, sessions: { s1: { evicted: 1, retryUnknown: 1 } } });
+    });
+
+    it('an id-less input keeps today\'s legacy path (no id on the acknowledgement)', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi' });
+      sendMessage(client, { type: 'input', session: 's1', text: 'hi' });
+      expect(sm.sendInput).toHaveBeenCalledTimes(2);
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'input_ack', session: 's1', success: true });
+    });
+
+    it('a key gets an id and an answer', () => {
+      const sm = running(['s1']);
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'key', session: 's1', key: 'C-c', clientInputId: ID });
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'input_ack', session: 's1', success: true, clientInputId: ID });
+    });
+  });
+
+  describe('relay side', () => {
+    it('the relayed frame keeps the id and the retry flag', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { client } = connectClient();
+      sendMessage(client, { type: 'subscribe', session: 'r1', machineId: 'm_peer' });
+      state.handlers.onOpen();
+      sendMessage(client, { type: 'input', session: 'r1', machineId: 'm_peer', text: 'go', clientInputId: ID, retry: true });
+      expect(state.sent.at(-1)).toEqual({ type: 'input', session: 'r1', text: 'go', clientInputId: ID, retry: true });
+    });
+
+    it('passes an acknowledgement only to the client that sent its id', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const a = connectClient();
+      const b = connectClient();
+      sendMessage(a.client, { type: 'subscribe', session: 'r1', machineId: 'm_peer' });
+      sendMessage(b.client, { type: 'subscribe', session: 'r1', machineId: 'm_peer' });
+      state.handlers.onOpen();
+      sendMessage(a.client, { type: 'input', session: 'r1', machineId: 'm_peer', text: 'go', clientInputId: ID });
+      state.handlers.onFrame({ type: 'input_ack', session: 'r1', success: true, clientInputId: ID });
+      expect(a.ws.sentMessages.filter((m) => m.type === 'input_ack')).toEqual([{ type: 'input_ack', session: 'r1', success: true, clientInputId: ID, machineId: 'm_peer' }]);
+      expect(b.ws.sentMessages.filter((m) => m.type === 'input_ack')).toEqual([]);
+      // An answer for an id nobody here sent goes nowhere.
+      state.handlers.onFrame({ type: 'error', code: 'input-not-allowed', session: 'r1', clientInputId: ID2 });
+      expect([...a.ws.sentMessages, ...b.ws.sentMessages].some((m) => m.clientInputId === ID2)).toBe(false);
+    });
+
+    it('answers peer-stream-lost with the id when the link is not active (nothing sent)', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'subscribe', session: 'r1', machineId: 'm_peer' }); // still connecting
+      sendMessage(client, { type: 'input', session: 'r1', machineId: 'm_peer', text: 'go', clientInputId: ID });
+      expect(state.sent.some((f) => f.type === 'input')).toBe(false);
+      expect(ws.sentMessages.at(-1)).toEqual({ type: 'error', code: 'peer-stream-lost', session: 'r1', machineId: 'm_peer', clientInputId: ID });
+    });
+
+    it('two sends of one id in flight at once: both answers reach the sender', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'subscribe', session: 'r1', machineId: 'm_peer' });
+      state.handlers.onOpen();
+      sendMessage(client, { type: 'input', session: 'r1', machineId: 'm_peer', text: 'go', clientInputId: ID });
+      sendMessage(client, { type: 'input', session: 'r1', machineId: 'm_peer', text: 'go', clientInputId: ID, retry: true });
+      state.handlers.onFrame({ type: 'input_ack', session: 'r1', success: true, clientInputId: ID });
+      state.handlers.onFrame({ type: 'input_ack', session: 'r1', success: true, clientInputId: ID });
+      expect(ws.sentMessages.filter((m) => m.type === 'input_ack')).toHaveLength(2);
+    });
+
+    it('a dropped link clears the pending answers for that machine and session', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage, manager } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' }) as any;
+      const { client } = connectClient();
+      sendMessage(client, { type: 'subscribe', session: 'r1', machineId: 'm_peer' });
+      state.handlers.onOpen();
+      sendMessage(client, { type: 'input', session: 'r1', machineId: 'm_peer', text: 'go', clientInputId: ID });
+      expect(manager.inputDurabilityStats().relayPendingAnswers).toBe(1);
+      state.handlers.onClose();
+      expect(manager.inputDurabilityStats().relayPendingAnswers).toBe(0);
+    });
+
+    it('forwards input_caps, synthesises inputAck 1 for an older peer, and replays caps to a client that subscribes late', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const a = connectClient();
+      sendMessage(a.client, { type: 'subscribe', session: 'new1', machineId: 'm_peer' });
+      sendMessage(a.client, { type: 'subscribe', session: 'old1', machineId: 'm_peer' });
+      state.handlers.onOpen();
+      state.handlers.onFrame({ type: 'input_caps', session: 'new1', inputAck: 2, remoteInput: true });
+      state.handlers.onFrame({ type: 'output', session: 'old1', data: 'x' });
+      state.handlers.onFrame({ type: 'subscribed', session: 'old1' });
+      expect(a.ws.sentMessages.filter((m) => m.type === 'input_caps')).toEqual([
+        { type: 'input_caps', session: 'new1', inputAck: 2, remoteInput: true, machineId: 'm_peer' },
+        { type: 'input_caps', session: 'old1', inputAck: 1, remoteInput: null, machineId: 'm_peer' },
+      ]);
+      const late = connectClient();
+      sendMessage(late.client, { type: 'subscribe', session: 'new1', machineId: 'm_peer' });
+      expect(late.ws.sentMessages).toContainEqual({ type: 'input_caps', session: 'new1', inputAck: 2, remoteInput: true, machineId: 'm_peer' });
     });
   });
 });
