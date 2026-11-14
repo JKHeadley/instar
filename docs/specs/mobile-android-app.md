@@ -219,7 +219,8 @@ The website file is not machine state.
 - **fleet:** follows `mobilePairing.push`.
 - **graduation criterion:** a week on the development agent with no Android notification beyond the bounds, none for a held item, none lost while the phone was online and the app not force-stopped, and no iPhone notification lost or duplicated.
 - **dark-window:** if not met within 30 days of release, the reason and a new date are recorded on CMT-1759.
-- **ladder:** mobilePairing (push has no entry of its own and follows the mobilePairing switch when unset, per mobile-push 2.7)
+- **ladder:** mobilePairing
+- Push has no ladder entry of its own: it follows the mobilePairing switch when unset (mobile-push 2.7).
 
 ## 6. Rollback
 
