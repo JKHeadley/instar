@@ -292,6 +292,7 @@ import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import { appOwnerName } from './mobileConversationRoutes.js';
+import { mediaOffBody } from './mobileMediaOff.js';
 import { mountMobileOpsRoutes, machineKey, summarizeMachines } from './mobileOpsRoutes.js';
 import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
@@ -23222,7 +23223,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       for (const f of replyFiles as Array<{ path: string }>) filePaths.push(f.path);
       if (filePaths.length > 0 && !isMobileMediaEnabled(ctx.config)) {
-        res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' });
+        res.status(503).json({ ...mediaOffBody(), detail: 'Files in app conversations are turned off on this agent. The owner can turn them on with one tap (Turn on files, under the refused message in the app), or set mobilePairing.native.media.enabled to true in .instar/config.json and restart.' });
         return;
       }
     }

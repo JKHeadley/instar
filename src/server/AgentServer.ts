@@ -644,6 +644,11 @@ export class AgentServer {
       ensure('mobilePairing.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.enabled', undefined), options.config));
       ensure('mobilePairing.native.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.enabled', undefined), options.config));
       running = isMobileNativeEnabled(options.config);
+      if (setting === 'files') {
+        // Files in app conversations ride on app conversations; the media gate is read at boot.
+        ensure('mobilePairing.native.media.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.media.enabled', undefined), options.config));
+        running = isMobileMediaEnabled(options.config);
+      }
     }
     console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
     if (running && !changed) return { changed: false, restarting: false };
@@ -7386,6 +7391,8 @@ export class AgentServer {
         applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
         reportsOn: (setting, machineId) => {
           const s = peerStanding(machineId);
+          // A machine's standing carries no files flag, so a files request is settled only by the peer's own answer.
+          if (setting === 'files') return false;
           return !!s && (setting === 'memory-privacy' ? s.privacy : s.native);
         },
         file: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'switch-requests.json'),
