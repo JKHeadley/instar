@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "worktree-create-off-event-loop",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T15:12:46.981Z",
+  "artifactPath": "upgrades/side-effects/worktree-create-off-event-loop.md",
+  "artifactSha256": "ba6b58922e26776471346c3ad2a6c220280000b41a7a12d531085a148a9f7166",
+  "coveredFiles": [
+    "docs/specs/worktree-create-off-event-loop.eli16.md",
+    "src/core/SafeGitExecutor.ts",
+    "src/core/WorktreeManager.ts",
+    "tests/unit/WorktreeManager-create-off-event-loop.test.ts",
+    "upgrades/next/worktree-create-off-event-loop.md",
+    "upgrades/side-effects/worktree-create-off-event-loop.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix: three child processes in workspace creation are awaited off the event loop, with a real time limit and a join for concurrent requests; no state, format or lock-decision change; a revert undoes it. The one change in SafeGitExecutor is a pass-through of spawn's detached flag: no verb, guard or audit logic moves. It is on the session-spawn path, so it had an independent review (three reads; concur on the third after the cleanup step was cut).",
+  "eli16Path": "docs/specs/worktree-create-off-event-loop.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-create-off-event-loop.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one git child per workspace-creation request (session spawn or HTTP route), killed at most once at its own time limit; no timer, retry, respawn or re-drive; concurrent requests for a topic are joined into one creation"
+  }
+}

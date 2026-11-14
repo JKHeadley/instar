@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lv-deadline-forensics",
+  "sessionId": "7b94e0ef-44cd-400d-9bb3-977c21954026",
+  "timestamp": "2026-11-12T16:20:07.361Z",
+  "artifactPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "artifactSha256": "9bad58a4fa1fbb8f460763016de5a389880491c0713fc65f58060ad2cec9084b",
+  "coveredFiles": [
+    "docs/specs/lv-deadline-forensics.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/mainHealth.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "upgrades/next/lv-deadline-forensics.md",
+    "upgrades/side-effects/lv-deadline-forensics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Re-arms one main verify after a green PR run when main's bounded error retries are spent; bounded per green run, no gate or verdict change.",
+  "eli16Path": "docs/specs/lv-deadline-forensics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

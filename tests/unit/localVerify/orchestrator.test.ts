@@ -817,12 +817,18 @@ describe('runVerify — e2e shards', () => {
     expect(f.logs.some((l) => l.event === 'file-in-multiple-shards' && l.file === E2E)).toBe(true);
   });
   it('a shard deadline waits for its sibling shard to exit before the slot is released', async () => {
-    const f = fake({ durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } });
+    // Only shard 1 hits its deadline; the last shard is still running when it does. (The fake
+    // clock is shared, so giving every shard the over-deadline duration would spend the overall
+    // budget before the last shard starts.)
+    const f = fake();
     const order: string[] = [];
     f.seams.holdSuiteSlot = async () => () => { order.push('release'); };
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
-      if ((isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`))) {
+      if (isE2e(a) && a.includes(`--shard=1/${E2E_N}`)) {
+        return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', deadlineKilled: true, pid: 999 };
+      }
+      if (isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`)) {
         await new Promise((r) => setTimeout(r, 20)); // still running when shard 1 has already failed
         const res = await exec(c, a, o);
         order.push('shard2-exited');
@@ -834,12 +840,26 @@ describe('runVerify — e2e shards', () => {
     expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error' });
     expect(order).toEqual(['shard2-exited', 'release']);
   });
+
   it('the unit lane is pinned to the parallel worker count; other lanes are not', async () => {
     const f = fake();
     await runVerify(input(), f.seams);
     const lanes = f.execCalls.filter((c) => c.command.endsWith('vitest'));
     expect(lanes[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
     for (const l of lanes.slice(1)) expect(l.env.INSTAR_TEST_WORKERS).toBeUndefined();
+  });
+  it('a per-machine unitWorkers setting sets the unit lane worker count; out of range keeps the default', async () => {
+    const f = fake();
+    await runVerify(input({ laneShards: { unitWorkers: 8 } }), f.seams);
+    expect(f.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe('8');
+    // The run holds the suite slot; its own unit lane is exempt from the nested clamp, other lanes are not touched.
+    const calls = f.execCalls.filter((c) => c.command.endsWith('vitest'));
+    expect(calls[0].env.INSTAR_HOST_TEST_OWN_SUITE_HOLDER).toBe(String(process.pid));
+    expect(calls[0].env.INSTAR_HOST_TEST_SEMAPHORE).toBeUndefined();
+    for (const l of calls.slice(1)) expect(l.env.INSTAR_HOST_TEST_OWN_SUITE_HOLDER).toBeUndefined();
+    const g = fake();
+    await runVerify(input({ laneShards: { unitWorkers: 99 } }), g.seams);
+    expect(g.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
   });
   it('a busy slot leaves an overlap entry (the evidence a re-queue happened)', async () => {
     const f = fake();
@@ -1049,11 +1069,12 @@ describe('runVerify — fail-fast across lanes (PR verifies)', () => {
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
   });
-  it('without failFast every lane runs to the end (today\'s behaviour)', async () => {
-    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] }, hang: ['integration', 'e2e'] });
+  it('without failFast a real failure stops nothing: every lane runs to the end', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
     expect(vitestCalls(f).length).toBeGreaterThanOrEqual(4);
   });
   it('a lane with a clean report and a null exit (killed by a signal) is not a failure, so nothing stops', async () => {
@@ -1075,10 +1096,60 @@ describe('runVerify — fail-fast across lanes (PR verifies)', () => {
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(f.logs.some((l) => l.event === 'isolation-rerun' && l.outcome === 'stopped')).toBe(true);
   });
-  it('a main verify never stops lanes early, even with failFast set', async () => {
-    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] }, hang: ['integration', 'e2e'] });
+  it('a main verify never stops lanes early for a failure, even with failFast set', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] } });
     const r = await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined, failFast: true }), f.seams);
     expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+  });
+});
+
+describe('runVerify — a lane deadline (brainstorm 2026-11-12 E2)', () => {
+  it('stops the sibling lanes at once, with or without failFast, and the run is a deadline error', async () => {
+    for (const failFast of [false, true]) {
+      const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 }, hang: ['e2e'] });
+      const r = await runVerify(input({ failFast, laneShards: { integration: 1, e2e: 1 } }), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('error');
+      expect(r.kind === 'record' && r.record.errorStep).toBe('deadline:integration');
+      expect(f.logs.some((l) => l.event === 'lanes-stop' && l.reason === 'deadline' && l.after === 'integration')).toBe(true);
+      expect(f.logs.some((l) => l.event === 'lane-stopped-early' && l.lane === 'e2e')).toBe(true);
+    }
+  });
+  it('names the test files still running at the kill, from the reporter\'s progress file', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const progress = o.env.LOCAL_VERIFY_PROGRESS_FILE;
+      if (progress && a.some((x) => x.includes('integration'))) {
+        f.files.set(progress, JSON.stringify({ v: 1, writtenAt: 0, finishedFiles: 41, running: [
+          { file: path.join(P.runDir, 'tests/integration/slow.test.ts'), startedAt: f.now() },
+        ] }));
+      }
+      return exec(c, a, o);
+    };
+    const r = await runVerify(input({ laneShards: { integration: 1, e2e: 1 } }), f.seams);
+    expect(r.kind === 'record' && r.record.errorStep).toBe('deadline:integration');
+    const ev = f.logs.find((l) => l.event === 'deadline-in-flight');
+    expect(ev).toMatchObject({ step: 'integration', finishedFiles: 41 });
+    expect((ev as { running: Array<{ file: string }> }).running[0].file).toBe('tests/integration/slow.test.ts');
+    expect(r.kind === 'record' && r.reasons[0]).toMatch(/still running: tests\/integration\/slow\.test\.ts \(\d+s\)/);
+  });
+  it('an oversized progress file is ignored (unknown)', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const progress = o.env.LOCAL_VERIFY_PROGRESS_FILE;
+      if (progress && a.some((x) => x.includes('integration'))) f.files.set(progress, ' '.repeat(70 * 1024));
+      return exec(c, a, o);
+    };
+    await runVerify(input({ laneShards: { integration: 1, e2e: 1 } }), f.seams);
+    expect(f.logs.find((l) => l.event === 'deadline-in-flight')).toMatchObject({ unknown: true });
+  });
+  it('an unreadable progress file is recorded as unknown, never as nothing running', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    const r = await runVerify(input({ laneShards: { integration: 1, e2e: 1 } }), f.seams);
+    expect(r.kind === 'record' && r.record.errorStep).toBe('deadline:integration');
+    expect(f.logs.find((l) => l.event === 'deadline-in-flight')).toMatchObject({ unknown: true });
   });
 });
 

@@ -11,7 +11,7 @@ import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.j
 import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
-import { buildAutoRepair, configurePayload, resultWords, confirmation } from './auto-repair-model.js';
+import { buildAutoRepair, configurePayload, resultWords, resultLines, confirmation } from './auto-repair-model.js';
 import { submitView, completionView, workingView, COMPLETION_POLL_MS, COMPLETION_GIVE_UP_MS, GIVE_UP_VIEW } from './signin-progress-model.js';
 
 // Tick state survives the page's 30-second re-render (spec one-tap-unattended-repair §6).
@@ -310,8 +310,11 @@ async function autoRepairTap(mode, rows, refresh) {
   if (!r.ok || !r.data || !Array.isArray(r.data.results)) { status.textContent = (r.data && r.data.error) || `The server answered ${r.status}.`; return; }
   autoRepairResults = { at: Date.now(), mode, results: r.data.results };
   autoRepairTicks.clear();
-  const nameOf = (id) => (rows.find((x) => x.machineId === id) || {}).name || 'A machine';
-  setKids(status, ...r.data.results.map((x) => el('span', { class: 'row-sub', text: `${x.ok ? '✓' : '✗'} ${nameOf(x.machineId)}: ${resultWords(x)}` })));
+  const lines = resultLines(r.data.results, rows);
+  status.textContent = lines.every((x) => x.ok) ? 'Done.' : lines.some((x) => x.ok) ? 'Done on some machines.' : 'Not done.';
+  status.after(el('ul', { class: 'result-list' }, lines.map((x) => el('li', { class: x.ok ? 'result-ok' : 'result-fail' },
+    el('span', { class: 'result-mark', 'aria-hidden': 'true', text: x.ok ? '✓' : '✗' }),
+    el('span', { class: 'result-words' }, el('strong', { text: `${x.name}:` }), ` ${x.words}`)))));
   // Re-read after about 30 s (a restart takes ~15 s and the supervisor polls every 10 s), then once more.
   setTimeout(() => { closeSheet(); refresh(); }, 30_000);
   setTimeout(() => refresh(), 60_000);

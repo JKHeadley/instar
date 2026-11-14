@@ -1,3 +1,7 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -61,7 +65,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -1531,6 +1535,19 @@ ${PAIRING_APPROVE_DASHBOARD_BULLET}
 `;
 }
 
+/**
+ * Slack person mentions (default on for people in the conversation). Shown in every Slack
+ * session's spawn context and in CLAUDE.md, so an agent knows how to tag someone.
+ */
+export const SLACK_MENTIONS_SESSION_LINE = 'To tag a person in Slack, write <@USERID> (for example <@U1234567890>). Anyone who is in this channel, DM or thread gets tagged automatically; any other ID, @channel/@here/@everyone, and anything inside code stays plain text. To tag someone outside the conversation or link a channel on purpose, add --native-reference ID to the relay command for each one.';
+export const SLACK_MENTIONS_CLAUDEMD_MARKER = '### Slack person mentions';
+export function SLACK_MENTIONS_CLAUDEMD_SECTION(): string {
+  return `\n${SLACK_MENTIONS_CLAUDEMD_MARKER}
+
+- Write a Slack mention as \`<@USERID>\`, never a plain \`@Name\` (that never tags anyone). People in the conversation (members of the channel or DM, or people who posted in the thread) get tagged automatically, with no flag. Any other ID, bots, \`@channel\`/\`@here\`/\`@everyone\` and anything inside code stay plain text. To tag someone outside the conversation, or link a channel (\`<#C…>\`), on purpose: \`slack-reply.sh --native-reference ID\` for each one. If Slack cannot confirm who is in the conversation, the mention goes out as plain text and the message still sends.
+- **When to use** (PROACTIVE): you want a person in the Slack conversation to see your reply (you are answering them, or passing on something for them) → put \`<@THEIR_ID>\` in the reply. The sender's ID is in the inbound line (\`uid:U…\`).
+`;
+}
 export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
 export const SLACK_OWNER_READ_AUTHORITY_LINE = '- **Owner-phone remote Slack history:** the server rechecks the signed phone\'s current key, person, owner role, revocation record and live pairing/native gates before every holder dial and before returning private history. Removing access while a read waits prevents that history from being returned. If revocation state cannot be checked, the read is refused. This does not proxy sends or remote file downloads.';
 /**
@@ -2051,6 +2068,8 @@ export interface MigratorConfig {
   hasTelegram: boolean;
   projectName: string;
   identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
+  /** Test seam: this machine's friendly name (default: macOS ComputerName / Linux pretty hostname). */
+  detectFriendlyMachineName?: () => string | null;
   /**
    * The configured claude-code binary (native-hook-events D4 version gate).
    * Absent ⇒ read from `<stateDir>/config.json` (never PATH).
@@ -3097,6 +3116,7 @@ export class PostUpdateMigrator {
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateMachineIdentityEpochs(result);
+    this.migrateMachineNicknames(result);
     this.migrateLegacyMaxSessions(result);
     this.migrateRetireDeadMentorConfig(result);
     this.migrateRetireStagedFeaturesCmt1004(result);
@@ -9992,6 +10012,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
+    if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginOwnerReadAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
+    }
+
     if (!content.includes('Telegram test groups:')) {
       content += '\n' + telegramOriginTestGroupsAwareness();
       patched = true;
@@ -10788,6 +10815,12 @@ setTimeout(() => process.exit(0), 2000);
       content += SLACK_FROM_APP_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
+    }
+    // Slack person mentions: default on for people in the conversation (2026-11-12).
+    if (!content.includes(SLACK_MENTIONS_CLAUDEMD_MARKER)) {
+      content += SLACK_MENTIONS_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Slack person mentions section');
     }
     if (!content.includes(SLACK_OWNER_READ_AUTHORITY_LINE)) {
       content = content.replace(SLACK_FROM_APP_CLAUDEMD_MARKER,
@@ -17172,6 +17205,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
@@ -18132,6 +18166,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
   /** Backfill legacy identity epochs before the recovery runtime can read them.
    * Existing monotonic/tombstone state always wins; corrupt authority is never
    * overwritten with a fabricated epoch-zero file. */
+  /**
+   * Every machine carries a human name (operator report 2026-11-12: a footer read
+   * "bob · Machine m_4851af"). Registries written before nicknames existed, or rebuilt by a
+   * path that skipped them, leave machines unnamed. Idempotent; never replaces a name a person
+   * chose (MachineIdentityManager.ensureNicknames). The server boot runs the same backfill.
+   */
+  private migrateMachineNicknames(result: MigrationResult): void {
+    try {
+      const mgr = new MachineIdentityManager(this.config.stateDir,
+        this.config.detectFriendlyMachineName ? { detectFriendlyName: this.config.detectFriendlyMachineName } : {});
+      if (!mgr.hasIdentity() || !fs.existsSync(mgr.registryPath)) { result.skipped.push('machine nicknames (no machine identity yet)'); return; }
+      const named = mgr.ensureNicknames();
+      if (named.length) result.upgraded.push(`machine nicknames: named ${named.length} machine(s)`);
+      else result.skipped.push('machine nicknames (every machine already named)');
+    } catch (err) {
+      result.errors.push(`machine nicknames: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateMachineIdentityEpochs(result: MigrationResult): void {
     const epochPath = path.join(this.config.stateDir, 'state', 'identity-epochs.json');
     const attestationPath = path.join(this.config.stateDir, 'state', 'machine-identity-migration-attestation.json');
@@ -24332,6 +24385,10 @@ process.stdin.on('end', async () => {
     // A reply queued while the server booted carried no session identity, so
     // recovery sent it labelled "unknown · unknown · unknown".
     '4b19226d06a99514cf53e92b0aa764705289002a0fd183990cbf4f5d827a4a8c',
+    // Queued-row origin digest version, shipped immediately BEFORE the owner-read
+    // outcome (native-conversation-base §3b). It printed "safe to send it again"
+    // for every `not-delivered`, including one ended on purpose (safeToResend false).
+    '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
   ]);
 
   /**

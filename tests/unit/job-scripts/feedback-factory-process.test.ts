@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { expectFixture, makeTmp, removeTmp, runScript, sharedContractCases, startStub, type StubRequest } from './harness.js';
+import { deadPort, expectFixture, makeTmp, removeTmp, runScript, sharedContractCases, startStub, type StubRequest } from './harness.js';
 
 const SLUG = 'feedback-factory-process';
 const RUN = 'drain-run:abc';
@@ -19,7 +19,39 @@ function flow(opts: { state?: string; lastRun?: Record<string, unknown>; tick?: 
 }
 
 describe('feedback-factory-process script', () => {
-  sharedContractCases(SLUG, flow());
+  // A server that never answers its own status read is too busy, not broken: the run is skipped.
+  sharedContractCases(SLUG, flow(), { timeoutResult: /^JOB_RESULT skipped status-busy$/, timeoutExitCode: 0 });
+
+  it('a status read that times out three times → skipped status-busy, no tick', async () => {
+    const stub = await startStub(() => ({ hang: true }));
+    const cwd = makeTmp('busy');
+    try {
+      fs.mkdirSync(path.join(cwd, '.instar'));
+      fs.writeFileSync(path.join(cwd, '.instar', 'config.json'), JSON.stringify({ developmentAgent: true }));
+      const r = await runScript(SLUG, { serverUrl: stub.url, cwd, env: { INSTAR_SCRIPT_HTTP_TIMEOUT_MS: '200' } });
+      expect(r.resultLine).toBe('JOB_RESULT skipped status-busy');
+      expect(r.exitCode).toBe(0);
+      expect(r.fields).toMatchObject({ outcome: 'status-busy' });
+      const urls = stub.requests.map((q) => q.url);
+      expect(urls.filter((u) => u === '/feedback-factory/drain/status')).toHaveLength(3);
+      expect(urls).not.toContain('/feedback-factory/drain/tick');
+    } finally { await stub.close(); removeTmp(cwd); }
+  });
+
+  it('a status read that times out once, then answers → the run goes ahead', async () => {
+    const inner = flow();
+    let first = true;
+    await expectFixture(SLUG, (q, nth) => {
+      if (first && q.url === '/feedback-factory/drain/status') { first = false; return { hang: true }; }
+      return inner(q, nth);
+    }, 'JOB_RESULT ok succeeded', 0, { ...POLL, INSTAR_SCRIPT_HTTP_TIMEOUT_MS: '300' });
+  });
+
+  it('a refused connection is still a failure, not a busy skip', async () => {
+    const r = await runScript(SLUG, { serverUrl: `http://127.0.0.1:${await deadPort()}` });
+    expect(r.resultLine).toBe('JOB_RESULT failed server-unreachable');
+    expect(r.exitCode).toBe(1);
+  });
 
   it('live → tick → terminal succeeded → ok succeeded, with fields pinned', async () => {
     const r = await expectFixture(SLUG, flow(), 'JOB_RESULT ok succeeded', 0, POLL);
