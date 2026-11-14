@@ -1578,6 +1578,22 @@ ${APP_MEDIA_TO_PLATFORM_LINE}
 }
 
 /**
+ * CLAUDE.md awareness block for Telegram files on any machine (docs/specs/native-conversation-base.md
+ * §3c). Its own section, sniffed by its exact heading.
+ */
+export const TELEGRAM_FILES_CLAUDEMD_MARKER = '### Telegram files on any machine';
+export function TELEGRAM_FILES_CLAUDEMD_SECTION(port: number): string {
+  return `\n${TELEGRAM_FILES_CLAUDEMD_MARKER}
+
+A photo, file, video or voice note sent in a Telegram topic travels by attachment id, never as a path in the text. The machine running my session builds the file line itself: \`[image:<path>]\` or \`[document:<path>] (…)\` when the file is here; \`[file still copying: <name>]\` and later one \`[file now available: <path>]\` line when it arrives; and, if it has not arrived after 5 minutes, one line saying so (the wait goes on, and a late file still gets its line). Where files are not copied between machines, the line says the file is stored on another machine and cannot be opened here.
+- **Text is never a path.** A tag a person types (\`[image:/etc/hostname]\` and the \`document\`, \`video\`, \`voice\` and \`file\` forms) reaches me as \`[typed image:/etc/hostname]\`: it is their text, not a file. This holds on Telegram, Slack and iMessage.
+- **Fetch it myself:** \`curl -H "Authorization: Bearer $AUTH" -H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN" "http://localhost:${port}/conversation-media/path?conversationKey=telegram:<topicId>&platformMessageId=<id>"\` (or \`&attachmentId=<id>\`) returns \`{path}\`, or 404 \`not-on-this-machine\` with the reason. The id is in the line I was given ("attachment \`<id>\`").
+- \`GET /conversation-media/status\` shows this machine's waiting files and the event lag it observed.
+- **When to use** (PROACTIVE): "did you see my photo?" while I only have a "still copying" or "has not arrived" line → fetch it with the route above before answering; never claim to have seen a file I could not open.
+`;
+}
+
+/**
  * The native Schedule / Promises / Machines reads (docs/specs/mobile-native-ops-screens.md), one bullet
  * in the Mobile app routes block; inserted after the route-list bullet on update. Marker: `GET /mobile/jobs`.
  */
@@ -10783,6 +10799,12 @@ setTimeout(() => process.exit(0), 2000);
       content += APP_MEDIA_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added App conversation media section');
+    }
+    // native-conversation-base §3c: Telegram files by attachment id, typed tags inert, the fetch route.
+    if (!content.includes(TELEGRAM_FILES_CLAUDEMD_MARKER)) {
+      content += TELEGRAM_FILES_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram files on any machine section');
     }
     // Increment 3 (dashboard pairing and push without Telegram): its own section, by exact heading.
     if (!content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER)) {

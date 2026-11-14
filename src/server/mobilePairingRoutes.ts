@@ -1982,17 +1982,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       json(b: unknown) { captured.body = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>; return fakeRes; },
       setHeader() { return fakeRes; },
     };
-    // Files (chat-media §4.5): one line per file before the caption, in Telegram's forms, with a
-    // server-chosen path to a private copy (the blobs were just published on this machine).
-    let sessionText = delivered;
-    if (app && stored.length > 0) {
-      const lines = await app.sessionLinesFor(storeKey, storeMessageId, stored, delivered);
-      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
-    }
+    // Files (chat-media §4.5, native-conversation-base §3c): by attachment id, never as tag lines in
+    // the text. The machine that serves the session builds the file lines from the field; the text
+    // keeps one path-free sentence per file for an older receiver.
+    const media = app ? stored.map((a) => ({
+      kind: a.kind === 'photo' ? 'photo' as const : a.kind === 'video' ? 'video' as const : a.kind === 'voice' ? 'voice' as const : 'document' as const,
+      attachmentId: a.attachmentId, filename: a.filename,
+    })) : [];
     const fakeReq = {
       headers: {},
       body: {
-        topicId, text: sessionText, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
+        topicId, text: delivered, media, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         ...(sender.role === 'owner' ? { fromUserId: ownerId } : {}), fromFirstName: senderName, forwarded: false,
       },
     };
