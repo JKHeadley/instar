@@ -142,4 +142,44 @@ describe('JevFirstDecision', () => {
     const answer = await createJevAsk(fetchImpl as unknown as typeof fetch)({ key: 'test-key', state: 'exchange', question: 'A promise?', model: 'jev-1.13.0', timeoutMs: 1000 });
     expect(answer).toMatchObject({ model: 'jev-1.13.0', probability: 0.91, tokensIn: 8 });
   });
+
+  describe('typed Jev failures (CMT-1678)', () => {
+    function clock(step: number) { let t = 1_000; return () => { const v = t; t += step; return v; }; }
+    const cases: Array<[string, () => unknown, string, number | null]> = [
+      ['an abort', () => Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }), 'timeout', null],
+      ['an HTTP 429', () => new Error('Jev HTTP 429'), 'http', 429],
+      ['a JSON parse failure', () => new SyntaxError('Unexpected token < in JSON at position 0'), 'invalid-body', null],
+      ['a reset socket', () => Object.assign(new Error('read ECONNRESET secret-ish detail'), { code: 'ECONNRESET' }), 'transport', null],
+    ];
+    for (const [label, make, kind, status] of cases) {
+      it(`classifies ${label} as ${kind}, times it from the injected clock and keeps no error text`, async () => {
+        const err = make();
+        const x = setup({ now: clock(37), askJev: async () => { throw err; } });
+        const result = await x.gateway.decide({ point, state: 'A real exchange', fallback: x.fallback });
+        expect(result).toMatchObject({ answer: false, source: 'incumbent', reason: 'jev-error' });
+        expect(x.fallback).toHaveBeenCalledOnce();
+        expect(x.rows[0].context).toMatchObject({ handoffReason: 'jev-error', jevFailureKind: kind, jevHttpStatus: status, jevElapsedMs: 37, jevMs: null });
+        expect(JSON.stringify(x.rows[0])).not.toContain((err as Error).message);
+      });
+    }
+
+    it('records elapsed time on a successful call and no failure kind', async () => {
+      const x = setup({ now: clock(15) });
+      await x.gateway.decide({ point, state: 'User asked; agent promised to fix it.', fallback: x.fallback });
+      expect(x.rows[0].context).toMatchObject({ jevMs: 120, jevElapsedMs: 15, jevFailureKind: null, jevHttpStatus: null });
+    });
+
+    it('writes null timing and kind when Jev was never asked', async () => {
+      const x = setup({ readKey: () => null });
+      await x.gateway.decide({ point, state: 'A real exchange', fallback: x.fallback });
+      expect(x.rows[0].context).toMatchObject({ handoffReason: 'no-key', jevElapsedMs: null, jevFailureKind: null, jevHttpStatus: null });
+    });
+
+    it('marks an unreadable returned answer as invalid-body', async () => {
+      const x = setup({ askJev: async () => null as never });
+      const result = await x.gateway.decide({ point, state: 'A real exchange', fallback: x.fallback });
+      expect(result.reason).toBe('jev-error');
+      expect(x.rows[0].context).toMatchObject({ jevFailureKind: 'invalid-body', jevHttpStatus: null });
+    });
+  });
 });
