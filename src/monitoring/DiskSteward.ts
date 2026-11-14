@@ -19,8 +19,11 @@ import {
 } from './diskSteward/levels.js';
 import type { PruneChildResult, WorktreePlan } from './diskStewardMain.js';
 import type { PruneRequest, RunRecord } from './diskSteward/pruneRunner.js';
+import type { WholeDiskResult } from './diskSteward/wholeDisk.js';
 
 const HOUR = 3_600_000;
+/** §3.7a: how often the whole home folder is measured by owner. */
+export const WHOLE_DISK_INTERVAL_MS = 24 * HOUR;
 const DAY = 24 * HOUR;
 const RETENTION_MS = 8 * DAY;
 const MAX_SAMPLES = 768;
@@ -46,6 +49,7 @@ export interface DuePost {
   biggest?: Array<{ name: string; bytes: number }>;
   sizesAt?: number;
   sizesPartial?: boolean;
+  wholeDisk?: WholeDiskResult;
   pruneEnabled: boolean;
   cleanupNotHelping: boolean;
   failures: number;
@@ -102,6 +106,7 @@ interface PersistedState {
   lastPost: { at: number; postId: string; level: Level; critical: boolean } | null;
   sizes?: { at: number; partial: boolean; folders: Array<{ name: string; bytes: number }> };
   worktrees?: WorktreePlan;
+  wholeDisk?: WholeDiskResult;
   lastMeasureFailedAt?: number | null;
   /** When this episode's last cycle healed the disk without a post. */
   healedAt?: number | null;
@@ -132,6 +137,7 @@ export interface DiskStewardStatus {
   prune: { enabled: boolean; dryRun: boolean; lastRun: PruneSummary | null; running: RunRecord | null; breaker: number };
   sizes: PersistedState['sizes'] | null;
   worktrees: WorktreePlan | null;
+  wholeDisk: WholeDiskResult | null;
 }
 
 function emptyState(): PersistedState {
@@ -304,16 +310,18 @@ export class DiskSteward {
       const belowWarn = th !== null && free0 !== null && free0 < th.warnBelow;
       const breakerTripped = this.state.breaker >= 3;
       const wantsMeasure = !this.state.sizes || now - this.state.sizes.at > 6 * HOUR;
+      // §3.7a: the whole home folder is slower to walk, so at most once a day.
+      const wantsWholeDisk = !this.state.wholeDisk || now - this.state.wholeDisk.at > WHOLE_DISK_INTERVAL_MS;
       let dryRun: boolean;
       let trigger: 'auto' | 'manual';
       if (opts.manual) { dryRun = opts.manual.dryRun; trigger = 'manual'; }
       else { dryRun = !(enabled && !this.deps.pruneDryRun() && dueForPrune && belowWarn && !breakerTripped); trigger = 'auto'; }
-      if (!opts.manual && dryRun && !wantsMeasure && this.state.lastPrune && now - this.state.lastPrune.at < 6 * HOUR) {
+      if (!opts.manual && dryRun && !wantsMeasure && !wantsWholeDisk && this.state.lastPrune && now - this.state.lastPrune.at < 6 * HOUR) {
         // A recent plan is fresh enough: post from it without another child run.
         this.queueAlert(now, opts.firstCritical);
         return { runId: null };
       }
-      const started = this.deps.runner.start({ trigger, dryRun, measure: wantsMeasure || !!opts.manual, requestedBy: opts.manual?.requestedBy ?? null });
+      const started = this.deps.runner.start({ trigger, dryRun, measure: wantsMeasure || !!opts.manual, wholeDisk: wantsWholeDisk, requestedBy: opts.manual?.requestedBy ?? null });
       if (!started) { this.deps.log({ event: 'prune-busy' }); if (!opts.manual) this.queueAlert(now, opts.firstCritical); return { runId: null }; }
       this.deps.evidence?.('fired', `${trigger}${dryRun ? ' dry-run' : ''}`);
       const backstop = new Promise<'timeout'>((r) => { const t = setTimeout(() => r('timeout'), 45 * 60_000); t.unref?.(); });
@@ -363,6 +371,7 @@ export class DiskSteward {
     }
     if (r.sizes) this.state.sizes = r.sizes;
     if (r.worktrees) this.state.worktrees = r.worktrees;
+    if (r.wholeDisk) this.state.wholeDisk = r.wholeDisk;
     if (r.categories.some((c) => c.error)) this.deps.evidence?.('error', 'a cleanup category failed');
   }
 
@@ -383,6 +392,7 @@ export class DiskSteward {
       ...(this.state.worktrees ? { worktrees: this.state.worktrees } : {}),
       reaperArmed: this.deps.reaperArmed(),
       ...(this.state.sizes ? { biggest: this.state.sizes.folders.slice(0, 3), sizesAt: this.state.sizes.at, sizesPartial: this.state.sizes.partial } : {}),
+      ...(this.state.wholeDisk ? { wholeDisk: this.state.wholeDisk } : {}),
       pruneEnabled: this.deps.pruneEnabled(),
       cleanupNotHelping: this.state.breaker >= 3,
       failures: 0, nextAttemptAt: now,
@@ -498,6 +508,7 @@ export class DiskSteward {
       lastPost: this.state.lastPost,
       prune: { enabled: this.deps.pruneEnabled(), dryRun: this.deps.pruneDryRun(), lastRun: this.state.lastPrune, running: this.deps.runner.running(), breaker: this.state.breaker },
       sizes: this.state.sizes ?? null,
+      wholeDisk: this.state.wholeDisk ?? null,
       worktrees: this.state.worktrees ?? null,
     };
   }
