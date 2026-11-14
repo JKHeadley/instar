@@ -13,6 +13,11 @@ instar setup                    # Same as above
 instar init [project-name]      # Create a new agent (general or project)
 ```
 
+`instar set-claude-key [-d <dir>]` puts a new Claude sign-in key (from
+`claude setup-token`) in place. It reads the key from stdin or a hidden
+prompt, never from the command line, and a running server picks it up within
+a minute.
+
 ## Server
 
 ```bash
