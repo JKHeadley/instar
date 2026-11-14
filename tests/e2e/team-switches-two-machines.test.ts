@@ -180,5 +180,22 @@ describe('team settings turn on for the whole agent', () => {
     expect(all.body).toMatchObject({ ok: true, setting: 'team-access' });
     expect(Array.isArray(all.body.settings)).toBe(true);
     expect((all.body.results as unknown[]).length).toBe((all.body.settings as unknown[]).length);
+
+    // Files in app conversations (the app's "Files are turned off" notice): the laptop has them off in its
+    // own config; the owner's one tap turns them on there over the same signed route.
+    const cfgPathB = path.join(b.stateDir, 'config.json');
+    const offB = JSON.parse(fs.readFileSync(cfgPathB, 'utf8'));
+    offB.mobilePairing = { ...(offB.mobilePairing ?? {}), native: { ...(offB.mobilePairing?.native ?? {}), media: { enabled: false } } };
+    fs.writeFileSync(cfgPathB, JSON.stringify(offB, null, 2));
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(cfgPathB, future, future);
+    const ch3 = await owner('POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: 'files' });
+    expect(ch3.status).toBe(200);
+    const sig3 = presence.sign(permissionPresenceMessage(r.body.deviceId, HOST, ch3.body.challenge, 'team-switch-on files'));
+    const files = await owner('POST', '/mobile/team/switches/turn-on', { setting: 'files', challenge: ch3.body.challenge, presenceSig: sig3 });
+    expect(files.status).toBe(200);
+    const filesById = new Map((files.body.machines as Array<{ machineId: string; result: string }>).map((x) => [x.machineId, x]));
+    expect(filesById.get(b.identity.machineId)).toMatchObject({ result: 'applied' });
+    expect(JSON.parse(fs.readFileSync(cfgPathB, 'utf8')).mobilePairing.native.media.enabled).toBe(true);
   }, 30_000);
 });

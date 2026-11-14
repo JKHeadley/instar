@@ -152,6 +152,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).
       ['POST', '/mobile/accounts/add'],
+      // A tap on a work card with Face ID (work-board-asks §4): only the team owner taps in phase 1.
+      ['POST', '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

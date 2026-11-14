@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "resume-heartbeat-one-tmux-call",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T11:32:04.305Z",
+  "artifactPath": "upgrades/side-effects/resume-heartbeat-one-tmux-call.md",
+  "artifactSha256": "68e1d7692438bdd8f0747fc1c28d45a041a89a880cab5f5ad0a66917ae8bc48b",
+  "coveredFiles": [
+    "docs/specs/resume-heartbeat-one-tmux-call.eli16.md",
+    "src/core/TopicResumeMap.ts",
+    "tests/e2e/resume-follows-account-dead-pane-e2e.test.ts",
+    "tests/e2e/resume-heartbeat-framework-lifecycle.test.ts",
+    "tests/e2e/session-resume-e2e.test.ts",
+    "tests/helpers/codexArchiveFixture.ts",
+    "tests/integration/resume-heartbeat-health-concurrency.test.ts",
+    "tests/unit/TopicResumeMap-framework-layout.test.ts",
+    "tests/unit/topic-resume-map-no-guess.test.ts",
+    "upgrades/next/resume-heartbeat-one-tmux-call.md",
+    "upgrades/side-effects/resume-heartbeat-one-tmux-call.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One method in one module replaces about 40 per-session tmux probes with one list call under the same liveness rule; no stored data or config changes; a revert undoes it. It feeds session resume, so it had an independent review (three reads, concur; the first found and I fixed a real defect).",
+  "eli16Path": "docs/specs/resume-heartbeat-one-tmux-call.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/resume-heartbeat-one-tmux-call.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

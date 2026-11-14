@@ -42,7 +42,11 @@ describe('a config read that fails, on the production boot path', () => {
     const { authorize } = await boot();
     const read = vi.spyOn(OriginConfigReader.prototype, 'read').mockRejectedValue(new Error('origin-config-size'));
     await vi.waitFor(() => expect(read).toHaveBeenCalled(), { timeout: 15_000, interval: 50 });
-    await vi.waitFor(async () => expect(await authorize()).toBe(false), { timeout: 2_000, interval: 50 });
+    // "At once" means without waiting out the 30 second bound on a kept snapshot (the next test),
+    // not within two seconds of wall time: on a loaded machine one authorize() round trip can
+    // itself take longer than that, and this test failed two unrelated changes on it
+    // (2026-11-13 19:42Z and 2026-11-14 05:52Z). 20 s stays well inside the 30 s bound.
+    await vi.waitFor(async () => expect(await authorize()).toBe(false), { timeout: 20_000, interval: 50 });
   }, 60_000);
   it('stops sending once the kept snapshot passes its 30 second bound', async () => {
     const { authorize } = await boot();

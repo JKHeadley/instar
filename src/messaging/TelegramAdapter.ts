@@ -3,6 +3,8 @@ import { notificationStamper, responseNotificationStamper, withNotificationEnvel
 const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
 const stampResponse = responseNotificationStamper('src/messaging/TelegramAdapter.ts');
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
+import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
@@ -63,15 +65,20 @@ import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
 import { topicRef } from './shared/topicRef.js';
+import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
+import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
   type AttentionLifecycleClass, type AttentionLifecycleConfig, type ResolvedAttentionLifecycleConfig,
 } from '../core/AttentionLifecycle.js';
-const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
+/** The reply to an invite this adapter cannot hand to a pairing handler: a direct link, or why there is none. */
+function pairingDashboardFallback(origin: OperatorLinkOrigin | null): string {
+  return `I got a pairing invite, but I can't take it from this chat. ${pairingDashboardLine(origin, 'Paste it', PAIRING_PASTE_ROUTE)}`;
+}
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
-  onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void>;
+  onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void | { refused: boolean }>; // what it decided; only the lifeline forward route reads it, polling ignores it
   onCallback(c: { callbackQueryId: string; data: string; fromUserId: number; chatId?: string; verified: boolean }): Promise<boolean>;
 }
 
@@ -700,6 +707,9 @@ export class TelegramAdapter implements MessagingAdapter {
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
+  private pairingDashboardOrigin: (() => OperatorLinkOrigin) | null = null;
+  /** Where the dashboard opens, for the direct link in the no-handler invite reply (topic 10000002573). */
+  setPairingDashboardOrigin(resolve: (() => OperatorLinkOrigin) | null): void { this.pairingDashboardOrigin = resolve; }
   /** The desktop code is consumed before ordinary command routing or message
    * logging. This callback is reachable only after Telegram sender auth. */
   private desktopApprovalHandler: ((input: { requestId: string; code: string; topicId: number; senderUid: string }) => boolean) | null = null;
@@ -787,6 +797,17 @@ export class TelegramAdapter implements MessagingAdapter {
   private inboundMediaHook: TelegramInboundMediaHook | null = null;
 
   setInboundMediaHook(hook: TelegramInboundMediaHook | null): void { this.inboundMediaHook = hook; }
+
+  /**
+   * native-conversation-base §3c: a file the lifeline downloaded and forwarded is captured into the
+   * media store exactly like a polled one, so it can follow the session to another machine. Returns
+   * the capture state the message's `media[]` entry carries.
+   */
+  captureForwardedMedia(info: TelegramInboundMedia): 'pending' | 'off' {
+    if (!this.inboundMediaHook) return 'off';
+    void this.copyInboundMedia(info);
+    return 'pending';
+  }
 
   /**
    * Hand one downloaded file to the inbound media hook. Bounded: at most 30 s is waited, and any
@@ -2458,7 +2479,9 @@ export class TelegramAdapter implements MessagingAdapter {
         text: escaped,
         parse_mode: 'HTML',
         _formatMode: 'html',
-        ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
+        // A yes/no pair shares one row; three or more (one per project in a Chief of Staff note) get a row each,
+        // so every button keeps its full name on a phone instead of being squeezed into one line.
+        ...(buttons.length ? { reply_markup: { inline_keyboard: buttons.length > 2 ? buttons.map((b) => [{ text: b.text, callback_data: b.data }]) : [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
       })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
@@ -6205,12 +6228,12 @@ export class TelegramAdapter implements MessagingAdapter {
         }).catch((err: unknown) => {
           // Never leave a forwarded invite unanswered (Echo's review): fall back to the dashboard line.
           console.warn(`[telegram] pairing invite handler failed: ${err instanceof Error ? err.message : String(err)}`);
-          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
+          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(readPairingOrigin(this.pairingDashboardOrigin)))).catch(() => {});
         });
         return;
       }
       if (this.isAuthorized(msg.from.id)) {
-        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
+        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(readPairingOrigin(this.pairingDashboardOrigin)))).catch(() => {});
       }
       return;
     }
@@ -6277,7 +6300,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Handle text messages
     if (!msg.text) return;
 
-    const text = msg.text;
+    // native-conversation-base §3c item 1: a path tag a person typed is inert from here on —
+    // before the text is forwarded, queued or logged. Commands are unaffected.
+    const text = escapeTypedPathTags(msg.text);
 
     const desktopApproval = this.consumeDesktopApproval({
       text, topicId: numericTopicId, senderUid: String(msg.from.id), trusted: true,
@@ -6311,6 +6336,8 @@ export class TelegramAdapter implements MessagingAdapter {
         username: msg.from.username,
         firstName: msg.from.first_name,
         messageThreadId: numericTopicId,
+        // A new poller sends `media` on every message (empty here), so a receiver can tell it from an old one.
+        media: [],
         // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
         // ANY profile-ingress recognition — carry the platform forward
         // metadata so the server-side parse can reject it deterministically.
@@ -6519,10 +6546,13 @@ export class TelegramAdapter implements MessagingAdapter {
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
+      // A transcript is person-derived text: typed path tags in it are inert (§3c item 1). The
+      // voice file itself is deleted below; the session reads the transcript, as before.
+      const safeTranscript = escapeTypedPathTags(transcript);
       const message: Message = {
         id: `tg-${msg.message_id}`,
         userId: msg.from.id.toString(),
-        content: `[voice] ${transcript}`,
+        content: `[voice] ${safeTranscript}`,
         channel: { type: 'telegram', identifier: topicId.toString() },
         receivedAt: new Date(msg.date * 1000).toISOString(),
         metadata: {
@@ -6532,6 +6562,7 @@ export class TelegramAdapter implements MessagingAdapter {
           messageThreadId: topicId,
           voiceFile: filepath,
           voiceDuration: voice.duration,
+          media: [],
         },
       };
 
@@ -6539,7 +6570,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
-        text: `[voice] ${transcript}`,
+        text: `[voice] ${safeTranscript}`,
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
@@ -6599,9 +6630,13 @@ export class TelegramAdapter implements MessagingAdapter {
         width: photo.width, height: photo.height,
       });
 
-      const content = caption
-        ? `[image:${filepath}] ${caption}`
-        : `[image:${filepath}]`;
+      // native-conversation-base §3c: the file travels as a structured field; the text carries
+      // only the path-free sentence and the person's caption, escaped. The path stays in process.
+      const media: InboundMediaLocal[] = [{
+        kind: 'photo', platformMessageId: String(msg.message_id), filename: mediaDisplayName(path.basename(filepath)),
+        capture: this.inboundMediaHook ? 'pending' : 'off', localPath: filepath,
+      }];
+      const content = composeInboundPayload(caption, toWireMedia(media));
 
       const message: Message = {
         id: `tg-${msg.message_id}`,
@@ -6615,14 +6650,15 @@ export class TelegramAdapter implements MessagingAdapter {
           firstName: msg.from.first_name,
           messageThreadId: topicId,
           photoPath: filepath,
+          media,
         },
       };
 
-      // Log it (including sender identity for multi-user topics)
+      // Log it (including sender identity for multi-user topics). Never a path (§3c item 3).
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
-        text: content,
+        text: historyTextFor(caption, media),
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
@@ -6673,9 +6709,11 @@ export class TelegramAdapter implements MessagingAdapter {
         at: new Date(msg.date * 1000).toISOString(),
       });
 
-      const content = caption
-        ? `[document:${filepath}] ${caption}`
-        : `[document:${filepath}]`;
+      const media: InboundMediaLocal[] = [{
+        kind: 'document', platformMessageId: String(msg.message_id), filename: mediaDisplayName(doc.file_name || path.basename(filepath).replace(/^\d{10,}-/, '')),
+        capture: this.inboundMediaHook ? 'pending' : 'off', localPath: filepath,
+      }];
+      const content = composeInboundPayload(caption, toWireMedia(media));
 
       const message: Message = {
         id: `tg-${msg.message_id}`,
@@ -6691,14 +6729,15 @@ export class TelegramAdapter implements MessagingAdapter {
           documentPath: filepath,
           documentName: doc.file_name,
           documentMimeType: doc.mime_type,
+          media,
         },
       };
 
-      // Log it
+      // Log it. Never a path (§3c item 3).
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
-        text: content,
+        text: historyTextFor(caption, media),
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
@@ -6887,7 +6926,7 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Approve this on the dashboard (Threadline tab) with your PIN.',
+        text: 'Approve this on the dashboard\'s Other agents page with your PIN.',
       }).catch(() => {});
       return;
     }
