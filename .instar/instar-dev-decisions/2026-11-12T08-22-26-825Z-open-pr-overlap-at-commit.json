@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-12T08:22:26.825Z",
+  "slug": "open-pr-overlap-at-commit",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 248,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "scripts/lib/open-pr-overlap.mjs"
+    ],
+    "addedLines": 248,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
