@@ -1362,6 +1362,14 @@ export function MOBILE_PLANS_PEOPLE_LINE(port: number): string {
 }
 export const MOBILE_PLANS_PEOPLE_MARKER = 'GET /mobile/plans';
 /**
+ * File viewer: whole-project name search and image preview. One bullet, shared by
+ * generateClaudeMd (new agents) and migrateClaudeMd (existing agents). Sniff: FILES_SEARCH_MARKER.
+ */
+export function FILES_SEARCH_CLAUDEMD_LINE(port: number): string {
+  return `- **Find a file by name**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/search?q=MEMORY"\` → \`{ query, results: [{ path, name, type, size?, modified? }], truncated, scanned }\` — a name match across every allowed folder under the same never-served and blocked-name rules as the list route (skips \`.git\` and \`node_modules\`; capped at 200 results, 20,000 entries and 2 seconds; \`truncated: true\` when it stopped early). Use it when the user asks "where is the file called X?" instead of walking folders. **Image preview**: \`GET /api/files/image?path=...\` serves a PNG, JPEG, GIF or WebP (checked by its bytes, never SVG; up to 5 MB and the viewer's size limit) inline with its real type — the console's Files page shows pictures through it.`;
+}
+export const FILES_SEARCH_MARKER = '/api/files/search?q=';
+/**
  * The native Messages to you / Insights reads and owner-phone removal (docs/specs/mobile-native-phones-messages.md),
  * one bullet in the Mobile app routes block after the plans-people bullet. Sniff: `GET /mobile/messages`.
  */
@@ -11019,6 +11027,21 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD, MOBILE_CAPACITY_SCREENS_RESOURCES_NEW);
       patched = true;
       result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
+    }
+
+    // File viewer search + image preview: one bullet after the "Generate a file link" bullet of
+    // the File Viewer section; appended when that bullet is missing. Sniff: FILES_SEARCH_MARKER.
+    if (content.includes('/api/files/') && !content.includes(FILES_SEARCH_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/api/files/link?path='));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, FILES_SEARCH_CLAUDEMD_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${FILES_SEARCH_CLAUDEMD_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added file search and image preview line');
     }
 
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
