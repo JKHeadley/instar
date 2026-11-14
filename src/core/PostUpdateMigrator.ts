@@ -1,3 +1,7 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -61,7 +65,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -2061,6 +2065,8 @@ export interface MigratorConfig {
   hasTelegram: boolean;
   projectName: string;
   identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
+  /** Test seam: this machine's friendly name (default: macOS ComputerName / Linux pretty hostname). */
+  detectFriendlyMachineName?: () => string | null;
   /**
    * The configured claude-code binary (native-hook-events D4 version gate).
    * Absent ⇒ read from `<stateDir>/config.json` (never PATH).
@@ -3107,6 +3113,7 @@ export class PostUpdateMigrator {
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateMachineIdentityEpochs(result);
+    this.migrateMachineNicknames(result);
     this.migrateLegacyMaxSessions(result);
     this.migrateRetireDeadMentorConfig(result);
     this.migrateRetireStagedFeaturesCmt1004(result);
@@ -10000,6 +10007,13 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + telegramOriginHeldOutcomeAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
+    }
+
+    // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
+    if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginOwnerReadAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
     }
 
     if (!content.includes('Telegram test groups:')) {
@@ -17189,6 +17203,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
@@ -18149,6 +18164,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
   /** Backfill legacy identity epochs before the recovery runtime can read them.
    * Existing monotonic/tombstone state always wins; corrupt authority is never
    * overwritten with a fabricated epoch-zero file. */
+  /**
+   * Every machine carries a human name (operator report 2026-11-12: a footer read
+   * "bob · Machine m_4851af"). Registries written before nicknames existed, or rebuilt by a
+   * path that skipped them, leave machines unnamed. Idempotent; never replaces a name a person
+   * chose (MachineIdentityManager.ensureNicknames). The server boot runs the same backfill.
+   */
+  private migrateMachineNicknames(result: MigrationResult): void {
+    try {
+      const mgr = new MachineIdentityManager(this.config.stateDir,
+        this.config.detectFriendlyMachineName ? { detectFriendlyName: this.config.detectFriendlyMachineName } : {});
+      if (!mgr.hasIdentity() || !fs.existsSync(mgr.registryPath)) { result.skipped.push('machine nicknames (no machine identity yet)'); return; }
+      const named = mgr.ensureNicknames();
+      if (named.length) result.upgraded.push(`machine nicknames: named ${named.length} machine(s)`);
+      else result.skipped.push('machine nicknames (every machine already named)');
+    } catch (err) {
+      result.errors.push(`machine nicknames: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateMachineIdentityEpochs(result: MigrationResult): void {
     const epochPath = path.join(this.config.stateDir, 'state', 'identity-epochs.json');
     const attestationPath = path.join(this.config.stateDir, 'state', 'machine-identity-migration-attestation.json');
@@ -24298,6 +24332,10 @@ process.stdin.on('end', async () => {
     // A reply queued while the server booted carried no session identity, so
     // recovery sent it labelled "unknown · unknown · unknown".
     '4b19226d06a99514cf53e92b0aa764705289002a0fd183990cbf4f5d827a4a8c',
+    // Queued-row origin digest version, shipped immediately BEFORE the owner-read
+    // outcome (native-conversation-base §3b). It printed "safe to send it again"
+    // for every `not-delivered`, including one ended on purpose (safeToResend false).
+    '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
   ]);
 
   /**

@@ -1,3 +1,4 @@
+import { resolveOriginStageDeadline, type OriginStageDeadlines } from './OriginStageDeadlines.js';
 import { categoryForProducer } from '../notificationCategories.js';
 import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope, isVerifiedReplyEnvelope, verifiedJobEnvelope, isVerifiedJobEnvelope } from '../NotificationSelectivityGate.js';
 import type { OutboundEnvelope } from '../NotificationSelectivityGate.js';
@@ -87,8 +88,20 @@ export interface OriginServiceOptions {
   diagnoseUnknown?: (originId: string, reason: string) => Promise<string | void>;
   diagnosticMode?: 'local' | 'delegate';
   limits?: Partial<OriginLimits>;
+  /**
+   * How long each recording stage may take before the service gives up on it. Absent fields
+   * keep the defaults (ORIGIN_STAGE_DEADLINES_MS). Read at call time, so a value set on
+   * `service.options` after construction takes effect, as `peerEvidence` does.
+   *
+   * These are real waits on disk commits (the evidence spool opens a SQLite file with
+   * synchronous FULL and fsyncs its directory). On a saturated disk a healthy commit can
+   * outlast a sub-second budget; tests running beside a full suite set generous values so a
+   * slow commit is not reported as a recording outage.
+   */
+  stageDeadlines?: Partial<OriginStageDeadlines>;
   now?: () => number;
 }
+export { ORIGIN_STAGE_DEADLINES_MS, ORIGIN_STAGE_DEADLINE_MAX_MS, type OriginStageDeadlines } from './OriginStageDeadlines.js';
 interface OriginScope { producer: TelegramOriginProducer; operations: string[]; policy?: OriginSendPolicyInput; policyReviewed?: boolean;
   logicalSendKey?: string; logicalOrdinal?: number; }
 export interface OriginPreparedBotOperation { record: TelegramOriginRecord; admission: OriginAdmission; }
@@ -117,6 +130,9 @@ export class TelegramOriginService {
   public notificationJobSession: (sessionId: string | null) => boolean = () => false;
   /** The job this local session runs, from the session record. A caller's claim never reaches here. */
   public notificationJobSlug: (sessionId: string | null) => string | undefined = () => undefined;
+  /** The native (Claude Code) session id of a running session from the server's session records,
+   * for a reply sent before any hook reported it. Binds it on the observer as a side effect. */
+  public resolveNativeSession: (sessionId: string) => string | null = () => null;
   readonly #scope = new AsyncLocalStorage<OriginScope>();
   readonly #producers = new Map<string, TelegramOriginProducer>();
   readonly #automationCredentials = new Map<string, { producer: TelegramOriginProducer; bodyDigest: string; topicId: number; expiresAt: number; logicalSendKey?: string }>();
@@ -205,7 +221,10 @@ export class TelegramOriginService {
     const verified = this.options.sessions.verify(token);
     if (!verified.ok) throw new TelegramOriginHoldError(verified.reason);
     const b = verified.binding;
-    await this.options.observer.refresh(b.sessionId);
+    if (!this.options.observer.get(b.sessionId)?.nativeSessionId) {
+      try { this.resolveNativeSession(b.sessionId); } catch { /* @silent-fallback-ok — an unresolved id leaves the model unknown, never a guess */ }
+    }
+    await this.options.observer.refresh(b.sessionId, { catchUp: true });
     const current = this.options.sessions.verify(token);
     if (!current.ok || current.binding.sessionIncarnation !== b.sessionIncarnation) {
       throw new TelegramOriginHoldError('session-no-longer-authorized');
@@ -340,7 +359,7 @@ export class TelegramOriginService {
     let binding: ReturnType<OriginSessionRegistry['attributeVerifier']>;
     try { binding = this.options.sessions.attributeVerifier(snapshot.originSessionDigest); } catch { return unattributed; }
     if (!binding) return unattributed;
-    try { await this.options.observer.refresh(binding.sessionId); } catch { /* A stale or missing observation leaves the model unknown. */ }
+    try { await this.options.observer.refresh(binding.sessionId, { catchUp: true }); } catch { /* A stale or missing observation leaves the model unknown. */ }
     const observation = this.options.observer.get(binding.sessionId);
     const current = observation && observation.sessionIncarnation === binding.sessionIncarnation ? observation : null;
     return { machine, session: { sessionId: binding.sessionId, sessionIncarnation: binding.sessionIncarnation,
@@ -477,11 +496,20 @@ export class TelegramOriginService {
     sealOriginAdmission(operation, this.options.signingKey, now);
     return operation;
   }
+  /**
+   * The budget for one stage: the caller's value when it is a whole number of milliseconds
+   * from 1 to ORIGIN_STAGE_DEADLINE_MAX_MS, otherwise the process default, otherwise the
+   * production budget (resolveOriginStageDeadline). A bad value never widens or
+   * removes a deadline.
+   */
+  #stageDeadline(stage: keyof OriginStageDeadlines): number {
+    return resolveOriginStageDeadline(stage, this.options.stageDeadlines);
+  }
   async #recordEvidence(record: StoredOriginInput): Promise<void> {
-    try { await within(this.options.store.putEvidence(record), 250); return; } catch { /* Inert evidence only; a late commit cannot send. */ }
-    try { await within(this.options.spoolEvidence(record), 500); return; } catch { /* Distinct local path can share the same physical disk. */ }
+    try { await within(this.options.store.putEvidence(record), this.#stageDeadline('storeEvidenceMs')); return; } catch { /* Inert evidence only; a late commit cannot send. */ }
+    try { await within(this.options.spoolEvidence(record), this.#stageDeadline('spoolEvidenceMs')); return; } catch { /* Distinct local path can share the same physical disk. */ }
     if (this.options.peerEvidence) {
-      try { await within(this.options.peerEvidence(record), 1250); return; } catch { /* Peer evidence is inert; all failures hold below. */ }
+      try { await within(this.options.peerEvidence(record), this.#stageDeadline('peerEvidenceMs')); return; } catch { /* Peer evidence is inert; all failures hold below. */ }
     }
     throw new TelegramOriginHoldError('all-durable-recording-sinks-unavailable');
   }
@@ -564,9 +592,9 @@ export class TelegramOriginService {
         await within(this.options.store.putVerifiedEvidence({ record: operation.admission.record,
           verification: { envelopeDigest: operation.admission.record.envelopeDigest, verifierMachineId: attestingMachine,
             keyId: key.keyId, keyEpoch: key.keyEpoch, keyFingerprint: wireDigest(key.publicKey), verifiedAt: verified.verifiedAt,
-            keyStatusAtAcceptance: 'active' } }), 1000);
+            keyStatusAtAcceptance: 'active' } }), this.#stageDeadline('verifiedEvidenceMs'));
       }
-      await within(this.options.store.admit(operation.admission), 1000);
+      await within(this.options.store.admit(operation.admission), this.#stageDeadline('admitMs'));
     }
     catch { return this.#hold(operation, 'execution-admission-unavailable'); }
   }

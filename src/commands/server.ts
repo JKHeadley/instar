@@ -17,7 +17,7 @@ import { resolveFailureReplicationTransport, isFailureReplicationKindAllowed, fi
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
-import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { configureClaudeChildAuth, configureClaudeReviewerLogin, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
@@ -113,6 +113,7 @@ import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
+import { chiefOfStaffStoreEnabled } from '../core/ChiefOfStaffStore.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -173,7 +174,7 @@ import {
   LIFELINE_INGRESS_CALLER_HEADER,
   LIFELINE_INGRESS_CALLER_SERVER_SELF,
 } from '../core/LifelineIngressSecret.js';
-import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { configureSyncOpMarker, defaultInflightMarkerReader, flushSyncOpMirror } from '../core/InFlightSyncOpMarker.js';
 import { StateManager, SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
@@ -6215,6 +6216,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { isMobileNativeEnabled: _isMobileNativeEnabled, isMobileUnreadEnabled: _isMobileUnreadEnabled } = await import('../server/mobilePairingRoutes.js');
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _appUnreadOn = _isMobileUnreadEnabled(config);
+    const _chiefOfStaffStoreOn = chiefOfStaffStoreEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
       s = { ...s, failureCallout: { enabled: !!coherenceJournal && resolveCorrectionLearningMode(config).failureCalloutsEnabled && (config.multiMachine?.stateSync?.failureCallout as { enabled?: boolean } | undefined)?.enabled !== false } };
@@ -6229,7 +6231,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
-      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      // Chief of Staff (docs/specs/chief-of-staff-topic.md §1.2): its records — check-ins, notes,
+      // bindings, last-tick — must be agent-wide, never machine-local. The store follows the feature
+      // switch; without it every record was refused 'disabled' and a check-in never counted anywhere.
+      if (_chiefOfStaffStoreOn) s = { ...s, chiefOfStaff: { enabled: true } };
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -9412,6 +9418,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -9552,6 +9559,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -12990,6 +12998,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           tmuxSession: e.session.tmuxSession,
           reason: e.reason,
           ...(e.session.framework ? { framework: e.session.framework } : {}),
+          ...(e.session.subscriptionAccountId ? { subscriptionAccountId: e.session.subscriptionAccountId } : {}),
           ...(e.uptimeSeconds !== undefined ? { uptimeSeconds: e.uptimeSeconds } : {}),
           ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
           ...(e.lastTail ? { lastTail: e.lastTail } : {}),
@@ -14801,6 +14810,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // The per-poll check of every session goes through the non-blocking tmux
+          // path where that path is on (the same gate as the rest of the async hot path).
+          ...(_tmuxAsyncEnabled ? {
+            isSessionAliveAsync: (name: string) => sessionManager.isSessionAliveNonBlocking(name),
+            captureSessionOutputAsync: (name: string, lines: number) => sessionManager.captureOutputAsync(name, lines),
+          } : {}),
           isSessionStarting: (topicId) => {
             const slackKey = slackProxyChannelMap.get(topicId);
             if (slackKey) {
@@ -19650,6 +19665,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // confidence band: do the minimum and return before any recovery cascade.
       if (_tmuxAsyncHotPathWakeGuard) {
         try {
+          flushSyncOpMirror(); // same process as the writer: settle a queued idle write first
           const marker = defaultInflightMarkerReader(config.stateDir)();
           if (marker?.inFlight) {
             console.log(
@@ -24365,14 +24381,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        sessionManager.setSpawnAccountResolver(() => {
+        const pinnedAccount = () => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
-        });
+        };
+        sessionManager.setSpawnAccountResolver(pinnedAccount);
+        // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
+        // the default login, which is signed out on a machine whose logins all live in the pool.
+        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
         sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
       }
+      // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
+      // never launch on a Codex account the pool reads at its wall; tag the
+      // session with one that has room, or refuse when none does. Same switch
+      // and walled predicate as the rescue; no Codex accounts → unchanged.
+      sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
@@ -29881,6 +29907,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!url) return { ok: false };
                 return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
               } };
+            // native-conversation-base §3b — the outcome route asks the execution
+            // owner over the SAME signed peer sender the receipt peer uses. The
+            // switches are read live on each ask; off makes answers more cautious only.
+            {
+              const { OriginOwnerReader } = await import('../messaging/telegram-origin/OriginOwnerRead.js');
+              const { originOwnerReadConfig, originForwardToHolderEnabled } = await import('../messaging/telegram-origin/OriginConfig.js');
+              const ownerReadOrigin = (): unknown => {
+                const messaging = liveConfig.get('messaging', config.messaging) as Array<{ type?: string; config?: { messageOrigin?: unknown } }> | undefined;
+                return (Array.isArray(messaging) ? messaging.find(m => m?.type === 'telegram') : undefined)?.config?.messageOrigin;
+              };
+              const receiptPeer = originReceiptPeer;
+              originRuntime.ownerReader = new OriginOwnerReader({ selfMachineId: meshSelfId, transport: { send: receiptPeer.send },
+                leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
+                enabled: () => {
+                  const origin = ownerReadOrigin();
+                  let forward = true;
+                  try { forward = originForwardToHolderEnabled(origin); } catch { forward = true; } // @silent-fallback-ok — matches the forward switch's own reading: unreadable keeps it on
+                  return forward && originOwnerReadConfig(origin).enabled;
+                },
+                budgetMs: () => originOwnerReadConfig(ownerReadOrigin()).budgetMs,
+                cacheEntries: () => originOwnerReadConfig(ownerReadOrigin()).cacheEntries });
+            }
             originRuntime.poolAudit = new OriginPoolAudit({
               operatorScopeRequired: true,
               shardIds: () => [meshSelfId, ...meshIdMgr.getActiveMachines().map(m => m.machineId).filter(id => id !== meshSelfId)],

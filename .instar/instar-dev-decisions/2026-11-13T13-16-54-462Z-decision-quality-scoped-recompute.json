@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-13T13:16:54.462Z",
+  "slug": "decision-quality-scoped-recompute",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 77,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/FeatureMetricsLedger.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

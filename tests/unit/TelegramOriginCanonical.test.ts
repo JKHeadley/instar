@@ -43,7 +43,8 @@ describe('origin optional display', () => {
   });
   it('labels configured and unknown evidence rather than presenting the desired model as observed', () => {
     expect(originFooter({ ...producer, model: { ...producer.model, status: 'configured' } }, resolveOriginDisplay())).toContain('gpt-6-astra (configured)');
-    expect(originFooter({ ...producer, model: { ...producer.model, value: null, status: 'unknown' } }, resolveOriginDisplay())).toContain('unknown');
+    // Unknown is left out of the footer, never printed as the word "unknown" (operator report 2026-11-12).
+    expect(originFooter({ ...producer, model: { ...producer.model, value: null, status: 'unknown' } }, resolveOriginDisplay())).toBe('Echo · Mac Studio · Codex');
   });
 });
 
@@ -56,7 +57,8 @@ describe('automation origin display', () => {
     expect(originFooter(automation, resolveOriginDisplay())).toBe('Echo · Mac Studio · automation');
     expect(originFooter({ ...automation, machine: unknown }, resolveOriginDisplay())).toBe('Echo · automation');
     expect(canonicalOrigin(automation)).toBe(before);
-    expect(originFooter({ ...automation, producerKind: 'session' }, resolveOriginDisplay())).toBe('Echo · Mac Studio · unknown · unknown');
+    expect(originFooter({ ...automation, producerKind: 'session' }, resolveOriginDisplay())).toBe('Echo · Mac Studio');
+    expect(originFooter({ ...automation, producerKind: 'session', machine: unknown }, resolveOriginDisplay())).toBe('Echo');
   });
   it('retains known automation evidence and explicit display overrides', () => {
     const known = { ...automation, harness: producer.harness, harnessName: 'Codex', model: { ...producer.model, status: 'configured' as const } };

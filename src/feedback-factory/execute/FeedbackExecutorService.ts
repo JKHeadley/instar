@@ -36,9 +36,9 @@ import {
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
 import {
-  ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
+  ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, readBaseFile, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
-import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
+import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, vitestFailureKeys, failuresAllPreexisting, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
 import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
@@ -219,6 +219,16 @@ function attemptTmpDirFor(agentHome: string, row: Pick<ExecutionRow, 'initiative
 
 /** Vitest's marks for a failed test in the output a killed run leaves behind. */
 const RELATED_FAILURE_OUTPUT = /(^|\s)(FAIL|×)\s|\b\d+ failed\b/m;
+/** A report file written by a confined run: read only when it is a regular file of bounded size. */
+function readTextIfPresent(file: string, maxBytes = 8 * 1024 * 1024): string | null {
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    return fs.readFileSync(file, 'utf8');
+  } catch { return null; /* @silent-fallback-ok: no report means only the printed output is read */ }
+}
+/** Why a related-tests run counted as "don't know" rather than a pass or a failure. */
+export type RelatedInconclusive = false | 'timed-out' | 'preexisting';
 
 export class FeedbackExecutorService {
   private readonly now: () => number;
@@ -682,11 +692,11 @@ export class FeedbackExecutorService {
     return null;
   }
 
-  attemptPaths(row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): { workspace: string; publishClone: string; baseClone: string; headClone: string; gateClone: string; tmpDir: string; reviewDir: string } {
+  attemptPaths(row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): { workspace: string; publishClone: string; baseClone: string; headClone: string; gateClone: string; referenceClone: string; reportsDir: string; tmpDir: string; reviewDir: string } {
     const base = path.join(this.opts.paths.agentHome, '.worktrees', `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`);
     // tmpDir is short and real on purpose (see shortAttemptTmpDir): under the agent home it is
     // too long for Claude Code's sandbox temp override, and every confined Bash call exits 1.
-    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, tmpDir: attemptTmpDirFor(this.opts.paths.agentHome, row), reviewDir: `${base}-review` };
+    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, referenceClone: `${base}-reference`, reportsDir: `${base}-reports`, tmpDir: attemptTmpDirFor(this.opts.paths.agentHome, row), reviewDir: `${base}-review` };
   }
 
   private executeStateDir(): string { return path.join(this.opts.paths.stateDir, 'state', 'feedback-factory', 'execute'); }
@@ -1093,7 +1103,7 @@ export class FeedbackExecutorService {
     const p = this.attemptPaths(row);
     const settingsPrefix = this.settingsPrefix(row.attemptId);
     const settings = (() => { try { return fs.readdirSync(this.settingsDir()).filter((n) => n.startsWith(settingsPrefix)).map((n) => path.join(this.settingsDir(), n)); } catch { return []; } })(); // @silent-fallback-ok: no settings directory → nothing to remove
-    for (const dir of [p.workspace, p.reviewDir, p.publishClone, p.baseClone, p.headClone, p.gateClone, p.tmpDir, ...settings]) {
+    for (const dir of [p.workspace, p.reviewDir, p.publishClone, p.baseClone, p.headClone, p.gateClone, p.referenceClone, p.reportsDir, p.tmpDir, ...settings]) {
       try { removeAttemptTree(dir, this.trashRoot(), 'feedback-execute attempt cleanup'); } catch (error) {
         this.opts.audit.append('execute:cleanup-failed', { attemptId: row.attemptId, dir: path.basename(dir), error: error instanceof Error ? error.name : 'unknown' });
       }
@@ -1217,7 +1227,7 @@ export class FeedbackExecutorService {
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       return;
     }
-    await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver, verification.relatedInconclusive === true);
+    await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver, verification.relatedInconclusive ?? false);
   }
 
   /**
@@ -1240,8 +1250,8 @@ export class FeedbackExecutorService {
   }
 
   /** (a) fails at base with an assertion (or a missing new source), (b) passes at the workspace, (c) lint + related tests pass. All confined. */
-  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true; relatedInconclusive?: boolean } | { ok: false; reason: string; detail?: string }> {
-    let relatedInconclusive = false;
+  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true; relatedInconclusive?: RelatedInconclusive } | { ok: false; reason: string; detail?: string }> {
+    let relatedInconclusive: RelatedInconclusive = false;
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
     const depsHash = this.metaJson<{ hash: string }>(`exec:attempt-deps:${row.attemptId}`)?.hash;
@@ -1256,11 +1266,11 @@ export class FeedbackExecutorService {
     const diskOk = async (clone: string) => await treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
-    const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS) => {
+    const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS, reportDir?: string) => {
       const runTmp = path.join(p.tmpDir, `check-${label}`);
       fs.mkdirSync(runTmp, { recursive: true, mode: 0o700 });
       return this.opts.runner.run({
-        command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, runTmp, depsDir)),
+        command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, runTmp, depsDir), reportDir ? { extraWrite: [reportDir] } : {}),
         env: confinedEnv(process.env, confinedCacheEnv(runTmp)), timeoutMs,
       });
     };
@@ -1288,6 +1298,36 @@ export class FeedbackExecutorService {
       fs.symlinkSync(path.join(depsDir, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
       applyChangeSet(dir, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute check clone delete') });
     };
+    /**
+     * A report folder created by trusted code outside the attempt's temp directory (which the attempt
+     * session could write) and writable only by the one run it is passed to.
+     */
+    const freshReportDir = (label: string): string => {
+      const dir = path.join(p.reportsDir, label);
+      removeAttemptTree(dir, this.trashRoot(), 'feedback-execute stale report dir');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return dir;
+    };
+    /**
+     * The failure keys the unchanged base reports for `files`, run in a fresh base clone under the same
+     * sandbox. A file the base lacks is simply absent, so its failures can never count as shared.
+     * Null when the base run hit a limit (then nothing can be said and the fix stays failed).
+     */
+    const relatedBaseline = async (files: string[]): Promise<Set<string> | null> => {
+      // A clone path no earlier run used: a process left behind by a run of attempt test code may
+      // still write the clones it ran in, so the base, head and gate clones cannot be reused here.
+      await freshClone(p.referenceClone, []);
+      const present = files.filter((f) => fs.existsSync(path.join(p.referenceClone, f)));
+      const keys = new Set<string>();
+      if (present.length === 0) return keys;
+      const reportDir = freshReportDir('baseline');
+      const report = path.join(reportDir, 'report.json');
+      // The same default config the head's `vitest related` run used, so both runs set up alike.
+      const r = await run(p.referenceClone, 'baseline', `./node_modules/.bin/vitest run --no-cache --reporter=default --reporter=json --outputFile.json=${shq(report)} ${present.map((f) => shq(`./${f}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS, reportDir);
+      if (limit(r)) return null;
+      for (const k of vitestFailureKeys(readTextIfPresent(report), `${r.stdout}\n${r.stderr}`, p.referenceClone).keys) keys.add(k);
+      return keys;
+    };
     try {
       // (a) base check: a throwaway clone at the base SHA with only the tests/ changes copied in.
       await freshClone(p.baseClone, testEntries(changeSet));
@@ -1314,37 +1354,52 @@ export class FeedbackExecutorService {
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
-        const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
+        // This run executes attempt test code, so its report has the same standing as its exit code.
+        const relatedReportDir = freshReportDir('related');
+        const relatedReport = path.join(relatedReportDir, 'report.json');
+        const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache --reporter=default --reporter=json --outputFile.json=${shq(relatedReport)} ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS, relatedReportDir);
         // Core files pull much of the suite into this run, and a busy machine can run out of time before
         // it finishes. That says nothing against a fix that passed its own checks, and the CI test jobs
         // must still pass on this head before merge. A failure already printed still stops the fix.
         if (related.timedOut && !RELATED_FAILURE_OUTPUT.test(`${related.stdout}\n${related.stderr}`)) {
-          relatedInconclusive = true;
+          relatedInconclusive = 'timed-out';
           this.opts.audit.append('execute:related-tests-inconclusive', { attemptId: row.attemptId });
         } else if (related.timedOut) {
           return failed('gate:related-tests', related);
         } else if (limit(related)) {
           return limited('related-tests', related);
         } else if (related.exitCode !== 0) {
-          return failed('gate:related-tests', related);
+          // A related test can fail for a reason the fix did not cause: the sandbox refuses a local
+          // `listen` (every route test that starts a server), or main is already red. Re-run only the
+          // failing files on a fresh clone of the unchanged base. When the base run reports every one
+          // of the same failures, the fix added none: the result is "don't know", and the full CI test
+          // run must still pass before merge. Any failure the base does not share stops the fix.
+          const headFailures = vitestFailureKeys(readTextIfPresent(relatedReport), `${related.stdout}\n${related.stderr}`, p.gateClone);
+          const baseline = headFailures.files.length > 0 ? await relatedBaseline(headFailures.files) : null;
+          if (!baseline || !failuresAllPreexisting(headFailures.keys, baseline)) {
+            this.opts.audit.append('execute:related-tests-failed', { attemptId: row.attemptId, failures: [...headFailures.keys].slice(0, 20), baselineShared: baseline ? [...headFailures.keys].filter((k) => baseline.has(k)).length : null });
+            return failed('gate:related-tests', related);
+          }
+          relatedInconclusive = 'preexisting';
+          this.opts.audit.append('execute:related-tests-preexisting', { attemptId: row.attemptId, failures: [...headFailures.keys].slice(0, 20) });
         }
       }
     } finally {
-      for (const dir of [p.baseClone, p.headClone, p.gateClone]) {
+      for (const dir of [p.baseClone, p.headClone, p.gateClone, p.referenceClone, p.reportsDir]) {
         try { removeAttemptTree(dir, this.trashRoot(), 'feedback-execute check clone cleanup'); } catch { /* @silent-fallback-ok: retried by the attempt cleanup */ }
       }
     }
     return { ok: true, relatedInconclusive };
   }
 
-  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult, relatedInconclusive = false): { title: string; body: string; message: string } {
+  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult, relatedInconclusive: RelatedInconclusive = false): { title: string; body: string; message: string } {
     const triage = this.opts.triageStore.get(row.initiativeId);
     // The triage schema already bounds the summary (400 printable chars); it is PR text, not model input.
     const summary = String(triage?.summary ?? 'a reported problem').replace(/\s+/g, ' ');
     const brief = triage?.brief;
     const title = `${kind === 'fix' ? 'fix' : 'docs(spec)'}(feedback): ${summary.slice(0, 60)}`.slice(0, 120);
     const eli16 = kind === 'fix'
-      ? `People using Instar reported a problem: ${summary} The feedback executor reproduced it with a test that failed before this change and passes after it, inside a sandbox with no network and no credentials. ${relatedInconclusive ? 'It also ran the repository\'s lint check. The tests related to the changed files ran out of time without a failure, so they are not a pass; CI has to pass before this merges.' : 'It also ran the repository\'s lint check and the tests related to the changed files.'} This pull request merges only after the repository owner approves this exact version.`
+      ? `People using Instar reported a problem: ${summary} The feedback executor reproduced it with a test that failed before this change and passes after it, inside a sandbox with no network and no credentials. ${relatedInconclusive === 'timed-out' ? 'It also ran the repository\'s lint check. The tests related to the changed files ran out of time without a failure, so they are not a pass; CI has to pass before this merges.' : relatedInconclusive === 'preexisting' ? 'It also ran the repository\'s lint check. Some tests related to the changed files failed, and every one of those failures also happens on the unchanged code in the same sandbox, so they are not a pass; CI has to pass before this merges.' : 'It also ran the repository\'s lint check and the tests related to the changed files.'} This pull request merges only after the repository owner approves this exact version.`
       : `People using Instar reported a problem that needs a design before anyone changes code: ${summary} This pull request adds only a first draft of that design. Once the repository owner approves it, a normal trusted session reviews and improves the draft before any build work starts.`;
     const body = [
       `## ELI16 — ${kind === 'fix' ? 'a fix for reported feedback' : 'a design draft for reported feedback'}`,
@@ -1372,9 +1427,12 @@ export class FeedbackExecutorService {
     return { title, body, message };
   }
 
-  private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string, relatedInconclusive = false): Promise<void> {
+  private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string, relatedInconclusive: RelatedInconclusive = false): Promise<void> {
     const text = this.prText(row, kind, result, relatedInconclusive);
-    const secrets = secretGate(changeSet, { notes: result.notes, prTitle: text.title, prBody: text.body });
+    // The publish clone holds the base here and the session cannot reach it. A crash mid-publish can leave
+    // already-gated bytes in it on re-verify, which exposes nothing new.
+    const publishClone = row.publishClone;
+    const secrets = secretGate(changeSet, { notes: result.notes, prTitle: text.title, prBody: text.body }, publishClone ? (rel) => readBaseFile(publishClone, rel) : undefined);
     if (secrets.length > 0) {
       const ref = this.saveHeldChangeSet(row, changeSet, result, kind);
       this.endAttempt(row, epoch, 'held', 'needs-review-secret-shape');
@@ -1746,7 +1804,7 @@ export class FeedbackExecutorService {
       outcome = { ...judgeRoutedFeedbackReview(reviewers, lead), reviewers };
     }
     this.opts.audit.append('execute:independent-review', { attemptId: row.attemptId, pr: prNumber, head: headSha, pass: outcome.pass, reason: outcome.reason,
-      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict })) });
+      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict, reason: r.reason })) });
     if (outcome.pass) {
       this.opts.store.patch(epoch, row.attemptId, { reviewSha: headSha, reviewVerdict: 'pass', reviewReason: outcome.reason, reviewedAt: this.now(), reviewRetries: retries });
       this.gradeLatestDecision(epoch, row.initiativeId, 'executor-independent-review-passed', 'right', 'weak');
