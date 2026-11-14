@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-14T23:06:35.326Z",
+  "slug": "machine-memory-care",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/localVerify/leftoverReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 810,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/machineLoadReport.ts",
+      "src/core/machineResourceProfile.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/leftoverReaper.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/scaffold/templates.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 797,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "local-verify-leftover-reaper: a killed pid leaves the process table and the sweep spawns nothing, so emissions are bounded by the finite leftover pool (per-pid 1) at a 10-min cadence; local-verify-memory-notice: open-once per episode, closed only after 10 min fine"
+    }
+  },
+  "verdict": "pass"
+}
