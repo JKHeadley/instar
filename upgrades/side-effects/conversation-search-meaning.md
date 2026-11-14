@@ -22,7 +22,7 @@ stores, the route returns only what the existing access checks allow, one live s
 route and the feeder, and a revert removes everything. The real new cost is a background process on
 every agent with native conversations; it is bounded per tick, skips under load, and was measured (see
 Interactions). Size: 2 new source files (~520 lines), 9 touched source files, 3 test files plus a test
-helper. Effort: no spec review rounds (Tier 1), one build pass, first commit attempt pending.
+helper. Effort: no spec review rounds (Tier 1), one build pass, two commits (the second records the measured backfill numbers).
 
 ## Decision-point inventory
 
@@ -79,7 +79,9 @@ bounds, not judgments about agent behavior.
 - **Cost (measured, Mac Studio, 2026-11-14):** 200 real Telegram messages, first 1200 characters,
   one ONNX thread: 1867 ms wall, 1917 ms CPU, 9.3 ms per message, model load 159 ms (cached). Per tick
   at most 48 embeds or 600 ms of embedding ⇒ about 4.5% of one core per 10 s tick while backfilling;
-  Echo's 40.8k Telegram rows take about 2.5 hours. Each tick also reads up to 100 + 400 message ids per
+  Echo's 40.8k Telegram rows take about 2.5 hours. A backfill sample through the real feeder, index
+  and model (500 real Telegram messages, load check bypassed): 492 embedded, 11 ticks, average tick 367 ms,
+  max 520 ms, 4.07 s CPU in all (8.3 ms per message), meaning query 4 ms (sqlite-vec). Each tick also reads up to 100 + 400 message ids per
   source (indexed SQL) and one primary-key lookup per id.
 - **Load:** the tick is skipped when the host CPU is at least 85% busy (the heavy-work admission line)
   or the load average is above 1.0 per core; ticks never overlap; the event loop is yielded between
@@ -87,7 +89,7 @@ bounds, not judgments about agent behavior.
 - **Races:** stores are appended while the feeder reads; a message landing mid-tick is picked up next
   tick. The index is single-writer (the feeder) with the route's `forget` of a gone message as the
   only other write.
-- **Disk:** ~1.6 KB per embedded message (~65 MB for 40k), capped at 200,000 rows (~320 MB worst case).
+- **Disk:** measured 5.2 MB for 500 messages, up to ~4 MB of it the write-ahead log; about 2 KB per row (~80 MB for 40k), capped at 200,000 rows (~400 MB worst case).
 
 ## 6. External surfaces
 

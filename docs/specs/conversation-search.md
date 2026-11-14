@@ -153,8 +153,12 @@ conversation store (live native conversations only), and the Slack rows the hist
 Cost, measured on the Mac Studio (2026-11-14, 200 real Telegram messages cut to 1200 characters, one ONNX
 thread, the existing `ONNX_SESSION_OPTIONS`): 9.3 ms of one core per message; a tick is at most ~450 ms
 of one core per 10 s, about 4.5% of ONE core while backfilling and nothing once caught up. Echo's 40.8k
-Telegram messages backfill in about 2.5 hours. The model is already resident at boot (SemanticMemory),
-so the added memory is the index file (~1.6 KB per message: ~65 MB for 40k).
+Telegram messages backfill in about 2.5 hours. A backfill sample through the real feeder, index and
+model (500 of Echo's newest Telegram messages, the load check bypassed to measure): 492 embedded and 8 too
+short in 11 ticks, ticks of 367 ms on average and 520 ms at most, 4.07 s of CPU in all (8.3 ms per
+message), and a meaning query of 4 ms with sqlite-vec loaded. The model is already resident at boot
+(SemanticMemory). Disk: that sample's file was 5.2 MB, of which up to ~4 MB is the write-ahead log (SQLite
+checkpoints it at about that size); the rows are about 2 KB each, so ~80 MB for 40k messages.
 
 ### 4.4 Searching it
 
