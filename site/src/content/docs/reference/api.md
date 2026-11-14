@@ -60,6 +60,49 @@ The dashboard uses these authenticated endpoints after the operator enters the e
 | POST | `/jobs/:slug/override` | Fork an instar default into the user namespace (idempotent) |
 | POST | `/jobs/:slug/unfork` | Archive the user copy to `.unfork-backups/<slug>-<ts>.md`, then restore the instar default |
 | GET | `/jobs/:slug/unfork-backups` | List retained unfork backups for a slug (30 days OR last 10, whichever is more generous) |
+| GET | `/jobs/:slug/supervision-hold` | Read a job's script-route supervision hold (or `null`) and its last 20 release records |
+| POST | `/jobs/:slug/supervision-hold/release` | Release a script-route supervision hold with a required reason; refused while the hold's cause is still unsettled |
+
+### Script-route supervision holds
+
+A scheduled script job normally runs its script directly. When the scheduler's restart check finds that the job's run history and its supervision journal disagree about a run, it writes a hold for that job. While a job is held, it runs as a session instead (the prior runner) until the hold is lifted. A script run cut off by a server restart or crash is recorded as a failed, interrupted run and does not by itself hold the job. A hold that the restart check wrote is lifted by that same check once its cause is settled; other holds stay until released.
+
+Both routes need the normal `Authorization: Bearer TOKEN` header. The slug must match `^[a-z0-9-]+$`.
+
+**Read a hold** — `GET /jobs/:slug/supervision-hold`
+
+```bash
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/jobs/health-check/supervision-hold
+```
+
+Returns `{ slug, hold, releases }`. `hold` is `{ slug, reason, heldAt }` when the job is held, or `null` when it is not. `releases` is the job's release history, newest first, at most 20 entries, each `{ slug, holdReason, heldAt, releasedAt, releasedBy, releaseReason }`. Reading changes nothing. Use it first, to see why a job is running as a session and whether it has been released before.
+
+**Release a hold** — `POST /jobs/:slug/supervision-hold/release`
+
+```bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \
+  http://localhost:4040/jobs/health-check/supervision-hold/release \
+  -d '{"reason":"Inspected run history; the mismatched run was settled after the restart"}'
+```
+
+The body is `{ "reason": "..." }`. The reason is required, is trimmed, and must be 1–500 characters; say why the hold's cause is settled. The release is not automatic and is never retried for you. Before releasing, the scheduler runs the same run-history check again for that job:
+
+- If the check still finds runs that disagree between the run history and the supervision journal, or a run too recent to judge yet, the release is refused and the hold stays.
+- Otherwise the hold is removed and an audit row is kept (who released it, why, and the original hold reason and time). The release is also logged as a `job_supervision_hold_released` activity event.
+
+The recorded releaser is always `agent` — the holder of the bearer token. A name in the request body is never used.
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| 200 | `{ released: true, slug, hold, releasedBy: "agent" }` | Released; `hold` is the hold that was removed |
+| 400 | `{ error: "Invalid job slug" }` or a `reason is required (1-500 characters)…` error | Bad slug, or missing, empty or too-long reason |
+| 404 | `{ error: "not-held", slug }` | The job has no hold |
+| 409 | `{ error: "cause-unsettled", slug, runIds, detail }` | Runs still disagree; `runIds` lists up to 20 of them (empty when a run is only too recent to judge) |
+| 409 | `{ error: "read-only-standby" }` | This server is a read-only standby; the supervision journal is not available here |
+| 503 | `{ error: "Scheduler not running" }` or `{ error: "census-unavailable", slug, detail }` | No scheduler, or run history could not be read completely |
+| 500 | `{ error }` | Unexpected failure |
+
+The read route returns the same 400, 409 `read-only-standby`, 503 `Scheduler not running` and 500 errors. On a 409 `cause-unsettled`, inspect the listed runs instead of retrying with a different reason; the release will keep being refused until the check passes.
 
 ## Relationships
 

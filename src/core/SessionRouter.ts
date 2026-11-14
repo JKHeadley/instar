@@ -191,7 +191,14 @@ export interface SessionRouterDeps {
   /** SYNCHRONOUS per-session CAS-claim (the §L−1 single-ref fast-forward push). */
   casClaimOwnership: (sessionKey: string, machineId: string, expectedEpoch: number) => { ok: boolean; epoch: number };
   /** ONE deliverMessage attempt over MeshRpc; throws on transport error/timeout. */
-  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null }) => Promise<DeliverAck>;
+  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null; row?: unknown }) => Promise<DeliverAck>;
+  /**
+   * The message's TopicMemory row to carry to the owner (context-budget §14 relay-path
+   * row carrier): read on this machine, numbered in its stream, idempotent per message.
+   * Null or absent ⇒ nothing carried (the switch is off, or no row channel). Never throws
+   * into dispatch: a fault carries nothing.
+   */
+  carryRow?: (msg: InboundMessage) => unknown | null;
   /** Router == owner: process the message on this machine. */
   handleLocally: (msg: InboundMessage) => Promise<void>;
   /**
@@ -203,7 +210,7 @@ export interface SessionRouterDeps {
    * ignored, the receiver refused a hard-coded epoch 0 as stale, and the
    * message was logged `spawned` while no machine held it).
    */
-  spawnOnMachine: (machineId: string, msg: InboundMessage, ownershipEpoch: number) => Promise<DeliverAck>;
+  spawnOnMachine: (machineId: string, msg: InboundMessage, ownershipEpoch: number, row?: unknown) => Promise<DeliverAck>;
   /**
    * Undo a remote placement this router just made whose spawn never landed:
    * move the still-`placing` record (owned by `placedOn`) to THIS machine as
@@ -442,10 +449,23 @@ export class SessionRouter {
     return this.placeAndClaim(msg, 'new', false);
   }
 
+  /** The row carried with a forward (§14). Contained: a fault carries nothing, the message still goes. */
+  private carriedRow(msg: InboundMessage): unknown | null {
+    if (!this.deps.carryRow) return null;
+    try {
+      return this.deps.carryRow(msg) ?? null;
+    } catch (err) { // @silent-fallback-ok — logged; the owner records the message as expected, so its precondition reads the missing row
+      this.deps.log?.(`carryRow for ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+      return null;
+    }
+  }
+
   private async forwardToOwner(msg: InboundMessage, owner: string, epoch: number, reResolveDepth: number): Promise<RouteOutcome> {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      // Read per attempt: the seq is idempotent per message, and a row stored after the first try still rides the retry.
+      const row = this.carriedRow(msg);
       try {
-        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null });
+        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null, ...(row != null ? { row } : {}) });
         // ANY ack (queued/duplicate/stale) proves the peer answered — close its
         // suspect window before interpreting the ack.
         this.deps.onOwnerResponsive?.(owner);
@@ -639,8 +659,9 @@ export class SessionRouter {
   /** The placement spawn hop, with the same retry/backoff as forwardToOwner. */
   private async spawnWithRetries(target: string, msg: InboundMessage, epoch: number): Promise<DeliverAck['accepted'] | 'unreachable'> {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      const row = this.carriedRow(msg);
       try {
-        const ack = await this.deps.spawnOnMachine(target, msg, epoch);
+        const ack = row != null ? await this.deps.spawnOnMachine(target, msg, epoch, row) : await this.deps.spawnOnMachine(target, msg, epoch);
         return ack.accepted;
       } catch (err) {
         this.deps.log?.(`spawn attempt ${attempt} on ${target} failed: ${String((err as Error)?.message ?? err)}`);

@@ -12,7 +12,7 @@ import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } fro
  * no JSONL discovery, no machine coordination.
  */
 
-import { readJobDeclaredFailure } from './jobDeclaredFailure.js';
+import { readJobDeclaredFailure, readJobDeclaredSkip } from './jobDeclaredFailure.js';
 import { jobGateReceiptPath, readJobGateReceipt, consumeJobGateReceipt, restoreJobGateReceipt } from './JobGateReceipt.js';
 import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
@@ -72,6 +72,10 @@ import type { TopicMemory } from '../memory/TopicMemory.js';
  * or reloaded mid-sleep). Reaper threshold = this × thresholdMultiplier.
  */
 const DEFAULT_EXPECTED_MINUTES = 30;
+/** The hold the restart census writes; the same census may release it once its cause is settled. */
+const CENSUS_HOLD_REASON = 'independent-history-mismatch';
+/** History error for a script run whose process ended without settling (restart/crash). */
+const INTERRUPTED_RUN_ERROR = 'interrupted: the server stopped before this script finished';
 
 interface QueuedJob {
   slug: string;
@@ -234,6 +238,7 @@ export class JobScheduler {
   private readonly activeScriptRunIds = new Set<string>();
   /** A failed durable write moves future fires off the script runner. */
   private supervisionBlockedSlugs = new Set<string>();
+  private readonly censusRechecks = new Map<string, ReturnType<typeof setTimeout>>();
   private projectedSessionListeners: ProjectedSessionListener[] = [];
   /** Triage sessions: tmux name → their run row. */
   private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
@@ -909,6 +914,8 @@ export class JobScheduler {
    * Stop the scheduler — cancel all cron tasks.
    */
   stop(): void {
+    for (const t of this.censusRechecks.values()) clearTimeout(t);
+    this.censusRechecks.clear();
     if (!this.running) return;
     if (this.silenceCheckTimer) clearInterval(this.silenceCheckTimer);
     this.silenceCheckTimer = null;
@@ -2199,21 +2206,28 @@ export class JobScheduler {
     if (!this.supervisionBlocksLoaded) {
       try {
         const store = this.getJobSupervisionStore();
-        for (const held of store.heldSlugs()) this.supervisionBlockedSlugs.add(held.slug);
-        const baseline = store.censusBaselineAt();
-        const scan = this.runHistory.query({ limit: 100000, excludeSideRuns: true });
-        if (!this.runHistory.isReadHealthy() || scan.total > scan.runs.length) {
+        const census = this.supervisionCensus(store);
+        if (!census) {
           this.supervisionCensusHealthy = false;
+          for (const held of store.heldSlugs()) this.supervisionBlockedSlugs.add(held.slug);
         } else {
-          for (const run of scan.runs) {
-            if (run.runner !== 'script' || run.startedAt < baseline) continue;
-            const row = store.findByRunId(run.runId);
-            if (!row || row.reason === 'missing-record' || row.reason === 'outcome-unknown'
-              || run.result === 'pending' || !row.completedAt || row.result !== run.result
-              || (row.status === 'pending' && !row.decisionEligible)) {
-              this.supervisionBlockedSlugs.add(run.slug);
-              store.holdSlug(run.slug, 'independent-history-mismatch');
+          for (const [mismatchedSlug] of census.mismatches) {
+            this.supervisionBlockedSlugs.add(mismatchedSlug);
+            store.holdSlug(mismatchedSlug, CENSUS_HOLD_REASON);
+          }
+          for (const held of store.heldSlugs()) {
+            // A census hold whose cause the same census no longer finds (the
+            // interrupted run is now settled) is released with an audit row.
+            // Every other hold reason waits for an explicit, recorded release.
+            if (held.reason === CENSUS_HOLD_REASON && !census.mismatches.has(held.slug) && !census.deferred.has(held.slug)) {
+              this.releaseCensusHold(store, held.slug);
+              continue;
             }
+            this.supervisionBlockedSlugs.add(held.slug);
+          }
+          for (const [deferredSlug, waitMs] of census.deferred) {
+            this.supervisionBlockedSlugs.add(deferredSlug);
+            this.scheduleCensusRecheck(deferredSlug, waitMs);
           }
         }
         this.supervisionBlocksLoaded = true;
@@ -2247,6 +2261,150 @@ export class JobScheduler {
       ? sr.disabledSlugs : SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS;
     if (disabledSlugs.includes(slug)) return false;
     return true;
+  }
+
+  /**
+   * Independent census of run history against the supervision journal.
+   * Returns slug → mismatching runIds, or null when history cannot be read
+   * completely (the caller then fails closed).
+   *
+   * A script run still `pending` in history whose process is gone (not live
+   * in this process, recorded by this machine) was interrupted by a server
+   * restart or crash. It is settled first — history completed as `failure`
+   * with an `interrupted` error and its attempt row closed the same way — so
+   * it is a failed run, not a mismatch (CMT-1610). Real mismatches still
+   * count: a result that differs between the two ledgers, a missing or
+   * unknown record for a completed run, or an unsettleable pending run.
+   */
+  private supervisionCensus(store: JobSupervisionStore, onlySlug?: string, now = Date.now()):
+    { mismatches: Map<string, string[]>; deferred: Map<string, number> } | null {
+    const baseline = store.censusBaselineAt();
+    const scan = this.runHistory.query({ limit: 100000, excludeSideRuns: true });
+    if (!this.runHistory.isReadHealthy() || scan.total > scan.runs.length) return null;
+    const mismatches = new Map<string, string[]>();
+    const deferred = new Map<string, number>();
+    for (const scanned of scan.runs) {
+      if (scanned.runner !== 'script' || scanned.startedAt < baseline) continue;
+      if (onlySlug && scanned.slug !== onlySlug) continue;
+      let run = scanned;
+      let row = store.findByRunId(run.runId);
+      const halfSettled = !!row?.completedAt && row.reason === 'interrupted' && row.result === 'failure';
+      if (run.result === 'pending' && this.isInterruptedHere(run) && (!row || !row.completedAt || halfSettled)) {
+        // A run younger than its longest possible lifetime may still be
+        // executing in an overlapping server process (rolling restart). It
+        // is neither settled nor held yet; the census rechecks it once that
+        // window has passed.
+        const waitMs = Date.parse(run.startedAt) + this.scriptRunMaxLifetimeMs(run.slug) - now;
+        if (waitMs > 0) {
+          deferred.set(run.slug, Math.max(deferred.get(run.slug) ?? 0, waitMs));
+          continue;
+        }
+        if (this.settleInterruptedScriptRun(store, run)) {
+          run = this.runHistory.findRun(run.runId) ?? run;
+          row = store.findByRunId(run.runId);
+        }
+      }
+      if (!row || row.reason === 'missing-record' || row.reason === 'outcome-unknown'
+        || run.result === 'pending' || !row.completedAt || row.result !== run.result
+        || (row.status === 'pending' && !row.decisionEligible)) {
+        const list = mismatches.get(run.slug) ?? [];
+        list.push(run.runId);
+        mismatches.set(run.slug, list);
+      }
+    }
+    return { mismatches, deferred };
+  }
+
+  /** Start-offset jitter plus the hard script kill bound, plus a minute of margin. */
+  private scriptRunMaxLifetimeMs(slug: string): number {
+    const job = this.jobs.find(j => j.slug === slug);
+    const minutes = Math.max(1, job?.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES);
+    return JobScheduler.MAX_SCRIPT_START_OFFSET_MS + minutes * 2 * 60_000 + 60_000;
+  }
+
+  private releaseCensusHold(store: JobSupervisionStore, slug: string): void {
+    store.releaseHold(slug, { by: 'census', reason: 'the run-history census found no unsettled or mismatched run for this job' });
+    this.supervisionBlockedSlugs.delete(slug);
+    console.log(`[job-supervision] released census hold on "${slug}" (cause settled)`);
+  }
+
+  /** One pending recheck per slug for a run that may still have been live at the census. */
+  private scheduleCensusRecheck(slug: string, waitMs: number): void {
+    if (this.censusRechecks.has(slug)) return;
+    const t = setTimeout(() => {
+      this.censusRechecks.delete(slug);
+      try {
+        const store = this.getJobSupervisionStore();
+        const census = this.supervisionCensus(store, slug);
+        if (!census) { this.scheduleCensusRecheck(slug, 5 * 60_000); return; } // stays blocked; try again later
+        if (census.mismatches.has(slug)) {
+          this.supervisionBlockedSlugs.add(slug);
+          store.holdSlug(slug, CENSUS_HOLD_REASON);
+          return;
+        }
+        const again = census.deferred.get(slug);
+        if (again !== undefined) { this.scheduleCensusRecheck(slug, again); return; }
+        const held = store.heldSlugs().find(h => h.slug === slug);
+        if (held?.reason === CENSUS_HOLD_REASON) this.releaseCensusHold(store, slug);
+        else if (!held) this.supervisionBlockedSlugs.delete(slug);
+      } catch (error) {
+        // @silent-fallback-ok — supervisionWriteFailed keeps the slug blocked and reports degradation.
+        this.supervisionWriteFailed(slug, error);
+      }
+    }, Math.min(waitMs + 1000, 60 * 60_000));
+    t.unref?.();
+    this.censusRechecks.set(slug, t);
+  }
+
+  /** A pending run this machine started whose process this server does not own. */
+  private isInterruptedHere(run: JobRun): boolean {
+    if (this.activeScriptRunIds.has(run.runId)) return false;
+    if (!run.machineId) return true;
+    return this.machineId !== null && run.machineId === this.machineId;
+  }
+
+  /** Settle both ledgers for an interrupted run; false when either write did not hold. */
+  private settleInterruptedScriptRun(store: JobSupervisionStore, run: JobRun): boolean {
+    try {
+      if (!store.settleInterruptedRun({ runId: run.runId, slug: run.slug, machineId: run.machineId ?? this.machineId, startedAt: run.startedAt })) return false;
+      this.runHistory.recordCompletion({ runId: run.runId, result: 'failure', error: INTERRUPTED_RUN_ERROR });
+      if (this.runHistory.findRun(run.runId)?.result !== 'failure') return false;
+      console.log(`[job-supervision] settled interrupted script run ${run.runId} as failed`);
+      return true;
+    } catch (error) {
+      // @silent-fallback-ok — an unsettled run stays a census mismatch, which holds the slug (fail closed).
+      console.error(`[job-supervision] could not settle interrupted run ${run.runId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Release a script-route hold with an audit record (CMT-1610). Refused
+   * while the census still finds an unsettled or mismatched run for the job,
+   * so a release can only follow a settled cause.
+   */
+  releaseSupervisionHold(slug: string, input: { by: string; reason: string }):
+    | { status: 'released'; hold: { slug: string; reason: string; heldAt: string } }
+    | { status: 'not-held' }
+    | { status: 'cause-unsettled'; runIds: string[] }
+    | { status: 'census-unavailable' } {
+    const store = this.getJobSupervisionStore();
+    if (!store.isSlugHeld(slug)) return { status: 'not-held' };
+    const census = this.supervisionCensus(store, slug);
+    if (!census) return { status: 'census-unavailable' };
+    const runIds = census.mismatches.get(slug);
+    if (runIds?.length) return { status: 'cause-unsettled', runIds: runIds.slice(0, 20) };
+    if (census.deferred.has(slug)) return { status: 'cause-unsettled', runIds: [] };
+    const hold = store.releaseHold(slug, input);
+    if (!hold) return { status: 'not-held' };
+    this.supervisionBlockedSlugs.delete(slug);
+    this.state.appendEvent({
+      type: 'job_supervision_hold_released',
+      summary: `Script route hold on "${slug}" released by ${input.by}`,
+      timestamp: new Date().toISOString(),
+      metadata: { slug, holdReason: hold.reason, heldAt: hold.heldAt, releasedBy: input.by, releaseReason: input.reason.slice(0, 500) },
+    });
+    return { status: 'released', hold };
   }
 
   /**
@@ -3351,6 +3509,9 @@ export class JobScheduler {
     // §B). Read synchronously, before any await, from the file named by this
     // run's unique tmux session.
     const declaredFailure = readJobDeclaredFailure(this.stateDir, tmuxSession);
+    // A declared skip (the job could not do its work for a reason outside it, such as its own
+    // server too busy to answer) is recorded `skipped`. Always consumed; a failure wins.
+    const declaredSkip = readJobDeclaredSkip(this.stateDir, tmuxSession);
 
     // Update job state with completion result
     const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
@@ -3358,6 +3519,7 @@ export class JobScheduler {
       : session.status === 'failed' || session.status === 'killed'
         ? `Session ${session.status} (${session.name})${session.endedReason === 'codex-rate-limited' ? ' — Codex 429 Too Many Requests' : ''}${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
         : `Declared failure: ${declaredFailure}`;
+    const skipped = !failed && declaredSkip !== null;
 
     // Capture session output FIRST — needed for both history and notifications
     let output = '';
@@ -3371,9 +3533,11 @@ export class JobScheduler {
     const jobState: JobState = {
       slug: job.slug,
       lastRun: existingState?.lastRun ?? new Date().toISOString(),
-      lastResult: failed ? 'failure' : 'success',
-      lastError: failureError,
-      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
+      lastResult: failed ? 'failure' : skipped ? 'skipped' : 'success',
+      // A skip keeps the last error, as the script runner does (§5.2).
+      lastError: skipped ? existingState?.lastError : failureError,
+      // A skip is neither: it leaves the failure streak where it was.
+      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : skipped ? (existingState?.consecutiveFailures ?? 0) : 0,
       nextScheduled: this.getNextRun(job.slug),
     };
     this.state.saveJobState(jobState);
@@ -3387,8 +3551,8 @@ export class JobScheduler {
     if (runId) {
       this.runHistory.recordCompletion({
         runId,
-        result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
-        error: failureError,
+        result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : skipped ? 'skipped' : 'success'),
+        error: failureError ?? (skipped ? `Declared skip: ${declaredSkip}` : undefined),
         outputSummary: output ? output.slice(-1000) : undefined,
         ...(emailOutboxId ? { emailOutboxId } : {}),
       });
@@ -3409,13 +3573,14 @@ export class JobScheduler {
         // session jobs. The transcript holds what the job actually did — hand
         // the audit that, falling back to the pane capture when unavailable.
         let auditOutput = output;
-        if (this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
+        // A skipped run did no work to audit (same as the script runner).
+        if (!skipped && this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
           const evidence = readJobTranscriptEvidence(
             findClaudeJobTranscript(session.claudeSessionId, session.cwd ?? path.dirname(this.stateDir)),
           );
           if (evidence) auditOutput = output.trim() ? `${evidence}\n[pane tail]\n${output}` : evidence;
         }
-        this.jevAudit?.capture({
+        if (!skipped) this.jevAudit?.capture({
           runId,
           slug: job.slug,
           goal: job.description ?? job.slug,
@@ -3440,7 +3605,9 @@ export class JobScheduler {
       this.state.delete('active-job');
     }
 
-    if (!failed) {
+    // A skip is not a success: it must not clear a pending failure alert or feed the
+    // silence watch (a server busy for days would otherwise look healthy).
+    if (!failed && !skipped) {
       this.clearFailureAlertState(job.slug);
       this.noteContinuitySuccess(job.slug);
     }
@@ -3548,7 +3715,7 @@ export class JobScheduler {
       : `${duration}s`;
 
     let summary = `*Job Complete: ${job.name}*\n`;
-    summary += `Status: ${failed ? 'Failed' : 'Done'}`;
+    summary += `Status: ${failed ? 'Failed' : skipped ? 'Skipped' : 'Done'}`;
     if (deathCause && deathCause !== 'unknown') summary += ` (${deathCause})`;
     summary += '\n';
     if (duration > 0) summary += `Duration: ${durationStr}\n`;

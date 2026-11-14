@@ -115,19 +115,21 @@ export function previewPlacement(o: {
  * `admission-refused (…): …`, `Max sessions (N) reached with M running`, and
  * `tmux session "…" already exists`.
  */
-export function classifySpawnRefusal(err: unknown): 'admission-refused' | 'session-capacity-refused' | 'session-exists' | null {
+export function classifySpawnRefusal(err: unknown): 'admission-refused' | 'session-capacity-refused' | 'session-exists' | 'codex-accounts-walled' | null {
   const code = (err as { code?: unknown } | null)?.code;
   if (code === 'admission-refused') return 'admission-refused';
   if (code === 'session-capacity-refused') return 'session-capacity-refused';
+  if (code === 'codex-accounts-walled') return 'codex-accounts-walled';
   const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
   return classifySpawnRefusalMessage(msg);
 }
 
-export function classifySpawnRefusalMessage(msg: string): 'admission-refused' | 'session-capacity-refused' | 'session-exists' | null {
+export function classifySpawnRefusalMessage(msg: string): 'admission-refused' | 'session-capacity-refused' | 'session-exists' | 'codex-accounts-walled' | null {
   if (typeof msg !== 'string') return null;
   if (/^admission-refused \(/.test(msg)) return 'admission-refused';
   if (/^Max sessions \(\d+\) reached with \d+ running/.test(msg)) return 'session-capacity-refused';
   if (/^tmux session ".*" already exists$/.test(msg)) return 'session-exists';
+  if (/^codex-accounts-walled: /.test(msg)) return 'codex-accounts-walled';
   return null;
 }
 

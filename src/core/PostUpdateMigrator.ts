@@ -1,3 +1,7 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -61,7 +65,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -559,6 +563,8 @@ Every production script run is recorded before execution. Read GET /jobs/triage 
 When active, an exact certified routine shape may be closed by a fixed rule. Jev checks every other trustworthy result that needs judgment. Haiku or Luna replaces Jev only while Jev is unavailable, and only with benchmark evidence and a recorded call. A bare OK or skipped line cannot be closed as safe without independent evidence. An uncertain verdict requests isolated diagnosis; if isolation is unavailable, the result stays open and raises attention.
 
 For the llm-decision-grading job, a server receipt confirms that the grading endpoint ran. A separate idle effect proof can grade a routine Jev verdict correct only when strict before/after reads show no decision rows at any grading point, including behind each cursor. A nonempty or unreadable workset remains outcome-unknown. This narrow proof does not enable Jev rollout by itself.
+
+**Held script routes:** a job whose script route is held runs as a session instead (the prior runner). A script run cut off by a server restart or crash is recorded as a failed, interrupted run and does not hold the job. A hold the restart check wrote is lifted by that same check once its cause is settled. Read a hold and its release history with GET http://localhost:${port}/jobs/SLUG/supervision-hold; release one with POST /jobs/SLUG/supervision-hold/release and a \`{"reason":"..."}\` body. A release is recorded and is refused (409 \`cause-unsettled\`) while a run still disagrees between the run history and the supervision record.
 
 **When to use:** "Did every script result get checked?" or "Why did this job stay open?" → read GET /jobs/triage and its supervision block. The scope=pool query shows partial-pool failures explicitly. Never infer full coverage from a missing peer or an empty model log.
 `;
@@ -2028,6 +2034,8 @@ export interface MigratorConfig {
   hasTelegram: boolean;
   projectName: string;
   identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
+  /** Test seam: this machine's friendly name (default: macOS ComputerName / Linux pretty hostname). */
+  detectFriendlyMachineName?: () => string | null;
   /**
    * The configured claude-code binary (native-hook-events D4 version gate).
    * Absent ⇒ read from `<stateDir>/config.json` (never PATH).
@@ -3074,6 +3082,7 @@ export class PostUpdateMigrator {
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateMachineIdentityEpochs(result);
+    this.migrateMachineNicknames(result);
     this.migrateLegacyMaxSessions(result);
     this.migrateRetireDeadMentorConfig(result);
     this.migrateRetireStagedFeaturesCmt1004(result);
@@ -9969,6 +9978,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
+    if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginOwnerReadAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
+    }
+
     if (!content.includes('Telegram test groups:')) {
       content += '\n' + telegramOriginTestGroupsAwareness();
       patched = true;
@@ -10081,6 +10097,17 @@ setTimeout(() => process.exit(0), 2000);
         content = content.replace(marker, `${paragraph}\n\n${marker}`);
         patched = true;
         result.upgraded.push('CLAUDE.md: added grading-job idle proof guidance');
+      }
+    }
+    const heldRouteAwareness = '**Held script routes:**';
+    if (content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER) && !content.includes(heldRouteAwareness)) {
+      const marker = '**When to use:** "Did every script result get checked?"';
+      const paragraph = JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port)
+        .split('\n').find(line => line.startsWith(heldRouteAwareness));
+      if (paragraph && content.includes(marker)) {
+        content = content.replace(marker, `${paragraph}\n\n${marker}`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added held script route guidance');
       }
     }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
@@ -16070,10 +16097,17 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
     // "does compaction recovery work" to its read surface. Idempotent: inserted
     // once after the "What are we working on?" row, sniffed on the route.
     if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
-      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
       content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
+    }
+    // The canary's `counted` state (S16, §9.6 Codex adapter): refresh an existing
+    // row that predates it. Idempotent: sniffed on the old row's closing words.
+    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = an engine') && content.includes('`n/a` = recovery switched off), plus')) {
+      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the Context Budget sentinel row names the canary\'s counted state');
     }
     // The sentinel's §17 rows (Phase 1 S12) joined its status: an existing row is
     // extended in place. Idempotent: sniffed on the new field name.
@@ -17119,6 +17153,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
@@ -18079,6 +18114,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
   /** Backfill legacy identity epochs before the recovery runtime can read them.
    * Existing monotonic/tombstone state always wins; corrupt authority is never
    * overwritten with a fabricated epoch-zero file. */
+  /**
+   * Every machine carries a human name (operator report 2026-11-12: a footer read
+   * "bob · Machine m_4851af"). Registries written before nicknames existed, or rebuilt by a
+   * path that skipped them, leave machines unnamed. Idempotent; never replaces a name a person
+   * chose (MachineIdentityManager.ensureNicknames). The server boot runs the same backfill.
+   */
+  private migrateMachineNicknames(result: MigrationResult): void {
+    try {
+      const mgr = new MachineIdentityManager(this.config.stateDir,
+        this.config.detectFriendlyMachineName ? { detectFriendlyName: this.config.detectFriendlyMachineName } : {});
+      if (!mgr.hasIdentity() || !fs.existsSync(mgr.registryPath)) { result.skipped.push('machine nicknames (no machine identity yet)'); return; }
+      const named = mgr.ensureNicknames();
+      if (named.length) result.upgraded.push(`machine nicknames: named ${named.length} machine(s)`);
+      else result.skipped.push('machine nicknames (every machine already named)');
+    } catch (err) {
+      result.errors.push(`machine nicknames: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateMachineIdentityEpochs(result: MigrationResult): void {
     const epochPath = path.join(this.config.stateDir, 'state', 'identity-epochs.json');
     const attestationPath = path.join(this.config.stateDir, 'state', 'machine-identity-migration-attestation.json');
@@ -24228,6 +24282,10 @@ process.stdin.on('end', async () => {
     // A reply queued while the server booted carried no session identity, so
     // recovery sent it labelled "unknown · unknown · unknown".
     '4b19226d06a99514cf53e92b0aa764705289002a0fd183990cbf4f5d827a4a8c',
+    // Queued-row origin digest version, shipped immediately BEFORE the owner-read
+    // outcome (native-conversation-base §3b). It printed "safe to send it again"
+    // for every `not-delivered`, including one ended on purpose (safeToResend false).
+    '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
   ]);
 
   /**

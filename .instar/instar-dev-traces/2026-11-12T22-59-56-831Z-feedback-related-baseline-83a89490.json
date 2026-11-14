@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "feedback-related-baseline",
+  "sessionId": "c7ebcf37-5ca7-419f-a005-cf4c9107a40b",
+  "timestamp": "2026-11-12T22:59:56.831Z",
+  "artifactPath": "upgrades/side-effects/feedback-related-baseline.md",
+  "artifactSha256": "711606544d35abd97a5b13bfbeb69ada06751648b2ecabe77e928a61cd608bf9",
+  "coveredFiles": [
+    "docs/specs/feedback-triage-and-execution.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-related-baseline.md",
+    "upgrades/side-effects/feedback-related-baseline.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One gate branch in trusted executor code, reversible by revert, no state or config; narrows a block using a controlled comparison while CI, two-model review and owner approval stay the authority.",
+  "eli16Path": "docs/specs/feedback-triage-and-execution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-related-baseline.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

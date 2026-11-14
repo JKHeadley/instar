@@ -17,7 +17,7 @@ import { resolveFailureReplicationTransport, isFailureReplicationKindAllowed, fi
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
-import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { configureClaudeChildAuth, configureClaudeReviewerLogin, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
@@ -113,6 +113,7 @@ import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
+import { chiefOfStaffStoreEnabled } from '../core/ChiefOfStaffStore.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -173,7 +174,7 @@ import {
   LIFELINE_INGRESS_CALLER_HEADER,
   LIFELINE_INGRESS_CALLER_SERVER_SELF,
 } from '../core/LifelineIngressSecret.js';
-import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { configureSyncOpMarker, defaultInflightMarkerReader, flushSyncOpMirror } from '../core/InFlightSyncOpMarker.js';
 import { StateManager, SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
@@ -214,6 +215,8 @@ import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
 import { TopicMemory } from '../memory/TopicMemory.js';
 import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../memory/topicRowWriter.js';
+import { TopicRowCarrier, TopicRowPullCoordinator, rowCarrierEnabled, slackSyntheticTopicId, ROW_PULL_TIMEOUT_MS } from '../memory/topicRowCarrier.js';
+import { TopicRowWatermarkStore } from '../memory/topicRowWatermark.js';
 import { SemanticMemory } from '../memory/SemanticMemory.js';
 import { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
 import { QuotaTracker } from '../monitoring/QuotaTracker.js';
@@ -886,6 +889,11 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** Relay-path row carrier and its watermark (context-budget §14); built beside the row writer. */
+let _topicRowCarrier: import('../memory/topicRowCarrier.js').TopicRowCarrier | null = null;
+let _topicRowWatermark: import('../memory/topicRowWatermark.js').TopicRowWatermarkStore | null = null;
+/** The gap and topic-move pulls; built at the mesh level (needs the signed client). */
+let _topicRowPulls: import('../memory/topicRowCarrier.js').TopicRowPullCoordinator | null = null;
 /** Chief of Staff §4: set by the loop wiring; the inbound hook calls it for an owner message in the CoS topic. */
 let _cosRenewalHook: ((topicId: number, telegramUserId: number, messageId: string) => void) | null = null;
 /** Chief of Staff §6: the CoS conversation accepts input only from the owner principal. Set with the loop; null ⇒ no CoS topic yet. */
@@ -6208,6 +6216,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { isMobileNativeEnabled: _isMobileNativeEnabled, isMobileUnreadEnabled: _isMobileUnreadEnabled } = await import('../server/mobilePairingRoutes.js');
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _appUnreadOn = _isMobileUnreadEnabled(config);
+    const _chiefOfStaffStoreOn = chiefOfStaffStoreEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
       s = { ...s, failureCallout: { enabled: !!coherenceJournal && resolveCorrectionLearningMode(config).failureCalloutsEnabled && (config.multiMachine?.stateSync?.failureCallout as { enabled?: boolean } | undefined)?.enabled !== false } };
@@ -6222,7 +6231,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
-      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      // Chief of Staff (docs/specs/chief-of-staff-topic.md §1.2): its records — check-ins, notes,
+      // bindings, last-tick — must be agent-wide, never machine-local. The store follows the feature
+      // switch; without it every record was refused 'disabled' and a check-in never counted anywhere.
+      if (_chiefOfStaffStoreOn) s = { ...s, chiefOfStaff: { enabled: true } };
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -9288,6 +9301,35 @@ export async function startServer(options: StartOptions): Promise<void> {
       topicMemory: () => topicMemory,
       channelEnabled: (channel) => channel === 'app' ? liveConfig.get<boolean>('contextBudget.enabled', false) === true : true,
     });
+    // The relay-path row carrier (context-budget-layered-summaries §14): the forward-to-owner
+    // path carries each message's row to the topic's owner, which lands it before the receipt
+    // and keeps a per-topic contiguous-ack watermark (the fold's topicRowsPresent precondition).
+    // `contextBudget.enabled`, read live and resolved through the development-agent gate.
+    try {
+      const wm = new TopicRowWatermarkStore({
+        dbPath: path.join(config.stateDir, 'state', 'topic-row-carrier', 'carrier.db'),
+        machineId: () => _meshSelfId,
+      });
+      _topicRowCarrier = new TopicRowCarrier({
+        store: wm,
+        topicMemory: () => topicMemory,
+        writer: topicRowWriter,
+        enabled: () => rowCarrierEnabled(liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined as never), config),
+        // Slack's synthetic topic id is a pure hash of the channel id (the same on every machine).
+        slackTopicId: (channelId) => slackSyntheticTopicId(channelId),
+        onGap: (topicId, gap) => { void _topicRowPulls?.onGap(topicId, gap); },
+      });
+      _topicRowWatermark = wm;
+    } catch (err) {
+      // @silent-fallback-ok — reported: without the store no row is carried and topicRowsPresent stays false (no fold)
+      DegradationReporter.getInstance().report({
+        feature: 'TopicRowCarrier',
+        primary: "Carry each forwarded message's TopicMemory row to the conversation's owner",
+        fallback: 'No rows are carried; every conversation reads rows-missing and never folds',
+        reason: err instanceof Error ? err.message : String(err),
+        impact: 'Context-budget folds stay off on this machine.',
+      });
+    }
     const telegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     // Telegram added after the install step (the recommended-services recipe, or a hand-added entry) left no reply
     // script, so a session could read the group but never answer. Write it when missing; an existing one is never touched.
@@ -9376,6 +9418,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -9516,6 +9559,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -12954,6 +12998,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           tmuxSession: e.session.tmuxSession,
           reason: e.reason,
           ...(e.session.framework ? { framework: e.session.framework } : {}),
+          ...(e.session.subscriptionAccountId ? { subscriptionAccountId: e.session.subscriptionAccountId } : {}),
           ...(e.uptimeSeconds !== undefined ? { uptimeSeconds: e.uptimeSeconds } : {}),
           ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
           ...(e.lastTail ? { lastTail: e.lastTail } : {}),
@@ -13325,7 +13370,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           const q = liveConfig.get<{ enabled?: boolean; dryRun?: boolean } | undefined>('multiMachine.sessionPool.inboundQueue', undefined);
           return q?.enabled === true && q?.dryRun === false && foldPoolGateOpen(livePool());
         },
-        topicRowsPresent: () => false, // the relay-path row carrier and watermark arrive in Phase 1 (§14)
+        // §14: the owner's TopicMemory holds the topic's rows up to its last message id (the carrier's watermark).
+        topicRowsPresent: (topicKey) => _topicRowCarrier?.rowsPresent(topicKey) ?? false,
         // §14: a topic folds only when its channel has a row writer that is on.
         hasRowSource: (topicId) => topicRowWriter.hasRowSource(topicId),
         // No live sentinel, no fold (§7.8): read lazily, the sentinel is built after the sweep.
@@ -13423,13 +13469,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
       if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
         const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
-        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, codexHomeForTmuxSession, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
         const { CompactionCanary } = await import('../monitoring/compactionCanary.js');
         const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
         const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
         const sentinelHandle = sentinelGovernor.for('context-budget-quarantine-reconcile');
         const poolLiveNow = () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; };
         const sessionDeps = productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath });
+        // §9.6 Codex adapter (S16): Codex sessions join the canary under the contextBudget.enabled dev gate, read live each tick.
+        const codexCanaryOn = () => contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined));
         // The §17 rows (Phase 1 S12). Freshness needs the layers (off ⇒ `unavailable: layers-off`)
         // and reads TopicMemory lazily; its rebuild request goes through the capture loop's
         // re-projection seam once that is wired (until then each request counts as `unavailable`).
@@ -13467,8 +13515,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           consumeToken: sentinelConsume,
           // The standing compaction canary (§9.1): observation only; its state rides GET /context-budget/sentinel.
           canary: {
-            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId }),
-            sessions: productionCanarySessions({ sessions: sessionManager, projectDir: config.projectDir }),
+            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() }),
+            sessions: productionCanarySessions({
+              sessions: sessionManager, projectDir: config.projectDir,
+              // §9.6 Codex adapter: Codex topic sessions join the canary (their rollout's `compacted`
+              // entry is the detection; the scan also drives trackContextUsage and the post-compaction
+              // producer) under the contextBudget.enabled dev gate, read live.
+              codex: {
+                enabled: codexCanaryOn,
+                homeForSession: (t) => codexHomeForTmuxSession(t, undefined, config.sessions.tmuxPath),
+              },
+            }),
             switchOn: () => liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false,
           },
           // The adapter verification suite (§9.6): re-run on any change of the engine binary
@@ -14753,6 +14810,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // The per-poll check of every session goes through the non-blocking tmux
+          // path where that path is on (the same gate as the rest of the async hot path).
+          ...(_tmuxAsyncEnabled ? {
+            isSessionAliveAsync: (name: string) => sessionManager.isSessionAliveNonBlocking(name),
+            captureSessionOutputAsync: (name: string, lines: number) => sessionManager.captureOutputAsync(name, lines),
+          } : {}),
           isSessionStarting: (topicId) => {
             const slackKey = slackProxyChannelMap.get(topicId);
             if (slackKey) {
@@ -17669,12 +17732,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // we assign stable negative synthetic IDs and route sendMessage to the correct platform.
     const slackProxyChannelMap = new Map<number, string>(); // syntheticId -> Slack channelId
     function slackChannelToSyntheticId(channelId: string): number {
-      // Stable hash: sum of char codes, negated to avoid Telegram topic ID collisions
-      let hash = 0;
-      for (let i = 0; i < channelId.length; i++) {
-        hash = ((hash << 5) - hash + channelId.charCodeAt(i)) | 0;
-      }
-      const syntheticId = -(Math.abs(hash) + 1); // Always negative, never 0
+      // Stable hash, negated to avoid Telegram topic ID collisions (the row carrier derives the same id).
+      const syntheticId = slackSyntheticTopicId(channelId); // Always negative, never 0
       slackProxyChannelMap.set(syntheticId, channelId);
       return syntheticId;
     }
@@ -19606,6 +19665,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // confidence band: do the minimum and return before any recovery cascade.
       if (_tmuxAsyncHotPathWakeGuard) {
         try {
+          flushSyncOpMirror(); // same process as the writer: settle a queued idle write first
           const marker = defaultInflightMarkerReader(config.stateDir)();
           if (marker?.inFlight) {
             console.log(
@@ -24321,14 +24381,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        sessionManager.setSpawnAccountResolver(() => {
+        const pinnedAccount = () => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
-        });
+        };
+        sessionManager.setSpawnAccountResolver(pinnedAccount);
+        // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
+        // the default login, which is signed out on a machine whose logins all live in the pool.
+        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
         sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
       }
+      // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
+      // never launch on a Codex account the pool reads at its wall; tag the
+      // session with one that has room, or refuse when none does. Same switch
+      // and walled predicate as the rescue; no Codex accounts → unchanged.
+      sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
@@ -28442,6 +28512,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §2.B — the receiver-side rejection trace (metadata-only). The DECIDING
           // machine records its own refusal to logs/mesh-rejections.jsonl so a
           // future incident is never forensically blank on the machine that decided.
+          // context-budget §14 relay-path row carrier: land the carried TopicMemory row here,
+          // before the receipt (idempotent on the row key; an older peer carries none, and the
+          // message is still recorded as expected so the fold precondition reads the missing row).
+          landRow: (cmd, sender) => {
+            const carrier = _topicRowCarrier;
+            if (!carrier) return;
+            // The carried stream must be the signed sender's own (the router that forwarded it).
+            carrier.land(cmd.session, cmd.messageId, (cmd as { row?: unknown }).row, sender || undefined);
+            const addr = carrier.enabled() ? carrier.address(cmd.session, cmd.messageId) : null;
+            // First arrival per (topic, ownership epoch): mark the move pending and pull the previous owner's rows.
+            if (addr) _topicRowPulls?.onTopicAccepted(addr.topicId, cmd.ownershipEpoch);
+          },
           onRejected: (meta) => {
             appendMeshRejection(config.stateDir, {
               reason: meta.reason,
@@ -29187,6 +29269,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               });
             },
+            // context-budget §14: serve this machine's own TopicMemory rows of one topic (bounded).
+            'topic-row-pull': (cmd) => _topicRowCarrier
+              ? _topicRowCarrier.servePull(cmd as Parameters<import('../memory/topicRowCarrier.js').TopicRowCarrier['servePull']>[0])
+              : { ok: false, reason: 'disabled' },
             'topic-history-pull': (cmd) => createTopicHistoryPullHandler({
               readHistory: telegram ? (topic, limit) => telegram!.getTopicHistory(topic, limit) : null,
             })(cmd as { topic?: unknown; limit?: unknown }),
@@ -29821,6 +29907,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!url) return { ok: false };
                 return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
               } };
+            // native-conversation-base §3b — the outcome route asks the execution
+            // owner over the SAME signed peer sender the receipt peer uses. The
+            // switches are read live on each ask; off makes answers more cautious only.
+            {
+              const { OriginOwnerReader } = await import('../messaging/telegram-origin/OriginOwnerRead.js');
+              const { originOwnerReadConfig, originForwardToHolderEnabled } = await import('../messaging/telegram-origin/OriginConfig.js');
+              const ownerReadOrigin = (): unknown => {
+                const messaging = liveConfig.get('messaging', config.messaging) as Array<{ type?: string; config?: { messageOrigin?: unknown } }> | undefined;
+                return (Array.isArray(messaging) ? messaging.find(m => m?.type === 'telegram') : undefined)?.config?.messageOrigin;
+              };
+              const receiptPeer = originReceiptPeer;
+              originRuntime.ownerReader = new OriginOwnerReader({ selfMachineId: meshSelfId, transport: { send: receiptPeer.send },
+                leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
+                enabled: () => {
+                  const origin = ownerReadOrigin();
+                  let forward = true;
+                  try { forward = originForwardToHolderEnabled(origin); } catch { forward = true; } // @silent-fallback-ok — matches the forward switch's own reading: unreadable keeps it on
+                  return forward && originOwnerReadConfig(origin).enabled;
+                },
+                budgetMs: () => originOwnerReadConfig(ownerReadOrigin()).budgetMs,
+                cacheEntries: () => originOwnerReadConfig(ownerReadOrigin()).cacheEntries });
+            }
             originRuntime.poolAudit = new OriginPoolAudit({
               operatorScopeRequired: true,
               shardIds: () => [meshSelfId, ...meshIdMgr.getActiveMachines().map(m => m.machineId).filter(id => id !== meshSelfId)],
@@ -30055,6 +30163,48 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           _signedLiveCopyProbe = (machineId, url, platform, platformId) =>
             meshClient.send({ machineId, url }, { type: 'session-live-probe', platform, platformId }, 0, { timeoutMs: 5_000 });
+          // context-budget §14: the row carrier's pulls — a gap from the stream's machine, and a
+          // moved topic's recent rows and stream heads from its previous owner (journal evidence).
+          if (_topicRowCarrier && _topicRowWatermark) {
+            const rowJournalMod = await import('../core/CoherenceJournalReader.js');
+            const rowJournal = new rowJournalMod.CoherenceJournalReader({ stateDir: config.stateDir });
+            _topicRowPulls = new TopicRowPullCoordinator({
+              carrier: _topicRowCarrier,
+              store: _topicRowWatermark,
+              selfMachineId: meshSelfId,
+              send: async (machineId, cmd) => {
+                const url = peerUrl(machineId);
+                if (!url) return null;
+                const r = await meshClient.send({ machineId, url }, cmd as import('../core/MeshRpc.js').MeshCommand, 0, { timeoutMs: ROW_PULL_TIMEOUT_MS });
+                return r.ok ? r.result : null;
+              },
+              prevOwnerOf: (topicId) => {
+                try {
+                  for (const e of rowJournal.query({ kind: 'topic-placement', topic: topicId, limit: 20 }).entries) {
+                    const prev = (e.data as { prevOwner?: string }).prevOwner;
+                    if (typeof prev === 'string' && prev !== meshSelfId) return prev;
+                  }
+                } catch { /* @silent-fallback-ok — no placement evidence: only gap pulls run, and any gap stays on the watermark */ }
+                return null;
+              },
+              log: (line) => console.warn(line),
+              reportFloor: (e) => DegradationReporter.getInstance().report({
+                feature: 'TopicRowCarrier.pull',
+                primary: "Pull every missing row of a conversation from the machine that carried it",
+                fallback: `Rows below seq ${e.floor} of stream ${e.stream} are older than one bounded pull; they are recorded as the stream's floor`,
+                reason: `gap wider than one pull for conversation ${e.topicId}`,
+                impact: "Older messages before the floor may be missing from this machine's conversation memory.",
+              }),
+            });
+          }
+          // The repair sweep: retries pending moves, gaps, rows a rebuild lost and accepted rows
+          // nobody carried, a bounded batch per minute (only while the carrier is on).
+          if (_topicRowPulls) {
+            const rowSweep = setInterval(() => {
+              if (_topicRowCarrier?.enabled()) void _topicRowPulls?.sweep().catch(() => { /* @silent-fallback-ok — sweep() never throws; the next pass retries */ });
+            }, 60_000);
+            if (typeof rowSweep.unref === 'function') rowSweep.unref();
+          }
           _pullRouterHistory = async (topic) => {
             const h = coordinator.getSyncStatus().leaseHolder;
             const url = h && h !== meshSelfId ? peerUrl(h) : null;
@@ -30985,6 +31135,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // is a no-op inside the carrier.
               if (r.ok && machineId === meshSelfId && prevOwner && prevOwner !== meshSelfId) {
                 _topicProfileCarrier?.onTopicAcquired(sk, prevOwner);
+                // context-budget §14: a topic this machine claims for itself pulls its rows from the previous owner too.
+                const rowTopic = _topicRowCarrier?.enabled() ? _topicRowCarrier.topicIdFor(sk) : null;
+                if (rowTopic !== null && rowTopic !== undefined) void _topicRowPulls?.onTopicAcquired(rowTopic, prevOwner, ownReg.read(sk)?.ownershipEpoch ?? 0);
               }
               return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };
             },
@@ -31010,7 +31163,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // senderEnvelope (Durable Inbound Message Queue §2.2): a drained
               // forward carries the STORED sender frame; an old peer ignores
               // the extra field (version skew named in the spec).
-              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
+              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}), ...(env.row != null ? { row: env.row } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -31020,10 +31173,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // landed, read exactly like a forward. It used to send epoch 0 and
             // discard the reply: a receiver holding an older record for the
             // topic NACKed it stale and the router still logged 'spawned'.
-            spawnOnMachine: async (machineId, msg, ownershipEpoch) => {
+            // context-budget §14: the message's TopicMemory row rides the forward (an older owner ignores it).
+            carryRow: (msg) => _topicRowCarrier?.carry(msg.sessionKey, msg.messageId) ?? null,
+            spawnOnMachine: async (machineId, msg, ownershipEpoch, row) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}), ...(row != null ? { row } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }

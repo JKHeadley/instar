@@ -390,7 +390,8 @@ describe('local-verify routes (integration)', () => {
     const gh: GhRunner = async (args) => {
       calls.push(args);
       const a = args.join(' ');
-      if (a.startsWith('pr list')) return { ok: true, stdout: JSON.stringify([{ number: 7, headRefOid: sha('a'), baseRefName: 'main', headRefName: 'echo/x', author: { login: 'EchoOfDawn' }, isCrossRepository: false, statusCheckRollup: [] }]) };
+      // The open-PR listing is a paged GraphQL read (`gh api graphql --paginate --slurp`).
+      if (a.startsWith('api graphql')) return { ok: true, stdout: JSON.stringify([{ data: { repository: { pullRequests: { nodes: [{ number: 7, headRefOid: sha('a'), baseRefName: 'main', headRefName: 'echo/x', author: { __typename: 'User', login: 'EchoOfDawn' }, isCrossRepository: false, commits: { nodes: [{ commit: { statusCheckRollup: null } }] } }] } } } }]) };
       if (a.includes('rules/branches/main')) return { ok: true, stdout: JSON.stringify([[{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'Build' }], strict_required_status_checks_policy: false } }]]) };
       if (a.includes('branches/main')) return { ok: true, stdout: JSON.stringify({ name: 'main', protection: { required_status_checks: { contexts: ['Build'] } } }) };
       if (a.includes('rulesets/')) return { ok: true, stdout: JSON.stringify({ current_user_can_bypass: 'never' }) };
@@ -435,7 +436,7 @@ describe('local-verify routes (integration)', () => {
     const settings = { requireCheck: true };
     const gh: GhRunner = async (args) => {
       const a = args.join(' ');
-      if (a.startsWith('pr list')) return { ok: true, stdout: '[]' };
+      if (a.startsWith('api graphql')) return { ok: true, stdout: JSON.stringify([{ data: { repository: { pullRequests: { nodes: [] } } } }]) };
       if (a.includes('rules/branches/main')) return { ok: true, stdout: JSON.stringify([[{ type: 'required_status_checks', parameters: { required_status_checks: settings.requireCheck ? [{ context: 'instar/local-verify' }] : [{ context: 'Build' }], strict_required_status_checks_policy: false } }]]) };
       if (a.includes('branches/main')) return { ok: true, stdout: JSON.stringify({ name: 'main', protection: { required_status_checks: { contexts: [] } } }) };
       if (a.includes('rulesets/')) return { ok: true, stdout: JSON.stringify({ current_user_can_bypass: 'never' }) };
