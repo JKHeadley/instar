@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "conversation-search-meaning",
+  "sessionId": "281a0ff5-07f5-4b12-a1fe-e89b1451fdc4",
+  "timestamp": "2026-11-14T11:45:10.495Z",
+  "artifactPath": "upgrades/side-effects/conversation-search-meaning.md",
+  "artifactSha256": "ab76ee854dd3ba11ec5239507a7d1897cab3501d6caa1025b806e6a41522f0b5",
+  "coveredFiles": [
+    "docs/specs/conversation-search.md",
+    "upgrades/side-effects/conversation-search-meaning.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation of measured cost for the Tier 1 meaning-search change; no runtime change.",
+  "eli16Path": "docs/specs/conversation-search.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-search-meaning.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

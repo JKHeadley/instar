@@ -845,6 +845,65 @@ export class TopicMemory {
     })) as TopicSearchResult[];
   }
 
+  /**
+   * Keyword search for the conversation search route (docs/specs/conversation-search.md §2):
+   * an already-built FTS5 MATCH expression, restricted IN SQL to the given topics (an empty list
+   * finds nothing), best `bm25` first, newest first on a tie, at most `limit` rows. `marked` is
+   * the full text with each matched token wrapped in `open` / `close`. Null when the database is
+   * not open (the caller reports the index as unavailable, never as "no hits").
+   */
+  searchKeyword(match: string, topicIds: ReadonlyArray<number>, limit: number, open: string, close: string): Array<{
+    messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string; rank: number; marked: string;
+  }> | null {
+    if (!this.db) return null;
+    if (!match || topicIds.length === 0) return [];
+    const rows = this.db.prepare(`
+      SELECT m.message_id AS messageId, m.topic_id AS topicId, m.text, m.from_user AS fromUser,
+             m.timestamp, bm25(messages_fts) AS rank,
+             highlight(messages_fts, 0, ?, ?) AS marked
+      FROM messages_fts
+      JOIN messages m ON m.id = messages_fts.rowid
+      WHERE messages_fts MATCH ?
+        AND m.topic_id IN (SELECT value FROM json_each(?))
+      ORDER BY rank, m.timestamp DESC
+      LIMIT ?
+    `).all(open, close, match, JSON.stringify(topicIds), Math.max(1, Math.min(500, Math.floor(limit)))) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''), fromUser: !!r.fromUser,
+      timestamp: String(r.timestamp ?? ''), rank: Number(r.rank), marked: String(r.marked ?? ''),
+    }));
+  }
+
+  /**
+   * Meaning search (docs/specs/conversation-search.md §4): one page of rows for the embedding
+   * index, newest first by row id, older than `beforeId` (null ⇒ the newest). Null when the
+   * database is not open.
+   */
+  indexPage(beforeId: number | null, limit: number): Array<{ id: number; messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string }> | null {
+    if (!this.db) return null;
+    const n = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const rows = (beforeId === null
+      ? this.db.prepare('SELECT id, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser, timestamp FROM messages ORDER BY id DESC LIMIT ?').all(n)
+      : this.db.prepare('SELECT id, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser, timestamp FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?').all(beforeId, n)) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id), messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''),
+      fromUser: !!r.fromUser, timestamp: String(r.timestamp ?? ''),
+    }));
+  }
+
+  /** One row by topic and Telegram message id (meaning search re-reads each candidate), or null. */
+  messageByKey(topicId: number, messageId: number): { text: string; fromUser: boolean; timestamp: string } | null {
+    if (!this.db) return null;
+    const r = this.db.prepare('SELECT text, from_user AS fromUser, timestamp FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as Record<string, unknown> | undefined;
+    return r ? { text: String(r.text ?? ''), fromUser: !!r.fromUser, timestamp: String(r.timestamp ?? '') } : null;
+  }
+
+  /** How many rows the index holds (meaning search coverage), or null when not open. */
+  totalMessages(): number | null {
+    if (!this.db) return null;
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+  }
+
   // ── Summaries ───────────────────────────────────────────────
 
   /**

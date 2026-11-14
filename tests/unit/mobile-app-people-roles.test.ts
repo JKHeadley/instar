@@ -180,6 +180,8 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     // conversation-pinned-messages: list and pin/unpin in each kind of conversation.
     'GET /mobile/chat/app/<uuid>/pins', 'POST /mobile/chat/app/<uuid>/pins', 'GET /mobile/chat/7/pins', 'POST /mobile/chat/7/pins',
     'GET /mobile/chat/slack/-1/pins', 'POST /mobile/chat/slack/-1/pins',
+    // conversation-search: `ref=` names one conversation.
+    'GET /mobile/conversations/search',
   ];
   const UUID = '22222222-2222-4222-8222-222222222222';
   const sample = (s: string) => s.replace('<uuid>', UUID).replace('<sha>', 'a'.repeat(64));
@@ -393,7 +395,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     const open = DEVICE_ALLOWLIST.filter((r) => r.tier === 'guest' || r.tier === 'member').length;
     // 27: mobile-unread-messages §3.5 opened POST /mobile/conversations/read to guests (reading is guest).
     // 31: conversation-pinned-messages opened the app and Telegram pin list (guest) and pin/unpin (member).
-    expect(open).toBe(31);
+    // 32: conversation-search opened GET /mobile/conversations/search to guests (searching is reading).
+    expect(open).toBe(32);
   });
 
   it.each([
