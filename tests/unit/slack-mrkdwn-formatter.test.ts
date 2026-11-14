@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatForSlack,
   applySlackFormatter,
+  candidateUserMentionIds,
   MAX_INPUT_LENGTH,
   type SlackFormatMode,
 } from '../../src/messaging/slack/SlackMrkdwnFormatter.js';
@@ -143,6 +144,57 @@ describe('formatForSlack — escaping (Slack specials)', () => {
 
   it('does not activate references inside code', () => {
     expect(fmt('`<@U0C62ABNDK8>`', 'mrkdwn', ['U0C62ABNDK8'])).toBe('`&lt;@U0C62ABNDK8&gt;`');
+  });
+});
+
+describe('formatForSlack — participant mentions (default on for people in the conversation)', () => {
+  const part = (text: string, participants: string[], explicit: string[] = []) =>
+    formatForSlack(text, 'mrkdwn', explicit, participants).text;
+
+  it('activates a mention of a verified participant with no flag (the reported case)', () => {
+    expect(part('<@U0C62ABNDK8> Justin passed on your note about the mailing address', ['U0C62ABNDK8'])).toBe(
+      '<@U0C62ABNDK8> Justin passed on your note about the mailing address',
+    );
+    expect(part('Thanks <@W0C62ABNDK8>', ['W0C62ABNDK8'])).toBe('Thanks <@W0C62ABNDK8>');
+  });
+
+  it('keeps a non-participant mention literal next to an active participant mention', () => {
+    expect(part('Hi <@U0C62ABNDK8>, cc <@U0APWL48281>', ['U0C62ABNDK8'])).toBe(
+      'Hi <@U0C62ABNDK8>, cc &lt;@U0APWL48281&gt;',
+    );
+  });
+
+  it('never activates broadcasts, channel references or links from participant data', () => {
+    expect(part('<!channel> <!here> <!everyone> <#C1234567890> <https://example.com|x>', ['U0C62ABNDK8', 'C1234567890', 'https://example.com'])).toBe(
+      '&lt;!channel&gt; &lt;!here&gt; &lt;!everyone&gt; &lt;#C1234567890&gt; &lt;https://example.com|x&gt;',
+    );
+  });
+
+  it('keeps a participant mention literal inside inline code and fenced code', () => {
+    expect(part('`<@U0C62ABNDK8>`', ['U0C62ABNDK8'])).toBe('`&lt;@U0C62ABNDK8&gt;`');
+    expect(part('```\n<@U0C62ABNDK8>\n```', ['U0C62ABNDK8'])).toBe('```\n&lt;@U0C62ABNDK8&gt;\n```');
+  });
+
+  it('with no participant data (failed or empty lookup) every mention stays literal', () => {
+    expect(part('Thanks <@U0C62ABNDK8>', [])).toBe('Thanks &lt;@U0C62ABNDK8&gt;');
+  });
+
+  it('the explicit list still activates a target outside the conversation, and a channel', () => {
+    expect(part('Ping <@U0APWL48281> in <#C1234567890>', [], ['U0APWL48281', 'C1234567890'])).toBe(
+      'Ping <@U0APWL48281> in <#C1234567890>',
+    );
+  });
+
+  it('applySlackFormatter reads and strips the internal participant list', () => {
+    const r = applySlackFormatter('chat.postMessage', { channel: 'C1', text: 'Hi <@U0C62ABNDK8>', _participantUserIds: ['U0C62ABNDK8'] }, 'mrkdwn');
+    expect(r.outgoingParams.text).toBe('Hi <@U0C62ABNDK8>');
+    expect(r.outgoingParams).not.toHaveProperty('_participantUserIds');
+  });
+
+  it('candidateUserMentionIds finds distinct person ids and caps them', () => {
+    expect(candidateUserMentionIds('<@U0C62ABNDK8> <@U0C62ABNDK8> <@W0APWL48281> <!here> <#C1234567890> <@U12>')).toEqual(['U0C62ABNDK8', 'W0APWL48281']);
+    const many = Array.from({ length: 20 }, (_, i) => `<@U0000000${String(i).padStart(3, '0')}>`).join(' ');
+    expect(candidateUserMentionIds(many)).toHaveLength(16);
   });
 });
 

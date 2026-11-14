@@ -259,7 +259,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   });
 
   // The owner turned a team setting on for the whole agent; the machine that took the tap asks each peer here.
-  // Narrow on purpose: two named settings, only ever on, so a machine of this agent can never use it to loosen anything.
+  // Narrow on purpose: three named settings (TEAM_SWITCH_SETTINGS), only ever on, so a machine of this agent can never use it to loosen anything.
   router.post('/api/team-access/switch-on', authMiddleware, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.teamSwitchOn) { res.status(503).json({ error: 'team-switches-unavailable' }); return; }

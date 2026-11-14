@@ -17,7 +17,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
-import { AGENT_CONNECT_HEADING, agentConnectSection, generateClaudeMd, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_BULLET } from '../../src/scaffold/templates.js';
+import { AGENT_CONNECT_HEADING, agentConnectSection, generateClaudeMd, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_BULLET, AGENT_CONNECT_DASHBOARD_LINK_LINE } from '../../src/scaffold/templates.js';
 import { TreeGenerator } from '../../src/knowledge/TreeGenerator.js';
 import { TreeTraversal } from '../../src/knowledge/TreeTraversal.js';
 import { TreeTriage } from '../../src/knowledge/TreeTriage.js';
@@ -238,6 +238,27 @@ describe('Connecting to another agent: existing agents (migration)', () => {
     expect(md).toContain(THREADLINE_PAIR_TOOL_BULLET + '\n\n' + AGENT_CONNECT_HOWTO_BULLET + '\n\n' + AGENT_CONNECT_HEADING);
     const again = (runClaudeMd(projectDir), fs.readFileSync(claudeMd, 'utf8'));
     expect(again).toBe(md);
+  });
+
+  it('an agent whose section predates the direct-link rule gets the one line before step 6, once (topic 10000002573)', () => {
+    const fresh = generateClaudeMd('test', 'Test', 4042, true);
+    expect(fresh).toContain(AGENT_CONNECT_DASHBOARD_LINK_LINE + '\n6. **Check, then say hello.**');
+    const old = fresh.replace(AGENT_CONNECT_DASHBOARD_LINK_LINE + '\n', '');
+    expect(old).not.toContain(AGENT_CONNECT_DASHBOARD_LINK_LINE);
+    fs.writeFileSync(claudeMd, old);
+    const r1 = runClaudeMd(projectDir);
+    expect(r1.upgraded).toContain('CLAUDE.md: pairing dashboard pointers are direct links');
+    const once = fs.readFileSync(claudeMd, 'utf8');
+    expect(threadlineRegion(once)).toBe(threadlineRegion(fresh));
+    expect(count(once, AGENT_CONNECT_DASHBOARD_LINK_LINE)).toBe(1);
+    runClaudeMd(projectDir);
+    expect(fs.readFileSync(claudeMd, 'utf8')).toBe(once);
+  });
+
+  it('the direct-link line names the real page, the paste option, and never putting the invite in a link', () => {
+    expect(AGENT_CONNECT_DASHBOARD_LINK_LINE).toContain('/dashboard/console/#/people/agents');
+    expect(AGENT_CONNECT_DASHBOARD_LINK_LINE).toContain('?connect=paste');
+    expect(AGENT_CONNECT_DASHBOARD_LINK_LINE).toContain('never put the invite itself in a link');
   });
 
   it('a freshly scaffolded agent is left alone (already has it)', () => {

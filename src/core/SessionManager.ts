@@ -4394,6 +4394,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
   }
 
+  /**
+   * A PURE read of whether `spawnInteractiveSession` would start an AUTOMATIC session right now
+   * (Work Board §6, the free pre-check): the absolute session cap it enforces, then the overload
+   * admission's non-counting `check`. It writes no audit row, takes no slot and starts nothing.
+   * `admissionCheck` is the work-admission read (`getActiveWorkAdmission()?.check()`), passed in so
+   * this stays a read of what the spawn itself would decide.
+   */
+  interactiveSpawnCapacity(admissionCheck?: () => { allowed: boolean; detail?: string } | null | undefined): { ok: true } | { ok: false; reason: string } {
+    const running = this.listRunningSessions();
+    const absoluteLimit = this.config.maxSessions * 3;
+    const countable = running.filter((s) => !this.longIndeterminateSessions.has(s.id));
+    if (countable.length >= absoluteLimit) return { ok: false, reason: `every session slot is in use (${countable.length} of ${absoluteLimit})` };
+    try {
+      const d = admissionCheck?.();
+      if (d && !d.allowed) return { ok: false, reason: d.detail ?? 'this machine is overloaded' };
+    } catch { /* @silent-fallback-ok: an unreadable admission gate is treated as room, exactly as checkAdmission fails toward starting */ }
+    return { ok: true };
+  }
+
   async spawnSession(options: Parameters<SessionManager['spawnSessionInternal']>[0]): Promise<Session> {
     const running = this.listRunningSessions();
     const effectiveCount = running.length + this.pendingHeadlessSpawns;
@@ -4763,7 +4782,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`confined-tools-unavailable: this job's tool list cannot be applied on ${headlessFramework}, so it was not started`);
     }
     if (await this.shouldRerouteToInteractive(headlessFramework)) {
-      const gate = this.evaluateRerouteGate(options.name, Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:')));
+      const gate = this.evaluateRerouteGate(options.name,
+        options.jobSlug && options.triggeredBy?.startsWith('scheduler:') ? 'scheduled-job' : options.confinement ? 'confined' : 'ordinary');
       if (gate.allow) {
         return await this.spawnReroutedInteractive({
           sessionId,
@@ -5130,17 +5150,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // must use their actual gate, not the scheduler's reserved global slot.
     if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions) return 'saturated';
     if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
-    return this.countReroutedInteractiveSessions() >= this.rerouteAdmissionCap(false)
+    return this.countReroutedInteractiveSessions() >= this.rerouteAdmissionCap('confined')
       || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
   }
 
-  private rerouteAdmissionCap(scheduledJob: boolean): number {
+  /**
+   * How many rerouted sessions may be live when a spawn of this kind is admitted. Ordinary spawns
+   * (conversations, builders, A2A) leave the last slot for a scheduler job and, from four slots
+   * up, the one before it for a confined feedback-executor spawn while a live executor asks for it
+   * (`setConfinedRerouteReserve`); so neither can be held at zero
+   * by ordinary traffic (2026-11-12: builders held every ordinary slot for hours and the executor
+   * started nothing). A confined spawn keeps the scheduler's slot. A small host reserves less: a
+   * one-slot host reserves nothing, and below four slots only the scheduler's slot is kept.
+   */
+  private rerouteAdmissionCap(kind: 'scheduled-job' | 'confined' | 'ordinary'): number {
     const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
-    // A one-slot host cannot reserve without blocking all conversations.
-    return !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
+    if (kind === 'scheduled-job' || maxRerouted <= 1) return maxRerouted;
+    if (kind === 'confined') return maxRerouted - 1;
+    return maxRerouted >= 4 && this.confinedRerouteReserve() ? maxRerouted - 2 : maxRerouted - 1;
   }
 
-  private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {
+  /**
+   * Whether ordinary spawns keep a slot free for confined spawns. Off until a live feedback executor
+   * turns it on (`setConfinedRerouteReserve`), so an agent that runs no executor keeps every
+   * ordinary slot it had.
+   */
+  private confinedRerouteReserve: () => boolean = () => false;
+
+  /** The feedback executor's wiring: reserve a slot only while it is enabled and live. */
+  setConfinedRerouteReserve(active: () => boolean): void {
+    this.confinedRerouteReserve = () => { try { return active() === true; } catch { return false; } }; // @silent-fallback-ok: an unreadable switch reserves nothing (the pre-reserve behaviour)
+  }
+
+  private evaluateRerouteGate(spawnName: string, kind: 'scheduled-job' | 'confined' | 'ordinary' = 'ordinary'): { allow: boolean } {
     const mode = this.config.subscriptionPathMode ?? 'off';
     const reroutedCount = this.countReroutedInteractiveSessions();
     const pressure = this.currentMemoryPressure();
@@ -5148,7 +5190,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Keep one of the existing memory-bounded slots for scheduled jobs when
     // conversations would otherwise fill the entire lane. A one-slot host
     // cannot reserve without blocking all conversations, so retain its cap.
-    const admissionCap = this.rerouteAdmissionCap(scheduledJob);
+    const admissionCap = this.rerouteAdmissionCap(kind);
     if (reroutedCount < admissionCap && !pressureElevated) {
       return { allow: true };
     }

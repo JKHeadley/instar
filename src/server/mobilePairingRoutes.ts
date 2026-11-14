@@ -1,3 +1,4 @@
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamSwitchLine } from '../core/TeamSwitches.js';
@@ -82,6 +83,7 @@ import {
   type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson, type TeamStanding,
 } from '../core/MobilePeople.js';
 import { parseReaderKey } from '../core/ConversationReadMarkers.js';
+import { MEDIA_OFF_ACTION } from './mobileMediaOff.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -1819,7 +1821,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // `telegram:<topicId>`. With media off, a body with files is refused as before: a message is
     // never stored without its files. An exact emergency stop never waits on its files.
     const mediaOn = svc.nativeOn && isMobileMediaEnabled(deps.config) && !!poolCtx?.appConversations;
-    if (body.attachments !== undefined && !mediaOn) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' }); return; }
+    if (body.attachments !== undefined && !mediaOn) { res.status(400).json(isMobileMediaEnabled(deps.config) ? { error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' } : { error: 'media-target-unsupported', detail: 'Files are turned off on this agent.', action: MEDIA_OFF_ACTION }); return; }
     let signedFiles: SignedAttachment[] | null = null;
     if (body.attachments !== undefined && !isExactStopMessage(text)) {
       const checked = checkSignedFiles(body.attachments);
@@ -1855,7 +1857,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
     recent.push(t); chatRate.set(p.deviceId, recent);
-    if (!tg.getAllTopicMappings().some((m) => m.topicId === topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
+    if (!telegramTopicKnown(tg, topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
     if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     svc.scanInbound(text); // may cancel a pending pairing; never refuses the message
     // With native conversations on (mobile-native-conversations §4.2, §4.9) no content check
@@ -1981,17 +1983,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       json(b: unknown) { captured.body = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>; return fakeRes; },
       setHeader() { return fakeRes; },
     };
-    // Files (chat-media §4.5): one line per file before the caption, in Telegram's forms, with a
-    // server-chosen path to a private copy (the blobs were just published on this machine).
-    let sessionText = delivered;
-    if (app && stored.length > 0) {
-      const lines = await app.sessionLinesFor(storeKey, storeMessageId, stored, delivered);
-      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
-    }
+    // Files (chat-media §4.5, native-conversation-base §3c): by attachment id, never as tag lines in
+    // the text. The machine that serves the session builds the file lines from the field; the text
+    // keeps one path-free sentence per file for an older receiver.
+    const media = app ? stored.map((a) => ({
+      kind: a.kind === 'photo' ? 'photo' as const : a.kind === 'video' ? 'video' as const : a.kind === 'voice' ? 'voice' as const : 'document' as const,
+      attachmentId: a.attachmentId, filename: a.filename,
+    })) : [];
     const fakeReq = {
       headers: {},
       body: {
-        topicId, text: sessionText, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
+        topicId, text: delivered, media, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         ...(sender.role === 'owner' ? { fromUserId: ownerId } : {}), fromFirstName: senderName, forwarded: false,
       },
     };
@@ -2224,6 +2226,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
+  ['GET', /^\/mobile\/work-board$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
@@ -2420,6 +2424,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Work Board (work-board-asks §7): any active phone reads the cards its person may see (the handler
+    // checks each card's conversation with the shared `mayUse`); only the owner's phone taps. Taps have their
+    // own bucket, so a run of card taps never uses up the allowance for approvals and switches.
+    { method: 'GET', re: /^\/mobile\/work-board$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'work-board-reads' },
+    { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
     { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },

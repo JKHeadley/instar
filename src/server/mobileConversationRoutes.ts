@@ -66,6 +66,7 @@ import { deviceTextForRow } from '../core/appPlatformMedia.js';
 import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { ConversationUnreadService, type Reader, type UnreadFields } from '../core/ConversationUnreadService.js';
 import { isMessagePosition, isReaderKey, CATCH_UP_PAGE } from '../core/ConversationReadMarkers.js';
+import { mediaOffBody } from './mobileMediaOff.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment,
@@ -327,7 +328,10 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
     ...(m.senderName ? { senderName: m.senderName } : {}), ...(m.senderRole ? { senderRole: m.senderRole } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
-    ...(m.role === 'agent' && originCtx ? { origin: agentOriginRow(m, originCtx) } : {}),
+    // Work Board §2: a line the work board wrote is reported as the work board's, never as the agent's
+    // own words, and carries no "which model wrote this" row (no model did).
+    ...(m.systemSource ? { systemSource: m.systemSource } : {}),
+    ...(m.role === 'agent' && originCtx && !m.systemSource ? { origin: agentOriginRow(m, originCtx) } : {}),
   };
 }
 
@@ -755,7 +759,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Media (§4.3): a body with attachments creates a `media-message`. An exact emergency stop
     // never waits on its files: it is handled as the text it is and the uploads simply expire.
     const wantsMedia = body.attachments !== undefined && !isExactStopMessage(text);
-    if (wantsMedia && !deps.mediaEnabled) { res.status(400).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' }); return; }
+    if (wantsMedia && !deps.mediaEnabled) { res.status(400).json(mediaOffBody()); return; }
     let signedFiles: SignedAttachment[] | null = null;
     if (wantsMedia) {
       const checked = checkSignedFiles(body.attachments);

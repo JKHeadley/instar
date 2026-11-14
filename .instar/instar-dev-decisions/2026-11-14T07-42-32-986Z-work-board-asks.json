@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-14T07:42:32.986Z",
+  "slug": "work-board-asks",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

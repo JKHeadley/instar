@@ -42,6 +42,7 @@ const INSTANCE_MAX = 64;
 const NAME_CHARSET = /^[a-zA-Z0-9\-_.:]+$/;
 const VALID_SUBSYSTEMS: readonly LedgerEntrySubsystem[] = [
   'threadline',
+  'work-board',
   'outbound-classifier',
   'session-manager',
   'compaction-sentinel',

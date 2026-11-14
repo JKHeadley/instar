@@ -25,6 +25,7 @@
  * one degradation signal after 10 min sustained, recovery logged once.
  */
 
+import { parseQueuedMediaCell, type InboundMediaLocal } from './inboundMedia.js';
 import type {
   PendingInboundStore,
   PendingInboundRow,
@@ -44,6 +45,11 @@ export interface DrainMessage {
   senderEnvelope: SenderEnvelope | null;
   topicMetadata: unknown;
   enqueueSeq: number;
+  /**
+   * Files by attachment id (native-conversation-base §3c). Null for a row written before the column
+   * existed, or by older code: its payload still carries the path-free sentence (or an old tag).
+   */
+  media?: InboundMediaLocal[] | null;
 }
 
 /**
@@ -234,6 +240,7 @@ export class QueueDrainLoop {
     payload: string;
     senderEnvelope?: SenderEnvelope | null;
     topicMetadata?: unknown;
+    media?: ReadonlyArray<InboundMediaLocal> | null;
   }, reason: string): EnqueueOutcome {
     const q = this.d.qcfg;
     // Dry-run: never claims custody, never short-circuits (§2.4) — durable
@@ -276,6 +283,7 @@ export class QueueDrainLoop {
           payload: msg.payload,
           senderEnvelope: msg.senderEnvelope ?? null,
           topicMetadata: msg.topicMetadata,
+          media: msg.media ?? null,
           reason,
           tenure: this.tenure,
           nowIso: new Date(nowMs).toISOString(),
@@ -936,6 +944,11 @@ export class QueueDrainLoop {
       senderEnvelope,
       topicMetadata,
       enqueueSeq: row.enqueue_seq,
+      // An unreadable media cell never poisons the row: the payload carries the path-free sentence.
+      media: ((): InboundMediaLocal[] | null => {
+        if (!row.media) return null;
+        try { return parseQueuedMediaCell(JSON.parse(row.media)); } catch { return null; } // @silent-fallback-ok — the payload's sentence still tells the session a file was sent
+      })(),
     };
   }
 
