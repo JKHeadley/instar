@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 import { validGenericMeasurement } from '../monitoring/MeasurementContractVersion.js';
 import { hasMeasurementBinding, type GenericMeasurementContract } from '../monitoring/MeasurementSubject.js';
 /**

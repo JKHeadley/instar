@@ -6,11 +6,21 @@ import type { WebKBuildEnrollment } from './TelegramWebKDriver.js';
  * The trusted enrollment entrypoint admits ONLY a build listed here, and only
  * when the authenticated read-only canary observes exactly these asset names
  * and digests. Adding a build is a reviewed code change, never a runtime input.
- * Newest first. Builds 684 and 686 are backed by the adjacent dated review reports.
+ * Newest first. Builds 684, 686 and 687 are backed by the adjacent dated review reports.
  */
 export interface ReviewedWebKBuild extends WebKBuildEnrollment { evidence: string; }
 
 export const REVIEWED_WEB_K_BUILDS: readonly ReviewedWebKBuild[] = Object.freeze<ReviewedWebKBuild[]>([
+  {
+    buildId: 'web-k-2.3-687',
+    evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.3-687-review.md',
+    criticalAssets: ['apiManagerProxy-xL1OSBOW.js', 'app-B3AbKbVS.js', 'index-Dthh6gB6.js'],
+    assetDigests: {
+      'apiManagerProxy-xL1OSBOW.js': '58a81d3e1a235bd1e171fa972b24342f64b1ba5076831c5b7e4bee4b87f7d75f',
+      'app-B3AbKbVS.js': 'ad4146645016e21cc1621fffba19d211320616d197880eedeb7ba727d8e4e160',
+      'index-Dthh6gB6.js': 'b0a0d838ea117b4b1b15a15e39862f86cc60db03ec6db19d8a4140b4db9423eb',
+    },
+  },
   {
     buildId: 'web-k-2.3-686',
     evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.3-686-review.md',

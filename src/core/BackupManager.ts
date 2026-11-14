@@ -316,6 +316,35 @@ function expandGlob(stateDir: string, entry: string): string[] {
   }
 }
 
+/** Staging directories live beside the snapshots; the leading dot keeps them out of SNAPSHOT_ID_PATTERN. */
+const STAGING_DIR_PREFIX = '.staging-';
+
+export interface StagedBackupSources {
+  /** The staging directory, inside the backups directory. */
+  dir: string;
+  /** stateDir-relative path (forward slashes) to the staged point-in-time copy. */
+  sources: Record<string, string>;
+}
+
+export interface CreateSnapshotOptions {
+  /** From stageSqliteFiles(): copies to use in place of the live file. */
+  stagedSources?: Readonly<Record<string, string>>;
+}
+
+function stagedKey(relative: string): string {
+  return path.normalize(relative).split(path.sep).join('/');
+}
+
+/**
+ * Files whose copy must come from one moment: a SQLite database with its
+ * write-ahead log, shared-memory file or rollback journal, and the feedback drain checkpoint
+ * record whose checksum describes the database at that moment.
+ */
+export function isPointInTimeFile(relative: string): boolean {
+  const base = path.basename(relative);
+  return /\.(db|sqlite3?)(-wal|-shm|-journal)?$/.test(base) || base === 'feedback-drain-checkpoint.json';
+}
+
 export class BackupManager {
   private readonly stateDir: string;
   private readonly backupsDir: string;
@@ -473,13 +502,107 @@ export class BackupManager {
   /**
    * Create a snapshot of the current state.
    */
-  createSnapshot(trigger: BackupSnapshot['trigger']): BackupSnapshot {
-    const id = this.generateId();
-    const snapshotDir = path.resolve(this.backupsDir, id);
-    fs.mkdirSync(snapshotDir, { recursive: true });
+  createSnapshot(trigger: BackupSnapshot['trigger'], opts?: CreateSnapshotOptions): BackupSnapshot {
+    const { id, snapshotDir } = this.claimSnapshotDir();
+    let snapshot: BackupSnapshot;
+    try {
+      snapshot = this.fillSnapshot(id, snapshotDir, trigger, opts);
+    } catch (error) {
+      // A snapshot that failed part-way has no manifest, so nothing would ever
+      // list or prune it. Remove it here instead of leaving its bytes behind.
+      try {
+        SafeFsExecutor.safeRmSync(snapshotDir, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:createSnapshot-failed' });
+      } catch { /* @silent-fallback-ok: the original error is rethrown; sweepAbandonedSnapshots removes what is left */ }
+      throw error;
+    }
+    // After the manifest is written the snapshot is complete: nothing below may remove it.
+    this.pruneSnapshots();
+    this.sweepAbandonedSnapshots();
+    return snapshot;
+  }
 
+  /** Create the snapshot directory. Exclusive, so two snapshots in one second never share one. */
+  private claimSnapshotDir(): { id: string; snapshotDir: string } {
+    fs.mkdirSync(this.backupsDir, { recursive: true });
+    for (let attempt = 0; ; attempt++) {
+      const id = this.generateId();
+      const snapshotDir = path.resolve(this.backupsDir, id);
+      try {
+        fs.mkdirSync(snapshotDir);
+        return { id, snapshotDir };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 50) throw error;
+      }
+    }
+  }
+
+  private fillSnapshot(id: string, snapshotDir: string, trigger: BackupSnapshot['trigger'], opts?: CreateSnapshotOptions): BackupSnapshot {
     const files: string[] = [];
     let totalBytes = 0;
+    // Point-in-time copies taken by stageSqliteFiles() stand in for the live
+    // file, so a copy made off the main thread cannot pair a database with a
+    // write-ahead log from a later moment. With staging in force, a
+    // point-in-time file is NEVER read live: one that was not staged (a log
+    // that appeared after staging) belongs to a later moment and is left out.
+    const stagingInForce = opts?.stagedSources !== undefined;
+    const staged = new Map<string, string>();
+    for (const [key, stagedPath] of Object.entries(opts?.stagedSources ?? {})) {
+      if (this.isAcceptableStagedEntry(key, stagedPath)) staged.set(key, stagedPath);
+      else console.warn(`[BackupManager] Ignoring staged entry that is not a staged point-in-time file: ${key}`);
+    }
+    const copied = new Set<string>();
+    let vanished = 0;
+    const goneDuringCopy = (error: unknown): boolean => {
+      // Off the main thread the server keeps working, so a file listed a moment
+      // ago can be renamed or removed before its copy. It is left out and counted.
+      if (!stagingInForce || (error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+      vanished++;
+      return true;
+    };
+    const copyStaged = (relative: string, stagedPath: string): void => {
+      if (!fs.existsSync(stagedPath)) throw new Error(`staged copy for ${relative} is gone; the snapshot would not hold one moment`);
+      const dest = path.join(snapshotDir, relative);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(stagedPath, dest, fs.constants.COPYFILE_FICLONE);
+      totalBytes += fs.statSync(stagedPath).size;
+      files.push(relative);
+    };
+    const copyOne = (relative: string, liveAbsolute: string, liveSize: number): void => {
+      const key = stagedKey(relative);
+      const stagedPath = staged.get(key);
+      if (stagedPath !== undefined) {
+        copied.add(key);
+        copyStaged(relative, stagedPath);
+        return;
+      }
+      if (stagingInForce && isPointInTimeFile(relative)) return;
+      const dest = path.join(snapshotDir, relative);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      try {
+        fs.copyFileSync(liveAbsolute, dest);
+      } catch (error) {
+        if (goneDuringCopy(error)) return;
+        throw error;
+      }
+      totalBytes += liveSize;
+      files.push(relative);
+    };
+    const lstatIfPresent = (absolute: string): fs.Stats | null => {
+      try {
+        return fs.lstatSync(absolute);
+      } catch (error) {
+        if (goneDuringCopy(error)) return null;
+        throw error;
+      }
+    };
+    const readdirIfPresent = (absolute: string): string[] => {
+      try {
+        return fs.readdirSync(absolute);
+      } catch (error) {
+        if (goneDuringCopy(error)) return [];
+        throw error;
+      }
+    };
 
     for (const entry of this.resolveIncludedFiles()) {
       // Security: block config.json and secrets regardless of user config
@@ -516,31 +639,35 @@ export class BackupManager {
               console.warn(`[BackupManager] Skipping blocked file in directory copy: ${next.relative}`);
               continue;
             }
-            const stat = fs.lstatSync(next.absolute);
-            if (stat.isSymbolicLink()) continue;
+            const stat = lstatIfPresent(next.absolute);
+            if (stat === null || stat.isSymbolicLink()) continue;
             if (stat.isDirectory()) {
-              for (const child of fs.readdirSync(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
+              for (const child of readdirIfPresent(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
               continue;
             }
             if (!stat.isFile()) continue;
-            const dest = path.join(snapshotDir, next.relative);
-            fs.mkdirSync(path.dirname(dest), { recursive: true });
-            fs.copyFileSync(next.absolute, dest);
-            totalBytes += stat.size;
-            files.push(next.relative);
+            copyOne(next.relative, next.absolute, stat.size);
           }
         }
       } else {
         // Single file
-        if (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile()) {
-          const dest = path.join(snapshotDir, entry);
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.copyFileSync(sourcePath, dest);
-          const stat = fs.statSync(sourcePath);
-          totalBytes += stat.size;
-          files.push(entry);
+        // One stat instead of exists-then-stat, so a file rotated away in between is simply absent.
+        let stat: fs.Stats | null = null;
+        try {
+          stat = fs.statSync(sourcePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
+        if (stat?.isFile()) copyOne(entry, sourcePath, stat.size);
       }
+    }
+
+    // A staged file whose live original went away in the meantime (a write-ahead
+    // log removed when its last connection closed) still belongs to the moment
+    // that was staged. Staging applied every deny layer; they are applied again here.
+    for (const [relative, stagedPath] of staged) {
+      if (copied.has(relative) || isDeniedForBackup(relative)) continue;
+      copyStaged(relative, stagedPath);
     }
 
     const integrityHash = this.computeIntegrityHash(files, totalBytes);
@@ -560,10 +687,140 @@ export class BackupManager {
       JSON.stringify(snapshot, null, 2),
     );
 
-    // Prune old snapshots
-    this.pruneSnapshots();
-
+    if (vanished > 0) console.warn(`[BackupManager] ${vanished} file(s) went away during the copy and are not in snapshot ${id}`);
     return snapshot;
+  }
+
+  /**
+   * A staged entry is only honoured when it is what stageSqliteFiles() produces:
+   * a point-in-time file, addressed by a plain relative path inside the state
+   * directory, whose copy sits directly inside one of this manager's staging
+   * directories. Anything else could write outside the snapshot or carry a file
+   * the include rules never chose.
+   */
+  private isAcceptableStagedEntry(key: string, stagedPath: string): boolean {
+    if (typeof stagedPath !== 'string' || !isPointInTimeFile(key) || isDeniedForBackup(key)) return false;
+    if (path.isAbsolute(key) || stagedKey(key) !== key || key.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) return false;
+    const stagingDir = path.dirname(path.resolve(stagedPath));
+    return path.dirname(stagingDir) === this.backupsDir && path.basename(stagingDir).startsWith(STAGING_DIR_PREFIX);
+  }
+
+  /**
+   * Remove snapshot directories that never got a manifest (the process was
+   * killed mid-copy) once they are older than `olderThanMs`. They are invisible
+   * to listSnapshots() and pruneSnapshots(), so nothing else reclaims them.
+   * The age bound keeps a copy still in progress safe. Returns how many.
+   */
+  sweepAbandonedSnapshots(olderThanMs = 24 * 60 * 60 * 1000, now = Date.now()): number {
+    let removed = 0;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(this.backupsDir, { withFileTypes: true }); } catch { return 0; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !SNAPSHOT_ID_PATTERN.test(entry.name)) continue;
+      const dir = path.join(this.backupsDir, entry.name);
+      try {
+        if (fs.existsSync(path.join(dir, 'manifest.json'))) continue;
+        if (now - fs.statSync(dir).mtimeMs < olderThanMs) continue;
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:sweepAbandonedSnapshots' });
+        removed++;
+      } catch { /* @silent-fallback-ok: an abandoned directory that cannot be removed now is tried again by the next snapshot */ }
+    }
+    return removed;
+  }
+
+  /** Entry-level deny layers (blocked names and blocked prefixes), shared by staging. */
+  private isEntryBlocked(entry: string): boolean {
+    const baseName = path.basename(entry).replace(/\/$/, '');
+    if (BLOCKED_FILES.has(baseName) || BLOCKED_FILES.has(entry)) return true;
+    const folded = path.normalize(entry).toLowerCase();
+    for (const prefix of BLOCKED_PATH_PREFIXES) {
+      if (folded.startsWith(prefix.toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Take point-in-time copies of every SQLite file (database, write-ahead log,
+   * shared-memory file) and the feedback drain checkpoint record in the
+   * included set, for a snapshot whose bulk copy then runs off the main thread.
+   *
+   * Runs synchronously ON the caller's thread, on purpose: nothing in this
+   * process can write to a database between its copy and its log's copy. That
+   * is the guarantee the fully synchronous createSnapshot() gave by blocking
+   * for the whole copy; this keeps it for the handful of files that need it.
+   * Copies are clones where the filesystem supports them (APFS, btrfs, XFS),
+   * so the cost is a few metadata operations rather than the data.
+   *
+   * Returns the staging directory (the caller removes it) and a map of
+   * stateDir-relative path to staged copy, for createSnapshot()'s stagedSources.
+   */
+  stageSqliteFiles(): StagedBackupSources {
+    fs.mkdirSync(this.backupsDir, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(this.backupsDir, STAGING_DIR_PREFIX));
+    const sources: Record<string, string> = {};
+    let index = 0;
+    const stage = (relative: string, absolute: string): void => {
+      if (!isPointInTimeFile(relative) || isDeniedForBackup(relative)) return;
+      const target = path.join(dir, String(index++));
+      try {
+        // A directory that merely has a database-like name is not staged.
+        if (!fs.statSync(absolute).isFile()) return;
+        fs.copyFileSync(absolute, target, fs.constants.COPYFILE_FICLONE);
+        sources[stagedKey(relative)] = target;
+      } catch (error) {
+        // A file that vanished between the listing and the copy is simply not staged.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    };
+    try {
+      for (const entry of this.resolveIncludedFiles()) {
+        if (this.isEntryBlocked(entry)) continue;
+        const sourcePath = path.join(this.stateDir, entry);
+        if (!entry.endsWith('/')) { stage(entry, sourcePath); continue; }
+        const pending = [{ absolute: sourcePath, relative: entry }];
+        while (pending.length > 0) {
+          const next = pending.pop()!;
+          let children: fs.Dirent[];
+          try { children = fs.readdirSync(next.absolute, { withFileTypes: true }); } catch { continue; }
+          for (const child of children) {
+            const relative = path.join(next.relative, child.name);
+            if (isDeniedForBackup(relative)) continue;
+            if (child.isDirectory()) pending.push({ absolute: path.join(next.absolute, child.name), relative });
+            else if (child.isFile()) stage(relative, path.join(next.absolute, child.name));
+          }
+        }
+      }
+    } catch (error) {
+      this.removeStaging(dir);
+      throw error;
+    }
+    return { dir, sources };
+  }
+
+  /** Remove one staging directory. Refuses anything that is not a staging directory of this manager. */
+  removeStaging(dir: string): void {
+    const resolved = path.resolve(dir);
+    if (path.dirname(resolved) !== this.backupsDir || !path.basename(resolved).startsWith(STAGING_DIR_PREFIX)) return;
+    try {
+      SafeFsExecutor.safeRmSync(resolved, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:removeStaging' });
+    } catch { /* @silent-fallback-ok: a staging directory left behind is swept by the next snapshot */ }
+  }
+
+  /** Remove staging directories a crashed run left behind (older than `olderThanMs`). Returns how many. */
+  sweepStaleStaging(olderThanMs = 60 * 60 * 1000, now = Date.now()): number {
+    let removed = 0;
+    let names: string[];
+    try { names = fs.readdirSync(this.backupsDir); } catch { /* @silent-fallback-ok: no readable backups directory means nothing to sweep; the next snapshot sweeps again */ return 0; }
+    for (const name of names) {
+      if (!name.startsWith(STAGING_DIR_PREFIX)) continue;
+      const dir = path.join(this.backupsDir, name);
+      try {
+        if (now - fs.statSync(dir).mtimeMs < olderThanMs) continue;
+      } catch { /* @silent-fallback-ok: a staging directory that vanished mid-sweep needs no removal */ continue; }
+      this.removeStaging(dir);
+      removed++;
+    }
+    return removed;
   }
 
   /**

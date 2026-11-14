@@ -3138,6 +3138,8 @@ function makeMainVerifyPasses(
  * one verify per head, and an `error` re-queues with backoff at most 3 times per
  * head. Pinned worst case: `main` sits on one head and EVERY verify errors
  * (targetAlwaysRejects) ⇒ 1 + 3 = 4 verifies, then nothing, horizon-independent.
+ * (A green PR run on this machine re-arms one more round — decideMainRearmAfterGreen — so the
+ * real bound is per green PR run; this model has no PR runs, so its pinned count is unchanged.)
  */
 const localVerifyMainSchedule: SelfActionController = {
   id: 'local-verify-main-schedule',

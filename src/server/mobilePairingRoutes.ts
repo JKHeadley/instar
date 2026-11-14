@@ -1846,7 +1846,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!isMobileChatEnabled(deps.config)) { res.status(503).json({ error: 'Chat from the app is turned off on this agent.' }); return; }
     const tg = poolCtx?.telegram;
     const ingest = poolCtx?.mobileInbound?.ingest;
-    const ownerId = tg?.getOwnerUserId?.();
+    // The owner the app speaks as: the configured owner, else the one verified operator (the same
+    // answer authority-bearing buttons use). An agent set up without ownerUserId still has an owner.
+    const ownerId = tg?.getVerifiedOwner?.() ?? tg?.getOwnerUserId?.();
     if (!tg || !ingest || !ownerId) { res.status(503).json({ error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' }); return; }
     if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'Messages aren\'t being received right now. Try again shortly or use Telegram.' }); return; }
     const t = Date.now();
