@@ -48,6 +48,8 @@ describe('ThreadlineEndpoints', () => {
     appA = express();
     appA.use(express.json());
     appA.use(createThreadlineRoutes(managerA, null, {
+      directPeerProtocol: () => true, // these tests exercise the opened protocol (threadline-http-peer-trust §0)
+      httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // granted peers (threadline-http-peer-trust §1-§2)
       localAgent: 'agent-a',
       version: '1.0',
       stateDir: stateDirA,
@@ -56,6 +58,8 @@ describe('ThreadlineEndpoints', () => {
     appB = express();
     appB.use(express.json());
     appB.use(createThreadlineRoutes(managerB, null, {
+      directPeerProtocol: () => true, // these tests exercise the opened protocol (threadline-http-peer-trust §0)
+      httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // granted peers (threadline-http-peer-trust §1-§2)
       localAgent: 'agent-b',
       version: '1.0',
       stateDir: stateDirB,
@@ -365,6 +369,8 @@ describe('ThreadlineEndpoints', () => {
       const app = express();
       app.use(express.json());
       app.use(createThreadlineRoutes(abB, router as never, {
+      directPeerProtocol: () => true, // these tests exercise the opened protocol (threadline-http-peer-trust §0)
+        httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // sender is a granted peer (threadline-http-peer-trust)
         localAgent: 'agent-b',
         version: '1.0',
         stateDir: abDirB,
