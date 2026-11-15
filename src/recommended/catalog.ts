@@ -37,7 +37,6 @@ export interface CatalogRow {
 
 const LOCAL_MODEL_SPEC = 'docs/specs/backup-local-model-last-resort.md';
 const OFF_MACHINE_SPEC = 'docs/specs/backup-off-machine-copy.md';
-const VOICE_SPEC = 'docs/specs/backup-on-machine-voice.md';
 
 export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze([
   {
@@ -136,10 +135,9 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     dataLeaves: 'The audio of your voice notes goes to the provider.',
     cost: 'Groq has a limited free tier, and OpenAI charges by the minute. I confirm the price with you first.',
     account: 'An account and key with Groq or OpenAI, which I get myself.',
-    backup: 'Your agent says it can’t read the voice note.',
-    backupStatus: 'gap',
-    gapWhen: 'Nothing can read a voice note without a provider.',
-    gapSpec: VOICE_SPEC,
+    backup: 'Your agent reads voice notes on its own machine with whisper.cpp, free, once it’s installed (I can install it).',
+    backupStatus: 'exercised',
+    drillTest: 'tests/e2e/local-voice-transcription-lifecycle.test.ts',
     setupRecipe: 'voice-v1',
   },
   {

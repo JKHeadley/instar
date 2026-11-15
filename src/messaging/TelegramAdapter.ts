@@ -54,7 +54,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { transcribeAudioFile } from '../core/VoiceTranscription.js';
+import { transcribeAudioFile, transcriptionFailureReason } from '../core/VoiceTranscription.js';
 import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
@@ -4065,13 +4065,16 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts):
-   * the explicit `voiceProvider` config first, then Groq, then OpenAI from the environment.
+   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts): an explicit
+   * `voiceProvider` ("groq", "openai" or "local") first, then a configured paid provider, then
+   * whisper.cpp on this machine (also the fallback when a paid one fails). 60 s budget: updates are
+   * handled one at a time, so a longer wait would hold up every topic.
    */
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
       mediaType: 'audio/ogg',
+      timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
     });
   }
@@ -6567,9 +6570,17 @@ export class TelegramAdapter implements MessagingAdapter {
       durationMs: typeof voice.duration === 'number' ? voice.duration * 1000 : undefined,
     });
 
-    // Transcribe
+    // Transcribe. Only the transcription itself decides the failure path: a later throw (logging, a
+    // callback) must never replace the person's words with "transcription unavailable".
+    let transcript: string | null = null;
+    let transcribeError: unknown = null;
     try {
-      const transcript = await this.transcribeVoice(filepath);
+      transcript = await this.transcribeVoice(filepath);
+    } catch (err) {
+      transcribeError = err;
+    }
+    try {
+      if (transcript === null) throw transcribeError ?? new Error('no transcript');
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
@@ -6622,13 +6633,59 @@ export class TelegramAdapter implements MessagingAdapter {
           console.error(`[telegram] Handler error: ${err}`);
         }
       }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const isNotConfigured = errMsg.includes('No voice transcription provider configured');
-      const replyText = isNotConfigured
-        ? "\ud83c\udfa4 I can't read voice notes yet: no transcription service is set up. Ask me to set up voice transcription and I'll do it, with one yes from you."
-        : `(Voice message received but transcription failed: ${errMsg})`;
-      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, replyText)).catch(() => {});
+    } catch (caught) {
+      if (transcript !== null) {
+        // Transcribed fine; something after it failed. The success path already handled its own errors.
+        console.error(`[telegram] Voice delivery error after transcription: ${caught}`);
+        return;
+      }
+      const err = transcribeError ?? caught;
+      // docs/specs/backup-on-machine-voice.md: the session (not a canned reply) learns a voice note
+      // arrived and why it could not be read, so the agent answers and can offer to fix it. No path in
+      // the text: the file is deleted below as before, and the app's media store already has a copy.
+      const reason = transcriptionFailureReason(err);
+      console.warn(`[telegram] Voice transcription failed: ${err instanceof Error ? err.message : String(err)}`);
+      const content = `[voice] (transcription unavailable: ${escapeTypedPathTags(reason)})`;
+      const message: Message = {
+        id: `tg-${msg.message_id}`,
+        userId: msg.from.id.toString(),
+        content,
+        channel: { type: 'telegram', identifier: topicId.toString() },
+        receivedAt: new Date(msg.date * 1000).toISOString(),
+        metadata: {
+          telegramUserId: msg.from.id,
+          username: msg.from.username,
+          firstName: msg.from.first_name,
+          messageThreadId: topicId,
+          voiceDuration: voice.duration,
+          transcriptionFailed: true,
+          media: [],
+        },
+      };
+      try {
+        this.appendToLog({
+          messageId: msg.message_id,
+          topicId,
+          text: content,
+          fromUser: true,
+          timestamp: new Date(msg.date * 1000).toISOString(),
+          sessionName: this.topicToSession.get(topicId) ?? null,
+          senderName: msg.from.first_name,
+          senderUsername: msg.from.username,
+          telegramUserId: msg.from.id,
+          provenance: 'user',
+        });
+      } catch (e) { console.error(`[telegram] Voice failure log error: ${e}`); } // the session still gets the line
+      if (this.onTopicMessage) {
+        try { this.onTopicMessage(message); } catch (e) { console.error(`[telegram] Topic message handler error: ${e}`); }
+      }
+      if (this.handler) {
+        try { await this.handler(message); } catch (e) { console.error(`[telegram] Handler error: ${e}`); }
+      } else {
+        // No session handler wired: fall back to telling the person directly, in plain words.
+        // @plain-notice-ok: `reason` is one of transcriptionFailureReason's fixed plain phrases, never raw error text
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `\ud83c\udfa4 I couldn't read that voice note: ${reason}.`)).catch(() => {});
+      }
     } finally {
       // Clean up voice file after processing
       try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/messaging/TelegramAdapter.ts:3477' }); } catch { /* ignore */ }

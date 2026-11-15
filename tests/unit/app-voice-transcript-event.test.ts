@@ -241,7 +241,7 @@ describe('storing the server transcript', () => {
     const { svc } = service({ transcribe: async () => { calls++; throw new TranscriptionUnavailableError(); } });
     const ev = await voiceMessage(svc);
     await lines(svc, ev);
-    expect((await lines(svc, ev))[0]).toMatch(/no transcription provider is configured/);
+    expect((await lines(svc, ev))[0]).toMatch(/no transcription service is set up/);
     expect(calls).toBe(1);
   });
 

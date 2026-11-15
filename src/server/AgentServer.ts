@@ -241,7 +241,7 @@ import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
-import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
+import { transcribeAudioFileDetailed, configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
@@ -6614,8 +6614,8 @@ export class AgentServer {
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
             // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
             // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
-            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
-            voiceProviderName: () => resolveTranscriptionProvider({ explicit: configuredVoiceProvider(options.config) })?.name,
+            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFileDetailed(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+            voiceProviderName: () => describeVoiceTranscription({ explicit: configuredVoiceProvider(options.config), cachedOnly: true }).active ?? undefined,
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({

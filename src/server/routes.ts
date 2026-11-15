@@ -365,7 +365,7 @@ import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
-import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
@@ -17282,6 +17282,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
     }
   });
+  // `voiceTranscription.local` (docs/specs/backup-on-machine-voice.md), read on every transcription.
+  registerLocalTranscriptionEnabled(() => localTranscriptionEnabledFromConfig(ctx.config));
+
+  // Which transcriber a voice note on THIS machine would use: paid, whisper.cpp on this machine, or
+  // nothing (and what is missing). Fresh on every call; /capabilities shows the cached copy.
+  router.get('/voice-transcription', (_req, res) => {
+    res.json(describeVoiceTranscription({ explicit: configuredVoiceProvider(ctx.config), noCache: true }));
+  });
+
   // Which doors the second-AI-subscription setup itself listed, so a switch-off takes back only those.
   const doorsAddedFile = path.join(ctx.config.stateDir, 'state', 'recommended-services', 'doors-added-by-setup.json');
   const readDoorsAddedBySetup = (): string[] => {

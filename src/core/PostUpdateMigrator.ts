@@ -1592,7 +1592,9 @@ export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads
 export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
 /** The voice form of increment 2 before server transcripts were stored (refreshed in place on update). */
 export const APP_MEDIA_PREVIOUS_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
-export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
+/** The voice line before on-machine transcription (docs/specs/backup-on-machine-voice.md); refreshed in place. */
+export const APP_MEDIA_V2_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
+export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same transcriber as Telegram voice notes (a Groq or OpenAI key when set up, else whisper.cpp on this machine; see Voice messages and transcription), and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With nothing to transcribe or a failure the line reads `(transcription unavailable: <plain reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
 /**
  * Files sent from the app into a Telegram topic or a Slack conversation (chat-media §4.9,
  * increment 3). Inserted after the "Reply with files" bullet on update (content-sniffed).
@@ -1705,6 +1707,22 @@ Once the person says yes to Email on the Services row (they type the one address
 - One-off from a session: \`POST /email/send-to-owner\` {subject, text} with \`X-Instar-Request: 1\` and the session's \`X-Instar-Bind-Token\`; refused from a conversation with other readers. It is HTTP, outside the MCP external-operation gate: the fixed recipient and the credential guard are its controls.
 - Never take the address or the proof code in chat: send the confirm page link (\`<dashboard>/dashboard/service-yes?service=email\`), where they type the address and later the code with their PIN.
 - **When to use** (PROACTIVE): the person asks to get something by email → if email isn't set up, offer it with that link; if it is, send it, or set the job's \`deliver\`.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for voice transcription, paid and on-machine (docs/specs/backup-on-machine-voice.md).
+ * "messages" in the title files it with messaging in the reference layout. Unique content-sniff marker:
+ * `Voice messages and transcription (`. Kept short on purpose.
+ */
+export function VOICE_TRANSCRIPTION_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Voice messages and transcription (\`GET /voice-transcription\`)
+
+Voice notes from Telegram, the app, Slack and WhatsApp reach me as \`[voice] <transcript>\`. A paid provider (Groq or OpenAI key) is used first when set up; otherwise, and as the fallback when it fails, the free whisper.cpp on this machine reads them (nothing leaves the machine; \`voiceProvider: "local"\` makes it the only one). When one can't be read I get \`(transcription unavailable: <reason>)\` with the plain reason, never a bare "unavailable".
+- Which transcriber this machine uses, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/voice-transcription\` → \`active\`, \`local.state\` (missing / installed-unproven / proven / failed), what is missing, and a plain \`summary\`. It answers for THIS machine only.
+- **Installing it is mine** (free, no account; the person only says yes), on every machine I run on: Mac \`brew install whisper-cpp ffmpeg\`; Linux the same with Homebrew, else the distro's ffmpeg plus a whisper.cpp source build at tag v1.9.5 (\`cmake -B build && cmake --build build -j 2 --config Release\`, copy \`build/bin/whisper-cli\` to \`~/.local/bin\`). Model: download \`https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin\` to \`~/.local/share/instar/models/ggml-base.bin.part\`, check SHA-256 \`60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\`, then rename to \`ggml-base.bin\`. A larger model alongside base needs \`INSTAR_WHISPER_MODEL\`. Then re-read the route.
+- Off switch: \`voiceTranscription.local: false\` in .instar/config.json.
+- **When to use** (PROACTIVE): a voice note arrives as \`(transcription unavailable: ...)\`, or the person asks whether I can hear voice notes → read the route; if local is missing, offer to install it in one plain sentence, and after their yes do it and ask them to resend.
 `;
 }
 
@@ -10989,7 +11007,7 @@ setTimeout(() => process.exit(0), 2000);
     {
       // Two older forms: increment 1 (phone transcripts only) and increment 2 before server
       // transcripts were stored and followed up late (§4.5.1). Each is refreshed once, in place.
-      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE]) {
+      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE, APP_MEDIA_V2_VOICE_LINE]) {
         const staleVoice = `\`[video:<path>]\`, ${prior} Read the file at that path`;
         if (content.includes(staleVoice)) {
           content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
@@ -11414,6 +11432,13 @@ setTimeout(() => process.exit(0), 2000);
       content += EMAIL_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Email messages to the owner section');
+    }
+
+    // Voice transcription (docs/specs/backup-on-machine-voice.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Voice messages and transcription (')) {
+      content += VOICE_TRANSCRIPTION_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Voice messages and transcription section');
     }
 
     // Ecosystem ideas (docs/specs/ecosystem-idea-pipeline.md) — Agent Awareness + Migration Parity.

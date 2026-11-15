@@ -3772,6 +3772,11 @@ export interface ExternalServicePermissions {
 
 export interface InstarConfig {
   /**
+   * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
+   * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
+   */
+  voiceTranscription?: { local?: boolean };
+  /**
    * PR links in outbound replies (src/messaging/prLinkReviewRequest.ts): when a reply links an open PR
    * this agent authored, the reviewer is requested on GitHub and read back before the reply goes out.
    * On by default. `reviewer` is a GitHub login; absent → the repository owner when that owner is a user.

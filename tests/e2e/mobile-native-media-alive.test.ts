@@ -62,6 +62,9 @@ async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: stri
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
     threadline: { ownerName: 'Justin' },
+    // The on-machine transcriber is off here so the honest-unavailable path is tested on any machine
+    // (docs/specs/backup-on-machine-voice.md; tests/e2e/local-voice-transcription-lifecycle.test.ts covers it on).
+    voiceTranscription: { local: false },
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
@@ -165,8 +168,8 @@ describe('media in app conversations — production wiring', () => {
     const note = /\[voice:([^\]]+)\] meet at the pier at noon/.exec(msg)![1]!;
     expect(fs.readFileSync(image).equals(photo)).toBe(true);
     expect(fs.readFileSync(note).equals(voice)).toBe(true);
-    // Increment 2: no phone transcript and no provider ⇒ the path with an honest note.
-    const note2 = /\[voice:([^\]]+)\] \(transcription unavailable: no transcription provider is configured; the audio file is at that path\)/.exec(msg)![1]!;
+    // Increment 2: no phone transcript and nothing to transcribe with ⇒ the path with an honest, plain note.
+    const note2 = /\[voice:([^\]]+)\] \(transcription unavailable: on-machine transcription is switched off, and no transcription service is set up; the audio file is at that path\)/.exec(msg)![1]!;
     expect(fs.readFileSync(note2).equals(voice2)).toBe(true);
     expect(msg).toContain('Photos from today');
 

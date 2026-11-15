@@ -66,7 +66,7 @@ export interface SlackConfig {
    */
   formatMode?: 'mrkdwn' | 'legacy-passthrough';
   /** Audio file transcription provider */
-  audioTranscriptionProvider?: 'groq' | 'openai';
+  audioTranscriptionProvider?: 'groq' | 'openai' | 'local';
   /** Stall detection timeout in minutes (default: 5) */
   stallTimeoutMinutes?: number;
   /** Promise follow-through timeout in minutes (default: 10) */
