@@ -53,14 +53,22 @@ An entry that breaks a rule is left out and reported; the other entries are stil
 written. `tests/unit/awareness-entry-registry.test.ts` fails on a broken entry in
 this folder, which is what keeps one from merging.
 
-## Your trace must list the entry file
+## Commit the entry file through the gate
 
-An entry file lives under `src/`, so the merge-time decision audit requires it in the
-`coveredFiles` of an instar-dev trace on the branch. Write the trace AFTER the entry file
-exists and put the file in `--files` (for a flagged PR: the one whole-PR trace, committed
-last). A PR that forgets passes its full verify and is then refused at merge with
-`decision-audit: uncovered: src/data/awareness/<id>.md`, and needs a push and a second
-verify (two features on 2026-11-15).
+An entry file lives under `src/`, so the merge-time decision audit
+(`scripts/decision-audit-presence-check.mjs`) requires it in a decision record on the branch.
+A decision record (`.instar/instar-dev-decisions/*.json`) is written by the pre-commit gate and
+lists only the files STAGED in that commit. So the entry file must be staged in a commit that
+goes through the gate, with its artifact and a fresh trace that names it. A trace written
+afterwards in a commit that does not stage the entry file does not cover it, and neither does a
+merge commit. A PR that misses this passes its full verify and is then refused at merge with
+`decision-audit: uncovered: src/data/awareness/<id>.md`, and needs a push and a second verify
+(three features on 2026-11-15). Check before you push:
+
+```bash
+BASE_SHA=$(git merge-base HEAD origin/main) HEAD_SHA=$(git rev-parse HEAD) \
+  node scripts/decision-audit-presence-check.mjs
+```
 
 ## Size
 

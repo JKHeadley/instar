@@ -20,7 +20,7 @@ The merge tool and every check it performs. All of that is unchanged.
 
 The size limit on GitHub's answers is raised from about one megabyte to 64. That is far more than any real answer needs and is still a limit.
 
-The author guide for the new one-file instruction entries also gains one paragraph: list your entry file in your change's paperwork. That was the real reason hidden behind the failed read, and a second feature ran into it the same morning.
+The author guide for the new one-file instruction entries also gains one paragraph: save your entry file in a commit that goes through the commit check, and run the merge audit before pushing. That was the real reason hidden behind the failed read, and a second feature ran into it the same morning.
 
 ## Safeguards
 

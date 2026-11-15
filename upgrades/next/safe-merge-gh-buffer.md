@@ -8,7 +8,7 @@
 
 Both `gh` spawns now pass `maxBuffer: GH_MAX_BUFFER_BYTES` (64 MiB, exported). No decision logic changes: the same checks run on the same answers.
 
-`src/data/awareness/README.md` gains a paragraph telling authors to list their entry file in the branch's trace: that is the real refusal the overflow was hiding, and a second feature hit it the same day.
+`src/data/awareness/README.md` gains a paragraph telling authors to commit their entry file through the gate and how to run the audit before pushing: that is the real refusal the overflow was hiding, and a second feature hit it the same day.
 
 ## What to Tell Your User
 
