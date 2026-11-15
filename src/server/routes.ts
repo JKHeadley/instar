@@ -398,7 +398,7 @@ import { runGradePassWithIdleProof } from '../core/JobGradePassIdleVerifier.js';
 import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
-import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, canonicalDecisionPoint, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
 import { CheckInReminderTicker, resolveCheckInTickIntervalMs } from '../monitoring/CheckInReminderTicker.js';
 import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
@@ -2620,6 +2620,7 @@ const REDACTED_PROVENANCE_FIELDS: readonly string[] = [
   'optionsPresented', 'decision', 'reason', 'floor', 'fallbackRung', 'arbiter',
   'model', 'door', 'tokensIn', 'tokensOut', 'latencyMs', 'decisionId', 'outcome',
   'correlationId', 'promptId', 'contentClass', 'mintedBy', 'grade', 'gradedBy', 'ruleId',
+  'producerCorrelationId',
 ];
 function pickRedactedProvenanceFields(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -25537,15 +25538,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const gradingSlackHours = posNum(q.gradingSlackHours, 2);
     const expiryCutoffMs = Date.now() - (evidenceWindowHours + gradingSlackHours) * 3_600_000;
 
-    const stats = ledger.decisionPointStats(sinceHours > 0 ? { sinceHours } : {});
-    const breakdown = ledger.decisionGradeBreakdown(sinceHours > 0 ? { sinceHours } : {});
-    const expired = ledger.countExpiredByPoint({ ...(sinceHours > 0 ? { sinceHours } : {}), expiryCutoffMs });
+    // Rows recorded under a retired decision-point id are repartitioned under
+    // its current id (DECISION_POINT_ALIASES), so a rename keeps its history.
+    const stats = mergeAliasedPointStats(ledger.decisionPointStats(sinceHours > 0 ? { sinceHours } : {}));
+    const breakdown = ledger.decisionGradeBreakdown(sinceHours > 0 ? { sinceHours } : {})
+      .map((r) => ({ ...r, decisionPoint: canonicalDecisionPoint(r.decisionPoint) }));
+    const expired = ledger.countExpiredByPoint({ ...(sinceHours > 0 ? { sinceHours } : {}), expiryCutoffMs })
+      .map((e) => ({ ...e, decisionPoint: canonicalDecisionPoint(e.decisionPoint) }));
     const rollupDays = sinceHours > 0 ? Math.max(1, Math.ceil(sinceHours / 24)) : 0;
-    const rollup = ledger.decisionQualityRollupDaily(rollupDays > 0 ? { sinceDays: rollupDays } : {});
+    const rollup = ledger.decisionQualityRollupDaily(rollupDays > 0 ? { sinceDays: rollupDays } : {})
+      .map((r) => ({ ...r, decisionPoint: canonicalDecisionPoint(r.decisionPoint) }));
     const featureRollup = ledger.byFeature(sinceHours > 0 ? { sinceHours } : {});
 
     const statByPoint = new Map(stats.map((s) => [s.decisionPoint, s]));
-    const expiredByPoint = new Map(expired.map((e) => [e.decisionPoint, e.expired]));
+    const expiredByPoint = new Map<string, number>();
+    for (const e of expired) expiredByPoint.set(e.decisionPoint, (expiredByPoint.get(e.decisionPoint) ?? 0) + e.expired);
     const llmCallsByComponent = new Map(featureRollup.map((f) => [f.feature, f.llmCalls]));
     const brByPoint = new Map<string, typeof breakdown>();
     for (const r of breakdown) {
@@ -48893,3 +48900,28 @@ function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
   }
 }
 
+
+
+/**
+ * Merge per-point decision stats whose stored id is a retired alias into the
+ * current id (CMT-1677). Counts add; attribution labels union.
+ */
+export function mergeAliasedPointStats<T extends { decisionPoint: string; decisions: number; models: string[]; frameworks: string[]; promptIds: string[] }>(
+  stats: T[],
+): T[] {
+  const byPoint = new Map<string, T>();
+  for (const s of stats) {
+    const point = canonicalDecisionPoint(s.decisionPoint);
+    const prior = byPoint.get(point);
+    if (!prior) { byPoint.set(point, { ...s, decisionPoint: point }); continue; }
+    const union = (a: string[], b: string[]): string[] => Array.from(new Set([...a, ...b])).sort();
+    byPoint.set(point, {
+      ...prior,
+      decisions: prior.decisions + s.decisions,
+      models: union(prior.models, s.models),
+      frameworks: union(prior.frameworks, s.frameworks),
+      promptIds: union(prior.promptIds, s.promptIds),
+    });
+  }
+  return [...byPoint.values()];
+}

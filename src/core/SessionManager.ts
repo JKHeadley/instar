@@ -7397,6 +7397,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * D3). Killing it stays allowed. Refusals are logged once per session.
    */
   private confinedWriteRefused(tmuxSession: string, what: string): boolean {
+    const refused = this.confinedWriteRefusedVerdict(tmuxSession, what);
+    // Every tmux write into a session passes this guard first, so an allowed
+    // verdict is the one place that knows input is about to reach the pane.
+    // Signal only (CMT-1677): the prompt-detect outcome observer must not read
+    // a pane changed by our own keys as "progressed without input".
+    if (!refused) {
+      try { this.promptDetector?.noteSessionInput(tmuxSession); } catch { /* @silent-fallback-ok — observation only; never blocks a write */ }
+    }
+    return refused;
+  }
+
+  private confinedWriteRefusedVerdict(tmuxSession: string, what: string): boolean {
     // The D2 startup driver is the ONLY writer allowed into a confined session, and only while it
     // holds the session (from its first capture to `delivered` or `failed`).
     //

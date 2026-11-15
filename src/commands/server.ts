@@ -8822,6 +8822,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         readConfig: () => liveConfig.get('intelligence.jevFirstPrompt', undefined as never),
         provenance: () => _judgmentProvenance,
       });
+      // CMT-1677: bounded pane-outcome observer. InputDetector consults it ONLY
+      // while the Jev prompt-detect point is on (the same dev gate), so the
+      // fleet records nothing new. Outcomes go through the §5.4 chokepoint.
+      const { PromptDetectOutcomeObserver } = await import('../monitoring/PromptDetectOutcomeObserver.js');
+      const { annotateDecisionOutcome } = await import('../core/DecisionQualityRecorderImpl.js');
       const detector = new InputDetector({
         detectionWindowLines: promptGateConfig.detectionWindowLines ?? 50,
         enabled: true,
@@ -8829,6 +8834,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         jevFirst: promptJevFirst,
         getJevPoint: getPromptJevPoint,
         jevState: promptDetectState,
+        outcomeObserver: new PromptDetectOutcomeObserver({ annotate: annotateDecisionOutcome }),
       });
       promptDetector = detector;
 
@@ -36537,6 +36543,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         process.exit(1);
       }
       _shuttingDown = true;
+      // CMT-1677: open pane observations end as observer-lost (unresolved), never silently dropped.
+      try { promptDetector?.disposeOutcomeObserver(); } catch { /* best effort: observation only */ }
       if (localVerifyTimer) { clearInterval(localVerifyTimer); localVerifyTimer = null; }
       try { localVerifyStatus?.stop(); } catch { /* best effort */ }
       try { localVerifyService?.shutdown(); } catch { /* best effort: a restart re-queues lazily */ }
