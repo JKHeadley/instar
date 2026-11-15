@@ -52,5 +52,10 @@
   "tier": 2,
   "tierReasoning": "Untrusted audio into native programs and four inbound channels change; security-sensitive input handling",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot per inbound voice note: ffmpeg + whisper-cli run once per received note (plus at most one local fallback after a failed paid call), never re-triggered by their own outcome; bounded by the caller's budget, one run per machine, queue depth 8"
+  }
 }
