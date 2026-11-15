@@ -92,6 +92,8 @@ Revert the PR and ship a release. There is no data migration: the new wire field
 
 ## Second-pass review
 
+**Reviewer:** independent reviewer subagents, two rounds (a fresh reviewer each round, given the code, not the author's conclusions)
+
 Round 1 (independent subagent) raised a concern with 7 findings:
 1. Command-line matching could kill agent sessions. Fixed: orphan roots only, tmux by socket only.
 2. The swap rule false-positived on the healthy Studio's ~25 % available memory, and the hold could wedge `main`. Fixed: a sustained rate, the 15 % floor, impaired only on thrashing, and the bounded hold.

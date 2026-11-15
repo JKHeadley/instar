@@ -39,5 +39,14 @@
   "tier": 2,
   "tierReasoning": "New authority to end processes and a modified Local Verify start gate; two independent review rounds",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "local-verify-leftover-reaper: a killed pid leaves the process table and the sweep spawns nothing, so emissions are bounded by the finite leftover pool (per-pid 1) at a 10-min cadence; local-verify-memory-notice: open-once per episode, closed only after 10 min fine"
+    }
+  }
 }
