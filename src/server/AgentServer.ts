@@ -4862,6 +4862,9 @@ export class AgentServer {
           // wrapper with no routing surface, so resolving from it would silently disable the
           // general-envelope gate in production while unit tests still passed.
           resolveFramework: buildCompletionClaimFrameworkResolver(options.intelligence),
+          // CMT-1679: exact replay input on the provenance row, live on dev agents and
+          // dark on the fleet (byte-identical rows there). Machine-local, never served.
+          recordReplayInput: resolveDevAgentGate(cfg.recordReplayInput, options.config),
           stateDir: options.config.stateDir,
           enabled: true,
           dryRun: cfg.dryRun !== false,

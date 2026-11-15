@@ -8105,6 +8105,13 @@ export interface MonitoringConfig {
     maxConcurrentPerTopic?: number;
     queueTtlMs?: number;
     redactIdentifiers?: boolean;
+    /**
+     * CMT-1679: record the arbiter's exact replay input (scrubbed message + bounded
+     * evidence) under the provenance row's machine-local `_contentFull`, plus a
+     * content-free prompt sha for parity. Dev-gated: OMITTED from ConfigDefaults so
+     * resolveDevAgentGate decides (live on dev agents, dark on the fleet).
+     */
+    recordReplayInput?: boolean;
   };
   /**
    * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER

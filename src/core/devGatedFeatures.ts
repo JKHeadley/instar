@@ -871,6 +871,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Observe-only v1: never blocks, rewrites, delays, sends, corrects, or authorizes. Every bounded Claude-authored response is eligible; unsupported capacity/PR facts stay unverifiable, uncertainty floors only round upward, provider-bound data is scrubbed under a same-origin door policy, and all corpus rows are automation-ineligible.',
   },
   {
+    name: 'completionClaimReplayInput',
+    configPath: 'monitoring.completionClaimVerification.recordReplayInput',
+    description: 'CMT-1679: record the completion-claim arbiter\'s exact replay input (already-scrubbed message + bounded structural evidence) under the provenance row\'s machine-local _contentFull, with a content-free prompt sha so a later replay can prove byte parity.',
+    justification: 'Observability only: no prompt text, model, timeout, verdict or routeActionClaim input changes. The captured message is the claim-scrub-v1 output already sent to the model; it lives only in the machine-local contextFull (stripped from contextRedacted, never served by GET /judgment-provenance, excluded from the cross-machine allowlist) under the existing 14-day retention. Rows the 64 KB clamp truncates, or whose rebuilt sha differs, are marked not replay-eligible. Off on the fleet, where rows stay byte-identical.',
+  },
+  {
     name: 'classReviewStateSync',
     configPath: 'multiMachine.stateSync.classReview.enabled',
     description: 'Unified correction ClassReview lifecycle reach across the agent machine pool.',

@@ -11677,6 +11677,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Completion-claim failure ledger awareness');
     }
+    if (!content.includes('Completion-claim replay input')) {
+      content += `\n- **Completion-claim replay input.** On development agents (dark on the fleet), each completion-claim decision row in the local judgment provenance log also keeps the exact scrubbed message and bounded tool evidence the verifier judged, under the machine-local \`_contentFull\` field, plus a content-free prompt sha (\`promptSha256\`, \`captureVersion: claim-replay-input-v1\`). That lets a later replay rebuild the same prompt and prove it matches; a row the 64 KB clamp cut, or whose rebuilt sha differs, is not replay-eligible. \`GET /judgment-provenance\` never serves the captured text. **When to use**: asked whether past claim checks can be replayed or graded → read the provenance rows for \`captureVersion\`; never claim a replay matched without the sha check. Switch: \`monitoring.completionClaimVerification.recordReplayInput\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Completion-claim replay input awareness');
+    }
 
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
     // Awareness Standard: an agent that doesn't know its messages pass an LLM
