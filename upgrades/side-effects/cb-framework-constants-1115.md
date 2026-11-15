@@ -49,3 +49,7 @@ Revert the commit.
 - tsc is clean.
 - framework-id-ratchet: 19 of 19 pass.
 - 12 related unit files: 207 tests pass.
+
+## Follow-up commit (2026-11-15 18:36Z)
+
+`src/commands/postDriveTranscriptAudit.ts`: `DEFAULT_FRAMEWORK` now imports `CODEX_CLI_FRAMEWORK` (same value). The `frameworkFacts.ts` doc comment now says that default or fallback engine ids import the constants too. The ratchet baseline drops to 1121. framework-id-ratchet and the post-drive audit test pass (2 files, 27 of 27).

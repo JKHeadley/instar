@@ -1,10 +1,9 @@
 {
-  "total": 1122,
+  "total": 1121,
   "perFile": {
     "src/cli.ts": 1,
     "src/commands/init.ts": 35,
     "src/commands/install.ts": 3,
-    "src/commands/postDriveTranscriptAudit.ts": 1,
     "src/commands/reflect.ts": 3,
     "src/commands/route.ts": 1,
     "src/commands/server.ts": 84,
