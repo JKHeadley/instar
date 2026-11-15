@@ -262,6 +262,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: "Signal-only — only changes the standby MESSAGE TEXT; never gates, blocks, initiates recovery, spends, or egresses. Reuses the existing tail-gated classifyStuckSignature and defers to the same one-voice recovery-ownership checks Tier 3 already honors. Flag-OFF = Tier1/2 byte-identical to today.",
   },
   {
+    name: 'neverSilent',
+    configPath: 'monitoring.neverSilent.enabled',
+    description: 'Never-Silent Conversation (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice: a durable per-message obligation, an overdue sweep, a judge on a DIFFERENT engine (Jev, then a Codex/Claude referee) that names why it is silent, and fixed-template notices that never depend on the judge or the stuck engine.',
+    justification: 'Telling is additive (one deterministic notice per overdue message, deduped and batched per conversation; a standby line already counts). The two actions that change anything — an account swap and an engine move — are separately switched (monitoring.neverSilent.actions / .frameworkFallback, both default false) until the judge is measured against real panes (§3.7); a conversation whose engine the operator chose is asked with one tap, never moved. Judge spend runs only on an overdue message, never on the stuck engine. Flag OFF = byte-identical (nothing recorded, nothing sent).',
+  },
+  {
     name: 'durableOutputScrub',
     configPath: 'monitoring.durableOutputScrub.enabled',
     description: 'Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be Clean") — the DurableOutputScrubber: a deterministic credential-SPAN scrub over LLM output at durable-output persistence chokepoints (session summaries wired first), config-gated + dark-first.',
@@ -944,7 +950,7 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'mobilePairing',
     configPath: 'mobilePairing.enabled',
-    description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',
+    description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes with an optional topicId for a pairing outcome line, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',
     justification: 'Phones never receive the API token or an operator session and may only make a fixed allowlist of signed requests (the one non-idempotent entry, chat, is made idempotent by requestId and never binds the topic operator); a phone becomes active only with a code sent privately to the owner. Dark on the fleet until the development-agent live proof passes.',
   },
   {

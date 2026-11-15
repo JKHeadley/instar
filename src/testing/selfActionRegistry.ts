@@ -66,6 +66,7 @@ import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js
 import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { decideNeverSilentAction } from '../monitoring/neverSilent/NeverSilentPolicy.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
@@ -75,6 +76,7 @@ import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS }
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
+import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
@@ -3168,7 +3170,7 @@ const localVerifyMainSchedule: SelfActionController = {
 const localVerifyMainDebounce: SelfActionController = {
   id: 'local-verify-main-debounce',
   actionVerb: 'retry-main-verify',
-  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; enqueueMain → decideMainEnqueue)',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; while main is suspect or red the debounce is 2 min capped at 10, so the floor on that path is 2 minutes and this model, which passes no health, does not exercise it; enqueueMain → decideMainEnqueue)',
   modelsPath: 'src/localVerify/LocalVerifyService.ts',
   delegatedGiveUp: 'none needed: the debounce cap (30 min) floors head-changed verifies; at most one is ever pending',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so each restart adds at most one head-changed verify; restarts are operator/updater-driven and dampened.' },
@@ -5433,6 +5435,52 @@ const workBoardPickup: SelfActionController = {
   },
 };
 
+/**
+ * never-silent-conversation-recovery — docs/specs/never-silent-conversation.md §3.3. A conversation
+ * owes an answer and stays silent forever under the pinned fixture: every account looks healthy to
+ * the pool, every swap and engine move "succeeds", and the conversation still never answers. The
+ * REAL table (`decideNeverSilentAction`) plus the watcher's per-incident bookkeeping it is fed:
+ * a swap is offered once (`swapTried` after the first), an engine move adds the engine it left to
+ * `triedFrameworks` (the breaker: never back to an engine already tried in the incident), one action
+ * per evidence revision, and status notices deduped per state revision. So the conversation gets at
+ * most one swap, one move and one notice per distinct state, then only "tell" with nothing new to
+ * say. Moving back needs the conversation idle (never, under the fixture).
+ */
+const neverSilentConversationRecovery: SelfActionController = {
+  id: 'never-silent-conversation-recovery',
+  actionVerb: 'conversation-respawn',
+  models: 'src/monitoring/neverSilent/NeverSilentWatcher.ts (decideNeverSilentAction + swapTried + triedFrameworks breaker + per-revision notice dedupe)',
+  modelsPath: 'src/monitoring/neverSilent/NeverSilentWatcher.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The breaker state (swap attempts, engines tried, notices sent) lives in the durable never-silent store, so a restart resets none of it, and nothing in this controller causes a restart.' },
+  boundK: 5, // one swap + one engine move + at most three distinct status notices
+  perTargetBoundK: 5,
+  ticks: 400,
+  tickMs: 15_000, // the sweep interval
+  makeUnderPressure(f, sink) {
+    const TARGET = 'silent-conversation';
+    let stuck = 'engine-a'; // stand-in engine ids: the model is engine-neutral
+    const tried: string[] = [];
+    let swapTried = false;
+    const noticed = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const fallbackEngine = ['engine-b', 'engine-a'].find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
+        const d = decideNeverSilentAction({
+          silenceClass: 'engine-login', confidence: 0.99, truncated: false, actionsSinceMessage: 'none',
+          pinned: false, actionsEnabled: true, frameworkFallbackEnabled: true, confidenceFloor: 0.8,
+          sameEngineHealthy: true, fallbackEngine, swapTried, // the pool always reports a healthy alternate under the fixture
+          protectedSession: false, recentlyRestored: false,
+        });
+        let outcome = '';
+        if (d.action === 'swap') { swapTried = true; outcome = 'refused'; sink.emit({ verb: 'account-swap', target: TARGET }); }
+        else if (d.action === 'fallback' && d.target) { tried.push(stuck); stuck = d.target; outcome = 'succeeded'; sink.emit({ verb: 'conversation-respawn', target: TARGET }); }
+        const revision = `${d.action}|${outcome}`;
+        if (d.action !== 'wait' && !noticed.has(revision)) { noticed.add(revision); sink.emit({ verb: 'notify', target: TARGET }); }
+      },
+    };
+  },
+};
 
 /**
  * local-verify-leftover-reaper: Local Verify's leftover test-process sweep
@@ -5518,7 +5566,56 @@ const localVerifyMemoryNotice: SelfActionController = {
   },
 };
 
+/**
+ * pairing-outcome-notice-retry — docs/specs/mobile-pairing-outcome-notice.md §3.4. The reconciler
+ * retries a decided outcome line (30 s doubling, 5 min cap) only inside the 1 h window after it was
+ * decided, then fails it and upserts one attention item per topic (30 s doubling, 10 min cap), giving
+ * up after MAX_ESCALATION_ATTEMPTS per process with one report. Under a target that always rejects
+ * both, the count settles at 15 sends + 12 upserts, horizon-independent.
+ */
+const pairingOutcomeNoticeRetry: SelfActionController = {
+  id: 'pairing-outcome-notice-retry',
+  actionVerb: 'retry',
+  models: 'src/core/PairingOutcomeWatches.ts (sendDue within SEND_WINDOW_MS + escalateFailed with MAX_ESCALATION_ATTEMPTS)',
+  modelsPath: 'src/core/PairingOutcomeWatches.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The send window is measured from the persisted decidedAt, so a restart cannot extend it; the upsert counter is per process, so each boot adds at most 12 attempts per topic.' },
+  boundK: 15 + MAX_ESCALATION_ATTEMPTS,
+  perTargetBoundK: 15,
+  ticks: 24 * 120,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const decidedAt = f.clock.nowMs();
+    let sendAttempts = 0, nextSendAt = decidedAt, failed = false;
+    let escAttempts = 0, nextEscAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!f.targetAlwaysRejects()) return;
+        if (!failed && now >= nextSendAt) {
+          if (now - decidedAt > PAIRING_SEND_WINDOW_MS) { failed = true; }
+          else {
+            sink.emit({ verb: 'retry', target: 'pairing-outcome-send' });
+            sink.emitTimesMs.push(now);
+            sendAttempts += 1;
+            const next = now + sendRetryDelayMs(sendAttempts);
+            if (next - decidedAt > PAIRING_SEND_WINDOW_MS) failed = true; else nextSendAt = next;
+          }
+        }
+        if (failed && escAttempts < MAX_ESCALATION_ATTEMPTS && now >= nextEscAt) {
+          sink.emit({ verb: 'retry', target: 'pairing-outcome-attention' });
+          sink.emitTimesMs.push(now);
+          escAttempts += 1;
+          nextEscAt = now + escalationRetryDelayMs(escAttempts);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  pairingOutcomeNoticeRetry,
+  neverSilentConversationRecovery,
   localVerifyLeftoverReaper,
   localVerifyMemoryNotice,
   graphSourceSweepCheckpointRetry,
