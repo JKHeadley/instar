@@ -56,3 +56,7 @@ Revert the PR's merge commit, which takes the feature (dark by default) out whol
 ## Tests
 
 Local Verify at 88736f8024: unit 67933 tests, integration 7313, e2e 4167, all with 0 failed.
+
+## Follow-up (2026-11-15 18:40Z)
+
+The awareness entry now says the document routes answer `503 documents-off` while the switch is off (matches `documentRoutes.ts`). This commit stages the entry file so its decision record covers it.
