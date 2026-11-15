@@ -68,6 +68,8 @@ export interface WorkBoardRouteDeps {
   /** Persist a settings change (live config); returns false on failure. */
   saveSettings: (patch: Record<string, unknown>) => boolean;
   log?: (event: string, detail: Record<string, unknown>) => void;
+  /** Receives the board read (as a status and body) so the Needs-you read can ask it as the same caller. */
+  exposeBoardRead?: (read: (req: Request) => { status: number; body: unknown }) => void;
 }
 
 function disabled(res: Response): void { res.status(503).json({ error: 'work-board-disabled' }); }
@@ -115,17 +117,25 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
 
   // ── reads ──────────────────────────────────────────────────────────────────
 
-  const listBoard = (req: Request, res: Response) => {
-    const svc = gate(res); if (!svc) return;
+  /** The board as this request's caller sees it, as a status and a body (the Needs-you read uses it too). */
+  const boardRead = (req: Request): { status: number; body: unknown } => {
+    if (!deps.enabled()) return { status: 503, body: { error: 'work-board-disabled' } };
+    const svc = deps.svc();
+    if (!svc) return { status: 503, body: { error: 'work-board-starting' } };
     const c = deps.caller(req);
-    if (c.kind === 'session') { res.status(403).json({ error: 'scoped-session-reads-its-own-card-only' }); return; }
+    if (c.kind === 'session') return { status: 403, body: { error: 'scoped-session-reads-its-own-card-only' } };
     const viewer = viewerFor(c);
-    if (!viewer) { res.status(401).json({ error: 'unauthorized' }); return; }
-    const donePage = Number.parseInt(String(req.query.donePage ?? '0'), 10) || 0;
+    if (!viewer) return { status: 401, body: { error: 'unauthorized' } };
+    const donePage = Number.parseInt(String(req.query?.donePage ?? '0'), 10) || 0;
     const board = boardJson(svc, viewer, (ck) => c.kind === 'device' && c.mayRead(ck), deps.displayName, { softOpenCards: deps.settings().softOpenCards, donePage, extraFor: extraFor(svc) });
     const ctl = deps.controller();
     // `viewer.canTap`: the team owner (a phone proves each tap with Face ID; the console with the PIN).
-    res.json({ ...board, viewer: { isOwner: viewer.isOwner || c.kind === 'bearer', canTap: viewer.isOwner || c.kind === 'bearer' }, ...(viewer.isAgent || viewer.isOwner ? { pickups: ctl?.status() ?? null } : {}), behind: deps.behind(), settings: viewer.isOwner || viewer.isAgent ? deps.settings() : undefined });
+    return { status: 200, body: { ...board, viewer: { isOwner: viewer.isOwner || c.kind === 'bearer', canTap: viewer.isOwner || c.kind === 'bearer' }, ...(viewer.isAgent || viewer.isOwner ? { pickups: ctl?.status() ?? null } : {}), behind: deps.behind(), settings: viewer.isOwner || viewer.isAgent ? deps.settings() : undefined } };
+  };
+  deps.exposeBoardRead?.(boardRead);
+  const listBoard = (req: Request, res: Response) => {
+    const r = boardRead(req);
+    res.status(r.status).json(r.body);
   };
   router.get('/work-board', listBoard);
   router.get('/mobile/work-board', listBoard);

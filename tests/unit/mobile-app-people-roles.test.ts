@@ -397,7 +397,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 31: conversation-pinned-messages opened the app and Telegram pin list (guest) and pin/unpin (member).
     // 32: work-board-asks §7 opened GET /mobile/work-board to guests; the handler shows only the cards whose conversation that person may read.
     // 33: conversation-list-pins opened POST /mobile/conversations/pins to guests (it orders the person's own list).
-    expect(open).toBe(33);
+    // 34: work-front-doors (decision 2) opened GET /mobile/needs to guests; the route filters per viewer (only the board, as that person reads it).
+    expect(open).toBe(34);
   });
 
   it.each([

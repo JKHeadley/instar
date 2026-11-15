@@ -139,7 +139,7 @@ class ChatsPage {
   }
 
   // ── Chief of Staff (chief-of-staff-topic.md §1.4/§5): what its projects need from the owner leads this page,
-  // in place, with the action (open the Chief of Staff conversation). Same rows as Home's count (needs-model.js).
+  // in place, with the action (open the Chief of Staff conversation). Same rows as the Needs-you list (needs-model.js).
   async loadChiefOfStaffNeeds() {
     this.cosNeeds = []; this.cosRef = null;
     try {

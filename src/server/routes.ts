@@ -53,6 +53,7 @@ import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } fr
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
 import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
@@ -3116,8 +3117,38 @@ export function createRoutes(ctx: RouteContext): Router {
     holdsLease: () => ctx.workBoard?.()?.holdsLease() ?? true,
     saveSettings: (patch) => ctx.workBoard?.()?.saveSettingsPatch(patch) ?? false,
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
+    exposeBoardRead: (read) => { workBoardReadAs = read; },
   };
+  let workBoardReadAs: ((req: import('express').Request) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
+  // The Needs-you list (docs/specs/work-front-doors.md decision 2): one read for the console, the phones and
+  // the Mac app, built from Home's own sources over this server's loopback, filtered per viewer.
+  const needsSelfRead = async (p: string, timeoutMs = NEEDS_READ_TIMEOUT_MS): Promise<{ status: number; body: unknown }> => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${ctx.config.port}${p}`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body is a failed source, shown as "could not check"
+    } catch { return { status: 0, body: null }; } // @silent-fallback-ok — no answer is a failed source, shown as "could not check"
+  };
+  // The canary (rule 43): a synthetic need through the real read every hour; two misses in a row raise one notice.
+  const needsCanary = new NeedsCanary({
+    read: (p) => needsSelfRead(p, NEEDS_CANARY_READ_TIMEOUT_MS),
+    notice: (why) => DegradationReporter.getInstance().report({ feature: 'NeedsYou.canary', primary: 'Show everything that needs the person in one list', fallback: 'Each page still shows its own needs; the list may be missing some.', reason: `The Needs-you canary missed twice: ${why}.`, impact: 'The Needs-you list on the console and the apps may be incomplete or failing.' }),
+  });
+  setTimeout(() => {
+    void needsCanary.tick();
+    setInterval(() => { void needsCanary.tick(); }, NEEDS_CANARY_INTERVAL_MS).unref();
+  }, NEEDS_CANARY_FIRST_DELAY_MS).unref();
+  mountNeedsRoutes(router, {
+    canary: needsCanary,
+    read: (p) => needsSelfRead(p),
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),
+    agentName: () => ctx.config.projectName ?? null,
+    machineId: () => ctx.meshSelfId ?? null,
+  });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
     verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
