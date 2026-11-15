@@ -88,3 +88,7 @@ Concur: nothing is hidden on a guess; newest-first ordering holds (`createdAt DE
 ## Class-Closure Declaration (display-only mirror)
 
 `defectClass: unbounded-self-action`, `closure: n/a` — reason: the change adds no new self-triggered emit; it SUPPRESSES one notice and performs one silent row close per failed/refused episode per process (bounded by the episode list, ≤500, and an in-process set), never a restart/spawn/notify/retry.
+
+## Framework-name ratchet (2026-11-14, after rebase onto main)
+
+Main gained a framework-id literal ratchet today. This PR's SubscriptionReloginAttention.ts named Codex with a framework-id literal; it now reads the plain engine name from the shared FRAMEWORK_DISPLAY_NAMES table (trailing " CLI" dropped, so the message text is unchanged for Codex and Claude Code). Unknown engines still read "Claude Code"; Gemini/Grok now get their own name. Ratchet clean at 1135; relogin tests pass.

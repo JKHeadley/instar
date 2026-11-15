@@ -18,6 +18,7 @@
  */
 
 import type { SubscriptionReloginEpisode } from './SubscriptionReloginStore.js';
+import { FRAMEWORK_DISPLAY_NAMES } from './IdentityRenderer.js';
 
 export interface SubscriptionReloginAttentionDeps {
   getEpisode: (id: string) => SubscriptionReloginEpisode | null;
@@ -80,7 +81,8 @@ export function clearRecoveredReloginAttention(
   episode: Pick<SubscriptionReloginEpisode, 'id' | 'accountId' | 'machineId' | 'framework'>,
   clear: AttentionConditionClear,
 ): number {
-  const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
+  // Plain engine name from the shared table (no framework-id literal here: framework-name ratchet).
+  const doorway = (FRAMEWORK_DISPLAY_NAMES[episode.framework] ?? 'Claude Code').replace(/ CLI$/, '');
   const resolution = `${doorway} subscription is signed in again (verified on this machine); the earlier repair failure no longer needs you`;
   let closed = clear({ conditionKey: subscriptionReloginConditionKey(episode) }, resolution).closed;
   closed += clear({ idPrefix: `subscription-relogin-${episode.id}-` }, resolution).closed;

@@ -28,3 +28,5 @@ Two separate gaps:
 ## What the reader needs to decide
 
 Nothing. This is a small, reversible fix to one producer of Attention items; reverting the change restores the old behaviour.
+
+**Update (2026-11-14):** the engine name in the closing note now comes from the shared list of engine names. The wording you see is the same.
