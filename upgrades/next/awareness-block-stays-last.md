@@ -1,8 +1,12 @@
-<!-- internal-only -->
 ## What Changed
-
-The step that adds the "Context-Death Self-Stop" anti-pattern note to CLAUDE.md now puts it before the "Feature notes" block instead of after it. Before, an agent whose CLAUDE.md had no "Critical Anti-Patterns" section got a file that changed on every update, once the first feature notes existed.
+The update step that adds the "Context-Death Self-Stop" note to an agent's CLAUDE.md now places it before the "Feature notes" block (awareness entry registry, `docs/specs/awareness-entry-registry.md`), not after it. Before this, an agent whose CLAUDE.md had no "Critical Anti-Patterns" section got a file that changed on every update once the first feature notes existed. Documents without a feature-notes block are written exactly as before.
 
 ## What to Tell Your User
+Nothing to do. Your agent's instruction file now stays the same from one update to the next, instead of shuffling a section around each time.
 
-Nothing. This is an internal fix to how updates write the agent's instructions.
+## Summary of New Capabilities
+- None. A placement fix in the update step.
+
+## Evidence
+- `tests/unit/awareness-block-stays-last.test.ts` (section created before the block, insert into a last section without entering the block, second run is a no-op, no-block documents unchanged).
+- `tests/unit/PostUpdateMigrator-org-intent-runtime.test.ts` and `tests/unit/mobile-native-capacity-screens-claudemd.test.ts` pass on a branch with a real registry entry (#3053), where they failed before.
