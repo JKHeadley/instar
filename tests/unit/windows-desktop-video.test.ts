@@ -57,6 +57,8 @@ describe('Windows desktop video switch', () => {
     expect(new WindowsDesktopHost(endpoint, secret).captureH264).toBeUndefined();
     expect(new WindowsDesktopHost(endpoint, secret, fetch, 2_000, { video: false }).captureH264).toBeUndefined();
     expect(typeof new WindowsDesktopHost(endpoint, secret, fetch, 2_000, { video: true }).captureH264).toBe('function');
+    expect(new WindowsDesktopHost(endpoint, secret, fetch, 2_000, { video: true }).videoFrameIntervalMs).toBe(50);
+    expect(new WindowsDesktopHost(endpoint, secret).videoFrameIntervalMs).toBeUndefined();
   });
 });
 

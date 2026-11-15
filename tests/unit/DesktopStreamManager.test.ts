@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { DesktopStreamManager, type DesktopStreamSession } from '../../src/server/DesktopStreamManager.js';
+import { DesktopStreamManager, desktopFrameIntervalMs, type DesktopStreamSession } from '../../src/server/DesktopStreamManager.js';
 
 describe('DesktopStreamManager', () => {
   const servers: http.Server[] = [];
@@ -25,6 +25,38 @@ describe('DesktopStreamManager', () => {
     const ws = new WebSocket(`ws://127.0.0.1:${address.port}/desktop-stream`);
     return { ws, manager };
   }
+
+  it('keeps the 15-a-second pace unless a session asks for faster, bounded to 20 a second', () => {
+    expect(desktopFrameIntervalMs(undefined)).toBe(67);
+    expect(desktopFrameIntervalMs(Number.NaN)).toBe(67);
+    expect(desktopFrameIntervalMs(50)).toBe(50);
+    expect(desktopFrameIntervalMs(10)).toBe(50);
+    expect(desktopFrameIntervalMs(200)).toBe(67);
+  });
+
+  async function picturesIn(ms: number, frameIntervalMs?: () => number | undefined): Promise<number> {
+    let captures = 0;
+    const { ws } = await connect(async () => ({
+      grantId: `pace-${Math.random()}`, assertActive: async () => {},
+      captureEncrypted: async () => { captures++; return Buffer.alloc(32, 1); },
+      ...(frameIntervalMs ? { frameIntervalMs } : {}),
+      decryptCommand: data => JSON.parse(data.toString()), input: async () => {},
+      revoke: async () => {}, release: () => {},
+    }));
+    await once(ws, 'open');
+    const before = captures;
+    await new Promise(resolve => setTimeout(resolve, ms));
+    const counted = captures - before;
+    ws.close();
+    return counted;
+  }
+
+  it('asks a faster video session for pictures more often than the default', async () => {
+    const [standard, faster] = await Promise.all([picturesIn(1_000), picturesIn(1_000, () => 50)]);
+    expect(standard).toBeLessThanOrEqual(16);
+    expect(faster).toBeGreaterThan(standard);
+    expect(faster).toBeLessThanOrEqual(21);
+  });
 
   it('refuses the upgrade when target admission fails', async () => {
     const { ws } = await connect(async () => { throw new Error('denied'); });

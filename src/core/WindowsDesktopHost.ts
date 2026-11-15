@@ -35,6 +35,8 @@ export class WindowsDesktopHost implements DesktopHost {
    * DirectDesktopAccess falls back to pictures for the session on any failure. */
   captureH264?: (forceKeyframe: boolean) => Promise<DesktopH264Frame | null>;
   private videoEmptySince: number | null = null;
+  /** The companion captures up to 20 pictures a second; ask that often for video. */
+  videoFrameIntervalMs?: number;
 
   constructor(private readonly endpoint: string, private readonly secret: Buffer,
     private readonly send: typeof fetch = fetch,
@@ -47,7 +49,10 @@ export class WindowsDesktopHost implements DesktopHost {
       throw new Error('windows-desktop-companion-config-invalid');
     }
     this.now = options.now ?? Date.now;
-    if (options.video === true) this.captureH264 = forceKeyframe => this.captureVideo(forceKeyframe);
+    if (options.video === true) {
+      this.captureH264 = forceKeyframe => this.captureVideo(forceKeyframe);
+      this.videoFrameIntervalMs = 50;
+    }
   }
 
   /** One access unit from the companion's live encoder, or null when it has no

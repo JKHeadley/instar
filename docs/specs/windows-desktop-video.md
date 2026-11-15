@@ -47,8 +47,12 @@ Windows session stayed on JPEG.
 4. **Switch** `remoteDesktop.windowsVideo.enabled`: explicit value wins; omitted ⇒ on for
    a `developmentAgent`, off on the fleet (`resolveWindowsDesktopVideo`).
 
-Input, lock, PIN, banner, grant and Stop paths are unchanged. The stream manager's
-15-per-second ceiling and 10 Mbps budget are unchanged.
+5. **Pace**: `DesktopStreamSession.frameIntervalMs` (bounded 50-67 ms) lets a live H.264
+   session be polled faster than the default 15/s; `DirectDesktopAccess` returns the host's
+   `videoFrameIntervalMs` only while the session is on H.264, and the Windows host declares 50 ms
+   (its companion captures up to 20/s). Every other session keeps 67 ms.
+
+Input, lock, PIN, banner, grant and Stop paths are unchanged. The 10 Mbps budget is unchanged.
 
 ## Compatibility
 

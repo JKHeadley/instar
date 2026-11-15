@@ -14,6 +14,7 @@ The Windows desktop companion (`src/native/remote-desktop/windows/InstarDesktopC
 - `resolveWindowsDesktopVideo` (new) — add — a configuration switch (explicit setting, else development agent); it chooses a codec path, it does not block or allow any action.
 - Companion `capture-h264` admission — pass-through — reuses the existing HMAC, replay, lease-ownership and interactive-desktop checks of `capture`, verbatim.
 - `DirectDesktopAccess` h264→JPEG downgrade — pass-through — unchanged.
+- `DesktopStreamManager` picture pace — modify — optional, bounded per-session pace (`desktopFrameIntervalMs`), a rate setting, not a gate.
 
 ---
 
@@ -44,7 +45,7 @@ No competing-signals decision point added.
 - Stall safety: a stream asked for pictures that produces none for 3 s (after a 6 s start-up allowance) fails, and the WSL host treats 5 s of empty replies as a failure, so a session falls back to JPEG instead of freezing. A produced picture that cannot be packaged forces the next keyframe. The encoder's activation object is shut down on stop, releasing a hardware encoder session at once.
 - Capture is paced to at most 20 grabs a second, buffers rotate without copying under the lock, and the area is capped at the JPEG path's 33,177,600 pixels.
 - The relay's picture lane carries both `capture` and `capture-h264`; input stays on its own lane.
-- `DesktopStreamManager` pacing (15/s), byte budget (10 Mbps) and keyframe-on-drop behaviour are unchanged. Rate control is quality-based (quality 70): measured on Mama PC's real screen at 1728x1080, a still screen costs ~170 bytes a picture and a fast full-screen scroll averaged ~22 KB (2.6 Mbps, max ~31 KB) against constant bitrate's 33-37 KB at any content; keyframes ~110-200 KB, far under the 1.25 MB frame cap.
+- `DesktopStreamManager` gains an optional per-session pace (`frameIntervalMs`, bounded 50-67 ms, i.e. 15-20 pictures a second). Only a live H.264 session on a host that declares `videoFrameIntervalMs` uses it: the Windows host declares 50 ms because its companion captures up to 20 a second. Mac, Linux and every JPEG session keep 67 ms. Measured before this: Mama's server sent 14.2 pictures a second with 12 ms of Windows-side work each, so the stream's own ceiling was the limit. Byte budget (10 Mbps) and keyframe-on-drop behaviour are unchanged. Rate control is quality-based (quality 70): measured on Mama PC's real screen at 1728x1080, a still screen costs ~170 bytes a picture and a fast full-screen scroll averaged ~22 KB (2.6 Mbps, max ~31 KB) against constant bitrate's 33-37 KB at any content; keyframes ~110-200 KB, far under the 1.25 MB frame cap.
 - Banner, lease, `SetThreadExecutionState`, DPI awareness: untouched.
 
 ## 6. External surfaces

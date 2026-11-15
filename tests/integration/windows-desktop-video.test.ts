@@ -88,6 +88,7 @@ describe('Windows Remote Desktop video through the session authority', () => {
     const fake = companion(true);
     const host = new WindowsDesktopHost(endpoint, secret, fake.send, 2_000, { video: true });
     const { stream, decrypt } = await openStream(host);
+    expect(stream.frameIntervalMs?.()).toBe(50); // video asks for up to 20 pictures a second
     const first = decrypt((await stream.captureEncrypted())!);
     expect(first.subarray(0, 6)).toEqual(Buffer.from('IDV1\x01\x01', 'latin1')); // AVC, keyframe
     expect([first.readUInt16BE(6), first.readUInt16BE(8)]).toEqual([1728, 1080]);
@@ -111,6 +112,7 @@ describe('Windows Remote Desktop video through the session authority', () => {
     expect(decrypt((await stream.captureEncrypted())!)).toEqual(JPEG);
     stream.frameQueued?.();
     await stream.captureEncrypted();
+    expect(stream.frameIntervalMs?.()).toBeUndefined(); // pictures keep the default pace
     // One video attempt, then pictures only: no retry storm against an old companion.
     expect(fake.ops.filter(op => op === 'capture-h264')).toHaveLength(1);
     expect(fake.ops.filter(op => op === 'capture').length).toBeGreaterThanOrEqual(1);
@@ -123,6 +125,7 @@ describe('Windows Remote Desktop video through the session authority', () => {
     const { stream, decrypt } = await openStream(host);
     expect(decrypt((await stream.captureEncrypted())!)).toEqual(JPEG);
     expect(fake.ops).not.toContain('capture-h264');
+    expect(stream.frameIntervalMs?.()).toBeUndefined();
     stream.release('terminal');
   });
 });
