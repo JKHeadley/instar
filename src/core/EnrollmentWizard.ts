@@ -35,6 +35,15 @@ import { validateEnrolledAccountEmail } from './AccountFollowMeEmailGate.js';
 import { ensureAgentOwnedMemory } from './AgentOwnedMemory.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
+/**
+ * The one place this file names the Claude engine. Both Claude-only steps (the already-signed-in
+ * completion and the post-completion readiness seeding) ask this, so the framework-id ratchet
+ * (scripts/lint-framework-name-ratchet.mjs) sees a single literal here.
+ */
+function isClaudeCodeLogin(login: Pick<PendingLogin, 'framework'>): boolean {
+  return login.framework === 'claude-code';
+}
+
 /** The public artifact a framework login yields (no secret). */
 export interface LoginArtifact {
   verificationUrl: string;
@@ -434,7 +443,7 @@ export class EnrollmentWizard {
     deps: AlreadySignedInDeps,
     reason: 'expired' | 'restart' | 'dead-pane',
   ): Promise<boolean> {
-    if (login.framework !== 'claude-code') return false;
+    if (!isClaudeCodeLogin(login)) return false;
     if (!login.expectedEmail || !login.configHome || !this.oracle) return false;
     if (this.completionSweepInFlight.has(login.id)) return false;
     let healthy = false;
@@ -515,7 +524,7 @@ export class EnrollmentWizard {
   }
 
   private ensureCompletedLoginReady(login: PendingLogin | null): void {
-    if (login && login.framework === 'claude-code' && login.configHome) {
+    if (login && isClaudeCodeLogin(login) && login.configHome) {
       const ready = this.ensureReady(login.configHome);
       if (ready.patched) {
         this.logger.log(`[EnrollmentWizard] made ${login.configHome} interactive-ready (${ready.reason})`);
