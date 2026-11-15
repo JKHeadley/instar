@@ -19,3 +19,7 @@ Pasted text is saved on the machine where the conversation runs, so this panel o
 ## What you need to decide
 
 Nothing. This is a small screen addition that a revert fully undoes.
+
+## Every warning has a way to act
+
+When a paste is refused (pasting switched off, too many pastes in a minute, the server not answering, or any other refusal), the message under the Send button now ends with "Ask the agent about this". That link opens Sessions with the question already written, and the pasted text stays in the box to send again. A paste waiting for a session points to Recent pastes, where it can be deleted. A mistake in the input, such as an empty box, gets no link, because the fix is the box right above the message.

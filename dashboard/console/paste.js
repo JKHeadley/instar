@@ -9,7 +9,7 @@ import {
   countWords, keptWords, pasteTargets, targetWords, pasteBody, pasteResultWords, buildRecent, recentHead,
   DELETE_CONFIRM, deleteResultWords, pasteEvent, LABEL_MAX,
 } from './paste-model.js';
-import { el, setKids, sheet, closeSheet, note } from './ui.js';
+import { el, setKids, sheet, closeSheet, note, askLink } from './ui.js';
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -69,14 +69,20 @@ export function openPasteSheet(api) {
   pick.addEventListener('change', () => { result.textContent = ''; result.removeAttribute('data-tone'); syncTarget(); });
   text.addEventListener('input', () => { counts.textContent = countWords(text.value); });
 
-  const show = (w) => { result.textContent = w.text; result.setAttribute('data-tone', w.tone || 'ok'); };
+  // A warning result always carries a way to act: the shared "Ask the agent about this" link (the text stays in the box to send again).
+  const show = (w, { ask = true } = {}) => {
+    result.textContent = w.text;
+    result.setAttribute('data-tone', w.tone || 'ok');
+    if (ask && (w.tone === 'attn' || w.tone === 'bad')) result.append(' ', askLink(`Paste to a session: ${w.text}`));
+  };
   let lastPasteId = null;
 
   go.addEventListener('click', async () => {
     const c = choice();
     if (c && c.kind === 'remote') { openRemote(c); return; }
     const req = pasteBody({ text: text.value, label: label.value, choice: c });
-    if (!req.ok) { show({ text: req.problems.join(' '), tone: 'bad' }); return; }
+    // warning-exempt: an input problem with the text or the target, fixed in the boxes right above it
+    if (!req.ok) { show({ text: req.problems.join(' '), tone: 'bad' }, { ask: false }); return; }
     go.disabled = true; show({ text: 'Sending…', tone: 'unknown' });
     const x = await call('POST', '/pastes', req.body);
     const w = pasteResultWords(x.status, x.data, { titleOf });

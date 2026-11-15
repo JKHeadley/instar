@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "console-paste-sheet-warning-paths",
+  "sessionId": "281a0ff5-07f5-4b12-a1fe-e89b1451fdc4",
+  "timestamp": "2026-11-15T14:20:57.372Z",
+  "artifactPath": "upgrades/side-effects/console-paste-sheet-warning-paths.md",
+  "artifactSha256": "f35628915e911b2905ced014724507deaad4dbcf8fc21f77b4548d9ede0430af",
+  "coveredFiles": [
+    "dashboard/console/paste-model.js",
+    "dashboard/console/paste.js",
+    "docs/specs/console-native-paste-sheet.eli16.md",
+    "tests/unit/console-paste-sheet.test.ts",
+    "upgrades/side-effects/console-paste-sheet-warning-paths.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "adds an ask link to paste sheet warnings; display only, a revert undoes it",
+  "eli16Path": "docs/specs/console-native-paste-sheet.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-paste-sheet-warning-paths.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

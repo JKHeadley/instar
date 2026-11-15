@@ -202,7 +202,9 @@ describe('paste in a DOM', () => {
     text.value = 'second';
     (q('.sheet button[data-paste-send]') as HTMLButtonElement).click();
     await flush(5);
-    expect(q('.sheet .paste-result').textContent).toBe('Not sent: Paste exceeds 10MB limit. Your text is still here.');
+    expect(q('.sheet .paste-result').textContent).toBe('Not sent: Paste exceeds 10MB limit. Your text is still here. Ask the agent about this');
+    // The refusal carries a way to act: the shared ask link, which opens Sessions with the question ready.
+    expect((q('.sheet .paste-result a.ask-link') as HTMLAnchorElement).getAttribute('href')).toMatch(/^#\/work\/sessions\?ask=/);
     expect(text.value).toBe('second');
 
     // Recent opens; Delete asks once, then removes it.

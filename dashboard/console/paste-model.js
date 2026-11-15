@@ -98,12 +98,17 @@ export function pasteResultWords(status, data, { titleOf } = {}) {
       const who = (titleOf && titleOf(d.sessionName)) || d.sessionName || 'the session';
       return { state: 'delivered', tone: 'ok', pasteId: d.pasteId || null, text: `Delivered ${chars} to ${who}.` };
     }
+    // warning-path: row
     return { state: 'waiting', tone: 'attn', pasteId: d.pasteId || null, text: `No session was ready; the ${chars} will be delivered when one starts. It stays in Recent pastes until then.` };
   }
+  // warning-path: askLink
   if (status === 503) return { state: 'failed', tone: 'bad', text: 'Not sent: pasting is switched off on this agent. Your text is still here.' };
+  // warning-path: askLink
   if (status === 429) return { state: 'failed', tone: 'bad', text: 'Not sent: too many pastes in the last minute. Wait a moment and send again; your text is still here.' };
+  // warning-path: askLink
   if (status === 0) return { state: 'failed', tone: 'bad', text: 'Not sent: the server could not be reached. Your text is still here.' };
   const why = d.message || d.error;
+  // warning-path: askLink
   return { state: 'failed', tone: 'bad', text: why ? `Not sent: ${String(why).replace(/\.$/, '')}. Your text is still here.` : `Not sent: the server answered ${status}. Your text is still here.` };
 }
 
@@ -111,6 +116,7 @@ export function pasteResultWords(status, data, { titleOf } = {}) {
 export function statusWords(status) {
   if (status === 'notified') return { text: 'delivered', tone: 'ok' };
   if (status === 'acknowledged') return { text: 'read by the session', tone: 'ok' };
+  // warning-path: row
   if (status === 'written' || status === 'queued') return { text: 'waiting for a session', tone: 'attn' };
   return { text: status ? `status unknown (${status})` : 'status unknown', tone: 'unknown' };
 }
