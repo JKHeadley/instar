@@ -53,6 +53,15 @@ An entry that breaks a rule is left out and reported; the other entries are stil
 written. `tests/unit/awareness-entry-registry.test.ts` fails on a broken entry in
 this folder, which is what keeps one from merging.
 
+## Your trace must list the entry file
+
+An entry file lives under `src/`, so the merge-time decision audit requires it in the
+`coveredFiles` of an instar-dev trace on the branch. Write the trace AFTER the entry file
+exists and put the file in `--files` (for a flagged PR: the one whole-PR trace, committed
+last). A PR that forgets passes its full verify and is then refused at merge with
+`decision-audit: uncovered: src/data/awareness/<id>.md`, and needs a push and a second
+verify (two features on 2026-11-15).
+
 ## Size
 
 Every title is named in the short capability list at the top of the instruction

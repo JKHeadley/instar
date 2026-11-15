@@ -2,7 +2,7 @@
 
 ## Summary of the change
 
-`scripts/safe-merge.mjs`: new exported constant `GH_MAX_BUFFER_BYTES` (64 MiB) passed as `maxBuffer` to the two `spawnSync('gh', …)` calls (the shared `gh()` helper and the merge call). New test `tests/unit/safe-merge-gh-buffer.test.ts`.
+`scripts/safe-merge.mjs`: new exported constant `GH_MAX_BUFFER_BYTES` (64 MiB) passed as `maxBuffer` to the two `spawnSync('gh', …)` calls (the shared `gh()` helper and the merge call). New test `tests/unit/safe-merge-gh-buffer.test.ts`. Also one documentation paragraph in `src/data/awareness/README.md` (the author guide for awareness entry files, itself skipped by the registry): the entry file must be listed in the branch's trace, because the refusal this buffer fix uncovered for PR 3053 (`decision-audit: uncovered: src/data/awareness/...`) recurred on PR 3179 the same morning. No code reads the README.
 
 ## Decision-point inventory
 
