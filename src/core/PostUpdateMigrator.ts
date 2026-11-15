@@ -3009,14 +3009,23 @@ export function insertContextDeathClaudeBlock(input: string): string {
     `<!-- /${markerId} -->`,
   ].join('\n');
   let content = input;
+  // The awareness-registry feature-notes block must stay the LAST thing in the file
+  // (docs/specs/awareness-entry-registry.md): this step can run after the registry wrote it,
+  // so it inserts before the block instead of past it. Without that, the next update moves
+  // the block back to the end and CLAUDE.md changes on every run.
+  const notes = findRegistryBlock(content);
+  const limit = notes.state === 'well-formed' ? notes.start : content.length;
   // Anchor: end of "Critical Anti-Patterns" (just before next `## ` heading) —
   // falls back to append if section absent.
-  const antiPatternsIdx = content.indexOf('## Critical Anti-Patterns');
+  const antiPatternsIdx = content.slice(0, limit).indexOf('## Critical Anti-Patterns');
   if (antiPatternsIdx >= 0) {
     const afterHeader = antiPatternsIdx + '## Critical Anti-Patterns'.length;
-    const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
-    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
+    const nextHeadingIdx = content.slice(0, limit).indexOf('\n## ', afterHeader);
+    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : limit;
     content = content.slice(0, insertAt) + '\n' + claudeBlock + '\n' + content.slice(insertAt);
+  } else if (limit < content.length) {
+    const beforeNotes = content.slice(0, limit).replace(/\n+$/, '');
+    content = beforeNotes + '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n\n' + content.slice(limit);
   } else {
     content += '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n';
   }
