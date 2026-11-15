@@ -5,7 +5,7 @@ import { bootTelegramOrigin } from '../../src/messaging/telegram-origin/Telegram
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { TelegramOriginHoldError } from '../../src/messaging/telegram-origin/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 
@@ -39,6 +39,7 @@ async function fixture() {
     noticeOwner: true, holdsLease: () => ownsLease, isSessionLive: () => false,
     diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
   cleanup.push(() => boot.close());
+  allowSlowOriginRecording(boot.runtime.service);
   boot.runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }),
     ...fixtureOriginContentDedup(stateDir) });
   await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: null });

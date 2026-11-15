@@ -113,6 +113,8 @@ export default defineConfig({
           items: [
             { label: 'Under the Hood', slug: 'architecture/under-the-hood' },
             { label: 'The Living System', slug: 'architecture/the-living-system' },
+            { label: 'Conversations: Custody and Writes', slug: 'architecture/conversations-custody' },
+            { label: 'Conversations: Recovery and Privacy', slug: 'architecture/conversations-recovery-privacy' },
           ],
         },
         {

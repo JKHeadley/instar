@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "codex-spawn-wall-placement",
+  "sessionId": "09360166-9cf3-4627-9d42-51d56f32c9a2",
+  "timestamp": "2026-11-13T01:28:05.317Z",
+  "artifactPath": "upgrades/side-effects/codex-spawn-wall-placement.md",
+  "artifactSha256": "f51cf732b7b032ba83aca666858a0ca956f4aaf2c92ccc2f67bb4106a4a670cf",
+  "coveredFiles": [
+    "docs/specs/codex-spawn-wall-placement.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/UsageWallRescue.ts",
+    "src/core/heavyWorkPlacement.ts",
+    "src/monitoring/ReapLog.ts",
+    "tests/e2e/codex-spawn-wall-placement-alive.test.ts",
+    "tests/integration/codex-spawn-wall-placement.test.ts",
+    "tests/unit/codex-spawn-wall-placement.test.ts",
+    "upgrades/next/codex-spawn-wall-placement.md",
+    "upgrades/side-effects/codex-spawn-wall-placement.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: headless codex-cli spawn placement reuses the wall rescue's existing walled predicate; no state or config migration; a revert fully restores prior behaviour.",
+  "eli16Path": "docs/specs/codex-spawn-wall-placement.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-spawn-wall-placement.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

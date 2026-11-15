@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 /**
  * FeatureRolloutReconciler — makes the InitiativeTracker self-populating
  * (GRADUATED-FEATURE-ROLLOUT-SPEC §4.1). Runs IN-PROCESS against the tracker

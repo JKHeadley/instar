@@ -18,7 +18,10 @@
 
 import path from 'node:path';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
-import { readUnhandledErrors } from './unhandledErrorsReporter.js';
+import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
+
+/** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
+const PROGRESS_MAX_BYTES = 64 * 1024;
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
 import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
@@ -31,6 +34,8 @@ import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } f
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
+/** Upper bound for the per-machine unit-lane worker setting (`laneShards.unitWorkers`). */
+export const MAX_UNIT_WORKERS = 12;
 
 // ── Seams ──────────────────────────────────────────────────────────────
 
@@ -170,10 +175,11 @@ export interface VerifyRunInput {
   /** True only for an automatic watcher candidate that can be rediscovered after a lease move. */
   preflightRediscoverable?: boolean;
   /**
-   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service).
-   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards`.
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service),
+   * and the per-machine unit-lane worker count `unitWorkers` (1..MAX_UNIT_WORKERS).
+   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards` / `unitWorkersParallel`.
    */
-  laneShards?: { integration?: number; e2e?: number };
+  laneShards?: { integration?: number; e2e?: number; unitWorkers?: number };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -562,7 +568,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
         // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
-        laneEnv.INSTAR_TEST_WORKERS = String(LOCAL_VERIFY_LIMITS.unitWorkersParallel);
+        const uw = input.laneShards?.unitWorkers;
+        const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
+        laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        // This run already holds the host suite slot. Its own unit lane is a child of that
+        // holder, so the host test-runner bound's nested clamp capped it at 4 workers whatever
+        // was asked (2026-11-12: 8 workers ran no faster, 1159 s). Declare the lane as the
+        // holder's own suite: the bound then skips only the clamp (the kill switch would also
+        // log a disabled bound on every run and trip the self-disable detector).
+        laneEnv.INSTAR_HOST_TEST_OWN_SUITE_HOLDER = String(process.pid);
+        seams.log({ event: 'unit-workers', workers, source: workers === uw ? 'machine-setting' : 'policy-default' });
         laneEnv.AUDIT_CHANGE_KIND = 'pull_request';
         laneEnv.AUDIT_CHANGE_BASE_SHA = input.baseSha;
         laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;
@@ -577,14 +592,41 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const pTmp = seams.fs.mkdtemp('lv-tmp-');
         const pTmux = seams.fs.mkdtemp('lv-tmux-');
         tempDirs.push(pTmp, pTmux);
+        const progressPath = path.join(p.reportsDir, `${key}.progress.json`);
         const env: NodeJS.ProcessEnv = { ...laneEnv, TMPDIR: pTmp, TMUX_TMPDIR: pTmux };
-        if (reporter) env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
-        const r = await exec(
-          path.join(binDir, 'vitest'),
-          ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
-            ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
-          key, budget(d.lanes[lane.name]), env, failFast ? stopLanes.signal : undefined,
-        );
+        if (reporter) {
+          env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
+          env.LOCAL_VERIFY_PROGRESS_FILE = progressPath;
+        }
+        let r: Awaited<ReturnType<typeof exec>>;
+        try {
+          // The signal is always passed: a deadline anywhere ends the run as an error, so the
+          // sibling lanes stop then too (fail-fast or not); before, they ran on for up to
+          // ~11 min holding the suite slot for a run already lost (brainstorm 2026-11-12 E2).
+          r = await exec(
+            path.join(binDir, 'vitest'),
+            ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
+              ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
+            key, budget(d.lanes[lane.name]), env, stopLanes.signal,
+          );
+        } catch (e) {
+          if (e instanceof RunError && e.step.startsWith('deadline:')) {
+            // Deadline forensics: which files were still running at the kill.
+            // Written by test-side code: read only when small (like the durations file).
+            const progressSize = seams.fs.size ? seams.fs.size(progressPath) : null;
+            const progress = reporter && (progressSize === null || progressSize <= PROGRESS_MAX_BYTES)
+              ? readProgress(seams.fs.readFile(progressPath), p.runDir, seams.now()) : null;
+            seams.log({ event: 'deadline-in-flight', step: key, ...(progress ?? { unknown: true }) });
+            if (!stopLanes.signal.aborted) {
+              seams.log({ event: 'lanes-stop', after: key, reason: 'deadline' });
+              stopLanes.abort();
+            }
+            if (progress && progress.running.length > 0) {
+              throw new RunError(e.step, `vitest hit its deadline; ${progress.finishedFiles} files finished; still running: ${progress.running.map((x) => `${x.file} (${x.seconds}s)`).join(', ')}`.slice(0, 1500));
+            }
+          }
+          throw e;
+        }
         if (r.aborted) return { report: null, status: null, unhandled: null, aborted: true };
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
@@ -637,7 +679,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (decision.rerun.length > 0 && report) {
         rerunBudget -= decision.rerun.length;
         const laneDeadlineAt = t + d.lanes[lane.name];
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, failFast ? stopLanes.signal : undefined);
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal);
         // The exit code is cleared only when the failed files explain it: they all passed alone
         // AND the lane reported zero unhandled errors (checked before the re-run).
         if (allPassed && unhandled === 0) exitCode = 0;

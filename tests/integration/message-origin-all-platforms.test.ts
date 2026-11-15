@@ -232,8 +232,10 @@ describe('the Slack reply route records origin in the send path', () => {
     const ok = await request(a).post('/slack/reply/C0123ABC').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo').send({ text: 'Here is the plan for Saturday.' });
     expect(ok.status).toBe(200);
     expect(seen[0].text).toBe('Here is the plan for Saturday.');
-    // No bind token and no credential: the footer still names the agent and says what is unknown.
-    expect(seen[0].footer).toMatch(/^_echo · .+ · unknown harness · unknown model_$/);
+    // No bind token, no credential and (in this fixture) no machine identity: every field is
+    // unknown, so the footer names only the agent and never prints the word "unknown"
+    // (operator report 2026-11-12). It used to read "_echo · unknown machine · unknown harness · unknown model_".
+    expect(seen[0].footer).toBe('_echo_');
     fail = true;
     const refused = await request(a).post('/slack/reply/C0123ABC').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo').send({ text: 'A second message for Saturday.' });
     expect(refused.status).toBe(503);

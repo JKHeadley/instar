@@ -4,6 +4,26 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { setOriginStageDeadlineProcessDefaults, setOriginStoreRequestTimeoutProcessDefault } from '../src/messaging/telegram-origin/OriginStageDeadlines.js';
+
+// Telegram-origin recording budgets: lifted for every test file.
+//
+// TelegramOriginService gives each recording stage a sub-second budget (250 ms store, 500 ms
+// spool, ...). They are real waits on fsync-ing disk commits, and beside a full suite on a
+// saturated disk a healthy commit outlasts them: the send is held as a recording outage and
+// a test that never meant to test timing fails an unrelated change (29 times in nine files
+// across 17 PRs, 2026-11-07 to 11-13; then two more files the morning eleven were fixed one
+// by one). 46 test files open a real origin service, so the allowance is set here, once.
+//
+// The store's own per-request deadline (2 s in production) is lifted to 20 s below for the
+// same reason: it is the layer under the stage budgets, and a loaded worker outlasting it
+// failed three unrelated changes on 2026-11-13. A store opened with an explicit
+// requestTimeoutMs keeps it (the worker-recovery tests pin 200 to 2000 ms). A store in a child
+// process a test spawns keeps 2 s. A sink that REJECTS fails at once whatever the budget. A test that wants the
+// production budgets sets them explicitly or calls
+// setOriginStageDeadlineProcessDefaults(null) (see origin-stage-deadlines.test.ts).
+setOriginStageDeadlineProcessDefaults({ storeEvidenceMs: 20_000, spoolEvidenceMs: 20_000, peerEvidenceMs: 20_000, verifiedEvidenceMs: 20_000, admitMs: 20_000 });
+setOriginStoreRequestTimeoutProcessDefault(20_000);
 
 //
 // Strip git environment overrides inherited from the parent process FIRST.

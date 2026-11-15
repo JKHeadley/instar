@@ -3,7 +3,7 @@
   "contracts": [
     {
       "id": "threadline-inbound-canonical-store",
-      "revision": 3,
+      "revision": 4,
       "producers": [
         "src/threadline/ThreadLog.ts",
         "src/threadline/recordThreadMessage.ts"
@@ -18,7 +18,10 @@
         "tests/integration/threadline-relay-send-priority.test.ts",
         "tests/integration/threadline-reap-recovery-wiring.test.ts",
         "tests/integration/threadline/canonical-history-wiring.test.ts",
-        "tests/e2e/threadline-reap-mid-processing.test.ts"
+        "tests/e2e/threadline-reap-mid-processing.test.ts",
+        "tests/unit/threadline/relayIngressHistory.test.ts",
+        "tests/integration/threadline/relay-ingress-canonical-history.test.ts",
+        "tests/e2e/threadline/relay-ingress-canonical-history-alive.test.ts"
       ]
     }
   ]

@@ -12,9 +12,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TEAM_ENFORCEMENT_VERSION, type MachineStanding } from './TeamAccessSync.js';
 
-/** The settings the owner can turn on for the whole agent. */
-export type TeamSwitchSetting = 'memory-privacy' | 'app-conversations';
-export const TEAM_SWITCH_SETTINGS: readonly TeamSwitchSetting[] = ['memory-privacy', 'app-conversations'];
+/**
+ * The settings the owner can turn on for the whole agent. `files` (files in app conversations,
+ * `mobilePairing.native.media.enabled`) is not something a team needs, so it never gets a People
+ * line; it is here so the app's "Files are turned off" notice can offer the same one-tap turn-on.
+ */
+export type TeamSwitchSetting = 'memory-privacy' | 'app-conversations' | 'files';
+export const TEAM_SWITCH_SETTINGS: readonly TeamSwitchSetting[] = ['memory-privacy', 'app-conversations', 'files'];
 export function isTeamSwitchSetting(v: unknown): v is TeamSwitchSetting {
   return typeof v === 'string' && (TEAM_SWITCH_SETTINGS as readonly string[]).includes(v);
 }
@@ -35,7 +39,7 @@ export interface TeamSwitchLine {
  * about the other two settings cannot be trusted, and updating it comes first.
  */
 export function teamSwitchSummary(machines: ReadonlyArray<{ machineId: string; standing: MachineStanding }>, requested: ReadonlyArray<{ setting: TeamSwitchSetting; machineId: string }> = []): TeamSwitchLine[] {
-  const off: Record<TeamSwitchSetting | 'build', string[]> = { 'app-conversations': [], 'memory-privacy': [], build: [] };
+  const off: Record<TeamSwitchSetting | 'build', string[]> = { 'app-conversations': [], 'memory-privacy': [], files: [], build: [] };
   for (const m of machines) {
     if (m.standing.enforcement < TEAM_ENFORCEMENT_VERSION) { off.build.push(m.machineId); continue; }
     if (!m.standing.native) off['app-conversations'].push(m.machineId);

@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Observable Intelligence — No Autonomous LLM Action Is Unauditable*
+
 /**
  * Core type definitions for instar.
  *
@@ -43,6 +46,42 @@ export interface ProviderCredential {
 }
 
 // ── Session Management ──────────────────────────────────────────────
+
+/** The neutral per-job / per-topic thinking-mode enum (mirrors THINKING_MODES in topicProfileValidation). */
+export type LaunchThinkingMode = 'off' | 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Launch intent record (docs/specs/job-launch-intent-record.md §2/§4, D5 — FROZEN field names,
+ * published through GET /jobs/:slug/history). Defined here, in the dependency-free type module,
+ * so Session, the builders and JobRunHistory share one shape without new import edges.
+ * `applied` means "sent on this launch" (in the argv, or the env as `NAME=value`), never that the
+ * engine honoured it. Every enum is additive-only; readers must tolerate values they don't know.
+ */
+export interface LaunchFeature {
+  feature: 'thinkingMode';
+  requestedValue: LaunchThinkingMode;
+  value: string;
+  channel: 'argv' | 'env';
+}
+/** A requested launch feature that was NOT sent. `requestedValue` is omitted for `invalid`. */
+export interface LaunchDrop {
+  feature: 'thinkingMode';
+  requestedValue?: LaunchThinkingMode;
+  reason: 'not-supported' | 'overridden-by-effort-pin' | 'invalid';
+}
+/** The run row's / session's launch record. The row's own framework/model are the only copy of those. */
+export interface JobRunLaunch {
+  /** Parsed semver (≤64 chars), or 'unknown' until/unless the async probe patches it. */
+  cliVersion: string;
+  /** The validated requested value only — never raw text. */
+  requested: { thinkingMode?: LaunchThinkingMode };
+  /** ≤8 entries. */
+  applied: LaunchFeature[];
+  /** ≤8 entries. */
+  dropped: LaunchDrop[];
+  /** Entries beyond 8 across both arrays, removed from the record and counted here. */
+  omitted?: number;
+}
 
 export interface Session {
   id: string;
@@ -162,6 +201,13 @@ export interface Session {
    * now for claude-code spawns; surfaced in GET /sessions and the reap-log so the
    * soak's success criterion (zero 'headless' under force) is machine-checkable. */
   launchLane?: 'headless' | 'rerouted-interactive';
+  /**
+   * The launch record (docs/specs/job-launch-intent-record.md §3/§4): built from the FINAL argv and
+   * `-e` env actually passed to tmux, immediately before the spawn, on both the headless and the
+   * rerouted-interactive lanes. `cliVersion` is the cached value or 'unknown' at spawn time.
+   * Absent when the session was not spawned through those lanes.
+   */
+  launch?: JobRunLaunch;
   /**
    * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D4):
    * the transport this session's Threadline tools were given at spawn. Persisted
@@ -542,6 +588,11 @@ export interface JobDefinition {
   frameworkModel?: string;
   /** Opt-in to reviewed, non-safety session-start context omissions. */
   leanContext?: boolean;
+  /** Per-job thinking mode (docs/specs/job-launch-intent-record.md): the neutral
+   *  `off|low|medium|high|max` intent each engine's launch builder translates or drops with a
+   *  recorded reason. Absent → the engine's default, argv/env unchanged. For agentmd jobs the
+   *  manifest value is authority. */
+  thinkingMode?: LaunchThinkingMode;
   /** Explicit missed-work handling after a verified lease promotion. Absent means ask. */
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
   /** Explicit project-relative prerequisites. Never interpreted as commands. */
@@ -2298,6 +2349,14 @@ export interface MachineRegistryEntry {
    * Optional for backward-compat with registries written before §L2.
    */
   nickname?: string;
+  /**
+   * Where `nickname` came from. `user`: typed by a person (never replaced automatically).
+   * `auto-self`: the machine's own friendly name (macOS ComputerName / Linux pretty hostname).
+   * `auto-derived`: derived from another machine's view of the hostname (e.g. at pairing); the
+   * machine itself upgrades it to its own friendly name on boot. Absent on older registries:
+   * treated like `user` (never replaced) when a nickname is present.
+   */
+  nicknameSource?: 'user' | 'auto-self' | 'auto-derived';
   /**
    * Self-attested static hardware properties (Session Pool §L2) — captured by
    * the machine from `os` and recorded into ITS OWN registry entry, then synced
@@ -5864,6 +5923,8 @@ export interface IntegratedBeingConfig {
 /** Ledger entry subsystem (who emitted). Always bound server-side. */
 export type LedgerEntrySubsystem =
   | 'threadline'
+  /** Work Board §6: one note per card handed to the agent (the card id only, never its title). */
+  | 'work-board'
   | 'outbound-classifier'
   | 'session-manager'
   | 'compaction-sentinel'

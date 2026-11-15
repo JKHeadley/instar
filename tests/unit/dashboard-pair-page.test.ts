@@ -165,7 +165,10 @@ describe('the pairing code page', () => {
     expect(text(h)).toContain('AB12 CD34');
     const approvals = h.calls.find((c) => c.url === '/mobile/pairing-approvals')!;
     expect(approvals.headers).toMatchObject({ Authorization: 'Bearer tok', 'X-Instar-Operator-Session': 'ops' });
-    expect(text(h)).toContain('Old phone · Paired');
+    const row = h.doc.querySelector('.pair-device-row')!;
+    expect(row.querySelector('.pair-device-name')!.textContent).toBe('Old phone');
+    expect(row.querySelector('.pair-device-detail')!.textContent).toBe('Paired');
+    expect(row.querySelector('button.pair-remove')!.getAttribute('aria-label')).toBe('Remove Old phone');
   });
 
   it('stores nothing: no token or session in localStorage or sessionStorage', async () => {

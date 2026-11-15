@@ -197,3 +197,65 @@ function logSafe(value: string): string {
 export function localRouteTrustLogLine(kind: 'would-refuse' | 'refuse', senderName: string, v: LocalRouteTrustVerdict): string {
   return `[relay-agent-trust] ${kind} from=${logSafe(senderName)} fp=${v.fingerprint ? v.fingerprint.slice(0, 12) : 'none'} source=${v.identitySource} trust=${v.level} op=${logSafe(v.operation)}`;
 }
+
+/** One would-refuse row per sender and operation per minute; each row says how many it stood for. */
+export const LOCAL_TRUST_WOULD_REFUSE_WINDOW_MS = 60 * 1000;
+/** Allowed decisions: one row per sender, operation and verdict per hour. */
+export const LOCAL_TRUST_ALLOWED_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * The sender a decision is about, for the ladder's distinct-sender bar: the
+ * fingerprint the lookup keyed on, else the (log-safe) claimed name. A claimed
+ * name is a guess, so this counts senders for evidence only, never for trust.
+ */
+export function localRouteTrustSubject(senderName: string, v: LocalRouteTrustVerdict): string {
+  return v.fingerprint ? `fp:${v.fingerprint.slice(0, 64)}` : `name:${logSafe(senderName)}`;
+}
+
+/** The evidence row for one verdict (CMT-1141; docs/specs/local-route-trust-maturation-bar.eli16.md). */
+export interface LocalRouteTrustEvidence {
+  key: string;
+  windowMs: number;
+  input: {
+    kind: 'fired' | 'error';
+    reason: string;
+    subject: string;
+    context: Record<string, string | number | boolean | null>;
+  };
+}
+
+/**
+ * Build the row the route records for a verdict. Every would-refuse decision is
+ * kept (bounded to one row a minute per sender and operation, carrying the count
+ * it stood for), with the sender and why it would have been refused. A refusal of
+ * a registry-known same-machine agent is the harm this rollout watches for, so it
+ * is an `error` row; everything else is `fired`.
+ */
+export function localRouteTrustEvidence(
+  senderName: string,
+  v: LocalRouteTrustVerdict,
+  dryRun: boolean,
+): LocalRouteTrustEvidence {
+  const verdict = v.allowed ? 'allowed' : dryRun ? 'would-refuse' : 'refuse';
+  const registeredRefusal = !v.allowed && v.identitySource === 'registry';
+  const subject = localRouteTrustSubject(senderName, v);
+  const operation = v.operation.slice(0, 48);
+  return {
+    key: `${subject}|${v.identitySource}|${operation}|${verdict}`,
+    windowMs: v.allowed ? LOCAL_TRUST_ALLOWED_WINDOW_MS : LOCAL_TRUST_WOULD_REFUSE_WINDOW_MS,
+    input: {
+      kind: registeredRefusal ? 'error' : 'fired',
+      reason: registeredRefusal ? `${verdict}-registered-sender` : verdict,
+      subject,
+      context: {
+        sender: logSafe(senderName),
+        level: v.level,
+        operation,
+        identitySource: v.identitySource,
+        fingerprint: v.fingerprint,
+        dryRun,
+        ...(v.allowed ? {} : { refuseReason: `${v.level}-may-not-${logSafe(operation)}` }),
+      },
+    },
+  };
+}

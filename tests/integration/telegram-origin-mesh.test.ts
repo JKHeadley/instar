@@ -132,8 +132,13 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
     expect(await originDeliveryConfirmed(h.source.store, heldOperation, { selfMachineId: 'source', agentId: 'echo', send: query })).toBe(true);
     expect(query).toHaveBeenCalledOnce(); expect(h.botNetwork).toHaveBeenCalledOnce();
     const receipt = await h.send({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
-    expect(receipt.result).toEqual({ ok: true, operationId: heldOperation, originId: source!.record.originId,
-      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true, messageIds: ['321'] });
+    expect(receipt.result).toMatchObject({ ok: true, operationId: heldOperation, originId: source!.record.originId,
+      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true, messageIds: ['321'],
+      // native-conversation-base §3b — the classified verdict travels beside the raw state.
+      role: 'execution-owner', outcome: 'delivered', safeToResend: false, originMachineId: 'source' });
+    // A third machine is refused without `reader` and answered with it.
+    expect((await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation, reader: true })).result)
+      .toMatchObject({ ok: true, role: 'execution-owner', outcome: 'delivered', messageIds: ['321'] });
     const intruder = await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
     expect(intruder.result).toEqual({ ok: false, reason: 'origin-receipt-unavailable' });
     const lookup = h.owner.store.getOperation.bind(h.owner.store);
@@ -265,6 +270,30 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
     expect(JSON.parse(records.records[0].record.envelopeJson)).toMatchObject({ originMachineId: 'source', sessionId: 'origin-session',
       model: { value: 'gpt-6-astra', status: 'configured' }, display: { enabled: false } });
     expect((await h.source.store.listOrigins()).records[0].operation).toBeNull();
+  });
+  it('records a delivered peer reply in the holder topic history with the original text and author', async () => {
+    const h = await boot();
+    const recorded: unknown[] = [];
+    h.owner.options.onForwardedDelivered = row => { recorded.push(row); };
+    const result = await h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: '**Decision needed** from the M5', send: h.send }));
+    expect(result.messageId).toBe(321);
+    expect(recorded).toEqual([{ chatId: '-100123', threadId: 42, text: '**Decision needed** from the M5', messageId: 321, producerKind: 'session' }]);
+  });
+  it('keeps a delivered peer reply delivered when the holder history recorder throws', async () => {
+    const h = await boot();
+    h.owner.options.onForwardedDelivered = () => { throw new Error('history store down'); };
+    const result = await h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: 'Still delivered', send: h.send }));
+    expect(result.messageId).toBe(321); expect(h.botNetwork).toHaveBeenCalledOnce();
+  });
+  it('records nothing in holder history when the holder refuses the reply', async () => {
+    const h = await boot();
+    const recorded: unknown[] = [];
+    h.owner.options.onForwardedDelivered = row => { recorded.push(row); };
+    await expect(h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: 'Open http://localhost:4042/private', send: h.send }))).rejects.toBeTruthy();
+    expect(recorded).toEqual([]);
   });
   it('refuses a revoked source attestation before owner admission or network dispatch', async () => {
     const h = await boot(); h.revoke();

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-13T01:28:47.634Z",
+  "slug": "codex-spawn-wall-placement",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/UsageWallRescue.ts",
+      "src/core/heavyWorkPlacement.ts",
+      "src/monitoring/ReapLog.ts"
+    ],
+    "addedLines": 93,
+    "deletedLines": 3
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2757
+    ],
+    "notes": "PR 2757 added the walled-default spawn guard and spawn tagging for claude-code only; the headless lane kept skipping the resolver for codex-cli, so Codex spawns rode the default CODEX_HOME login untagged."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

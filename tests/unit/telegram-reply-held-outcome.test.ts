@@ -104,4 +104,12 @@ describe('telegram-reply.sh — held reply outcome', () => {
     expect(res.stderr).toContain('NOT SENT');
     expect(res.stderr).toContain('safe to send it again');
   });
+
+  it('a not-delivered verdict with safeToResend false (ended on purpose) never says resend (native-conversation-base §3b)', async () => {
+    const res = await run(held('known-failed'), `{"operationId":"${OP}","outcome":"not-delivered","safeToResend":false,"messageIds":[],"detail":"It was ended on purpose; do not resend."}`);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('ended on purpose');
+    expect(res.stderr).toContain('Do NOT resend');
+    expect(res.stderr).not.toContain('safe to send it again');
+  });
 });

@@ -19,6 +19,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 import { artifactSha256 } from '../../scripts/lib/instar-dev-trace.mjs';
 import { buildGreenPrDeps, buildGuardLatchStore, isAnalyzableGreenPrRepo, resolveGreenPrAgentNamespace, resolveGreenPrPaths, GH_PR_JSON_FIELDS, LIST_PR_JSON_FIELDS, REFETCH_PR_JSON_FIELDS, reportUnknownGhJsonField, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { ghRowFromGraphqlPr } from '../../src/monitoring/greenPrOpenPrList.js';
 import { installedSafeMergePath } from '../../src/core/installedSafeMerge.js';
 import { DefaultMergeRunner } from '../../src/monitoring/MergeRunner.js';
 
@@ -31,6 +32,11 @@ beforeEach(() => {
   fs.writeFileSync(safeMergePath, '// fake\n');
 });
 afterEach(() => { try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test-cleanup' }); } catch { /* ignore */ } });
+
+/** One page of the paged open-PR listing, as `gh api graphql` prints it. */
+const openPrPage = (nodes: unknown[], viewer = 'me') => JSON.stringify({
+  data: { viewer: { login: viewer }, repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } },
+});
 
 /** A fake gh exec recording the calls; returns canned JSON per command shape. */
 function fakeGh(responses: Record<string, { stdout: string; code?: number; stderr?: string }>) {
@@ -78,7 +84,7 @@ describe('buildGreenPrDeps — config-threading (M2)', () => {
   it('uses the shared authenticated runtime on the default gh read path', async () => {
     const marker = path.join(dir, 'green-gh-env.txt');
     const fakeExecutable = path.join(dir, 'gh');
-    fs.writeFileSync(fakeExecutable, `#!/bin/sh\nprintf '%s|%s' "$GH_TOKEN" "$GITHUB_TOKEN" > "${marker}"\nprintf '[]'\n`, { mode: 0o700 });
+    fs.writeFileSync(fakeExecutable, `#!/bin/sh\nprintf '%s|%s' "$GH_TOKEN" "$GITHUB_TOKEN" > "${marker}"\nprintf '%s' '{"data":{"viewer":{"login":"me"},"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'\n`, { mode: 0o700 });
     const opts = baseOpts({
       ghExec: undefined,
       githubRuntime: () => ({
@@ -134,19 +140,18 @@ describe('resolveGreenPrAgentNamespace', () => {
 });
 
 describe('buildGreenPrDeps — widened projections (Blocker 4)', () => {
-  it('listOpenPrs requests autoMergeRequest in the projection and derives autoMergeArmed', async () => {
-    const rows = JSON.stringify([
-      { number: 1, title: 'a', labels: [], isDraft: false, headRefName: 'echo/x', headRefOid: 'h1', mergeable: 'MERGEABLE', statusCheckRollup: [], autoMergeRequest: { enabledAt: 't', expectedHeadOid: 'h1' } },
-      { number: 2, title: 'b', labels: [], isDraft: false, headRefName: 'echo/y', headRefOid: 'h2', mergeable: 'MERGEABLE', statusCheckRollup: [], autoMergeRequest: null },
-    ]);
-    const { ghExec, calls } = fakeGh({ 'pr list': { stdout: rows } });
+  it('listOpenPrs requests autoMergeRequest in the paged query and derives autoMergeArmed', async () => {
+    const node = (number: number, autoMergeRequest: unknown) => ({
+      number, title: 't', isDraft: false, headRefName: `echo/${number}`, headRefOid: `h${number}`, baseRefName: 'main',
+      mergeable: 'MERGEABLE', labels: { nodes: [] }, author: { __typename: 'User', login: 'me' }, autoMergeRequest,
+    });
+    const { ghExec, calls } = fakeGh({ 'api graphql': { stdout: openPrPage([node(1, { enabledAt: 't' }), node(2, null)]) } });
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), latches);
     const prs = await deps.listOpenPrs();
-    // The list projection requested autoMergeRequest.
-    const listCall = calls.find((c) => c[0] === 'pr' && c[1] === 'list')!;
-    const jsonFields = listCall[listCall.indexOf('--json') + 1];
-    expect(jsonFields).toContain('autoMergeRequest');
+    // The listing asked GitHub for autoMergeRequest.
+    const listCall = calls.find((c) => c[0] === 'api' && c[1] === 'graphql')!;
+    expect(listCall.find((a) => a.startsWith('query='))).toContain('autoMergeRequest');
     expect(prs[0].autoMergeArmed).toBe(true);
     expect(prs[1].autoMergeArmed).toBe(false);
   });
@@ -195,16 +200,18 @@ describe('gh --json projections are pinned to fields gh actually supports (2026-
 
   it('the LIVE gh calls carry exactly the pinned projections (no stray literal field list)', async () => {
     const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'OPEN' });
-    const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view }, 'pr list': { stdout: '[]' } });
+    const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view }, 'api graphql': { stdout: openPrPage([]) } });
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), buildGuardLatchStore(baseOpts({ ghExec })));
     await deps.refetchPr(1);
     await deps.listOpenPrs();
     const fieldsOf = (c: string[]) => c[c.indexOf('--json') + 1].split(',');
     const viewCall = calls.find((c) => c[0] === 'pr' && c[1] === 'view')!;
-    const listCall = calls.find((c) => c[0] === 'pr' && c[1] === 'list')!;
     expect(fieldsOf(viewCall)).toEqual([...REFETCH_PR_JSON_FIELDS]);
-    expect(fieldsOf(listCall)).toEqual([...LIST_PR_JSON_FIELDS]);
-    for (const f of [...fieldsOf(viewCall), ...fieldsOf(listCall)]) expect(GH_PR_JSON_FIELDS).toContain(f);
+    // The paged listing returns rows carrying exactly the pinned list projection.
+    expect(calls.some((c) => c[0] === 'pr' && c[1] === 'list')).toBe(false);
+    const rowKeys = Object.keys(ghRowFromGraphqlPr({ number: 1 }));
+    expect(rowKeys).toEqual([...LIST_PR_JSON_FIELDS]);
+    for (const f of [...fieldsOf(viewCall), ...rowKeys]) expect(GH_PR_JSON_FIELDS).toContain(f);
   });
 
   it('an "Unknown JSON field" exit is a LOUD degradation naming the field (once per field), and still fails toward null', async () => {

@@ -79,7 +79,11 @@ export interface SessionMonitorEvents {
   'monitor:mechanical-recovery': { topicId: number; sessionName: string; result: RecoveryResult };
   'monitor:user-notified': { topicId: number; message: string };
   'monitor:recovery-deferred': { topicId: number; sessionName: string };
+  'monitor:liveness-indeterminate': { topicId: number; sessionName: string; polls: number };
 }
+
+/** Consecutive polls without a definite liveness answer before it is reported (once per run). */
+const INDETERMINATE_STREAK_REPORT = 5;
 
 export interface SessionMonitorDeps {
   /** Get all active topic-to-session mappings */
@@ -88,6 +92,15 @@ export interface SessionMonitorDeps {
   captureSessionOutput: (sessionName: string, lines: number) => string | null;
   /** Check if a session is alive */
   isSessionAlive: (sessionName: string) => boolean;
+  /**
+   * The same two reads without blocking the event loop, for the per-poll check
+   * of every session. When both are given the poll uses them; the synchronous
+   * pair stays in use for the rare re-checks inside a recovery decision.
+   * `'indeterminate'` (tmux too slow to answer, or a pane that ended
+   * ambiguously) is read as alive: a slow tmux is not a dead session.
+   */
+  isSessionAliveAsync?: (sessionName: string) => Promise<boolean | 'indeterminate'>;
+  captureSessionOutputAsync?: (sessionName: string, lines: number) => Promise<string | null>;
   /** A replacement is being launched for this conversation. */
   isSessionStarting?: (topicId: number) => boolean;
   /** Get recent messages for a topic */
@@ -150,6 +163,10 @@ export class SessionMonitor extends EventEmitter {
   private snapshots = new Map<number, SessionSnapshot>();
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private pollStartedAt = 0;
+  private skippedPolls = 0;
+  /** Consecutive polls in which tmux gave no definite liveness answer, per topic. */
+  private readonly indeterminateStreaks = new Map<number, { sessionName: string; polls: number }>();
   /** Topic-level cooldown for context exhaustion — survives snapshot cleanup */
   private contextExhaustionCooldowns = new Map<number, number>();
   /** Topic-level notification cooldown — survives snapshot cleanup.
@@ -326,8 +343,18 @@ export class SessionMonitor extends EventEmitter {
 
   // ── Core Polling ────────────────────────────────────────
   async poll(): Promise<void> {
-    if (!this.config.enabled || this.running) return;
+    if (!this.config.enabled) return;
+    if (this.running) {
+      // The reads await, so a poll can outlast its interval when tmux is slow.
+      // The skipped tick is said out loud: a monitor that has gone quiet for
+      // minutes must not look the same as one with nothing to report.
+      this.skippedPolls++;
+      console.warn(`[SessionMonitor] previous poll still running after ${Math.round((Date.now() - this.pollStartedAt) / 1000)} s; skipping this tick (${this.skippedPolls} skipped in a row)`);
+      return;
+    }
     this.running = true;
+    this.pollStartedAt = Date.now();
+    this.skippedPolls = 0;
 
     try {
       const activeTopics = this.deps.getActiveTopicSessions();
@@ -338,11 +365,15 @@ export class SessionMonitor extends EventEmitter {
           this.snapshots.delete(topicId);
         }
       }
+      for (const topicId of this.indeterminateStreaks.keys()) {
+        if (!activeTopics.has(topicId)) this.indeterminateStreaks.delete(topicId);
+      }
 
       // Check each active session
       for (const [topicId, sessionName] of activeTopics) {
         if (this.ownedByPeer(topicId)) {
           this.snapshots.delete(topicId);
+          this.indeterminateStreaks.delete(topicId);
           continue;
         }
         try {
@@ -375,7 +406,28 @@ export class SessionMonitor extends EventEmitter {
 
   private async checkSession(topicId: number, sessionName: string): Promise<void> {
     const now = Date.now();
-    const alive = this.deps.isSessionAlive(sessionName);
+    // Once a minute, for every session: with the synchronous pair this is three
+    // tmux subprocesses per session on the main thread, and on a saturated
+    // machine each can take seconds. The asynchronous pair asks the same
+    // questions without holding the loop.
+    const nonBlocking = !!this.deps.isSessionAliveAsync && !!this.deps.captureSessionOutputAsync;
+    const liveness = nonBlocking ? await this.deps.isSessionAliveAsync!(sessionName) : this.deps.isSessionAlive(sessionName);
+    // 'indeterminate' (tmux did not answer in time, or a pane that ended with
+    // no exit status to judge by) is not a dead session: it is read as alive and
+    // looked at again next poll. A run of them is reported once, so a tmux that
+    // has stopped answering does not go unnoticed.
+    const alive = liveness !== false;
+    if (liveness === 'indeterminate') {
+      const previous = this.indeterminateStreaks.get(topicId);
+      const streak = previous && previous.sessionName === sessionName ? previous.polls + 1 : 1;
+      this.indeterminateStreaks.set(topicId, { sessionName, polls: streak });
+      if (streak === INDETERMINATE_STREAK_REPORT) {
+        console.warn(`[SessionMonitor] the liveness of "${sessionName}" (topic ${topicId}) could not be determined for ${streak} polls in a row; it is being treated as alive`);
+        this.emit('monitor:liveness-indeterminate', { topicId, sessionName, polls: streak });
+      }
+    } else {
+      this.indeterminateStreaks.delete(topicId);
+    }
     // A registry entry can still name the failed resume while its replacement
     // is launching. Do not recover or announce the old name in that window.
     if (!alive && this.deps.isSessionStarting?.(topicId)) return;
@@ -400,7 +452,12 @@ export class SessionMonitor extends EventEmitter {
     snap.sessionName = sessionName;
 
     // Capture current output
-    const currentOutput = alive ? (this.deps.captureSessionOutput(sessionName, 30) || '') : '';
+    // No screen read when the liveness read came back indeterminate: when the
+    // cause is a tmux that did not answer, the read would wait out a second
+    // timeout for nothing. (The other cause, a pane that ended with no exit
+    // status, is also skipped for that poll; the synchronous path read it.)
+    const currentOutput = !alive || liveness === 'indeterminate' ? ''
+      : ((nonBlocking ? await this.deps.captureSessionOutputAsync!(sessionName, 30) : this.deps.captureSessionOutput(sessionName, 30)) || '');
 
     // Check if output changed
     if (currentOutput !== snap.lastOutput && currentOutput.length > 0) {

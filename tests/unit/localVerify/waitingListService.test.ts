@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { LocalVerifyService, MERGE_THROUGHPUT_LABEL, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
+import { LocalVerifyService, MERGE_THROUGHPUT_LABEL, THROUGHPUT_AGING_MS, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import { WAITING_LIST_LIMITS } from '../../../src/localVerify/waitingList.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
@@ -307,6 +307,52 @@ describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
     expect(s.prQueue().length).toBeLessThan(CAP);
     expect(await s.svc.request(81, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
     expect(s.audit().some((l) => l.event === 'queue-full-waiting' && l.pr === 81)).toBe(false);
+  });
+
+  it('an ordinary waiter refused THROUGHPUT_AGING_MS ago shares the throughput overflow, bounded by the same cap', async () => {
+    const labelled = (pr: number) => view(pr, { labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const v: Record<number, PrView> = { ...views(50, 51) };
+    for (let pr = 80; pr < 80 + LOCAL_VERIFY_LIMITS.throughputOverflow; pr++) v[pr] = labelled(pr);
+    const s = setup({ views: v });
+    await fill(s);
+    expect(await s.svc.request(50, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    // Offered every 10 min (stays live): refused until it has waited the aging window.
+    for (let waited = 10; waited < THROUGHPUT_AGING_MS / MIN; waited += 10) {
+      s.advance(10 * MIN);
+      expect(await s.svc.request(50, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    }
+    s.advance(10 * MIN);
+    expect(await s.svc.request(50, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
+    expect(s.audit().filter((l) => l.event === 'queue-full-throughput-admitted').at(-1)).toMatchObject({ pr: 50, agedWaiter: true });
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([]);
+    // The overflow stays bounded: labelled PRs fill what is left, then an aged waiter is refused too.
+    for (let pr = 80; pr < 80 + LOCAL_VERIFY_LIMITS.throughputOverflow - 1; pr++) {
+      expect(await s.svc.request(pr, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
+    }
+    expect(s.prQueue()).toHaveLength(CAP + LOCAL_VERIFY_LIMITS.throughputOverflow);
+    expect(await s.svc.request(51, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    s.advance(THROUGHPUT_AGING_MS);
+    expect(await s.svc.request(51, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+  });
+
+  it('among aged waiters the oldest live one takes the overflow; a stale one never counts as aged', async () => {
+    const s = setup({ views: views(50, 51, 52) });
+    await fill(s);
+    expect(await s.svc.request(52, { explicit: false })).toEqual({ ok: false, code: 'queue-full' }); // refused once, then not offered
+    s.advance(MIN);
+    await s.svc.request(50, { explicit: false });
+    s.advance(MIN);
+    await s.svc.request(51, { explicit: false });
+    for (let i = 0; i < THROUGHPUT_AGING_MS / MIN / 10 - 1; i++) { // up to 82 min: neither aged yet
+      s.advance(10 * MIN);
+      await s.svc.request(50, { explicit: false }); await s.svc.request(51, { explicit: false });
+    }
+    // Both 50 and 51 are aged; 51 asks first but 50 was refused earlier, so 51 waits.
+    s.advance(10 * MIN);
+    expect(await s.svc.request(51, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    // 52 is older than both but stale (not offered for the stale window): it does not hold 50 back.
+    expect(await s.svc.request(50, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
+    expect(await s.svc.request(51, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
   });
 
   it('a keptPlace re-queue (a pushed head of a queued PR) is never refused or made to wait', async () => {
