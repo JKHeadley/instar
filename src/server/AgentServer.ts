@@ -7465,7 +7465,7 @@ export class AgentServer {
           /* @self-action-controller: held-debt-loss-notice */
           void options.telegram?.createAttentionItem({ id: `telegram-origin-held-lost:${entry.originMachineId}:${entry.rootOperationId}`,
             category: 'telegram-origin', priority: 'HIGH', title: 'A reply was lost with a removed machine',
-            summary: `A reply${entry.topicId == null ? '' : ` to topic ${entry.topicId}`} was waiting on machine ${entry.originMachineId}, which the owner marked as gone. It may not have reached you; check the conversation before asking for it again.`,
+            summary: `A reply${entry.topicId == null ? '' : ` to ${topicRef(entry.topicId)}`} was waiting on machine ${entry.originMachineId}, which the owner marked as gone. It may not have reached you; check the conversation before asking for it again.`,
             sourceContext: 'telegram-origin-held-debt' }, { hubOnly: true }).catch(() => undefined); // @silent-fallback-ok — the loss is also visible in the held-debt status
         })).catch(() => undefined); // @silent-fallback-ok — closure then waits for the next status read wiring
       this.app.use(createTeamRouter(pairingSvc, {

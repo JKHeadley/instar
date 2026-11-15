@@ -24556,6 +24556,9 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Native-conversation-base 3b version (PR #3092), before this PR's token-less
+    // forward change. Shipped through v1.3.1795.
+    '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',
     // Origin-labelled boot-queue version, before the token-less custody line
     // (standby-durable-forward-without-token §9). Shipped through v1.3.1739.
     '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
