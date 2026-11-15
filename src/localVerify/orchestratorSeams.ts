@@ -24,6 +24,7 @@ import { getHostTestRunnerSemaphore, TestRunnerCapacityTimeoutError, TestRunnerS
 import { fileURLToPath } from 'node:url';
 import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams, RunDegradation } from './orchestrator.js';
 import { localImportGraph } from './verifierVersion.js';
+import { reapLeftovers, realReapDeps } from './leftoverReaper.js';
 
 /** The trusted unhandled-errors reporter installed next to this module (dist), or null. */
 export function installedUnhandledErrorsReporter(): string | null {
@@ -319,6 +320,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
     log,
     importGraph: (files) => localImportGraph(files),
     unhandledErrorsReporter: installedUnhandledErrorsReporter,
+    reapLeftovers: (prefixes, o) => reapLeftovers(realReapDeps(), prefixes, o),
   };
 }
 

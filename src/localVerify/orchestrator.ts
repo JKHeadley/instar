@@ -31,6 +31,7 @@ import { effectivePreflightMode, PREFLIGHT_LIMITS } from './preflight.js';
 import { PreflightCleanupError, runFocusedPreflight } from './runFocusedPreflight.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
 import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
+import type { LeftoverPrefix, ReapOptions, ReapResult } from './leftoverReaper.js';
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
@@ -134,6 +135,26 @@ export interface OrchestratorSeams {
    * run worktree (installed by `npm ci`), then the verifier's own install.
    */
   typescript?(): TsModule;
+  /**
+   * End this machine's leftover processes under the given path prefixes (leftoverReaper.ts:
+   * own user only, never this process or its ancestors; SIGCONT then SIGKILL). Absent ⇒ no reap.
+   */
+  reapLeftovers?(prefixes: LeftoverPrefix[], opts?: ReapOptions): Promise<ReapResult>;
+}
+
+/**
+ * The run's own folders as reaper prefixes: its run worktree and every temp folder it made,
+ * in both spellings macOS shows for `/private/tmp` (commands print either).
+ */
+export function runLeftoverPrefixes(runDir: string, tempDirs: readonly string[]): LeftoverPrefix[] {
+  const out = new Set<string>();
+  for (const d of [runDir, ...tempDirs]) {
+    const bare = d.replace(/\/+$/, '');
+    if (bare.length < 6) continue;
+    out.add(bare);
+    if (bare.startsWith('/private/')) out.add(bare.slice('/private'.length));
+  }
+  return [...out].map((prefix) => ({ prefix, minAgeS: 0 }));
 }
 
 // ── Input / output ─────────────────────────────────────────────────────
@@ -995,6 +1016,17 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
 
   async function cleanup(failed: boolean): Promise<string | null> {
     let kept: string | null = null;
+    // First, end whatever the run's tests left running (a detached tmux server, a stopped
+    // helper): every lane is over, so a process still pointing into this run's own folders
+    // is a leftover. Before the folders go, so nothing still holds them open.
+    if (seams.reapLeftovers) {
+      try {
+        const r = await seams.reapLeftovers(runLeftoverPrefixes(p.runDir, tempDirs), { startedBeforeMs: seams.now() });
+        if (r.matched > 0) seams.log({ event: 'leftovers-reaped', where: 'run-end', matched: r.matched, killed: r.killed, sample: r.sample });
+      } catch (e) {
+        seams.log({ event: 'leftovers-reap-failed', where: 'run-end', detail: e instanceof Error ? e.message : String(e) });
+      }
+    }
     try {
       if (worktreeCreated) {
         if (failed) {

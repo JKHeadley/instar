@@ -147,7 +147,7 @@ import {
   type TopicProfileOrchestratorDeps,
 } from '../core/TopicProfileOrchestrator.js';
 import { TopicSpawnBriefStore, formatCarriedBriefBlock } from '../core/TopicSpawnBriefStore.js';
-import { effectivePending, heavyFit, selfHeavyJobProfile } from '../core/machineResourceProfile.js';
+import { effectivePending, heavyFit, peerMemoryReason, selfHeavyJobProfile } from '../core/machineResourceProfile.js';
 import { acceptedHeavy, heavyReservations } from '../core/heavyWorkPlacement.js';
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { resolveStageBProductionActivation } from '../core/StageBActivationGate.js';
@@ -26235,6 +26235,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           agentHome: path.dirname(config.stateDir),
           machineId: lvMachineId,
           hooks: lvHooks,
+          // Machine memory care: the load sampler is constructed later in boot; read it live.
+          selfMemoryPressure: () => _machineLoadSampler?.memoryPressure() ?? null,
         });
         if (built.service) {
           localVerifyService = built.service;
@@ -26255,6 +26257,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!_resourcePoolRegistryRef) return { eligible: true, reason: 'pool-unavailable', score: null };
                 const cap = _resourcePoolRegistryRef.getCapacity(machineId);
                 if (!cap) return { eligible: false, reason: 'not-in-pool', score: null };
+                // Machine memory care: a peer whose own fresh report says it is short of memory
+                // is out of the line (with a notice), even when its overall verdict is only elevated.
+                const memReason = peerMemoryReason(cap);
+                if (memReason) return { eligible: false, reason: 'memory-pressure', score: null, memoryReason: memReason };
                 const fit = heavyFit(cap, effectivePending(cap, heavyReservations.count(machineId)));
                 return { eligible: fit.eligible, reason: fit.reason, score: fit.loadPerCore };
               },
