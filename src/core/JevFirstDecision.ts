@@ -38,6 +38,21 @@ export interface JevDecisionResult {
   fallback?: FallbackAnswer;
   recordId?: string;
 }
+/** Fixed, content-free classes for a failed Jev call (never the error text). */
+export type JevFailureKind = 'timeout' | 'http' | 'invalid-body' | 'transport';
+
+/** Classify a thrown askJev error into a fixed code; the message text is never kept. */
+export function classifyJevFailure(err: unknown): { kind: JevFailureKind; httpStatus: number | null } {
+  const e = err as { name?: unknown; message?: unknown } | null;
+  const name = e && typeof e === 'object' && typeof e.name === 'string' ? e.name : '';
+  const message = e && typeof e === 'object' && typeof e.message === 'string' ? e.message : '';
+  if (name === 'AbortError' || name === 'TimeoutError') return { kind: 'timeout', httpStatus: null };
+  const http = /^Jev HTTP (\d+)$/.exec(message);
+  if (http) return { kind: 'http', httpStatus: Number(http[1]) };
+  if (err instanceof SyntaxError) return { kind: 'invalid-body', httpStatus: null };
+  return { kind: 'transport', httpStatus: null };
+}
+
 export interface JevFirstDeps {
   readKey: () => string | null;
   askJev: (input: { key: string; state: string; question: string; model: string; timeoutMs: number }) => Promise<JevAnswer>;
@@ -82,6 +97,8 @@ export class JevFirstDecision {
     let jev: JevAnswer | undefined;
     let selected: boolean | null = null;
     let key: string | null = null;
+    let jevElapsedMs: number | null = null;
+    let failure: ReturnType<typeof classifyJevFailure> | null = null;
     if (point.stage !== 'off') {
       if (bytes > point.maxStateBytes) reason = 'oversize';
       else if (!scrub || scrub.error || scrub.truncated) reason = 'scrub-error';
@@ -93,8 +110,10 @@ export class JevFirstDecision {
         }
         if (!key) reason = 'no-key';
         else {
+          const askStart = now();
           try {
             jev = await this.deps.askJev({ key, state: scrub.text, question: point.question, model: point.model, timeoutMs: point.timeoutMs });
+            jevElapsedMs = Math.max(0, now() - askStart);
             try { this.deps.onJevCall?.(point.id, jev); } catch {
               /* @silent-fallback-ok — a metrics write cannot change the decision */
             }
@@ -109,7 +128,14 @@ export class JevFirstDecision {
                 reason = 'requires-detail';
               }
             }
-          } catch {
+          } catch (err) {
+            if (jevElapsedMs === null) {
+              jevElapsedMs = Math.max(0, now() - askStart);
+              failure = classifyJevFailure(err);
+            } else {
+              // askJev returned, but its answer object could not be read.
+              failure = { kind: 'invalid-body', httpStatus: null };
+            }
             reason = 'jev-error';
             try { this.deps.onJevCall?.(point.id, null); } catch {
               /* @silent-fallback-ok — the Jev failure already routes to the incumbent */
@@ -136,7 +162,8 @@ export class JevFirstDecision {
         jevModel: point.model, jevProbability: jev?.probability ?? null, jevMs: jev?.ms ?? null,
         jevTokensIn: jev?.tokensIn ?? null, fallbackModel: incumbent?.model ?? null,
         fallbackSelection: point.fallbackSelection, benchmarkTaskId: point.benchmarkTaskId ?? null,
-        handoffReason: reason, auditDisagree,
+        handoffReason: reason, jevFailureKind: failure?.kind ?? null,
+        jevHttpStatus: failure?.httpStatus ?? null, jevElapsedMs, auditDisagree,
         _contentFull: {
           question: point.question,
           state: scrub && !scrub.error && !scrub.truncated ? scrub.text : '[withheld: context unavailable]',
