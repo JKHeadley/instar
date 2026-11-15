@@ -54,6 +54,7 @@ const PENDING_BASELINE = [
   'skillLearning.drafter', 'skillLearning.reviewer',
   // conversation-graph-suggestions (2026-11-11): advice-only grouping proposals; graded by the owner's Accept/Reject taps until a bench task lands.
   'ConversationGraphSuggestions',
+  'ConversationSilenceJudge', // never-silent-conversation §3.7: its benchmark IS the held-out pane corpus that gates its actions (tracked CMT-1781); actions ship off until then
 ].sort();
 
 const EXEMPT_BASELINE = [

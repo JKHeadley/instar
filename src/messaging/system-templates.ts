@@ -35,6 +35,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { matchesPairingOutcomeLine } from '../core/PairingOutcomeText.js';
 
 // ── Enumerated categories for the escalation message ──────────────────
 
@@ -278,5 +279,8 @@ export function matchesSystemTemplate(body: string): boolean {
   if (ESCALATION_RE.test(body)) return true;
   if (STAMPEDE_RE.test(body)) return true;
   if (RECOVERED_RE.test(body)) return true;
+  // Pairing outcome lines (docs/specs/mobile-pairing-outcome-notice.md §3.4): a bounded grammar
+  // whose variable slots admit only letters, digits, spaces, apostrophes and hyphens.
+  if (matchesPairingOutcomeLine(body)) return true;
   return false;
 }

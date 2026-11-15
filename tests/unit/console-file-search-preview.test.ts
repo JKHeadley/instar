@@ -21,7 +21,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   buildSearch, searchUrl, imageUrl, previewPlan, previewResult, IMAGE_PREVIEW_MAX,
 } from '../../dashboard/console/files-model.js';
-import { PostUpdateMigrator, FILES_SEARCH_CLAUDEMD_LINE, FILES_SEARCH_MARKER } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+const FILES_SEARCH_MARKER = '/api/files/search?q=';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
 describe('searchByName (real files)', () => {
@@ -129,7 +130,7 @@ describe('Agent awareness for file search', () => {
     expect(md).toContain(FILES_SEARCH_MARKER);
     expect(md).toContain('/api/files/image?path=');
   });
-  it('migrateClaudeMd adds it after the file-link bullet once', () => {
+  it('migrateClaudeMd gives an existing agent the line once, from the awareness entry', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'files-search-mig-'));
     try {
       const stateDir = path.join(tmp, '.instar');
@@ -141,10 +142,8 @@ describe('Agent awareness for file search', () => {
       run(); run();
       const out = fs.readFileSync(mdPath, 'utf-8');
       expect(out.split(FILES_SEARCH_MARKER).length - 1).toBe(1);
-      const lines = out.split('\n');
-      const at = lines.findIndex((l) => l.includes(FILES_SEARCH_MARKER));
-      expect(lines[at - 1]).toMatch(/Generate a file link/);
-      expect(lines[at]).toBe(FILES_SEARCH_CLAUDEMD_LINE(4321));
+      expect(out).toContain('**Finding a file by name** — ');
+      expect(out).toContain('http://localhost:4321/api/files/search?q=MEMORY');
     } finally {
       SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/console-file-search-preview.test.ts' });
     }

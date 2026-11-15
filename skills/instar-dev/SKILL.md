@@ -83,6 +83,8 @@ The agent invokes `/build` as the execution engine. `/build` owns the worktree i
 
 During build, the agent applies `/build`'s own discipline: write tests, make each test fail for the right reason before making it pass, no stubs, no deferred TODOs. All of that is `/build`'s standard behavior.
 
+**Agent-awareness text goes in one new file.** When the change needs to tell agents about a feature, add `src/data/awareness/<id>.md` (a `title`, an optional `requires: telegram`, and a body whose first line is prose; the format is in `src/data/awareness/README.md`). Do not add a section to `generateClaudeMd()` in `src/scaffold/templates.ts` or a block to `patchClaudeMdContent` in `src/core/PostUpdateMigrator.ts`: the entry reaches new agents, existing agents and the Codex/Gemini copies by itself, and two features never conflict on it. Only a row under a core heading (the Registry First table, for example) still edits the template.
+
 ### Phase 4 — Side-effects review
 
 After the build phase produces a working change, BEFORE committing, the agent produces the side-effects artifact.

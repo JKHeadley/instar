@@ -74,7 +74,32 @@ export function mainFailureFromRunDetail(
     files.push(f.file);
     if (typeof f.message === 'string' && f.message.length > 0) messages[f.file] = f.message.split('\n')[0].slice(0, MAIN_RED_HOLD_LIMITS.messageChars);
   }
+  // A failing LINT step names no test file, but it names its script. Without this the hold
+  // stayed inactive (`failing-files-unknown`) on 2026-11-15 while `main` failed
+  // `scripts/lint-framework-name-ratchet.mjs`, and 21 PR runs failed the same step. The
+  // script is matched like a failing file: a PR that touches it or names its path,
+  // basename or stem is a repair candidate; the rest wait.
+  for (const reason of run?.reasons ?? []) {
+    const script = lintScriptFromReason(reason);
+    if (script === null || files.includes(script)) continue;
+    if (files.length >= MAIN_RED_HOLD_LIMITS.maxFiles) break;
+    files.push(script);
+    messages[script] = `the lint step ${script} failed`;
+  }
   return { headSha, files, reasons: (run?.reasons ?? []).slice(0, MAIN_RED_HOLD_LIMITS.maxReasons), messages, recordedAt: nowIso };
+}
+
+/**
+ * The repo script a failed lint step ran, from the run's reason
+ * (`lint-failed:node scripts/<path>.{js,mjs,cjs}` with optional arguments), or null for
+ * any other shape (the type check, a shell pipeline): those name nothing a repair could
+ * be matched against, so they hold nothing, as before. Pure.
+ */
+export function lintScriptFromReason(reason: unknown): string | null {
+  if (typeof reason !== 'string') return null;
+  const m = /^lint-failed:node (scripts\/[\w./-]+\.(?:js|mjs|cjs))(?: |$)/.exec(reason);
+  if (!m || m[1].includes('..')) return null;
+  return m[1];
 }
 
 /** Normalize a PR's title + body for matching (lowercased, bounded). */

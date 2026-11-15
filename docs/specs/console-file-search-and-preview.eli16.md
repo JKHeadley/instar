@@ -20,6 +20,6 @@ The search has limits so it can never hog the machine: it stops after 200 result
 
 Nothing. This is a small, read-only addition that a revert fully undoes.
 
-## Update order fix
+## How agents learn about it
 
-When an existing agent updates, a step adds the new file search line to its instructions file. That step used to run before the step that adds the File Viewer section the line belongs in. So on an agent without that section, the first update added the section and only the second update added the line. The step now runs right after the section is added, so one update does everything and a second update changes nothing.
+The agent learns about file search from one small text file in the folder of feature notes. Every agent, new or old, gets that note in its instructions on its next update, and a second update changes nothing. Earlier versions of this change edited the big instructions template and the update code directly. That kept colliding with other changes to the same two files, and the update step once ran in the wrong order, so the note moved to the feature notes folder.

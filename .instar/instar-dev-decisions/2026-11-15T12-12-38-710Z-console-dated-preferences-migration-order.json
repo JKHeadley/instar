@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-15T12:12:38.710Z",
+  "slug": "console-dated-preferences-migration-order",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 33,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

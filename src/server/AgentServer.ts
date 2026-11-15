@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -209,6 +210,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { getMigrationDefaults } from '../config/ConfigDefaults.js';
 import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
+import { createNeverSilentRoutes } from './neverSilentRoutes.js';
 import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
 import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
@@ -225,6 +227,8 @@ import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
+import { createConversationSearchRouter } from './mobileConversationSearchRoutes.js';
+import { telegramRowId } from '../core/ConversationReadMarkers.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
 import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
@@ -1095,6 +1099,9 @@ export class AgentServer {
   private apprenticeshipMatrixAcceptance: MatrixAcceptanceStore | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
+  /** native-conversation-any-machine-access §3f: the source's transcript copy pass (null: dark). */
+  private transcriptCheckpointTick: (() => Promise<void>) | null = null;
+  private transcriptCheckpointTimer: ReturnType<typeof setInterval> | null = null;
   private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
@@ -1264,6 +1271,8 @@ export class AgentServer {
     publisher?: TelegraphService;
     viewer?: PrivateViewer;
     jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
+    /** Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.4): posts one automation reply as the pairing-outcome producer. */
+    mobilePairingAutomationReply?: import('./pairingOutcomeNotice.js').AutomationPost;
     tunnel?: TunnelManager;
     /**
      * Multi-route own names (docs/specs/mobile-multi-route.md): inject the Tailscale CLI and the
@@ -1529,6 +1538,12 @@ export class AgentServer {
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
+    /** native-conversation-any-machine-access §3d: one signed read of a peer — see RouteContext.meshSignedRead. */
+    meshSignedRead?: (machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<import('../core/MeshRpcClient.js').MeshRpcClientResult>;
+    /** native-conversation-any-machine-access §3f: transcript copies — see RouteContext.transcriptCopies. */
+    transcriptCopies?: import('./routes.js').RouteContext['transcriptCopies'];
+    /** §3f: the source's copy pass, run on the token-ledger poller's cadence. */
+    transcriptCheckpointTick?: () => Promise<void>;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -1839,6 +1854,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.transcriptCheckpointTick = options.transcriptCheckpointTick ?? null;
     this.syncDashboardPinVersion();
     this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
@@ -2132,6 +2148,21 @@ export class AgentServer {
         : (process.env.VITEST ? null : defaultTailscaleExec(wslWindowsHostAddress() !== null)),
       isWsl: wslWindowsHostAddress() !== null,
       ...(options.mobileRoutes?.fetchFn ? { fetchFn: options.mobileRoutes.fetchFn } : {}),
+      // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): a line in the topic that asked for the link.
+      ...(options.mobilePairingAutomationReply ? { outcomeNotice: createPairingOutcomeNotice({
+        post: options.mobilePairingAutomationReply,
+        port: options.config.port,
+        authToken: options.config.authToken ?? '',
+        available: () => !!options.telegram && !!options.telegramOrigin?.service,
+        recentOperatorInbound: (topicId, withinMs) => options.telegram?.selectivity?.recentOperatorInbound(topicId, withinMs) ?? null,
+        upsertAttention: async (item) => {
+          if (!options.telegram) throw new Error('Telegram not configured');
+          return options.telegram.upsertAttentionItem({
+            id: item.id, title: item.title, summary: item.summary, description: item.summary, priority: 'NORMAL',
+            category: 'mobile-pairing', sourceContext: 'mobile-pairing-outcome', contextTopicIds: [item.topicId],
+          } as Parameters<NonNullable<typeof options.telegram>['upsertAttentionItem']>[0]);
+        },
+      }) } : {}),
       raiseAttention: (title, body) => {
         void options.telegram?.createAttentionItem({
           id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',
@@ -6361,6 +6392,8 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      meshSignedRead: options.meshSignedRead ?? null,
+      transcriptCopies: options.transcriptCopies ?? null,
       mutualSshHealth: options.mutualSshHealth ?? (() => {
         if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
         const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
@@ -7144,6 +7177,8 @@ export class AgentServer {
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.startMaturationLadder(options, routeCtx);
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    // Never-Silent Conversation (docs/specs/never-silent-conversation.md §4): 503 while off.
+    this.app.use(createNeverSilentRoutes());
     this.app.use(createMaturationLadderRoutes({
       enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
       ladder: () => this.maturationLadder,
@@ -7252,6 +7287,22 @@ export class AgentServer {
         }) : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
+      // Keyword search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
+      this.app.use(createConversationSearchRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: conversationFlatDeps.machineId,
+        topicMemory: () => options.topicMemory ?? null,
+        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: m.topicName })) : undefined,
+        telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
+          return row ? telegramRowId(row) : null;
+        } : undefined,
+        slack: slackBridge ? () => (slackOwnerUserId(options.config) ? {
+          conversations: () => slackListRows(slackBridge).map((c) => ({ id: c.id, title: c.title })),
+          history: (id, limit) => { const conv = slackBridge.resolve(id); return conv ? slackBridge.history(conv, limit) : []; },
+        } : null) : undefined,
+        pool: routeCtx,
+      }));
       if(routeCtx.conversationRegistry){
         startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
@@ -9014,6 +9065,13 @@ export class AgentServer {
         // codex_token_sessions table — closing the "ledger blind to Codex"
         // gap. process.cwd() is the agent's project dir (launchd sets the
         // server's working directory to it), matching session_meta.cwd.
+
+        // §3f: with no token-ledger poller to ride, the copy pass keeps the same 60 s cadence itself.
+        if (this.transcriptCheckpointTick && !this.tokenLedger) {
+          const tick = this.transcriptCheckpointTick;
+          this.transcriptCheckpointTimer = setInterval(() => { void tick().catch(() => { /* @silent-fallback-ok — the pass records its own errors as evidence */ }); }, 60_000);
+          if (typeof this.transcriptCheckpointTimer.unref === 'function') this.transcriptCheckpointTimer.unref();
+        }
         if (this.tokenLedger) {
           try {
             this.tokenLedgerPoller = new TokenLedgerPoller({
@@ -9026,11 +9084,19 @@ export class AgentServer {
               afterTick: async () => {
                 await this.apprenticeshipCycleSlaMonitor?.tick();
                 await this.geminiCapacityEscalationMonitor?.tick();
+                // §3f: copy new transcript rows on the same cadence that sees them grow.
+                await this.transcriptCheckpointTick?.();
               },
             });
             this.tokenLedgerPoller.start();
           } catch (err) {
             console.warn('[instar] token-ledger poller start failed:', err);
+            // §3f: the copy pass must not stop with the poller; it keeps the same cadence itself.
+            if (this.transcriptCheckpointTick && !this.transcriptCheckpointTimer) {
+              const tick = this.transcriptCheckpointTick;
+              this.transcriptCheckpointTimer = setInterval(() => { void tick().catch(() => { /* @silent-fallback-ok — the pass records its own errors as evidence */ }); }, 60_000);
+              if (typeof this.transcriptCheckpointTimer.unref === 'function') this.transcriptCheckpointTimer.unref();
+            }
           }
 
           // ── Burn-detection auto-heal system ──────────────────────────
@@ -9690,6 +9756,7 @@ export class AgentServer {
       try { if (this.reconSweepTimer) clearInterval(this.reconSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       this.featureMetricsPruneTimer = null;
     }
+    if (this.transcriptCheckpointTimer) { clearInterval(this.transcriptCheckpointTimer); this.transcriptCheckpointTimer = null; }
     if (this.tokenLedger) {
       try {
         this.tokenLedger.close();

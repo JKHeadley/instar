@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { MainHealth, decideMainRearmAfterGreen, oldestUnverifiedAfterGreen, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
+import { MainHealth, decideMainHeadEnqueue, decideMainRearmAfterGreen, oldestUnverifiedAfterGreen, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
 import { LocalVerifyService, MAIN_FAIR_SHARE_MS, MAIN_VERIFY_LIMITS, decideFlakyEscalation, decideStart, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import { validateRecord, type LocalVerifyRecord } from '../../../src/localVerify/record.js';
@@ -662,6 +662,76 @@ describe('green main record feeds PR isolation; repeat flakes escalate', () => {
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(8)], escalatedAt: null }, now)).toEqual({ escalate: false, count: 2 }); // outside the window
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(2) }, now).escalate).toBe(false);
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(8) }, now).escalate).toBe(true);
+  });
+});
+
+describe('a main that is not healthy is re-verified after a short wait (2026-11-15: 111 minutes closed after the repair merged)', () => {
+  const obs = (over: Partial<Parameters<typeof decideMainHeadEnqueue>[0]> = {}) => ({ head: sha('1'), since: 0, firstUnverifiedAt: null, handled: sha('1'), immediate: false, ...over });
+  const UNHEALTHY = { healthy: false };
+
+  it('pure: a new head is ready after 2 unchanged minutes when unhealthy; 10 when healthy or unstated', () => {
+    const seen = decideMainHeadEnqueue(obs(), sha('2'), 5 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY);
+    expect(seen.enqueue).toBe(false); // first sight: not at once
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 6 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY).enqueue).toBe(false);
+    const d = decideMainHeadEnqueue(seen.next, sha('2'), 7 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY);
+    expect(d.enqueue).toBe(true);
+    expect(d.next).toMatchObject({ head: sha('2'), handled: sha('2'), firstUnverifiedAt: null, immediate: false });
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 7 * MIN).enqueue).toBe(false);
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 7 * MIN, MAIN_VERIFY_LIMITS, { healthy: true }).enqueue).toBe(false);
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 15 * MIN).enqueue).toBe(true);
+  });
+
+  it('pure: one stale read of the failed head between two reads of the repair starts no verify of it', () => {
+    // reads a minute apart: repair, failed head (stale), repair, repair, repair
+    let o = obs({ handled: null }); // even with the failed head not remembered as handled
+    const reads: Array<[string, number]> = [[sha('2'), 1], [sha('1'), 2], [sha('2'), 3], [sha('2'), 4], [sha('2'), 5]];
+    const enqueued: string[] = [];
+    for (const [h, m] of reads) { const d = decideMainHeadEnqueue(o, h, m * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY); o = d.next; if (d.enqueue) enqueued.push(h); }
+    expect(enqueued).toEqual([sha('2')]); // only the repair, once it read the same for 2 minutes
+  });
+
+  it('pure: a head that never settles is capped at one verify per 10 minutes when unhealthy', () => {
+    let o = obs();
+    const at: number[] = [];
+    for (let m = 1; m <= 25; m++) { const d = decideMainHeadEnqueue(o, m.toString(16).padStart(40, '0'), m * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY); o = d.next; if (d.enqueue) at.push(m); }
+    expect(at).toEqual([11, 22]); // 10 minutes after each first unverified head (minutes 1 and 12)
+  });
+
+  it('pure: the short wait never lengthens limits a caller already made shorter', () => {
+    const quick = { debounceMs: 30_000, debounceCapMs: 60_000 };
+    const seen = decideMainHeadEnqueue(obs(), sha('2'), 0, quick, UNHEALTHY);
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 30_000, quick, UNHEALTHY).enqueue).toBe(true);
+  });
+
+  it('pure: still once per head: a head already handled is not enqueued again, healthy or not', () => {
+    expect(decideMainHeadEnqueue(obs(), sha('1'), 99 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY).enqueue).toBe(false);
+  });
+
+  it('service: after main goes red, the repair head is verified once it has read the same for 2 minutes (a stale read of the red head in between restarts the count), not 10', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1')); // boot: immediate
+    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1') }); // the one re-run
+    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.svc.mainHealth().state).toBe('main-red');
+    s.svc.noteMainHead(sha('2')); // the repair landed
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('1')); // one stale read of the red head
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(2);
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(2);
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(3);
+    expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: sha('2') });
+  });
+
+  it('service: a healthy main keeps the 10-minute debounce for a new head', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    s.svc.noteMainHead(sha('2'));
+    s.advance(2 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(1);
   });
 });
 

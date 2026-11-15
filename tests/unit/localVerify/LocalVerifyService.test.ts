@@ -157,6 +157,22 @@ describe('degradations carried by the run child', () => {
   });
 });
 
+describe('the automatic re-run after an error', () => {
+  it('a merge conflict is NOT re-run (same head and base give the same conflict); another error still is', async () => {
+    const h = setup({ views: { 1: view(), 2: view() } });
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    await h.finish(0, ok(record({ outcome: 'error', errorStep: 'conflict', lanes: [], mergeTree: '' })));
+    expect(h.spawned).toHaveLength(1);
+    expect(fs.readFileSync(h.svc.auditPath, 'utf8')).not.toContain('"event":"error-auto-retry"');
+    await h.svc.request(2, { explicit: false });
+    expect(h.spawned).toHaveLength(2);
+    await h.finish(1, ok(record({ pr: 2, outcome: 'error', errorStep: 'fetch', lanes: [], mergeTree: '' })));
+    expect(h.spawned).toHaveLength(3);
+    expect(fs.readFileSync(h.svc.auditPath, 'utf8')).toContain('"event":"error-auto-retry"');
+  });
+});
+
 describe('automatic full-suite replay after enforced preflight red', () => {
   it('bypasses preflight on a fresh-tree retry after a preflight cleanup error', async () => {
     const h = setup({ views: { 1: view() } });

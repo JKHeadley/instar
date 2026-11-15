@@ -43,6 +43,17 @@ export function movedMachinesMidStepNotice(targetMachineName: string | null | un
     + `The conversation carries on there. If that step matters, ask me to check it.`;
 }
 
+/**
+ * The same cut-off move, but the machine the conversation moved to confirmed it has
+ * picked the step back up (src/core/InterruptedMoveResume.ts). Said once, plainly; the
+ * resumed session itself reports the result.
+ */
+export function movedMachinesResumingNotice(targetMachineName: string | null | undefined): string {
+  const where = plainMachineName(targetMachineName);
+  return `I moved this conversation to ${where} before I'd finished my last step. `
+    + `I'm picking that step back up there now, and I'll tell you when it's done.`;
+}
+
 /** A message arrived with no live session, so a new one is starting. Says nothing has stopped: the conversation carries on. */
 export const SESSION_RESTARTING_NOTICE =
   `🔄 Starting a new session for this conversation. Your message is saved and I'll answer it once I'm back.`;
@@ -103,6 +114,8 @@ export const USER_NOTICE_CATALOG: ReadonlyArray<{ id: string; render: () => stri
   { id: 'moved-machines-mid-step', render: () => movedMachinesMidStepNotice('Mac Studio') },
   { id: 'moved-machines-mid-step:unnamed', render: () => movedMachinesMidStepNotice(null) },
   { id: 'moved-machines-mid-step:id-only', render: () => movedMachinesMidStepNotice('m_03b30f5b32c6ef3eb0afd3ca7054e252') },
+  { id: 'moved-machines-resuming', render: () => movedMachinesResumingNotice('Mac Studio') },
+  { id: 'moved-machines-resuming:unnamed', render: () => movedMachinesResumingNotice(null) },
   { id: 'session-restarting', render: () => SESSION_RESTARTING_NOTICE },
   { id: 'session-back', render: () => SESSION_BACK_NOTICE },
   { id: 'profile-reapply', render: () => PROFILE_REAPPLY_NOTICE },
