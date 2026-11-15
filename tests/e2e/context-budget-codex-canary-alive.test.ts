@@ -113,7 +113,7 @@ describe('Codex compaction channel — alive on the production path', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
     expect(src).toContain("const codexCanaryOn = () => contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined));");
     expect(src).toContain('enabled: codexCanaryOn,');
-    expect(src).toContain("engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn()");
+    expect(src).toContain("engineInScope: (e) => e !== CODEX_CLI_FRAMEWORK || codexCanaryOn()");
     expect(src).toContain('homeForSession: (t) => codexHomeForTmuxSession(t, undefined, config.sessions.tmuxPath),');
     // The canary's default engine hooks are the adapter's real functions (not no-ops).
     const canary = fs.readFileSync(path.join(ROOT, 'src/monitoring/compactionCanary.ts'), 'utf-8');

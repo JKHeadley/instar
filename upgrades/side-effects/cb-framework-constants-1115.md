@@ -53,3 +53,7 @@ Revert the commit.
 ## Follow-up commit (2026-11-15 18:36Z)
 
 `src/commands/postDriveTranscriptAudit.ts`: `DEFAULT_FRAMEWORK` now imports `CODEX_CLI_FRAMEWORK` (same value). The `frameworkFacts.ts` doc comment now says that default or fallback engine ids import the constants too. The ratchet baseline drops to 1121. framework-id-ratchet and the post-drive audit test pass (2 files, 27 of 27).
+
+## Follow-up commit (2026-11-15 18:45Z)
+
+Four WIRED e2e tests read `src/commands/server.ts` as text. Three expected the old `'codex-cli'` literal in `engineInScope` and in the codex adapter-suite wiring, and now expect `CODEX_CLI_FRAMEWORK`, which is what the wiring actually says. `context-layer-h3-alive` expects `h3Builder: _h3Builder ?? undefined,` with its comma, so the AgentServer constructor call lists `h3Builder` before `contextLayers` again. No behaviour change. I checked every literal those four tests expect against the source files: all present.
