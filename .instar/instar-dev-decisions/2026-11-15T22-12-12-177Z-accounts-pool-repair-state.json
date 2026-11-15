@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-15T22:12:12.177Z",
+  "slug": "accounts-pool-repair-state",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 114,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileCapacityRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 103,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
