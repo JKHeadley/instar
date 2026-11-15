@@ -1470,6 +1470,23 @@
       "grandfathered": true
     },
     {
+      "category": "derived-conversation-embeddings",
+      "description": "Meaning search over conversations (docs/specs/conversation-search.md §4): one row per message this machine holds (conversation ref, source key, time, platform, sender, text hash) with its 384-float vector from the local all-MiniLM-L6-v2 model, or no vector for a message under 3 words. No message text. Filled in the background from TopicMemory, the app conversation store and the Slack history rows; at most 200,000 rows (newest kept). Machine-local by design: each machine indexes what it holds and scope=pool merges answers.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "state/conversation-embeddings.db"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "note": "Derived from the conversation stores and rebuilt from them (a corrupt or different-model file is set aside and refilled); bounded to the newest 200,000 messages."
+      }
+    },
+    {
       "category": "derived-project-map",
       "description": "Project-map spatial-awareness scan (refreshable).",
       "scope": "derived-cache",
