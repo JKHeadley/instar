@@ -63,6 +63,8 @@ async function serve(runtime:ConversationGraphReplicationRuntime){
 /** wideIdentifiers: each row carries the longest ids production accepts (80-char op/event id per OP_ID_RE and
  * EVENT_ID_RE, 200-char idempotency key per opaque()), so fewer real rows cross the real 128KiB page size. */
 async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPages=requireLarge?25:1,{wideIdentifiers=false}:{wideIdentifiers?:boolean}={}){
+  // Content-free phase timings (row count, phase name, milliseconds) so slow runs show where the time went.
+  const phaseStart=performance.now();let phaseAt=phaseStart;const phase=(name:string)=>{const now=performance.now();console.log('graph context phase',JSON.stringify({rows:count,phase:name,ms:Math.round(now-phaseAt),totalMs:Math.round(now-phaseStart)}));phaseAt=now;};
   const fixture=await setupGraphRuntimeFixture(),{f,runtime:origin,peer:oldPeer,service,witness,managers}=fixture;
   await origin.prepareNativeTailClosure();
   const headerId=newHeaderId(),effort={kind:'effort' as const,id:crypto.randomUUID()};let predecessorHash:string|null=null;
@@ -78,12 +80,18 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
    const plaintext=encodeGraphSourceEnvelope(coreType,core,authorizationProof,Buffer.from(canonicalJson(application))),encryptedSourceBundle=sealGraphBundle(plaintext,f.membership.members,{agentId:'echo',eventId});plaintext.fill(0);
    const controlCapsule=createGraphControlCapsule(coreType,core,authorizationProof),packet={coreType,controlHash:canonicalHash(controlCapsule),erasureIdentity:deriveGraphErasureIdentity(coreType,core),agentId:'echo',eventId,idempotencyKey,coreHash:canonicalHash(core),authorizationReceiptHash:canonicalHash(receipt),sourceSequence:i,predecessorHash,membershipEpoch:1,leaseEpoch:1,writerId:origin.machineId,sourceBundleHash:canonicalHash(encryptedSourceBundle)};
    const record:ConversationGraphReplicationRecord={coreType,packet,packetSignature:signGraphRecord(D.packet,packet,managers[0].loadSigningKey()),core,authorizationProof,encryptedSourceBundle};
-   const own=await origin.source.appendLocal(record),prepared=service.prepare({packet,packetSignature:record.packetSignature,controlCapsule,encryptedSourceBundle,...current});await origin.source.attachPreparation(eventId,prepared);record.preparationProof=prepared;
-   const remote=await oldPeer.source.receive(record,origin.machineId),certificate=service.commit('echo',idempotencyKey,current.lease,current.originalLease,[own.receipt,remote]);
+   const own=await origin.source.appendLocal(record),prepared=service.prepare({packet,packetSignature:record.packetSignature,controlCapsule,encryptedSourceBundle,...current});
+   // The two members' stores are independent (own directory, own serial queue; persist stores a clone), so the origin's
+   // preparation write and the peer's receipt of the prepared record overlap. Every production call still runs once.
+   const originPrepared=origin.source.attachPreparation(eventId,prepared);record.preparationProof=prepared;
+   const [,remote]=await Promise.all([originPrepared,oldPeer.source.receive(record,origin.machineId)]),certificate=service.commit('echo',idempotencyKey,current.lease,current.originalLease,[own.receipt,remote]);
    const acknowledgments=await Promise.all([origin.source.attachCertificate(eventId,certificate),oldPeer.source.attachCertificate(eventId,certificate)]);
-   for(const ack of acknowledgments){service.acknowledgeCertificate('echo',idempotencyKey,ack);await origin.source.recordCertificateReceipt(eventId,ack);await oldPeer.source.recordCertificateReceipt(eventId,ack);}predecessorHash=packet.coreHash;
+   // Witness acknowledgments stay synchronous and in order; each member records both receipts in the same order on its
+   // own serial queue, and the two members' writes overlap. The row completes before the next row starts.
+   const memberReceipts:Promise<void>[]=[];for(const ack of acknowledgments){service.acknowledgeCertificate('echo',idempotencyKey,ack);memberReceipts.push(origin.source.recordCertificateReceipt(eventId,ack),oldPeer.source.recordCertificateReceipt(eventId,ack));}await Promise.all(memberReceipts);predecessorHash=packet.coreHash;
    if(i%1000===0)console.log('real historical records certified',i);
   }
+  phase('history-certified');
   const target={sourceKind:'header' as const,sourceId:headerId},requestId='bulk-header-erasure',authorizationReceiptHash=canonicalHash('actual owner erasure'),action={requestId,target,bundleHashes:[],authorizationReceiptHash};
   const eraseActuation=origin.actuation(),erasure=service.erase('echo',requestId,target,[],authorizationReceiptHash,eraseActuation.lease,eraseActuation.originalLease,signGraphRecord(D.action,witnessActionPayload('erase',action,eraseActuation.lease),managers[0].loadSigningKey()));
   const erasureAuthority=await witness.erasureAuthority(erasure);await origin.source.applyErasure(erasure,erasureAuthority);await oldPeer.source.applyErasure(erasure,erasureAuthority);const records=oldPeer.source.recordsForRepair().sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
@@ -110,6 +118,7 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
   const addedReceipt=await new ConversationGraphReplicationTransfer({...stageOptions,directory:addedStage,machineId:addedId,memberPrivateKey:added.loadSigningKey(),memberSealingPrivateKey:added.loadEncryptionKey()}).stage(stage);
   const survivorReceipt=await new ConversationGraphReplicationTransfer({...stageOptions,directory:survivorStage,machineId:oldPeer.machineId,memberPrivateKey:managers[1].loadSigningKey(),memberSealingPrivateKey:managers[1].loadEncryptionKey()}).stage(stage);
   const activated=await witness.recoverPending({newMembership:membership,authorization,currentLease:lease,originalCurrentLease:actuation.originalLease,revalidations:[],stateTransferReceipts:[addedReceipt,survivorReceipt],sourceManifest:manifest,historicalRewraps:rewraps});
+  phase('erase-membership-stage-activate');
   await origin.close();await oldPeer.close();
   for(const identity of [managers[1],added]){for(const other of [managers[1],added])if(identity!==other){identity.registerMachine(other.loadIdentity(),'standby');new IdentityStore({stateDir:identity.baseDir}).apply({identity:other.loadIdentity(),scope:'remote',actor:'pairing-trust',path:'pair'});}const registry=identity.loadRegistry();if(registry.machines[origin.machineId])registry.machines[origin.machineId].revokedAt=new Date().toISOString();identity.saveRegistry(registry);}
   const configuration={...fixture.options[1].configuration!,membership,stagingDiskQuotaBytes:budget};
@@ -132,6 +141,7 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
   let referenceBytes=0;for(const name of references){const file=path.join(sourceDirectory,name);referenceBytes+=(await fs.stat(file)).size;const reference=JSON.parse(await fs.readFile(file,'utf8'));expect(Object.keys(reference).sort()).toEqual(['contextHash','rewrapHash','v']);}expect(referenceBytes).toBeLessThan(2*1024*1024);
   expect(await treeBytes(addedStage)).toBeLessThan(budget);expect(await treeBytes(survivorStage)).toBeLessThan(budget);
   console.log('actual bounded context bytes',JSON.stringify({records:count,manifest:Buffer.byteLength(canonicalJson(manifest)),sourceReferenceBytes:referenceBytes,stageBytes:await treeBytes(addedStage)}));
+  phase('member-boot-import-verify');
   expect(receiver.source.recordsForRepair()).toHaveLength(count);expect(()=>receiver.source.openVerifiedPayload(receiver.source.repairRecord(records[1].packet.eventId)!)).toThrow('erased');
   const originalCertificate=canonicalJson(records[0].certificate),survivorUrl=await serve(survivor);
   for(const identity of [managers[1],added]){const registry=identity.loadRegistry();registry.machines[survivor.machineId].endpoints=[{kind:'lan',url:survivorUrl}];registry.machines[addedId].endpoints=[{kind:'lan',url:addedBoot.url}];identity.saveRegistry(registry);}
@@ -144,6 +154,7 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
   expect(restarted.runtime.readiness().retained).toBe(false);
   const bodyRecovery=vi.spyOn(witness,'recover').mockRejectedValue(new Error('independent witness application-body endpoint unavailable'));let repairedReady=false;try{repairedReady=await restarted.runtime.refreshReadiness();}finally{bodyRecovery.mockRestore();}
   expect(repairedReady,(restarted.runtime as unknown as {lastReadinessFailure:string}).lastReadinessFailure).toBe(true);
+  phase('restart-signed-peer-repair');
   expect(contextPages).toBeGreaterThanOrEqual(minPages); // the context actually transferred in 128KiB signed pages
   if(minPages>=2){ // the real production page size was crossed: every served page is part of a >=2-page, >128KiB context and all pages arrived
    expect(servedPages.length).toBe(contextPages);
@@ -157,6 +168,7 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
   expect(()=>restarted.runtime.source.openVerifiedPayload(restarted.runtime.source.repairRecord(records[1].packet.eventId)!)).toThrow('erased');
   expect((await fs.readdir(path.join(sourceDirectory,'contexts'))).filter(name=>name.endsWith('.json'))).toHaveLength(1);
   expect((await fs.readdir(sourceDirectory)).filter(name=>name.endsWith('.receipt.json'))).toHaveLength(0);
+  phase('repaired-record-assertions');
 
 }
 describe('bounded shared historical proof custody',()=>{
