@@ -136,7 +136,17 @@ import { activeUsageLimitWatch, setActiveUsageLimitWatch, UsageLimitWatch } from
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
-import { movedMachinesMidStepNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
+import { movedMachinesMidStepNotice, movedMachinesResumingNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
+import { handOffInterruptedMove, InterruptedMoveResumeReceiver, parseInterruptedMoveResume } from '../core/InterruptedMoveResume.js';
+/** The target answers within its 20 s ownership wait; the mesh route's own limit is 30 s. */
+const INTERRUPTED_MOVE_RESUME_TIMEOUT_MS = 28_000;
+/** The moved-mid-step notice answers the person's own message, so it is a conversation notice
+ *  (message-loss-notice), never the quiet default. Without a known message it stays quiet. */
+function interruptedMoveNoticeEnvelope(inboundMessageId: string | null): import('../messaging/NotificationSelectivityGate.js').OutboundEnvelope {
+  return inboundMessageId
+    ? { origin: 'automated', category: 'message-loss-notice', sourceContext: 'interrupted-move', inboundMessageId }
+    : stampNotification();
+}
 import { parseDashboardCreatePayload, safeMachineLabel, createDashboardCreateStartRunner, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
@@ -1017,6 +1027,8 @@ let _recordRopeResult:
 let _identityLeaseEligible: () => boolean = () => true;
 let _threadlineBoot: import('../threadline/ThreadlineBootstrap.js').ThreadlineBootstrapResult | null = null;
 let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdentityServer | null = null;
+/** interrupted-move-resume receiver: built on the first request, keeps its once-per-epoch memory. */
+let _interruptedMoveResumeReceiver: InterruptedMoveResumeReceiver | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
 // session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
@@ -28899,6 +28911,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           markInjected: (session, messageId) => _inboundQueue?.markRemoteInjected(session, messageId),
           report: (what, detail) => degradationReporter.report({ feature: what, primary: 'deliver a forwarded app message on the machine that runs its conversation', fallback: 'the message reads "unknown" in the app', reason: detail, impact: 'An app message may not have reached its session.' }),
         });
+        // bug #2: a session started on a machine that is not the Telegram router has no local
+        // history for the topic, so the router's recent messages are pulled and handed to the
+        // spawn. Shared by the forwarded-message spawn and the interrupted-move resume.
+        const pullMovedTopicContext = async (tg: TelegramAdapter, topicId: number): Promise<string> => {
+          const history = await pullMovedTopicHistory({
+            signedPull: _pullRouterHistory,
+            bearerFetch: async (topic) => {
+              const url = _resolveRouterUrl?.() ?? null;
+              if (!url) return null;
+              const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
+                headers: { 'Authorization': `Bearer ${config.authToken}` },
+                signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
+              });
+              if (!resp.ok) return null;
+              const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
+              if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
+              return Array.isArray(j.messages) ? j.messages : null;
+            },
+            log: (m) => console.warn(`  [session-pool] ${m}`),
+          }, topicId);
+          // A bounded pull cannot prove that no older messages lived on a prior machine.
+          return `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
+        };
         const deliverMessageHandler = deliverMod.createDeliverMessageHandler({
           ownerEpochOf: (s) => ownReg.read(s)?.ownershipEpoch ?? null,
           recordReceipt: (messageId, session) => {
@@ -29163,24 +29198,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // history for the topic is empty) so the moved session continues with context
               // instead of starting blank. Best-effort — on any failure we spawn without it.
               void (async (): Promise<string> => {
-                const history = await pullMovedTopicHistory({
-                  signedPull: _pullRouterHistory,
-                  bearerFetch: async (topic) => {
-                    const url = _resolveRouterUrl?.() ?? null;
-                    if (!url) return null;
-                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
-                      headers: { 'Authorization': `Bearer ${config.authToken}` },
-                      signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
-                    });
-                    if (!resp.ok) return null;
-                    const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
-                    if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
-                    return Array.isArray(j.messages) ? j.messages : null;
-                  },
-                  log: (m) => console.warn(`  [session-pool] ${m}`),
-                }, topicId);
-                // A bounded pull cannot prove that no older messages lived on a prior machine.
-                const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
+                const movedContext = await pullMovedTopicContext(tg, topicId);
                 return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text ? await sessionTextP() : text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
@@ -29326,7 +29344,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, appAliasString(topic)); },
             onDrainEnded: (sk) => { _appConversationService?.clearEmergency(sk); },
-            notifyInterrupted: (topic, target) => {
+            notifyInterrupted: (topic, target, handoff) => {
               if (topic.startsWith('app:')) {
                 let name: string | null = null;
                 try { name = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null; } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
@@ -29341,12 +29359,28 @@ export async function startServer(options: StartOptions): Promise<void> {
               // the last step was cut off. The person sees the machine's nickname
               // (never its id — Rule 7); the bound and timings stay in the audit row.
               let targetName: string | null = null;
+              let selfName: string | null = null;
               try {
-                targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null;
+                const active = meshIdMgr.getActiveMachines();
+                targetName = active.find((m) => m.machineId === target)?.entry.nickname ?? null;
+                selfName = active.find((m) => m.machineId === meshSelfId)?.entry.nickname ?? null;
               } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
-              void withNotificationEnvelope(stampNotification(), async () => (telegram)!
-                .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName)))
-                .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
+              // 2026-11-14 (topic 142440): the cut-off step was dropped and this notice was
+              // filed quiet. Now the target is asked to pick the step back up (it then sends
+              // the notice); only when it cannot does this machine send the "may be
+              // incomplete" notice. Either way the notice rides the person's own message
+              // (message-loss-notice), so it lands in the conversation, not the quiet feed.
+              const inboundMessageId = telegram.selectivity?.latestInbound(topicNum) ?? null;
+              void handOffInterruptedMove({
+                requestResume: () => _identityMeshSend
+                  ? _identityMeshSend(target, {
+                    type: 'interrupted-move-resume', sessionKey: topic, claimEpoch: handoff.claimEpoch, fromName: selfName, inboundMessageId,
+                  }, INTERRUPTED_MOVE_RESUME_TIMEOUT_MS)
+                  : Promise.resolve({ ok: false, reason: 'mesh-unavailable' }),
+                sendIncompleteNotice: () => withNotificationEnvelope(interruptedMoveNoticeEnvelope(inboundMessageId), async () => (telegram)!
+                  .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName))),
+                log: (line) => console.log(pc.dim(`  ${line}`)),
+              });
             },
             transferDeliveryLedger: createInboundDeliveryTransferStep({
               selfMachineId: meshSelfId,
@@ -29710,6 +29744,65 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
               _ownershipNudgeReceiver.receive(sender, nudge);
               return { ok: true };
+            },
+            // interrupted-move-resume (src/core/InterruptedMoveResume.ts) — a move closed this
+            // conversation's session mid-step on the machine it left; pick the step back up here.
+            // Acts only on this machine's OWN ownership record, once per (conversation, epoch).
+            'interrupted-move-resume': async (cmd) => {
+              const req = parseInterruptedMoveResume(cmd as { sessionKey?: unknown; claimEpoch?: unknown; fromName?: unknown; inboundMessageId?: unknown });
+              if (!req) return { ok: false, reason: 'malformed' };
+              if (!telegram) return { ok: false, outcome: 'unsupported', reason: 'telegram-unavailable' };
+              const tg = telegram;
+              _interruptedMoveResumeReceiver ??= new InterruptedMoveResumeReceiver({
+                selfMachineId: meshSelfId,
+                readOwnership: (key) => ownReg.read(key),
+                emergencyStopActive: () => {
+                  try {
+                    const flagAt = fs.statSync(path.join(config.projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
+                    return Date.now() - flagAt < 120_000;
+                  } catch { /* @silent-fallback-ok — no flag file = no emergency stop (the defined absent-state) */ return false; }
+                },
+                resumeTopic: async (topicId, note) => {
+                  // A start already running for this topic (a new message, a dashboard start):
+                  // wait for it to bind and hand it the note, never start a second session.
+                  for (let i = 0; i < 60 && (_dashboardStartsInFlight.has(topicId) || _spawningTopicsRegistryRef?.has(topicId)); i++) {
+                    await new Promise((r) => setTimeout(r, 1000));
+                  }
+                  const existing = tg.getSessionForTopic(topicId);
+                  if (existing && sessionManager.isSessionAlive(existing)) {
+                    const injected = sessionManager.injectTelegramMessage(existing, topicId, note, tg.getTopicName?.(topicId) ?? undefined);
+                    if (injected === false) throw new Error('inject-returned-false');
+                    return 'injected';
+                  }
+                  // Hold the topic's start-in-progress token (taken with no await after the check
+                  // above) until the session is bound, so a message arriving meanwhile waits for
+                  // this start instead of starting a second session under another name.
+                  const startReg = _spawningTopicsRegistryRef;
+                  const startTok = startReg ? startReg.add(topicId) : null;
+                  try {
+                    const spawnName = `topic-${topicId}`;
+                    // The router has this topic's history locally; any other machine pulls it.
+                    const movedContext = _resolveRouterUrl?.() ? await pullMovedTopicContext(tg, topicId) : undefined;
+                    const name = await spawnSessionForTopic(sessionManager, tg, spawnName, topicId, note, undefined, undefined, movedContext);
+                    tg.registerTopicSession(topicId, name, spawnName);
+                    return 'spawned';
+                  } finally {
+                    if (startReg && startTok) startReg.clear(topicId, startTok);
+                  }
+                },
+                sendNotice: (topicId, resuming, inboundMessageId) => {
+                  let targetName: string | null = null;
+                  try { targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === meshSelfId)?.entry.nickname ?? null; }
+                  catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
+                  const id = inboundMessageId ?? tg.selectivity?.latestInbound(topicId) ?? null;
+                  return withNotificationEnvelope(interruptedMoveNoticeEnvelope(id), async () => tg
+                    .sendToTopic(topicId, resuming ? movedMachinesResumingNotice(targetName) : movedMachinesMidStepNotice(targetName)));
+                },
+                now: () => Date.now(),
+                sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+                log: (line) => console.log(pc.dim(`  ${line}`)),
+              });
+              return _interruptedMoveResumeReceiver.receive(req);
             },
             // WORKING-SET-HANDOFF-SPEC §3.2 — the chunked working-set serve
             // verb. Registered always (lockstep with the union+RBAC edits so

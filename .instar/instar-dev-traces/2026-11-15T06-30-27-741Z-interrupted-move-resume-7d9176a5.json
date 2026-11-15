@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "interrupted-move-resume",
+  "sessionId": "a74a698f-f59f-4d6c-999b-374df952c34e",
+  "timestamp": "2026-11-15T06:30:27.741Z",
+  "artifactPath": "upgrades/side-effects/interrupted-move-resume.md",
+  "artifactSha256": "22e6c7c46ed7122cd709f931a24b96cb9d59a3d6d517108272a4315557bc8a1b",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/InterruptedMoveResume.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/data/awareness/moved-mid-step.md",
+    "src/messaging/userNotices.ts",
+    "tests/e2e/interrupted-move-resume-alive.test.ts",
+    "tests/integration/interrupted-move-resume-roundtrip.test.ts",
+    "tests/unit/InterruptedMoveResume.test.ts",
+    "tests/unit/MeshRpc.test.ts",
+    "tests/unit/SessionDrainRunner.test.ts",
+    "tests/unit/userNotices.test.ts",
+    "upgrades/interrupted-move-resume.eli16.md",
+    "upgrades/next/interrupted-move-resume.md",
+    "upgrades/side-effects/interrupted-move-resume.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: a forced-close hand-off plus one new signed mesh verb; no persisted state, no config, a revert fully undoes it.",
+  "eli16Path": "upgrades/interrupted-move-resume.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/interrupted-move-resume.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
