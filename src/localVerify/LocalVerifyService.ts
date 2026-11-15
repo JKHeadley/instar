@@ -1224,7 +1224,7 @@ export class LocalVerifyService {
     // A head different from the last one observed: queued PR entries resolved before now re-read their base at start.
     if (o.head !== null && o.head !== sha) this.mainMovedAt = now;
     if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
-    const d = decideMainHeadEnqueue(o, sha, now);
+    const d = decideMainHeadEnqueue(o, sha, now, MAIN_VERIFY_LIMITS, { healthy: this.health.isHealthy() });
     o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
     o.handled = d.next.handled; o.immediate = d.next.immediate;
     if (d.enqueue) {

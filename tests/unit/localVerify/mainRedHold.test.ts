@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  MAIN_RED_HOLD_LIMITS, decideMainRedHold, failingFileNames, holdReasonText, isRevertText, mainFailureFromRunDetail, prMatchText, repairVerdict,
+  MAIN_RED_HOLD_LIMITS, decideMainRedHold, failingFileNames, holdReasonText, isRevertText, lintScriptFromReason, mainFailureFromRunDetail, prMatchText, repairVerdict,
 } from '../../../src/localVerify/mainRedHold.js';
 
 const RED = 'e'.repeat(40);
@@ -37,6 +37,62 @@ describe('mainFailureFromRunDetail — the bounded detail kept for the hold', ()
     expect(d.reasons).toHaveLength(MAIN_RED_HOLD_LIMITS.maxReasons);
     expect(mainFailureFromRunDetail(RED, { reasons: ['dirty-tree'] }, 'now').files).toEqual([]);
     expect(mainFailureFromRunDetail(RED, undefined, 'now').files).toEqual([]);
+  });
+});
+
+describe('a failing lint step holds like a failing file (2026-11-15: main failed lint-framework-name-ratchet, 21 doomed PR runs)', () => {
+  const LINT = 'scripts/lint-framework-name-ratchet.mjs';
+  const REASON = `lint-failed:node ${LINT}`;
+
+  it('lintScriptFromReason reads the repo script, with or without arguments; every other shape is null', () => {
+    expect(lintScriptFromReason(REASON)).toBe(LINT);
+    expect(lintScriptFromReason('lint-failed:node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce')).toBe('scripts/lint-deferral-carrier-resolvable.mjs');
+    expect(lintScriptFromReason('lint-failed:node scripts/lint-state-registry.js')).toBe('scripts/lint-state-registry.js');
+    for (const other of [
+      'lint-failed:node node_modules/typescript-native/bin/tsc --noEmit', // the type check names no repo script
+      'lint-failed:node scripts/../outside.mjs',
+      'lint-failed:node scripts/lint-a-name-cut-off-by-the-80-character-limit-of-the-reason-te',
+      'build-failed:node scripts/build.mjs',
+      'lint-failed:sh -c node scripts/x.mjs',
+      'file-failed:tests/unit/x.test.ts:1',
+      '', null, 7,
+    ]) expect(lintScriptFromReason(other)).toBeNull();
+  });
+
+  it('mainFailureFromRunDetail adds the script after the failing test files, once, under the cap', () => {
+    const d = mainFailureFromRunDetail(RED, { reasons: [REASON, REASON], failures: [] }, 'now');
+    expect(d.files).toEqual([LINT]);
+    expect(d.messages[LINT]).toBe(`the lint step ${LINT} failed`);
+    const both = mainFailureFromRunDetail(RED, { reasons: [`file-failed:${FILE}:1`, REASON], failures: [{ file: FILE }] }, 'now');
+    expect(both.files).toEqual([FILE, LINT]);
+    const full = mainFailureFromRunDetail(RED, { reasons: [REASON], failures: Array.from({ length: 50 }, (_, i) => ({ file: `tests/unit/f${i}.test.ts` })) }, 'now');
+    expect(full.files).toHaveLength(MAIN_RED_HOLD_LIMITS.maxFiles);
+    expect(full.files).not.toContain(LINT);
+    expect(mainFailureFromRunDetail(RED, { reasons: ['lint-failed:node node_modules/typescript-native/bin/tsc --noEmit'] }, 'now').files).toEqual([]);
+  });
+
+  it('the incident: the repair that names the script runs; changes that neither touch nor name it are held', () => {
+    const f = mainFailureFromRunDetail(RED, { reasons: [REASON], failures: [] }, '2026-11-15T00:55:45.289Z');
+    const repair = { pr: 3182, files: ['src/core/EnrollmentWizard.ts'], text: prMatchText('fix(enrollment): name the Claude engine once so main passes the framework-id ratchet', 'Main fails `node scripts/lint-framework-name-ratchet.mjs` (1135 -> 1136)') };
+    const touches = { pr: 3072, files: [LINT, 'src/core/frameworkFacts.ts'], text: prMatchText('feat: h3 builder', '') };
+    const byStem = { pr: 3103, files: ['src/server/routes.ts'], text: prMatchText('fix: baseline split for lint-framework-name-ratchet', '') };
+    const unrelated = { pr: 3135, files: ['src/core/FeedbackExecutor.ts'], text: prMatchText('fix(feedback): executor PRs survive restarts', '') };
+    const unknown = { pr: 3161, files: null, text: prMatchText('feat(conversations): pin whole conversations', '') };
+    const d = decideMainRedHold({ enabled: true, health: { state: 'main-red', redHead: RED }, failure: f, queue: [repair, touches, byStem, unrelated, unknown] });
+    expect(d).toMatchObject({ active: true, failingFiles: [LINT] });
+    if (!d.active) throw new Error('unreachable');
+    expect(d.repairPrs).toEqual([
+      { pr: 3182, by: 'names-file', file: LINT },
+      { pr: 3072, by: 'touches-file', file: LINT },
+      { pr: 3103, by: 'names-file', file: LINT },
+    ]);
+    expect(d.heldPrs).toEqual([{ pr: 3135, reason: 'no-overlap' }, { pr: 3161, reason: 'files-unknown' }]);
+    expect(holdReasonText(d)).toContain(LINT);
+  });
+
+  it('a lint failure of an unreadable shape still holds nothing (failing-files-unknown), as before', () => {
+    const f = mainFailureFromRunDetail(RED, { reasons: ['lint-failed:node node_modules/typescript-native/bin/tsc --noEmit'], failures: [] }, 'now');
+    expect(decideMainRedHold({ enabled: true, health: { state: 'main-red', redHead: RED }, failure: f, queue: [] })).toEqual({ active: false, reason: 'failing-files-unknown' });
   });
 });
 

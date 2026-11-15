@@ -3167,7 +3167,7 @@ const localVerifyMainSchedule: SelfActionController = {
 const localVerifyMainDebounce: SelfActionController = {
   id: 'local-verify-main-debounce',
   actionVerb: 'retry-main-verify',
-  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; enqueueMain → decideMainEnqueue)',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; while main is suspect or red the debounce is 2 min capped at 10, so the floor on that path is 2 minutes and this model, which passes no health, does not exercise it; enqueueMain → decideMainEnqueue)',
   modelsPath: 'src/localVerify/LocalVerifyService.ts',
   delegatedGiveUp: 'none needed: the debounce cap (30 min) floors head-changed verifies; at most one is ever pending',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so each restart adds at most one head-changed verify; restarts are operator/updater-driven and dampened.' },
