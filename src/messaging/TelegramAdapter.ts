@@ -1119,6 +1119,9 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Offer-list buttons (docs/specs/recommended-services.md, Offers). Wired by the recommended-services routes. */
   private recommendedOfferHandler: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
   setRecommendedOfferHandler(fn: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.recommendedOfferHandler = fn; }
+  /** Never-Silent Conversation one-tap ask (`ns:m:<24 hex>`). The handler owns the nonce check and idempotency. */
+  private neverSilentAskHandler: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
+  setNeverSilentAskHandler(fn: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.neverSilentAskHandler = fn; }
 
   /** One offer list with its buttons, in the owner's conversation. The message id is the delivery proof the offer ledger records. */
   async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
@@ -2015,6 +2018,8 @@ export class TelegramAdapter implements MessagingAdapter {
        *  topic. Writes no outbound history row (the inbound row already exists) and
        *  touches neither stall nor promise tracking. */
       operatorMirror?: boolean;
+      /** One row of inline buttons (never-silent-conversation: the one-tap "Move to Codex" ask). */
+      inlineButtons?: Array<{ text: string; data: string }>;
     },
   ): Promise<SendResult> {
     // NOT the chokepoint, and this comment is the correction of a claim that stood here.
@@ -2039,6 +2044,9 @@ export class TelegramAdapter implements MessagingAdapter {
       chat_id: this.config.chatId,
       text,
     };
+    if (options?.inlineButtons?.length) {
+      params.reply_markup = { inline_keyboard: [options.inlineButtons.map((b) => ({ text: b.text, callback_data: b.data }))] };
+    }
     if (!isGeneralTopic(topicId)) {
       params.message_thread_id = topicId;
     }
@@ -7084,6 +7092,20 @@ export class TelegramAdapter implements MessagingAdapter {
     // `rs:n:` is S-class (a no: less action, undoable on the confirm page, bounded per hour by the handler),
     // so anyone in the owner's conversation may tap it. `rs:y:` is P-class and owner-only; the handler also
     // limits it to address services. The nonce is single-use on the handler's side.
+    // ── Never-Silent one-tap ask (docs/specs/never-silent-conversation.md, Frontloaded Decision 2).
+    // P-class (it moves the conversation to another engine): owner-only, judged by the handler.
+    if (query.data.startsWith('ns:')) {
+      const approver = this.getConfiguredApprover();
+      const fromIsOwner = approver !== undefined && query.from.id === approver;
+      let statusText = 'That button is no longer active.';
+      if (this.neverSilentAskHandler) {
+        try { statusText = await this.neverSilentAskHandler({ data: query.data, fromIsOwner }); }
+        catch { statusText = "Couldn't take that. It stays where it is and I'll tell you here when it's fixed."; }
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: statusText, show_alert: statusText.length > 60 }).catch(() => {});
+      return;
+    }
+
     if (query.data.startsWith('rs:')) {
       const m = /^rs:([ny]):([0-9a-f]{32})$/.exec(query.data);
       if (!m) {
