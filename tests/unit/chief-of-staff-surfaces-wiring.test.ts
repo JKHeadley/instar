@@ -77,7 +77,7 @@ describe('Chief of Staff surfaces — static wiring', () => {
     expect(t).toContain('What does the Chief of Staff need from me?');
     expect(read('dashboard/console/needs-model.js')).toContain("{ id: 'chief-of-staff', page: 'work/chats', reads: { cos: '/chief-of-staff' },");
     expect(read('dashboard/console/chats.js')).toContain("'data-operator-need': 'chief-of-staff'");
-    expect(read('dashboard/console/chats.js')).toContain('orderWithTree(this.rows, this.pinnedKey)');
+    expect(read('dashboard/console/chats.js')).toContain('orderWithTree(rest, this.pinnedKey)');
   });
 });
 
