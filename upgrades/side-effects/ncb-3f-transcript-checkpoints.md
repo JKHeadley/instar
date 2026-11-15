@@ -186,3 +186,7 @@ No behaviour change. Rollback: revert the commit.
 ## Registration fix after Local Verify (2026-11-14)
 
 Local Verify (Studio, 22:14Z, head 73d9e98b2) failed two registration ratchets: the `sessionTranscripts` replicated store was in the server registry but neither seamed nor allow-listed in `ReplicatedStoreReconcilerWiring.ts`, and the `/transcript-copies` route prefix was unclassified in `CapabilityIndex.ts`. Added an allow-list entry (server-only writer: the checkpoint tick and peer ingest; no CLI path) and an INTERNAL_PREFIXES entry (owner-only, dark, learned through the CLAUDE.md awareness card). No behaviour change; both are declarations the ratchets require.
+
+## Framework-name baseline (2026-11-14, after main gained the ratchet)
+
+Local Verify (M5, 01:41Z) failed tests/unit/framework-id-ratchet.test.ts: this slice moved two framework-id literals from src/server/routes.ts into the new src/core/sessionTranscriptPull.ts, and the checked-in baseline still listed the old split. Updated scripts/framework-name-ratchet-baseline.json (routes.ts 14 -> 12, sessionTranscriptPull.ts 0 -> 2); total unchanged at 1135. No code change.
