@@ -314,7 +314,8 @@ a.row:hover { background: var(--surface-raised); border-radius: var(--r-sm); }
 .group-head h1 { margin: var(--s-2) 0 var(--s-2); font-size: clamp(26px, 6vw, 36px); font-weight: 800; letter-spacing: -.03em; color: var(--text-strong); }
 .group-head p { margin: 0; color: var(--text-muted); max-width: 60ch; }
 .tiles { display: grid; gap: var(--s-3); grid-template-columns: 1fr; }
-@media (min-width: 640px) { .tiles { grid-template-columns: 1fr 1fr; } }
+/* Side by side, every row of tiles is the same height (2026-11-14: rows were 164px and 143px). */
+@media (min-width: 640px) { .tiles { grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; } }
 @media (min-width: 1100px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
 /* A conditional tile's wrapper inside the grid: its tile takes a grid cell; hidden stays hidden. */
 .tiles .tiles-inline { display: contents; }
@@ -1503,3 +1504,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .work-policy { display: flex; gap: var(--s-2); align-items: flex-start; }
 .work-settings-grid { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-bottom: var(--s-3); }
 .work-setting { display: grid; gap: var(--s-1); }
+
+/* Machines: a remote desktop that lost its Mac permission, with its one fix. */
+.desktop-fix { margin-bottom: var(--s-4); }
+.desktop-fix .confirm-row { margin: var(--s-2) 0 0; }
+.desktop-fix p { margin: 0; }
