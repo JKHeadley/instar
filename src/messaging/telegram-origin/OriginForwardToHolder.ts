@@ -17,6 +17,7 @@ import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
 import { topicRef } from '../shared/topicRef.js';
+import { createHash } from 'node:crypto';
 import type { OriginAuditRecord } from './StoreTypes.js';
 import { classifyOperationOutcome, failureCause, suppressionReason } from './OriginOperationOutcome.js';
 import type { FailureCause, SuppressionReason } from './OriginOperationOutcome.js';
@@ -30,14 +31,36 @@ export { AdvisoryAnswerClosedError };
 
 /** Only a durable Telegram receipt may turn a recovered hold into a topic
  * history row. Follow a lease-transfer supersession to the delivered copy. */
+/** Follow `supersededBy` links from `operationId` to the row with no successor
+ * (standby-durable-forward-without-token §2). Recovery only: chain-following
+ * for the outcome route belongs to native-conversation-base slice 3b. A visited set stops a cycle; a
+ * successor whose row is missing (pruned) is `missing`, never the last row seen.
+ * A chain only grows by a supersede, which the ladder and deadline bound, so the
+ * walk needs no numeric cap. */
+export async function followSupersedeChain(operationId: string, getOperation: (id: string) => Promise<OriginAuditRecord | null>):
+  Promise<{ kind: 'terminal'; operationId: string; audit: OriginAuditRecord | null } | { kind: 'missing'; operationId: string } | { kind: 'cycle'; operationId: string }> {
+  const seen = new Set<string>();
+  let id = operationId;
+  let audit = await getOperation(id);
+  for (;;) {
+    seen.add(id);
+    const next = (audit?.operation?.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
+    if (typeof next !== 'string' || next === id) return { kind: 'terminal', operationId: id, audit };
+    if (seen.has(next)) return { kind: 'cycle', operationId: next };
+    const successor = await getOperation(next);
+    if (!successor) return { kind: 'missing', operationId: next };
+    id = next; audit = successor;
+  }
+}
+
 export async function confirmedRecoveredForward(row: HeldOperationRow, getOperation: (id: string) => Promise<OriginAuditRecord | null>): Promise<{ topicId: number; text: string; messageId: number } | null> {
   const detail = row.holdDetail as { text?: unknown } | null;
   const topicId = Number(row.destination.topicId);
   if (typeof detail?.text !== 'string' || !Number.isSafeInteger(topicId) || topicId < 1) return null;
-  const original = await getOperation(row.operationId);
-  const supersededBy = (original?.operation?.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
-  const deliveredId = typeof supersededBy === 'string' && supersededBy !== row.operationId ? supersededBy : row.operationId;
-  const audit = deliveredId === row.operationId ? original : await getOperation(deliveredId);
+  const end = await followSupersedeChain(row.operationId, getOperation);
+  if (end.kind !== 'terminal') return null;
+  const deliveredId = end.operationId;
+  const audit = end.audit;
   const verdict = classifyOperationOutcome(deliveredId, audit, []);
   if (verdict.outcome !== 'delivered' || verdict.messageIds.length !== 1) return null;
   return { topicId, text: detail.text, messageId: Number(verdict.messageIds[0]) };
@@ -47,6 +70,52 @@ export const HOLD_REASON_LEASE_NOT_HELD = 'lease-not-held';
 /** Execution owner recorded on a hold taken while NO holder could be named.
  * Never a real machine, so recovery always re-prepares for the holder it finds. */
 export const UNRESOLVED_LEASE_HOLDER = 'lease-holder-unresolved';
+/** The bot account a token-less standby seals a hold with when the holder
+ * could not be asked (standby-durable-forward-without-token §1). The same string a
+ * token-less boot already uses for its runtime (TelegramOriginBoot). Never a real
+ * account: the holder refuses it, and recovery re-seals it to the live account. */
+export const UNRESOLVED_TOKENLESS_ACCOUNT = 'unresolved-tokenless-source';
+
+/** Notice-class sends (§8): never turned into durable holds on a token-less
+ * machine. A delay notice delivered after its reply is worse than none, and an
+ * expiry report that is itself held could expire and raise another. */
+export const NOTICE_CLASS_PRODUCERS: ReadonlySet<string> = new Set(['reply-delivery-notice', 'held-forward-notice', 'attention-hub-post', 'held-expiry-report']);
+export function isNoticeClass(kindMetadata: Record<string, unknown> | undefined): boolean {
+  const cls = kindMetadata?.noticeClass;
+  return typeof cls === 'string' && NOTICE_CLASS_PRODUCERS.has(cls);
+}
+
+/** A validated holder `capabilities` answer: the live bot account and owner. */
+export interface HolderCapabilities { accountId: string; executionOwnerMachineId: string }
+export type HolderProbe = { ok: true; capabilities: HolderCapabilities } | { ok: false; reason: string };
+
+/** Validate a raw `capabilities` reply. Anything but a credential owner with a
+ * numeric account id and a bounded owner id is treated as unreachable (§1). */
+export function validHolderCapabilities(reply: { ok: boolean; result?: unknown; reason?: string }): HolderProbe {
+  const cap = reply.result as { ok?: boolean; protocol?: string; credentialOwner?: boolean; accountId?: unknown; executionOwnerMachineId?: unknown } | undefined;
+  if (!reply.ok && reply.reason === 'origin-runtime-unavailable') return { ok: false, reason: 'origin-runtime-unavailable' };
+  if (!reply.ok || !cap?.ok || cap.protocol !== ORIGIN_MESH_PROTOCOL || !cap.credentialOwner || typeof cap.accountId !== 'string' || !/^\d+$/.test(cap.accountId) ||
+    typeof cap.executionOwnerMachineId !== 'string' || !cap.executionOwnerMachineId || cap.executionOwnerMachineId.length > 128) {
+    return { ok: false, reason: 'origin-peer-protocol-unavailable' };
+  }
+  return { ok: true, capabilities: { accountId: cap.accountId, executionOwnerMachineId: cap.executionOwnerMachineId } };
+}
+
+/** Deterministic successor id for a supersede (§2): `<root>~r<hop>-<plan8>`. The
+ * plan part digests only fields stable across prepares (content, sealed account,
+ * owner, destination, child count): child and materialization ids are fresh
+ * random values on every prepare, so they can never be part of it. */
+export function supersedingOperationId(previousOperationId: string, plan: { contentDigest: string; accountId: string; owner: string; destination: unknown; children: number; variant?: string }): string {
+  const m = /^(.*)~r(\d+)-[0-9a-f]{8}$/.exec(previousOperationId);
+  const root = m ? m[1] : previousOperationId;
+  const hop = m ? Number(m[2]) + 1 : 1;
+  // `variant` (native-conversation-base §3a item 2: the late-marked successor) is part of the
+  // digest only when set, so an unmarked successor keeps the r7 id unchanged.
+  const fields: unknown[] = [plan.contentDigest, plan.accountId, plan.owner, plan.destination, plan.children];
+  if (plan.variant !== undefined) fields.push(plan.variant);
+  const plan8 = createHash('sha256').update(JSON.stringify(fields)).digest('hex').slice(0, 8);
+  return `${root}~r${hop}-${plan8}`;
+}
 export const FORWARD_SETTLE_TIMEOUT_MS = 15_000;
 /** §4.2 — the reply request runs settle + ONE forward attempt inside this
  * budget (≥ the holder's 10 s execute + 5 s margin, both RPCs sharing it),
@@ -181,16 +250,23 @@ export async function submitOriginToHolder(input: {
   send: (command: OriginMeshCommand) => Promise<{ ok: boolean; result?: unknown; reason?: string }>;
   /** When set, a holder answering a different execution owner is refused before submit. */
   expectedOwner?: string;
+  /** A validated answer already read in this attempt: skips the second read (§1). */
+  capabilities?: HolderCapabilities;
 }): Promise<HolderSubmitResult> {
   const base = { type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL } as const;
-  let capabilities: { ok: boolean; result?: unknown; reason?: string };
-  try { capabilities = await input.send({ ...base, action: 'capabilities' }); }
-  catch { return { ok: false, reason: 'origin-peer-unreachable', outcome: 'held', retryable: true }; }
-  const cap = capabilities.result as { ok?: boolean; protocol?: string; credentialOwner?: boolean; accountId?: string; executionOwnerMachineId?: string } | undefined;
-  if (!capabilities.ok && capabilities.reason === 'origin-runtime-unavailable') return { ok: false, reason: 'origin-runtime-unavailable', outcome: 'held', retryable: true };
-  if (!capabilities.ok || !cap?.ok || cap.protocol !== ORIGIN_MESH_PROTOCOL || !cap.credentialOwner || typeof cap.accountId !== 'string' ||
-    typeof cap.executionOwnerMachineId !== 'string' || !cap.executionOwnerMachineId || cap.executionOwnerMachineId.length > 128) {
-    return { ok: false, reason: 'origin-peer-protocol-unavailable', outcome: 'held', retryable: true };
+  let cap: HolderCapabilities;
+  if (input.capabilities) cap = input.capabilities;
+  else {
+    let capabilities: { ok: boolean; result?: unknown; reason?: string };
+    try { capabilities = await input.send({ ...base, action: 'capabilities' }); }
+    catch { return { ok: false, reason: 'origin-peer-unreachable', outcome: 'held', retryable: true }; }
+    const raw = capabilities.result as { ok?: boolean; protocol?: string; credentialOwner?: boolean; accountId?: string; executionOwnerMachineId?: string } | undefined;
+    if (!capabilities.ok && capabilities.reason === 'origin-runtime-unavailable') return { ok: false, reason: 'origin-runtime-unavailable', outcome: 'held', retryable: true };
+    if (!capabilities.ok || !raw?.ok || raw.protocol !== ORIGIN_MESH_PROTOCOL || !raw.credentialOwner || typeof raw.accountId !== 'string' ||
+      typeof raw.executionOwnerMachineId !== 'string' || !raw.executionOwnerMachineId || raw.executionOwnerMachineId.length > 128) {
+      return { ok: false, reason: 'origin-peer-protocol-unavailable', outcome: 'held', retryable: true };
+    }
+    cap = { accountId: raw.accountId, executionOwnerMachineId: raw.executionOwnerMachineId };
   }
   if (input.expectedOwner !== undefined && cap.executionOwnerMachineId !== input.expectedOwner) {
     return { ok: false, reason: 'execution-owner-mismatch', outcome: 'held', retryable: true };
@@ -368,8 +444,16 @@ export interface ForwardInput { topicId: number; chatId: string; text: string; s
 export interface ForwardDeps {
   lease: ForwardLeaseView;
   /** Prepare (and record intent for) an operation whose execution owner is `holder`. */
-  prepare: (holder: string, input: ForwardInput, operationId?: string) => Promise<OriginPreparedBotOperation>;
-  submit: (holder: string, operation: OriginPreparedBotOperation) => Promise<HolderSubmitResult>;
+  prepare: (holder: string, input: ForwardInput, operationId?: string, accountId?: string) => Promise<OriginPreparedBotOperation>;
+  submit: (holder: string, operation: OriginPreparedBotOperation, capabilities?: HolderCapabilities) => Promise<HolderSubmitResult>;
+  /** Set on a machine with no bot token (§1, §4): every attempt reads the holder's
+   * `capabilities` first, seals with that live account (or the placeholder when
+   * the holder cannot be asked), and a `self` settle never becomes a local send. */
+  tokenless?: boolean;
+  /** One `capabilities` read to `holder` (required when `tokenless`). */
+  probe?: (holder: string) => Promise<HolderProbe>;
+  /** Fired (never awaited) after a successful probe: re-post hub notices that found the holder unreachable (§8). */
+  onHolderReachable?: () => unknown;
   /** Make the hold DURABLE: admit locally + `recordOperationState('held', lease-not-held)`.
    * Resolves false when the state writer refused (the row stays `admitted` and the
    * ordinary local replay carries it) — audited, never silently assumed. */
@@ -409,14 +493,41 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   const delays = deps.ladder?.delaysMs ?? FORWARD_LADDER.delaysMs;
   const audit = (row: Record<string, unknown>) => { try { deps.audit?.({ ts: deps.now(), topicId: input.topicId, ...row }); } catch { /* audit is observability only */ } };
   const settled = await settleLeaseRoute(deps.lease, { sleep: deps.sleep, now: deps.now, timeoutMs: deps.settleTimeoutMs });
-  if (settled.kind === 'self') return { kind: 'local' };
+  const tokenless = deps.tokenless === true;
+  // A token-less machine has no transport of its own: a `self` settle is a hold,
+  // never a local send (standby-durable-forward-without-token §4). An advisory answer on a
+  // token-less `self` settle is held too: forwardAdvisoryAnswer has no holder for it.
+  if (settled.kind === 'self' && !tokenless) return { kind: 'local' };
   if (input.advisoryReplacementOf) return forwardAdvisoryAnswer(deps, input, input.advisoryReplacementOf, settled, delays, audit);
   let operation: OriginPreparedBotOperation | null = null;
   let lastHolder: string | null = null;
   let lastAttempt: ForwardLastAttempt = 'unsettled';
-  let lastReason = settled.kind === 'unsettled' ? `lease-settling-${settled.reason}` : 'not-attempted';
+  let lastReason = settled.kind === 'unsettled' ? `lease-settling-${settled.reason}` : settled.kind === 'self' ? 'self-no-transport' : 'not-attempted';
   if (settled.kind === 'unsettled') audit({ phase: 'settle-timeout', reason: settled.reason });
-  else {
+  else if (settled.kind === 'self') audit({ phase: 'self-no-transport' });
+  else if (tokenless) {
+    // §1: read the holder first, then seal with its live account. One read per attempt.
+    const holder = settled.holder;
+    lastHolder = holder;
+    const probe = deps.probe ? await deps.probe(holder).catch((): HolderProbe => ({ ok: false, reason: 'origin-peer-unreachable' })) : { ok: false as const, reason: 'probe-unavailable' };
+    if (!probe.ok) {
+      lastReason = probe.reason; lastAttempt = 'unreachable';
+      operation = await deps.prepare(holder, input, undefined, UNRESOLVED_TOKENLESS_ACCOUNT);
+      audit({ phase: 'refused', attempt: 0, holder, operationId: operation.record.operationId, reason: probe.reason, tokenless: true });
+    } else {
+      try { void Promise.resolve(deps.onHolderReachable?.()).catch(() => undefined); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
+      operation = await deps.prepare(holder, input, undefined, probe.capabilities.accountId);
+      const result = await deps.submit(holder, operation, probe.capabilities);
+      if (result.ok) {
+        audit({ phase: 'sent', attempt: 0, holder, operationId: operation.record.operationId, messageId: result.messageId, tokenless: true });
+        return { kind: 'sent', messageId: result.messageId, holder, operationId: operation.record.operationId };
+      }
+      if (result.policyRefusal) throw new OriginSendPolicyRefusal(result.policyRefusal, operation.record.operationId);
+      lastReason = result.reason;
+      audit({ phase: 'refused', attempt: 0, holder, operationId: operation.record.operationId, reason: result.reason, outcome: result.outcome, retryable: result.retryable, tokenless: true });
+      lastAttempt = result.outcome === 'outcome-unknown' ? 'outcome-unknown' : result.reason === 'origin-peer-unreachable' ? 'unreachable' : 'refused';
+    }
+  } else {
     const holder = settled.holder;
     operation = await deps.prepare(holder, input);
     lastHolder = holder;
@@ -431,7 +542,8 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
     lastAttempt = result.outcome === 'outcome-unknown' ? 'outcome-unknown' : result.reason === 'origin-peer-unreachable' ? 'unreachable' : 'refused';
   }
   // forward-to-holder-failed → the durable hold.
-  if (!operation) operation = await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
+  if (!operation) operation = tokenless ? await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input, undefined, UNRESOLVED_TOKENLESS_ACCOUNT)
+    : await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
   const now = deps.now();
   const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt, machineId: lastHolder, topicId: input.topicId, chatId: input.chatId,
     text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.admission.preparedAt,
@@ -503,6 +615,14 @@ export interface ForwardRecoveryDeps {
   lease: ForwardLeaseView;
   prepare: ForwardDeps['prepare'];
   submit: ForwardDeps['submit'];
+  /** See `ForwardDeps.tokenless` / `probe`. */
+  tokenless?: boolean;
+  probe?: ForwardDeps['probe'];
+  onHolderReachable?: ForwardDeps['onHolderReachable'];
+  /** A concrete seal no longer matches the holder's bot (§2): never re-sealed automatically. */
+  onAccountChanged?: (input: { operationId: string; topicId: string | null; sealedAccountId: string; liveAccountId: string }) => Promise<void> | void;
+  /** A placeholder seal was replaced by the live account (evidence only, §10). */
+  onResealed?: (operationId: string) => void;
   /** The old holder's `receipt` for the operation id, read by `classifyHolderReceipt`:
    * `accepted` resolves the hold; `owned-by-holder` and `unreachable` keep it;
    * `not-accepted` (never admitted there, or an older owner's terminal row)
@@ -637,6 +757,24 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     try { await deps.onOwnerUnstatedSettled?.({ ...row, holdDetail: { ...(detail ?? {}), ownerUnstated } }); } catch { /* the scan and the forward-expiry pass carry it */ }
     return 'retained';
   };
+  // standby-durable-forward-without-token §1–2: on a token-less machine `live` is the
+  // holder's capabilities answer read once in this pass (set below, before any
+  // successor on the ordinary route is prepared).
+  const tokenless = deps.tokenless === true;
+  let live: HolderCapabilities | undefined;
+  const resealNeeded = (): boolean => live !== undefined && operation.record.destination.accountId === UNRESOLVED_TOKENLESS_ACCOUNT;
+  /** §2 — a token-less successor replaces the placeholder with the live account, KEEPS a
+   * concrete seal across a holder change, and gets a deterministic id. `late` names the
+   * late-marked plan, so a marked and an unmarked successor never share an id. */
+  const prepareFor = (holder: string, input: ForwardInput, late: boolean): Promise<OriginPreparedBotOperation> => {
+    if (!tokenless) return deps.prepare(holder, input);
+    const sealed = operation.record.destination.accountId;
+    const account = sealed === UNRESOLVED_TOKENLESS_ACCOUNT ? live?.accountId : sealed;
+    const nextId = supersedingOperationId(operationId, { contentDigest: operation.record.contentDigest, accountId: account ?? UNRESOLVED_TOKENLESS_ACCOUNT, owner: holder,
+      destination: { chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId }, children: operation.admission.children.length,
+      ...(late ? { variant: 'late' } : {}) });
+    return deps.prepare(holder, input, nextId, account);
+  };
   // §3a item 2 — a successor for this row (holder change, late mark, or the one
   // replacement after a reasonless ending): prepared under the original's
   // producer record, policy input and deadline, with the late line when due.
@@ -655,7 +793,7 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     const line = markAt !== null && replacement ? lateRecoveredReplyNotice(first, markAt) : null;
     if (line) {
       try {
-        const next = await deps.prepare(holder, { ...base, text: `${line}\n\n${detail.text}`, replacement });
+        const next = await prepareFor(holder, { ...base, text: `${line}\n\n${detail.text}`, replacement }, true);
         return { next, carrier: { firstPreparedAt: first, lateMarkedAt: markAt } };
       } catch (error) {
         audit({ outcome: 'late-mark-unavailable', holder, reason: error instanceof Error ? error.message : 'unknown' });
@@ -665,12 +803,12 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (markAt !== null) { try { await deps.onLateUnmarked?.(operationId); } catch { /* counter only */ } }
     if (markedOnly) return null;
     try {
-      const next = await deps.prepare(holder, { ...base, ...(replacement ? { replacement } : {}) });
+      const next = await prepareFor(holder, { ...base, ...(replacement ? { replacement } : {}) }, false);
       return { next, carrier: { firstPreparedAt: first, lateMarkedAt: null } };
     } catch (error) {
       // The recorded producer could not be re-entered: the pre-3a replacement path.
       if (!replacement) throw error;
-      const next = await deps.prepare(holder, base);
+      const next = await prepareFor(holder, base, false);
       return { next, carrier: { firstPreparedAt: first, lateMarkedAt: null } };
     }
   };
@@ -681,6 +819,9 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (!detail) return 'retained';
     const now = deps.now();
     const { next } = successor;
+    // §2: the superseding seal is never the placeholder; nothing is made durable for it.
+    if (tokenless && next.record.destination.accountId === UNRESOLVED_TOKENLESS_ACCOUNT) { audit({ outcome: 'retained-reseal-placeholder-refused', holder }); return 'retained'; }
+    const resealed = resealNeeded();
     const { ownerUnstated: _u, ...carried } = detail;
     const unmarkedLate = (lateMarkDue(row, operation, now) !== null || !!row.lateMarkedAt) && successor.carrier.lateMarkedAt === null;
     const nextDetail: HeldForwardDetail = { ...carried, ...extra, ...(unmarkedLate ? { lateMarkUnavailable: true } : {}), machineId: holder, lastAttempt: 'refused', reason: 'not-attempted', at: now, supersedes: operationId,
@@ -692,10 +833,14 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     audit({ outcome: superseded ? 'superseded' : 'supersede-refused', holder, previousOwner: operation.record.executionOwnerMachineId, supersededBy: next.record.operationId,
       lateMarked: successor.carrier.lateMarkedAt !== null && successor.carrier.lateMarkedAt !== row.lateMarkedAt });
     if (!superseded) return 'retained';
+    if (resealed) {
+      audit({ outcome: 'account-reseal', holder, supersededBy: next.record.operationId });
+      try { deps.onResealed?.(next.record.operationId); } catch { /* @silent-fallback-ok — evidence only; never changes delivery */ }
+    }
     if (!await deps.rehold(next.record.operationId, { ...nextDetail, lastAttempt: 'outcome-unknown', at: deps.now() })) {
       audit({ outcome: 'retained-superseding-marker-store-refused', holder, operationId: next.record.operationId }); return 'retained';
     }
-    const result = await deps.submit(holder, next);
+    const result = live ? await deps.submit(holder, next, live) : await deps.submit(holder, next);
     if (result.ok) {
       if (!await deps.resolve(next.record.operationId, result.deliveryMachineId, result.receiptJson)) {
         audit({ outcome: 'retained-superseding-store-refused', holder, operationId: next.record.operationId }); return 'retained';
@@ -791,6 +936,30 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   }
   const route = classifyLeaseRoute(deps.lease);
   if (route.kind === 'settling') { await retain({ reason: `lease-settling-${route.reason}` }); audit({ outcome: 'retained-settling', reason: route.reason }); return 'retained'; }
+  if (route.kind === 'self' && tokenless) {
+    // §4: no local transport. Retain WITHOUT the `local-sent` marker, exactly like settling,
+    // so the row re-forwards once a credentialed machine holds the lease again.
+    await retain({ reason: 'self-no-transport' }); audit({ outcome: 'retained-self-no-transport' }); return 'retained';
+  }
+  // §1–2: a token-less machine reads the holder once per pass, before anything is prepared.
+  if (tokenless && route.kind !== 'self') {
+    const probe = deps.probe ? await deps.probe(route.holder).catch((): HolderProbe => ({ ok: false, reason: 'origin-peer-unreachable' })) : { ok: false as const, reason: 'probe-unavailable' };
+    if (!probe.ok) {
+      // No attempt reached the holder: keep the ladder where it is (§2), so an outage never burns the row's tries.
+      if (detail) await deps.rehold(operationId, { ...detail, machineId: route.holder, reason: probe.reason, lastAttempt: 'unreachable', at: deps.now() });
+      audit({ outcome: 'retained-holder-unreachable', holder: route.holder, reason: probe.reason }); return 'retained';
+    }
+    live = probe.capabilities;
+    try { void Promise.resolve(deps.onHolderReachable?.()).catch(() => undefined); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
+    const sealed = operation.record.destination.accountId;
+    if (sealed !== UNRESOLVED_TOKENLESS_ACCOUNT && sealed !== live.accountId) {
+      // A concrete seal is never re-sealed automatically: a swapped holder must not
+      // be able to re-send held content under another bot.
+      await retain({ machineId: route.holder, reason: 'account-changed', lastAttempt: 'refused' });
+      try { await deps.onAccountChanged?.({ operationId, topicId: row.destination.topicId, sealedAccountId: sealed, liveAccountId: live.accountId }); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
+      audit({ outcome: 'account-changed', holder: route.holder, sealedAccountId: sealed, liveAccountId: live.accountId }); return 'retained';
+    }
+  }
   if (detail?.lastAttempt === 'local-sent') {
     // A local send was STARTED and its resolve did not land (crash, store
     // refusal). The user may already have it: never send again; the row rides to
@@ -822,7 +991,7 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     await deps.rehold(operationId, { ...detail!, lateMarkUnavailable: true });
     detail!.lateMarkUnavailable = true;
   }
-  if (operation.record.executionOwnerMachineId === holder) {
+  if (operation.record.executionOwnerMachineId === holder && !resealNeeded()) {
     if (!detail) return 'retained';
     // Mark custody uncertainty BEFORE the RPC. If the standby store refuses
     // the receipt afterward, the next tick asks this holder; it never submits
@@ -830,7 +999,7 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (!await deps.rehold(operationId, { ...detail, machineId: holder, lastAttempt: 'outcome-unknown', at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) })) {
       audit({ outcome: 'retained-marker-store-refused', holder }); return 'retained';
     }
-    const result = await deps.submit(holder, operation);
+    const result = live ? await deps.submit(holder, operation, live) : await deps.submit(holder, operation);
     if (result.ok) {
       if (!await deps.resolve(operationId, result.deliveryMachineId, result.receiptJson)) {
         audit({ outcome: 'retained-store-refused', holder, messageId: result.messageId }); return 'retained';

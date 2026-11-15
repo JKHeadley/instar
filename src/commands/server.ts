@@ -136,7 +136,17 @@ import { activeUsageLimitWatch, setActiveUsageLimitWatch, UsageLimitWatch } from
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
-import { movedMachinesMidStepNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
+import { movedMachinesMidStepNotice, movedMachinesResumingNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
+import { handOffInterruptedMove, InterruptedMoveResumeReceiver, parseInterruptedMoveResume } from '../core/InterruptedMoveResume.js';
+/** The target answers within its 20 s ownership wait; the mesh route's own limit is 30 s. */
+const INTERRUPTED_MOVE_RESUME_TIMEOUT_MS = 28_000;
+/** The moved-mid-step notice answers the person's own message, so it is a conversation notice
+ *  (message-loss-notice), never the quiet default. Without a known message it stays quiet. */
+function interruptedMoveNoticeEnvelope(inboundMessageId: string | null): import('../messaging/NotificationSelectivityGate.js').OutboundEnvelope {
+  return inboundMessageId
+    ? { origin: 'automated', category: 'message-loss-notice', sourceContext: 'interrupted-move', inboundMessageId }
+    : stampNotification();
+}
 import { parseDashboardCreatePayload, safeMachineLabel, createDashboardCreateStartRunner, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
@@ -240,7 +250,7 @@ import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { MachineEvidenceStore } from '../core/MachineEvidenceStore.js';
 import { AttentionConditionStore, baseKeyOfItemId } from '../core/AttentionConditionStore.js';
-import { resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
+import { clearRecoveredReloginAttention, resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
 import { SubscriptionReloginApprovalReminder, DEFAULT_APPROVAL_REMINDER_HOURS, waitingSinceMs, approvalReminderSummary } from '../core/SubscriptionReloginApprovalReminder.js';
 import { createOperatorLinkOriginResolver, PublicLinkPendingError } from '../server/dashboardPaths.js';
 import { DEFAULT_SLOW_RETRY, outsideQuietHours } from '../core/SubscriptionReloginService.js';
@@ -899,6 +909,9 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** standby-durable-forward-without-token §10 (holder side / standby side). */
+let tokenlessEvidenceRecorder: import('../messaging/telegram-origin/TokenlessForwardEvidence.js').HolderEvidenceRecorder | undefined;
+let tokenlessEvidenceOutbox: import('../messaging/telegram-origin/TokenlessForwardEvidence.js').StandbyEvidenceOutbox | null = null;
 /** Relay-path row carrier and its watermark (context-budget §14); built beside the row writer. */
 let _topicRowCarrier: import('../memory/topicRowCarrier.js').TopicRowCarrier | null = null;
 let _topicRowWatermark: import('../memory/topicRowWatermark.js').TopicRowWatermarkStore | null = null;
@@ -1017,6 +1030,8 @@ let _recordRopeResult:
 let _identityLeaseEligible: () => boolean = () => true;
 let _threadlineBoot: import('../threadline/ThreadlineBootstrap.js').ThreadlineBootstrapResult | null = null;
 let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdentityServer | null = null;
+/** interrupted-move-resume receiver: built on the first request, keeps its once-per-epoch memory. */
+let _interruptedMoveResumeReceiver: InterruptedMoveResumeReceiver | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
 // session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
@@ -18211,7 +18226,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               getEpisode: (id) => subscriptionReloginRuntime?.store.get(id) ?? null,
               listEpisodes: (accountId) => subscriptionReloginRuntime?.store.list({ accountId, limit: 50 }) ?? [],
               localMachineId: subscriptionPoolMachineId,
-              localCellHealthy: (accountId) => subscriptionPool.get(accountId)?.status === 'active',
+              // Verified, not just labelled: pool active + matching identity + a live login check.
+              localCellHealthy: (accountId) => (subscriptionPoolMachineId
+                ? subscriptionReloginRuntime?.cellVerifiedHealthy(accountId, subscriptionPoolMachineId) ?? false : false),
             }));
         }
         subscriptionReloginRuntime = createSubscriptionReloginRuntime({ stateDir: config.stateDir,
@@ -18287,6 +18304,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
           onPhoneTap: notify ? (episode, key) => notify(episode, key, 'phone-tap') : undefined,
+          // A failed/refused repair whose account is verified signed in again closes its own
+          // attention row (Self-Heal Before Notify) instead of waiting for a hand clear.
+          onConditionCleared: telegram ? (episode) => {
+            const closed = clearRecoveredReloginAttention(episode, (match, resolution) => telegram!.clearAttentionCondition(match, resolution));
+            if (closed > 0) console.log(`[subscription-relogin] ${episode.accountId}: signed in again (verified) — closed ${closed} attention row(s)`);
+          } : undefined,
           allowedScopes: reloginCfg.allowedScopes ?? [], tickMs: reloginCfg.tickMs,
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
@@ -19869,6 +19892,153 @@ export async function startServer(options: StartOptions): Promise<void> {
       } catch (err) {
         console.error(`[PresenceProxy] Failed to initialize:`, err);
       }
+    }
+
+    // ── Never-Silent Conversation (docs/specs/never-silent-conversation.md) ──────────
+    // Every inbound conversation message ends in a reply or a plain Instar notice. Dev-gated;
+    // the actions that change anything (swap, engine move) are separately switched and off.
+    try {
+      const nsCfg = () => {
+        const raw = liveConfig.get<Record<string, unknown> | undefined>('monitoring.neverSilent',
+          (config.monitoring as { neverSilent?: Record<string, unknown> } | undefined)?.neverSilent) ?? {};
+        const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d);
+        return {
+          enabled: resolveDevAgentGate(typeof raw.enabled === 'boolean' ? raw.enabled : undefined, config),
+          judge: raw.judge !== false,
+          actions: raw.actions === true,
+          frameworkFallback: raw.frameworkFallback === true,
+          confidenceFloor: typeof raw.confidenceFloor === 'number' ? raw.confidenceFloor : 0.8,
+          noticeAfterMs: num(raw.noticeAfterSeconds, 120) * 1000,
+        };
+      };
+      const { buildNeverSilent } = await import('../monitoring/neverSilent/neverSilentWiring.js');
+      const { setNeverSilentInstance } = await import('../server/neverSilentRoutes.js');
+      const { sendNeverSilentTelegramNotice } = await import('../messaging/telegram-origin/OriginDeterministicSend.js');
+      const { SecretStore: NsSecretStore } = await import('../core/SecretStore.js');
+      // One referee provider per engine, built on first use (own breaker each); every call names its
+      // account explicitly, so the referee never runs on the stuck engine's ambient login.
+      const { LlmCircuitBreaker: NsBreaker } = await import('../core/LlmCircuitBreaker.js');
+      const { buildIntelligenceProvider: nsBuild } = await import('../core/intelligenceProviderFactory.js');
+      const nsReferees = new Map<string, import('../core/types.js').IntelligenceProvider | null>();
+      const nsRefereeFor = (fw: string) => {
+        if (!nsReferees.has(fw)) {
+          let p: import('../core/types.js').IntelligenceProvider | null = null;
+          try { p = nsBuild({ framework: fw as import('../core/intelligenceProviderFactory.js').IntelligenceFramework, breaker: new NsBreaker() }); }
+          catch { p = null; /* @silent-fallback-ok — no CLI for that engine: the next engine, or undetermined (still told) */ }
+          nsReferees.set(fw, p);
+        }
+        return nsReferees.get(fw) ?? null;
+      };
+      const nsTelegram = telegram;
+      const neverSilent = buildNeverSilent({
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        config: nsCfg,
+        sessionForTelegramTopic: (topicId) => nsTelegram?.getSessionForTopic(topicId) ?? null,
+        sessionForSlackChannel: (key) => _slackAdapter?.getSessionForChannel(key) ?? null,
+        sessionFacts: (tmux) => {
+          const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === tmux);
+          const framework = sessionManager.frameworkForSession(tmux) ?? null;
+          // The login home comes from the session's pool account (engine-neutral); a session with
+          // no account is read from its own environment, never a guessed default.
+          const acct = s?.subscriptionAccountId ? subscriptionPool.list().find((a) => a.id === s.subscriptionAccountId) : undefined;
+          return {
+            framework,
+            accountId: s?.subscriptionAccountId ?? null,
+            configHome: acct?.configHome ?? sessionManager.configHomeForSession(tmux) ?? null,
+            alive: sessionManager.isSessionAlive(tmux),
+            startedAt: s?.startedAt ? Date.parse(s.startedAt) : null,
+          };
+        },
+        isProtected: (tmux) => config.sessions.protectedSessions.includes(tmux),
+        capturePane: (tmux) => sessionManager.captureOutput(tmux, 200),
+        poolAccounts: () => subscriptionPool.list().map((a) => ({ id: a.id, framework: a.framework, configHome: a.configHome, status: a.status, statusCause: a.statusCause ?? null })),
+        loginCheck: (id) => quotaPoller.loginCheck(id),
+        observeLoginExpired: async (configHome, tmux) => (await quotaPoller.observeCliLoginExpired({ configHome, session: tmux })).reason,
+        repairStarted: (accountId) => {
+          if (!accountId || !subscriptionReloginRuntimeRef) return false;
+          try {
+            return subscriptionReloginRuntimeRef.store.list({ accountId })
+              .some((e) => !['succeeded', 'refused', 'cancelled', 'failed'].includes(e.state));
+          } catch { return false; /* @silent-fallback-ok — wording only */ }
+        },
+        swap: async (session) => {
+          if (!_quotaAwareScheduler || !session.accountId) return { swapped: false, reason: 'no-scheduler-or-account' };
+          const r = await _quotaAwareScheduler.onQuotaPressure({ sessionName: session.tmuxSession, exhaustedAccountId: session.accountId, nowMs: Date.now(), callerClass: 'reactive-swap' });
+          return { swapped: !!(r as { swapped?: boolean }).swapped, reason: (r as { reason?: string }).reason };
+        },
+        profileFor: (topicId) => _topicProfileStore?.resolve(topicId) ?? null,
+        writeFramework: async (topicId, framework, updatedBy) => {
+          if (!_topicProfileStore) return false;
+          try {
+            await _topicProfileStore.mutate(topicId, { framework: framework as import('../core/intelligenceProviderFactory.js').IntelligenceFramework | null, updatedBy }, { shiftPrevious: true });
+            return true;
+          } catch (err) { console.warn(`[never-silent] profile write refused: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        respawnTopic: async (topicId, tmux, text) => {
+          if (!nsTelegram || !tmux) return false;
+          await respawnSessionForTopic(sessionManager, nsTelegram, tmux, topicId, text, topicMemory);
+          return true;
+        },
+        readJevKey: () => {
+          try { const v = new NsSecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get('typesafe_api_key'); return typeof v === 'string' && v ? v : null; }
+          catch { return null; } // @silent-fallback-ok — no key ⇒ the referee alone
+        },
+        refereeFor: nsRefereeFor,
+        sendTelegramNotice: async (topicId, text, inboundMessageId, button) => {
+          if (!nsTelegram) return null;
+          const r = await sendNeverSilentTelegramNotice(nsTelegram, topicId, text, inboundMessageId, button ? [button] : undefined) as { recorded?: boolean; messageId?: number };
+          return r && r.recorded !== true && typeof r.messageId === 'number' ? String(r.messageId) : null;
+        },
+        sendSlackNotice: async (key, text) => {
+          if (!_slackAdapter) return null;
+          const ts = await _slackAdapter.sendToChannel(key, text);
+          return ts || null;
+        },
+        evidence: (kind, reason, context) => {
+          const flat: Record<string, string | number | boolean | null> = {};
+          for (const [k, v] of Object.entries(context)) {
+            if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') flat[k] = v;
+          }
+          featureEvidence.record('monitoring.neverSilent', { kind, reason, context: flat });
+        },
+      });
+      setNeverSilentInstance({ store: neverSilent.store, enabled: () => nsCfg().enabled });
+      if (nsTelegram) {
+        nsTelegram.setNeverSilentAskHandler((tap) => neverSilent.handleTelegramTap(tap));
+        const priorNs = nsTelegram.onMessageLogged;
+        nsTelegram.onMessageLogged = (entry) => {
+          if (priorNs) priorNs(entry);
+          try {
+            if (entry.topicId == null || entry.topicId === 2) return;
+            if (entry.fromUser && entry.telegramUserId && nsTelegram.isInboundRefused?.(entry.topicId, entry.telegramUserId)) return;
+            neverSilent.observeLogged('telegram', String(entry.topicId), {
+              messageId: String(entry.messageId), text: entry.text, fromUser: entry.fromUser, provenance: entry.provenance, senderName: entry.senderName,
+            });
+          } catch { /* @silent-fallback-ok — observation only; the sweep still runs */ }
+        };
+      }
+      if (_slackAdapter) {
+        const slack = _slackAdapter;
+        const priorSlackNs = slack.onMessageLogged;
+        slack.onMessageLogged = (entry) => {
+          if (priorSlackNs) priorSlackNs(entry);
+          try {
+            if (!entry.channelId || slack.isSystemChannel(String(entry.channelId))) return;
+            // Top-level channel messages only in this version: an agent reply is logged without its
+            // thread, so a thread message could be closed by an answer elsewhere (never-silent §5a).
+            if (entry.fromUser && entry.threadTs) return;
+            const key = String(entry.channelId);
+            neverSilent.observeLogged('slack', key, {
+              messageId: String(entry.messageId), text: entry.text, fromUser: entry.fromUser, provenance: entry.provenance, senderName: entry.senderName,
+            });
+          } catch { /* @silent-fallback-ok — observation only */ }
+        };
+      }
+      neverSilent.start();
+      if (nsCfg().enabled) console.log(pc.green('  Never-silent conversations: on (actions ' + (nsCfg().actions ? 'on' : 'off') + ')'));
+    } catch (err) {
+      console.warn(`[never-silent] not started: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Start CaffeinateManager (prevents macOS system sleep)
@@ -28744,6 +28914,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           markInjected: (session, messageId) => _inboundQueue?.markRemoteInjected(session, messageId),
           report: (what, detail) => degradationReporter.report({ feature: what, primary: 'deliver a forwarded app message on the machine that runs its conversation', fallback: 'the message reads "unknown" in the app', reason: detail, impact: 'An app message may not have reached its session.' }),
         });
+        // bug #2: a session started on a machine that is not the Telegram router has no local
+        // history for the topic, so the router's recent messages are pulled and handed to the
+        // spawn. Shared by the forwarded-message spawn and the interrupted-move resume.
+        const pullMovedTopicContext = async (tg: TelegramAdapter, topicId: number): Promise<string> => {
+          const history = await pullMovedTopicHistory({
+            signedPull: _pullRouterHistory,
+            bearerFetch: async (topic) => {
+              const url = _resolveRouterUrl?.() ?? null;
+              if (!url) return null;
+              const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
+                headers: { 'Authorization': `Bearer ${config.authToken}` },
+                signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
+              });
+              if (!resp.ok) return null;
+              const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
+              if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
+              return Array.isArray(j.messages) ? j.messages : null;
+            },
+            log: (m) => console.warn(`  [session-pool] ${m}`),
+          }, topicId);
+          // A bounded pull cannot prove that no older messages lived on a prior machine.
+          return `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
+        };
         const deliverMessageHandler = deliverMod.createDeliverMessageHandler({
           ownerEpochOf: (s) => ownReg.read(s)?.ownershipEpoch ?? null,
           recordReceipt: (messageId, session) => {
@@ -29008,24 +29201,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // history for the topic is empty) so the moved session continues with context
               // instead of starting blank. Best-effort — on any failure we spawn without it.
               void (async (): Promise<string> => {
-                const history = await pullMovedTopicHistory({
-                  signedPull: _pullRouterHistory,
-                  bearerFetch: async (topic) => {
-                    const url = _resolveRouterUrl?.() ?? null;
-                    if (!url) return null;
-                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
-                      headers: { 'Authorization': `Bearer ${config.authToken}` },
-                      signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
-                    });
-                    if (!resp.ok) return null;
-                    const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
-                    if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
-                    return Array.isArray(j.messages) ? j.messages : null;
-                  },
-                  log: (m) => console.warn(`  [session-pool] ${m}`),
-                }, topicId);
-                // A bounded pull cannot prove that no older messages lived on a prior machine.
-                const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
+                const movedContext = await pullMovedTopicContext(tg, topicId);
                 return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text ? await sessionTextP() : text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
@@ -29171,7 +29347,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, appAliasString(topic)); },
             onDrainEnded: (sk) => { _appConversationService?.clearEmergency(sk); },
-            notifyInterrupted: (topic, target) => {
+            notifyInterrupted: (topic, target, handoff) => {
               if (topic.startsWith('app:')) {
                 let name: string | null = null;
                 try { name = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null; } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
@@ -29186,12 +29362,28 @@ export async function startServer(options: StartOptions): Promise<void> {
               // the last step was cut off. The person sees the machine's nickname
               // (never its id — Rule 7); the bound and timings stay in the audit row.
               let targetName: string | null = null;
+              let selfName: string | null = null;
               try {
-                targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null;
+                const active = meshIdMgr.getActiveMachines();
+                targetName = active.find((m) => m.machineId === target)?.entry.nickname ?? null;
+                selfName = active.find((m) => m.machineId === meshSelfId)?.entry.nickname ?? null;
               } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
-              void withNotificationEnvelope(stampNotification(), async () => (telegram)!
-                .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName)))
-                .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
+              // 2026-11-14 (topic 142440): the cut-off step was dropped and this notice was
+              // filed quiet. Now the target is asked to pick the step back up (it then sends
+              // the notice); only when it cannot does this machine send the "may be
+              // incomplete" notice. Either way the notice rides the person's own message
+              // (message-loss-notice), so it lands in the conversation, not the quiet feed.
+              const inboundMessageId = telegram.selectivity?.latestInbound(topicNum) ?? null;
+              void handOffInterruptedMove({
+                requestResume: () => _identityMeshSend
+                  ? _identityMeshSend(target, {
+                    type: 'interrupted-move-resume', sessionKey: topic, claimEpoch: handoff.claimEpoch, fromName: selfName, inboundMessageId,
+                  }, INTERRUPTED_MOVE_RESUME_TIMEOUT_MS)
+                  : Promise.resolve({ ok: false, reason: 'mesh-unavailable' }),
+                sendIncompleteNotice: () => withNotificationEnvelope(interruptedMoveNoticeEnvelope(inboundMessageId), async () => (telegram)!
+                  .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName))),
+                log: (line) => console.log(pc.dim(`  ${line}`)),
+              });
             },
             transferDeliveryLedger: createInboundDeliveryTransferStep({
               selfMachineId: meshSelfId,
@@ -29556,6 +29748,65 @@ export async function startServer(options: StartOptions): Promise<void> {
               _ownershipNudgeReceiver.receive(sender, nudge);
               return { ok: true };
             },
+            // interrupted-move-resume (src/core/InterruptedMoveResume.ts) — a move closed this
+            // conversation's session mid-step on the machine it left; pick the step back up here.
+            // Acts only on this machine's OWN ownership record, once per (conversation, epoch).
+            'interrupted-move-resume': async (cmd) => {
+              const req = parseInterruptedMoveResume(cmd as { sessionKey?: unknown; claimEpoch?: unknown; fromName?: unknown; inboundMessageId?: unknown });
+              if (!req) return { ok: false, reason: 'malformed' };
+              if (!telegram) return { ok: false, outcome: 'unsupported', reason: 'telegram-unavailable' };
+              const tg = telegram;
+              _interruptedMoveResumeReceiver ??= new InterruptedMoveResumeReceiver({
+                selfMachineId: meshSelfId,
+                readOwnership: (key) => ownReg.read(key),
+                emergencyStopActive: () => {
+                  try {
+                    const flagAt = fs.statSync(path.join(config.projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
+                    return Date.now() - flagAt < 120_000;
+                  } catch { /* @silent-fallback-ok — no flag file = no emergency stop (the defined absent-state) */ return false; }
+                },
+                resumeTopic: async (topicId, note) => {
+                  // A start already running for this topic (a new message, a dashboard start):
+                  // wait for it to bind and hand it the note, never start a second session.
+                  for (let i = 0; i < 60 && (_dashboardStartsInFlight.has(topicId) || _spawningTopicsRegistryRef?.has(topicId)); i++) {
+                    await new Promise((r) => setTimeout(r, 1000));
+                  }
+                  const existing = tg.getSessionForTopic(topicId);
+                  if (existing && sessionManager.isSessionAlive(existing)) {
+                    const injected = sessionManager.injectTelegramMessage(existing, topicId, note, tg.getTopicName?.(topicId) ?? undefined);
+                    if (injected === false) throw new Error('inject-returned-false');
+                    return 'injected';
+                  }
+                  // Hold the topic's start-in-progress token (taken with no await after the check
+                  // above) until the session is bound, so a message arriving meanwhile waits for
+                  // this start instead of starting a second session under another name.
+                  const startReg = _spawningTopicsRegistryRef;
+                  const startTok = startReg ? startReg.add(topicId) : null;
+                  try {
+                    const spawnName = `topic-${topicId}`;
+                    // The router has this topic's history locally; any other machine pulls it.
+                    const movedContext = _resolveRouterUrl?.() ? await pullMovedTopicContext(tg, topicId) : undefined;
+                    const name = await spawnSessionForTopic(sessionManager, tg, spawnName, topicId, note, undefined, undefined, movedContext);
+                    tg.registerTopicSession(topicId, name, spawnName);
+                    return 'spawned';
+                  } finally {
+                    if (startReg && startTok) startReg.clear(topicId, startTok);
+                  }
+                },
+                sendNotice: (topicId, resuming, inboundMessageId) => {
+                  let targetName: string | null = null;
+                  try { targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === meshSelfId)?.entry.nickname ?? null; }
+                  catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
+                  const id = inboundMessageId ?? tg.selectivity?.latestInbound(topicId) ?? null;
+                  return withNotificationEnvelope(interruptedMoveNoticeEnvelope(id), async () => tg
+                    .sendToTopic(topicId, resuming ? movedMachinesResumingNotice(targetName) : movedMachinesMidStepNotice(targetName)));
+                },
+                now: () => Date.now(),
+                sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+                log: (line) => console.log(pc.dim(`  ${line}`)),
+              });
+              return _interruptedMoveResumeReceiver.receive(req);
+            },
             // WORKING-SET-HANDOFF-SPEC §3.2 — the chunked working-set serve
             // verb. Registered always (lockstep with the union+RBAC edits so
             // a mixed-version caller gets a clean answer, never no-handler
@@ -29602,9 +29853,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             'telegram-origin': async (cmd, sender) => {
               if (!telegramOriginBoot) return { ok: false, reason: 'origin-runtime-unavailable' };
               const { handleOriginMesh } = await import('../messaging/telegram-origin/OriginMesh.js');
+              const { HolderEvidenceRecorder } = await import('../messaging/telegram-origin/TokenlessForwardEvidence.js');
+              tokenlessEvidenceRecorder ??= new HolderEvidenceRecorder(config.stateDir, (featureId, input) => featureEvidence.record(featureId, input));
+              const debtMod = await import('../messaging/telegram-origin/TokenlessHeldDebt.js');
+              if (!debtMod.peerHeldDebtStore()) debtMod.setPeerHeldDebtStore(new debtMod.PeerHeldDebtStore(config.stateDir));
               return handleOriginMesh({ runtime: telegramOriginBoot.runtime,
                 command: cmd as import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand,
-                authenticatedSender: sender,
+                authenticatedSender: sender, evidence: tokenlessEvidenceRecorder, heldDebt: debtMod.peerHeldDebtStore() ?? undefined,
                 resolveKey: machineId => {
                   const manager = coordinator.managers.identityManager;
                   const entry = manager.loadRegistry().machines[machineId];
@@ -32906,6 +33161,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             const originForwardMod = await import('../messaging/telegram-origin/OriginForwardToHolder.js');
             const originConfigMod = await import('../messaging/telegram-origin/OriginConfig.js');
             const hasUsableBotToken = typeof originBotToken === 'string' && originBotToken.length > 0;
+            // standby-durable-forward-without-token §5: a machine WITHOUT the bot token may take the
+            // durable forward when this dev-gated key is live (dark on the fleet; reads dark if unreadable).
+            const tokenlessDurableForwardOn = (): boolean => {
+              try { return resolveDevAgentGate(liveConfig.get<boolean | undefined>('telegramOrigin.tokenlessDurableForward.enabled', undefined), config); }
+              catch { return false; } // @silent-fallback-ok — an unreadable gate reads dark: today's direct relay
+            };
             const forwardSwitchOn = (): boolean => {
               try {
                 const messaging = liveConfig.get('messaging', config.messaging) as Array<{ type?: string; config?: { messageOrigin?: unknown } }> | undefined;
@@ -32994,24 +33255,117 @@ export async function startServer(options: StartOptions): Promise<void> {
               return 'active';
             });
             const tgConfig = () => originTelegramConfig!.config as { chatId: string; formatMode?: import('../messaging/TelegramMarkdownFormatter.js').FormatMode };
+            // §10: a token-less standby carries its evidence outbox to the holder on capabilities/submit.
+            const evidenceMod = await import('../messaging/telegram-origin/TokenlessForwardEvidence.js');
+            const tokenlessOutbox = hasUsableBotToken ? null : new evidenceMod.StandbyEvidenceOutbox(config.stateDir);
+            /** Operations that replaced a placeholder seal (§10 ran metric); bounded to recent ids. */
+            const resealedOperationIds = new Set<string>();
+            tokenlessEvidenceOutbox = tokenlessOutbox;
+            // §9: tell reachable peers a reply is pending here (metadata only), and report how it ended.
+            const debtLedgerMod = await import('../messaging/telegram-origin/TokenlessHeldDebt.js');
+            const heldDebtLedger = hasUsableBotToken ? null : new debtLedgerMod.StandbyHeldDebtLedger(config.stateDir);
+            const reachablePeers = (): Array<{ machineId: string; url: string }> => {
+              try {
+                return meshIdMgr.getActiveMachines().filter(m => m.machineId !== meshSelfId).slice(0, 8)
+                  .flatMap(m => { const url = peerUrl(m.machineId); return url ? [{ machineId: m.machineId, url }] : []; });
+              } catch { return []; } // @silent-fallback-ok — no peers known: the debt stays on this machine only (§9 named risk)
+            };
+            const notifyPeersOfHold = (operation: import('../messaging/telegram-origin/TelegramOriginService.js').OriginPreparedBotOperation, authoredAt: number) => {
+              if (!heldDebtLedger) return;
+              const root = debtLedgerMod.chainRoot(operation.record.operationId);
+              const tokenlessHold = { rootOperationId: root, topicId: operation.record.destination.topicId, authoredAt };
+              void Promise.allSettled(reachablePeers().map(async peer => {
+                const r = await meshClient.send(peer, { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'evidence',
+                  record: operation.admission.record, tokenlessHold } as never, 0, { timeoutMs: 1250 });
+                return (r.ok && (r.result as { ok?: boolean } | undefined)?.ok) ? peer.machineId : null;
+              })).then(results => {
+                const told = results.flatMap(x => x.status === 'fulfilled' && x.value ? [x.value] : []);
+                try { heldDebtLedger.notified(root, told); } catch { /* @silent-fallback-ok — best effort */ }
+              });
+            };
+            const flushHeldOutcomes = () => {
+              if (!heldDebtLedger) return;
+              for (const peerId of heldDebtLedger.peersOwed()) {
+                const url = peerUrl(peerId);
+                if (!url) continue;
+                const outcomes = heldDebtLedger.owed(peerId);
+                if (!outcomes.length) continue;
+                void meshClient.send({ machineId: peerId, url }, { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'capabilities',
+                  forwardContext: { tokenless: true, outcomes } } as never, 0, { timeoutMs: 1250 }).then(r => {
+                  const ack = (r.result as { outcomesAck?: unknown } | undefined)?.outcomesAck;
+                  if (Array.isArray(ack)) heldDebtLedger.acked(peerId, ack.filter((x): x is string => typeof x === 'string'));
+                }).catch(() => undefined); // @silent-fallback-ok — owed outcomes are resent on the next resolution or reachable holder
+              }
+            };
+            const resolveHeldDebt = (operationId: string, outcome: import('../messaging/telegram-origin/TokenlessHeldDebt.js').HeldOutcome) => {
+              if (!heldDebtLedger) return;
+              try { heldDebtLedger.resolved(debtLedgerMod.chainRoot(operationId), outcome); } catch { /* @silent-fallback-ok */ }
+              flushHeldOutcomes();
+            };
+            const withForwardContext = (command: import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand) => {
+              if (!tokenlessOutbox || (command.action !== 'capabilities' && command.action !== 'submit')) return command;
+              const resealed = command.action === 'submit' && resealedOperationIds.has(command.operation.record.operationId);
+              return { ...command, forwardContext: { tokenless: true, resealed, events: tokenlessOutbox.pending() } };
+            };
+            const ackEvidence = <T extends { result?: unknown }>(reply: T): T => {
+              const ack = (reply?.result as { evidenceAck?: unknown } | undefined)?.evidenceAck;
+              if (tokenlessOutbox && Array.isArray(ack)) { try { tokenlessOutbox.ack(ack.filter((x): x is string => typeof x === 'string')); } catch { /* @silent-fallback-ok — evidence only; resent next time */ } }
+              return reply;
+            };
             const sendToHolder = (holder: string, timeoutMs = Math.min(relayTimeoutMs, originForwardMod.FORWARD_RPC_TIMEOUT_MS)) => {
               const url = peerUrl(holder);
+              const raw = sendToHolderRaw(holder, url, timeoutMs);
+              return async (command: import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand) => ackEvidence(await raw(withForwardContext(command)));
+            };
+            const sendToHolderRaw = (holder: string, url: string | null, timeoutMs: number) => {
               return (command: import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand) => {
                 if (!url) return Promise.reject(new Error('origin-peer-unreachable'));
                 // §4.2 — `capabilities` + `submit` share the 30 s attempt budget.
                 return meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs });
               };
             };
+            // §2: one network timeout per holder per recovery tick. A failed probe is remembered for one
+            // tick interval, so the remaining rows skip the dead holder.
+            const PROBE_FAILURE_MEMO_MS = 5_000;
+            const recentProbeFailure = new Map<string, number>();
+            /** The current recovery pass's capabilities answer (§2), reused by that pass's rows. */
+            /** §2 account-changed items: the topics already listed per (sealed, live) pair. */
+            const accountChangedTopics = new Map<string, Set<string>>();
+            const noticeBrakes = await import('../messaging/telegram-origin/TokenlessNoticeBrakes.js');
+            let tickProbe: { holder: string; answer: import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe; at: number } | null = null;
+            const recoveryProbe = async (holder: string): Promise<import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe> =>
+              tickProbe && tickProbe.holder === holder && Date.now() - tickProbe.at < PROBE_FAILURE_MEMO_MS * 2 ? tickProbe.answer : probeHolder(holder);
+            const probeHolder = async (holder: string): Promise<import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe> => {
+              const failedAt = recentProbeFailure.get(holder);
+              if (failedAt !== undefined && Date.now() - failedAt < PROBE_FAILURE_MEMO_MS) return { ok: false, reason: 'origin-peer-unreachable' };
+              let answer: import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe;
+              try { answer = originForwardMod.validHolderCapabilities(await sendToHolder(holder)({ type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'capabilities' })); }
+              catch { answer = { ok: false, reason: 'origin-peer-unreachable' }; } // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+              if (answer.ok) recentProbeFailure.delete(holder); else recentProbeFailure.set(holder, Date.now());
+              return answer;
+            };
+            // §8/§10: with nothing held, a light check still lets re-posts and evidence flow once the holder answers.
+            if (!hasUsableBotToken) {
+              const idleCheck = setInterval(() => {
+                const pending = telegram.pendingHubReposts.size > 0 || (tokenlessOutbox?.pending().length ?? 0) > 0 || (heldDebtLedger?.peersOwed().length ?? 0) > 0;
+                const holder = coordinator.getSyncStatus().leaseHolder;
+                if (!pending || !holder || holder === meshSelfId) return;
+                void probeHolder(holder).then(r => { if (r.ok) { flushHeldOutcomes(); void telegram.repostPendingHubPosts(); } }).catch(() => undefined); // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+              }, 60_000);
+              idleCheck.unref?.();
+            }
             const forwardDeps = (runtime: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime):
               import('../messaging/telegram-origin/OriginForwardToHolder.js').ForwardDeps => ({
               lease: forwardLease,
-              prepare: async (holder, input, operationId) => {
+              prepare: async (holder, input, operationId, sealAccountId) => {
                 const service = runtime.service;
                 const { applyTelegramFormatter } = await import('../messaging/TelegramAdapter.js');
                 const params = applyTelegramFormatter('sendMessage', { chat_id: input.chatId, text: input.text, parse_mode: 'Markdown',
                   ...(input.topicId > 1 ? { message_thread_id: input.topicId } : {}), ...(input.silent ? { disable_notification: true } : {}) },
                   (input.formatMode as import('../messaging/TelegramMarkdownFormatter.js').FormatMode | undefined) ?? tgConfig().formatMode).outgoingParams as import('../messaging/telegram-origin/types.js').BotParameters;
-                const accountId = String(originBotToken).split(':')[0];
+                // Token machines derive the account from their token; a token-less machine is handed the
+                // holder's live account (or the placeholder) by the forward path (§1).
+                const accountId = hasUsableBotToken ? String(originBotToken).split(':')[0] : (sealAccountId ?? originForwardMod.UNRESOLVED_TOKENLESS_ACCOUNT);
                 // native-conversation-base §3a item 2 — a replacement keeps the original's sealed
                 // policy input (the content-check key) and deadline, seals its first draft time,
                 // and is prepared under the original's producer record so it stays a session reply.
@@ -33030,8 +33384,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await service.recordIntent(operation);
                 return operation;
               },
-              submit: async (holder, operation) => {
-                try { return await originForwardMod.submitOriginToHolder({ operation, send: sendToHolder(holder), expectedOwner: holder }); }
+              tokenless: !hasUsableBotToken,
+              onHolderReachable: () => telegram.repostPendingHubPosts(),
+              probe: probeHolder,
+              submit: async (holder, operation, capabilities) => {
+                try { return await originForwardMod.submitOriginToHolder({ operation, send: sendToHolder(holder), expectedOwner: holder, capabilities }); }
                 catch (error) {
                   if (error instanceof QuietRecordedError) await runtime.store.recordOperationState({ operationId: operation.record.operationId,
                     state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId: error.receipt.quietId } });
@@ -33045,6 +33402,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await runtime.service.admit(operation);
                 const recorded = await runtime.store.recordOperationState({ operationId: operation.record.operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> });
                 await runtime.refreshHeldForward({ force: true });
+                if (recorded && !hasUsableBotToken) notifyPeersOfHold(operation, detail.authoredPreparedAt ?? Date.now());
                 return recorded;
               },
               notify: async (holder, topicId) => {
@@ -33053,7 +33411,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Three short RPCs (5 s each): the notice must never push the reply
                 // request past its route timeout — worst case settle 15 s + attempt 30 s + notice 15 s.
                 const r = await runtime.service.runAsUnboundAutomation('telegram-server', () => relayOriginBot({ runtime, topicId, text, chatId: tgConfig().chatId,
-                  formatMode: tgConfig().formatMode, send: sendToHolder(holder, 5_000), executionOwnerMachineId: holder }));
+                  formatMode: tgConfig().formatMode, kindMetadata: { noticeClass: 'held-forward-notice' }, send: sendToHolder(holder, 5_000), executionOwnerMachineId: holder }));
                 return Number.isSafeInteger(r.messageId);
               },
               noticeGate: heldNoticeGate,
@@ -33075,16 +33433,48 @@ export async function startServer(options: StartOptions): Promise<void> {
                 noteAnsweredInline: operationId => runtime.noteVerdictAnsweredInline(operationId),
               },
             });
-            if (telegramOriginBoot && hasUsableBotToken && meshSelfId) {
+            // §5: recovery and expiry are always wired on a token-less machine (drain-only), so held
+            // rows still drain after the gate goes dark. The gate only controls creating new holds.
+            if (telegramOriginBoot && meshSelfId) {
               const runtime = telegramOriginBoot.runtime;
               telegram.holderForwardPolicy = {
                 decide: () => originForwardMod.decideHolderForward({ switchOn: forwardSwitchOn(), poolStage: _sessionPoolStage(), route: originForwardMod.classifyLeaseRoute(forwardLease), hasPeer: forwardHasPeer() }),
               };
               // §4.2 — recovery re-forwards the SAME operation; an outcome-unknown
               // attempt is resolved at the old holder's receipt, never re-sent blind.
+              // §2: one capabilities read per recovery pass on a token-less machine, before any row is attempted.
+              // The answer is reused by that pass's rows (tickProbe), so a healthy pass reads once too.
+              if (!hasUsableBotToken) {
+                runtime.options.forwardTickReachable = async () => {
+                  const holder = coordinator.getSyncStatus().leaseHolder;
+                  if (!holder || holder === meshSelfId) return true; // self/settling: the per-row route logic retains it
+                  const answer = await probeHolder(holder);
+                  tickProbe = { holder, answer, at: Date.now() };
+                  if (answer.ok) { flushHeldOutcomes(); void telegram.repostPendingHubPosts(); }
+                  else heldAudit({ ts: Date.now(), phase: 'recovery', outcome: 'retained-holder-unreachable-tick', holder, reason: answer.reason, gateLive: tokenlessDurableForwardOn() });
+                  return answer.ok;
+                };
+              }
               runtime.options.forwardRecovery = async (operation, row) => {
                 const outcome = await originForwardMod.recoverForwardedHold({
                 lease: forwardLease, prepare: forwardDeps(runtime).prepare, submit: forwardDeps(runtime).submit, audit: heldAudit, now: Date.now,
+                tokenless: !hasUsableBotToken, probe: recoveryProbe,
+                onHolderReachable: () => { flushHeldOutcomes(); return telegram.repostPendingHubPosts(); },
+                onResealed: operationId => { resealedOperationIds.add(operationId); if (resealedOperationIds.size > 500) resealedOperationIds.delete(resealedOperationIds.values().next().value as string); },
+                onAccountChanged: async changed => {
+                  // ONE item per (sealed, live) pair. Each new topic is added to it; the same topic on a
+                  // later tick changes nothing, so the item is not re-raised every recovery pass.
+                  const key = `${changed.sealedAccountId}:${changed.liveAccountId}`;
+                  const topic = changed.topicId ?? 'unknown';
+                  if (!noticeBrakes.noteAccountChangedTopic(accountChangedTopics, key, topic)) return;
+                  const named = [...(accountChangedTopics.get(key) ?? [])].map(t => t === 'unknown' ? 'an unknown topic' : topicRef(Number(t))).join(', ');
+                  /* @self-action-controller: tokenless-account-changed-notice */
+                  await telegram.createAttentionItem({ id: `telegram-origin-account-changed:${key}`,
+                    category: 'telegram-origin', priority: 'HIGH', title: 'Held replies are waiting for their original bot',
+                    summary: `Held replies sealed for bot ${changed.sealedAccountId} are waiting: the sending machine now uses bot ${changed.liveAccountId}. They expire unless the original bot returns.`,
+                    description: `Affected: ${named}. Nothing is re-sent automatically.`,
+                    sourceContext: 'telegram-origin-account-changed' }, { hubOnly: true });
+                },
                 // native-conversation-base §3a item 7 — the raw state is read WITH the owner's
                 // outcome, reason and failure; a reasonless `suppressed` is never folded into
                 // "not accepted", which would send a second copy.
@@ -33129,6 +33519,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   if (recovered) telegram.recordRecoveredOutbound(recovered.topicId, recovered.text, recovered.messageId,
                     originForwardMod.recoveredForwardProvenance(row.holdDetail, row.producerKind));
                 }
+                if (outcome === 'sent' || outcome === 'resolved') resolveHeldDebt(row.operationId, 'delivered');
+                if (outcome === 'settled') resolveHeldDebt(row.operationId, 'outcome-unknown');
                 if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;
               };
@@ -33163,17 +33555,20 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await telegram.createAttentionItem(originForwardMod.handBackItem(row), { hubOnly: true });
               };
               runtime.options.onHeldForwardExpired = async row => {
+                if (tokenlessOutbox) { try { tokenlessOutbox.add('expired-undelivered', row.operationId); } catch { /* @silent-fallback-ok — evidence only */ } }
+                resolveHeldDebt(row.operationId, 'expired');
                 const topicId = Number(row.destination.topicId);
                 heldAudit({ phase: 'expired', topicId: row.destination.topicId, operationId: row.operationId, lastAttempt: (row.holdDetail as { lastAttempt?: string } | null)?.lastAttempt ?? null });
                 if (Number.isSafeInteger(topicId)) heldCollapser.clear(topicId);
-                await telegram.createAttentionItem(originForwardMod.heldExpiryItem(row), { hubOnly: true });
+                /* @self-action-controller: held-forward-expiry-report */
+                await telegram.createAttentionItem(originForwardMod.heldExpiryItem(row), { hubOnly: true, noticeClass: 'held-expiry-report' });
               };
             }
             telegram.outboundRelay = async (topicId, text, opts) => {
               if (telegramOriginBoot) {
                 const { TelegramOriginHoldError, OriginForwardSettledLocallyError } = await import('../messaging/telegram-origin/types.js');
                 const tg = tgConfig();
-                if (hasUsableBotToken && meshSelfId) {
+                if (meshSelfId && (hasUsableBotToken || (forwardSwitchOn() && tokenlessDurableForwardOn() && !originForwardMod.isNoticeClass(opts?.kindMetadata)))) {
                   // §4.1/§4.2 — settle, forward to the holder, ladder, then hold durably.
                   const runtime = telegramOriginBoot.runtime;
                   // native-conversation-forwarded-advisory item 5 — this reply may answer a handed-back forward.
@@ -33184,15 +33579,30 @@ export async function startServer(options: StartOptions): Promise<void> {
                   if (outcome.kind === 'local') throw new OriginForwardSettledLocallyError();
                   if (outcome.kind === 'sent') return { messageId: outcome.messageId, topicId, destinationStoreConfirmed: true as const };
                   if (!outcome.noticeDelivered && outcome.noticeSuppressed !== 'already-noticed') void raiseHeldItem({ topicId, holder: outcome.holder, operationId: outcome.operationId, lastAttempt: outcome.lastAttempt, reason: outcome.reason });
-                  throw new TelegramOriginHoldError(originForwardMod.HOLD_REASON_LEASE_NOT_HELD, outcome.operationId, 'held');
+                  const heldError = new TelegramOriginHoldError(originForwardMod.HOLD_REASON_LEASE_NOT_HELD, outcome.operationId, 'held');
+                  if (!hasUsableBotToken) heldError.custody = 'this-machine-only';
+                  throw heldError;
                 }
                 const holder = coordinator.getSyncStatus().leaseHolder;
                 const url = holder ? peerUrl(holder) : null;
                 if (!holder || !url || holder === meshSelfId) throw new TelegramOriginHoldError('origin-credential-owner-unavailable');
-                const { relayOriginBot } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
-                return relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
-                  silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
-                  send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
+                const { relayOriginBot, relayNothingPrepared } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
+                try {
+                  return await relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
+                    silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
+                    send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
+                } catch (error) {
+                  // §10 audit: a notice-class send found the holder unreachable and was deliberately not held (§8).
+                  if (!hasUsableBotToken && relayNothingPrepared(error) && originForwardMod.isNoticeClass(opts?.kindMetadata)) {
+                    heldAudit({ ts: Date.now(), phase: 'notice-not-held', topicId, noticeClass: String(opts?.kindMetadata?.noticeClass), reason: (error as { reason?: string }).reason ?? null, gateLive: tokenlessDurableForwardOn() });
+                  }
+                  // §10 harm signal: the relay could not even prepare a reply while the token-less durable forward was live.
+                  if (relayNothingPrepared(error) && tokenlessEvidenceOutbox && tokenlessDurableForwardOn()
+                    && !originForwardMod.isNoticeClass(opts?.kindMetadata)) {
+                    try { tokenlessEvidenceOutbox.add('not-sent-while-live'); } catch { /* @silent-fallback-ok — evidence only */ }
+                  }
+                  throw error;
+                }
               }
               const r = await relayOutbound(topicId, text, opts, {
                 leaseHolder: () => coordinator.getSyncStatus().leaseHolder,
@@ -34563,7 +34973,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only now: a retry must see the session router, spawn admission and the operator routes.
     _slackRefusedHold?.start();
     activeUsageLimitWatch()?.start();
-    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, conversationListPins: _listPinStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, meshSignedRead: _meshSignedRead ?? undefined, transcriptCopies: _transcriptCopies ?? undefined, transcriptCheckpointTick: _transcriptCheckpointTick ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, workBoard: () => _workBoardRuntime, workBoardLate: _workBoardLate, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
+    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, mobilePairingAutomationReply: (topicId: number, body: Record<string, unknown>, logicalSendId: string, opts: { headers: Record<string, string>; signal: AbortSignal }) => postOriginAutomationReply({ service: telegramOriginBoot?.runtime.service, port: config.port, authToken: config.authToken ?? '', producerId: 'mobile-pairing-outcome', topicId, body, author: deterministicAutomationAuthor(), logicalSendId, headers: opts.headers, signal: opts.signal }), tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, conversationListPins: _listPinStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, meshSignedRead: _meshSignedRead ?? undefined, transcriptCopies: _transcriptCopies ?? undefined, transcriptCheckpointTick: _transcriptCheckpointTick ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, workBoard: () => _workBoardRuntime, workBoardLate: _workBoardLate, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
     conversationGraphReplicationRuntime?.start();
     // Unread (mobile-unread-messages §3.3): the retry and gc timers, and the boot catch-up from any reachable
     // peer once the pool registry has had a moment to name them. Phones get no baseline until it settles.

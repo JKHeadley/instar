@@ -27,6 +27,8 @@ import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSo
 import { WorkAdmission } from '../core/workAdmission.js';
 import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
+import { HUB_REPOST_MAX_ATTEMPTS, hubRepostDecision, noteAccountChangedTopic, heldExpiryReportDue, type HubRepostState } from '../messaging/telegram-origin/TokenlessNoticeBrakes.js';
+import { closeGoneEntries, type HeldDebtEntry } from '../messaging/telegram-origin/TokenlessHeldDebt.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
@@ -66,6 +68,7 @@ import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js
 import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { decideNeverSilentAction } from '../monitoring/neverSilent/NeverSilentPolicy.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
@@ -75,6 +78,7 @@ import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS }
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
+import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
@@ -3168,7 +3172,7 @@ const localVerifyMainSchedule: SelfActionController = {
 const localVerifyMainDebounce: SelfActionController = {
   id: 'local-verify-main-debounce',
   actionVerb: 'retry-main-verify',
-  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; enqueueMain → decideMainEnqueue)',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; while main is suspect or red the debounce is 2 min capped at 10, so the floor on that path is 2 minutes and this model, which passes no health, does not exercise it; enqueueMain → decideMainEnqueue)',
   modelsPath: 'src/localVerify/LocalVerifyService.ts',
   delegatedGiveUp: 'none needed: the debounce cap (30 min) floors head-changed verifies; at most one is ever pending',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so each restart adds at most one head-changed verify; restarts are operator/updater-driven and dampened.' },
@@ -5394,6 +5398,128 @@ const reloginApprovalReminder: SelfActionController = {
   },
 };
 
+
+/** tokenless-hub-repost (standby-durable-forward-without-token §8): an attention hub post that
+ * found the sending machine unreachable is re-posted when it answers again. Pressure: the holder
+ * keeps answering its capabilities probe but every re-post fails. The real decision backs off
+ * (1 min, 5 min, 30 min, then every 2 h) and gives the extra hub post up after
+ * HUB_REPOST_MAX_ATTEMPTS failures; the item stays open on the dashboard. */
+const tokenlessHubRepost: SelfActionController = {
+  id: 'tokenless-hub-repost',
+  actionVerb: 'retry',
+  models: 'src/messaging/TelegramAdapter.ts (repostPendingHubPostsOnce — hubRepostDecision backoff + give-up, attempts persisted in pending-hub-reposts.json)',
+  modelsPath: 'src/messaging/TelegramAdapter.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => (SELF_ACTION_CONTROLLERS.find(c => c.id === 'tokenless-hub-repost') as SelfActionController).makeUnderPressure(f, sink) },
+  boundK: HUB_REPOST_MAX_ATTEMPTS,
+  perTargetBoundK: HUB_REPOST_MAX_ATTEMPTS,
+  ticks: 24 * 60 * 3,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'tokenless-hub-repost:item';
+    const durable = () => f.durableState.get(key) as { pending: boolean; state?: HubRepostState } | undefined;
+    if (!durable()) f.durableState.set(key, { pending: true });
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = durable()!;
+        if (!d.pending) return;
+        const now = f.clock.nowMs();
+        const decision = hubRepostDecision(d.state, now);
+        if (decision === 'wait') return;
+        if (decision === 'give-up') { d.pending = false; return; }
+        sink.emit({ verb: 'retry', target: 'hub-repost:item' });
+        // The fixture's target always rejects: the attempt fails and is recorded.
+        if (f.targetAlwaysRejects()) d.state = { attempts: (d.state?.attempts ?? 0) + 1, lastAt: now };
+        else d.pending = false;
+      },
+    };
+  },
+};
+
+/** tokenless-account-changed-notice (§2): held replies sealed for one bot while the sending
+ * machine now runs another. Pressure: the same mismatch is found on every recovery pass for the
+ * same topic. The real decision raises one item per (sealed, live) pair and adds a topic only
+ * once, so a steady mismatch raises it once. */
+const tokenlessAccountChangedNotice: SelfActionController = {
+  id: 'tokenless-account-changed-notice',
+  actionVerb: 'createAttentionItem',
+  models: 'src/commands/server.ts (onAccountChanged — noteAccountChangedTopic, one item per bot pair, re-raised only for a new topic)',
+  modelsPath: 'src/commands/server.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The listed topics are held in memory, so a restart can raise the same fixed-id item once more per topic; it updates that one item, and the count stays bounded by the number of affected topics.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60 * 3,
+  tickMs: 5_000,
+  makeUnderPressure(_f, sink) {
+    const listed = new Map<string, Set<string>>();
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!noteAccountChangedTopic(listed, '111:222', '141014')) return;
+        sink.emit({ verb: 'createAttentionItem', target: 'account-changed:111:222' });
+      },
+    };
+  },
+};
+
+/** held-forward-expiry-report (§8): a held forward that passed its deadline is reported once.
+ * Pressure: the expired row stays in the store on every refresh. The real filter reports only
+ * rows whose durable expiryReportedAt marker is still null, and the marker is written after the
+ * report, so a steady expired row is reported once. */
+const heldForwardExpiryReport: SelfActionController = {
+  id: 'held-forward-expiry-report',
+  actionVerb: 'createAttentionItem',
+  models: 'src/commands/server.ts (onHeldForwardExpired) driven by TelegramOriginRuntime.refreshHeldForward (heldExpiryReportDue + markHoldExpiryReported)',
+  modelsPath: 'src/commands/server.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => (SELF_ACTION_CONTROLLERS.find(c => c.id === 'held-forward-expiry-report') as SelfActionController).makeUnderPressure(f, sink) },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60 * 3,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const key = 'held-forward-expiry-report:row';
+    if (!f.durableState.has(key)) f.durableState.set(key, { state: 'expired', expiryReportedAt: null as number | null });
+    return {
+      tick() {
+        sink.considered += 1;
+        const row = f.durableState.get(key) as { state: string; expiryReportedAt: number | null };
+        if (!heldExpiryReportDue(row)) return;
+        sink.emit({ verb: 'createAttentionItem', target: 'held-expiry:op-1' });
+        row.expiryReportedAt = f.clock.nowMs();
+      },
+    };
+  },
+};
+
+/** held-debt-loss-notice (§9): a held reply owed by a machine the owner marked as gone is
+ * reported as a loss once. Pressure: the closure runs on every status read while the machine
+ * stays gone. The real closure deletes each entry as it reports it, so nothing is reported twice. */
+const heldDebtLossNotice: SelfActionController = {
+  id: 'held-debt-loss-notice',
+  actionVerb: 'createAttentionItem',
+  models: 'src/server/AgentServer.ts (setHeldDebtGoneCheck loss reporter) over TokenlessHeldDebt.closeGoneEntries (report, then delete)',
+  modelsPath: 'src/server/AgentServer.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => (SELF_ACTION_CONTROLLERS.find(c => c.id === 'held-debt-loss-notice') as SelfActionController).makeUnderPressure(f, sink) },
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 24 * 60 * 3,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'held-debt-loss-notice:entries';
+    if (!f.durableState.has(key)) {
+      const entry = (root: string): HeldDebtEntry => ({ rootOperationId: root, topicId: '141014', authoredAt: 0, originMachineId: 'm_gone', recordedAt: 0 });
+      f.durableState.set(key, { 'm_gone:op-a': entry('op-a'), 'm_gone:op-b': entry('op-b') } as Record<string, HeldDebtEntry>);
+    }
+    return {
+      tick() {
+        sink.considered += 1;
+        const all = f.durableState.get(key) as Record<string, HeldDebtEntry>;
+        closeGoneEntries(all, id => id === 'm_gone', e => sink.emit({ verb: 'createAttentionItem', target: `held-lost:${e.rootOperationId}` }));
+      },
+    };
+  },
+};
+
 /**
  * work-board-pickup (docs/specs/work-board-asks.md §6): an approved card is handed to its
  * conversation's session; the hand-over that spends (a session spawn or inject) is refused for
@@ -5433,6 +5559,52 @@ const workBoardPickup: SelfActionController = {
   },
 };
 
+/**
+ * never-silent-conversation-recovery — docs/specs/never-silent-conversation.md §3.3. A conversation
+ * owes an answer and stays silent forever under the pinned fixture: every account looks healthy to
+ * the pool, every swap and engine move "succeeds", and the conversation still never answers. The
+ * REAL table (`decideNeverSilentAction`) plus the watcher's per-incident bookkeeping it is fed:
+ * a swap is offered once (`swapTried` after the first), an engine move adds the engine it left to
+ * `triedFrameworks` (the breaker: never back to an engine already tried in the incident), one action
+ * per evidence revision, and status notices deduped per state revision. So the conversation gets at
+ * most one swap, one move and one notice per distinct state, then only "tell" with nothing new to
+ * say. Moving back needs the conversation idle (never, under the fixture).
+ */
+const neverSilentConversationRecovery: SelfActionController = {
+  id: 'never-silent-conversation-recovery',
+  actionVerb: 'conversation-respawn',
+  models: 'src/monitoring/neverSilent/NeverSilentWatcher.ts (decideNeverSilentAction + swapTried + triedFrameworks breaker + per-revision notice dedupe)',
+  modelsPath: 'src/monitoring/neverSilent/NeverSilentWatcher.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The breaker state (swap attempts, engines tried, notices sent) lives in the durable never-silent store, so a restart resets none of it, and nothing in this controller causes a restart.' },
+  boundK: 5, // one swap + one engine move + at most three distinct status notices
+  perTargetBoundK: 5,
+  ticks: 400,
+  tickMs: 15_000, // the sweep interval
+  makeUnderPressure(f, sink) {
+    const TARGET = 'silent-conversation';
+    let stuck = 'engine-a'; // stand-in engine ids: the model is engine-neutral
+    const tried: string[] = [];
+    let swapTried = false;
+    const noticed = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const fallbackEngine = ['engine-b', 'engine-a'].find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
+        const d = decideNeverSilentAction({
+          silenceClass: 'engine-login', confidence: 0.99, truncated: false, actionsSinceMessage: 'none',
+          pinned: false, actionsEnabled: true, frameworkFallbackEnabled: true, confidenceFloor: 0.8,
+          sameEngineHealthy: true, fallbackEngine, swapTried, // the pool always reports a healthy alternate under the fixture
+          protectedSession: false, recentlyRestored: false,
+        });
+        let outcome = '';
+        if (d.action === 'swap') { swapTried = true; outcome = 'refused'; sink.emit({ verb: 'account-swap', target: TARGET }); }
+        else if (d.action === 'fallback' && d.target) { tried.push(stuck); stuck = d.target; outcome = 'succeeded'; sink.emit({ verb: 'conversation-respawn', target: TARGET }); }
+        const revision = `${d.action}|${outcome}`;
+        if (d.action !== 'wait' && !noticed.has(revision)) { noticed.add(revision); sink.emit({ verb: 'notify', target: TARGET }); }
+      },
+    };
+  },
+};
 
 /**
  * local-verify-leftover-reaper: Local Verify's leftover test-process sweep
@@ -5518,7 +5690,56 @@ const localVerifyMemoryNotice: SelfActionController = {
   },
 };
 
+/**
+ * pairing-outcome-notice-retry — docs/specs/mobile-pairing-outcome-notice.md §3.4. The reconciler
+ * retries a decided outcome line (30 s doubling, 5 min cap) only inside the 1 h window after it was
+ * decided, then fails it and upserts one attention item per topic (30 s doubling, 10 min cap), giving
+ * up after MAX_ESCALATION_ATTEMPTS per process with one report. Under a target that always rejects
+ * both, the count settles at 15 sends + 12 upserts, horizon-independent.
+ */
+const pairingOutcomeNoticeRetry: SelfActionController = {
+  id: 'pairing-outcome-notice-retry',
+  actionVerb: 'retry',
+  models: 'src/core/PairingOutcomeWatches.ts (sendDue within SEND_WINDOW_MS + escalateFailed with MAX_ESCALATION_ATTEMPTS)',
+  modelsPath: 'src/core/PairingOutcomeWatches.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The send window is measured from the persisted decidedAt, so a restart cannot extend it; the upsert counter is per process, so each boot adds at most 12 attempts per topic.' },
+  boundK: 15 + MAX_ESCALATION_ATTEMPTS,
+  perTargetBoundK: 15,
+  ticks: 24 * 120,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const decidedAt = f.clock.nowMs();
+    let sendAttempts = 0, nextSendAt = decidedAt, failed = false;
+    let escAttempts = 0, nextEscAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!f.targetAlwaysRejects()) return;
+        if (!failed && now >= nextSendAt) {
+          if (now - decidedAt > PAIRING_SEND_WINDOW_MS) { failed = true; }
+          else {
+            sink.emit({ verb: 'retry', target: 'pairing-outcome-send' });
+            sink.emitTimesMs.push(now);
+            sendAttempts += 1;
+            const next = now + sendRetryDelayMs(sendAttempts);
+            if (next - decidedAt > PAIRING_SEND_WINDOW_MS) failed = true; else nextSendAt = next;
+          }
+        }
+        if (failed && escAttempts < MAX_ESCALATION_ATTEMPTS && now >= nextEscAt) {
+          sink.emit({ verb: 'retry', target: 'pairing-outcome-attention' });
+          sink.emitTimesMs.push(now);
+          escAttempts += 1;
+          nextEscAt = now + escalationRetryDelayMs(escAttempts);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  pairingOutcomeNoticeRetry,
+  neverSilentConversationRecovery,
   localVerifyLeftoverReaper,
   localVerifyMemoryNotice,
   graphSourceSweepCheckpointRetry,
@@ -5650,5 +5871,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   browserActivationEffectRetry,
   fcmPauseTrialRetry,
   emailFallbackRetry,
+  tokenlessHubRepost,
+  tokenlessAccountChangedNotice,
+  heldForwardExpiryReport,
+  heldDebtLossNotice,
   workBoardPickup,
 ];

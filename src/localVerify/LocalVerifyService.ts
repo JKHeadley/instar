@@ -1275,7 +1275,7 @@ export class LocalVerifyService {
     // A head different from the last one observed: queued PR entries resolved before now re-read their base at start.
     if (o.head !== null && o.head !== sha) this.mainMovedAt = now;
     if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
-    const d = decideMainHeadEnqueue(o, sha, now);
+    const d = decideMainHeadEnqueue(o, sha, now, MAIN_VERIFY_LIMITS, { healthy: this.health.isHealthy() });
     o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
     o.handled = d.next.handled; o.immediate = d.next.immediate;
     if (d.enqueue) {
@@ -3175,6 +3175,10 @@ export class LocalVerifyService {
 
   /* @self-action-controller: local-verify-error-rerun */
   private handleErrorRetry(entry: QueueEntry, errorStep?: string): void {
+    // A merge conflict is decided by the head and the base alone: re-running the same pair a
+    // second later gives the same conflict (it only doubled every conflict record and status
+    // post). The head runs again when it moves, or on an explicit request for the same head.
+    if (errorStep === 'conflict') return;
     const d = decideVerifyRetry(entry, 'error');
     if (d.action !== 're-run') return;
     entry.errorRetries = d.errorRetries;

@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { historyTextFor } from '../core/inboundMedia.js';
@@ -4783,20 +4784,23 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       // Reach-aware B17 (Echo Bugs topic 10000002506): the operator-errand SIGNAL plus
       // the AGENT REACH context (browser-profile accounts + what the agent's own key
-      // reads). Built only when an errand-shaped ask is present in a reply, so every
-      // other review is unchanged. Fail-OPEN: any error leaves both undefined and the
+      // reads). The errand signal (and with it the REACH sub-clause) fires only on
+      // an errand-shaped reply. The reach DATA is also built for every non-health-
+      // alert review: the B17 APPROVAL-NOT-ERRAND sub-clause (Echo Bugs topic
+      // 10000002731) reads it to tell "the agent could do this step on a yes" from
+      // "only the operator can". Fail-OPEN: any error leaves both undefined and the
       // gate runs exactly as before.
       let agentReach: import('../core/agent-reach.js').AgentReach | undefined;
       try {
         if (kindForSignals === 'reply') {
           const errand = detectOperatorErrand(text);
-          if (errand.errand) {
-            signals.operatorErrand = { errand: true, phrase: errand.phrase };
-            const registry =
-              ctx.playwrightRegistry?.() ??
-              new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
-            agentReach = buildAgentReach(registry);
-          }
+          if (errand.errand) signals.operatorErrand = { errand: true, phrase: errand.phrase };
+        }
+        if (kindForSignals !== 'health-alert') {
+          const registry =
+            ctx.playwrightRegistry?.() ??
+            new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
+          agentReach = buildAgentReach(registry);
         }
       } catch {
         // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
@@ -21432,7 +21436,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         && typeof metadata?.inboundMessageId === 'string'
         ? { origin: 'automated' as const, category: 'presence-standby' as const,
           sourceContext: 'presence-proxy', inboundMessageId: metadata.inboundMessageId }
-        : undefined;
+        // Pairing outcome (docs/specs/mobile-pairing-outcome-notice.md §3.4): only the in-process
+        // producer reaches this branch, and its anchor (the operator's message the link answers)
+        // was verified at mint. Without an anchor the line falls through to an ordinary notice.
+        : originProducer?.producerKind === 'server-automation' && originProducer.producerId === PAIRING_OUTCOME_PRODUCER
+          && typeof metadata?.inboundMessageId === 'string' && /^\d{1,20}$/.test(metadata.inboundMessageId)
+          ? { origin: 'automated' as const, category: 'pairing-outcome' as const,
+            sourceContext: PAIRING_OUTCOME_PRODUCER, inboundMessageId: metadata.inboundMessageId }
+          : undefined;
       const sendOptions = {
         envelope: conversationNotice ?? (originProducer?.producerKind !== 'server-automation' && !(originProducer?.sessionId && ctx.state.getSession(originProducer.sessionId)?.jobSlug) && !isProxy && !isSystemTemplate && !notificationJobSession && !metadataJobSlug && senderClass !== 'script'
           && (messageKind === undefined || messageKind === 'reply')
@@ -21444,8 +21455,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied || originProducer?.producerId === 'reply-delivery-notice'
             ? {
+                ...(originProducer?.producerId === 'reply-delivery-notice' ? { noticeClass: 'reply-delivery-notice' } : {}),
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
@@ -32697,6 +32709,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/preferences/session-context', async (_req, res) => {
     const r = await preferencesSessionContext();
     res.status(r.status).json(r.body);
+  });
+
+  // GET /preferences — the STRUCTURED list behind the console's "What I've learned about
+  // you" page: one entry per learned preference with when it was last seen
+  // (`recordedAt`), how often (`dedupeCount`), how sure (`confidence`) and which machine
+  // learned it (`origin`). Same gate and the same source precedence as the session-context
+  // read above (foundation union → WS2.1 merged view → own store), so the page and the
+  // injected block never disagree about what is kept. Read only. Never serves
+  // `violationPattern` or replication bookkeeping; every `learning` passes the credential
+  // scrubber (PreferencesListView). Same bearer auth as every route; a memory-boundary
+  // session token is refused by the default-deny memorySessionGuard (not on its allow-list).
+  router.get('/preferences', async (_req, res) => {
+    try {
+      const cfg = ctx.config.monitoring?.correctionLearning;
+      if (cfg?.enabled !== true) {
+        res.status(503).json({ error: 'correction-learning disabled' });
+        return;
+      }
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const { buildPreferenceList, unionToPreferenceRows } = await import('../core/PreferencesListView.js');
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const stateSyncPrefEnabled = resolveDevAgentGate(
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled,
+        ctx.config as { developmentAgent?: boolean },
+      );
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const list = buildPreferenceList(unionToPreferenceRows(ctx.preferencesUnionReader.readAll(PREF_STORE_KEY)));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const { mergePreferenceViews } = await import('../core/PreferencesSync.js');
+        const merged = mergePreferenceViews({ ownMachineId: selfId, own: manager.getAllForSync(), replicas });
+        const list = buildPreferenceList(merged.map((m) => ({ entry: m, origin: m.winningMachineId, redacted: m.textRedacted === true })));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const list = buildPreferenceList(manager.read().preferences.map((entry) => ({ entry, origin: selfId })));
+      res.json({ ...list, scope: 'local' });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, ctx.config.stateDir) : 'Failed to read preferences' });
+    }
   });
 
   // ── Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) ──

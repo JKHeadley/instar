@@ -105,6 +105,13 @@ describe('telegram-reply.sh — held reply outcome', () => {
     expect(res.stderr).toContain('safe to send it again');
   });
 
+  // standby-durable-forward-without-token §9 (2026-11-11 incidents, topics 141469 and 141014).
+  it('a token-less hold says it is kept on this machine only', async () => {
+    const res = await run(held('held', ',"custody":"this-machine-only"'), `{"operationId":"${OP}","outcome":"pending","safeToResend":false}`);
+    expect(res.stderr).toContain('HELD');
+    expect(res.stderr).toContain('Kept on this machine only');
+  });
+
   it('a not-delivered verdict with safeToResend false (ended on purpose) never says resend (native-conversation-base §3b)', async () => {
     const res = await run(held('known-failed'), `{"operationId":"${OP}","outcome":"not-delivered","safeToResend":false,"messageIds":[],"detail":"It was ended on purpose; do not resend."}`);
     expect(res.status).toBe(1);

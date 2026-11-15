@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -209,6 +210,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { getMigrationDefaults } from '../config/ConfigDefaults.js';
 import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
+import { createNeverSilentRoutes } from './neverSilentRoutes.js';
 import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
 import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
@@ -225,6 +227,8 @@ import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
+import { createConversationSearchRouter } from './mobileConversationSearchRoutes.js';
+import { telegramRowId } from '../core/ConversationReadMarkers.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
 import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
@@ -1267,6 +1271,8 @@ export class AgentServer {
     publisher?: TelegraphService;
     viewer?: PrivateViewer;
     jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
+    /** Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.4): posts one automation reply as the pairing-outcome producer. */
+    mobilePairingAutomationReply?: import('./pairingOutcomeNotice.js').AutomationPost;
     tunnel?: TunnelManager;
     /**
      * Multi-route own names (docs/specs/mobile-multi-route.md): inject the Tailscale CLI and the
@@ -2142,6 +2148,21 @@ export class AgentServer {
         : (process.env.VITEST ? null : defaultTailscaleExec(wslWindowsHostAddress() !== null)),
       isWsl: wslWindowsHostAddress() !== null,
       ...(options.mobileRoutes?.fetchFn ? { fetchFn: options.mobileRoutes.fetchFn } : {}),
+      // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): a line in the topic that asked for the link.
+      ...(options.mobilePairingAutomationReply ? { outcomeNotice: createPairingOutcomeNotice({
+        post: options.mobilePairingAutomationReply,
+        port: options.config.port,
+        authToken: options.config.authToken ?? '',
+        available: () => !!options.telegram && !!options.telegramOrigin?.service,
+        recentOperatorInbound: (topicId, withinMs) => options.telegram?.selectivity?.recentOperatorInbound(topicId, withinMs) ?? null,
+        upsertAttention: async (item) => {
+          if (!options.telegram) throw new Error('Telegram not configured');
+          return options.telegram.upsertAttentionItem({
+            id: item.id, title: item.title, summary: item.summary, description: item.summary, priority: 'NORMAL',
+            category: 'mobile-pairing', sourceContext: 'mobile-pairing-outcome', contextTopicIds: [item.topicId],
+          } as Parameters<NonNullable<typeof options.telegram>['upsertAttentionItem']>[0]);
+        },
+      }) } : {}),
       raiseAttention: (title, body) => {
         void options.telegram?.createAttentionItem({
           id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',
@@ -7156,6 +7177,8 @@ export class AgentServer {
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.startMaturationLadder(options, routeCtx);
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    // Never-Silent Conversation (docs/specs/never-silent-conversation.md §4): 503 while off.
+    this.app.use(createNeverSilentRoutes());
     this.app.use(createMaturationLadderRoutes({
       enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
       ladder: () => this.maturationLadder,
@@ -7264,6 +7287,22 @@ export class AgentServer {
         }) : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
+      // Keyword search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
+      this.app.use(createConversationSearchRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: conversationFlatDeps.machineId,
+        topicMemory: () => options.topicMemory ?? null,
+        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: m.topicName })) : undefined,
+        telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
+          return row ? telegramRowId(row) : null;
+        } : undefined,
+        slack: slackBridge ? () => (slackOwnerUserId(options.config) ? {
+          conversations: () => slackListRows(slackBridge).map((c) => ({ id: c.id, title: c.title })),
+          history: (id, limit) => { const conv = slackBridge.resolve(id); return conv ? slackBridge.history(conv, limit) : []; },
+        } : null) : undefined,
+        pool: routeCtx,
+      }));
       if(routeCtx.conversationRegistry){
         startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
@@ -7439,7 +7478,9 @@ export class AgentServer {
         selfMachineId: teamSelfId,
         peers: () => this.teamSwitchPeers(),
         knownMachines: () => {
-          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false)); } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
+          try {
+            return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false));
+          } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
         },
         applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
         reportsOn: (setting, machineId) => {
@@ -7452,6 +7493,17 @@ export class AgentServer {
         reportError: (err) => pairingSvc.reportTeamFault('TeamAccess.switch', err),
       });
       this.teamSwitchApplier = teamSwitches;
+      // standby-durable-forward-without-token §9: a machine the owner recorded as gone closes its
+      // held-reply debt as a LOSS (one attention item each), never by silent deletion. Wired once here.
+      void import('../messaging/telegram-origin/TokenlessHeldDebt.js').then(m => m.setHeldDebtGoneCheck(
+        id => pairingSvc.teamLog()?.isGone(id) ?? false,
+        entry => {
+          /* @self-action-controller: held-debt-loss-notice */
+          void options.telegram?.createAttentionItem({ id: `telegram-origin-held-lost:${entry.originMachineId}:${entry.rootOperationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A reply was lost with a removed machine',
+            summary: `A reply${entry.topicId == null ? '' : ` to ${topicRef(entry.topicId)}`} was waiting on machine ${entry.originMachineId}, which the owner marked as gone. It may not have reached you; check the conversation before asking for it again.`,
+            sourceContext: 'telegram-origin-held-debt' }, { hubOnly: true }).catch(() => undefined); // @silent-fallback-ok — the loss is also visible in the held-debt status
+        })).catch(() => undefined); // @silent-fallback-ok — closure then waits for the next status read wiring
       this.app.use(createTeamRouter(pairingSvc, {
         signer: () => loadMachineSigner(options.config.stateDir),
         applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),
