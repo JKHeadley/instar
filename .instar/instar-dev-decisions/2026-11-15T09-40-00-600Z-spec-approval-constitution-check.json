@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-15T09:40:00.600Z",
+  "slug": "spec-approval-constitution-check",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 481,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MessagingToneGate.ts",
+      "src/core/specConstitutionCheckLedger.ts",
+      "src/data/awareness/spec-approval-constitution-check.md",
+      "src/server/routes.ts",
+      "src/server/specReviewRoutes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 480,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

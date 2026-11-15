@@ -18,6 +18,7 @@
  * is the structural backup that catches lapses.
  */
 
+import { renderSpecApprovalSection } from './specConstitutionCheckLedger.js';
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
 import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
@@ -552,6 +553,7 @@ export const VALID_RULES = new Set([
   'B22_SURFACE_REFERRAL',
   'B23_UNSOURCED_ATTRIBUTION',
   'B24_OLD_VIEW_LINK',
+  'B25_SPEC_APPROVAL_UNCHECKED',
 ]);
 
 /**
@@ -615,6 +617,9 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // Old-style page link while documents replace pages (instar-document-viewer §3.9b). Judged by meaning,
   // like B22: the rule joins the prompt only with its detector signal.
   B24_OLD_VIEW_LINK: 'behavioral-judgment',
+  // B25 combines the constitution-check RECORDS signal with a meaning judgment of
+  // whether the text asks approval of a spec/design (Echo Bugs topic 10000002750).
+  B25_SPEC_APPROVAL_UNCHECKED: 'signal-driven',
 };
 
 /**
@@ -671,6 +676,11 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B22_SURFACE_REFERRAL: 'advisory',
   B23_UNSOURCED_ATTRIBUTION: 'advisory',
   B24_OLD_VIEW_LINK: 'advisory',
+  // A HOLD, not a nudge: the operator directive is that the constitution check is
+  // part of every design process, so an approval ask without it is held. The way
+  // through is always the agent's own (run the check, carry the result) — the
+  // operator is never asked to do anything. Also exempt from the advisory migration.
+  B25_SPEC_APPROVAL_UNCHECKED: 'blocking',
 };
 
 /**
@@ -727,6 +737,10 @@ export const ADVISORY_MIGRATION_EXEMPT_RULES: ReadonlySet<string> = new Set<stri
   'B17_FALSE_BLOCKER',
   'B18_AUTONOMY_STOP',
   'B19_PARKED_ON_USER',
+  // B25: the agent skipping the constitution check is the very judgment the rule
+  // constrains, so an acknowledged override would defeat it (same reasoning as the
+  // self-stop family). It stays a hold until the request carries the check result.
+  'B25_SPEC_APPROVAL_UNCHECKED',
 ]);
 
 /**
@@ -1048,6 +1062,14 @@ export interface ToneReviewContext {
    */
   agentReach?: import('./agent-reach.js').AgentReach;
   /**
+   * This machine's recent built-in constitution check results (latest per spec;
+   * src/core/specConstitutionCheckLedger.ts). DATA, not instructions. Read by the
+   * B25_SPEC_APPROVAL_UNCHECKED rule, which is rendered for every kind except health
+   * alerts. Absent → the rule is still rendered and told the records are unavailable,
+   * so it judges only whether the text reports a check result.
+   */
+  specConstitutionChecks?: import('./specConstitutionCheckLedger.js').SpecConstitutionCheckRecord[];
+  /**
    * Free-text description of how outbound messages should be written for this
    * agent's user — e.g. "ELI10, short sentences, plain words". Sourced from
    * `InstarConfig.messagingStyle`. When undefined/empty, the style rule
@@ -1277,6 +1299,7 @@ export class MessagingToneGate {
       context.standingAuthorization,
       gateSignals,
       context.agentReach,
+      context.specConstitutionChecks,
     );
     // F5: route the operator-facing SYNCHRONOUS reply (a human is waiting) to the
     // interactive reservation lane in the host spawn cap. Honored only when the
@@ -1535,6 +1558,7 @@ export class MessagingToneGate {
     standingAuthorization?: ToneReviewContext['standingAuthorization'],
     gateSignals?: GateSignal[],
     agentReach?: ToneReviewContext['agentReach'],
+    specConstitutionChecks?: ToneReviewContext['specConstitutionChecks'],
   ): string {
     const boundary = `MSG_BOUNDARY_${crypto.randomBytes(8).toString('hex')}`;
 
@@ -1548,7 +1572,10 @@ export class MessagingToneGate {
     const agentReachSection =
       (errandReach ? this.renderAgentReach(agentReach) : '') +
       (signals?.unownedHandoff?.flagged === true ? `\n=== B17 UNOWNED-HANDOFF ===\n${B17_UNOWNED_HANDOFF_SUBCLAUSE}\n` : '') +
-      this.renderApprovalNotErrand(messageKind, errandReach ? undefined : agentReach);
+      this.renderApprovalNotErrand(messageKind, errandReach ? undefined : agentReach) +
+      // B25 (Echo Bugs topic 10000002750): a spec/design approval ask must carry its
+      // constitution check result. Every kind except health alerts; no phrase filter.
+      (messageKind === 'health-alert' ? '' : renderSpecApprovalSection(specConstitutionChecks));
     // §Design 8 (CMT-1793): B1–B7 artifacts are detected DETERMINISTICALLY here
     // and supplied to the prompt as a bounded signal list — the prompt judges
     // them IN CONTEXT (no in-prompt literal-matching). Rendered in its OWN

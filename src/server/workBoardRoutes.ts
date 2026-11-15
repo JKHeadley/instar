@@ -68,6 +68,23 @@ export interface WorkBoardRouteDeps {
   /** Persist a settings change (live config); returns false on failure. */
   saveSettings: (patch: Record<string, unknown>) => boolean;
   log?: (event: string, detail: Record<string, unknown>) => void;
+  /**
+   * B25 (Echo Bugs topic 10000002750): judge an AGENT-written card text — does it ask
+   * the owner to approve a spec or design without carrying its constitution check
+   * result? A hold refuses the write with 422 and the way through. Absent ⇒ no judge.
+   */
+  specApprovalJudge?: (text: string) => Promise<{ hold: boolean; issue?: string; suggestion?: string; unavailable?: boolean; noProvider?: boolean }>;
+}
+
+/** The card text an approval ask lives in: the fields a person reads to decide. */
+export function cardTextForSpecJudge(fields: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const k of ['title', 'need', 'recommendation', 'question', 'options', 'doneWhen']) {
+    const v = fields[k];
+    if (v === undefined || v === null) continue;
+    parts.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  }
+  return parts.join('\n');
 }
 
 function disabled(res: Response): void { res.status(503).json({ error: 'work-board-disabled' }); }
@@ -78,6 +95,45 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const svc = deps.svc();
     if (!svc) { res.status(503).json({ error: 'work-board-starting' }); return null; }
     return svc;
+  };
+
+  /**
+   * B25 hold for agent writes. Returns true when the write may proceed; on a hold it
+   * has written the 422 (or a retryable 503 when the judge could not answer). A
+   * person's own write is never judged.
+   */
+  const specApprovalAllows = async (p: WorkPrincipal, fields: Record<string, unknown>, res: Response): Promise<boolean> => {
+    if (p.kind === 'person' || !deps.specApprovalJudge) return true;
+    const text = cardTextForSpecJudge(fields);
+    if (!text.trim()) return true;
+    const v = await deps.specApprovalJudge(text);
+    if (v.noProvider) {
+      // No LLM provider on this agent at all: no judgment is possible anywhere, and a
+      // standing refusal would block every agent card. Named in the log, not silent.
+      deps.log?.('spec-approval-judge-no-provider', {});
+      return true;
+    }
+    if (v.unavailable) {
+      // Fail closed, named and retryable: the judge tried two model tiers and could not answer.
+      deps.log?.('spec-approval-judge-unavailable', {});
+      res.status(503).json({
+        error: 'spec-approval-judge-unavailable',
+        rule: 'B25_SPEC_APPROVAL_UNCHECKED',
+        retryable: true,
+        message: 'The check that reads agent-written cards for a spec or design approval ask could not answer just now. Nothing was written; write the card again in a minute.',
+      });
+      return false;
+    }
+    if (!v.hold) return true;
+    deps.log?.('spec-approval-held', { issue: v.issue });
+    res.status(422).json({
+      error: 'spec-approval-unchecked',
+      rule: 'B25_SPEC_APPROVAL_UNCHECKED',
+      issue: v.issue,
+      suggestion: v.suggestion,
+      message: 'This card asks the owner to approve a spec or design without its constitution check result. Run the built-in constitution check on it, then write the card again with one line giving the result.',
+    });
+    return false;
   };
 
   const viewerFor = (c: ResolvedCaller): Viewer | null => {
@@ -168,6 +224,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const svc = gate(res); if (!svc) return;
     const p = writerOf(req, res, 'Enter your dashboard PIN to add this card'); if (!p) return;
     const { pin: _pin, ...body } = (req.body ?? {}) as Record<string, unknown>;
+    if (!(await specApprovalAllows(p, body, res))) return;
     const r = svc.createCard(p, body);
     if (!r.ok) { send(res, r); return; }
     try { await deps.ensureConversation(r.cardId, r.conversationKey, String(body.title ?? '')); }
@@ -190,6 +247,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const { pin: _pin, kind: _k, recordType: _rt, ...rest } = body;
     const fields = (body.fields && typeof body.fields === 'object' ? body.fields : rest) as Record<string, unknown>;
     if (p.kind === 'person' && kind !== 'edited') { res.status(403).json({ error: 'agent-only' }); return; }
+    if ((kind === 'edited' || kind === 'waiting-on') && !(await specApprovalAllows(p, fields, res))) return;
     const before = svc.view(id);
     const wasApproved = !!before?.card.approvalValid;
     switch (kind) {

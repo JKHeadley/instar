@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "spec-approval-constitution-check",
+  "sessionId": "7b47e4d1-6232-48f9-a299-003f25529327",
+  "timestamp": "2026-11-15T09:52:33.464Z",
+  "artifactPath": "upgrades/side-effects/spec-approval-constitution-check.md",
+  "artifactSha256": "f019f7a255d561924a86b2b62e92e8b54696144d6227d54698fcc2a570564f23",
+  "coveredFiles": [
+    "docs/specs/spec-approval-constitution-check.eli16.md",
+    "src/core/specConstitutionCheckLedger.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/spec-approval-constitution-check.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Keeps the outbound gate's Stage-B import closure minimal: a local structural type replaces a type import, and the new ledger module is listed as excluded with its reason, following the agent-reach precedent. No behaviour change.",
+  "eli16Path": "docs/specs/spec-approval-constitution-check.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/spec-approval-constitution-check.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

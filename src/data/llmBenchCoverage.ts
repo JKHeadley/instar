@@ -41,6 +41,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
+  WorkBoardSpecApprovalJudge: { pending: 'wave-3' }, // B25 card judge (spec-approval-constitution-check); graded by its route tests until a bench battery lands
   // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
   // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
   // progress observed after a restart) until a bench battery lands.
@@ -233,6 +234,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   WarrantsReplyGate: true,
   UnjustifiedStopGate: true,
   AttributionJudge: true, // reads notes, messages and logged rows, all of which may quote untrusted text
+  WorkBoardSpecApprovalJudge: true, // reads agent-written card text, which may quote untrusted conversation content
   MessagingToneGate: true, // reviews a draft that routinely quotes untrusted user/tool content
   CoherenceReviewer: true,
   LLMSanitizer: true, // definitionally judges untrusted inbound content
@@ -425,6 +427,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
   AttributionJudge: false, // rules on what a person said, not an agent's claim of completion or health
+  WorkBoardSpecApprovalJudge: false, // judges whether a card asks approval without its constitution check result, not a completion/health claim
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
   LLMSanitizer: false, // sanitizes untrusted inbound content
@@ -567,6 +570,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
   AttributionJudge: { pending: 'contract-wave-2' }, // closed own|relayed|unclear + faithful verdicts
+  WorkBoardSpecApprovalJudge: { contractTest: 'tests/unit/spec-approval-constitution-check.test.ts' }, // closed {fire, issue, suggestion} verdict; the test feeds back the exact reply shape the prompt teaches
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
@@ -901,6 +905,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   WarrantsReplyGate: exposed(EXPOSED_USER),
   UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
   AttributionJudge: exposed(EXPOSED_ALL), // notes, messages and logged rows
+  WorkBoardSpecApprovalJudge: exposed(EXPOSED_ALL), // card text plus constitution-check records merged from peers
   MessagingToneGate: exposed(EXPOSED_ALL), // reviews an outbound draft quoting user/tool content
   HubIntentClassifier: exposed(EXPOSED_USER), // inbound hub message
   CoherenceReviewer: exposed(EXPOSED_ALL), // reviews outbound coherence (draft + context)

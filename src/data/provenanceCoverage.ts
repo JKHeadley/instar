@@ -480,6 +480,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Advice-only grouping of the owner\'s unassigned conversations into proposed efforts. Deterministic floors drop invalid groups; every surviving group is graded by the owner\'s own Accept or Reject before anything moves.',
   },
   {
+    decisionPoint: 'work-board-spec-approval-judge',
+    component: 'WorkBoardSpecApprovalJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Judges whether an agent-written Work Board card asks the owner to approve a spec or design without its constitution check result (rule B25). Low volume (agent card writes only); a hold returns the write to the agent with the way through, and every hold or judge outage is logged by name.',
+  },
+  {
     decisionPoint: 'never-silent-conversation-judge',
     component: 'ConversationSilenceJudge',
     status: 'pending:backlog:decision-quality-enrolment',

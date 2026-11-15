@@ -30,6 +30,10 @@ const PENDING_BASELINE = [
   'AttributionJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
   'PreCompactionFlush', 'RelationshipManager',
+  // spec-approval-constitution-check (Echo Bugs topic 10000002750, 2026-11-15): the B24 Work Board card judge.
+  // Low volume (agent card writes only); its verdict is graded by its route and contract tests until a
+  // bench battery is authored in the research tree, which does not live in this repo.
+  'WorkBoardSpecApprovalJudge',
   // context-budget-layered-summaries §6.5 (Phase 1 S8, 2026-11-10): chunk/C2 summaries over an archived span;
   // graded by the Phase 2 fold probes until a bench task lands.
   'ContextLayerChunk',

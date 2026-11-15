@@ -347,6 +347,7 @@ import { createDesktopSetupRoutes } from './desktopSetupRoutes.js';
 import { hasMachinePick, resolveCreateMachineChoice, safeMachineLabel, type CreateMachineChoice, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
+import { recentSpecConstitutionChecks, judgeSpecApprovalAsk, SpecCheckPeerCache } from '../core/specConstitutionCheckLedger.js';
 import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
@@ -2974,6 +2975,34 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
 ];
 
 export function createRoutes(ctx: RouteContext): Router {
+  // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
+  // Proxied-on-read: this machine's ledger merged with each online peer's own answer
+  // (GET /spec/constitution-checks), refreshed in the background at most once a minute
+  // so a review never waits on the network. Undefined on a local read error, so the
+  // judge is told "unavailable" and a broken read is never mistaken for "no checks".
+  const specCheckPeerCache = new SpecCheckPeerCache(async () => {
+    const peers = (ctx.resolvePeerUrls?.() ?? []).filter((p) => ctx.machinePoolRegistry?.getCapacity(p.machineId)?.online !== false);
+    const answers = await Promise.all(peers.map(async (p) => {
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/spec/constitution-checks', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) return null;
+        const body = await r.json() as { records?: unknown };
+        return { machine: p.machineId, records: body.records };
+      } catch {
+        return null; // @silent-fallback-ok — a peer that does not answer is absent from this refresh only
+      }
+    }));
+    return answers.filter((a): a is { machine: string; records: unknown } => a !== null);
+  });
+  const safeRecentSpecChecks = (stateDir: string | undefined): import('../core/specConstitutionCheckLedger.js').SpecConstitutionCheckRecord[] | undefined => {
+    if (!stateDir) return undefined;
+    try { return specCheckPeerCache.get(recentSpecConstitutionChecks(stateDir)); }
+    catch { return undefined; /* @silent-fallback-ok — rendered to the judge as "records unavailable" */ }
+  };
+
   // ── Signed pool reads (native-conversation-any-machine-access §3d) ──
   // Per machine, per kind of read and per version: what each peer has answered in signed form.
   const signedReads = new SignedReadCapability();
@@ -3131,6 +3160,7 @@ export function createRoutes(ctx: RouteContext): Router {
     holdsLease: () => ctx.workBoard?.()?.holdsLease() ?? true,
     saveSettings: (patch) => ctx.workBoard?.()?.saveSettingsPatch(patch) ?? false,
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
+    specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
   };
   registerWorkBoardRoutes(router, workBoardRouteDeps);
   mountOriginDisplayPreferences(router, ctx);
@@ -5131,6 +5161,9 @@ export function createRoutes(ctx: RouteContext): Router {
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
           agentReach,
+          // B24 (Echo Bugs topic 10000002750): this machine's built-in constitution
+          // check results, so a spec/design approval ask is judged against them.
+          specConstitutionChecks: options.messageKind === 'health-alert' ? undefined : safeRecentSpecChecks(ctx.config.stateDir),
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.
