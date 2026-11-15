@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "graph-fast-context-pages",
+  "sessionId": "1cbcbeb3-33d7-4c90-84d4-4b21248dd546",
+  "timestamp": "2026-11-15T00:09:27.429Z",
+  "artifactPath": "upgrades/side-effects/graph-fast-context-pages.md",
+  "artifactSha256": "46965133b40938c5592b89a4f3c28b19e2c3f636294f521c0ff8dba21681137a",
+  "coveredFiles": [
+    "docs/eli16/graph-fast-context-pages.eli16.md",
+    "upgrades/next/graph-fast-context-pages.md",
+    "upgrades/side-effects/graph-fast-context-pages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs-only CMT1637 maintenance of test-only PR3094: records the measured Studio pre-push run (87.091 s, focused vitest.push.config.ts, not official), the never-started exit143 manual run, and the routine main merge. No test, src, config or bound change; no pass or official-result claim.",
+  "eli16Path": "docs/eli16/graph-fast-context-pages.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-fast-context-pages.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "opus-independent-docs-and-merge-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

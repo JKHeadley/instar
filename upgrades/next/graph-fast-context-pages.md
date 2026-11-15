@@ -9,3 +9,9 @@
 - A separate narrow typecheck (a custom config that extends the repo `tsconfig.json` and includes only this test file; not the normal build) reported the same 4 errors as the unmodified file. The edit adds none, but that check did not pass.
 - A fresh independent review agreed with the code only. It did not run the test.
 - At this checkpoint the new case had not run: one manual run waited about 18 minutes for a test slot and was stopped on purpose before starting, so it gave no result or timing. Pass/fail and per-file time come from the official Local Verify run on the PR (CMT-1637). Under 60 seconds on the Studio is the goal, not a measured result.
+
+## Evidence (pre-push measurement 2026-11-12, main merge 2026-11-14)
+- First real execution: the required pre-push check at commit `77b9f38` ran this file on the Studio under the focused `vitest.push.config.ts` (not the official integration config, not the full suite). 2 passed, 2 skipped (the two opt-in cases). The new 112-row case took 87.091 s, the eight-row smoke 10.133 s, and the file 97.225 s. The new case's boundary assertions (file > 128 KiB, ≥ 2 served pages, every index served) are part of that pass. The 60 s goal was not met; the case's 180 s timeout was not changed.
+- The manual run from the first checkpoint never started (stopped while queued, exit 143) and is not evidence either way.
+- The branch was merged with main at `7ff41d4`. The only conflict was one comment line beside the 300-row case. The resolved test file is byte-identical to the reviewed version, and this PR changes no `src/` file.
+- No official Local Verify result exists yet for the updated head. That run decides the pass/fail and lane time.

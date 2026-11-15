@@ -95,3 +95,19 @@ These notes record the evidence at the initial draft checkpoint. They stay accur
 - The size figure (about 1347 bytes per row, 112 rows ≈ 151 KB plus fixed activation/lease bytes) is an estimate from the entry shape, not observed. The new file-size assertion is what proves it.
 - Under 60 s on the Studio is a goal, not a result. Nothing here claims the test passed, is fast, or has shipped.
 - Scope: this is not first-contact or Threadline Witness work. It grants no authority and changes no config. The 300/4000-row opt-in cases and the production 128 KiB page bound are unchanged.
+
+---
+
+## 9. Evidence update (pre-push measurement 2026-11-12, main merge 2026-11-14)
+
+Section 8 stays as the record of the first checkpoint. This section adds what is known since.
+
+- **First real execution (Studio, focused pre-push config):** the ordinary required pre-push check for head `77b9f38089` ran this file on the Studio (`m_03b30f5b…`) under `vitest.push.config.ts`. 2 passed, 2 skipped (the two opt-in cases, scale flag unset). The new 112-row case took 87.091 s, the eight-row smoke 10.133 s, and the file 97.225 s. The boundary assertions in the new case held on that run. This is NOT the official integration config, NOT the full suite and NOT a Local Verify result. Since 87.091 s > 60 s, the 60 s goal from section 5 was not met. The 180000 ms case timeout was not changed and is not proposed for change.
+- **Manual targeted run:** still unexecuted (stopped while queued, exit 143, see section 8). Not counted.
+- **Main merge:** `origin/main` at `7ff41d4589` was merged (no rebase, no force). The only conflict was the comment line above the opt-in 300-row case: main's #3090 says "Multi-page proof:" and this branch says "Multi-page proof at 300 rows:". The branch wording was kept. The resolved test file hash is `bdb997424022…`, the exact file the independent review concurred on. This PR changes no `src/` file (`src/` is byte-identical to the merged main `7ff41d4589`), so production bounds, including `GRAPH_CONTEXT_PAGE_BYTES = 128*1024`, are unchanged.
+- **Lane budget:** the PR stays a draft, with no merge-throughput label, until the official Local Verify run on the updated head reports the new case's pass and the integration lane time, and the lane-budget condition is checked against that. A run on the M5 is not a Studio result.
+- **Red hosted checks on the old head `77b9f38`:**
+  - *Docs Coverage* failed repo-wide floors (overall 53% < 55%, route 54% < 55%, class 50% < 55%). This test-only change adds no capability, so it cannot cause or fix that.
+  - *Unit Tests (node 20, shard 2/4)* failed in `tests/integration/graph-witness-chunks.test.ts:68`, a different file that this change does not touch.
+  - Neither is evidence about this change. Both were already there before it, and both are listed in the CMT-1637 maintenance report to the owning session, which routes them to the feedback queue. On the merged tree, `node scripts/docs-coverage.mjs --check` still fails only the route floor (54% < 55%), with this PR adding no route.
+- **Proportion signal:** Tier 1, test-only plus docs. Effort is high for the size (a manual slot wait, an official-measurement route and a main merge) because of the shared integration lane budget, not because the code changed.
