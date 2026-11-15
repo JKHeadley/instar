@@ -311,6 +311,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'neverSilent',
+    prefixes: ['/never-silent'],
+    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message, the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /never-silent/incidents'],
+    }),
+  },
+  {
     key: 'queuePace',
     prefixes: ['/queue-pace'],
     description: 'Queue pace (docs/specs/queue-pace.md) — an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items) with a plain 7-day verdict (falling-behind / catching-up / holding / shrinking-by-exits / unknown / owner-not-serving) and, for a queue that is behind, the named reason (person / quota / cap / worker / unknown). GET /queue-pace (?scope=pool merges every machine) returns per-queue inflowPerDay, outflowPerDay, exitedPerDay, open, daysToClear, bottleneck, coverage and tuner state. Dev-gated measure-only (queuePace.enabled); 503 when dark. The triage pace tuner has its own flag queuePace.tuner.enabled (default false, dry-run). When asked "are we keeping up with feedback / promises / action items?" → read this, don\'t guess.',

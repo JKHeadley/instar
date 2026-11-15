@@ -165,6 +165,11 @@ export class NotificationSelectivityGate {
     }
     if (envelope?.origin === 'verified-reply') this.metrics.eatenReplyCounterfactual++;
     if (CONVERSATION_CATEGORIES.has(category)) {
+      // Never-Silent Conversation: the notice that a person's message went unanswered is the ONE
+      // outcome besides a reply (spec §2). It is produced only by the internal never-silent
+      // producer (category comes from categoryForProducer, never from request metadata) and always
+      // names the waiting inbound message, so it is never held as quiet — however long the wait.
+      if (category === 'never-silent-notice' && envelope?.inboundMessageId) return result('deliver', 'never-silent-floor');
       const rows = this.inbound.get(topicId);
       const match = envelope?.inboundMessageId && rows?.find(row => row.id === envelope.inboundMessageId && (category === 'presence-standby' || this.now() - row.at <= 900000));
       const token = `${topicId}:${envelope?.inboundMessageId}:${category}`;

@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-14T23:00:32.000Z",
+  "slug": "never-silent-conversation",
+  "carriers": {
+    "CMT-1781": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "After the first never-silent PR merges: (1) run the held-out pane corpus measurement and turn actions on per class (spec 3.7); (2) move the other recovery producers onto one shared per-conversation lease (Phase 2); (3) add the every-poll claude auth status read; (4) engine moves and the one-tap ask on Slack and app conversations; (5) the bounded probe rung on the stuck account."
+    }
+  }
+}

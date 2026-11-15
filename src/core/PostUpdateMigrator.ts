@@ -1978,6 +1978,21 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 }
 
 /**
+ * The Never-Silent Conversation section, one definition for fresh agents and updated ones.
+ * Sniff key for the migrator: `/never-silent/incidents`. Spec: docs/specs/never-silent-conversation.md
+ */
+export function NEVER_SILENT_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Never-silent conversations
+
+A message someone sends to a conversation ends in exactly one of two things: a reply from me, or a plain message from Instar in that conversation saying what went wrong and what is being done. Each inbound message is recorded until it is answered; one that is still unanswered after about two minutes is looked at by a judge that runs on a DIFFERENT engine from the stuck one (Jev first, then a Codex or Claude referee), from the screen since the message, the engine's own login check and the account list. Instar then tells the person, from fixed wording, even when the judge is down. When actions are on, an expired login moves the conversation to another signed-in account or to the other engine and re-delivers the waiting message; a conversation the operator set to an engine is asked first, with one "Move to …" button, and is never moved without that tap. A Codex session also starts with its own folder already trusted, so it cannot stall at "Trust this folder?".
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/never-silent/incidents\` (\`?open=1\` for what is waiting now): each conversation's waiting messages, the judged reason, the action and every notice sent. 503 = off on this agent (\`monitoring.neverSilent.enabled\`; on for development agents). Log: \`logs/never-silent.jsonl\`.
+- **When to use** (PROACTIVE): someone asks "why did that conversation go quiet?", "why didn't you answer?", or says a reply never came → read \`/never-silent/incidents\` first and answer from it in plain words.
+- Actions that change anything (\`monitoring.neverSilent.actions\`, \`.frameworkFallback\`) are off until the judge has been measured against real screens; with them off, Instar still tells the person the reason.
+`;
+}
+
+/**
  * The Disk Steward section, one definition for fresh agents and updated ones.
  * Sniff key for the migrator: `/disk-steward`. Spec: docs/specs/disk-steward.md
  */
@@ -3009,14 +3024,23 @@ export function insertContextDeathClaudeBlock(input: string): string {
     `<!-- /${markerId} -->`,
   ].join('\n');
   let content = input;
+  // The awareness-registry feature-notes block must stay the LAST thing in the file
+  // (docs/specs/awareness-entry-registry.md): this step can run after the registry wrote it,
+  // so it inserts before the block instead of past it. Without that, the next update moves
+  // the block back to the end and CLAUDE.md changes on every run.
+  const notes = findRegistryBlock(content);
+  const limit = notes.state === 'well-formed' ? notes.start : content.length;
   // Anchor: end of "Critical Anti-Patterns" (just before next `## ` heading) —
   // falls back to append if section absent.
-  const antiPatternsIdx = content.indexOf('## Critical Anti-Patterns');
+  const antiPatternsIdx = content.slice(0, limit).indexOf('## Critical Anti-Patterns');
   if (antiPatternsIdx >= 0) {
     const afterHeader = antiPatternsIdx + '## Critical Anti-Patterns'.length;
-    const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
-    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
+    const nextHeadingIdx = content.slice(0, limit).indexOf('\n## ', afterHeader);
+    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : limit;
     content = content.slice(0, insertAt) + '\n' + claudeBlock + '\n' + content.slice(insertAt);
+  } else if (limit < content.length) {
+    const beforeNotes = content.slice(0, limit).replace(/\n+$/, '');
+    content = beforeNotes + '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n\n' + content.slice(limit);
   } else {
     content += '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n';
   }
@@ -12325,6 +12349,15 @@ Rule: I do not state that work landed inside another agent's state unless I have
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
       }
+      // A failed repair whose account is verified signed in again closes its own row (relogin self-heal).
+      const recoveredSentence = 'A failure whose account is then verified signed in again (pool active, matching identity, a live login check of ok: by a later repair, by hand, or by the provider) sends no failure notice and closes its own attention row with the resolution "signed in again (verified on this machine)"; the user asks "why did that sign-in alert disappear?" → this.';
+      const slowRetryEndForRecovered = 'When the user asks "why did that repair start again by itself?" \u2192 this.';
+      if (content.includes(slowRetryEndForRecovered) && !content.includes('why did that sign-in alert disappear?')) {
+        // Inserted BEFORE the bullet's closing sentence, which other migrations use as their anchor.
+        content = content.replace(slowRetryEndForRecovered, recoveredSentence + ' ' + slowRetryEndForRecovered);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+      }
       // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
       const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
       if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
@@ -14575,6 +14608,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
     } else {
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
+    // Never-Silent Conversation (never-silent-conversation spec). Idempotent via the route path.
+    if (!content.includes('/never-silent/incidents')) {
+      content += '\n' + NEVER_SILENT_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-silent conversations section');
+    } else {
+      result.skipped.push('CLAUDE.md: never-silent conversations section already present');
     }
 
     // Disk Steward (disk-steward spec). Idempotent via content-sniffing on the route path.
@@ -17344,6 +17386,10 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
       // the disk?" and "clear disk on <machine>" from the same section.
       '## Disk Steward',
+      // never-silent-conversation: the watcher, its incidents route and the notices are
+      // server-side and framework-neutral; a Codex session answering "why did that go
+      // quiet?" must find the same section.
+      '## Never-silent conversations',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
