@@ -24,6 +24,7 @@
  * Spec: docs/specs/capabilities-introspection.md (PR #N — follow-up #2 of two).
  */
 
+import { configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
@@ -345,6 +346,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       configured: true,
       endpoints: ['POST /email/send-to-owner', 'GET /email/outbox', 'GET /recommended-services/email/status', 'POST /recommended-services/email/code', 'POST /recommended-services/:id/prove'],
     }),
+  },
+  {
+    key: 'voiceTranscription',
+    prefixes: ['/voice-transcription'],
+    description: 'Voice transcription (docs/specs/backup-on-machine-voice.md) — which transcriber a voice note on THIS machine uses: a paid provider (Groq or OpenAI key), else the free on-machine whisper.cpp, which is also the fallback when the paid one fails. GET /voice-transcription answers fresh: active, paid, local (state missing / installed-unproven / proven / failed, what is missing, paths), the machine, and a plain summary. When a voice note arrives "transcription unavailable" or the person asks "can you hear voice notes?" → read it; if local is missing, offer to install it (free, the person only says yes). Off switch: voiceTranscription.local false.',
+    build: ({ ctx }) => {
+      const d = describeVoiceTranscription({ cachedOnly: true, explicit: configuredVoiceProvider(ctx.config) });
+      return {
+        configured: d.active !== null,
+        active: d.active,
+        localState: d.local?.state ?? 'off',
+        summary: d.summary,
+        endpoints: ['GET /voice-transcription'],
+      };
+    },
   },
   {
     key: 'ecosystemIdeas',

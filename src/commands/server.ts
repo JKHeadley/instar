@@ -10505,8 +10505,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
           // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
           // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
-          transcribeVoice: (filePath, mediaType, timeoutMs) => voiceMod.transcribeAudioFile(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
-          voiceProviderName: () => voiceMod.resolveTranscriptionProvider({ explicit: voiceMod.configuredVoiceProvider(config) })?.name,
+          transcribeVoice: (filePath, mediaType, timeoutMs) => voiceMod.transcribeAudioFileDetailed(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+          voiceProviderName: () => voiceMod.describeVoiceTranscription({ explicit: voiceMod.configuredVoiceProvider(config), cachedOnly: true }).active ?? undefined,
           raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
           clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({
@@ -11945,53 +11945,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.warn(`[slack] Stall observed in ${channelId} for ${sessionName} after ${Date.now() - injectedAt}ms: ${messageText.slice(0, 100)}`);
         };
 
-        // Wire voice transcription (reuses Telegram's provider resolution: Groq → OpenAI)
+        // Wire voice transcription through the shared module (docs/specs/backup-on-machine-voice.md):
+        // an explicit `audioTranscriptionProvider` ("groq", "openai" or "local"), else a configured paid
+        // provider, else whisper.cpp on this machine (also the fallback when a paid one fails). 60 s budget.
         slackAdapter.transcribeVoice = async (filePath: string) => {
-          const providers: Record<string, { envKey: string; baseUrl: string; model: string }> = {
-            groq: { envKey: 'GROQ_API_KEY', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3' },
-            openai: { envKey: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1', model: 'whisper-1' },
-          };
-          let provider: { apiKey: string; baseUrl: string; model: string } | null = null;
-          const explicit = (slackConfig.config as Record<string, unknown>).audioTranscriptionProvider as string;
-          if (explicit && providers[explicit.toLowerCase()]) {
-            const p = providers[explicit.toLowerCase()];
-            const apiKey = process.env[p.envKey];
-            if (apiKey) provider = { apiKey, baseUrl: p.baseUrl, model: p.model };
-          }
-          if (!provider) {
-            for (const [, p] of Object.entries(providers)) {
-              const apiKey = process.env[p.envKey];
-              if (apiKey) { provider = { apiKey, baseUrl: p.baseUrl, model: p.model }; break; }
-            }
-          }
-          if (!provider) {
-            // A key the voice-transcription setup stored in the vault (docs/specs/recommended-services.md).
-            const shared = (await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} });
-            if (shared) provider = { apiKey: shared.apiKey, baseUrl: shared.baseUrl, model: shared.model };
-          }
-          if (!provider) throw new Error('No voice transcription provider. Set GROQ_API_KEY or OPENAI_API_KEY.');
-
-          const formData = new FormData();
-          const fileBuffer = fs.readFileSync(filePath);
-          const blob = new Blob([fileBuffer], { type: 'audio/ogg' });
-          formData.append('file', blob, path.basename(filePath));
-          formData.append('model', provider.model);
-
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 60_000);
-          try {
-            const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${provider.apiKey}` },
-              body: formData,
-              signal: controller.signal,
-            });
-            if (!response.ok) throw new Error(`Transcription API error (${response.status}): ${await response.text()}`);
-            const data = await response.json() as { text: string };
-            return data.text;
-          } finally {
-            clearTimeout(timer);
-          }
+          const { transcribeAudioFile } = await import('../core/VoiceTranscription.js');
+          const explicit = (slackConfig.config as Record<string, unknown>).audioTranscriptionProvider;
+          return transcribeAudioFile(filePath, {
+            explicit: typeof explicit === 'string' ? explicit : undefined,
+            mediaType: 'audio/ogg',
+            timeoutMs: 60_000,
+            log: (note) => console.log(`[slack] ${note}`),
+          });
         };
 
         // Wire intelligence provider for LLM-gated stall confirmation
