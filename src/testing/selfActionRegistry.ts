@@ -5420,14 +5420,14 @@ const neverSilentConversationRecovery: SelfActionController = {
   tickMs: 15_000, // the sweep interval
   makeUnderPressure(f, sink) {
     const TARGET = 'silent-conversation';
-    let stuck = 'claude-code';
+    let stuck = 'engine-a'; // stand-in engine ids: the model is engine-neutral
     const tried: string[] = [];
     let swapTried = false;
     const noticed = new Set<string>();
     return {
       tick() {
         sink.considered += 1;
-        const fallbackEngine = ['codex-cli', 'claude-code'].find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
+        const fallbackEngine = ['engine-b', 'engine-a'].find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
         const d = decideNeverSilentAction({
           silenceClass: 'engine-login', confidence: 0.99, truncated: false, actionsSinceMessage: 'none',
           pinned: false, actionsEnabled: true, frameworkFallbackEnabled: true, confidenceFloor: 0.8,

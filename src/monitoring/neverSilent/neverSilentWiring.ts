@@ -8,7 +8,8 @@ import path from 'node:path';
 import { NeverSilentStore, type ConversationPlatform } from './NeverSilentStore.js';
 import { NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type SessionFacts } from './NeverSilentWatcher.js';
 import { ConversationSilenceJudge, type RefereeRoute } from './ConversationSilenceJudge.js';
-import { ClaudeAuthStatusReader } from '../../core/ClaudeAuthStatus.js';
+import { ENGINE_LOGIN_READERS } from '../../providers/adapters/engineSessionHooks.js';
+import type { IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
 import { classifyLoginExpired } from '../../core/LoginExpiredSignature.js';
 import { isSystemOrProxyMessage } from '../../messaging/shared/isSystemOrProxyMessage.js';
 import type { IntelligenceProvider } from '../../core/types.js';
@@ -51,8 +52,8 @@ export interface NeverSilentWiringInput {
   respawnTopic: (topicId: number, tmuxSession: string | null, text: string) => Promise<boolean>;
   // judge
   readJevKey: () => string | null;
-  codexReferee: IntelligenceProvider | null;
-  claudeReferee: IntelligenceProvider | null;
+  /** A referee provider for an engine (built once per engine by the caller), or null when that engine has none. */
+  refereeFor: (framework: string) => IntelligenceProvider | null;
   // notices
   sendTelegramNotice: (topicId: number, text: string, inboundMessageId: string, button?: { text: string; data: string }) => Promise<string | null>;
   sendSlackNotice: (channelId: string, text: string) => Promise<string | null>;
@@ -77,20 +78,27 @@ const isHealthy = (a: PoolAccountLike, loginCheck: string | null): boolean =>
 export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiring {
   const now = input.now ?? (() => Date.now());
   const store = new NeverSilentStore(input.stateDir, now);
-  const auth = new ClaudeAuthStatusReader();
   const logPath = path.join(input.logsDir, 'never-silent.jsonl');
   const healthy = (fw?: string, exclude?: string | null) => input.poolAccounts()
     .filter((a) => (!fw || a.framework === fw) && a.id !== exclude && isHealthy(a, input.loginCheck(a.id)));
 
+  /** Engines with at least one signed-in account, most accounts first (engine-neutral: read from the pool). */
+  const healthyEngines = (): string[] => {
+    const n = new Map<string, number>();
+    for (const a of healthy()) n.set(a.framework, (n.get(a.framework) ?? 0) + 1);
+    return [...n.entries()].sort((x, y) => y[1] - x[1]).map(([fw]) => fw);
+  };
+
   const pickReferee = (stuck: { framework: string | null; accountId: string | null }): RefereeRoute | null => {
-    // Never the stuck framework+account: a stuck Claude session is judged on Codex and vice versa.
-    if (stuck.framework !== 'codex-cli' && input.codexReferee) {
-      const acct = healthy('codex-cli')[0];
-      if (acct) return { name: `codex:${acct.id}`, provider: input.codexReferee, accountOverride: { accountId: acct.id, configHome: acct.configHome } };
-    }
-    if (stuck.framework !== 'claude-code' && input.claudeReferee) {
-      const acct = healthy('claude-code', stuck.accountId)[0];
-      if (acct) return { name: `claude:${acct.id}`, provider: input.claudeReferee, accountOverride: { accountId: acct.id, configHome: acct.configHome } };
+    // Never the stuck framework+account. A different engine first (§3.2 rung 2), then a different
+    // signed-in account on the same engine (rung 3).
+    const engines = healthyEngines();
+    const ordered = [...engines.filter((fw) => fw !== stuck.framework), ...engines.filter((fw) => fw === stuck.framework)];
+    for (const fw of ordered) {
+      const provider = input.refereeFor(fw);
+      if (!provider) continue;
+      const acct = healthy(fw, fw === stuck.framework ? stuck.accountId : null)[0];
+      if (acct) return { name: `${fw}:${acct.id}`, provider, accountOverride: { accountId: acct.id, configHome: acct.configHome } };
     }
     return null;
   };
@@ -111,10 +119,9 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
     resolveSession: resolve,
     capturePane: input.capturePane,
     authStatus: async (framework, configHome) => {
-      if (framework !== 'claude-code' || !configHome) return null;
-      const ans = await auth.read(configHome);
-      if (ans.loggedIn === false && !(await auth.canaryProven())) return { loggedIn: null, detail: 'signed-out answer not yet proven on this machine' };
-      return { loggedIn: ans.loggedIn, ...(ans.loginExpiresAt ? { detail: `login expires ${ans.loginExpiresAt}` } : {}) };
+      const reader = framework ? ENGINE_LOGIN_READERS[framework as IntelligenceFramework] : undefined;
+      if (!reader || !configHome) return null;
+      return reader(configHome);
     },
     accountFacts: (id) => {
       if (!id) return null;
@@ -129,11 +136,7 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
     sameEngineHealthy: (fw, exclude) => !!fw && healthy(fw, exclude).length > 0,
     fallbackEngine: (platform, stuck, tried) => {
       if (platform !== 'telegram') return null; // engine moves are keyed on Telegram topics
-      for (const fw of ['codex-cli', 'claude-code']) {
-        if (fw === stuck || tried.includes(fw)) continue;
-        if (healthy(fw).length > 0) return fw;
-      }
-      return null;
+      return healthyEngines().find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
     },
     hints: (pane) => {
       const out: string[] = [];

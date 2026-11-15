@@ -53,7 +53,7 @@ function setup(referee: IntelligenceProvider | null) {
     loginCheck: () => 'ok',
     observeLoginExpired: async () => {}, repairStarted: () => false, swap: async () => ({ swapped: false }),
     profileFor: () => null, writeFramework: async () => true, respawnTopic: async () => true,
-    readJevKey: () => null, codexReferee: referee, claudeReferee: null,
+    readJevKey: () => null, refereeFor: () => referee,
     sendTelegramNotice: async (_topic, text) => { sent.push(text); return String(sent.length); },
     sendSlackNotice: async () => null,
     now: () => t,

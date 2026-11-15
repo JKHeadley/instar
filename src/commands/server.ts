@@ -19796,12 +19796,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { setNeverSilentInstance } = await import('../server/neverSilentRoutes.js');
       const { sendNeverSilentTelegramNotice } = await import('../messaging/telegram-origin/OriginDeterministicSend.js');
       const { SecretStore: NsSecretStore } = await import('../core/SecretStore.js');
-      let nsCodexReferee: import('../core/types.js').IntelligenceProvider | null = null;
-      try {
-        const { LlmCircuitBreaker: NsBreaker } = await import('../core/LlmCircuitBreaker.js');
-        const { buildIntelligenceProvider: nsBuild } = await import('../core/intelligenceProviderFactory.js');
-        nsCodexReferee = nsBuild({ framework: 'codex-cli', breaker: new NsBreaker() });
-      } catch { /* @silent-fallback-ok — no Codex CLI: Jev alone, or undetermined (still told) */ }
+      // One referee provider per engine, built on first use (own breaker each); every call names its
+      // account explicitly, so the referee never runs on the stuck engine's ambient login.
+      const { LlmCircuitBreaker: NsBreaker } = await import('../core/LlmCircuitBreaker.js');
+      const { buildIntelligenceProvider: nsBuild } = await import('../core/intelligenceProviderFactory.js');
+      const nsReferees = new Map<string, import('../core/types.js').IntelligenceProvider | null>();
+      const nsRefereeFor = (fw: string) => {
+        if (!nsReferees.has(fw)) {
+          let p: import('../core/types.js').IntelligenceProvider | null = null;
+          try { p = nsBuild({ framework: fw as import('../core/intelligenceProviderFactory.js').IntelligenceFramework, breaker: new NsBreaker() }); }
+          catch { p = null; /* @silent-fallback-ok — no CLI for that engine: the next engine, or undetermined (still told) */ }
+          nsReferees.set(fw, p);
+        }
+        return nsReferees.get(fw) ?? null;
+      };
       const nsTelegram = telegram;
       const neverSilent = buildNeverSilent({
         stateDir: config.stateDir,
@@ -19812,10 +19820,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         sessionFacts: (tmux) => {
           const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === tmux);
           const framework = sessionManager.frameworkForSession(tmux) ?? null;
+          // The login home comes from the session's pool account (engine-neutral); a session with
+          // no account is read from its own environment, never a guessed default.
+          const acct = s?.subscriptionAccountId ? subscriptionPool.list().find((a) => a.id === s.subscriptionAccountId) : undefined;
           return {
             framework,
             accountId: s?.subscriptionAccountId ?? null,
-            configHome: framework === 'claude-code' ? (sessionManager.configHomeForSession(tmux, { defaultWhenUnset: true }) ?? null) : null,
+            configHome: acct?.configHome ?? sessionManager.configHomeForSession(tmux) ?? null,
             alive: sessionManager.isSessionAlive(tmux),
             startedAt: s?.startedAt ? Date.parse(s.startedAt) : null,
           };
@@ -19854,8 +19865,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try { const v = new NsSecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get('typesafe_api_key'); return typeof v === 'string' && v ? v : null; }
           catch { return null; } // @silent-fallback-ok — no key ⇒ the referee alone
         },
-        codexReferee: nsCodexReferee,
-        claudeReferee: sharedIntelligence ?? null,
+        refereeFor: nsRefereeFor,
         sendTelegramNotice: async (topicId, text, inboundMessageId, button) => {
           if (!nsTelegram) return null;
           const r = await sendNeverSilentTelegramNotice(nsTelegram, topicId, text, inboundMessageId, button ? [button] : undefined) as { recorded?: boolean; messageId?: number };

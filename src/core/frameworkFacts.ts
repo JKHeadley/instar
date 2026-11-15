@@ -44,6 +44,15 @@ export const FRAMEWORK_ALIASES: Readonly<Record<string, IntelligenceFramework>> 
   'grok-build': 'grok-build',
 };
 
+/** The plain name a person sees for each engine (never-silent notices and similar user text). */
+export const FRAMEWORK_DISPLAY_NAMES: Readonly<Record<IntelligenceFramework, string>> = {
+  'claude-code': 'Claude',
+  'codex-cli': 'Codex',
+  'gemini-cli': 'Gemini',
+  'pi-cli': 'Pi',
+  'grok-build': 'Grok',
+};
+
 /**
  * Resolve a user-supplied framework name, or null when it is not recognised.
  * Trims and lowercases, matching the historical behaviour of both callers.

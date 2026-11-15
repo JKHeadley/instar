@@ -50,7 +50,7 @@ import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStart
 const squash = (text: string): string => text.replace(/\s+/g, '');
 import { extractGeminiFinalAssistantBlock, meaningfulTail, meaningfulNonBlankTail } from './paneText.js';
 import { ensureClaudeFirstRunAnswered } from './ensureInteractiveReady.js';
-import { ensureCodexProjectTrusted } from './ensureCodexProjectTrusted.js';
+import { PROJECT_TRUST_SEEDERS } from '../providers/adapters/engineSessionHooks.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
 
@@ -8294,16 +8294,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
-    // Never-Silent Conversation §1.5: a Codex session in a folder its home never trusted stops
-    // at "Trust this folder?" and never answers. Record the agent's own launch folder first.
-    // (Skipped under vitest for the default home: that is the operator's real ~/.codex.)
-    if (framework === 'codex-cli') {
-      const codexHome = launchSpec.envOverrides.CODEX_HOME
-        ?? (process.env.VITEST ? undefined : (process.env.CODEX_HOME || path.join(os.homedir(), '.codex')));
-      const trust = ensureCodexProjectTrusted(codexHome, options?.cwd ?? this.config.projectDir);
-      if (trust.patched) console.log(`[SessionManager] codex: trusted the launch folder in ${codexHome}`);
-      else if (trust.reason !== 'already-recorded' && trust.reason !== 'no-home') {
-        console.warn(`[SessionManager] codex: could not record folder trust in ${codexHome} — ${trust.reason}`);
+    // Never-Silent Conversation §1.5: a session in a folder its engine home never trusted can stop
+    // at a "trust this folder?" dialog and never answer. Record the agent's own launch folder first,
+    // through the engine's own seeder (adapter table). Under vitest the default home is skipped: it is
+    // the operator's real home.
+    const trustSeeder = PROJECT_TRUST_SEEDERS[framework];
+    if (trustSeeder) {
+      const seeded = trustSeeder(launchSpec.envOverrides, options?.cwd ?? this.config.projectDir, { allowDefaultHome: !process.env.VITEST });
+      if (seeded.result.patched) console.log(`[SessionManager] ${framework}: trusted the launch folder in ${seeded.home}`);
+      else if (seeded.result.reason !== 'already-recorded' && seeded.result.reason !== 'no-home') {
+        console.warn(`[SessionManager] ${framework}: could not record folder trust in ${seeded.home} — ${seeded.result.reason}`);
       }
     }
     const memoryScoped = Boolean(memoryPlan?.scopeDir && memoryPlan.settingsPath);

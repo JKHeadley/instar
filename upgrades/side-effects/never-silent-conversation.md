@@ -77,6 +77,10 @@ No dashboard renderer, approval page or grant form is touched. The one operator-
 
 Config: `monitoring.neverSilent.enabled: false` (live) stops everything; byte-identical behaviour with it off. Code revert is clean: one JSON state file (`state/never-silent.json`) and one log (`logs/never-silent.jsonl`) are left behind and inert. A move already applied leaves a `system:never-silent` framework pin, undone with the existing topic-profile clear/undo. The Codex trust entries are harmless to keep. No data migration.
 
+## Engine-neutral by construction (2.0 Rule 30)
+
+The first push added 17 framework-id literals and failed the framework-name ratchet. Engine specifics now live behind two adapter-tree tables in `src/providers/adapters/engineSessionHooks.ts` (`PROJECT_TRUST_SEEDERS` for the Codex folder trust, `ENGINE_LOGIN_READERS` for Claude Code's `auth status`), display names live in `FRAMEWORK_DISPLAY_NAMES` in `src/core/frameworkFacts.ts`, and the referee and the fallback engine are chosen from whichever engines the account pool has signed-in accounts for (`refereeFor(framework)` builds one provider per engine). The never-silent code adds no framework-id literals; the ratchet reads the baseline count unchanged.
+
 ## Conclusion
 
 Ship dark on the fleet, live on development agents with actions off; the live proof turns actions on only on a throwaway agent. Actions graduate per class after the judge measurement (CMT-1781).

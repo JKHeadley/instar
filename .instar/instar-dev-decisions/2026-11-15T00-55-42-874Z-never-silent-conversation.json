@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-15T00:55:42.874Z",
+  "slug": "never-silent-conversation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 159,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/frameworkFacts.ts",
+      "src/monitoring/neverSilent/NeverSilentPolicy.ts",
+      "src/monitoring/neverSilent/neverSilentWiring.ts",
+      "src/providers/adapters/engineSessionHooks.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 114,
+    "deletedLines": 45
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "never-silent-conversation-recovery in src/testing/selfActionRegistry.ts: under a conversation that never answers while every account looks healthy and every move succeeds, the real decideNeverSilentAction plus the per-incident swapTried flag, triedFrameworks breaker and per-revision notice dedupe settle at one swap, one engine move and at most three notices; moving back needs an idle conversation and a passing sign-in check; judge calls back off 60 s doubling to 10 min"
+    }
+  },
+  "verdict": "pass"
+}

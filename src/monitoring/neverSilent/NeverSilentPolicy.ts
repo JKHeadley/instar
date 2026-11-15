@@ -10,6 +10,7 @@
  */
 import type { SilenceClass } from './NeverSilentStore.js';
 import type { ActionsSinceMessage } from './ConversationSilenceJudge.js';
+import { FRAMEWORK_DISPLAY_NAMES } from '../../core/frameworkFacts.js';
 
 export type NeverSilentAction =
   | 'wait'            // working-slow: no action, obligation stays open
@@ -67,9 +68,8 @@ export function decideNeverSilentAction(i: PolicyInput): PolicyDecision {
 
 // ── Notices (fixed templates; the judge's evidence is never shown) ────────────
 
-const ENGINE_NAMES: Record<string, string> = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok' };
 export function engineName(fw: string | null | undefined): string {
-  return (fw && ENGINE_NAMES[fw]) || 'the AI engine';
+  return (fw && (FRAMEWORK_DISPLAY_NAMES as Record<string, string>)[fw]) || 'the AI engine';
 }
 
 function lead(count: number): string {

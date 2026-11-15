@@ -74,8 +74,7 @@ function wiring(stateDir: string, over: Partial<NeverSilentWiringInput> = {}) {
     writeFramework: async (topicId, framework, updatedBy) => { profiles.set(topicId, { framework, updatedBy }); return true; },
     respawnTopic: async (topicId, _tmux, text) => { respawns.push({ topicId, text }); return true; },
     readJevKey: () => null,
-    codexReferee: referee,
-    claudeReferee: null,
+    refereeFor: (fw) => (fw === 'codex-cli' ? referee : null),
     sendTelegramNotice: async (topicId, text, _id, button) => { sent.push({ topicId, text, button }); return String(sent.length); },
     sendSlackNotice: async () => null,
     now: () => t,
@@ -187,7 +186,7 @@ describe('never-silent conversations — production wiring', () => {
   it('a referee that is down still ends in a delivered notice (never "nothing")', async () => {
     const { stateDir } = await boot();
     const down = { evaluate: async () => { throw new Error('signed out'); } } as unknown as IntelligenceProvider;
-    const w = wiring(stateDir, { codexReferee: down });
+    const w = wiring(stateDir, { refereeFor: (fw) => (fw === 'codex-cli' ? down : null) });
     w.ns.observeLogged('telegram', '10375', { messageId: '1', text: 'are you there?', fromUser: true });
     w.advance(121_000);
     await w.ns.watcher.tick();
