@@ -308,7 +308,9 @@ describe('Agent Awareness + Migration Parity: the conversation search line', () 
     expect(r.upgraded).toContain('CLAUDE.md: the conversation search line now mentions meaning search');
     const md = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8');
     const want = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', '4321');
-    expect(md).toContain(`${APP_CONVERSATIONS_PINS_LINE}\n${want}\n- next line`);
+    // The conversation-list pins migration (PR 3161) puts its own line right after the pinned messages line, so the search line follows that.
+    expect(md).toContain(APP_CONVERSATIONS_PINS_LINE);
+    expect(md).toContain(`${want}\n- next line`);
     expect(md).not.toContain(old);
     expect(want).toContain('mode=meaning');
     expect(want).toContain('meaning-unavailable');
