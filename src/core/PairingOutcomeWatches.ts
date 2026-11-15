@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { outcomeLine, type PairingOutcome } from './PairingOutcomeText.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export type WatchState = 'watching' | 'due' | 'sending' | 'handed-off' | 'sent' | 'failed';
 
@@ -372,7 +373,7 @@ export class PairingOutcomeWatches {
   private fail(e: OutcomeWatch, error: string, uncertain: boolean): void {
     e.state = 'failed'; e.lastError = error; e.endedAt = new Date(this.now()).toISOString(); e.escalated = false;
     if (uncertain) e.uncertain = true;
-    this.deps.reportDegradation?.('MobilePairing.outcomeNotice', new Error(`pairing outcome line not posted in topic ${e.topicId}: ${error}`));
+    this.deps.reportDegradation?.('MobilePairing.outcomeNotice', new Error(`pairing outcome line not posted in ${topicRef(e.topicId)}: ${error}`));
   }
 
   /** §3.4 close the loop: one attention item per topic listing every outcome that could not be posted. */
@@ -392,7 +393,7 @@ export class PairingOutcomeWatches {
         this.escalateBackoff.set(topicId, { attempts, nextAt: this.now() + escalationRetryDelayMs(attempts) });
         if (attempts >= MAX_ESCALATION_ATTEMPTS) {
           // Give up for this process: the outcome stays readable in pairingOutcomes, and this is reported once.
-          this.deps.reportDegradation?.('MobilePairing.outcomeNotice', new Error(`attention item for topic ${topicId} could not be recorded after ${attempts} attempts`));
+          this.deps.reportDegradation?.('MobilePairing.outcomeNotice', new Error(`attention item for ${topicRef(topicId)} could not be recorded after ${attempts} attempts`));
         }
       }
     }

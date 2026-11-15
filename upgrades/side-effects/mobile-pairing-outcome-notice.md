@@ -129,3 +129,9 @@ This change adds a self-triggered controller (the pairing-outcome reconciler's r
 - **`defectClass`:** `unbounded-self-action`
 - **`closure`:** `guard`
 - **`guardEvidence`:** `{ enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts (controller pairing-outcome-notice-retry in src/testing/selfActionRegistry.ts), howCaught: sends retry only inside the 1 h window after the outcome was decided (15 attempts at most), then one attention-item upsert per topic with 30 s doubling to a 10 min cap and a 12-attempt per-process give-up (MAX_ESCALATION_ATTEMPTS); the pass reads nothing while no entry is open. Steady state under an always-rejecting target: 27 actions, horizon-independent; the ratchet drives the model built on the same sendRetryDelayMs / escalationRetryDelayMs helpers the class uses. }`
+
+---
+
+## Follow-up: Local Verify finding (2026-11-14 22:00 PST)
+
+Local Verify on the M5 (head ebf5593e70, 67,392 unit tests) failed one file, `tests/unit/topic-ref-ratchet.test.ts`: two degradation messages in `PairingOutcomeWatches` printed a bare topic id. They now use `topicRef()` (`src/messaging/shared/topicRef.ts`). Wording of internal degradation reports only; no behaviour, decision point or user-facing line changes, so the review above stands. The other repo-wide ratchet tests were run on the branch before this push and pass.
