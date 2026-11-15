@@ -75,14 +75,14 @@ export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' }
 /** Who a pairing link is for (people and roles §3.2); absent ⇒ the owner. Server memory only. */
 export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' | 'team' }
 
-interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null; person: PairingPerson | null }
+interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null; person: PairingPerson | null; watchId?: string }
 
 export type MintResult =
   | { ok: true; code: string; expiresAt: number }
   | { ok: false; reason: 'too-many-live-codes' | 'too-many-mints' };
 
 export type RedeemResult =
-  | { ok: true; label: string | null; bound: BoundOrigin | null; person: PairingPerson | null }
+  | { ok: true; label: string | null; bound: BoundOrigin | null; person: PairingPerson | null; watchId?: string }
   | { ok: false; reason: 'invalid' | 'too-many-attempts' };
 
 /** In-memory pairing codes. Only SHA-256 hashes are kept; a restart drops every code. */
@@ -124,12 +124,20 @@ export class PairingCodeStore {
       const entry = this.codes.get(h);
       if (entry) {
         this.codes.delete(h);
-        if (entry.tokenHash === sha(currentToken)) return { ok: true, label: entry.label, bound: entry.bound, person: entry.person };
+        if (entry.tokenHash === sha(currentToken)) return { ok: true, label: entry.label, bound: entry.bound, person: entry.person, ...(entry.watchId ? { watchId: entry.watchId } : {}) };
       }
     }
     if (this.failureTimes.length >= MAX_FAILED_REDEEMS) return { ok: false, reason: 'too-many-attempts' };
     this.failureTimes.push(this.now());
     return { ok: false, reason: 'invalid' };
+  }
+
+  /** Attach a pairing-outcome watch to a live code (docs/specs/mobile-pairing-outcome-notice.md §3.2). */
+  attachWatch(code: string, watchId: string): boolean {
+    const entry = this.codes.get(sha(code));
+    if (!entry) return false;
+    entry.watchId = watchId;
+    return true;
   }
 
   /** Who a live code is for, without taking it: a refusal here must not burn the link. */
