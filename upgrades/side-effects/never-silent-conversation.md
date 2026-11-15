@@ -85,6 +85,7 @@ The first push added 17 framework-id literals and failed the framework-name ratc
 
 - Head 74391f71b7: failed in 56 s on the framework-name ratchet (main's own regression from PR 3147, fixed by PR 3182, plus 17 literals of this change; see the section above).
 - Head 29ac333096: unit lane 67,078 passed, 4 failed. Three were this change and are fixed: the route file was missing from the discoverability test's mounted-router list; the judge's attribution label was unregistered (now `sentinel` in `componentCategories`, with an `LLM-ROUTING-REGISTRY.md` row); the `monitoring.neverSilent` ConfigDefaults block shifted the dark-gate lint's hand-authored line map, and the block is removed because every key defaults in code and `enabled` is dev-gated. The fourth, `tests/unit/telegram-origin/store-worker-recovery.test.ts`, passes locally and this change does not touch it.
+- Head ad09245: unit lane 8 failures. Seven were the LLM-component census rows a new judge needs (bench coverage, untrusted input, judges-claims, parser contract, routing injection exposure, provenance census): `ConversationSilenceJudge` now has a row in each. Two of those are recorded as `pending` and added to the shrink-only baselines on purpose: its benchmark is the held-out pane corpus that gates its actions, and its decision-quality enrolment rides the existing backlog (both CMT-1781); its actions ship off until then. The eighth, `tests/unit/desktop-displays.test.ts`, passes locally and is untouched.
 
 ## Conclusion
 
