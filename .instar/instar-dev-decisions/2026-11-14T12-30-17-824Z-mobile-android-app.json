@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-14T12:30:17.824Z",
+  "slug": "mobile-android-app",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 740,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePush.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 704,
+    "deletedLines": 36
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "fcm-pause-trial-retry: under a cause that never clears, trial k waits 30 min x 2^(k-1) and nextFcmTrialAt returns null after 6, so the action count settles at 6 whatever the horizon; the only re-arm is the agent's Bearer recheck, limited to 6 an hour per process and never re-forwarded"
+    }
+  },
+  "verdict": "pass"
+}

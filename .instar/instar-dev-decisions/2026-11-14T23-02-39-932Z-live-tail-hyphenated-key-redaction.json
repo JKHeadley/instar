@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-14T23:02:39.932Z",
+  "slug": "live-tail-hyphenated-key-redaction",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/postDriveTranscriptAudit.ts",
+      "src/core/liveTailRedaction.ts",
+      "src/monitoring/ClaimObservation.ts",
+      "src/monitoring/PromiseBeacon.ts",
+      "src/threadline/openConversationBrief.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
