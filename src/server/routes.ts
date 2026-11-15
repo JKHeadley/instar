@@ -40674,6 +40674,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     };
     mountUsageRoutes(router, () => ctx.usageRouteDeps?.() ?? null);
+    // One merged /subscription-relogin?scope=pool read shared by the blockers and repairs deps (2 s).
+    type MobileReloginPool = { blockers?: Array<{ accountId: string; machineId: string; reason: string }>; episodes?: Array<import('./mobileCapacityRoutes.js').RepairView> };
+    let mobileReloginPoolCache: { at: number; p: Promise<MobileReloginPool | null> } | null = null;
+    const mobileReloginPoolRead = () => {
+      if (mobileReloginPoolCache && Date.now() - mobileReloginPoolCache.at < 2_000) return mobileReloginPoolCache.p;
+      const p = fetch(`http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}/subscription-relogin?scope=pool`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(6_000),
+      }).then(async (r) => (r.ok ? await r.json() as MobileReloginPool : null)).catch(() => null); // @silent-fallback-ok — null = no pool repair evidence; cells fall back to this machine's repairs
+      mobileReloginPoolCache = { at: Date.now(), p };
+      return p;
+    };
     mountMobileCapacityRoutes(router, {
       accountsView: () => subscriptionPoolScopeView(),
       inUseAccountId: async () => {
@@ -40693,12 +40704,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       localRepairs: () => (ctx.subscriptionRelogin?.store.list({}) ?? []).map((e) => ({ accountId: e.accountId, state: e.state })),
       // The same merged read the console uses, so the phone and the dashboard count the same sign-ins.
       reloginBlockers: async () => {
-        const response = await fetch(`http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}/subscription-relogin?scope=pool`, {
-          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(6_000),
-        });
-        if (!response.ok) return [];
-        const body = await response.json() as { blockers?: Array<{ accountId: string; machineId: string; reason: string }> };
-        return Array.isArray(body.blockers) ? body.blockers : [];
+        const body = await mobileReloginPoolRead();
+        return Array.isArray(body?.blockers) ? body.blockers : [];
+      },
+      // Every machine's repairs, so a repair running on (or failing on) a peer shows on that peer's cell.
+      poolRepairs: async () => {
+        const body = await mobileReloginPoolRead();
+        if (!body || !Array.isArray(body.episodes)) throw new Error('relogin pool read unavailable');
+        return body.episodes.filter((e) => typeof e?.accountId === 'string' && typeof e?.machineId === 'string' && typeof e?.state === 'string');
       },
       spendSummary: (hours) => spendPart(routingSpendSummaryResult('day', hours), !routingSpendGateOpen()),
       tokens: (sinceMs) => (ctx.tokenLedger
