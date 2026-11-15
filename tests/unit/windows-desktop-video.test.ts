@@ -105,6 +105,33 @@ describe('Windows desktop video from the companion', () => {
     }
   });
 
+  it('gives up on video after five seconds of empty replies', async () => {
+    let now = 1_000;
+    const fake = fakeCompanion(() => new Response(new Uint8Array(0), { headers: { 'Content-Type': 'video/h264' } }));
+    const host = new WindowsDesktopHost(endpoint, secret, fake.send, 2_000, { video: true, now: () => now });
+    await host.startIndicator(() => {});
+    expect(await host.captureH264!(false)).toBeNull();
+    now += 4_999;
+    expect(await host.captureH264!(false)).toBeNull();
+    now += 1;
+    await expect(host.captureH264!(false)).rejects.toThrow('windows-desktop-video-stalled');
+    host.stopIndicator();
+  });
+
+  it('resets the empty-reply clock on every picture', async () => {
+    let now = 1_000; let empty = true;
+    const fake = fakeCompanion(body => empty ? new Response(new Uint8Array(0), { headers: { 'Content-Type': 'video/h264' } })
+      : new Response(packet(body.keyframe === true), { headers: { 'Content-Type': 'video/h264' } }));
+    const host = new WindowsDesktopHost(endpoint, secret, fake.send, 2_000, { video: true, now: () => now });
+    await host.startIndicator(() => {});
+    await host.captureH264!(false);
+    now += 4_000; empty = false;
+    expect(await host.captureH264!(true)).not.toBeNull();
+    now += 4_000; empty = true;
+    expect(await host.captureH264!(false)).toBeNull();
+    host.stopIndicator();
+  });
+
   it('refuses video without a live lease', async () => {
     const host = new WindowsDesktopHost(endpoint, secret, fakeCompanion(() => new Response(packet(true),
       { headers: { 'Content-Type': 'video/h264' } })).send, 2_000, { video: true });
@@ -129,17 +156,29 @@ describe('Windows companion video contract (source)', () => {
     expect(relay).toMatch(/@\([^)]*'capture-h264'[^)]*\) -notcontains \$op/);
   });
 
-  it('checks the lease under the gate but waits for a picture outside it', () => {
+  it('checks the lease under the gate, then waits for a picture off the accept loop', () => {
     const start = companion.indexOf('if (op == "capture-h264") {');
     const block = companion.slice(start, companion.indexOf('return;', start));
-    const gate = block.indexOf('lock (Gate) {');
-    const take = block.indexOf('.Take(');
     expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('lock (Gate) {');
     expect(block).toContain('OwnsLease(lease)');
     expect(block).toContain('InteractiveDesktop()');
-    expect(gate).toBeGreaterThan(-1);
-    expect(take).toBeGreaterThan(block.indexOf('}', gate));
-    expect(block).toContain('"video/h264"');
+    expect(block).not.toContain('.Take(');
+    expect(block).toContain('ThreadPool.QueueUserWorkItem(delegate { ServeVideo(client, stream, video, keyframe); });');
+    const serve = companion.slice(companion.indexOf('static void ServeVideo('));
+    const body = serve.slice(0, serve.indexOf('\n    }\n'));
+    expect(body).toContain('video.Take(keyframe, keyframe ? 300 : 50)');
+    expect(body).toContain('"video/h264"');
+    expect(body).not.toContain('lock (Gate)');
+    expect(body).toContain('finally { stream.Dispose(); client.Close(); }');
+  });
+
+  it('fails a stalled stream and stops an idle one, so a viewer never freezes', () => {
+    expect(companion).toContain('failure = "video-stalled";');
+    expect(companion).toContain('if (Video != null && Video.Idle) StopVideo();');
+    expect(companion).toContain('if (stopped) return null; // the lease stopped while this request waited');
+    expect(companion).toContain('if (encoder.TakeDropped()) forceKeyframe = true;');
+    expect(companion).toMatch(/activate\.ShutdownObject\(\); \} catch \{ \/\* releases the encoder session/);
   });
 
   it('stops video whenever the lease stops', () => {

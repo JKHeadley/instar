@@ -8,7 +8,7 @@ The helper also now works on the next picture while the current one is still tra
 
 **What stays the same.** Who may connect, the PIN, the time limit, the red "remote control active" banner, Stop, and how clicks and typing work are all unchanged. A click is never stuck waiting behind a video picture: the helper checks the request quickly and never makes the mouse and keyboard wait more than a brief moment.
 
-**Safeguards.** If anything about video doesn't work on a particular machine (an old helper, no video maker available, an error), that session quietly goes back to photos, exactly as before. Nothing breaks; it is just choppier. If the helper on the Windows machine is older than the agent, the agent asks for video once, gets told no, and uses photos.
+**Safeguards.** If anything about video doesn't work on a particular machine (an old helper, no video maker available, an error), that session quietly goes back to photos, exactly as before. Nothing breaks; it is just choppier. If the helper on the Windows machine is older than the agent, the agent asks for video once, gets told no, and uses photos. And if video ever just stops arriving (the video maker hangs, for example), the session notices within a few seconds and switches to photos rather than leaving you looking at a frozen screen.
 
 **Who gets it.** It is switched on for our own development machines first and switched off for everyone else until it has been measured in real use. It can be turned off on any machine with one setting, and that takes effect right away.
 

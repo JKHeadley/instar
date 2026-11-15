@@ -183,7 +183,9 @@ namespace InstarDesktop {
     }
     static void Handle(TcpClient client) {
       client.ReceiveTimeout = 2500; client.SendTimeout = 2500;
-      using (client) using (NetworkStream stream = client.GetStream()) {
+      bool handedOff = false; // a video request finishes on its own thread
+      NetworkStream stream = client.GetStream();
+      try {
         List<byte> header = new List<byte>(); int matched = 0;
         while (header.Count < 8192 && matched < 4) {
           int b = stream.ReadByte(); if (b < 0) return;
@@ -220,8 +222,8 @@ namespace InstarDesktop {
           object result; string type = "application/json";
           bool exitAfterWrite = false;
           if (op == "capture-h264") {
-            // Validated under the gate; the short wait for a frame happens
-            // outside it so a heartbeat or Stop is never queued behind video.
+            // Validated under the gate; the short wait for a picture runs on a
+            // worker thread, so the next request is served meanwhile.
             bool keyframe = command.ContainsKey("keyframe") && command["keyframe"] is bool && (bool)command["keyframe"];
             VideoStream video;
             lock (Gate) {
@@ -229,9 +231,8 @@ namespace InstarDesktop {
               if (!OwnsLease(lease) || !InteractiveDesktop()) throw new InvalidOperationException();
               video = VideoFor(lease, ShownArea(command));
             }
-            byte[] unit = video.Take(keyframe, keyframe ? 300 : 50);
-            // Empty means no new picture yet; the caller simply asks again.
-            Write(stream, 200, "video/h264", unit ?? new byte[0]);
+            handedOff = true;
+            ThreadPool.QueueUserWorkItem(delegate { ServeVideo(client, stream, video, keyframe); });
             return;
           }
           lock (Gate) {
@@ -294,7 +295,20 @@ namespace InstarDesktop {
           Write(stream, 200, type, (byte[])result);
           if (exitAfterWrite) Environment.Exit(0);
         } catch { Write(stream, 400, "application/json", Reply(new { error = "desktop-unavailable" })); }
+      } finally {
+        if (!handedOff) { stream.Dispose(); client.Close(); }
       }
+    }
+    /// <summary>Waits briefly for the next access unit and answers, off the accept
+    /// loop, so clicks, keys, heartbeats and Stop never queue behind video. An
+    /// empty 200 means no new picture yet; the caller simply asks again.</summary>
+    static void ServeVideo(TcpClient client, NetworkStream stream, VideoStream video, bool keyframe) {
+      try {
+        byte[] unit = video.Take(keyframe, keyframe ? 300 : 50);
+        Write(stream, 200, "video/h264", unit ?? new byte[0]);
+      } catch {
+        try { Write(stream, 400, "application/json", Reply(new { error = "desktop-unavailable" })); } catch { /* the caller has gone */ }
+      } finally { stream.Dispose(); client.Close(); }
     }
     // A stable short id: "\\\\.\\DISPLAY1" is not safe to carry as viewer text.
     static string DisplayId(Screen screen) { return screen.DeviceName.TrimStart('\\', '.'); }
@@ -572,6 +586,7 @@ namespace InstarDesktop {
       System.Threading.Timer watchdog = new System.Threading.Timer(_ => { lock (Gate) {
         ExpireUpdate();
         if (Active && (Now() - LastHeartbeat > 5000 || !InteractiveDesktop())) StopLocked();
+        if (Video != null && Video.Idle) StopVideo(); // nobody is watching: release the encoder and capture
       } }, null, 1000, 1000);
       TcpListener server = new TcpListener(bind, port); server.Start(8);
       while (true) {
@@ -585,32 +600,40 @@ namespace InstarDesktop {
   /// <summary>Live H.264 for one lease and one screen area. A capture thread keeps
   /// the newest picture; an encode thread turns it into the next access unit and
   /// holds at most one until a request takes it, so every delta reaches the viewer
-  /// in order and the slow WSL hop overlaps the next capture and encode.</summary>
+  /// in order and the slow WSL hop overlaps the next capture and encode. A stream
+  /// that stops producing while it is being asked fails, so the session falls
+  /// back to pictures instead of freezing.</summary>
   internal sealed class VideoStream : IDisposable {
-    const int IdleStopMs = 4000;
+    const int IdleStopMs = 4000;      // no request for this long: the companion stops the stream
+    const int StallMs = 3000;         // asked, but nothing produced for this long: fail
+    const int FirstFrameMs = 6000;    // encoder start-up allowance before the stall clock applies
+    const int CapturePeriodMs = 50;   // at most 20 grabs a second; the stream asks for 15
+    const long MaxPixels = 33177600;  // the same cap as a JPEG capture
     public readonly string Lease;
     public readonly Rectangle Area;
     public readonly Size Size;
     readonly object sync = new object();
     readonly Thread captureThread, encodeThread;
-    byte[] latest, spare;          // newest captured BGRA, and the buffer being filled
+    byte[] latest;                 // newest captured BGRA (swapped, never copied, under the lock)
     long latestSequence, encodedSequence;
     byte[] packet;                 // the next access unit, waiting for a request
     bool forceKeyframe = true;
     volatile bool stopped;
-    volatile string failure;
-    long lastTakeAt;
+    string failure;
+    long lastTakeAt, lastProducedAt;
+    readonly long createdAt;
     public string EncoderName = "";
 
     public VideoStream(string lease, Rectangle area) {
+      if ((long)area.Width * area.Height > MaxPixels) throw new InvalidOperationException("video-area-too-large");
       Lease = lease; Area = area; Size = ScreenGrabber.VideoSize(area);
-      lastTakeAt = Environment.TickCount;
+      createdAt = lastTakeAt = lastProducedAt = Environment.TickCount;
       captureThread = new Thread(CaptureLoop); captureThread.IsBackground = true; captureThread.Name = "instar-video-capture";
       encodeThread = new Thread(EncodeLoop); encodeThread.IsBackground = true; encodeThread.Name = "instar-video-encode";
       captureThread.Start(); encodeThread.Start();
     }
 
-    public bool Failed { get { return failure != null; } }
+    public bool Failed { get { lock (sync) return failure != null; } }
     public bool Idle { get { return Environment.TickCount - Interlocked.Read(ref lastTakeAt) > IdleStopMs; } }
 
     /// <summary>The waiting access unit, or null after waitMs with none ready. A
@@ -626,13 +649,20 @@ namespace InstarDesktop {
         }
         for (;;) {
           if (failure != null) throw new InvalidOperationException(failure);
+          if (stopped) return null; // the lease stopped while this request waited
           if (packet != null && (!keyframe || packet[0] == 1)) {
             byte[] taken = packet; packet = null;
             Monitor.PulseAll(sync);
             return taken;
           }
+          long now = Environment.TickCount;
+          if (now - createdAt > FirstFrameMs && now - lastProducedAt > StallMs) {
+            failure = "video-stalled";
+            Monitor.PulseAll(sync);
+            throw new InvalidOperationException(failure);
+          }
           int left = deadline - Environment.TickCount;
-          if (left <= 0 || stopped) return null;
+          if (left <= 0) return null;
           Monitor.Wait(sync, left);
         }
       }
@@ -641,15 +671,17 @@ namespace InstarDesktop {
     void CaptureLoop() {
       try {
         using (ScreenGrabber grabber = new ScreenGrabber(Area.Width, Area.Height)) {
-          while (!stopped && !Idle) {
-            byte[] picture = grabber.Grab(Area);
+          byte[] spare = new byte[Area.Width * Area.Height * 4];
+          while (!stopped) {
+            int started = Environment.TickCount;
+            grabber.Grab(Area, spare);
             lock (sync) {
-              if (spare == null || spare.Length != picture.Length) spare = new byte[picture.Length];
-              Buffer.BlockCopy(picture, 0, spare, 0, picture.Length);
-              byte[] swap = latest; latest = spare; spare = swap;
+              byte[] swap = latest; latest = spare; spare = swap ?? new byte[latest.Length];
               latestSequence++;
               Monitor.PulseAll(sync);
             }
+            int rest = CapturePeriodMs - (Environment.TickCount - started);
+            if (rest > 0) Thread.Sleep(rest);
           }
         }
       } catch (Exception error) { Fail("capture: " + error.Message); }
@@ -661,23 +693,25 @@ namespace InstarDesktop {
         using (H264Encoder encoder = H264Encoder.Create(Size.Width, Size.Height, Bitrate(Size), true)) {
           EncoderName = encoder.Name;
           byte[] picture = null;
-          while (!stopped && !Idle) {
+          while (!stopped) {
             bool keyframe;
             lock (sync) {
               // Wait for the previous unit to be taken and for a newer picture.
-              while (!stopped && (packet != null || latestSequence == encodedSequence)) Monitor.Wait(sync, 250);
-              if (stopped) break;
-              if (picture == null || picture.Length != latest.Length) picture = new byte[latest.Length];
-              Buffer.BlockCopy(latest, 0, picture, 0, latest.Length);
+              while (!stopped && failure == null && (packet != null || latestSequence == encodedSequence)) Monitor.Wait(sync, 250);
+              if (stopped || failure != null) break;
+              byte[] swap = picture; picture = latest; latest = swap; // take the newest picture without copying it
               encodedSequence = latestSequence;
               keyframe = forceKeyframe;
             }
             byte[] unit = encoder.EncodeNv12(converter.Convert(picture), keyframe, 500);
-            if (unit == null) continue;
             lock (sync) {
+              // A picture the encoder made but could not deliver leaves a gap: restart from a keyframe.
+              if (encoder.TakeDropped()) forceKeyframe = true;
+              if (unit == null) continue;
               if (forceKeyframe && unit[0] != 1) continue; // a delta from before the request
               if (unit[0] == 1) forceKeyframe = false;
               packet = unit;
+              lastProducedAt = Environment.TickCount;
               Monitor.PulseAll(sync);
             }
           }
@@ -724,7 +758,7 @@ namespace InstarDesktop {
 
     public readonly int Width, Height;
     readonly IntPtr memory, bitmap, previous, bits;
-    readonly byte[] pixels;
+    readonly int pixels;
     bool disposed;
 
     public ScreenGrabber(int width, int height) {
@@ -741,11 +775,12 @@ namespace InstarDesktop {
         SetStretchBltMode(memory, Halftone);
         SetBrushOrgEx(memory, 0, 0, IntPtr.Zero);
       } finally { ReleaseDC(IntPtr.Zero, screen); }
-      pixels = new byte[width * height * 4];
+      pixels = width * height * 4;
     }
 
-    /// <summary>The returned array is reused by the next Grab.</summary>
-    public byte[] Grab(Rectangle area) {
+    /// <summary>Copies the area into `target` (width*height*4 bytes).</summary>
+    public void Grab(Rectangle area, byte[] target) {
+      if (target.Length != pixels) throw new ArgumentException("target");
       if (disposed) throw new ObjectDisposedException("grabber");
       IntPtr screen = GetDC(IntPtr.Zero);
       if (screen == IntPtr.Zero) throw new InvalidOperationException("screen-dc");
@@ -756,8 +791,7 @@ namespace InstarDesktop {
         if (!ok) throw new InvalidOperationException("blt");
       } finally { ReleaseDC(IntPtr.Zero, screen); }
       GdiFlush();
-      Marshal.Copy(bits, pixels, 0, pixels.Length);
-      return pixels;
+      Marshal.Copy(bits, target, 0, pixels);
     }
 
     /// <summary>The largest even size at most 1920x1080 with the area's shape.</summary>
@@ -1013,6 +1047,8 @@ namespace InstarDesktop {
     public readonly bool Hardware;
     public readonly string Name;
     readonly IMFTransform transform;
+    IMFActivate activate; // shut down with the encoder so a hardware session is released at once
+    bool dropped;
     readonly IMFMediaEventGenerator events;
     readonly ICodecAPI codec;
     readonly uint inputStream, outputStream;
@@ -1106,17 +1142,22 @@ namespace InstarDesktop {
           for (int i = 0; i < count; i++) {
             IntPtr item = Marshal.ReadIntPtr(list, i * IntPtr.Size);
             IMFActivate activate = (IMFActivate)Marshal.GetObjectForIUnknown(item);
-            Marshal.Release(item);
             try {
               object value; Guid iid = IidTransform;
               Check(activate.ActivateObject(ref iid, out value), "activate");
-              return new H264Encoder((IMFTransform)value, hardware, (hardware ? "hardware-" : "software-") + i, width, height, bitrate);
+              H264Encoder encoder = new H264Encoder((IMFTransform)value, hardware, (hardware ? "hardware-" : "software-") + i, width, height, bitrate);
+              encoder.activate = activate;
+              return encoder;
             } catch (Exception error) {
               failures.Add(error);
               try { activate.ShutdownObject(); } catch { /* best effort */ }
             }
           }
-        } finally { CoTaskMemFree(list); }
+        } finally {
+          // MFTEnumEx hands over one reference per entry; the RCW took its own.
+          for (int i = 0; i < count; i++) Marshal.Release(Marshal.ReadIntPtr(list, i * IntPtr.Size));
+          CoTaskMemFree(list);
+        }
       }
       throw new InvalidOperationException("no-h264-encoder" + (failures.Count > 0 ? ": " + failures[0].Message : ""));
     }
@@ -1130,8 +1171,11 @@ namespace InstarDesktop {
       long deadline = clock.ElapsedMilliseconds + timeoutMs;
       if (!Hardware) {
         Check(transform.ProcessInput(inputStream, sample, 0), "input");
-        byte[] produced = Drain();
-        if (produced != null) ready.Enqueue(produced);
+        for (int more = 0; more < 4; more++) { // take every output that is ready, so the next input is accepted
+          byte[] produced = Drain();
+          if (produced == null) break;
+          ready.Enqueue(produced);
+        }
       } else {
         bool submitted = false;
         while (clock.ElapsedMilliseconds < deadline && !(submitted && ready.Count > 0)) {
@@ -1245,7 +1289,7 @@ namespace InstarDesktop {
       // Re-emit with 4-byte start codes only; prepend cached parameter sets to a bare IDR.
       List<byte> body = new List<byte>(unit.Length + 64);
       if (hasIdr && !(hasSps && hasPps)) {
-        if (parameterSets == null) return null;
+        if (parameterSets == null) { dropped = true; return null; }
         body.AddRange(parameterSets);
       }
       foreach (int[] nal in nals) {
@@ -1254,7 +1298,7 @@ namespace InstarDesktop {
         body.Add(0); body.Add(0); body.Add(0); body.Add(1);
         for (int i = nal[0]; i < nal[0] + nal[1]; i++) body.Add(unit[i]);
       }
-      if (body.Count > MaxAccessUnit) return null;
+      if (body.Count > MaxAccessUnit) { dropped = true; return null; }
       byte[] packet = new byte[5 + body.Count];
       packet[0] = (byte)(hasIdr ? 1 : 0);
       packet[1] = (byte)(Width >> 8); packet[2] = (byte)Width;
@@ -1289,10 +1333,20 @@ namespace InstarDesktop {
       return kept.ToArray();
     }
 
+    /// <summary>True once after a produced picture could not be packaged (a gap the
+    /// viewer cannot decode past without a new keyframe).</summary>
+    public bool TakeDropped() { bool was = dropped; dropped = false; return was; }
+
     public void Dispose() {
       if (disposed) return;
       disposed = true;
+      try { transform.ProcessMessage(0x10000001, IntPtr.Zero); } catch { /* end streaming, best effort */ }
       try { Marshal.ReleaseComObject(transform); } catch { /* already released */ }
+      if (activate != null) {
+        try { activate.ShutdownObject(); } catch { /* releases the encoder session; best effort */ }
+        try { Marshal.ReleaseComObject(activate); } catch { /* already released */ }
+        activate = null;
+      }
     }
   }
 }

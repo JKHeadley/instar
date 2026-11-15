@@ -15,6 +15,8 @@ export function resolveWindowsDesktopVideo(config: {
 }
 
 const FRAME_LIMIT = 1_250_000;
+/** Empty video replies for this long mean the companion's encoder stalled: fall back to pictures. */
+const VIDEO_STALL_MS = 5_000;
 const JSON_LIMIT = 4_096;
 const REQUEST_TIMEOUT_MS = 2_000;
 
@@ -28,20 +30,23 @@ export class WindowsDesktopHost implements DesktopHost {
   private generation = 0;
   private leaseId: string | null = null;
   private readonly pending = new Set<AbortController>();
+  private readonly now: () => number;
   /** Present only when video is switched on: the companion encodes H.264 and
    * DirectDesktopAccess falls back to pictures for the session on any failure. */
   captureH264?: (forceKeyframe: boolean) => Promise<DesktopH264Frame | null>;
+  private videoEmptySince: number | null = null;
 
   constructor(private readonly endpoint: string, private readonly secret: Buffer,
     private readonly send: typeof fetch = fetch,
     private readonly requestTimeoutMs: number = REQUEST_TIMEOUT_MS,
-    options: { video?: boolean } = {}) {
+    options: { video?: boolean; now?: () => number } = {}) {
     const url = new URL(endpoint);
     if (url.protocol !== 'http:' || url.username || url.password || url.search || url.hash
       || url.pathname !== '/' || secret.length !== 32
       || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1_000 || requestTimeoutMs > 5_000) {
       throw new Error('windows-desktop-companion-config-invalid');
     }
+    this.now = options.now ?? Date.now;
     if (options.video === true) this.captureH264 = forceKeyframe => this.captureVideo(forceKeyframe);
   }
 
@@ -50,7 +55,16 @@ export class WindowsDesktopHost implements DesktopHost {
   private async captureVideo(forceKeyframe: boolean): Promise<DesktopH264Frame | null> {
     const packet = await this.call('capture-h264',
       this.onDisplay({ leaseId: this.requireLease(), keyframe: forceKeyframe === true }), FRAME_LIMIT, 'video/h264');
-    return packet.length ? parseNativeH264(packet) : null;
+    if (packet.length) { this.videoEmptySince = null; return parseNativeH264(packet); }
+    // The companion fails a stalled encoder itself; this is the backstop for one
+    // that keeps answering "nothing yet" forever.
+    const now = this.now();
+    this.videoEmptySince ??= now;
+    if (now - this.videoEmptySince >= VIDEO_STALL_MS) {
+      this.videoEmptySince = null;
+      throw new Error('windows-desktop-video-stalled');
+    }
+    return null;
   }
 
   async probe(): Promise<DesktopProbe> {
@@ -149,6 +163,7 @@ export class WindowsDesktopHost implements DesktopHost {
     if (this.indicatorActive || this.leaseId) throw new Error('windows-desktop-indicator-already-active');
     const leaseId = randomBytes(24).toString('base64url');
     this.leaseId = leaseId;
+    this.videoEmptySince = null;
     let reply: Record<string, unknown>;
     try { reply = await this.json('start', { leaseId }); }
     catch (error) {

@@ -39,8 +39,10 @@ No competing-signals decision point added.
 
 ## 5. Interactions
 
-- The companion serves requests one at a time. The video request validates under the gate and then waits outside it, ≤50 ms (≤300 ms for a forced keyframe), so input, heartbeat and Stop requests wait at most that long behind video, less than today's ~80 ms JPEG capture held under the gate.
-- `StopLocked` (Stop, lost heartbeat, desktop no longer interactive) stops video threads first; a stream also stops itself after 4 s without a request, and is replaced when the shown area changes (display picker).
+- The companion's accept loop serves requests one at a time. A video request validates lease and desktop under the gate, then is handed to a worker thread that waits ≤50 ms (≤300 ms for a forced keyframe) for the next unit and answers, so input, heartbeat and Stop are never queued behind video (today a JPEG capture holds the loop ~80-100 ms).
+- `StopLocked` (Stop, lost heartbeat, desktop no longer interactive) stops video threads first, and a waiting request then returns nothing; the companion's 1 s watchdog stops a stream after 4 s without a request; a new shown area (display picker) replaces it.
+- Stall safety: a stream asked for pictures that produces none for 3 s (after a 6 s start-up allowance) fails, and the WSL host treats 5 s of empty replies as a failure, so a session falls back to JPEG instead of freezing. A produced picture that cannot be packaged forces the next keyframe. The encoder's activation object is shut down on stop, releasing a hardware encoder session at once.
+- Capture is paced to at most 20 grabs a second, buffers rotate without copying under the lock, and the area is capped at the JPEG path's 33,177,600 pixels.
 - The relay's picture lane carries both `capture` and `capture-h264`; input stays on its own lane.
 - `DesktopStreamManager` pacing (15/s), byte budget (10 Mbps) and keyframe-on-drop behaviour are unchanged; deltas are ~36 KB, keyframes ~70-140 KB, under the 1.25 MB frame cap.
 - Banner, lease, `SetThreadExecutionState`, DPI awareness: untouched.
@@ -67,7 +69,7 @@ Dark-by-default capability that reuses the existing video contract, negotiation 
 
 ## Second-pass review (if required)
 
-**Reviewer:** not required by category; independent code review of the companion interop: see Evidence.
+**Reviewer:** not required by category. An independent reviewer (fresh subagent, given the code only) read the commit: all nine COM interface layouts, GUIDs, marshalling and per-frame reference counting checked correct, no crash path found. It raised seven defects, all fixed in the follow-up commit: a stream that stops producing never failing (idle race, missing SPS/PPS, a hardware encoder that stops asking for input); a dropped delta not forcing a keyframe; hardware encoder sessions not shut down; unpaced full-size capture with extra copies; the video wait still holding the serial accept loop; the software encoder's extra outputs not drained; a picture returned after the lease stopped.
 
 ## Evidence pointers
 
