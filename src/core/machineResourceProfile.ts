@@ -16,7 +16,7 @@
  */
 
 import type { MachineCapacity } from './types.js';
-import { LOAD_REPORT_MAX_AGE_MS } from './machineLoadReport.js';
+import { LOAD_REPORT_MAX_AGE_MS, memoryPressureReason } from './machineLoadReport.js';
 
 /** How much a piece of work asks of a machine. Absent = `standard`. */
 export type WorkWeight = 'light' | 'standard' | 'heavy';
@@ -174,6 +174,18 @@ export function effectivePending(m: MachineCapacity, deciderReserved = 0): numbe
   const fresh = typeof m.loadReportAgeMs === 'number' && m.loadReportAgeMs <= LOAD_REPORT_MAX_AGE_MS;
   const adv = fresh && typeof m.loadReport?.heavyPending === 'number' ? m.loadReport.heavyPending : 0;
   return Math.max(0, deciderReserved, adv);
+}
+
+/**
+ * Plain words when a machine's own FRESH load report says it is short of memory
+ * (`memoryPressured`, its 2-of-3 memory row), else null. A stale or older-code report
+ * never says so (heavyFit's freshness rules then decide as before). Machine memory care.
+ */
+export function peerMemoryReason(m: MachineCapacity): string | null {
+  const r = m.loadReport;
+  const fresh = typeof m.loadReportAgeMs === 'number' && m.loadReportAgeMs <= LOAD_REPORT_MAX_AGE_MS;
+  if (!r || !fresh || r.memoryPressured !== true) return null;
+  return memoryPressureReason(r) ?? 'memory is short on most recent samples';
 }
 
 /** Fit for a heavy item: heavy-capable AND fresh headroom. Light/standard work is never filtered by size. */

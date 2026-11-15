@@ -649,7 +649,12 @@ describe('test-runner-bound meta-verification (spec §5)', () => {
           // Local Verify (2026-11-12): the slot holder declares this child as its own suite.
           key: 'ownSuite',
           config: FIXTURE_MINSAFE_CONFIG,
-          args: PROBES,
+          // An explicit width of 5, as Local Verify always asks for one (INSTAR_TEST_WORKERS).
+          // Without it the unclamped pool is vitest's default, CPU count - 1: 3 on a 4-core CI
+          // runner, so (d2)'s "more than 4" measured the host, not the clamp (main red,
+          // 2026-11-14). A wrongly clamped child still measures at most 4: the nested clamp
+          // outranks a CLI --maxWorkers (the CLI-proof case above).
+          args: [...PROBES, '--maxWorkers=5'],
           env: { FIXTURE_PROBE_DIR: probeOwn, FIXTURE_PROBE_EXPECT: '5', INSTAR_HOST_TEST_OWN_SUITE_HOLDER: '$HOLDER_PID' },
         },
       ];

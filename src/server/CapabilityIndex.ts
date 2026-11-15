@@ -1833,6 +1833,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  * here — never both, never neither.
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'transcript-copies', reason: 'Transcript copies on every machine (native-conversation-any-machine-access §3f) — owner-only GET /transcript-copies reports per-session copy coverage (no text) for a dark, dev-gated feature; the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'memory-picker', reason: 'Jev memory picker (jev-memory-picker spec) — POST /memory-picker/session-context is the session-start hook\'s call (and its compaction twin); dev-gated, shadow by default (503 when off); the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'jev-correction', reason: 'Jev correction-detector shadow (jev-correction-shadow spec) — GET /jev-correction/summary reads a dark, log-only research instrument comparing Jev with the correction sentinel\'s Layer-0 detector; the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether Jev should feed the sentinel' },
   { prefix: 'load-assessment', reason: 'Model assessment of machine load (trustworthy-machine-load B4) — GET /load-assessment/summary reads an advisory, log-only instrument (dev-gated); the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether its labels should inform reports' },

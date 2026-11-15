@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-15T01:48:59.848Z",
+  "slug": "ncb-3f-transcript-checkpoints",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/framework-name-ratchet-baseline.json"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
