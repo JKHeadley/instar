@@ -11106,21 +11106,6 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
     }
 
-    // File viewer search + image preview: one bullet after the "Generate a file link" bullet of
-    // the File Viewer section; appended when that bullet is missing. Sniff: FILES_SEARCH_MARKER.
-    if (content.includes('/api/files/') && !content.includes(FILES_SEARCH_MARKER)) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/api/files/link?path='));
-      if (at >= 0) {
-        lines.splice(at + 1, 0, FILES_SEARCH_CLAUDEMD_LINE(port));
-        content = lines.join('\n');
-      } else {
-        content = `${content.replace(/\n*$/, '\n')}${FILES_SEARCH_CLAUDEMD_LINE(port)}\n`;
-      }
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added file search and image preview line');
-    }
-
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
     // after the capacity bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PLANS_PEOPLE_MARKER)) {
@@ -16056,6 +16041,22 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       result.upgraded.push('CLAUDE.md: added File Viewer section');
     } else {
       result.skipped.push('CLAUDE.md: File Viewer section already present');
+    }
+
+    // Runs AFTER the File Viewer section is added above, so a first migration places it and a second changes nothing.
+    // File viewer search + image preview: one bullet after the "Generate a file link" bullet of
+    // the File Viewer section; appended when that bullet is missing. Sniff: FILES_SEARCH_MARKER.
+    if (content.includes('/api/files/') && !content.includes(FILES_SEARCH_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/api/files/link?path='));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, FILES_SEARCH_CLAUDEMD_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${FILES_SEARCH_CLAUDEMD_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added file search and image preview line');
     }
 
     // a2a-single-agent-identity §5 (Agent Awareness): an agent that already

@@ -19,3 +19,7 @@ The search has limits so it can never hog the machine: it stops after 200 result
 ## What you need to decide
 
 Nothing. This is a small, read-only addition that a revert fully undoes.
+
+## Update order fix
+
+When an existing agent updates, a step adds the new file search line to its instructions file. That step used to run before the step that adds the File Viewer section the line belongs in. So on an agent without that section, the first update added the section and only the second update added the line. The step now runs right after the section is added, so one update does everything and a second update changes nothing.
