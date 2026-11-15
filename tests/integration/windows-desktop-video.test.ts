@@ -23,7 +23,7 @@ function packet(keyframe: boolean): Buffer {
   return Buffer.concat([header, keyframe ? KEY_UNIT : DELTA_UNIT]);
 }
 
-function companion(videoSupported: boolean) {
+function companion(videoSupported: boolean, videoEmpty = false) {
   const ops: string[] = [];
   const send = (async (url: string, init: RequestInit) => {
     const op = url.slice(endpoint.length);
@@ -40,6 +40,7 @@ function companion(videoSupported: boolean) {
     if (op === 'capture-h264') {
       // An older companion has no such operation: it answers 400.
       if (!videoSupported) return new Response('{"error":"desktop-unavailable"}', { status: 400, headers: { 'Content-Type': 'application/json' } });
+      if (videoEmpty) return new Response(new Uint8Array(0), { headers: { 'Content-Type': 'video/h264' } });
       return new Response(packet(body.keyframe === true), { headers: { 'Content-Type': 'video/h264' } });
     }
     return Response.json({ ok: true });
@@ -116,6 +117,21 @@ describe('Windows Remote Desktop video through the session authority', () => {
     // One video attempt, then pictures only: no retry storm against an old companion.
     expect(fake.ops.filter(op => op === 'capture-h264')).toHaveLength(1);
     expect(fake.ops.filter(op => op === 'capture').length).toBeGreaterThanOrEqual(1);
+    stream.release('terminal');
+  });
+
+  it('switches a stalled video session to pictures', async () => {
+    let now = 5_000;
+    const fake = companion(true, true); // the encoder answers "nothing yet" forever
+    const host = new WindowsDesktopHost(endpoint, secret, fake.send, 2_000, { video: true, now: () => now });
+    const { stream, decrypt } = await openStream(host);
+    expect(await stream.captureEncrypted()).toBeNull();
+    now += 5_000;
+    expect(decrypt((await stream.captureEncrypted())!)).toEqual(JPEG);
+    stream.frameQueued?.();
+    await stream.captureEncrypted();
+    expect(fake.ops.filter(op => op === 'capture-h264')).toHaveLength(2);
+    expect(stream.frameIntervalMs?.()).toBeUndefined();
     stream.release('terminal');
   });
 

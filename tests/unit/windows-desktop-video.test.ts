@@ -134,6 +134,19 @@ describe('Windows desktop video from the companion', () => {
     host.stopIndicator();
   });
 
+  it('starts the empty-reply clock afresh for a new lease', async () => {
+    let now = 1_000;
+    const fake = fakeCompanion(() => new Response(new Uint8Array(0), { headers: { 'Content-Type': 'video/h264' } }));
+    const host = new WindowsDesktopHost(endpoint, secret, fake.send, 2_000, { video: true, now: () => now });
+    await host.startIndicator(() => {});
+    expect(await host.captureH264!(false)).toBeNull();
+    host.stopIndicator();
+    now += 60_000; // long after the old lease's first empty reply
+    await host.startIndicator(() => {});
+    expect(await host.captureH264!(false)).toBeNull();
+    host.stopIndicator();
+  });
+
   it('refuses video without a live lease', async () => {
     const host = new WindowsDesktopHost(endpoint, secret, fakeCompanion(() => new Response(packet(true),
       { headers: { 'Content-Type': 'video/h264' } })).send, 2_000, { video: true });

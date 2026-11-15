@@ -34,28 +34,36 @@ describe('DesktopStreamManager', () => {
     expect(desktopFrameIntervalMs(200)).toBe(67);
   });
 
-  async function picturesIn(ms: number, frameIntervalMs?: () => number | undefined): Promise<number> {
-    let captures = 0;
-    const { ws } = await connect(async () => ({
-      grantId: `pace-${Math.random()}`, assertActive: async () => {},
-      captureEncrypted: async () => { captures++; return Buffer.alloc(32, 1); },
-      ...(frameIntervalMs ? { frameIntervalMs } : {}),
-      decryptCommand: data => JSON.parse(data.toString()), input: async () => {},
-      revoke: async () => {}, release: () => {},
-    }));
-    await once(ws, 'open');
-    const before = captures;
-    await new Promise(resolve => setTimeout(resolve, ms));
-    const counted = captures - before;
-    ws.close();
-    return counted;
+  /** The pauses the stream schedules between picture requests (load-independent). */
+  async function pacingDelays(frameIntervalMs?: () => number | undefined): Promise<number[]> {
+    const delays: number[] = [];
+    const real = globalThis.setTimeout;
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (typeof ms === 'number' && ms >= 5 && ms <= 67) delays.push(ms);
+      return real(fn, ms, ...rest);
+    }) as typeof setTimeout);
+    try {
+      const { ws } = await connect(async () => ({
+        grantId: `pace-${Math.random()}`, assertActive: async () => {},
+        captureEncrypted: async () => Buffer.alloc(32, 1),
+        ...(frameIntervalMs ? { frameIntervalMs } : {}),
+        decryptCommand: data => JSON.parse(data.toString()), input: async () => {},
+        revoke: async () => {}, release: () => {},
+      }));
+      await once(ws, 'open');
+      await new Promise(resolve => real(resolve, 400));
+      ws.close();
+    } finally { spy.mockRestore(); }
+    return delays;
   }
 
   it('asks a faster video session for pictures more often than the default', async () => {
-    const [standard, faster] = await Promise.all([picturesIn(1_000), picturesIn(1_000, () => 50)]);
-    expect(standard).toBeLessThanOrEqual(16);
-    expect(faster).toBeGreaterThan(standard);
-    expect(faster).toBeLessThanOrEqual(21);
+    const standard = await pacingDelays();
+    const faster = await pacingDelays(() => 50);
+    expect(standard.length).toBeGreaterThan(0);
+    expect(faster.length).toBeGreaterThan(0);
+    expect(Math.max(...standard)).toBeGreaterThan(50); // the default 67 ms pace
+    expect(Math.max(...faster)).toBeLessThanOrEqual(50); // never slower than asked
   });
 
   it('refuses the upgrade when target admission fails', async () => {
