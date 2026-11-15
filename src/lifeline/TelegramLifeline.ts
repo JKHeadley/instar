@@ -1330,8 +1330,39 @@ export class TelegramLifeline {
   }
 
   private notificationInbound = new Map<number, Map<string, number>>();
+  /**
+   * Is `chatId` one of the configured chats (chatId / issuesChatId)? On a miss the
+   * messaging config is re-read once, so an issuesChatId set while this long-lived
+   * process was running takes effect without a lifeline restart. A chat that is still
+   * unknown is refused: treating it as the main group would file its thread numbers
+   * as unrelated main-group topics and reply there (cross-chat disclosure).
+   */
+  private isConfiguredChat(chatId: number | string | undefined): boolean {
+    if (chatId === undefined || chatId === null) return true; // not chat-scoped
+    const known = () => [this.config.chatId, this.config.issuesChatId]
+      .some(c => c !== undefined && c !== null && String(c).trim() !== '' && String(c).trim() === String(chatId));
+    if (known()) return true;
+    try {
+      const fresh = loadConfig(this.projectConfig.projectDir).messaging?.find(m => m.type === 'telegram' && m.enabled)?.config as Partial<LifelineConfig> | undefined;
+      // Only the chat routing is refreshed; the main chat never moves under a running poller.
+      if (fresh && String(fresh.chatId) === String(this.config.chatId)) {
+        const issues = fresh.issuesChatId === undefined || fresh.issuesChatId === null || String(fresh.issuesChatId).trim() === '' ? undefined : String(fresh.issuesChatId);
+        if (issues !== this.config.issuesChatId) {
+          console.log(`[Lifeline] Messaging config issuesChatId changed (${this.config.issuesChatId ?? 'unset'} → ${issues ?? 'unset'}); applied without restart.`);
+          this.config.issuesChatId = issues;
+        }
+      }
+    } catch { /* unreadable config — keep the current one */ }
+    return known();
+  }
+
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     const msg = update.message;
+    const updateChat = msg ? msg.chat?.id : update.callback_query?.message?.chat?.id;
+    if (!this.isConfiguredChat(updateChat)) {
+      console.warn(`[Lifeline] Ignoring update ${update.update_id} from unconfigured chat ${updateChat} (not chatId or issuesChatId).`);
+      return;
+    }
     normalizeInboundThread(msg, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
     const configured = this.projectConfig.messaging?.find(item => item.type === 'telegram')?.config;
     const authorized = configured?.authorizedUserIds as number[] | undefined;
