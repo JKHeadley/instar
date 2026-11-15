@@ -120,10 +120,57 @@ export function oldestUnverifiedAfterGreen(
   prev: number | null,
   verifiedHeadIsCurrent: boolean,
   runStartedAtMs: number | null,
+  /**
+   * When a head newer than the verified one was first observed (null = not known). A green
+   * verify of head A covers every merge up to A, so the oldest merge it does not cover is the
+   * one that replaced A, and that was observed at this time. This holds wherever the run
+   * started and whatever `main` did meanwhile. Without it (2026-11-15) a merge or release
+   * commit every 20 to 30 minutes meant no verified head was ever still current when its
+   * run finished, the clock stayed at the first merge after boot, and `main` went
+   * `unverified-too-long` three hours later with three green verifies on record.
+   */
+  supersededAtMs: number | null = null,
 ): number | null {
   if (verifiedHeadIsCurrent || prev === null) return null;
-  if (runStartedAtMs === null || !Number.isFinite(runStartedAtMs)) return prev;
-  return Math.max(prev, runStartedAtMs);
+  let next = prev;
+  if (runStartedAtMs !== null && Number.isFinite(runStartedAtMs)) next = Math.max(next, runStartedAtMs);
+  if (supersededAtMs !== null && Number.isFinite(supersededAtMs)) next = Math.max(next, supersededAtMs);
+  return next;
+}
+
+/** How many replaced heads the service remembers a replacement time for (bounded; oldest dropped). */
+export const SUPERSEDED_HEADS_KEPT = 50;
+
+/**
+ * Record that `prevHead` stopped being `main`'s head at `now` (a different head was observed).
+ * The FIRST such time is kept: a stale read that shows an old head again and then moves on
+ * must not move its replacement time later (later would be the lenient direction), and the
+ * head such a read leaves is not recorded at all. Pure apart from the map it is given.
+ */
+export function noteHeadSuperseded(map: Map<string, number>, prevHead: string | null, newHead: string, now: number): void {
+  if (prevHead === null || prevHead === newHead || map.has(prevHead)) return;
+  // A flip back to a head already known to have been replaced is a stale read (or a reset to old
+  // history): the head being left was not replaced by something newer, so nothing is recorded.
+  if (map.has(newHead)) return;
+  map.set(prevHead, now);
+  while (map.size > SUPERSEDED_HEADS_KEPT) map.delete(map.keys().next().value as string);
+}
+
+/**
+ * The replacement time that a green verify of `head` covers up to: `head`'s own, or, when a
+ * release commit of `head` took its place (a release commit changes no code, `releaseAlias`
+ * maps it to its parent), the time that release commit was replaced in turn. The latest of
+ * them, since each is covered. Null when `head` was never seen replaced. Pure.
+ */
+export function supersededAtFor(head: string, map: ReadonlyMap<string, number>, releaseAlias: ReadonlyMap<string, string>): number | null {
+  let best: number | null = map.get(head) ?? null;
+  for (const [release, parent] of releaseAlias) {
+    if (parent !== head) continue;
+    const t = map.get(release);
+    // The release commit is still the head (never replaced): the caller's `verifiedHeadIsCurrent` covers that case.
+    if (t !== undefined && (best === null || t > best)) best = t;
+  }
+  return best;
 }
 
 /**
