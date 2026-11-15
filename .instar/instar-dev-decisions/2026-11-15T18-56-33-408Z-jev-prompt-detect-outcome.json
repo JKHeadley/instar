@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-15T18:56:33.408Z",
+  "slug": "jev-prompt-detect-outcome",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 519,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/JevFirstDecision.ts",
+      "src/core/JevFirstPrompt.ts",
+      "src/core/JudgmentProvenanceLog.ts",
+      "src/core/SessionManager.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/PromptDetectOutcomeObserver.ts",
+      "src/monitoring/PromptGate.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 496,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

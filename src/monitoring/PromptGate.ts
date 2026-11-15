@@ -11,9 +11,17 @@
 
 import { EventEmitter } from 'node:events';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
-import { DP_PROMPT_INJECTION_DETECT } from '../data/provenanceCoverage.js';
+import { DP_TERMINAL_PROMPT_DETECT } from '../data/provenanceCoverage.js';
+import type { PromptDetectOutcomeObserver } from './PromptDetectOutcomeObserver.js';
 
-export const PROMPT_GATE_LLM_DETECT_PROMPT_ID = 'prompt-injection-detect-v1';
+/**
+ * Prompt identity of the terminal blocking-prompt detector. Was
+ * 'prompt-injection-detect-v1' before CMT-1677, which read like the security
+ * prompt-injection check; the prompt text itself is unchanged.
+ */
+export const PROMPT_GATE_LLM_DETECT_PROMPT_ID = 'terminal-prompt-detect-v1';
+/** The retired prompt id, kept so readers can repartition older rows. */
+export const PROMPT_GATE_LLM_DETECT_LEGACY_PROMPT_ID = 'prompt-injection-detect-v1';
 
 /** Identity-only envelope for the exact bounded terminal context shown to the detector. */
 export function buildPromptGateDecisionContext(input: {
@@ -97,6 +105,18 @@ export interface InputDetectorConfig {
   getJevPoint?: () => import('../core/JevFirstDecision.js').JevPoint;
   /** Frames the terminal tail as the Jev state (the replay's framing). */
   jevState?: (terminalTail: string) => string;
+  /**
+   * Bounded pane-outcome observer (CMT-1677). Consulted ONLY while the Jev
+   * point is on (the intelligence.jevFirstPrompt dev gate), so with the gate
+   * off nothing is tracked and every row is byte-identical to before.
+   * Signal only: it never changes what PromptGate acts on.
+   */
+  outcomeObserver?: PromptDetectOutcomeObserver;
+}
+
+/** Content-free identity of the pane bottom (the last 5 meaningful lines). */
+export function paneBottomFingerprint(lines: string[]): string {
+  return createHash('sha256').update(lines.slice(-5).join('\n')).digest('hex');
 }
 
 /** True when the incumbent's raw response would make PromptGate act on a blocking prompt. */
@@ -524,6 +544,9 @@ export class InputDetector extends EventEmitter {
     const allLines = trimTrailingBlankRows(stripped.split('\n'));
     const lines = allLines.slice(-this.config.detectionWindowLines);
     const tailText = lines.join('\n');
+    if (this.config.outcomeObserver) {
+      try { this.config.outcomeObserver.onPane(sessionName, paneBottomFingerprint(lines)); } catch { /* @silent-fallback-ok — observation only */ }
+    }
     const contentFingerprint = createHash('sha256').update(tailText).digest('hex');
     const previousContentFingerprint = this.lastContentFingerprint.get(sessionName);
     if (previousContentFingerprint && previousContentFingerprint !== contentFingerprint) {
@@ -715,6 +738,12 @@ If it IS a genuine blocking system prompt, respond with JSON (no markdown fences
 When in doubt, respond NO_PROMPT. False positives cause spam.`;
 
     const incumbentStarted = Date.now();
+    // CMT-1677: while the Jev point is on, learn the router-minted correlation
+    // id of this exact call so the Jev row and the pane outcome join on it.
+    // Gate off → no callback is added and the call is byte-identical.
+    const linking = this.jevPointActive();
+    let producerCorrelationId: string | null = null;
+    const bottomFingerprint = linking && this.config.outcomeObserver ? paneBottomFingerprint(lines) : null;
     // A synchronous throw must still reach the silent catch below, exactly as
     // when this call sat inside it.
     let incumbent: Promise<string>;
@@ -725,16 +754,19 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
         temperature: 0,
         attribution: { component: 'PromptGate' }, // attribution for /metrics/features
         provenance: {
-          decisionPoint: DP_PROMPT_INJECTION_DETECT,
+          decisionPoint: DP_TERMINAL_PROMPT_DETECT,
           context: buildPromptGateDecisionContext({ promptText: prompt, terminalContext: context }),
           optionsPresented: ['no-prompt', 'plan', 'permission', 'question', 'confirmation', 'selection'],
           promptId: PROMPT_GATE_LLM_DETECT_PROMPT_ID,
+          ...(linking ? { onCorrelationId: (id: string) => { producerCorrelationId = id; } } : {}),
         },
       }));
     } catch (err) {
       incumbent = Promise.reject(err);
     }
-    this.shadowJev(context, incumbent, incumbentStarted);
+    if (linking) this.observeSnapshot(sessionName, () => producerCorrelationId, bottomFingerprint, incumbent, incumbentStarted);
+    this.shadowJev(context, incumbent, incumbentStarted,
+      linking ? () => ({ producerCorrelationId, sessionName }) : undefined);
 
     try {
       const response = await incumbent;
@@ -789,7 +821,12 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    * is never awaited by detection, and swallows every failure: the incumbent
    * response above is what PromptGate acts on in every case.
    */
-  private shadowJev(context: string, incumbent: Promise<string>, startedAt: number): void {
+  private shadowJev(
+    context: string,
+    incumbent: Promise<string>,
+    startedAt: number,
+    link?: () => { producerCorrelationId: string | null; sessionName: string },
+  ): void {
     try {
       const { jevFirst, getJevPoint } = this.config;
       if (!jevFirst || !getJevPoint) return;
@@ -799,6 +836,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
       this.lastJevShadow = jevFirst.decide({
         point: point.stage === 'live' ? { ...point, stage: 'shadow' } : point,
         state,
+        ...(link ? { link } : {}),
         fallback: () => incumbent.then((response) => ({
           answer: promptGateResponseIsBlocking(response), model: 'fast', ms: Date.now() - startedAt,
         })),
@@ -811,6 +849,72 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
   /** Test seam: the latest shadow comparison (always resolves, never rejects). */
   lastJevShadow: Promise<void> | null = null;
 
+  /** True when the Jev prompt-detect point is on (the intelligence.jevFirstPrompt gate). */
+  private jevPointActive(): boolean {
+    try {
+      const { jevFirst, getJevPoint } = this.config;
+      if (!jevFirst || !getJevPoint) return false;
+      return getJevPoint().stage !== 'off';
+    } catch {
+      // @silent-fallback-ok — an unreadable point means "off": nothing is linked or observed.
+      return false;
+    }
+  }
+
+  /**
+   * Start the bounded pane-outcome observation for this snapshot (CMT-1677).
+   * The router mints the correlation id synchronously at evaluate(); if a
+   * wrapper delayed it, tracking starts once the incumbent settles, still
+   * against the SNAPSHOT's bottom, so a change in between is not missed.
+   */
+  private observeSnapshot(
+    sessionName: string,
+    correlationId: () => string | null,
+    bottomFingerprint: string | null,
+    incumbent: Promise<string>,
+    startedAt: number,
+  ): void {
+    const observer = this.config.outcomeObserver;
+    if (!observer || !bottomFingerprint) return;
+    let tracked = false;
+    const tryTrack = (): string | null => {
+      const id = correlationId();
+      if (id && !tracked) {
+        tracked = true;
+        try { observer.track({ sessionName, correlationId: id, bottomFingerprint, startedAt }); } catch { /* @silent-fallback-ok — observation only */ }
+      }
+      return id;
+    };
+    tryTrack();
+    incumbent.then(
+      (response) => {
+        const id = tryTrack();
+        if (!id) return;
+        try { observer.setIncumbent(sessionName, id, promptGateResponseIsBlocking(response) ? 'blocking' : 'no-prompt'); } catch { /* @silent-fallback-ok */ }
+      },
+      () => {
+        // A failed call still settles: any held event is recorded, ungraded.
+        const id = tryTrack();
+        if (!id) return;
+        try { observer.setIncumbent(sessionName, id, 'unknown'); } catch { /* @silent-fallback-ok */ }
+      },
+    );
+  }
+
+  /**
+   * Any tmux write into the session (SessionManager's single write guard).
+   * Feeds ONLY the outcome observer; unlike onInputSent it leaves the
+   * detector's dedup and cooldown state alone.
+   */
+  noteSessionInput(sessionName: string): void {
+    try { this.config.outcomeObserver?.onInput(sessionName); } catch { /* @silent-fallback-ok — observation only */ }
+  }
+
+  /** Shutdown: close every open pane observation as observer-lost. */
+  disposeOutcomeObserver(): void {
+    try { this.config.outcomeObserver?.dispose(); } catch { /* @silent-fallback-ok — observation only */ }
+  }
+
   /**
    * Called when input is sent to a session — clears dedup cache
    * since the prompt has been answered.
@@ -821,6 +925,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    * provided by stableCount + post-emission cooldown.
    */
   onInputSent(sessionName: string): void {
+    this.noteSessionInput(sessionName);
     this.emittedPrompts.delete(sessionName);
     this.stableCount.delete(sessionName);
     this.lastOutput.delete(sessionName);
@@ -859,6 +964,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    * Clean up stale state for a session that has ended.
    */
   cleanup(sessionName: string): void {
+    try { this.config.outcomeObserver?.onSessionEnded(sessionName); } catch { /* @silent-fallback-ok — observation only */ }
     this.lastOutput.delete(sessionName);
     this.lastContentFingerprint.delete(sessionName);
     this.stableCount.delete(sessionName);

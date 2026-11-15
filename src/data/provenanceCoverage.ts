@@ -301,8 +301,29 @@ export const DP_TOPIC_SUMMARIZE = 'topic-summarize';
 /** Bounded dashboard page facts → awareness-only insight strip. */
 export const DP_DASHBOARD_INSIGHT = 'dashboard-insight';
 
-/** Ambiguous bounded terminal output → blocking-prompt kind or no prompt. */
-export const DP_PROMPT_INJECTION_DETECT = 'prompt-injection-detect';
+/** Ambiguous bounded terminal output → blocking-prompt kind or no prompt
+ * (PromptGate's terminal-input detector — NOT the security prompt-injection
+ * check; CMT-1677 renamed it from 'prompt-injection-detect'). */
+export const DP_TERMINAL_PROMPT_DETECT = 'terminal-prompt-detect';
+
+/**
+ * Retired decision-point ids → their current id. Rows recorded before a
+ * rename keep their stored id; readers canonicalize through this map so the
+ * history is repartitioned under the current identity instead of being lost
+ * or pooled under a misleading name. Never a census entry of its own.
+ */
+export const DECISION_POINT_ALIASES: Readonly<Record<string, string>> = {
+  // Before CMT-1677 the terminal blocking-prompt detector recorded under a
+  // name that reads like the security prompt-injection audit (SyncOrchestrator).
+  'prompt-injection-detect': DP_TERMINAL_PROMPT_DETECT,
+};
+
+/** The current decision-point id for a stored one (identity for current ids). */
+export function canonicalDecisionPoint(decisionPoint: string): string {
+  return Object.prototype.hasOwnProperty.call(DECISION_POINT_ALIASES, decisionPoint)
+    ? DECISION_POINT_ALIASES[decisionPoint]
+    : decisionPoint;
+}
 
 /** Ambiguous A2A message → reply or suppress. */
 export const DP_WARRANTS_REPLY_GATE = 'warrants-reply-gate';
@@ -717,18 +738,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Gates —
   {
-    decisionPoint: DP_PROMPT_INJECTION_DETECT,
+    decisionPoint: DP_TERMINAL_PROMPT_DETECT,
     component: 'PromptGate',
     status: 'wired',
     volumeClass: 'budget:500',
     contentClass: 'content-bearing',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'JSON/type validation and the no-prompt cache establish parser and spend behavior, not whether terminal ' +
-      'output truly contained a blocking system prompt. Identity-only provenance enables later comparison with ' +
-      'actual prompt responses without storing terminal bodies.',
     reason:
-      'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text.',
+      'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text. ' +
+      'Outcomes come from the bounded pane observer (terminal-prompt-* rules): only progressed-without-input is tool evidence; the rest grade unknown.',
   },
   {
     decisionPoint: 'external-operation-gate',
@@ -1348,6 +1365,8 @@ export interface EvidenceRule {
 /** Default hog evidence window (§5.4.5 "bounded window (default 6h)"). */
 const HOG_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const DECISION_POINT_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
+/** PromptGate pane-outcome horizon H (CMT-1677): 15 minutes from the snapshot. */
+export const TERMINAL_PROMPT_OUTCOME_HORIZON_MS = 15 * 60 * 1000;
 
 export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // A kill graded `wrong` ONLY IF a same-commandHash candidate respawns in-window
@@ -1461,6 +1480,26 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
     rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
     owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
   },
+  // ── Terminal blocking-prompt outcomes (CMT-1677) ──────────────────────
+  // PromptGate's bounded pane observer watches the bottom of the pane for
+  // 15 minutes after a detector snapshot. The pane CHANGING with no input sent
+  // is tool evidence that the pane was not blocking: the detector's "no
+  // prompt" grades right, its "blocking" grades wrong. Negative evidence, not
+  // proof (a blocking modal with a live clock would also change).
+  'terminal-prompt-progressed-v1': {
+    ruleId: 'terminal-prompt-progressed-v1', decisionPoint: DP_TERMINAL_PROMPT_DETECT,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'PromptGate', windowMs: TERMINAL_PROMPT_OUTCOME_HORIZON_MS,
+  },
+  // Every other observed ending — input sent while the bottom was unchanged
+  // (candidate evidence it WAS blocking, not proof), nothing within the
+  // horizon, the session ending, or the observer losing track — records the
+  // outcome kind with the honest `unknown` grade. Missing is never a pass.
+  'terminal-prompt-unresolved-v1': {
+    ruleId: 'terminal-prompt-unresolved-v1', decisionPoint: DP_TERMINAL_PROMPT_DETECT,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'PromptGate', windowMs: TERMINAL_PROMPT_OUTCOME_HORIZON_MS,
+  },
   'feedback-readiness-window-unknown-v1': {
     ruleId: 'feedback-readiness-window-unknown-v1', decisionPoint: DP_FEEDBACK_READINESS,
     rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
@@ -1532,7 +1571,7 @@ const CENSUS_BY_COMPONENT: ReadonlyMap<string, ProvenanceCoverageEntry> = new Ma
 /** The census entry for a decision point, or undefined (an unknown decision
  * point at the settlement write is counted, never thrown — §5.6). */
 export function getCensusEntry(decisionPoint: string): ProvenanceCoverageEntry | undefined {
-  return CENSUS_BY_POINT.get(decisionPoint);
+  return CENSUS_BY_POINT.get(decisionPoint) ?? CENSUS_BY_POINT.get(canonicalDecisionPoint(decisionPoint));
 }
 
 /** The census entry keyed by the 1:1 `attribution.component` enrollment key

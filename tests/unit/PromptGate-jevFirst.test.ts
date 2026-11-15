@@ -84,7 +84,7 @@ describe('PromptGate prompt-detect shadow', () => {
     expect(h.rows).toHaveLength(1);
     const row = h.rows[0];
     expect(row).toMatchObject({ decisionPoint: 'prompt-detect', decision: 'no', reason: 'shadow', fallbackRung: 'incumbent' });
-    expect(row.context.gradingGap).toBe('no-linked-outcome-for-prompt-detect');
+    expect(row.context.gradingGap).toBe('outcome-joins-on-producerCorrelationId');
     expect(row.context._contentFull.state).toContain('Done with the change.');
     expect(row.context._contentFull.state).not.toContain('A'.repeat(90));
     expect(asked.state).not.toContain('A'.repeat(90));

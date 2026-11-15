@@ -1,0 +1,20 @@
+<!-- bump: patch -->
+## What Changed
+
+PromptGate's blocking-prompt detector now gets an outcome label (CMT-1677). A bounded in-memory observer (`src/monitoring/PromptDetectOutcomeObserver.ts`) watches the bottom five pane lines for 15 minutes after each detector snapshot and records exactly one outcome through the existing decision-quality annotate chokepoint, keyed by the incumbent call's router-minted correlation id: `progressed-without-input` (pane changed, no input: graded right for a "no prompt" verdict, wrong for "blocking", rule `terminal-prompt-progressed-v1`), or `input-while-unchanged` / `unchanged-no-input` / `session-ended` / `observer-lost`, all graded `unknown` (rule `terminal-prompt-unresolved-v1`). Input is seen at SessionManager's single tmux write guard. At most 64 sessions are tracked. An event that arrives while the detector call is still running is held and recorded when the call settles, so it is graded with the verdict and never lands before its decision row. The Jev `prompt-detect` row now carries `producerCorrelationId` as a new validated top-level provenance-row field (the served-context scrub masks id-shaped values) and `sessionName` in its context. The observer runs only while `intelligence.jevFirstPrompt` is on (dev agents), so fleet rows are unchanged.
+
+The detector's decision point is renamed from `prompt-injection-detect` to `terminal-prompt-detect` (prompt id `terminal-prompt-detect-v1`), so it is no longer confused with the security prompt-injection audit. `GET /decision-quality` and the census lookup read the old id as an alias, so earlier rows are counted under the new name.
+
+## What to Tell Your User
+
+Nothing changes in how your sessions behave. Behind the scenes, I can now check whether my "is this session stuck at a prompt?" guesses were right by looking at what the session did afterwards. That is groundwork for using a cheaper model for that check later.
+
+## Summary of New Capabilities
+
+- Graded outcomes for the terminal blocking-prompt check on `GET /decision-quality` (point `terminal-prompt-detect`, rules `terminal-prompt-progressed-v1` and `terminal-prompt-unresolved-v1`).
+
+## Evidence
+
+- Unit: `tests/unit/PromptDetectOutcomeObserver.test.ts`, `tests/unit/PromptGate-jevFirst.test.ts`, `tests/unit/PromptGate.test.ts`, `tests/unit/provenance-coverage-ratchet.test.ts`.
+- Integration: `tests/integration/terminal-prompt-outcome-provenance.test.ts`.
+- E2E: `tests/e2e/terminal-prompt-outcome-lifecycle.test.ts`.
