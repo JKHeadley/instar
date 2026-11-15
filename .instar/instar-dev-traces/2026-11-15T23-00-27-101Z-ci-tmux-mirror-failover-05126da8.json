@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "ci-tmux-mirror-failover",
+  "sessionId": "c0d12928-cf85-4146-a56f-e4313af41416",
+  "timestamp": "2026-11-15T23:00:27.101Z",
+  "artifactPath": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "artifactSha256": "02c038b6ee0b12f65c972f08a3e998610a5caca94eefddb4132f3483c638373d",
+  "coveredFiles": [
+    ".github/scripts/setup-ci-tmux.sh",
+    "upgrades/next/ci-tmux-mirror-failover.md",
+    "upgrades/side-effects/ci-tmux-mirror-failover.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Advisory CI setup script only (apt retry bound); no product code; a revert fully undoes it. Protected path, so the independent second pass recorded in the artifact is declared here.",
+  "eli16Path": "upgrades/next/ci-tmux-mirror-failover.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
