@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-05T23:05:00.000Z",
-      "auditRef": "docs/audits/attributed-statements-trace-interaction-family-2026-11-05.json",
-      "auditSha256": "0039e562c633c5dffa38a1b264b645bcb99bd4ff3d6adbcc1c41ab0df0b93fa8",
-      "areaSha256": "c2902dc347d54e1c03d1d9db756679c49236aa000697c9b7c981ce4ff9558d9e",
+      "lastAuditedAt": "2026-11-12T02:10:40.000Z",
+      "auditRef": "docs/audits/ask-links-clause-interaction-family-2026-11-11.json",
+      "auditSha256": "856925af71b686b024f06788e8a8718f6311272f6b3c345d8cb13e7e9ac4aadb",
+      "areaSha256": "74dcb5ea08699c7786e230b4ef2fd75b02aa54b28c7cbc3a9b263e08a90a0981",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13

@@ -1157,7 +1157,38 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
 - **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
 - **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
 
+/**
+ * "Every ask carries its links." — named clause under Agent Proposes, Operator
+ * Approves (ratified by Justin, topic 141868, 2026-11-11). Emitted in the CLAUDE.md
+ * template right before SURFACE_REFERRAL_CLAUDEMD_SECTION and inserted for existing
+ * agents by migrateClaudeMd (migrateAskLinksParagraph: the canonical text is a no-op,
+ * a paragraph opening with the ASK_LINKS_CLAUDEMD_MARKER phrase is replaced).
+ */
+export const ASK_LINKS_CLAUDEMD_MARKER = '**Every ask carries its links.**';
+export const ASK_LINKS_CLAUDEMD_SECTION = `**Every ask carries its links.** When a message needs the operator to review, approve or decide, end it with a short *What I need from you* section: one line per ask in plain words, a working link to each item (check it opens first; a private view for private content), and the exact reply that settles it. An authority grant links to its Approve/Decline page instead of a reply.`;
 export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
+
+/**
+ * Pure helper for migrateClaudeMd: converge a CLAUDE.md on the canonical
+ * "Every ask carries its links." paragraph. Exported for tests.
+ */
+export function migrateAskLinksParagraph(content: string): { content: string; changed: boolean; replaced: boolean } {
+  if (content.includes(ASK_LINKS_CLAUDEMD_SECTION)) return { content, changed: false, replaced: false };
+  // A variant: a paragraph opening with the phrase — its continuation lines are the
+  // contiguous non-blank lines that do not start a heading, list item, table or new bold lead.
+  const variant = /^\*\*Every ask carries its links[^\n]*(?:\n(?![ \t]*(?:#|- |\* |\||\*\*))[^\n]+)*/m;
+  if (variant.test(content)) {
+    return { content: content.replace(variant, () => ASK_LINKS_CLAUDEMD_SECTION), changed: true, replaced: true };
+  }
+  const surfaceLead = '**Sending the operator to a page: link, words, and look first.**';
+  const at = content.indexOf(surfaceLead);
+  if (at !== -1 && (at === 0 || content[at - 1] === '\n')) {
+    return { content: `${content.slice(0, at)}${ASK_LINKS_CLAUDEMD_SECTION}\n\n${content.slice(at)}`, changed: true, replaced: false };
+  }
+  const sep = content.endsWith('\n') ? '\n' : '\n\n';
+  return { content: `${content}${sep}${ASK_LINKS_CLAUDEMD_SECTION}\n`, changed: true, replaced: false };
+}
+
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
@@ -1410,6 +1441,7 @@ export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work 
 
 /** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
 export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
+export const APP_CONVERSATIONS_LIST_PINS_LINE = '- A person can pin whole conversations to the top of their conversation list (the app and the dashboard\'s "Pinned" group). Pins belong to each person (the owner, a team member, a shared person), at most 50, and are the same on every machine. The first page of `GET /mobile/conversations` carries `pinnedRefs` [{ref, atMs}] and `pinnedRows` (full list rows, newest pin first); my own Bearer read sees them only with `?reader=<key>`. Pin or unpin: `POST /mobile/conversations/pins {ref, pinned}` (ref `app:<uuid>`, `telegram:<topicId>` or `slack:<machine>:<id>`; a Bearer call must name `?reader=`). When the operator asks "pin this conversation", that is this, not a pinned message. Off switch: `mobilePairing.native.listPins.enabled: false`.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1558,6 +1590,7 @@ ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
 ${APP_CONVERSATIONS_UNREAD_LINE}
 ${DASHBOARD_CONVERSATIONS_LINE}
 ${APP_CONVERSATIONS_PINS_LINE}
+${APP_CONVERSATIONS_LIST_PINS_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -10472,6 +10505,23 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
     }
 
+    // "Every ask carries its links." (Agent Proposes, Operator Approves named clause,
+    // ratified 2026-11-11 topic 141868) — Agent Awareness + Migration Parity. Content-
+    // sniffed: the canonical line is a no-op; a hand-added variant that opens with
+    // "**Every ask carries its links" is replaced so every agent converges on one text;
+    // otherwise it is placed right before the surface-referral paragraph (as the
+    // template does), or appended when that paragraph is not found.
+    {
+      const askLinks = migrateAskLinksParagraph(content);
+      if (askLinks.changed) {
+        content = askLinks.content;
+        patched = true;
+        result.upgraded.push(askLinks.replaced
+          ? 'CLAUDE.md: replaced a variant of "Every ask carries its links" with the canonical line'
+          : 'CLAUDE.md: added "Every ask carries its links"');
+      }
+    }
+
     // Agent Awareness Standard + Migration Parity: an existing agent that does not
     // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
     // a nudge as a wall and will never produce the override evidence the whole
@@ -11093,6 +11143,18 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the pinned messages line');
+      }
+    }
+
+    // Conversation-list pins (docs/specs/conversation-list-pins.md): the bullet after the pinned messages line.
+    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes(APP_CONVERSATIONS_LIST_PINS_LINE)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_LIST_PINS_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the conversation-list pins line');
       }
     }
 
@@ -17066,6 +17128,8 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       '**File-path feedback is always a NUDGE',
       // B22 is server-side too, so every framework's agents meet the same nudge.
       '**Sending the operator to a page: link, words, and look first',
+      // "Every ask carries its links": a messaging rule, so every framework's agents need it.
+      '**Every ask carries its links.**',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must
