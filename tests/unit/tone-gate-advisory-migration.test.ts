@@ -83,8 +83,11 @@ describe('advisory migration — disposition resolution', () => {
     }
   });
 
-  it('the exempt set is exactly the self-stop family — no silent additions or removals', () => {
-    expect([...ADVISORY_MIGRATION_EXEMPT_RULES].sort()).toEqual([...SELF_STOP_FAMILY].sort());
+  it('the exempt set is exactly the self-stop family plus B24 — no silent additions or removals', () => {
+    // B24_SPEC_APPROVAL_UNCHECKED (Echo Bugs topic 10000002750) is exempt for the
+    // self-stop family's reason: the agent that skipped the constitution check is the
+    // party the rule constrains, so an acknowledged override would defeat it.
+    expect([...ADVISORY_MIGRATION_EXEMPT_RULES].sort()).toEqual([...SELF_STOP_FAMILY, 'B24_SPEC_APPROVAL_UNCHECKED'].sort());
   });
 
   it('every exempt rule is a REAL rule id (an exemption for a typo protects nothing)', () => {

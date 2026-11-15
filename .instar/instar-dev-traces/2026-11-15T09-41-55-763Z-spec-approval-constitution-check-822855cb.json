@@ -27,5 +27,10 @@
   "eli16Path": "docs/specs/spec-approval-constitution-check.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/spec-approval-constitution-check.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the peer-record refresh runs only when an outbound review or card write asks for records, at most once per 60s (SpecCheckPeerCache.refreshMs), with in-flight dedupe and no retry; a failed refresh waits for the next interval"
+  }
 }
