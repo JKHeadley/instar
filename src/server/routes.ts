@@ -4782,20 +4782,23 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       // Reach-aware B17 (Echo Bugs topic 10000002506): the operator-errand SIGNAL plus
       // the AGENT REACH context (browser-profile accounts + what the agent's own key
-      // reads). Built only when an errand-shaped ask is present in a reply, so every
-      // other review is unchanged. Fail-OPEN: any error leaves both undefined and the
+      // reads). The errand signal (and with it the REACH sub-clause) fires only on
+      // an errand-shaped reply. The reach DATA is also built for every non-health-
+      // alert review: the B17 APPROVAL-NOT-ERRAND sub-clause (Echo Bugs topic
+      // 10000002731) reads it to tell "the agent could do this step on a yes" from
+      // "only the operator can". Fail-OPEN: any error leaves both undefined and the
       // gate runs exactly as before.
       let agentReach: import('../core/agent-reach.js').AgentReach | undefined;
       try {
         if (kindForSignals === 'reply') {
           const errand = detectOperatorErrand(text);
-          if (errand.errand) {
-            signals.operatorErrand = { errand: true, phrase: errand.phrase };
-            const registry =
-              ctx.playwrightRegistry?.() ??
-              new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
-            agentReach = buildAgentReach(registry);
-          }
+          if (errand.errand) signals.operatorErrand = { errand: true, phrase: errand.phrase };
+        }
+        if (kindForSignals !== 'health-alert') {
+          const registry =
+            ctx.playwrightRegistry?.() ??
+            new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
+          agentReach = buildAgentReach(registry);
         }
       } catch {
         // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.

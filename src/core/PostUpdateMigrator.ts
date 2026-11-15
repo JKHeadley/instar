@@ -141,6 +141,8 @@ import {
   THREADLINE_PAIR_TOOL_MARKER,
   SOMEONE_ELSES_WORK_TRAP,
   SOMEONE_ELSES_WORK_TRAP_MARKER,
+  APPROVAL_NOT_CHORE_TRAP,
+  APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
 import { generateClaudeMd } from '../scaffold/templates.js';
 import {
@@ -1980,6 +1982,21 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 - **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
 - Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
 - Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
+/**
+ * The Never-Silent Conversation section, one definition for fresh agents and updated ones.
+ * Sniff key for the migrator: `/never-silent/incidents`. Spec: docs/specs/never-silent-conversation.md
+ */
+export function NEVER_SILENT_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Never-silent conversations
+
+A message someone sends to a conversation ends in exactly one of two things: a reply from me, or a plain message from Instar in that conversation saying what went wrong and what is being done. Each inbound message is recorded until it is answered; one that is still unanswered after about two minutes is looked at by a judge that runs on a DIFFERENT engine from the stuck one (Jev first, then a Codex or Claude referee), from the screen since the message, the engine's own login check and the account list. Instar then tells the person, from fixed wording, even when the judge is down. When actions are on, an expired login moves the conversation to another signed-in account or to the other engine and re-delivers the waiting message; a conversation the operator set to an engine is asked first, with one "Move to …" button, and is never moved without that tap. A Codex session also starts with its own folder already trusted, so it cannot stall at "Trust this folder?".
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/never-silent/incidents\` (\`?open=1\` for what is waiting now): each conversation's waiting messages, the judged reason, the action and every notice sent. 503 = off on this agent (\`monitoring.neverSilent.enabled\`; on for development agents). Log: \`logs/never-silent.jsonl\`.
+- **When to use** (PROACTIVE): someone asks "why did that conversation go quiet?", "why didn't you answer?", or says a reply never came → read \`/never-silent/incidents\` first and answer from it in plain words.
+- Actions that change anything (\`monitoring.neverSilent.actions\`, \`.frameworkFallback\`) are off until the judge has been measured against real screens; with them off, Instar still tells the person the reason.
 `;
 }
 
@@ -9654,6 +9671,20 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the "Someone Else\'s Work" gravity well');
     }
+    // Gravity well "Your Turn to Do It" (topic 10000002731): an approval handed
+    // over as a chore. Inserted after the "Someone Else's Work" trap (always
+    // present by now), else appended. Idempotent by the marker sniff.
+    if (!content.includes(APPROVAL_NOT_CHORE_TRAP_MARKER)) {
+      const at = content.indexOf(SOMEONE_ELSES_WORK_TRAP);
+      if (at >= 0) {
+        const end = at + SOMEONE_ELSES_WORK_TRAP.length;
+        content = `${content.slice(0, end)}\n\n${APPROVAL_NOT_CHORE_TRAP}${content.slice(end)}`;
+      } else {
+        content += `\n\n${APPROVAL_NOT_CHORE_TRAP}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the "Your Turn to Do It" gravity well');
+    }
     if (!content.includes('### Quiet by Default notifications')) {
       content = content.replace(/^\*\*🩺 Agent Health lane[^\n]*\n/m, '');
       content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
@@ -12334,6 +12365,15 @@ Rule: I do not state that work landed inside another agent's state unless I have
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
       }
+      // A failed repair whose account is verified signed in again closes its own row (relogin self-heal).
+      const recoveredSentence = 'A failure whose account is then verified signed in again (pool active, matching identity, a live login check of ok: by a later repair, by hand, or by the provider) sends no failure notice and closes its own attention row with the resolution "signed in again (verified on this machine)"; the user asks "why did that sign-in alert disappear?" → this.';
+      const slowRetryEndForRecovered = 'When the user asks "why did that repair start again by itself?" \u2192 this.';
+      if (content.includes(slowRetryEndForRecovered) && !content.includes('why did that sign-in alert disappear?')) {
+        // Inserted BEFORE the bullet's closing sentence, which other migrations use as their anchor.
+        content = content.replace(slowRetryEndForRecovered, recoveredSentence + ' ' + slowRetryEndForRecovered);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+      }
       // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
       const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
       if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
@@ -14584,6 +14624,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
     } else {
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
+    // Never-Silent Conversation (never-silent-conversation spec). Idempotent via the route path.
+    if (!content.includes('/never-silent/incidents')) {
+      content += '\n' + NEVER_SILENT_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-silent conversations section');
+    } else {
+      result.skipped.push('CLAUDE.md: never-silent conversations section already present');
     }
 
     // Disk Steward (disk-steward spec). Idempotent via content-sniffing on the route path.
@@ -17353,6 +17402,10 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
       // the disk?" and "clear disk on <machine>" from the same section.
       '## Disk Steward',
+      // never-silent-conversation: the watcher, its incidents route and the notices are
+      // server-side and framework-neutral; a Codex session answering "why did that go
+      // quiet?" must find the same section.
+      '## Never-silent conversations',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming

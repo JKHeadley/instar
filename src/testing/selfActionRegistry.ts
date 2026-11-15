@@ -66,6 +66,7 @@ import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js
 import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { decideNeverSilentAction } from '../monitoring/neverSilent/NeverSilentPolicy.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
@@ -5434,6 +5435,52 @@ const workBoardPickup: SelfActionController = {
   },
 };
 
+/**
+ * never-silent-conversation-recovery — docs/specs/never-silent-conversation.md §3.3. A conversation
+ * owes an answer and stays silent forever under the pinned fixture: every account looks healthy to
+ * the pool, every swap and engine move "succeeds", and the conversation still never answers. The
+ * REAL table (`decideNeverSilentAction`) plus the watcher's per-incident bookkeeping it is fed:
+ * a swap is offered once (`swapTried` after the first), an engine move adds the engine it left to
+ * `triedFrameworks` (the breaker: never back to an engine already tried in the incident), one action
+ * per evidence revision, and status notices deduped per state revision. So the conversation gets at
+ * most one swap, one move and one notice per distinct state, then only "tell" with nothing new to
+ * say. Moving back needs the conversation idle (never, under the fixture).
+ */
+const neverSilentConversationRecovery: SelfActionController = {
+  id: 'never-silent-conversation-recovery',
+  actionVerb: 'conversation-respawn',
+  models: 'src/monitoring/neverSilent/NeverSilentWatcher.ts (decideNeverSilentAction + swapTried + triedFrameworks breaker + per-revision notice dedupe)',
+  modelsPath: 'src/monitoring/neverSilent/NeverSilentWatcher.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The breaker state (swap attempts, engines tried, notices sent) lives in the durable never-silent store, so a restart resets none of it, and nothing in this controller causes a restart.' },
+  boundK: 5, // one swap + one engine move + at most three distinct status notices
+  perTargetBoundK: 5,
+  ticks: 400,
+  tickMs: 15_000, // the sweep interval
+  makeUnderPressure(f, sink) {
+    const TARGET = 'silent-conversation';
+    let stuck = 'engine-a'; // stand-in engine ids: the model is engine-neutral
+    const tried: string[] = [];
+    let swapTried = false;
+    const noticed = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const fallbackEngine = ['engine-b', 'engine-a'].find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
+        const d = decideNeverSilentAction({
+          silenceClass: 'engine-login', confidence: 0.99, truncated: false, actionsSinceMessage: 'none',
+          pinned: false, actionsEnabled: true, frameworkFallbackEnabled: true, confidenceFloor: 0.8,
+          sameEngineHealthy: true, fallbackEngine, swapTried, // the pool always reports a healthy alternate under the fixture
+          protectedSession: false, recentlyRestored: false,
+        });
+        let outcome = '';
+        if (d.action === 'swap') { swapTried = true; outcome = 'refused'; sink.emit({ verb: 'account-swap', target: TARGET }); }
+        else if (d.action === 'fallback' && d.target) { tried.push(stuck); stuck = d.target; outcome = 'succeeded'; sink.emit({ verb: 'conversation-respawn', target: TARGET }); }
+        const revision = `${d.action}|${outcome}`;
+        if (d.action !== 'wait' && !noticed.has(revision)) { noticed.add(revision); sink.emit({ verb: 'notify', target: TARGET }); }
+      },
+    };
+  },
+};
 
 /**
  * local-verify-leftover-reaper: Local Verify's leftover test-process sweep
@@ -5568,6 +5615,7 @@ const pairingOutcomeNoticeRetry: SelfActionController = {
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   pairingOutcomeNoticeRetry,
+  neverSilentConversationRecovery,
   localVerifyLeftoverReaper,
   localVerifyMemoryNotice,
   graphSourceSweepCheckpointRetry,
