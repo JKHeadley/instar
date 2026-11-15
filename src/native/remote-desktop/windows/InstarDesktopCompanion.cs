@@ -1019,6 +1019,7 @@ namespace InstarDesktop {
     static readonly Guid LowLatency = new Guid("9c27891a-ed7a-40e1-88e8-b22727a024ee");
     static readonly Guid ApiRateControl = new Guid("1c0608e9-370c-4710-8a58-cb6181c42423");
     static readonly Guid ApiMeanBitrate = new Guid("f7222374-2144-4815-b550-a37f8e12ee52");
+    static readonly Guid ApiQuality = new Guid("fcbf57a3-7ea5-4b0c-9644-69b40c39c391");
     static readonly Guid ApiGopSize = new Guid("95f31b26-95a4-41aa-9303-246a7fc6eef1");
     static readonly Guid ApiBPictures = new Guid("8d390aac-dc5c-4200-b57f-814d04babab2");
     static readonly Guid ApiForceKeyframe = new Guid("398c1b98-8353-475a-9ef2-8f265d260345");
@@ -1076,7 +1077,12 @@ namespace InstarDesktop {
       uint[] inputs = new uint[1], outputs = new uint[1];
       if (transform.GetStreamIDs(1, inputs, 1, outputs) >= 0) { inputStream = inputs[0]; outputStream = outputs[0]; }
       SetCodecValue(LowLatency, true); // VT_BOOL
-      SetCodec(ApiRateControl, 0u); // CBR keeps each picture's size predictable
+      // Quality-based rate control: an unchanged screen costs ~200 bytes a picture
+      // instead of padding to the bitrate, and fast motion measured below constant
+      // bitrate on Mama PC (2.6 vs 4.4 Mbps at 1728x1080, quality 70). The mean
+      // bitrate stays set for an encoder that refuses the mode.
+      SetCodec(ApiRateControl, 3u);
+      SetCodec(ApiQuality, 70u);
       SetCodec(ApiMeanBitrate, (uint)bitrate);
       SetCodec(ApiGopSize, 450u);
       SetCodec(ApiBPictures, 0u);

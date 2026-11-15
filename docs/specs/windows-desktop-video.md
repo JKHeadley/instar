@@ -28,7 +28,7 @@ Windows session stayed on JPEG.
      (largest even size ≤1920x1080 with the area's shape) and converts to NV12
      (~8 ms), then the Media Foundation H.264 encoder (hardware first — Quick
      Sync/NVENC/AMF async MFT — then Microsoft's software MFT) in baseline
-     level 4.0, low-latency, no B-frames, CBR ≈0.15 bit/pixel at 15/s (~11-20 ms);
+     level 4.0, low-latency, no B-frames, quality-based rate control (quality 70; mean bitrate ≈0.15 bit/pixel at 15/s kept as the fallback target) (~11-20 ms);
    - at most one encoded access unit waits; a request takes it, so every delta
      reaches the viewer in order and transport overlaps the next capture.
    - keyframe requests drop a waiting delta and force an IDR; every keyframe
