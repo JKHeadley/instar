@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-14T11:06:33.258Z",
+  "slug": "conversation-search",
+  "carriers": {
+    "CMT-1758": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Building in four PRs: filter/sort by app, pin conversations (agent-stored), keyword search across app/Telegram/Slack in app+dashboard, meaning search with the local engine"
+    }
+  }
+}

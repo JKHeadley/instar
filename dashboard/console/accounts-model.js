@@ -193,6 +193,24 @@ export function accountNotices(accounts, { partial = false, now = Date.now() } =
 }
 
 /**
+ * The header's account counts, from the same cell states as the rows. An account is ready when it
+ * is signed in on every machine that holds it; it needs a sign-in when any machine shows "needs
+ * sign-in" (or holds another account's login); the rest (signing in now, still being checked, other states) are
+ * not ready yet with nothing for the person to do. ready + needSignIn + inProgress = total.
+ */
+export function accountCounts(accounts) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  let ready = 0, needSignIn = 0, inProgress = 0;
+  for (const a of list) {
+    const cells = Array.isArray(a && a.cells) ? a.cells : [];
+    if (cells.some((c) => c.state === 'attn')) needSignIn++;
+    else if (cells.length && cells.every((c) => c.state === 'ok')) ready++;
+    else inProgress++;
+  }
+  return { total: list.length, ready, needSignIn, inProgress };
+}
+
+/**
  * Build the page. episodes: /subscription-relogin?scope=pool episodes (optional).
  * Returns { ok, needs, notices, accounts, headline, sub, facts, partial, tone }.
  */
@@ -272,18 +290,20 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   }
   // A waiting sign-in (unconfirmed, or repair the agent owns) shows on its row only: a line saying
   // there is nothing to do is not worth the space (operator rule 2026-11-06, topic 134088).
-  const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok')).length;
+  const counts = accountCounts(accounts);
   const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
   const notices = accountNotices(accounts, { partial: failed.length > 0, now });
   // The title says what needs the person; otherwise it is just the page name and the notices
   // (each with its own action) sit under it.
   const headline = needs.length ? (needs.length === 1 ? '1 sign-in needs you.' : `${needs.length} sign-ins need you.`) : 'Accounts';
   const facts = [
+    // The header agrees with the rows: how many accounts are ready everywhere, and how many need a sign-in.
+    { n: `${counts.ready} of ${counts.total}`, label: 'ready' },
     // warning-path: inline
-    needs.length ? { n: needs.length, label: 'need you', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
+    counts.needSignIn ? { n: counts.needSignIn, label: counts.needSignIn === 1 ? 'needs you to sign in' : 'need you to sign in', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
+    counts.inProgress ? { n: counts.inProgress, label: 'not ready yet, nothing for you to do' } : null,
     // A routine number: one full account among others with room is not a warning (the notices say when it is).
     busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` } : null,
-    { n: `${usable}/${accounts.length}`, label: 'accounts usable' },
     inUse && inUse.activeAccountId ? { n: (byId.get(inUse.activeAccountId) || {}).name || 'Account name unavailable', label: 'in use here' } : null,
   ].filter(Boolean);
   const machineNames = {};

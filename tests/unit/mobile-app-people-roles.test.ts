@@ -182,6 +182,8 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     // conversation-pinned-messages: list and pin/unpin in each kind of conversation.
     'GET /mobile/chat/app/<uuid>/pins', 'POST /mobile/chat/app/<uuid>/pins', 'GET /mobile/chat/7/pins', 'POST /mobile/chat/7/pins',
     'GET /mobile/chat/slack/-1/pins', 'POST /mobile/chat/slack/-1/pins',
+    // conversation-search: `ref=` names one conversation.
+    'GET /mobile/conversations/search',
   ];
   const UUID = '22222222-2222-4222-8222-222222222222';
   const sample = (s: string) => s.replace('<uuid>', UUID).replace('<sha>', 'a'.repeat(64));
@@ -401,8 +403,9 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 39: §3.6a item 6 opened the link-code lookup (who asked for this code), so the phone shows it before Face ID.
     // 32: work-board-asks §7 opened GET /mobile/work-board to guests; the handler shows only the cards whose conversation that person may read.
     // 33: conversation-list-pins opened POST /mobile/conversations/pins to guests (it orders the person's own list).
-    // 41: both of the above together (31 + 8 document routes + 2 from work-board and pins).
-    expect(open).toBe(41);
+    // 34: conversation-search opened GET /mobile/conversations/search to guests (searching is reading).
+    // 42: all of the above together (31 + 8 document routes + work-board, pins and search).
+    expect(open).toBe(42);
   });
 
   it.each([

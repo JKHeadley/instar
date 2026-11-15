@@ -2282,6 +2282,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  // Keyword search over conversations (conversation-search): the same visibility as the list.
+  ['GET', /^\/mobile\/conversations\/search$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
   ['POST', /^\/mobile\/conversations\/read$/.source],
   // Pinning a conversation to the top of the list (conversation-list-pins): the same per-person pins as the phone.
@@ -2343,6 +2345,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['POST', /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, 'guest'],
   // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
   ['GET', /^\/mobile\/work-board$/, 'guest'],
+  // Searching is reading (conversation-search): only conversations and messages this person may read.
+  ['GET', /^\/mobile\/conversations\/search$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   // Pinning a conversation orders the person's own list; the route checks they may see it.
@@ -2435,6 +2439,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Moving a document to another conversation (§4.2): owner phone, Face ID-signed challenge.
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
+    { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
