@@ -44,6 +44,11 @@ export type MeshCommand =
       type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number;
       /** The message's TopicMemory row (context-budget §14 relay-path carrier). An older peer ignores it. */
       row?: unknown;
+      /**
+       * Files by attachment id (native-conversation-base §3c). Never a path; validated on receipt by
+       * `parseInboundMediaField`. An older peer ignores it and injects the payload's path-free sentence.
+       */
+      media?: unknown;
     }
   | {
       /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */

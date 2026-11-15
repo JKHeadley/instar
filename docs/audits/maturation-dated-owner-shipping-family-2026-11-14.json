@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-14T08:19:56.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code-subagent"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 10
+  },
+  "convergenceReport": "docs/specs/reports/maturation-dated-owner-shipping-family-2026-11-14.md",
+  "convergenceSha256": "e6f6813045617f03df263c0a44ea3feef30c16be82fd79174c4d0ca3c2560594",
+  "areas": {
+    "Shipping": {
+      "areaSha256": "1fb87921b71fb3f94a795d35c5d8bc1cf3ba909efa31a7ba999bee53e993c424",
+      "verdict": "accepted"
+    }
+  }
+}

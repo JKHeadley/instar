@@ -28,6 +28,7 @@ import type { UnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWir
 import { createTempProject, createMockSessionManager } from '../../helpers/setup.js';
 import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
+import { FeatureEvidenceLog, FEATURE_EVIDENCE_FILE, setFeatureEvidenceLog } from '../../../src/monitoring/FeatureEvidenceLog.js';
 
 const FP_KNOWN = 'c'.repeat(32);   // "peer-known" in known-agents.json
 const FP_OTHER = 'd'.repeat(32);   // a fingerprint only ever asserted in a body
@@ -172,6 +173,25 @@ describe('/messages/relay-agent — local-route trust (real route)', () => {
     expect(after.evaluated - before.evaluated).toBe(1);
     expect(after.wouldRefuse - before.wouldRefuse).toBe(1);
     expect(after.refused).toBe(before.refused);
+  });
+
+  it('dry-run: each would-refuse leaves a durable evidence row naming the sender and why, and the message is still delivered', async () => {
+    const dir = fs.mkdtempSync(path.join(h.project.dir, 'evidence-'));
+    setFeatureEvidenceLog(new FeatureEvidenceLog({ projectDir: dir, machine: 'test-machine', instarVersion: '0.0.0' }));
+    try {
+      const sender = `drill-stranger-${crypto.randomUUID().slice(0, 8)}`;
+      const res = await captureLogs(() => post(envelope(NAME, { from: sender })));
+      expect(res.result.status).toBe(200);
+      await vi.waitFor(() => expect(h.handleInboundMessage).toHaveBeenCalledTimes(1));
+      const rows = fs.readFileSync(path.join(dir, FEATURE_EVIDENCE_FILE), 'utf-8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+      const row = rows.find((r) => r.featureId === 'threadline.localRouteTrust' && r.reason === 'would-refuse');
+      expect(row).toMatchObject({
+        kind: 'fired', subject: `name:${sender}`,
+        context: { sender, level: 'untrusted', operation: 'message', identitySource: 'none', dryRun: true, refuseReason: 'untrusted-may-not-message' },
+      });
+    } finally {
+      setFeatureEvidenceLog(null);
+    }
   });
 
   it('dry-run: a sender whose profile permits the operation counts as allowed, not would-refuse', async () => {

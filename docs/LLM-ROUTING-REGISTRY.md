@@ -189,6 +189,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | Component | file:line | Decision | Nature | Route | Intentional? |
 |---|---|---|---|---|---|
 | TopicSummarizer | src/memory/TopicSummarizer.ts:163 | topic summary + PURPOSE | D | OC(fast) | ⚠ cheap fits |
+| ConversationGraphSuggestions | src/server/ConversationGraphSuggestionService.ts:218 | group unassigned conversations into proposed efforts (advice; owner accepts/rejects each) | D | OC(balanced) | ✅ intentional — advice only, output validated deterministically (offered aliases, 2-12, no overlap/project mix); bench `pending` wave-3, graded by owner Accept/Reject |
 | RelationshipManager ×2 | src/core/RelationshipManager.ts:328/381 | person match / dedup | D | OC(fast) | ⚠ |
 | StandardsConformanceReviewer ×2 | src/core/reviewers/standards-conformance.ts:206/256 | spec-vs-standards / fit | B | OC(capable) | ✅ |
 | JobReflector | src/core/JobReflector.ts:207 | reflect on job outcome | B/D | OC(capable) | ✅ |

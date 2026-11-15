@@ -30,9 +30,11 @@ import { renderLearned } from './learned.js';
 import { topicNameMap } from './topic-names.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
+import { renderContext } from './context.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
+import { renderWork } from './work.js';
 import { renderConversations, conversationsTile } from './conversations.js';
 import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot } from './ticket-model.js';
@@ -712,6 +714,7 @@ const NATIVE = {
   'work/development': renderDevelopment,
   'work/maturation': renderMaturation,
   'work/ideas': renderIdeas,
+  'work/board': renderWork,
   'work/sessions': renderSessions,
   'work/chats': renderChats,
   'work/documents': renderDocuments,
@@ -729,6 +732,7 @@ const NATIVE = {
   'settings/learned': renderLearned,
   'settings/inside': renderInside,
   'settings/files': renderFiles,
+  'settings/context': renderContext,
 };
 
 // Pages that exist only in phone mode: the Work page's Pace card, on its own.

@@ -52,6 +52,8 @@ const PENDING_BASELINE = [
   // skill-learning-sentinel slice 1 (2026-11-06): shadow-only arbiter/drafter + cross-family reviewer; graded by the
   // rung-1 operator sample (agree/disagree taps on proposals) until a bench task lands.
   'skillLearning.drafter', 'skillLearning.reviewer',
+  // conversation-graph-suggestions (2026-11-11): advice-only grouping proposals; graded by the owner's Accept/Reject taps until a bench task lands.
+  'ConversationGraphSuggestions',
 ].sort();
 
 const EXEMPT_BASELINE = [

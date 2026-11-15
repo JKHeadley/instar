@@ -8,7 +8,7 @@ import type { ThreadLogEntry } from './ThreadLog.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { contentDigest } from './threadDigest.js';
 
-// canonical-migration-consumer: threadline-inbound-canonical-store@3
+// canonical-migration-consumer: threadline-inbound-canonical-store@4
 
 interface RecoverableInbound {
   id: string;

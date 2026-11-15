@@ -53,7 +53,7 @@ import type { StateManager } from '../core/StateManager.js';
 import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import type { CanRunJobResult, IntelligenceProvider, MessagingAdapter, SkipReason } from '../core/types.js';
 import { TOPIC_STYLE } from '../messaging/TelegramAdapter.js';
-import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '../core/types.js';
+import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority, Session } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { reportDeliverySinkFailure } from '../messaging/DeliverySinkFailure.js';
@@ -3137,6 +3137,9 @@ export class JobScheduler {
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
       ...(toolDecision.confinedTools ? { confinedTools: toolDecision.confinedTools } : {}),
       ...(toolDecision.requireConfinement ? { requireToolConfinement: true } : {}),
+      // Per-job thinking mode (job-launch-intent-record §3): the launching builder translates
+      // or drops it, and the session's `launch` record says which.
+      ...(job.thinkingMode !== undefined ? { thinkingMode: job.thinkingMode } : {}),
     });
     spawnPromise.then((session) => {
       gateSpawnAccepted = true;
@@ -3179,8 +3182,11 @@ export class JobScheduler {
         clampedAllowlist: observability.clampedAllowlist,
         toolsConfined: toolOutcome.toolsConfined,
         toolEnforcement: toolOutcome.toolEnforcement,
+        // job-launch-intent-record §3/§4: taken from the same returned session as framework/model.
+        ...(session?.launch ? { launch: session.launch } : {}),
       });
       this.activeRunIds.set(sessionName, runId);
+      this.recordLaunchIntentEvidence(job.slug, runId, session);
 
       // Update job state on successful spawn (clear error, set pending result)
       const jobState: JobState = {
@@ -4299,7 +4305,11 @@ export class JobScheduler {
       // Keep silence alerts focused on jobs that stopped being attempted.
       if (this.state.get(this.failureAlertStateKey(job.slug))) continue;
       if (!this.isJobScopedToThisMachine(job)) {
-        this.raiseContinuityAlert(job, 'it is set to run only on another machine, and this machine is the one running jobs', `job-silence-${job.slug}`);
+        // Say why in plain words, and name both machines and the fix: the bare notice repeated
+        // daily for days without anyone being able to tell where the job was pinned or what to change.
+        const here = this.machineName ?? this.machineId ?? 'this machine';
+        const pinned = (job.machines ?? []).join(', ');
+        this.raiseContinuityAlert(job, `it is set to run only on another machine (${pinned}), and this machine (${here}) is the one running jobs. To fix it, add ${here} to the job's "machines" list in .instar/jobs.json, remove the list so it runs wherever the scheduler is, or disable the job if it is no longer needed`, `job-silence-${job.slug}`);
         continue;
       }
       const state = this.state.getJobState(job.slug);
@@ -4850,6 +4860,43 @@ export class JobScheduler {
    * function: hashing is deterministic over body + canonicalized
    * frontmatter; non-agentmd entries carry nulls.
    */
+  /**
+   * Launch-record bookkeeping for one MAIN-PATH run, after its start row is written
+   * (job-launch-intent-record §4 "Never waits", Maturation plan → dev-agent-live).
+   * Signal only — nothing here decides or blocks anything, and nothing here may throw into the
+   * spawn path (the session is already running).
+   *  - one `jobs.launchIntent` `fired` evidence row per run, with its runId;
+   *  - an `error` row when the session carried no launch record;
+   *  - the async CLI version probe, which patches only `launch.cliVersion` when it settles.
+   */
+  private recordLaunchIntentEvidence(slug: string, runId: string, session: Session | undefined): void {
+    try {
+      featureEvidence.record('jobs.launchIntent', {
+        kind: 'fired',
+        reason: session?.launch ? 'launch-recorded' : 'launch-missing',
+        context: {
+          runId, slug,
+          applied: session?.launch?.applied?.length ?? 0,
+          dropped: session?.launch?.dropped?.length ?? 0,
+        },
+      });
+      if (!session?.launch) {
+        featureEvidence.record('jobs.launchIntent', {
+          kind: 'error', reason: 'launch record could not be built', context: { runId, slug },
+        });
+        return;
+      }
+      const probe = (this.sessionManager as { probeLaunchVersion?: (s: Session) => Promise<string> }).probeLaunchVersion;
+      if (typeof probe !== 'function') return;
+      void probe.call(this.sessionManager, session)
+        .then((version) => { this.runHistory.recordLaunchVersion(runId, version); })
+        .catch(() => { /* @silent-fallback-ok — the row keeps cliVersion 'unknown' */ });
+    } catch (err) {
+      // @silent-fallback-ok — observability must never break a running job; logged.
+      console.warn(`[scheduler] launch record bookkeeping for "${slug}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   static computeRunObservability(
     job: JobDefinition,
     resolution: AllowlistResolution,

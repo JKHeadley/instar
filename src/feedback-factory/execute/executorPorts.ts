@@ -45,6 +45,12 @@ export interface AttemptGit {
    * `'none'` when no release contains it yet; null when it cannot be determined.
    */
   firstReleaseContaining(sourceRepoPath: string, commit: string): Promise<{ tag: string; taggedAt: number } | 'none' | null>;
+  /**
+   * The full SHA and committer time of `commit` when it names a commit the trusted source checkout
+   * has AND `baseSha` contains it; null otherwise (unknown, not an ancestor, or unreadable).
+   * Optional: without it a session's "already fixed by" claim is never trusted.
+   */
+  commitInBase?(sourceRepoPath: string, commit: string, baseSha: string): Promise<{ sha: string; committedAt: number } | null>;
 }
 
 export interface GitHubGateway {
@@ -163,6 +169,18 @@ export class SafeAttemptGit implements AttemptGit {
       const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(\.git)?$/.exec(raw);
       return m ? { slug: `${m[1]}/${m[2]}`, url: `https://github.com/${m[1]}/${m[2]}.git` } : null;
     } catch { return null; } // @silent-fallback-ok: an unreadable origin makes the executor report no-source-repo
+  }
+
+  async commitInBase(sourceRepoPath: string, commit: string, baseSha: string): Promise<{ sha: string; committedAt: number } | null> {
+    if (!/^[0-9a-f]{7,40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(baseSha)) return null;
+    const read = (args: string[], operation: string) => SafeGitExecutor.readSync(args, { cwd: sourceRepoPath, operation, sourceTreeReadOk: true, timeout: 60_000 });
+    try {
+      const full = read(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`], 'feedback-execute already-fixed resolve').trim();
+      if (!/^[0-9a-f]{40}$/.test(full)) return null;
+      read(['merge-base', '--is-ancestor', full, baseSha], 'feedback-execute already-fixed ancestry');
+      const committedAt = Date.parse(read(['log', '-1', '--format=%cI', full], 'feedback-execute already-fixed date').trim());
+      return Number.isFinite(committedAt) ? { sha: full, committedAt } : null;
+    } catch { return null; } // @silent-fallback-ok: unknown or not an ancestor → the claim is not trusted and the attempt counts as plain not-reproducible
   }
 
   async firstReleaseContaining(sourceRepoPath: string, commit: string): Promise<{ tag: string; taggedAt: number } | 'none' | null> {

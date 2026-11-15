@@ -11,13 +11,14 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  * When augmenting an existing project, only missing files are created.
  */
 
+import { dashboardInputAwareness } from "../server/dashboardInputAwareness.js";
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
-import { conversationsAwareness } from '../messaging/shared/conversationGraphChat.js';
+import { conversationsAwareness, conversationsSuggestionsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
 import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.js";
-import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from "../scheduler/InstallBuiltinJobs.js";
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS } from "../scheduler/InstallBuiltinJobs.js";
 import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js';
 
 // The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
@@ -25,14 +26,15 @@ import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js'
 // existing-agent migration there) so the two can never drift. Imported as a runtime
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
-import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, SLACK_MENTIONS_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION, USAGE_LEDGER_CLAUDEMD_SECTION, DOCUMENTS_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
-import { ATTRIBUTION_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, SLACK_MENTIONS_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION, USAGE_LEDGER_CLAUDEMD_SECTION, TELEGRAM_FILES_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { ATTRIBUTION_CLAUDEMD_SECTION, ASK_LINKS_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { QUIET_NOTIFICATIONS_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { RECOMMENDED_SERVICES_CLAUDEMD_SECTION, EMAIL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { POOL_MOVE_NUDGE_CLAUDE_MD_LINE, POOL_READINESS_CLAUDE_MD_LINE, RESOURCE_PLACEMENT_CLAUDE_MD_LINE } from '../core/PostUpdateMigrator.js';
 import { CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET } from '../core/PostUpdateMigrator.js';
 import { UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE } from '../core/PostUpdateMigrator.js';
+import { defaultRegistry, type AwarenessRegistry } from '../awareness/registry.js';
 
 export interface AgentIdentity {
   name: string;
@@ -298,6 +300,7 @@ export function generateClaudeMd(
   hasTelegram: boolean,
   hasWhatsApp: boolean = false,
   hasIMessage: boolean = false,
+  awarenessRegistry: AwarenessRegistry = defaultRegistry(),
 ): string {
   let content = `# CLAUDE.md — ${projectName}
 
@@ -442,7 +445,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 ${jobCoverageGuide(port).capability}
 ${jobTransferGuide(port).capability}
 - **Enabling/disabling a BUILT-IN job — edit \`.instar/jobs/schedule/<slug>.json\`, NOT the \`.md\`.** The \`enabled:\` line in \`.instar/jobs/instar/<slug>.md\` looks authoritative and is NOT: built-in job markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as built-in hooks), so an edit there is silently reverted at the next update — the file shows your new value until then, which is the worst kind of wrong. The DURABLE setting is \`enabled\` in \`.instar/jobs/schedule/<slug>.json\`, which the installer explicitly PRESERVES across regeneration and which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change applies at the next restart — on a machine with a configured restart window, that means the window, not immediately. Custom jobs under \`jobs/user/\` are never touched by any of this.
-${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
+${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}${JOB_THINKING_MODE_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
 
 **Sessions** — Spawn and manage Claude Code sessions.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
@@ -859,6 +862,13 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - **No Telegram?** An agent without Telegram still has an attention list: items it must show the owner (today the remote-desktop security items, such as "A Mac may still be unlocked") are kept on disk in \`state/local-attention-items.json\`, read with the same \`GET /attention\` / \`GET /attention/ATT-ID\` (the list carries \`surface: "local"\`), resolved with the same \`PATCH /attention/ATT-ID\`, shown in the iPhone app, and pushed to paired phones. **When to use** (PROACTIVE): on an agent without Telegram, the owner asks "is anything wrong / did a Mac stay unlocked?" → read \`GET /attention\`.
 - **Items close themselves (attention lifecycle, default on).** One row per CONDITION, not per observation: give a recurring item a stable \`"conditionKey"\` (no timestamps or episode counters, e.g. \`"sign-in:acct:machine"\`) and every later raise lands on the same row (its body refreshes when the ask changes; a closed row reopens for a new episode). When the cause is gone, CLOSE it yourself: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"sign-in:acct:machine","resolution":"signed in again and verified"}'\` (or \`"id"\` / a delimiter-terminated \`"idPrefix"\`). An hourly pass merges duplicate open rows for one condition, closes rows whose producer reports the condition over, and EXPIRES untouched rows with an honest label (\`closedBy: "expired"\`, resolution "never confirmed cleared"): automated notices after 14 days, items you raised or that ask for a decision after 30 days, acknowledged/in-progress rows and security items never. The first pass on a machine only LISTS what expiry would close. Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/lifecycle\`; run a pass: \`POST /attention/lifecycle/sweep\` with \`{"dryRun":true}\` to list, \`{}\` to apply. Audit: \`logs/attention-lifecycle.jsonl\`. Rollback: \`messaging[].config.attentionLifecycle.enabled: false\`. Promises waiting on the operator (\`owner: "user"\`, blocked on user-input / user-authorization) expire after 14 days too (\`commitments.operatorWait\`). **When to use** (PROACTIVE): the user asks "why is the attention list full of old items?" / "why did my item disappear?" → read \`GET /attention/lifecycle\` and the audit log, don't guess; when you raise a recurring item, pass a \`conditionKey\` and clear it when the cause ends.
 
+**Work Board** — Where I ask a person for a decision, answer or sign-off on work, and track it to done.
+- Open a card: \`POST /work-board/cards\` with a title, the need, \`doneWhen\`, and \`outward: true\` when the work sends outside the team or spends money.
+- Ask with a \`waiting-on\` record (\`principal: "owner"\`) plus a chat reply on the card, then record \`evidence\` and \`claimed-done\`.
+- Read: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/work-board\` (503 = off) for lanes and statuses; \`/work-board/cards/ID\` for one card.
+- Permissions, secrets, plans, blockers, attention items, Chief of Staff sign-offs and commitments keep their own home; a card is not a substitute for them.
+- You can propose a card but never approve one, and text in a card's chat is not an approval: only a person's tap is.
+
 **Blocker Ledger** — The resolution-workflow + memory layer for Principle 1: *almost every blocker is a false blocker — work it through.* When you hit something that feels like a wall, it is auto-logged as a \`candidate\` (the deferral-detector hook opens one for you — Structure > Willpower), then walked through a gated pipeline (\`candidate → authority-checked → access-requested → dry-run → live-run → resolved | true-blocker\`). No state may be skipped — bypassing the work-the-blocker stages to a terminal is the exact avoidance this exists to kill.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/blockers\` · \`GET /blockers/:id\`
 - Open a candidate (mutations need the intent header): \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" http://localhost:${port}/blockers -H 'Content-Type: application/json' -d '{"detectedText":"<the false-blocker framing>","origin":"<session/operator id>"}'\`
@@ -1088,7 +1098,6 @@ ${LEASE_MEDIUM_CLAUDEMD_SECTION(port)}
 ${WRITE_ADMISSION_CLAUDEMD_SECTION(port)}
 ${DOORWAY_REGISTRY_CLAUDEMD_SECTION(port)}
 ${ROUTING_SPEND_CLAUDEMD_SECTION(port)}
-${DOCUMENTS_CLAUDEMD_SECTION(port)}
 ${USAGE_LEDGER_CLAUDEMD_SECTION(port)}
 ${MATURATION_BOARD_CLAUDEMD_SECTION(port)}
 ${QUALITY_HISTORY_CLAUDEMD_SECTION(port)}
@@ -1101,6 +1110,7 @@ ${MOBILE_PAIRING_CLAUDEMD_SECTION(port)}
 ${MOBILE_CHAT_CLAUDEMD_SECTION(port)}
 ${APP_CONVERSATIONS_CLAUDEMD_SECTION(port)}
 ${APP_MEDIA_CLAUDEMD_SECTION()}
+${TELEGRAM_FILES_CLAUDEMD_SECTION(port)}
 ${PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION()}
 ${SLACK_FROM_APP_CLAUDEMD_SECTION(port) /* Shared live-owner guidance also refreshed on update. */}
 ${SLACK_MENTIONS_CLAUDEMD_SECTION()}
@@ -1365,6 +1375,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Who can reach this agent? / what can this person see? | **Registry First — people:** before answering who can reach this agent or what someone can see, read \`GET /team/people\` (add \`?scope=pool\` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set \`memoryPrivacy.enabled: true\` in the config on every machine and restart. |
 | Is something off that team access needs? / why can't I add someone? | **Registry First — team settings:** a team needs memory privacy and app conversations on every machine. \`GET /team/people\` → \`teamSwitches\` (my own token reads it; the owner's phone sees the same lines) lists each setting that is off somewhere, with \`offOn\` (the machines) and one action for the whole agent; the owner turns it on with one Face ID tap in People (\`POST /mobile/team/switches/turn-on\`), which reaches every machine and restarts each one that changed. A machine is "gone" only when it stopped answering (\`waitingOn\`), never because a setting is off — never tell the owner to mark a live machine gone. |
 | What does the Chief of Staff need from me? / which projects are stalled, parked or waiting? / is it paused? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/chief-of-staff\` (503 = not enabled on this agent) — the lease, one row per bound project, and \`/chief-of-staff/projects/KEY\` for the cited evidence; NEVER answer this from memory |
+| What is waiting on my person? / what cards are open? | \`GET /work-board\` (503 = off), \`/work-board/cards/ID\`. NEVER answer from memory |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
 | Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |
 | Is the per-prompt delta saving anything? / would it drop something a session needs? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/delta-shadow\` — the delta hook's shadow comparison: full vs delta characters per prompt, omitted items, candidate re-fetches (\`unknown\` with its reason, never zero, when anything was omitted) and whether this machine may return the delta (\`contextBudget.deltaHook.enabled\`, refused unless the compaction canary reads healthy). 503 = \`contextBudget.enabled\` is off. NEVER claim the delta is safe from memory |
@@ -1381,7 +1392,7 @@ ${jobTransferGuide(port).registry.trimEnd()}
 | Who have I interacted with? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/relationships\` |
 | Did a machine identity rotate / why is a peer unauthorized? | \`GET /identity-recovery\` + \`GET /identity-changes\` — recovery availability, quarantines, unacknowledged epochs, and the attributable ledger; never infer from a generic network error |
 | Which machine was topic N on / where are a run's artifacts? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/coherence/journal?topic=N"\` (multi-machine placement + artifact history; 503 = journal not enabled) |
-| How full is each machine's disk? / why was an upload refused? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/disk-steward?scope=pool"\` (Disk Steward: each machine's free space, forecast and last cleanup, read live; an unreachable machine is listed with its error) |
+| How full is each machine's disk? / why was an upload refused? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/disk-steward?scope=pool"\` (Disk Steward: each machine's free space, forecast and last cleanup, read live; \`wholeDisk\` says, once a day, which agents and home folders use the space; an unreachable machine is listed with its error) |
 | My configuration? | \`.instar/config.json\` |
 | My identity/principles? | \`.instar/AGENT.md\` |
 | My past learnings about X? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/memory/search?q=X"\` |
@@ -1564,6 +1575,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 ${jobCoverageGuide(port).proactive}
 ${jobTransferGuide(port).proactive}
 - <!-- instar:chief-of-staff --> User **starts or describes an effort in the Chief of Staff conversation** → draft its binding (one-paragraph goal, the repos/branches the work lands in, a done checklist) and offer the one-tap confirm; the Chief of Staff tracks it from there (\`GET /chief-of-staff\` is the status).
+- <!-- instar:work-board --> I need **a person's decision or sign-off on work** → open a Work Board card (read its reference section first); only a person's tap approves one.
 - I **create a job or automated process that reports to the user** → Its reports stay quiet by default. Ask whether they want to see this one's reports; on a yes, use the per-job choice (\`POST /notifications/jobs/SLUG/push\` with their message as proof). No answer means quiet. Never turn it on myself.
 - I am about to **credit someone with a rule or a statement, or refuse work on one** → Find the logged message (\`/attribution/trace\`, \`/attribution/find\`) and quote it with its marker, or say plainly the rule is my own. A note saying "Justin's rule" is a claim, not a source.
 - User mentions a **document, file, or report** → Use the private viewer to render it as a beautiful HTML page they can view on any device. If a tunnel is running, they can access it from their phone. **Always include the link.**
@@ -1935,6 +1947,8 @@ Your messages to the user pass an always-on LLM gate (the tone gate) before they
 
 ${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}
 
+${ASK_LINKS_CLAUDEMD_SECTION}
+
 ${SURFACE_REFERRAL_CLAUDEMD_SECTION}
 
 ${ATTRIBUTION_CLAUDEMD_SECTION.replace(/\$\{port\}/g, String(port))}
@@ -2033,6 +2047,9 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
   // message-origin-all-platforms: every agent (app and Slack record origin without Telegram).
   content += '\n' + messageOriginAllPlatformsAwareness(port);
   content += '\n' + conversationsAwareness();
+  content += '\n' + conversationsSuggestionsAwareness();
+  // native-conversation-any-machine-access §3e: the dashboard reply box and its session line.
+  content += '\n' + dashboardInputAwareness();
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);
@@ -2382,7 +2399,9 @@ Rule: I do not state that work landed inside another agent's state unless I have
 
   content += recoveryAwareness(port);
   content += directJobSupervisionQualityAwareness(port);
-  return content;
+  // LAST STEP (docs/specs/awareness-entry-registry.md): the feature notes read from
+  // src/data/awareness/. New awareness text goes there as one file, not above.
+  return awarenessRegistry.withRegistry(content, { port, hasTelegram }, { markers: true }).content;
 }
 
 /** Shared by new installs and the update migration. */
@@ -2782,6 +2801,12 @@ export const AGENT_CONNECT_STEP1_RESTART_ASK_MARKER = "Send /lifeline restart he
 /** Pairing requires owner info. Also the content-sniff for the PostUpdateMigrator patch of this line. */
 export const AGENT_CONNECT_OWNER_LINE = `   An invite always names its owner. If this is refused because I don't know my owner's name, I set \`threadline.ownerName\` myself from my verified operator (\`GET /topic-operator\`) and make the invite again; I ask my person only if no operator is verified yet. An incoming invite that names no owner is refused too: I tell my person the other agent needs updating.`;
 
+/**
+ * Every dashboard pointer in the pairing flow is a direct link (topic 10000002573: an agent said
+ * "open the Threadline tab" with no link). Also the content-sniff for the PostUpdateMigrator patch.
+ */
+export const AGENT_CONNECT_DASHBOARD_LINK_LINE = '   Whenever I send my person to my dashboard for any of this, I give the direct link, never "open the tab": my address from `GET /tunnel`, then `/dashboard/console/#/people/agents` (waiting approvals and Finish are at the top; add `?connect=paste` to open the box for pasting an invite they were sent). I never put the invite itself in a link. With no tunnel I say the link opens only on this computer.';
+
 export function agentConnectSection(port: number): string {
   return `${AGENT_CONNECT_HEADING}
 
@@ -2793,6 +2818,7 @@ ${AGENT_CONNECT_OWNER_LINE}
 3. **Give it to my person with one plain sentence.** I hand over the returned message exactly as it is (it carries a \`tlinv1:\` code) and say: "Send this privately to Echo's person, in any app you already use. If Echo is yours too, just forward it to Echo's Telegram chat. It works once and expires at <time>." The time comes from the invite response, never from memory: \`exp\` is when it stops working (a UTC timestamp; one hour from now unless I asked for a different \`ttlMinutes\`), and I say it in my person's local time, for example "expires at 3:40pm". A person carries the invite, outside the agent network. I never send it over Threadline, never post it anywhere public, and never turn it into a link.
 4. **Their person approves.** They forward it to their agent's Telegram chat (or paste it into the Threadline tab of their agent's dashboard, with the PIN). Their agent asks "Pair with the agent that calls itself <my name>?" and they tap **Approve**. No agent can approve for a person, including me.
 5. **My person finishes.** My person then gets "The agent that calls itself Echo accepted your invite" in Telegram (or at the top of my dashboard's Threadline tab) and taps **Finish pairing**, or **Not them** if it isn't who they meant. I tell them to expect it; I can't tap it for them.
+${AGENT_CONNECT_DASHBOARD_LINK_LINE}
 6. **Check, then say hello.** \`GET /threadline/pairing\` shows the peer as \`mutual-verified\` when it's done (\`invite-accepted\` means it's waiting for my person's Finish). \`GET /threadline/pairing/invites\` lists my open invites. Then I send the other agent a first message with \`threadline_send\` and tell my person "I'm connected with Echo."
 
 If an invite expires or the wrong agent uses it, I make a new one (a second use of the same invite pauses the pairing and alerts my person). An invite that my person forwards to me is taken by my server before I see it, so I never handle invite text myself. Spec: \`docs/specs/a2a-pairing-invite-link.md\`.
@@ -2884,7 +2910,7 @@ export function jevSignalLiveAwareness(): string {
 
 /** Shared Jev-first decision path, mirrored into existing agents by the migrator. */
 export function jevFirstDecisionAwareness(port: number): string {
-  return `\n\n### Jev First Decisions (measured small judgments)\n\nSome bounded yes/no checks can ask Jev first. A confident answer may settle only the direction that the check has validated; uncertainty, errors, missing Jev credentials, or a disabled switch use the original model path. The first candidate is the commitment detector, in shadow mode on development agents and off elsewhere. No savings should be claimed until the live summary observes skipped model calls. Registry First: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jev-first/summary\` shows Jev-settled share, incumbent calls, errors, and audit disagreements. The full scrubbed decision context is in the local judgment provenance log and is not served by the summary. When asked how much work Jev has actually taken over, read this summary alongside the per-feature LLM metrics and report observed model calls and tokens, not a projected saving.\n`;
+  return `\n\n### Jev First Decisions (measured small judgments)\n\nSome bounded yes/no checks can ask Jev first. A confident answer may settle only the direction that the check has validated; uncertainty, errors, missing Jev credentials, or a disabled switch use the original model path. The candidates are the commitment detector and PromptGate's blocking-prompt check (point \`prompt-detect\`), both in shadow mode on development agents and off elsewhere. No savings should be claimed until the live summary observes skipped model calls. Registry First: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jev-first/summary\` shows Jev-settled share, incumbent calls, errors, and audit disagreements. The full scrubbed decision context is in the local judgment provenance log and is not served by the summary. When asked how much work Jev has actually taken over, read this summary alongside the per-feature LLM metrics and report observed model calls and tokens, not a projected saving.\n`;
 }
 
 /** Heading of the correction meaning-grouping card; the migrator sniffs it. */

@@ -26,6 +26,7 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
+import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS } from '../core/WorkCardStore.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -106,7 +107,12 @@ export type PermissionAction =
   /** Start a fresh sign-in for one account on one machine (account-sign-in-face-id): the pair is the signed target. */
   | { kind: 'account-sign-in'; target: string; accountId: string; machineId: string }
   /** Add a Claude or Codex account (account-add-face-id): the kind is the signed target. */
-  | { kind: 'account-add'; target: NewAccountKind };
+  | { kind: 'account-add'; target: NewAccountKind }
+  /** A tap on a work card (work-board-asks §4): the signed line covers the action and everything it binds to. */
+  | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields };
+
+/** The fields one work-card tap binds to; the title enters the signature only through its hash. */
+export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }
 
 export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
@@ -153,6 +159,7 @@ export function actionLine(a: PermissionAction): string {
     case 'session-default': return `session-default new-topic-default ${a.framework ?? 'none'} ${a.model ?? 'none'}`;
     case 'account-sign-in': return `account-sign-in ${a.target}`;
     case 'account-add': return `account-add ${a.target}`;
+    case 'work-card-tap': return tapActionLine({ cardId: a.target, ...a.tap });
   }
 }
 
@@ -165,7 +172,26 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 }
 
 /** Builds an action from its parts, or names what is wrong with them. */
-export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+export function buildAction(kind: unknown, target: unknown, extra: { tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+  // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
+  if (kind === 'work-card-tap') {
+    if (!isCardId(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.tapAction !== 'string' || !(TAP_ACTIONS as ReadonlyArray<string>).includes(extra.tapAction)) return { ok: false, error: 'bad-tap-action' };
+    const tap: WorkCardTapFields = { action: extra.tapAction };
+    const hex = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+    if (!absent(extra.materialHash)) { if (!hex(extra.materialHash)) return { ok: false, error: 'bad-material-hash' }; tap.materialHash = extra.materialHash; }
+    if (!absent(extra.titleHash)) { if (!hex(extra.titleHash)) return { ok: false, error: 'bad-title-hash' }; tap.titleHash = extra.titleHash; }
+    for (const k of ['questionId', 'claimId', 'retryOf', 'names'] as const) {
+      if (absent(extra[k])) continue;
+      if (!isRecordId(extra[k])) return { ok: false, error: `bad-${k}` };
+      tap[k] = extra[k] as string;
+    }
+    if (!absent(extra.answer)) {
+      if (typeof extra.answer !== 'string' || extra.answer.length > 8000) return { ok: false, error: 'bad-answer' };
+      tap.answer = extra.answer;
+    }
+    return { ok: true, action: { kind, target, tap } };
+  }
   // An account sign-in names `<accountId>@<machineId>`, split and re-checked part by part.
   if (kind === 'account-sign-in') {
     if (typeof target !== 'string') return { ok: false, error: 'bad-target' };
@@ -277,7 +303,7 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
 
 /** The fields one request can carry into `buildAction`. */
 function actionExtras(b: Rec): Parameters<typeof buildAction>[2] {
-  return { value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
+  return { tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
 }
 
 /** Text that holds a token, before or after cleaning: a name is not where a key goes. */
@@ -333,7 +359,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'work-card-tap' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -645,6 +671,8 @@ export interface MobilePermissionsDeps {
    * answering start-cell's body. The account joins the pool only when the sign-in completes with this email.
    */
   addAccount?: (input: { kind: NewAccountKind; nickname: string | null; email: string }) => Promise<ActionResult>;
+  /** Apply the owner's tap to a work card (work-board-asks §4); absent ⇒ the work board is off here. */
+  workCardTap?: (cardId: string, tap: WorkCardTapFields) => Promise<ActionResult>;
   now?: () => number;
 }
 
@@ -813,6 +841,24 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     audit.record({ event: ok ? event : 'refused', deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'request-secret' && typeof madeKey === 'string' ? { requestKey: madeKey } : {}), ...(action.kind === 'set-feature' ? { value: action.value } : {}), status: r.status, ...(ok ? {} : { reason: errorCode(r.body) }) });
     res.status(r.status).json(r.body);
   };
+
+  // A tap on a work card (work-board-asks §4): the owner's phone, Face ID over the exact action line.
+  router.post('/mobile/work-board/cards/:id/tap', async (req: Request, res: Response) => {
+    if (!deps.workCardTap) { res.status(503).json({ error: 'work-board-disabled' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const built = buildAction('work-card-tap', String(req.params.id), { ...actionExtras(b), tapAction: b.action });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'work-card-tap' }>;
+    let r: ActionResult;
+    try { r = await deps.workCardTap(a.target, a.tap); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told the tap failed
+      report('MobilePermissions.workCardTap', 'the tap is applied to the card', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'tap-failed' } };
+    }
+    finish(res, 'work-card-tap', a, g, r);
+  });
 
   router.post('/mobile/permissions/requests/:id/approve', (req: Request, res: Response) => {
     const g = writeGate(req, res);

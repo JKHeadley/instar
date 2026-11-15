@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "telegram-topic-known-for-app-sends",
+  "sessionId": "5caca228-c4c8-4c82-9ad9-3407ba21a3cc",
+  "timestamp": "2026-11-13T08:22:47.954Z",
+  "artifactPath": "upgrades/side-effects/telegram-topic-known-for-app-sends.md",
+  "artifactSha256": "36b063c02c3007d6daecc0cc927aac6281c4167a57185cd24051fbef84c9f9d9",
+  "coveredFiles": [
+    "src/messaging/telegramTopicKnown.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-operator-chat.test.ts",
+    "tests/unit/job-continuity-alert.test.ts",
+    "tests/unit/telegram-topic-known.test.ts",
+    "upgrades/eli16/telegram-topic-known-for-app-sends.md",
+    "upgrades/next/telegram-topic-known-for-app-sends.md",
+    "upgrades/side-effects/telegram-topic-known-for-app-sends.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: one existence predicate shared by five app write paths plus notice wording; a revert fully undoes it, no state or config",
+  "eli16Path": "upgrades/eli16/telegram-topic-known-for-app-sends.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-topic-known-for-app-sends.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

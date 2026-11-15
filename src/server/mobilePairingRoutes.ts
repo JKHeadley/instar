@@ -1,3 +1,4 @@
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamSwitchLine } from '../core/TeamSwitches.js';
@@ -113,6 +114,7 @@ export interface MobilePairingDeps {
    * Send the owner's private chat a message, with a Decline button and (mobile-pairing-approve §3.2)
    * an Approve button when their data is given; resolves to the Telegram message id, or null.
    */
+  /** The owner's private message; a message id, null (not sent), or OWNER_DM_HELD (-1: held by the send queue, may still land). */
   ownerDM?: (text: string, declineData: string, approveData?: string) => Promise<number | null>;
   /**
    * Whether a Telegram owner is known (mobile-native-conversations §4.4): with one, the code goes
@@ -982,7 +984,8 @@ export class MobilePairingService {
     this.declineNonces.set(nonce, device.id);
     const canApprove = isPairingApproveEnabled(this.deps.config) && this.approvable(device);
     const codeLine = `Your code to set up a browser with ${this.deps.config.projectName} is ${displayCode(code)}.`;
-    const delivered = await deliverOwnerDM(this, browserApprovalText(this.deps.config.projectName, device, codeLine, canApprove), nonce, canApprove);
+    const dm = await deliverOwnerDM(this, browserApprovalText(this.deps.config.projectName, device, codeLine, canApprove), nonce, canApprove);
+    const delivered = typeof dm === 'number' ? dm : null;
     if (!delivered) { this.confirm.drop(device.id); this.declineNonces.delete(nonce); }
     return !!delivered;
   }
@@ -1292,13 +1295,27 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
       `Phone name: ${device.deviceName ?? '(none given)'}`,
     ]).join('\n\n');
-    const delivered = await deliverOwnerDM(svc, text, nonce, canApprove);
+    const dm = await deliverOwnerDM(svc, text, nonce, canApprove);
+    const delivered = typeof dm === 'number' ? dm : null;
     if (!delivered || !svc.deps.ownerDM) {
       // An owner phone may have approved during the wait (mobile-pairing-approve §3.4): that stands.
       const now = svc.devices.get(device.id);
       if (now?.status === 'active') { res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'active', approval: 'telegram', codeFormat }); return; }
-      svc.confirm.drop(device.id);
+      // The message did not go out within the wait (a held or slow Telegram send), which says nothing
+      // about the owner's private chat, and a held message may still land later (2026-11-14: one did,
+      // and the owner approved from it). When native conversations are on, keep the phone pending:
+      // its Approve/Decline nonce stays live for that late message, and the owner's phones are told so
+      // the owner can approve with Face ID. Nothing new is granted to a dashboard PIN session: on an
+      // agent with a Telegram owner the PIN still never approves a phone (fb-e6b7ee2b-a8c).
+      // Only a slow or held send waits: a definite failure (no private chat, bot blocked) keeps the 409, whose words say how to fix it.
+      if (dm === 'pending' && svc.nativeOn) {
+        featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: owner DM not confirmed, kept pending for a late DM or an owner phone', context: { deviceId: device.id, approval: 'telegram', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
+        svc.notifyOwnerPhones(device);
+        res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat, ...svc.waitingFields(device) });
+        return;
+      }
       svc.declineNonces.delete(nonce);
+      svc.confirm.drop(device.id);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the pending device expires on its own
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: confirmation code not delivered', context: { deviceId: device.id, routeKind: eligible.kind } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
@@ -1314,13 +1331,15 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
  * The owner's private approval message, delivered within 10 s or not at all (shared by phone
  * redeem and browser setup). Resolves to the Telegram message id, or null when not delivered.
  */
-async function deliverOwnerDM(svc: MobilePairingService, text: string, nonce: string, canApprove: boolean): Promise<number | null> {
+async function deliverOwnerDM(svc: MobilePairingService, text: string, nonce: string, canApprove: boolean): Promise<number | null | 'pending'> {
   if (!svc.deps.ownerDM) return null;
   try {
-    return await Promise.race([
+    const r = await Promise.race([
       svc.deps.ownerDM(text, `md:d:${nonce}`, ...(canApprove ? [`md:a:${nonce}`] : [])),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 10_000)),
     ]);
+    // -1: the send queue holds the message and retries it, so it may still land (a slow or held send, not a refusal).
+    return r === -1 ? 'pending' : r;
   } catch { return null; } // @silent-fallback-ok — treated as not delivered: the pending device is removed and the caller gets 409
 }
 
@@ -1740,12 +1759,24 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const revision = b.revision;
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) { res.status(400).json({ error: 'bad-revision' }); return; }
     let reg: Parameters<typeof svc.devices.setPush>[1];
+    // A clear is handled before any provider, token or environment check (mobile-android-app §2.3).
     if (b.token === null) reg = { token: null, revision };
     else {
-      if (typeof b.token !== 'string' || !/^[0-9a-f]{64,200}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
-      if (b.environment !== 'sandbox' && b.environment !== 'production') { res.status(400).json({ error: 'bad-environment' }); return; }
+      // `provider` absent ⇒ apns, so every existing iPhone request reads exactly as before.
+      if (b.provider !== undefined && b.provider !== 'apns' && b.provider !== 'fcm') { res.status(400).json({ error: 'bad-provider' }); return; }
+      const provider: 'apns' | 'fcm' = b.provider === 'fcm' ? 'fcm' : 'apns';
+      if (provider === 'fcm') {
+        // FCM tokens are opaque: a local size and storage floor, not a provider rule.
+        if (typeof b.token !== 'string' || !/^[\x21-\x7e]{32,4096}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
+        if (b.environment !== undefined) { res.status(400).json({ error: 'bad-environment' }); return; }
+      } else {
+        if (typeof b.token !== 'string' || !/^[0-9a-f]{64,200}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
+        if (b.environment !== 'sandbox' && b.environment !== 'production') { res.status(400).json({ error: 'bad-environment' }); return; }
+      }
       if (typeof b.notifyTokenHash !== 'string' || !/^[0-9a-f]{64}$/.test(b.notifyTokenHash)) { res.status(400).json({ error: 'bad-notify-token-hash' }); return; }
-      reg = { token: b.token, environment: b.environment, notifyTokenHash: b.notifyTokenHash, revision };
+      reg = provider === 'fcm'
+        ? { token: b.token, provider, notifyTokenHash: b.notifyTokenHash, revision }
+        : { token: b.token, provider, environment: b.environment as 'sandbox' | 'production', notifyTokenHash: b.notifyTokenHash, revision };
     }
     let r: ReturnType<typeof svc.devices.setPush>;
     try { r = svc.devices.setPush(p.deviceId, reg); } catch (err) {
@@ -1754,7 +1785,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return;
     }
     if (!r.ok) { res.status(r.reason === 'not-active' ? 403 : 409).json({ error: r.reason }); return; }
-    res.json({ ok: true, revision: r.revision });
+    if (reg.token === null) { res.json({ ok: true, revision: r.revision }); return; }
+    // `ready`: can this machine send to this kind of phone right now (a reading, not a promise).
+    let ready = false;
+    try { ready = isMobilePushEnabled(deps.config) && !!svc.push?.readyFor(reg.provider ?? 'apns'); } catch { ready = false; } // @silent-fallback-ok — an unanswerable reading is not ready
+    res.json({ ok: true, revision: r.revision, ready });
   });
 
   router.get('/mobile/attention/:id', async (req: Request, res: Response) => {
@@ -1818,6 +1853,46 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     };
     res.status(202).json({ accepted: true });
     void svc.push.receive(trig, true).catch((err) => deps.reportDegradation?.('MobilePush.receive', err)); // @silent-fallback-ok — reported through DegradationReporter
+  });
+
+  // Re-check after a recovery (mobile-android-app §2.3): re-arm FCM trials here and on every peer.
+  const recheckTimes: number[] = [];
+  router.post('/mobile/push/recheck', async (req: Request, res: Response) => {
+    if (!svc.enabled() || !svc.push || !isMobilePushEnabled(deps.config)) { json503(res); return; }
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'token-required' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const keys = Object.keys(b);
+    if (b.provider !== 'fcm' || keys.some((k) => k !== 'provider' && k !== 'forwarded') || (b.forwarded !== undefined && b.forwarded !== true)) {
+      res.status(400).json({ error: 'bad-recheck', detail: 'Body must be { provider: "fcm", forwarded?: true }.' });
+      return;
+    }
+    const t = Date.now();
+    while (recheckTimes.length && t - recheckTimes[0]! > 60 * 60_000) recheckTimes.shift();
+    if (recheckTimes.length >= 6) { res.status(429).json({ error: 'too-many-requests' }); return; }
+    recheckTimes.push(t);
+    const self = deps.selfMachineId ?? 'local';
+    const machines: Array<{ machine: string; armed: boolean; reason?: string }> = [{ machine: self, ...svc.push.recheckFcm() }];
+    const unreachable: string[] = [];
+    // A forwarded request is applied here and never sent on, so each machine applies one recheck once.
+    if (b.forwarded !== true && poolCtx) {
+      const allow = (deps.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      await Promise.all((poolCtx.resolvePeerUrls?.() ?? []).slice(0, 16).map(async (p) => {
+        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { unreachable.push(p.machineId); return; }
+        try {
+          const r = await poolPeerFetch(poolCtx.recordRopeResult ?? undefined, p, '/mobile/push/recheck', {
+            method: 'POST', headers: { Authorization: `Bearer ${deps.config.authToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'fcm', forwarded: true }), signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+          });
+          // A peer at its own limit is reachable, just rate-limited; say so instead of "unreachable".
+          if (r.status === 429) { machines.push({ machine: p.machineId, armed: false, reason: 'rate-limited' }); return; }
+          const text = r.ok ? await r.text() : '';
+          const row = r.ok && Buffer.byteLength(text) <= MAX_PEER_BYTES ? (JSON.parse(text) as { machines?: Array<{ armed?: unknown; reason?: unknown }> }).machines?.[0] : undefined;
+          if (!row || typeof row.armed !== 'boolean') { unreachable.push(p.machineId); return; }
+          machines.push({ machine: p.machineId, armed: row.armed, ...(typeof row.reason === 'string' ? { reason: row.reason.slice(0, 40) } : {}) });
+        } catch { unreachable.push(p.machineId); } // @silent-fallback-ok — listed in `unreachable`; that machine still trials on its own clock
+      }));
+    }
+    res.json({ machines, unreachable });
   });
 
   router.get('/mobile/push', (_req: Request, res: Response) => {
@@ -1885,7 +1960,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
     recent.push(t); chatRate.set(p.deviceId, recent);
-    if (!tg.getAllTopicMappings().some((m) => m.topicId === topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
+    if (!telegramTopicKnown(tg, topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
     if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     svc.scanInbound(text); // may cancel a pending pairing; never refuses the message
     // With native conversations on (mobile-native-conversations §4.2, §4.9) no content check
@@ -2011,17 +2086,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       json(b: unknown) { captured.body = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>; return fakeRes; },
       setHeader() { return fakeRes; },
     };
-    // Files (chat-media §4.5): one line per file before the caption, in Telegram's forms, with a
-    // server-chosen path to a private copy (the blobs were just published on this machine).
-    let sessionText = delivered;
-    if (app && stored.length > 0) {
-      const lines = await app.sessionLinesFor(storeKey, storeMessageId, stored, delivered);
-      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
-    }
+    // Files (chat-media §4.5, native-conversation-base §3c): by attachment id, never as tag lines in
+    // the text. The machine that serves the session builds the file lines from the field; the text
+    // keeps one path-free sentence per file for an older receiver.
+    const media = app ? stored.map((a) => ({
+      kind: a.kind === 'photo' ? 'photo' as const : a.kind === 'video' ? 'video' as const : a.kind === 'voice' ? 'voice' as const : 'document' as const,
+      attachmentId: a.attachmentId, filename: a.filename,
+    })) : [];
     const fakeReq = {
       headers: {},
       body: {
-        topicId, text: sessionText, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
+        topicId, text: delivered, media, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         ...(sender.role === 'owner' ? { fromUserId: ownerId } : {}), fromFirstName: senderName, forwarded: false,
       },
     };
@@ -2209,6 +2284,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['GET', /^\/mobile\/conversations$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
   ['POST', /^\/mobile\/conversations\/read$/.source],
+  // Pinning a conversation to the top of the list (conversation-list-pins): the same per-person pins as the phone.
+  ['POST', /^\/mobile\/conversations\/pins$/.source],
   ['POST', /^\/mobile\/conversations$/.source],
   ['PATCH', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['DELETE', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
@@ -2264,8 +2341,12 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['POST', /^\/mobile\/browsers\/link\/lookup$/, 'guest'],
   ['GET', /^\/mobile\/browsers$/, 'guest'],
   ['POST', /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, 'guest'],
+  // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
+  ['GET', /^\/mobile\/work-board$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
+  // Pinning a conversation orders the person's own list; the route checks they may see it.
+  ['POST', /^\/mobile\/conversations\/pins$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
@@ -2358,6 +2439,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
     { method: 'POST', re: /^\/mobile\/conversations\/read$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 60, bucket: 'read-marks' },
+    // Conversation-list pins (conversation-list-pins): a person's own list order, its own bucket.
+    { method: 'POST', re: /^\/mobile\/conversations\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'list-pins' },
     { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
@@ -2476,6 +2559,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Work Board (work-board-asks §7): any active phone reads the cards its person may see (the handler
+    // checks each card's conversation with the shared `mayUse`); only the owner's phone taps. Taps have their
+    // own bucket, so a run of card taps never uses up the allowance for approvals and switches.
+    { method: 'GET', re: /^\/mobile\/work-board$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'work-board-reads' },
+    { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
     { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "local-route-trust-maturation-bar",
+  "sessionId": "3163e10c-7ce0-462d-a080-5ec20f729d11",
+  "timestamp": "2026-11-11T20:15:32.076Z",
+  "artifactPath": "upgrades/side-effects/local-route-trust-maturation-bar.md",
+  "artifactSha256": "78cb921465effcd0938a371278557c647bfa3fc7a160995011c2c5880505170d",
+  "coveredFiles": [
+    "docs/specs/local-route-trust-maturation-bar.eli16.md",
+    "scripts/drills/local-route-trust-drill.mjs",
+    "src/data/feature-ladders.json",
+    "src/monitoring/FeatureEvidenceLog.ts",
+    "src/server/routes.ts",
+    "src/threadline/localRouteTrust.ts",
+    "tests/integration/threadline/a2a-local-route-trust.test.ts",
+    "tests/unit/local-route-trust-maturation-bar.test.ts",
+    "upgrades/next/local-route-trust-maturation-bar.md",
+    "upgrades/side-effects/local-route-trust-maturation-bar.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Evidence rows and an advisory ladder bar for a dry-run feature; delivery behaviour unchanged; a revert fully undoes it",
+  "eli16Path": "docs/specs/local-route-trust-maturation-bar.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-route-trust-maturation-bar.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

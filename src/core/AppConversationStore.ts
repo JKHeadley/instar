@@ -107,6 +107,11 @@ export interface MessageEvent extends AppEventBase {
    * recorded in the same append as the reply. Information only; nothing decides on it.
    */
   agentOrigin?: MessageOriginEvidence;
+  /**
+   * Work Board §2: set ONLY by the server-side append of a `Work board:` line, never accepted from a
+   * request body. An older build's validator drops it and falls back to the line's own prefix.
+   */
+  systemSource?: 'work-board';
   /** team-roles-and-access, "Step 2b": what lets any machine judge who may read this. Absent on older events, which every grant opens. */
   accessStamp?: AccessStamp;
 }
@@ -218,6 +223,8 @@ export interface BrowsedMessage {
   /** Unread (mobile-unread-messages §3.4): the sender's registry person, so a count can tell a reader's own rows. */
   senderPerson?: ConversationOwner;
   agentOrigin?: MessageOriginEvidence;
+  /** Work Board §2: this line was written by the work board, not by the agent. */
+  systemSource?: 'work-board';
   accessStamp?: AccessStamp;
 }
 
@@ -332,6 +339,8 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
         const agentOrigin = validateMessageOriginEvidence(r.agentOrigin);
         if (agentOrigin && agentOrigin.machineId === machineId) out.agentOrigin = agentOrigin;
       }
+      // Work Board §2: a server-written card line. Only on an agent-role plain message; any other value is dropped.
+      if (r.role === 'agent' && r.kind === 'message' && r.systemSource === 'work-board') (out as MessageEvent).systemSource = 'work-board';
       return out;
     }
     case 'delivery': {
@@ -965,21 +974,40 @@ export class AppConversationStore {
    */
   listConversations(opts: { limit?: number; cursor?: string | null } = {}): { conversations: ConversationSummary[]; nextCursor: string | null } {
     const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
-    let rows: Array<Record<string, unknown>>;
     const act = `COALESCE(lastActivity, createdAt, '')`;
-    if (opts.cursor && opts.cursor.includes('|')) {
-      const i = opts.cursor.lastIndexOf('|');
-      const ca = opts.cursor.slice(0, i);
-      const ck = opts.cursor.slice(i + 1);
-      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' AND (${act} < ? OR (${act} = ? AND canonicalKey < ?)) ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(ca, ca, ck, limit + 1) as Array<Record<string, unknown>>;
-    } else {
-      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(limit + 1) as Array<Record<string, unknown>>;
+    // Work Board §2: conversations of archived or removed cards are left out BEFORE paging. If the
+    // card store cannot be read, everything is shown (hiding must never fail closed on a list).
+    let hidden: Set<string> | null = null;
+    try { hidden = this.hiddenConversationKeys?.() ?? null; } catch { hidden = null; /* @silent-fallback-ok: an unreadable card store shows every conversation */ }
+    const isHidden = (r: Record<string, unknown>): boolean => !!hidden && hidden.size > 0 && hidden.has(String(r.canonicalKey).replace(/^app:/, ''));
+    const kept: Array<Record<string, unknown>> = [];
+    let cursor = opts.cursor && opts.cursor.includes('|') ? opts.cursor : null;
+    // Each pass reads one batch after the cursor; hidden rows are skipped and the read continues,
+    // bounded by the table size (every pass advances the keyset cursor or ends).
+    for (;;) {
+      let rows: Array<Record<string, unknown>>;
+      const want = limit + 1 - kept.length + (hidden?.size ? Math.min(hidden.size, 200) : 0);
+      if (cursor) {
+        const i = cursor.lastIndexOf('|');
+        const ca = cursor.slice(0, i);
+        const ck = cursor.slice(i + 1);
+        rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' AND (${act} < ? OR (${act} = ? AND canonicalKey < ?)) ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(ca, ca, ck, want) as Array<Record<string, unknown>>;
+      } else {
+        rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(want) as Array<Record<string, unknown>>;
+      }
+      for (const r of rows) { if (!isHidden(r) && kept.length < limit + 1) kept.push(r); }
+      if (rows.length < want || kept.length >= limit + 1) break;
+      const lastRow = rows[rows.length - 1];
+      cursor = `${(lastRow.lastActivity as string | null) ?? (lastRow.createdAt as string | null) ?? ''}|${String(lastRow.canonicalKey)}`;
     }
-    const more = rows.length > limit;
-    const page = rows.slice(0, limit).map(toSummary);
+    const more = kept.length > limit;
+    const page = kept.slice(0, limit).map(toSummary);
     const last = page[page.length - 1];
     return { conversations: page, nextCursor: more && last ? `${last.lastActivity ?? last.createdAt ?? ''}|${last.canonicalKey}` : null };
   }
+
+  /** Work Board §2: set by the wiring; returns the conversation keys of archived or removed cards. */
+  hiddenConversationKeys: (() => Set<string>) | null = null;
 
   /** The pin state of one message (conversation-pinned-messages): its winning event's state, or null when never pinned. */
   pinState(conversationKey: string, messageId: string): 'pinned' | 'unpinned' | null {
@@ -1106,6 +1134,7 @@ export class AppConversationStore {
         ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
         ...(ev.senderPerson ? { senderPerson: ev.senderPerson } : {}),
         ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
+        ...((ev as MessageEvent).systemSource ? { systemSource: (ev as MessageEvent).systemSource } : {}),
         ...(ev.accessStamp ? { accessStamp: ev.accessStamp } : {}),
       });
     }

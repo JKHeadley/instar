@@ -89,6 +89,11 @@ export interface PendingInboundRow {
   fold_since: string | null;
   /** Cumulative fold-held time, credited to the row's TTL (never to the pause cap). */
   fold_frozen_ms: number;
+  /**
+   * native-conversation-base §3c: the message's files by attachment id (JSON), or null for a row
+   * written before the column existed. Added idempotently at open.
+   */
+  media?: string | null;
 }
 
 export interface EnqueueInput {
@@ -97,6 +102,8 @@ export interface EnqueueInput {
   payload: string;
   senderEnvelope?: SenderEnvelope | null;
   topicMetadata?: unknown;
+  /** Files by attachment id (§3c); never a path. */
+  media?: ReadonlyArray<unknown> | null;
   reason: string;
   /** Tenure id at enqueue (§3.5) — opaque string from the drain's tenure source. */
   tenure: string | null;
@@ -301,6 +308,9 @@ export class PendingInboundStore {
     addColumn('fold_id', 'TEXT');
     addColumn('fold_since', 'TEXT');
     addColumn('fold_frozen_ms', 'INTEGER NOT NULL DEFAULT 0');
+    // native-conversation-base §3c: a message's files by attachment id. Nullable: a row from before
+    // this column (or written by older code after a downgrade) still has the sentence in `payload`.
+    addColumn('media', 'TEXT');
     // The session-level hold (a fold usually begins with nothing queued, so a
     // row-level mark alone would miss the next arrival).
     db.exec(`CREATE TABLE IF NOT EXISTS fold_holds (session_key TEXT PRIMARY KEY, fold_id TEXT NOT NULL, since TEXT NOT NULL)`);
@@ -415,12 +425,12 @@ export class PendingInboundStore {
              session_key, message_id, payload, payload_bytes, sender_envelope,
              sender_display, topic_metadata, reason, state, enqueued_at,
              enqueued_mono, boot_session_id, lease_epoch, status_history,
-             first_frozen_at, frozen_since, fold_id, fold_since
+             first_frozen_at, frozen_since, fold_id, fold_since, media
            ) VALUES (
              @session_key, @message_id, @payload, @payload_bytes, @sender_envelope,
              @sender_display, @topic_metadata, @reason, 'queued', @enqueued_at,
              @enqueued_mono, @boot_session_id, @lease_epoch, @status_history,
-             @first_frozen_at, @frozen_since, @fold_id, @fold_since
+             @first_frozen_at, @frozen_since, @fold_id, @fold_since, @media
            )`,
         )
         .run({
@@ -431,6 +441,7 @@ export class PendingInboundStore {
           sender_envelope: input.senderEnvelope ? JSON.stringify(input.senderEnvelope) : null,
           sender_display: senderDisplay,
           topic_metadata: input.topicMetadata != null ? JSON.stringify(input.topicMetadata) : null,
+          media: input.media != null ? JSON.stringify(input.media) : null,
           reason: input.reason,
           enqueued_at: input.nowIso,
           enqueued_mono: input.monoMs,
@@ -678,7 +689,7 @@ export class PendingInboundStore {
       .prepare(
         `UPDATE entries SET
            state = @to, terminal_reason = @reason,
-           payload = NULL, sender_envelope = NULL, topic_metadata = NULL,
+           payload = NULL, sender_envelope = NULL, topic_metadata = NULL, media = NULL,
            frozen_since = NULL,
            delivered_unconfirmed = @unconfirmed
          WHERE enqueue_seq = @seq AND state = @expected`,

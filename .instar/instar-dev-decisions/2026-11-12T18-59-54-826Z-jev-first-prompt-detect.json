@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-12T18:59:54.826Z",
+  "slug": "jev-first-prompt-detect",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 170,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/JevFirstDecision.ts",
+      "src/core/JevFirstPrompt.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/PromptGate.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 166,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

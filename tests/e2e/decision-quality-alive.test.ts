@@ -29,6 +29,8 @@ import type { DecisionQualityRecorderImpl } from '../../src/core/DecisionQuality
 import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { buildCommitmentJevFirst } from '../../src/core/JevFirstCommitment.js';
+import { buildPromptJevFirst, promptDetectState } from '../../src/core/JevFirstPrompt.js';
+import { InputDetector } from '../../src/monitoring/PromptGate.js';
 import { CommitmentSentinel } from '../../src/monitoring/CommitmentSentinel.js';
 import { JudgmentProvenanceLog } from '../../src/core/JudgmentProvenanceLog.js';
 import { getFeatureMetricsRecorder } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
@@ -130,6 +132,38 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
     expect(res.body.points).toEqual([expect.objectContaining({
       id: 'commitment-detect', decisions: 1, jevSettled: 0, incumbentHandled: 1,
     })]);
+  });
+
+  it('production prompt-detect factory shadows PromptGate and is alive on /jev-first/summary', async () => {
+    const bootSource = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+    expect(bootSource).toMatch(/buildPromptJevFirst\(/);
+    expect(bootSource).toMatch(/readConfig: \(\) => liveConfig\.get\('intelligence\.jevFirstPrompt'/);
+    expect(bootSource).toMatch(/new InputDetector\(\{[\s\S]*?jevFirst: promptJevFirst,[\s\S]*?getJevPoint: getPromptJevPoint,[\s\S]*?jevState: promptDetectState/);
+    expect(DEV_GATED_FEATURES.filter((f) => f.configPath === 'intelligence.jevFirstPrompt.enabled')).toHaveLength(1);
+    const provenance = new JudgmentProvenanceLog({ dir: path.join(stateDir, 'jev-first-prompt-provenance') });
+    const askJev = vi.fn(async () => ({ model: 'jev-1.13.0', probability: 0.02, ms: 7, tokensIn: 40 }));
+    const { gateway, getPoint } = buildPromptJevFirst({ stateDir, developmentAgent: true,
+      readConfig: () => undefined, provenance: () => provenance, readKey: () => 'test-key', askJev });
+    expect(getPoint().stage).toBe('shadow');
+    expect(buildPromptJevFirst({ stateDir, developmentAgent: false, readConfig: () => undefined,
+      provenance: () => provenance, readKey: () => null, askJev }).getPoint().stage).toBe('off');
+    // The incumbent finds a blocking prompt Jev confidently calls "no": PromptGate still relays it.
+    const evaluate = vi.fn(async () => '{"type":"selection","summary":"Pick a target","options":[{"key":"1","label":"staging"}]}');
+    const detector = new InputDetector({ detectionWindowLines: 50, enabled: true, intelligence: { evaluate } as any,
+      jevFirst: gateway, getJevPoint: getPoint, jevState: promptDetectState });
+    const emitted: unknown[] = [];
+    detector.on('prompt', (p) => emitted.push(p));
+    const pane = 'Deploy target picker\n  staging\n  production\nuse arrows then enter\n';
+    for (let i = 0; i < 3; i++) detector.onCapture('e2e-session', pane);
+    await vi.waitFor(() => expect(askJev).toHaveBeenCalledOnce());
+    await detector.lastJevShadow;
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(emitted).toHaveLength(1);
+    const res = await request(app).get('/jev-first/summary').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.points).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: 'prompt-detect', decisions: 1, jevSettled: 0, incumbentHandled: 1, jevCalls: 1,
+    })]));
   });
 
   it('GET /decision-quality is alive (200, not 503) with the real shape', async () => {

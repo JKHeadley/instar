@@ -12,12 +12,33 @@ import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
+import { contextNeeds } from './context-model.js';
+import { workBoardNeedRows } from './work-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
+
+/** Collapse whitespace and cut at a word boundary (never mid-word), with an ellipsis when anything was cut.
+ *  The same rule as `cutAtWord` in src/core/ChiefOfStaffLoop.ts (tests/unit/console-chief-of-staff-needs.test.ts keeps them equal). */
+export function cutAtWord(text, max) {
+  const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const room = t.slice(0, Math.max(1, max - 1));
+  const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
+  const base = (sp >= Math.floor(max / 3) ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '');
+  return `${base}…`;
+}
+
+/** A short project name from its goal, the same rule as `shortProjectTitle` in src/core/ChiefOfStaffLoop.ts. */
+export function shortProjectTitle(goal, max = 60) {
+  const g = String(goal == null ? '' : goal).replace(/\s+/g, ' ').trim();
+  if (!g) return 'Untitled project';
+  const m = /^(.{3,}?)(?::\s|\s[—–-]\s|[.!?]\s)/.exec(g);
+  return cutAtWord(m && m[1].length <= max ? m[1] : g, max);
+}
 
 /** Chief of Staff rows: parked / breaker-tripped projects, projects waiting on the owner, a paused or soon-expiring check-in lease. */
 export function chiefOfStaffNeedRows(cos, now) {
@@ -27,12 +48,16 @@ export function chiefOfStaffNeedRows(cos, now) {
   if (!d || typeof d !== 'object' || !d.lease || typeof d.lease !== 'object' || !Array.isArray(d.projects)) return UNREADABLE;
   const out = [];
   const href = '#/work/chats';
-  const title = (p) => (typeof p.goal === 'string' && p.goal.trim() ? p.goal.trim().slice(0, 80) : String(p.conversationKey || 'a project'));
+  // Each project row opens that project's own conversation; the lease rows open the Chief of Staff page.
+  const projectHref = (p) => (typeof p.conversationKey === 'string' && /^(app|telegram|slack):[A-Za-z0-9-]+$/.test(p.conversationKey) ? `#/work/chats?c=${encodeURIComponent(p.conversationKey)}` : href);
+  // The server's short name (initiative title / conversation name / goal lead) when it sends one; else the same rule here.
+  const title = (p) => (typeof p.title === 'string' && p.title.trim() ? cutAtWord(p.title, 60)
+    : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : String(p.conversationKey || 'a project'));
   for (const p of d.projects) {
     if (!p || typeof p !== 'object') continue;
-    if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', href));
-    else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', href));
-    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', href));
+    if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', projectHref(p)));
+    else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', projectHref(p)));
+    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', projectHref(p)));
   }
   if (d.projects.length) {
     if (!d.lease.live) out.push(row('cos:paused', 'Your Chief of Staff is paused until you check in', 'Say anything in its conversation.', href));
@@ -83,6 +108,9 @@ export const NEED_SOURCES = [
   // Chief of Staff (chief-of-staff-topic.md §5): what its projects need from the owner. 503 = feature off = nothing waiting.
   { id: 'chief-of-staff', page: 'work/chats', reads: { cos: '/chief-of-staff' },
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
+  // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
+  { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => row(r.key, r.main, r.sub, r.href)); } },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
     rows: ({ pending }, now) => {
@@ -105,6 +133,17 @@ export const NEED_SOURCES = [
       const p = buildPending(status);
       if (!p.ok) return p.off ? [] : UNREADABLE;
       return p.rows.map((r) => row(`learned-pending:${r.name}`, `A new skill waits for your OK: ${r.body}`, 'Confirm or reject it on the Learned page', '#/settings/learned?s=pending', [r.name]));
+    } },
+  // Context budget (context-budget-layered-summaries.md §11): a memory refresh stuck past the watcher's own
+  // settling time, an unreadable refresh record, or compression recovery that stopped working (one row per
+  // machine). 503 = off here; a stale watcher heartbeat is "can't tell", never "nothing".
+  // Read from the watcher's status only (cheap); the conversation names stay on the page itself.
+  { id: 'context', page: 'settings/context', reads: { sentinel: '/context-budget/sentinel' },
+    rows: ({ sentinel }, now) => {
+      const needs = contextNeeds(sentinel.data, {}, now);
+      if (needs === null) return UNREADABLE;
+      // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
+      return needs.map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
     } },
 ];
 

@@ -19,6 +19,10 @@ import type {ConversationGraphOwnerPolicySnapshot} from '../core/ConversationGra
 import {createConversationGraphRouter} from './conversationGraphRoutes.js';
 import {createConversationGraphChangeRouter} from './conversationGraphChangeRoutes.js';
 import {createConversationGraphHistoryRoutes,type ConversationGraphHistoryDeps} from './conversationGraphHistoryRoutes.js';
+import {createConversationGraphSuggestionRouter} from './conversationGraphSuggestionRoutes.js';
+import {ConversationGraphSuggestionService} from './ConversationGraphSuggestionService.js';
+import type {IntelligenceProvider} from '../core/types.js';
+import type {ConversationRef} from '../core/conversationGraph.js';
 
 /** The one answer every graph route gives while Conversations is configured
  * off here: 503 `conversation-graph-off`, the code the history route already
@@ -73,6 +77,10 @@ export function createConversationGraphSurface(options:{
  /** Live operator policy; absence preserves the older admitted-only adapter. */
  dashboardPolicy?:()=>ConversationGraphOwnerPolicySnapshot|null;initializeDashboardPolicy?:()=>void;forceFileKey?:boolean;
  history?:Pick<ConversationGraphHistoryDeps,'selfMachineId'|'localBaseUrl'|'peers'|'authToken'|'agentId'|'peerHostAllowlist'|'recordRopeResult'>;
+ /** The Chief of Staff Telegram topic: the root of the owner's Overview (conversation-graph-suggestions §2). */
+ chiefOfStaffTopicId?:()=>number|null;
+ /** The suggestion step (§3). Mounted only with owner corrections, since Accept needs them. */
+ suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string}};
 }):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();
  const router=Router();
@@ -82,7 +90,12 @@ export function createConversationGraphSurface(options:{
  const corrections=options.correctionsEnabled===true&&options.scope!==null;
  const localIntents=corrections&&typeof options.dashboardPolicy==='function';
  const source=new ConversationGraphRuntimeReadSource(runtime,custody,{correctionsEnabled:corrections,erasureEnabled:corrections,localIntentsEnabled:localIntents});
- const model=new ConversationGraphReadModel(source);
+ const rootConversation=():ConversationRef|null=>{
+  const topicId=options.chiefOfStaffTopicId?.()??null;
+  return topicId!==null&&Number.isSafeInteger(topicId)&&topicId>1&&options.telegramChatId
+   ?{kind:'conversation',platform:'telegram',chatId:options.telegramChatId,topicId}:null;
+ };
+ const model=new ConversationGraphReadModel(source,{rootConversation});
  router.use(createConversationGraphRouter({model,resolveViewer}));
  if(options.history)router.use(createConversationGraphHistoryRoutes({...options.history,
   ready:()=>runtime.isReady(),verifyOwner:req=>resolveViewer(req,'dashboard')!==null,
@@ -106,9 +119,12 @@ export function createConversationGraphSurface(options:{
   const changes=new ConversationGraphOwnerChanges({runtime,identity:options.identity,membership:()=>runtime.installedMembership,
    dropped:runtime.droppedOriginRegistry,scope:options.scope!,telegramChatId:options.telegramChatId,resolveViewer,
    hasConversation:ref=>runtime.inventory().conversations.some(row=>nodeKey(row.ref)===nodeKey(ref)),
+   isRootConversation:ref=>model.isRootConversation(ref),
    headerVersion:headerId=>{custody.synchronize();return custody.get(headerId);},
    ...(ownerAdmission?{captureOwnerIntent:ownerAdmission.capture,resolveQueuedOwner:ownerAdmission.resolve}:{})});
   router.use(createConversationGraphChangeRouter({changes,resolveViewer}));
+  if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,
+   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence})}));
  }
  return router;
 }

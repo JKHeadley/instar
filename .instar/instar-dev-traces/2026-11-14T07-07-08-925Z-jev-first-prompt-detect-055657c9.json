@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "jev-first-prompt-detect",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T07:07:08.925Z",
+  "artifactPath": "upgrades/side-effects/jev-first-prompt-detect.md",
+  "artifactSha256": "58c05e7c0926c4fdf02852fa573ee22601019cb9a269f1ae540ac04e10c38afa",
+  "coveredFiles": [
+    "docs/specs/jev-first-prompt-detect-marker.eli16.md",
+    "src/monitoring/PromptGate.ts",
+    "upgrades/side-effects/jev-first-prompt-detect.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One exemption comment on a pure classifier catch; a revert fully undoes it.",
+  "eli16Path": "docs/specs/jev-first-prompt-detect-marker.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-prompt-detect.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -32,6 +32,9 @@ export interface GraphOwnerChangeDeps {
  resolveViewer(req:Request,surface:'dashboard'|'mobile'):GraphViewer|null;
  /** Current certified source inventory, never a request's claimed destination. */
  hasConversation(ref:NodeRef):boolean;
+ /** The Chief of Staff conversation is the root of the owner's tree: it is never placed under
+  * anything (docs/specs/conversation-graph-suggestions.md §2). Absent → no such rule. */
+ isRootConversation?(ref:NodeRef):boolean;
  headerVersion(headerId:string):{version:number;forgotten:boolean}|null;
  captureOwnerIntent?(req:Request,surface:'dashboard'|'mobile',key:string):GraphQueuedOwnerAdmission|null;
  resolveQueuedOwner?(intent:GraphLocalOwnerIntent):Promise<GraphQueuedOwnerResolution>;
@@ -213,7 +216,8 @@ export class ConversationGraphOwnerChanges {
     lastAgreedParent:this.visibleParent(owner,graph.parentOf.get(nodeKey(change.subject))??null),
     proposedParents:events.filter(e=>e.op==='set-primary-placement'&&heads.includes(e.eventId))
      .map(e=>e.op==='set-primary-placement'?e.parent:null).filter(parent=>parent===null||owner.mayView(parent))});
-   const eligibility=moveEligibility(events,{verify},change.subject,change.parent,new Date().toISOString());
+   const rootRefused=change.parent!==null&&this.options.isRootConversation?.(change.subject)===true;
+   const eligibility=rootRefused?{eligible:false as const,reason:'chief-of-staff-is-root'}:moveEligibility(events,{verify},change.subject,change.parent,new Date().toISOString());
    const allowed=eligibility.eligible&&this.scopeAllowed(change.subject,change.parent,graph);
    const current=this.options.resolveViewer(req,surface);
    if(!current||current.principalKey!==owner.principalKey||current.grantVersion!==owner.grantVersion)return failure(403,'hierarchy-owner-only');
@@ -306,6 +310,7 @@ export class ConversationGraphOwnerChanges {
    let content:Record<string,unknown>={kind:'graph-owner-change',requestHash,requestId};
    if(change.kind==='set-primary-placement'){
     if(!known(change.subject)||(change.parent&&!known(change.parent)))return reject('not-found',{},404);
+    if(change.parent!==null&&this.options.isRootConversation?.(change.subject)===true)return reject('chief-of-staff-is-root');
     const heads=graph.placementHeads.get(nodeKey(change.subject))??[];
     if(!equal(heads,change.replacesPlacementEventIds))return reject('placement-conflict',{
      lastAgreedParent:this.visibleParent(owner,graph.parentOf.get(nodeKey(change.subject))??null),

@@ -15,8 +15,21 @@ import { verify as verifySignature } from 'node:crypto';
 import { verifyPoolLinkAssertion, type PoolLinkAssertion } from '../../core/PoolLinkAssertion.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import { originAuditDeliveryConfirmed } from './OriginDeliveryResolution.js';
+import { forwardedDeliveryRow } from './ForwardedDeliveryHistory.js';
 
 export const ORIGIN_MESH_PROTOCOL = 'instar-telegram-origin-v1';
+
+/** History only: the delivery outcome is already decided, so a failing
+ * recorder can never turn a delivered reply into a refusal the peer retries. */
+function recordForwardedDelivery(runtime: TelegramOriginRuntime, operation: OriginPreparedBotOperation, messageId: unknown): void {
+  if (!runtime.options.onForwardedDelivered) return;
+  try {
+    const row = forwardedDeliveryRow(operation, messageId);
+    if (row) runtime.options.onForwardedDelivered(row);
+  } catch (error) {
+    console.warn('[telegram-origin] forwarded delivery history not recorded', error instanceof Error ? error.name : 'unknown-error');
+  }
+}
 export type OriginMeshCommand = { type: 'telegram-origin'; protocol: typeof ORIGIN_MESH_PROTOCOL } & (
   { action: 'capabilities' } | { action: 'receipt'; operationId: string; reader?: boolean } | { action: 'evidence'; record: StoredOriginInput } |
   { action: 'submit'; operation: OriginPreparedBotOperation } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
@@ -159,6 +172,19 @@ export async function handleOriginMesh(options: {
     record.destination.transport !== 'bot-api' || record.destination.accountId !== runtime.options.bot.accountId) {
     return { ok: false, reason: 'origin-plan-invalid' };
   }
+  // native-conversation-base §3a item 7 — an owner that receives a submit for an id
+  // it holds as terminal answers with that ending instead of sending. Naming the
+  // operation id makes the forwarder ask this machine's `receipt`, which carries
+  // the classified outcome, reason and failure; the old id is never sent again.
+  try {
+    const existing = await runtime.store.getOperation(record.operationId);
+    const state = existing?.operation?.state;
+    if (existing && state && ['suppressed', 'known-failed', 'expired', 'superseded'].includes(state)) {
+      const verdict = classifyOperationOutcome(record.operationId, existing, runtime.unrecordedReceipts?.forOperation(record.operationId) ?? []);
+      return { ok: false, reason: 'origin-operation-terminal', outcome: 'held', operationId: record.operationId,
+        terminal: { state, outcome: verdict.outcome, reason: verdict.reason ?? null, failure: verdict.failure ?? null } };
+    }
+  } catch { /* unreadable: the admit below refuses a conflicting replay on its own */ }
   try {
     await runtime.store.putVerifiedEvidence({ record: stored, verification });
     const response = await runtime.service.runFirstSend(record.operationId, async () => {
@@ -169,6 +195,7 @@ export async function handleOriginMesh(options: {
           networkTimeoutMs: 10_000 }, undefined, operation);
     });
     const body = await response.json() as { result?: { message_id?: number } };
+    recordForwardedDelivery(runtime, operation, body.result?.message_id);
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
       deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
   } catch (error) {
@@ -178,6 +205,7 @@ export async function handleOriginMesh(options: {
     // Telegram accepted it; only the receipt write failed. Answering a refusal
     // here would let the forwarding standby re-forward a delivered message.
     if (error instanceof TelegramOriginHoldError && error.outcome === 'accepted-unrecorded' && error.delivered?.messageId && /^\d+$/.test(error.delivered.messageId)) {
+      recordForwardedDelivery(runtime, operation, Number(error.delivered.messageId));
       return { ok: true, originId: record.originId, messageId: Number(error.delivered.messageId), originReceiptConfirmed: true,
         deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId, receiptRecorded: false };
     }

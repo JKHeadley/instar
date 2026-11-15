@@ -1,38 +1,47 @@
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 /**
- * Tier-1 unit tests for the Instar Documents CLAUDE.md awareness block
- * (docs/specs/instar-document-viewer.md, Agent Awareness / Migration Parity):
- *   - generateClaudeMd (new agents via init) includes the awareness section;
- *   - migrateClaudeMd (existing agents via update) appends it, content-sniffed + idempotent;
- *   - the section function uses the injected port (never hardcoded).
+ * Tier-1 unit tests for the Instar Documents CLAUDE.md awareness text
+ * (docs/specs/instar-document-viewer.md, Agent Awareness / Migration Parity). The text is
+ * one awareness entry, src/data/awareness/instar-documents.md
+ * (docs/specs/awareness-entry-registry.md), so:
+ *   - the entry parses with no error and renders with the injected port (never hardcoded);
+ *   - generateClaudeMd (new agents via init) includes it;
+ *   - migrateClaudeMd (existing agents via update) adds it exactly once, idempotently.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { DOCUMENTS_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { defaultRegistry, renderRegistrySection } from '../../src/awareness/registry.js';
 
 const MARKER = 'Commentable documents on the dashboard document page';
 
 describe('Documents CLAUDE.md awareness (Agent Awareness Standard)', () => {
-  it('generateClaudeMd (new-install path) includes the awareness section with the comments read', () => {
+  it('the entry file parses cleanly', () => {
+    const reg = defaultRegistry();
+    expect(reg.errors().filter((e) => e.id === 'instar-documents')).toEqual([]);
+    expect(reg.eligibleEntries({ port: 4042, hasTelegram: false }).some((e) => e.id === 'instar-documents' && e.title.startsWith(MARKER))).toBe(true);
+  });
+
+  it('generateClaudeMd (new-install path) includes the awareness text with the comments read', () => {
     const md = generateClaudeMd('my-proj', 'echo', 4042, true);
-    expect(md).toContain(MARKER);
+    expect(md.split(MARKER).length - 1).toBe(1);
     expect(md).toContain('GET /docs/:id/comments?status=open');
     expect(md).toContain('http://localhost:4042/docs');
     expect(md).toContain('GET /docs/graph');
   });
 
-  it('the section function honors the injected port (never hardcoded)', () => {
-    const s = DOCUMENTS_CLAUDEMD_SECTION(9999);
+  it('the entry honors the injected port (never hardcoded)', () => {
+    const s = renderRegistrySection({ port: 9999, hasTelegram: false });
     expect(s).toContain('http://localhost:9999/docs');
     expect(s).not.toContain('localhost:4042');
   });
 });
 
-describe('migrateClaudeMd appends the documents section for existing agents (Migration Parity), idempotently', () => {
+describe('migrateClaudeMd adds the documents text for existing agents (Migration Parity), idempotently', () => {
   let projectDir: string;
   let stateDir: string;
   let claudeMdPath: string;
@@ -41,9 +50,8 @@ describe('migrateClaudeMd appends the documents section for existing agents (Mig
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'documents-claudemd-'));
     stateDir = path.join(projectDir, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042 , claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042, claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
     claudeMdPath = path.join(projectDir, 'CLAUDE.md');
-    // A CLAUDE.md that does NOT yet carry the documents section.
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md — legacy agent\n\nSome existing content.\n');
   });
   afterEach(() => {
@@ -51,23 +59,14 @@ describe('migrateClaudeMd appends the documents section for existing agents (Mig
   });
 
   function countMarker(): number {
-    const content = fs.readFileSync(claudeMdPath, 'utf-8');
-    return content.split(MARKER).length - 1;
+    return fs.readFileSync(claudeMdPath, 'utf-8').split(MARKER).length - 1;
   }
 
-  it('adds the section on first migrate, then is a no-op on a second run (content-sniffed)', () => {
+  it('adds the text on first migrate, then is a no-op on a second run', () => {
     expect(countMarker()).toBe(0);
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();
     expect(countMarker()).toBe(1);
     expect(fs.readFileSync(claudeMdPath, 'utf-8')).toContain('GET /docs/graph');
-    // Second run must not double-append.
-    new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();
-    expect(countMarker()).toBe(1);
-  });
-
-  it('does NOT re-append when the section is already present', () => {
-    fs.appendFileSync(claudeMdPath, DOCUMENTS_CLAUDEMD_SECTION(4042));
-    expect(countMarker()).toBe(1);
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();
     expect(countMarker()).toBe(1);
   });

@@ -48,6 +48,8 @@ export const GROUPS = [
       { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
+      // Shown only when GET /work-board answers 200 (the work board is switched on): the probe.
+      { id: 'work-board', label: 'Work board', icon: 'check', desc: 'Cards you and the agent agreed on: what waits for your OK, an answer or a sign-off, and what the agent is doing.', probe: '/work-board' },
     ],
   },
   {
@@ -81,6 +83,7 @@ export const GROUPS = [
       { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
       { id: 'preferences-learning', label: 'What I’ve learned about you', icon: 'sparkle', desc: 'How you like things, picked up from your corrections, and the corrections I am still watching.' },
       { id: 'files', label: 'Files', icon: 'folder', desc: 'Find, read and fix a project file from your phone, and choose which folders can be browsed and edited.' },
+      { id: 'context', label: 'Context', icon: 'layers', desc: 'What each conversation’s running summary holds, how fresh it is, what it costs, and whether recovery after a long conversation is compressed works.' },
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
@@ -103,7 +106,7 @@ export function allTabIds() {
 
 /** Features rebuilt natively in the console, by legacy tab id. */
 /** Tiles with no legacy dashboard tab: new pages are built in the console only. */
-export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'documents'];
+export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'context', 'work-board', 'documents'];
 
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
@@ -111,6 +114,7 @@ export const NATIVE_PAGES = {
   sessions: '#/work/sessions',
   chats: '#/work/chats',
   documents: '#/work/documents',
+  'work-board': '#/work/board',
   // Sending text or files now happens in each session's own message box.
   dropzone: '#/work/sessions',
   projects: '#/work/plans',
@@ -132,6 +136,7 @@ export const NATIVE_PAGES = {
   features: '#/settings/allowed',
   'preferences-learning': '#/settings/learned',
   files: '#/settings/files',
+  context: '#/settings/context',
   // The pairing code page: its own strict page, outside the console (PIN, then the code + Copy).
   phones: '/dashboard/pair',
   'pr-pipeline': '#/work/development?s=shipping',
@@ -173,6 +178,7 @@ export const PHONE_PAGE_ALIASES = {
   development: 'work/development',
   maturation: 'work/maturation',
   ideas: 'work/ideas',
+  board: 'work/board',
   sessions: 'work/sessions',
   chats: 'work/chats',
   documents: 'work/documents',
@@ -190,6 +196,7 @@ export const PHONE_PAGE_ALIASES = {
   learned: 'settings/learned',
   inside: 'settings/inside',
   files: 'settings/files',
+  context: 'settings/context',
 };
 
 /** Pages that exist only in phone mode (the Pace card is a page of its own there). */

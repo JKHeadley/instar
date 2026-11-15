@@ -177,6 +177,8 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     'GET /mobile/conversations/session', 'GET /mobile/conversations/<uuid>/placement',
     // mobile-unread-messages §3.5: a read report names conversations in its body.
     'POST /mobile/conversations/read',
+    // conversation-list-pins: a pin names its conversation in the body; the route runs the shared check.
+    'POST /mobile/conversations/pins',
     // conversation-pinned-messages: list and pin/unpin in each kind of conversation.
     'GET /mobile/chat/app/<uuid>/pins', 'POST /mobile/chat/app/<uuid>/pins', 'GET /mobile/chat/7/pins', 'POST /mobile/chat/7/pins',
     'GET /mobile/chat/slack/-1/pins', 'POST /mobile/chat/slack/-1/pins',
@@ -397,7 +399,10 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     //     single-use page code to guests (each document is still checked against its conversation's audience).
     // 38: instar-document-viewer §3.6a opened linking a computer, listing and forgetting linked computers (each is the person's own).
     // 39: §3.6a item 6 opened the link-code lookup (who asked for this code), so the phone shows it before Face ID.
-    expect(open).toBe(39);
+    // 32: work-board-asks §7 opened GET /mobile/work-board to guests; the handler shows only the cards whose conversation that person may read.
+    // 33: conversation-list-pins opened POST /mobile/conversations/pins to guests (it orders the person's own list).
+    // 41: both of the above together (31 + 8 document routes + 2 from work-board and pins).
+    expect(open).toBe(41);
   });
 
   it.each([

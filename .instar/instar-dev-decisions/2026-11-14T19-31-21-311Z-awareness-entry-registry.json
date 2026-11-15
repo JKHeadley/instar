@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-14T19:31:21.311Z",
+  "slug": "awareness-entry-registry",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 764,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-awareness-entry-registry.mjs",
+      "skills/instar-dev/SKILL.md",
+      "src/awareness/registry.ts",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/awareness/README.md",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 752,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
