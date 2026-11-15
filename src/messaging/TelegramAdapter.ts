@@ -6675,12 +6675,12 @@ export class TelegramAdapter implements MessagingAdapter {
           telegramUserId: msg.from.id,
           provenance: 'user',
         });
-      } catch (e) { console.error(`[telegram] Voice failure log error: ${e}`); } // the session still gets the line
+      } catch (e) { console.error(`[telegram] Voice failure log error: ${e}`); /* @silent-fallback-ok — logged; the session still gets the line below */ }
       if (this.onTopicMessage) {
-        try { this.onTopicMessage(message); } catch (e) { console.error(`[telegram] Topic message handler error: ${e}`); }
+        try { this.onTopicMessage(message); } catch (e) { console.error(`[telegram] Topic message handler error: ${e}`); /* @silent-fallback-ok — logged, same as the success path; delivery to the handler still runs */ }
       }
       if (this.handler) {
-        try { await this.handler(message); } catch (e) { console.error(`[telegram] Handler error: ${e}`); }
+        try { await this.handler(message); } catch (e) { console.error(`[telegram] Handler error: ${e}`); /* @silent-fallback-ok — logged, same as the success path's handler error */ }
       } else {
         // No session handler wired: fall back to telling the person directly, in plain words.
         // @plain-notice-ok: `reason` is one of transcriptionFailureReason's fixed plain phrases, never raw error text

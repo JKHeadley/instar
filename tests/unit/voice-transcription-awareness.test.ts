@@ -8,12 +8,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { PostUpdateMigrator, VOICE_TRANSCRIPTION_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, APP_MEDIA_CURRENT_VOICE_LINE, APP_MEDIA_V2_VOICE_LINE } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, APP_MEDIA_CLAUDEMD_SECTION, APP_MEDIA_CURRENT_VOICE_LINE, APP_MEDIA_V2_VOICE_LINE } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { splitAwareness } from '../../src/scaffold/claudeMdLayout.js';
+import { registryErrors, renderRegistrySection } from '../../src/awareness/registry.js';
 import { RECOMMENDED_SERVICE_CATALOG } from '../../src/recommended/catalog.js';
 
-const MARKER = 'Voice messages and transcription (';
+const TITLE = 'Voice messages and transcription';
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/voice-transcription-awareness.test.ts' }); });
 
@@ -30,25 +30,18 @@ function migrate(content: string): string {
 }
 
 describe('voice transcription awareness', () => {
-  it('is in the template, short, and names the route, the install steps and the off switch', () => {
-    const s = VOICE_TRANSCRIPTION_CLAUDEMD_SECTION(4040);
-    expect(s).toContain(MARKER);
-    expect(s).toContain('http://localhost:4040/voice-transcription');
-    expect(s).toContain('brew install whisper-cpp ffmpeg');
-    expect(s).toContain('60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe');
-    expect(s).toContain('voiceTranscription.local: false');
-    expect(s.length).toBeLessThan(2600);
-    expect(generateClaudeMd('p', 'a', 4040, false)).toContain(MARKER);
-  });
-
-  it('reaches an existing agent exactly once on update', () => {
-    expect(migrate('# Agent\n').split(MARKER).length - 1).toBe(1);
-  });
-
-  it('lands in the messaging reference file', () => {
-    const split = splitAwareness(`# CLAUDE.md — a\n\n## Something\n\ntext\n${VOICE_TRANSCRIPTION_CLAUDEMD_SECTION(4040)}`);
-    const owner = [...split.referenceTitles.entries()].find(([, titles]) => titles.some((t) => t.includes('Voice messages and transcription')));
-    expect(owner?.[0]).toBe('messaging.md');
+  it('is an awareness entry naming the route, the install steps and the off switch, for every agent', () => {
+    // docs/specs/awareness-entry-registry.md: one file in src/data/awareness/, rebuilt for every agent on update.
+    expect(registryErrors().filter((e) => JSON.stringify(e).includes('voice-transcription'))).toEqual([]);
+    for (const hasTelegram of [true, false]) {
+      const s = renderRegistrySection({ port: 4040, hasTelegram });
+      expect(s).toContain(`**${TITLE}**`);
+      expect(s).toContain('http://localhost:4040/voice-transcription');
+      expect(s).toContain('brew install whisper-cpp ffmpeg');
+      expect(s).toContain('60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe');
+      expect(s).toContain('voiceTranscription.local: false');
+    }
+    expect(generateClaudeMd('p', 'a', 4040, false)).toContain(TITLE);
   });
 
   it('refreshes the previous App conversation media voice line in place, once', () => {

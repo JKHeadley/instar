@@ -9,7 +9,7 @@ This change teaches every agent to use that free program, whisper.cpp, which run
 - If you want your audio to never leave the computer, the agent can be set to use only the on-machine program.
 - If nothing is installed, the agent tells you in one sentence what's missing and offers to install it. Installing is free; your only step is saying yes.
 
-It works the same for Telegram, the app, Slack and WhatsApp, because they all now go through one shared piece of code. The agent can also answer "which transcriber are you using?" from a status page instead of guessing.
+It works the same for Telegram, the app, Slack and WhatsApp, because they all now go through one shared piece of code. The agent can also answer "which transcriber are you using?" from a status page instead of guessing. Every agent, new or already running, learns about all of this through a short note added to its instructions on its next update.
 
 To keep the computer responsive, only one voice note is transcribed on the machine at a time, and each one has a time limit.
 

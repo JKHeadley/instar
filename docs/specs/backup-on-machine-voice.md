@@ -163,7 +163,7 @@ The person's only step is "yes". Installing is free; no account.
 
 - **Route**: `GET /voice-transcription` (Bearer) returns `describeVoiceTranscription()` fresh: `active`, `paid`, `local` (state, missing, binary/model/ffmpeg paths, last run), `machine` (this machine's name), and a one-line plain `summary` naming the machine.
 - **Capabilities**: `CapabilityIndex` key `voiceTranscription`, prefix `/voice-transcription`, endpoints listed. Its `build()` is synchronous and on the `/capabilities` path, so it reads only the cached description; when the cache is empty it describes local (file checks only) and paid from the environment only, and marks `storedKeyChecked: false`. It never reads the keychain or starts a process.
-- **CLAUDE.md**: a short "Voice messages and transcription (`GET /voice-transcription`)" section from a shared builder, emitted by the template and appended by `migrateClaudeMd` with that content-sniff marker (Migration Parity). "messages" in the title files it in the messaging reference; a unit test asserts the layout puts it in `messaging.md`.
+- **Agent awareness**: one entry file, `src/data/awareness/voice-transcription.md` ("Voice messages and transcription"), under the awareness entry registry (docs/specs/awareness-entry-registry.md): written into every agent's instructions, new and existing, on each update, so no migration step is needed. A unit test checks the entry renders with the route, install steps and off switch.
 - **Catalog**: the `voice-transcription` row's backup becomes "Your agent reads voice notes on its own machine with whisper.cpp, free, once it's installed (I can install it)", status `exercised`, drill `tests/e2e/local-voice-transcription-lifecycle.test.ts`.
 
 ## Decision points touched

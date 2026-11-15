@@ -4,7 +4,7 @@ Voice notes can now be transcribed on the agent's own machine with whisper.cpp, 
 
 Telegram, the app, Slack and WhatsApp now all use the one shared transcription module (Slack and WhatsApp had their own copies). When a note can't be transcribed, every channel tells the agent the plain reason (for example which pieces are missing), and on Telegram the session receives `[voice] (transcription unavailable: <reason>)` instead of the person getting a canned reply, so the agent answers and can offer to fix it. App transcripts are labelled with the provider that actually produced them.
 
-New `GET /voice-transcription` says which transcriber this machine uses and what is missing; `/capabilities` carries a `voiceTranscription` block. The agent's CLAUDE.md gains a "Voice messages and transcription" section with the exact install steps (added to existing agents on update). The recommended-services catalog's voice row now lists the on-machine transcriber as its tested backup.
+New `GET /voice-transcription` says which transcriber this machine uses and what is missing; `/capabilities` carries a `voiceTranscription` block. Every agent's instructions gain a "Voice messages and transcription" feature note with the exact install steps (through the awareness entry registry, so existing agents get it on update). The recommended-services catalog's voice row now lists the on-machine transcriber as its tested backup.
 
 Safety: ffmpeg only accepts single-file audio formats and no network; one local run at a time per machine, each with a time limit; silence is measured from the audio, because whisper invents words on silence.
 

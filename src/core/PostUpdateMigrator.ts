@@ -1711,22 +1711,6 @@ Once the person says yes to Email on the Services row (they type the one address
 }
 
 /**
- * CLAUDE.md awareness block for voice transcription, paid and on-machine (docs/specs/backup-on-machine-voice.md).
- * "messages" in the title files it with messaging in the reference layout. Unique content-sniff marker:
- * `Voice messages and transcription (`. Kept short on purpose.
- */
-export function VOICE_TRANSCRIPTION_CLAUDEMD_SECTION(port: number): string {
-  return `\n### Voice messages and transcription (\`GET /voice-transcription\`)
-
-Voice notes from Telegram, the app, Slack and WhatsApp reach me as \`[voice] <transcript>\`. A paid provider (Groq or OpenAI key) is used first when set up; otherwise, and as the fallback when it fails, the free whisper.cpp on this machine reads them (nothing leaves the machine; \`voiceProvider: "local"\` makes it the only one). When one can't be read I get \`(transcription unavailable: <reason>)\` with the plain reason, never a bare "unavailable".
-- Which transcriber this machine uses, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/voice-transcription\` → \`active\`, \`local.state\` (missing / installed-unproven / proven / failed), what is missing, and a plain \`summary\`. It answers for THIS machine only.
-- **Installing it is mine** (free, no account; the person only says yes), on every machine I run on: Mac \`brew install whisper-cpp ffmpeg\`; Linux the same with Homebrew, else the distro's ffmpeg plus a whisper.cpp source build at tag v1.9.5 (\`cmake -B build && cmake --build build -j 2 --config Release\`, copy \`build/bin/whisper-cli\` to \`~/.local/bin\`). Model: download \`https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin\` to \`~/.local/share/instar/models/ggml-base.bin.part\`, check SHA-256 \`60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\`, then rename to \`ggml-base.bin\`. A larger model alongside base needs \`INSTAR_WHISPER_MODEL\`. Then re-read the route.
-- Off switch: \`voiceTranscription.local: false\` in .instar/config.json.
-- **When to use** (PROACTIVE): a voice note arrives as \`(transcription unavailable: ...)\`, or the person asks whether I can hear voice notes → read the route; if local is missing, offer to install it in one plain sentence, and after their yes do it and ask them to resend.
-`;
-}
-
-/**
  * CLAUDE.md awareness block for the ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md).
  * Unique content-sniff marker: `Ideas from similar projects (`. Kept short on purpose.
  */
@@ -11432,13 +11416,6 @@ setTimeout(() => process.exit(0), 2000);
       content += EMAIL_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Email messages to the owner section');
-    }
-
-    // Voice transcription (docs/specs/backup-on-machine-voice.md) — Agent Awareness + Migration Parity.
-    if (!content.includes('Voice messages and transcription (')) {
-      content += VOICE_TRANSCRIPTION_CLAUDEMD_SECTION(port);
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added Voice messages and transcription section');
     }
 
     // Ecosystem ideas (docs/specs/ecosystem-idea-pipeline.md) — Agent Awareness + Migration Parity.

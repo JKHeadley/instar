@@ -116,7 +116,7 @@ function looksLikeModel(p: string): boolean {
   } catch {
     return false; // @silent-fallback-ok — unreadable is "no usable model", named as missing
   } finally {
-    if (fd !== null) try { fs.closeSync(fd); } catch { /* closing a read-only fd */ }
+    if (fd !== null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only fd; nothing to recover */ }
   }
 }
 
@@ -125,7 +125,7 @@ function findModel(env: NodeJS.ProcessEnv, homeDir: string): string | null {
   if (override && path.isAbsolute(override) && looksLikeModel(override)) return override;
   for (const dir of modelDirs(env, homeDir)) {
     let names: string[];
-    try { names = fs.readdirSync(dir); } catch { continue; }
+    try { names = fs.readdirSync(dir); } catch { continue; /* @silent-fallback-ok — an absent model folder means no model there; the missing list names it */ }
     const others = names.filter((n) => /^ggml-.+\.bin$/.test(n) && !(MODEL_PREFERENCE as readonly string[]).includes(n)).sort();
     for (const name of [...MODEL_PREFERENCE.filter((n) => names.includes(n)), ...others]) {
       const candidate = path.join(dir, name);
@@ -139,7 +139,7 @@ interface Found { binary: string | null; model: string | null; ffmpeg: string | 
 
 function mtimeOf(p: string | null): string {
   if (!p) return '-';
-  try { return String(fs.statSync(p).mtimeMs); } catch { return '?'; }
+  try { return String(fs.statSync(p).mtimeMs); } catch { return '?'; /* @silent-fallback-ok — an unreadable mtime only makes the install signature differ, which forces a re-check */ }
 }
 
 function detectFiles(opts: LocalDetectOptions): Found {
@@ -336,7 +336,7 @@ export function parseWhisperOutput(stdout: string): string | null {
 }
 
 function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
+  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; /* @silent-fallback-ok — ESRCH is the answer (process gone), EPERM means alive */ }
 }
 
 /** Per-user folder for the machine-wide lock (not the shared /tmp, where another account could plant one). */
@@ -348,13 +348,13 @@ export function defaultLockRoot(env: NodeJS.ProcessEnv = process.env, homeDir = 
 interface LockOwner { pid?: number; token?: string; startedAt?: number; expectedEnd?: number }
 
 function readOwner(dir: string): LockOwner | null {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')) as LockOwner; } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')) as LockOwner; } catch { return null; /* @silent-fallback-ok — no owner file yet (mid-create) or a crash; staleness then falls to the directory's mtime */ }
 }
 
 /** Stale: the owner's process is gone, or the lock directory itself is older than any run can be. */
 function isStale(dir: string, o: LockOwner | null, wallNow: number): boolean {
   if (o && typeof o.pid === 'number' && !pidAlive(o.pid)) return true;
-  try { return wallNow - fs.statSync(dir).mtimeMs > LOCK_STALE_MS; } catch { return false; }
+  try { return wallNow - fs.statSync(dir).mtimeMs > LOCK_STALE_MS; } catch { return false; /* @silent-fallback-ok — the lock vanished (released); not stale, the caller retries mkdir */ }
 }
 
 const TAKEOVER_STALE_MS = 30_000;
