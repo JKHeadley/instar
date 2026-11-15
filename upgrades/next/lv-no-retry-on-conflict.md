@@ -1,0 +1,21 @@
+# The test line no longer retries a merge conflict a second later
+
+<!-- bump: patch -->
+
+## What Changed
+
+When a Local Verify run ends in an error, the line re-runs it once automatically. That also applied to a merge conflict, where the same head against the same base gives the same conflict: every conflicting change was tried twice within a second, which doubled its conflict records and status posts and told nobody anything new. `LocalVerifyService.handleErrorRetry` now skips the automatic re-run when the error step is `conflict`. Other errors are re-run once, as before.
+
+## What to Tell Your User
+
+Nothing changes for you. The test line's records are less noisy.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| A conflicting change is reported once, not twice | Automatic |
+
+## Evidence
+
+2026-11-14: every conflict in the audit log appears as two `record` rows one second apart (for example PR 3053 at 18:35:48Z and 18:35:49Z; across 158 conflict records every immediate pair ran on the same base and none ended in anything but a conflict). The brainstorm that day counted 18 conflict verdicts, each pair being one real conflict. New unit test in `tests/unit/localVerify/LocalVerifyService.test.ts` (162 pass); `tests/unit/localVerify/peerVerifier.test.ts` (75 pass); `tsc --noEmit` clean.

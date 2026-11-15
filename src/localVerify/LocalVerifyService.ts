@@ -3175,6 +3175,10 @@ export class LocalVerifyService {
 
   /* @self-action-controller: local-verify-error-rerun */
   private handleErrorRetry(entry: QueueEntry, errorStep?: string): void {
+    // A merge conflict is decided by the head and the base alone: re-running the same pair a
+    // second later gives the same conflict (it only doubled every conflict record and status
+    // post). The head runs again when it moves, or on an explicit request for the same head.
+    if (errorStep === 'conflict') return;
     const d = decideVerifyRetry(entry, 'error');
     if (d.action !== 're-run') return;
     entry.errorRetries = d.errorRetries;
