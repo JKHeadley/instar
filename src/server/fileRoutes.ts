@@ -440,6 +440,131 @@ function checkBlockedFilename(filePath: string, config: FileViewerConfig): strin
   return null;
 }
 
+// ── Name search (GET /api/files/search) ─────────────────────────────
+
+export const SEARCH_MAX_QUERY = 200;
+export const SEARCH_DEFAULT_RESULTS = 50;
+export const SEARCH_MAX_RESULTS = 200;
+export const SEARCH_MAX_SCANNED = 20_000;
+export const SEARCH_MAX_DEPTH = 12;
+export const SEARCH_MAX_MS = 2_000;
+/** Folders the walk never descends into (still matchable by name where they sit). */
+const SEARCH_SKIP_DESCENT = new Set(['.git', 'node_modules']);
+
+export interface FileSearchResult {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified?: string;
+}
+
+/** The allowed roots to walk, as project-relative paths ('' = the project root). */
+function searchRoots(config: FileViewerConfig): string[] {
+  const roots = new Set<string>();
+  for (const ap of config.allowedPaths) {
+    const n = path.normalize(ap).replace(/\/$/, '');
+    if (n === '.' || n === '') return [''];
+    if (path.isAbsolute(n) || n.includes('..')) continue;
+    roots.add(n);
+  }
+  // Drop a root nested under another root (it is walked through its parent).
+  return [...roots].filter((r) => ![...roots].some((o) => o !== r && r.startsWith(o + '/'))).sort();
+}
+
+/**
+ * Breadth-first name match over the allowed folders. Every entry is admitted by
+ * resolveListEntry plus the allowed-path pre-check on its requested AND resolved
+ * spelling; each matching entry is re-checked through validatePath (and blocked
+ * names on both spellings) before it is returned. Real directories are visited once
+ * (a symlink loop cannot recurse). Exported for the unit test.
+ */
+export async function searchByName(
+  query: string,
+  limit: number,
+  projectDir: string,
+  config: FileViewerConfig,
+  budget: { maxScanned?: number; maxDepth?: number; maxMs?: number; now?: () => number } = {},
+): Promise<{ results: FileSearchResult[]; truncated: boolean; scanned: number }> {
+  const needle = query.toLowerCase();
+  const maxScanned = budget.maxScanned ?? SEARCH_MAX_SCANNED;
+  const maxDepth = budget.maxDepth ?? SEARCH_MAX_DEPTH;
+  const maxMs = budget.maxMs ?? SEARCH_MAX_MS;
+  const now = budget.now ?? Date.now;
+  const started = now();
+  const realProjectDir = await fs.promises.realpath(projectDir);
+  const visited = new Set<string>();
+  const matches: FileSearchResult[] = [];
+  let scanned = 0;
+  let truncated = false;
+
+  const queue: Array<{ rel: string; depth: number }> = [];
+  for (const root of searchRoots(config)) {
+    if (root === '') { queue.push({ rel: '', depth: 0 }); continue; }
+    const v = await validatePath(root, projectDir, config);
+    if (v.valid && v.resolvedStat?.isDirectory()) queue.push({ rel: root, depth: 0 });
+  }
+
+  outer: while (queue.length) {
+    const { rel, depth } = queue.shift()!;
+    const dirAbs = rel ? path.resolve(projectDir, rel) : projectDir;
+    let realDir: string;
+    try { realDir = await fs.promises.realpath(dirAbs); } catch { continue; } // @silent-fallback-ok — a folder that vanished mid-walk has nothing to match; the walk goes on
+    if (visited.has(realDir)) continue;
+    visited.add(realDir);
+    let names: fs.Dirent[];
+    try { names = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { continue; } // @silent-fallback-ok — an unreadable folder is skipped exactly as the list route would refuse it
+    names.sort((a, b) => a.name.localeCompare(b.name));
+    for (const d of names) {
+      if (scanned >= maxScanned || now() - started > maxMs) { truncated = true; break outer; }
+      scanned++;
+      const entryRel = rel ? path.join(rel, d.name) : d.name;
+      if (!checkRelativePathAllowed(entryRel, config).ok) continue;
+      const resolved = await resolveListEntry(dirAbs, d.name, entryRel, realProjectDir, config);
+      if (!resolved) continue;
+      const resolvedRel = path.relative(realProjectDir, resolved.realPath);
+      if (resolvedRel && !checkRelativePathAllowed(resolvedRel, config).ok) continue;
+      const isDir = resolved.stat.isDirectory();
+      if (!isDir && !resolved.stat.isFile()) continue;
+      if (d.name.toLowerCase().includes(needle)) {
+        const v = await validatePath(entryRel, projectDir, config);
+        const blocked = !isDir && (checkBlockedFilename(entryRel, config) ?? (v.resolvedPath ? checkBlockedFilename(v.resolvedPath, config) : null));
+        if (v.valid && !blocked) {
+          matches.push(isDir
+            ? { path: entryRel.split(path.sep).join('/'), name: d.name, type: 'directory' }
+            : { path: entryRel.split(path.sep).join('/'), name: d.name, type: 'file', size: resolved.stat.size, modified: resolved.stat.mtime.toISOString() });
+          if (matches.length > limit) { truncated = true; break outer; }
+        }
+      }
+      if (isDir && depth + 1 <= maxDepth && !SEARCH_SKIP_DESCENT.has(d.name)) queue.push({ rel: entryRel, depth: depth + 1 });
+      else if (isDir && depth + 1 > maxDepth) truncated = true;
+    }
+  }
+
+  const depthOf = (p: string) => p.split('/').length;
+  matches.sort((a, b) => (a.type === b.type ? 0 : a.type === 'file' ? -1 : 1) || depthOf(a.path) - depthOf(b.path) || a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+  return { results: matches.slice(0, limit), truncated, scanned };
+}
+
+// ── Image preview (GET /api/files/image) ────────────────────────────
+
+/** Largest image the preview route serves (the viewer's maxFileSize may be lower). */
+export const IMAGE_PREVIEW_MAX = 5 * 1_048_576;
+
+/**
+ * The real raster type from a file's first bytes, or null. PNG, JPEG, GIF and WebP
+ * only: SVG is never previewed (it is markup that can carry script), and a file only
+ * named like an image is refused. Exported for the unit test.
+ */
+export function sniffImageType(b: Uint8Array): string | null {
+  const at = (i: number, ...v: number[]) => v.every((x, k) => b[i + k] === x);
+  if (b.length >= 8 && at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (b.length >= 3 && at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (b.length >= 6 && (at(0, 0x47, 0x49, 0x46, 0x38, 0x37, 0x61) || at(0, 0x47, 0x49, 0x46, 0x38, 0x39, 0x61))) return 'image/gif';
+  if (b.length >= 12 && at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp';
+  return null;
+}
+
 // ── Check if a path is editable ──────────────────────────────────────
 
 function isEditable(relativePath: string, config: FileViewerConfig): boolean {
@@ -678,6 +803,37 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: 'Failed to list directory' });
+    }
+  });
+
+  // ── GET /api/files/search ──────────────────────────────────────
+  // Find a file by name across every allowed folder (people-settings.md, Files).
+  // Every directory descended into and every result goes through the same rules as
+  // the other file routes: resolveListEntry (never-served on the requested AND the
+  // resolved path, blocked names on both, realpath inside the project), the shared
+  // allowed-path pre-check on both spellings, and validatePath on each result — so a
+  // symlink or a never-served file never appears. Bounded: results, entries scanned,
+  // depth and wall time are capped; `truncated: true` says the walk stopped early.
+
+  router.get('/api/files/search', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q) {
+      res.status(400).json({ error: 'Missing q parameter' });
+      return;
+    }
+    if (q.length > SEARCH_MAX_QUERY) {
+      res.status(400).json({ error: `q is longer than ${SEARCH_MAX_QUERY} characters` });
+      return;
+    }
+    const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, SEARCH_MAX_RESULTS) : SEARCH_DEFAULT_RESULTS;
+    try {
+      const out = await searchByName(q, limit, projectDir, config);
+      res.json({ query: q, ...out });
+    } catch {
+      // The caller gets an explicit 500 (nothing is hidden).
+      res.status(500).json({ error: 'Failed to search files' });
     }
   });
 
@@ -1097,6 +1253,81 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       });
     } catch {
       res.status(500).json({ error: 'Failed to download file' });
+    }
+  });
+
+  // ── GET /api/files/image ────────────────────────────────────────
+  // Image preview for the console's Files page. The same admission as download
+  // (validatePath, blocked names on the requested AND resolved spelling, the
+  // checked-descriptor open), plus: the real type is read from the file's first
+  // bytes (PNG, JPEG, GIF, WebP only — never SVG, which can carry script, and never
+  // a file only NAMED like an image), the size is capped at IMAGE_PREVIEW_MAX and
+  // the viewer's own maxFileSize, and the answer is served inline with the sniffed
+  // Content-Type, nosniff, and a sandbox CSP so it can never run as a document.
+
+  router.get('/api/files/image', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!requestedPath) {
+      res.status(400).json({ error: 'Missing path parameter' });
+      return;
+    }
+    const validation = await validatePath(requestedPath, projectDir, config);
+    if (!validation.valid) {
+      res.status(validation.status || 403).json({ error: validation.error });
+      return;
+    }
+    const blocked = checkBlockedFilename(requestedPath, config) ?? checkBlockedFilename(validation.resolvedPath!, config);
+    if (blocked) {
+      res.status(403).json({ error: blocked });
+      return;
+    }
+    const checkedStat = validation.resolvedStat!;
+    if (checkedStat.isDirectory()) {
+      res.status(400).json({ error: 'Cannot preview a directory' });
+      return;
+    }
+    const maxSize = Math.min(IMAGE_PREVIEW_MAX, config.maxFileSize);
+    if (checkedStat.size > maxSize) {
+      res.status(413).json({ error: 'Image too large to preview', size: checkedStat.size, maxSize });
+      return;
+    }
+    const opened = await openCheckedDescriptor(validation.resolvedPath!, checkedStat, projectDir);
+    if (!opened.handle) {
+      res.status(403).json({ error: opened.reason });
+      return;
+    }
+    const handle = opened.handle;
+    try {
+      const size = opened.stat.size;
+      if (size > maxSize) {
+        await handle.close();
+        res.status(413).json({ error: 'Image too large to preview', size, maxSize });
+        return;
+      }
+      const bytes = Buffer.alloc(size);
+      let read = 0;
+      while (read < size) {
+        const { bytesRead } = await handle.read(bytes, read, size - read, read);
+        if (bytesRead === 0) break;
+        read += bytesRead;
+      }
+      await handle.close();
+      const body = bytes.subarray(0, read);
+      const mime = sniffImageType(body);
+      if (!mime) {
+        res.status(415).json({ error: 'Not a previewable image (PNG, JPEG, GIF or WebP only)' });
+        return;
+      }
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Length', body.length);
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.end(body);
+    } catch {
+      await handle.close().catch(() => { /* already closed or failing */ });
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to read image' });
     }
   });
 

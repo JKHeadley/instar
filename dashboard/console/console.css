@@ -963,6 +963,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .files-status:empty { display: none; }
 .files-status { margin: var(--s-2) 0 0; }
 .files-body { padding-top: var(--s-3); padding-bottom: 88px; }
+.files-image img { display: block; max-width: 100%; max-height: 70vh; height: auto; margin: 0 auto; border-radius: var(--r-md); background: var(--surface-raised); }
 .files-lock { margin: 0 0 var(--s-3); font-size: 14px; color: var(--text-muted); }
 .files-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-2); }
 .files-toggle .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
