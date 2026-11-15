@@ -48,7 +48,7 @@ export function pressTargetRefusal(s: PressCandidate, c: PressTargetChecks = {})
   let mapped: unknown = null;
   try { mapped = c.channelFor?.(s.tmuxSession) ?? null; } catch { mapped = 'unknown'; } // @silent-fallback-ok — an adapter that cannot answer is treated as bound (refuse)
   if (mapped !== null && mapped !== undefined && mapped !== '' && mapped !== 0) return 'channel-bound';
-  if (!s.name.startsWith(PRESS_TARGET_PREFIX)) return 'not-throwaway';
+  if (typeof s.name !== 'string' || !s.name.startsWith(PRESS_TARGET_PREFIX)) return 'not-throwaway'; // a nameless session (e.g. a job) is never a press target
   if (s.jobSlug) return 'job-session';
   if (s.framework !== undefined && s.framework !== CLAUDE_CODE_FRAMEWORK) return 'not-claude-code';
   if (!s.claudeSessionId) return 'no-engine-session';

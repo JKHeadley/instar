@@ -35,6 +35,8 @@ describe('press target refusal', () => {
   });
   it('refuses a non-throwaway name, a job, another engine, an unknown engine session and a protected session', () => {
     expect(pressTargetRefusal({ ...throwaway, name: 'echo-work' })).toBe('not-throwaway');
+    // A session with no name (a job session record) refuses instead of throwing.
+    expect(pressTargetRefusal({ ...throwaway, name: undefined as unknown as string })).toBe('not-throwaway');
     expect(pressTargetRefusal({ ...throwaway, jobSlug: 'nightly' })).toBe('job-session');
     expect(pressTargetRefusal({ ...throwaway, framework: 'codex-cli' })).toBe('not-claude-code');
     expect(pressTargetRefusal({ ...throwaway, claudeSessionId: undefined })).toBe('no-engine-session');

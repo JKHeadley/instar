@@ -57,3 +57,7 @@ Revert the commit.
 ## Follow-up commit (2026-11-15 18:45Z)
 
 Four WIRED e2e tests read `src/commands/server.ts` as text. Three expected the old `'codex-cli'` literal in `engineInScope` and in the codex adapter-suite wiring, and now expect `CODEX_CLI_FRAMEWORK`, which is what the wiring actually says. `context-layer-h3-alive` expects `h3Builder: _h3Builder ?? undefined,` with its comma, so the AgentServer constructor call lists `h3Builder` before `contextLayers` again. No behaviour change. I checked every literal those four tests expect against the source files: all present.
+
+## Follow-up commit (2026-11-15 21:40Z)
+
+The integration test post-compact-route failed on the M5: a PostCompact from a job session (no topic, no name) answered 500 instead of `{recorded:false, reason:'no-topic'}`. `pressTargetRefusal` called `s.name.startsWith` on a session record with no name. It now refuses with `not-throwaway` when the name is not a string, the same answer a non-throwaway name gets, so nothing that was refused before is now allowed. A unit case covers it. synthetic-press 9/9, post-compact-route integration 6/6, tsc clean.
