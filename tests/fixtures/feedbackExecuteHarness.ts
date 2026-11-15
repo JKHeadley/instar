@@ -60,6 +60,8 @@ export interface ExecHarness extends Harness {
   merges: Array<{ pr: number; sha: string }>;
   safeMergeExit: { code: number | null; stdout: string };
   release: { value: { tag: string; taggedAt: number } | 'none' | null };
+  /** The git port's commitInBase answer for a claimed commit (default: never in base). */
+  commitInBase: { fn: (commit: string, baseSha: string) => { sha: string; committedAt: number } | null };
   runs: ConfinedCommand[];
   runScript: { fn: (cmd: ConfinedCommand) => Partial<ConfinedResult> | null };
   runnerAvailable: { value: boolean };
@@ -129,6 +131,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.merges = [];
   h.safeMergeExit = { code: 5, stdout: 'safe-merge-result: {"result":"armed"}' };
   h.release = { value: 'none' };
+  h.commitInBase = { fn: () => null };
   h.runs = [];
   h.runScript = { fn: () => null };
   h.runnerAvailable = { value: true };
@@ -161,6 +164,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     },
     githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
     firstReleaseContaining: async () => h.release.value,
+    commitInBase: async (_src, commit, baseSha) => h.commitInBase.fn(commit, baseSha),
   };
   let nextPr = 100;
   const github: GitHubGateway = {

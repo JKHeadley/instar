@@ -329,3 +329,45 @@ describe('pinned messages (conversation-pinned-messages)', () => {
     expect(m.pinOutcomeWords({ ok: false, data: { error: 'too-many-pins' } })).toContain('100 pinned messages');
   });
 });
+
+describe('conversations pinned to the top of the list (conversation-list-pins)', () => {
+  const body = {
+    conversations: [
+      { id: UUID, platform: 'app', title: 'Plans', lastActivity: '2026-11-14T09:00:00.000Z', lastPreview: 'fresh' },
+      { id: 7, platform: 'telegram', title: 'Ops', lastActivity: '2026-11-13T09:00:00.000Z' },
+      { id: -5, platform: 'slack', title: 'DM', lastActivity: null, machine: 'm1' },
+    ],
+    pinnedRows: [
+      { id: -5, platform: 'slack', title: 'DM', lastActivity: null, machine: 'm1' },
+      { id: UUID, platform: 'app', title: 'Plans', lastActivity: '2026-11-14T08:00:00.000Z', lastPreview: 'older copy' },
+    ],
+  };
+  it('reads pinnedRows in pin order; absent ⇒ null (feature off or a later page)', () => {
+    expect(m.listPinnedRows(body)!.map((r: { key: string }) => r.key)).toEqual(['slack:-5', `app:${UUID}`]);
+    expect(m.listPinnedRows({ conversations: [] })).toBeNull();
+    expect(m.listPinnedRows({ pinnedRows: [] })).toEqual([]);
+  });
+  it('splits the list: pinned first in pin order, preferring the list\'s own newer copy; the rest keep their order', () => {
+    const rows = m.listRows(body);
+    const { pinned, rest } = m.splitPinned(rows, m.listPinnedRows(body));
+    expect(pinned.map((r: { key: string }) => r.key)).toEqual(['slack:-5', `app:${UUID}`]);
+    expect(pinned[1].preview).toBe('fresh');
+    expect(rest.map((r: { key: string }) => r.key)).toEqual(['telegram:7']);
+    // A pinned row older than the page still leads.
+    const older = m.splitPinned(rows.slice(1), m.listPinnedRows(body));
+    expect(older.pinned.map((r: { key: string }) => r.key)).toEqual(['slack:-5', `app:${UUID}`]);
+    expect(m.splitPinned(rows, null).pinned).toEqual([]);
+  });
+  it('the pin ref of a row is the canonical one the route takes', () => {
+    const rows = m.listRows(body);
+    expect(m.listPinRefOf(rows[0])).toBe(`app:${UUID}`);
+    expect(m.listPinRefOf(rows[1])).toBe('telegram:7');
+    expect(m.listPinRefOf(rows[2])).toBe('slack:m1:-5');
+    expect(m.listPinRefOf({ ...rows[2], machine: null })).toBeNull();
+  });
+  it('plain words for a refused pin', () => {
+    expect(m.listPinOutcomeWords({ ok: true, data: {} })).toBeNull();
+    expect(m.listPinOutcomeWords({ ok: false, data: { error: 'pin-limit' } })).toContain('50 pinned conversations');
+    expect(m.listPinOutcomeWords({ ok: false, data: { error: 'list-pins-off' } })).toContain('turned off');
+  });
+});

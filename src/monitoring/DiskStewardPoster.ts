@@ -82,6 +82,28 @@ export function renderPost(post: DuePost, now: number = Date.now()): string {
     const when = post.sizesAt ? ` (sized ${ago(now - post.sizesAt)}${post.sizesPartial ? ', partial: at least these' : ''})` : '';
     lines.push(`Biggest folders: ${big.map((f) => `\`${f.n}\` ${gib(f.b)}`).join(', ')}${when}.`);
   }
+  const wd = post.wholeDisk;
+  // A peer's post arrives as data: render only well-formed numbers and names.
+  if (wd && typeof wd.usedBytes === 'number' && wd.usedBytes > 0 && Array.isArray(wd.owners)) {
+    const owners = wd.owners
+      .filter((o) => o && typeof o.owner === 'string' && typeof o.bytes === 'number' && Number.isFinite(o.bytes))
+      .map((o) => {
+        const folder = o.owner.startsWith('~/');
+        const n = cleanName(folder ? o.owner.slice(2) : o.owner);
+        return n ? `${folder ? `\`~/${n}\`` : `agent ${n}`} ${gib(o.bytes)}` : null;
+      })
+      .filter((x): x is string => x !== null)
+      .slice(0, 5);
+    if (owners.length) {
+      const when = ` (measured ${typeof wd.at === 'number' ? ago(now - wd.at) : 'earlier'}${wd.partial ? ', partial: at least these' : ''})`;
+      const unfinished = (Array.isArray(wd.unfinished) ? wd.unfinished : [])
+        .map((u) => (typeof u === 'string' && u.startsWith('~/') ? cleanName(u.slice(2)) : null))
+        .filter((n): n is string => n !== null).slice(0, 3);
+      const what = unfinished.length ? `folders I don't open (personal files, app data, the system) or didn't finish counting (${unfinished.map((n) => `\`~/${n}\``).join(', ')})` : "folders I don't open (personal files, app data, the system)";
+      const rest = typeof wd.notOpenedBytes === 'number' && wd.notOpenedBytes >= 0.5 * GiB ? `; ${gib(wd.notOpenedBytes)} is in ${what}` : '';
+      lines.push(`Whole disk, ${gib(wd.usedBytes)} used: ${owners.join(', ')}${rest}${when}.`);
+    }
+  }
   if (!post.pruneEnabled && !post.cleared.length && post.cacheReclaimableBytes < 0.5 * GiB) {
     lines.push('Nothing here is safe for me to clear automatically; the folders above are where the space is.');
   }

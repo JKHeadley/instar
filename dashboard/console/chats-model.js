@@ -79,6 +79,30 @@ export function orderWithTree(rows, pinnedKey) {
   for (const r of rows) if (!seen.has(r.key)) walk(r, 0); // rows reachable only through a cycle still show
   return out;
 }
+// ── conversations pinned to the top of the list (docs/specs/conversation-list-pins.md) ──
+/** The first page's pinned rows, in pin order; null when the server sent no pin fields (feature off, later page). */
+export function listPinnedRows(body) {
+  if (!body || !Array.isArray(body.pinnedRows)) return null;
+  return listRows({ conversations: body.pinnedRows });
+}
+/** The ref the pin route takes for a list row: `app:<uuid>`, `telegram:<topic>`, `slack:<machine>:<id>`. */
+export function listPinRefOf(row) { return row ? readRefOf(row.ref, row.machine) : null; }
+/** Splits the list: the pinned rows first (pin order), then every other row in the list's own order. */
+export function splitPinned(rows, pinnedRows) {
+  const pins = Array.isArray(pinnedRows) ? pinnedRows : [];
+  const keys = new Set(pins.map((r) => r.key));
+  // The list's own copy of a pinned row is newer (it refreshes with every page), so it is shown when there is one.
+  const byKey = new Map((rows || []).map((r) => [r.key, r]));
+  return { pinned: pins.map((p) => byKey.get(p.key) || p), rest: (rows || []).filter((r) => !keys.has(r.key)) };
+}
+/** Plain words for a refused pin. */
+export function listPinOutcomeWords(r) {
+  if (r && r.ok) return null;
+  const d = (r && r.data) || {};
+  if (d.error === 'pin-limit') return d.detail || 'You already have 50 pinned conversations. Unpin one first.';
+  if (d.error === 'list-pins-off') return 'Pinning conversations is turned off on this agent.';
+  return d.detail || 'That did not work. Try again.';
+}
 export function listMeta(body) {
   const failed = Array.isArray(body && body.pool && body.pool.failed) ? body.pool.failed.filter((f) => f && typeof f.machineId === 'string') : [];
   return { nextCursor: typeof (body && body.nextCursor) === 'string' && body.nextCursor ? body.nextCursor : null, failed, slackOwnerUnset: Boolean(body && body.slackOwnerUnset) };

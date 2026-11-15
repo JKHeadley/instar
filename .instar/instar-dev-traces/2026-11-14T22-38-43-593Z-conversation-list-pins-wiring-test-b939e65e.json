@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "conversation-list-pins-wiring-test",
+  "sessionId": "281a0ff5-07f5-4b12-a1fe-e89b1451fdc4",
+  "timestamp": "2026-11-14T22:38:43.593Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-pins-wiring-test.md",
+  "artifactSha256": "2d5a8a3632b8d9e37d671d940fef149d083a6f14ebfa83acf60bdf0380c90b70",
+  "coveredFiles": [
+    "tests/unit/chief-of-staff-surfaces-wiring.test.ts",
+    "upgrades/side-effects/conversation-list-pins-wiring-test.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test expectation follows the renamed call in this PR",
+  "eli16Path": "docs/specs/conversation-list-pins.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-pins-wiring-test.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

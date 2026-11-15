@@ -85,6 +85,8 @@ export interface ReceivedMessage {
   messageId: string;
   content: PlaintextMessage;
   timestamp: string;
+  /** Set when the wire carried no timestamp and `timestamp` is this end's receive time (unknown-sender path). */
+  timestampSynthesized?: true;
   envelope: MessageEnvelope;
   /** The identity key the envelope's signature was verified against (decrypted messages only).
    *  The refuse-downgrade mark (spec threadline-standalone-pairing D6, step 6) is recorded only

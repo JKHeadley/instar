@@ -38,7 +38,7 @@ import {
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, readBaseFile, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
-import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, vitestFailureKeys, failuresAllPreexisting, type SessionResult } from './executorSession.js';
+import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, filesNamingTest, relativeImports, shq, testNamePattern, vitestPassedTestCount, vitestFailureKeys, failuresAllPreexisting, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
 import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
@@ -217,6 +217,8 @@ function attemptTmpDirFor(agentHome: string, row: Pick<ExecutionRow, 'initiative
   return shortAttemptTmpDir(row.initiativeId, row.attempt, shortTmpRealRoot(), path.resolve(agentHome));
 }
 
+/** Re-verifications allowed after restarts interrupt an attempt's checks (the session is not re-run). */
+export const MAX_REVERIFY_AFTER_RESTART = 3;
 /** Vitest's marks for a failed test in the output a killed run leaves behind. */
 const RELATED_FAILURE_OUTPUT = /(^|\s)(FAIL|×)\s|\b\d+ failed\b/m;
 /** A report file written by a confined run: read only when it is a regular file of bounded size. */
@@ -518,9 +520,15 @@ export class FeedbackExecutorService {
       const triage = this.opts.triageStore.get(row.initiativeId);
       const awayFromWork = !triage || triage.state === 'hold' || triage.state === 'ignored';
       if (row.ownerEpoch < epoch) {
-        acted.add(row.attemptId);
-        if (!(await this.disarm(row, epoch, 'stale-epoch'))) continue;
-        if (row.state === 'merge-armed') this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:stale-epoch', disarmFailed: false });
+        // An armed PR under an older epoch is a stop: disarm it and leave re-gating to the next tick.
+        // A PR that was never armed is not a stop. Its disarm is a no-op kept as a safety net, and the
+        // PR goes on to its review this tick. The epoch moves on every server restart, and on a night
+        // of frequent restarts a PR that waited a tick each time was never reviewed (2026-11-13: #3129
+        // sat unreviewed for 5 hours under 9 restarts).
+        const armed = row.state === 'merge-armed';
+        if (armed) acted.add(row.attemptId);
+        if (!(await this.disarm(row, epoch, 'stale-epoch'))) { acted.add(row.attemptId); continue; }
+        if (armed) this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:stale-epoch', disarmFailed: false });
         row = this.opts.store.adopt(epoch, row.attemptId);
       }
       if (awayFromWork) {
@@ -1044,11 +1052,16 @@ export class FeedbackExecutorService {
       }
     }
     const intact = (row.workspace && fs.existsSync(row.workspace)) || fs.existsSync(this.attemptPaths(row).reviewDir);
-    if (row.state === 'verifying' && row.reason !== 'reverify-after-restart' && intact && row.publishClone && fs.existsSync(row.publishClone)) {
-      // Verification interrupted by a restart with the workspace intact: verify again once (an
-      // infrastructure interruption is not the item's failure).
+    const reverifies = this.metaJson<{ n: number }>(`exec:reverify:${row.attemptId}`)?.n ?? (row.reason === 'reverify-after-restart' ? 1 : 0);
+    if (row.state === 'verifying' && reverifies < MAX_REVERIFY_AFTER_RESTART && intact && row.publishClone && fs.existsSync(row.publishClone)) {
+      // Verification interrupted by a restart with the workspace intact: verify again, up to
+      // MAX_REVERIFY_AFTER_RESTART times (an infrastructure interruption is not the item's failure).
+      // The session's work is already done; only the trusted checks run again. The hold that would
+      // defer a restart yields to Local Verify, and on a busy day updates restart the server about
+      // hourly, so one re-check was often lost to the next restart (2026-11-12/13).
+      this.setMeta(epoch, `exec:reverify:${row.attemptId}`, { n: reverifies + 1 });
       this.opts.store.patch(epoch, row.attemptId, { state: 'running', reason: 'reverify-after-restart' });
-      this.opts.audit.append('execute:reverify', { attemptId: row.attemptId });
+      this.opts.audit.append('execute:reverify', { attemptId: row.attemptId, n: reverifies + 1 });
       return;
     }
     if (row.state === 'claimed' || row.state === 'verifying') {
@@ -1110,12 +1123,13 @@ export class FeedbackExecutorService {
     }
   }
 
-  /** `failed` → one retry, then hold execution-failed; `not-reproducible` twice → hold not-reproducible. */
-  private async afterFailure(row: ExecutionRow, epoch: number, kind: 'failed' | 'not-reproducible'): Promise<void> {
+  /** `failed` → one retry, then hold execution-failed; `not-reproducible` twice → hold not-reproducible; a verified `already-fixed` → hold at once. */
+  private async afterFailure(row: ExecutionRow, epoch: number, kind: 'failed' | 'not-reproducible' | 'already-fixed'): Promise<void> {
     const meta = this.itemMeta(row.initiativeId);
     if (kind === 'failed') meta.failedSince++; else meta.notReproSince++;
     let holdReason: string | null = null;
-    if (meta.failedSince >= 2) holdReason = 'execution-failed';
+    if (kind === 'already-fixed') holdReason = 'already-fixed';
+    else if (meta.failedSince >= 2) holdReason = 'execution-failed';
     else if (meta.notReproSince >= 2) holdReason = 'not-reproducible';
     if (holdReason) {
       meta.episodes++;
@@ -1124,6 +1138,7 @@ export class FeedbackExecutorService {
       // After a second episode the executor no longer takes the item automatically.
       if (meta.episodes >= 2) meta.blocked = true;
       if (holdReason === 'not-reproducible') this.gradeLatestDecision(epoch, row.initiativeId, 'executor-not-reproducible-twice', 'wrong', 'weak');
+      else if (holdReason === 'already-fixed') this.gradeLatestDecision(epoch, row.initiativeId, 'executor-already-fixed', 'wrong', 'weak');
       else this.gradeLatestDecision(epoch, row.initiativeId, 'executor-infrastructure', 'unknown', 'weak');
       await this.holdItem(epoch, row.initiativeId, holdReason);
     }
@@ -1179,8 +1194,20 @@ export class FeedbackExecutorService {
     if (!result) { this.endAttempt(row, epoch, 'failed', 'result-missing-or-invalid'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
     this.opts.store.patch(epoch, row.attemptId, { outcome: result.outcome });
     if (result.outcome === 'not-reproducible') {
-      this.endAttempt(row, epoch, 'not-reproducible', 'session-claim');
-      await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'not-reproducible');
+      // A claim that an earlier commit already fixed it counts only when trusted code finds that commit
+      // in the attempt's base AND it was committed after the item's first report (a commit older than
+      // the report cannot be the fix for it). Then a second session would only rediscover the same
+      // fix: hold the item now. New reports bring it back, as with every hold.
+      const sourceRepo = this.opts.config().sourceRepoPath;
+      const found = result.fixedByCommit && row.baseSha && sourceRepo && this.opts.git.commitInBase
+        ? await this.opts.git.commitInBase(sourceRepo, result.fixedByCommit, row.baseSha)
+        : null;
+      const firstReport = (this.opts.processing.feedbackByCluster().get(row.clusterId) ?? [])
+        .map((r) => Date.parse(String(r.receivedAt ?? ''))).filter(Number.isFinite).reduce((min, t) => Math.min(min, t), Infinity);
+      const fixedBy = found && Number.isFinite(firstReport) && found.committedAt > firstReport ? found.sha : null;
+      if (result.fixedByCommit) this.opts.audit.append('execute:already-fixed-claim', { attemptId: row.attemptId, claimed: result.fixedByCommit, inBase: found?.sha ?? null, afterFirstReport: found ? found.committedAt > firstReport : null, verified: fixedBy });
+      this.endAttempt(row, epoch, 'not-reproducible', fixedBy ? 'already-fixed' : 'session-claim');
+      await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, fixedBy ? 'already-fixed' : 'not-reproducible');
       return;
     }
     if (result.outcome === 'gave-up') { this.endAttempt(row, epoch, 'failed', 'gave-up'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
@@ -1260,7 +1287,13 @@ export class FeedbackExecutorService {
     // --no-cache: vitest's results cache lives in node_modules, which is the read-only dependency cache here.
     // One vitest run per config: the unit config collects only unit files, so an
     // integration or e2e test file needs its own lane config or it runs nothing.
-    const testCmd = groupTestFilesByConfig(result.testFiles)
+    // Only the listed files that contain the named test: the named test must pass in every run, and
+    // a listed file without it runs nothing under -t (2026-11-13, 54c2a4aa:a2 failed a working fix on
+    // an extra integration file). The bytes come from the change set the checks publish; when no
+    // listed file names the test, every listed file runs, as before.
+    const testFiles = filesNamingTest(result.testFiles, result.testName, (f) => changeSet.entries.find((e) => e.path === f)?.bytes?.toString('utf8') ?? null);
+    if (testFiles.length !== result.testFiles.length) this.opts.audit.append('execute:test-files-narrowed', { attemptId: row.attemptId, listed: result.testFiles, kept: testFiles });
+    const testCmd = groupTestFilesByConfig(testFiles)
       .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
     const diskOk = async (clone: string) => await treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;

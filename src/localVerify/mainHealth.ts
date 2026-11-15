@@ -92,6 +92,30 @@ export interface MainHeadObservation {
 }
 
 /**
+ * The "oldest merge with no green `main` verify after it" clock, after a GREEN `main`
+ * verify. A verify of the current head (or of the head a release commit collapses into)
+ * covers everything: the clock clears. A verify of an OLDER head that was main's head
+ * when its run started still covers every merge made before that start, so the clock
+ * moves forward to the run's start and never backwards. The caller passes
+ * `runStartedAtMs` only for such a run; for a run that started on a head main had
+ * already moved past (it waited in the queue, an error retry, the re-run after a first
+ * failure) it passes null and the clock stays where it is. Leaving the clock untouched
+ * in every older-head case (the behaviour until 2026-11-14) meant that once merges
+ * landed more often than a verify takes, no verify was ever of the current head, the
+ * clock never cleared, and main went `unverified-too-long` three hours after the last
+ * restart however many green verifies had run.
+ */
+export function oldestUnverifiedAfterGreen(
+  prev: number | null,
+  verifiedHeadIsCurrent: boolean,
+  runStartedAtMs: number | null,
+): number | null {
+  if (verifiedHeadIsCurrent || prev === null) return null;
+  if (runStartedAtMs === null || !Number.isFinite(runStartedAtMs)) return prev;
+  return Math.max(prev, runStartedAtMs);
+}
+
+/**
  * A valid `main` head was observed at `now`: the next debounce state, and whether a
  * `main` verify is enqueued for it now. Enqueued once per head (`handled`), after 10
  * minutes of an unchanged head, or 30 minutes after the first unverified head, or at

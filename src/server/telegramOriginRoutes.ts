@@ -8,6 +8,7 @@ import { OriginSendPolicyRefusal } from '../messaging/telegram-origin/OriginSend
 import { originToolGuardDigest } from '../messaging/telegram-origin/OriginToolGuard.js';
 import { classifyOperationOutcome } from '../messaging/telegram-origin/OriginOperationOutcome.js';
 import { readOperationOutcome } from '../messaging/telegram-origin/OriginOwnerRead.js';
+import { devicePersonOf, principalOf } from './mobilePairingRoutes.js';
 
 export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldError): void {
   if (error instanceof OriginSendPolicyRefusal) {
@@ -27,6 +28,8 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
   runtime: () => TelegramOriginRuntime | null | undefined;
   verifyOperator: (proof: string | undefined) => boolean;
   setupGreeting?: () => { send: (text: string) => Promise<{ messageId: number }> } | null;
+  /** native-conversation-base §3a item 6 — the conversation's own read check (`deviceMayUse`, `read`). */
+  mayReadConversation?: (req: Request, ref: string) => boolean;
 }): void {
   const operator = (req: Request, res: Response): boolean => {
     if (deps.verifyOperator(req.get('X-Instar-Operator-Session'))) return true;
@@ -195,6 +198,37 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
       res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
         detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' }, req.app.locals.stateDir));
+    }
+  });
+  // native-conversation-base §3a item 6 — the authored text of a reply this machine
+  // wrote, for its session after a hand-back. API token only: a device token is
+  // refused here whatever the allowlist says, and the caller must pass the same
+  // conversation check the topic's history read applies. Any refusal of a known id
+  // reads exactly like an unknown one.
+  router.get('/telegram/origins/operations/:operationId/text', async (req, res) => {
+    const operationId = req.params.operationId;
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    if (principalOf(req).kind !== 'token' || devicePersonOf(req) !== null) { res.status(403).json({ error: 'device-token-refused' }); return; }
+    const runtime = deps.runtime();
+    if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId }); return; }
+    const unknown = () => res.status(404).json({ error: 'unknown-operation', operationId });
+    try {
+      const audit = await runtime.store.getOperation(operationId);
+      if (!audit) { unknown(); return; }
+      const record = JSON.parse(audit.record.envelopeJson) as import('../messaging/telegram-origin/types.js').TelegramOriginRecord;
+      if (record.producerKind !== 'session' || !record.sessionId || record.originMachineId !== runtime.options.identity.originMachineId) { unknown(); return; }
+      const topicId = record.destination.topicId;
+      if (topicId === null || (deps.mayReadConversation && !deps.mayReadConversation(req, `telegram:${topicId}`))) { unknown(); return; }
+      if (!audit.operation) { res.status(410).json({ error: 'gone', operationId, detail: 'The reply text was removed with the record after its retention window.' }); return; }
+      const held = audit.operation.holdDetail?.text;
+      if (typeof held === 'string') { res.json({ operationId, source: 'hold-detail', text: held }); return; }
+      const child = audit.children[0] ? await runtime.store.getChild(audit.children[0].childId) : null;
+      let sealed: unknown = null;
+      try { sealed = (JSON.parse(child?.materializations[0]?.requestJson ?? 'null') as { policy?: { text?: unknown } } | null)?.policy?.text; } catch { sealed = null; } // @silent-fallback-ok — not silent: an unreadable sealed body answers 410 gone below
+      if (typeof sealed === 'string') { res.json({ operationId, source: 'sealed-policy-input', text: sealed }); return; }
+      res.status(410).json({ error: 'gone', operationId, detail: 'The reply text is no longer stored on this machine.' });
+    } catch {
+      res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId }, req.app.locals.stateDir));
     }
   });
   router.get('/telegram/origins/:originId', async (req, res) => {
