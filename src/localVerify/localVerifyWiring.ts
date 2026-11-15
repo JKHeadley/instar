@@ -23,7 +23,8 @@ import type { PeerClient, PeerResult, PeerRunAnswer, PeerStatus } from './peer.j
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
-import { realGit } from './orchestratorSeams.js';
+import { localVerifyTempRoot, realGit } from './orchestratorSeams.js';
+import { reapLeftovers, realReapDeps, type LeftoverPrefix, type ReapDeps, type ReapOptions } from './leftoverReaper.js';
 import { verifyPaths } from './orchestrator.js';
 import { FloorGate } from './floorGate.js';
 import { StatusReconciler, type StatusReconcilerSeams } from './StatusReconciler.js';
@@ -59,6 +60,14 @@ export function localVerifyAttentionItem(key: string, detail: Record<string, unk
   id: string; title: string; summary: string; priority: 'HIGH' | 'MEDIUM'; mode: 'upsert' | 'create';
 } {
   const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
+  if (key.startsWith('local-verify:memory-pressure:')) {
+    // One item per machine, reopened by a later episode (upsert); closed when memory recovers.
+    return {
+      id, mode: 'upsert', priority: 'HIGH',
+      title: detail.who === 'self' ? 'Local Verify: this machine is short of memory' : 'Local Verify: a test machine is short of memory',
+      summary: String(typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
+    };
+  }
   if (key.startsWith('local-verify:starved:')) {
     const n = String(detail.interruptions ?? 0);
     const waited = String(detail.waitedMinutes ?? '?');
@@ -104,6 +113,14 @@ export interface LocalVerifyWiringOpts {
   /** Override the child entry (tests running from source point at the built dist). */
   mainEntry?: string;
   hooks?: LocalVerifyHooks;
+  /** This machine's memory state in plain words, or null (machine memory care). Absent ⇒ never held. */
+  selfMemoryPressure?: () => string | null;
+  /**
+   * The process table the backstop leftover sweep reads and signals. Absent ⇒ the real one,
+   * except under a test runner (VITEST), where a built service must never signal the test
+   * host's own processes unless the test passes deps explicitly. null ⇒ no sweep.
+   */
+  reapDeps?: ReapDeps | null;
 }
 
 export type LocalVerifyWiringResult =
@@ -148,6 +165,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       try { return githubRuntime().env; } catch { return null; } // @silent-fallback-ok — no explicit GitHub identity makes every request refuse as pr-unreadable
     },
   });
+  const reapDeps = opts.reapDeps !== undefined ? opts.reapDeps : (process.env.VITEST ? null : realReapDeps());
   const service = new LocalVerifyService(
     {
       repo: opts.repo,
@@ -183,6 +201,11 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
       clearSignal: (k, r) => opts.hooks?.clearSignal?.(k, r),
+      // Machine memory care: this machine's own memory state (late-bound: the load sampler
+      // starts after this service), and the backstop sweep of leftover test processes.
+      selfMemoryPressure: () => opts.selfMemoryPressure?.() ?? null,
+      ...(reapDeps ? { reapLeftovers: (prefixes: LeftoverPrefix[], o?: ReapOptions) => reapLeftovers(reapDeps, prefixes, o) } : {}),
+      tempRoot: () => localVerifyTempRoot(),
       isAncestor: (a, d) => isAncestorInBareClone(opts.agentHome, a, d),
       // The same computation, over the files as they are NOW: an update that replaced the dist
       // under this still-running server holds the queue for the restart instead of burning it.
