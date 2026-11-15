@@ -3,7 +3,7 @@
 **Version / slug:** `windows-desktop-video`
 **Date:** `2026-11-14`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required (no gate, sentinel, watchdog or messaging decision); independent code review of the companion interop recorded below`
+**Second-pass reviewer:** `independent fresh-context subagents (code review of the companion; review of the test changes and the added live-test skip)`
 
 ## Summary of the change
 
@@ -71,7 +71,14 @@ Dark-by-default capability that reuses the existing video contract, negotiation 
 
 ## Second-pass review (if required)
 
-**Reviewer:** not required by category. An independent reviewer (fresh subagent, given the code only) read the commit: all nine COM interface layouts, GUIDs, marshalling and per-frame reference counting checked correct, no crash path found. It raised seven defects, all fixed in the follow-up commit: a stream that stops producing never failing (idle race, missing SPS/PPS, a hardware encoder that stops asking for input); a dropped delta not forcing a keyframe; hardware encoder sessions not shut down; unpaced full-size capture with extra copies; the video wait still holding the serial accept loop; the software encoder's extra outputs not drained; a picture returned after the lease stopped.
+**Reviewer:** independent fresh-context Claude subagents, given the code and diff only (not this artifact's conclusions)
+
+**Independent read of the artifact: concur**
+
+Two independent passes:
+
+1. Companion code (commit 70e7e59be4 before fixes): all nine COM interface layouts, GUIDs, marshalling and per-frame reference counting checked correct, no crash path found. It raised seven defects, all fixed in the follow-up commit: a stream that stops producing never failing (idle race, missing SPS/PPS, a hardware encoder that stops asking for input); a dropped delta not forcing a keyframe; hardware encoder sessions not shut down; unpaced full-size capture with extra copies; the video wait still holding the serial accept loop; the software encoder's extra outputs not drained; a picture returned after the lease stopped.
+2. Test changes and the added skip (Local Verify flagged `skipsAdded`): VERDICT concur. No existing assertion was loosened (the transport regex change makes the "relay carries every allowed op" check stricter: the old pattern never matched `capture-h264`; the capture-rate edit follows a renamed expression). The only skipped case is the live Windows run in `tests/e2e/windows-desktop-video-lifecycle.test.ts`, which needs real Windows hardware and the opt-in `WINDOWS_DESKTOP_VIDEO_LIVE_TEST=1` (not an `INSTAR_*` name); its two wiring tests always run, and unit + integration cover the same logic against an HMAC-checking companion stand-in. Both sides of each new decision are covered. Its three minor gaps were closed in commit 8b4a600ef5: a new lease restarts the empty-reply clock; a stalled session switches to pictures end to end; the pace test reads scheduled delays instead of wall-clock picture counts.
 
 ## Evidence pointers
 
