@@ -11107,22 +11107,6 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
     }
 
-    // GET /preferences (structured, dated learned preferences): one bullet after the
-    // session-context bullet of the Preferences section (a "- " line, never the Registry
-    // First table row that also names that route); appended when no such bullet exists.
-    if (content.includes('/preferences/session-context') && !content.includes(PREFERENCES_LIST_MARKER)) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/preferences/session-context'));
-      if (at >= 0) {
-        lines.splice(at + 1, 0, PREFERENCES_LIST_CLAUDEMD_LINE(port));
-        content = lines.join('\n');
-      } else {
-        content = `${content.replace(/\n*$/, '\n')}${PREFERENCES_LIST_CLAUDEMD_LINE(port)}\n`;
-      }
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added GET /preferences (dated learned preferences) line');
-    }
-
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
     // after the capacity bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PLANS_PEOPLE_MARKER)) {
@@ -15204,6 +15188,23 @@ That envelope is deliberate: learned preferences are **signals, not authoritativ
       content += '\n' + pooledPrefsLine;
       patched = true;
       result.upgraded.push('CLAUDE.md: added pooled-preferences (WS2.1) awareness (Correction & Preference Learning multi-machine extension)');
+    }
+
+    // GET /preferences (structured, dated learned preferences): runs AFTER the Preferences section
+    // is added above, so a first migration places it and a second changes nothing. One bullet after the
+    // session-context bullet of the Preferences section (a "- " line, never the Registry
+    // First table row that also names that route); appended when no such bullet exists.
+    if (content.includes('/preferences/session-context') && !content.includes(PREFERENCES_LIST_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/preferences/session-context'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, PREFERENCES_LIST_CLAUDEMD_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${PREFERENCES_LIST_CLAUDEMD_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added GET /preferences (dated learned preferences) line');
     }
 
     const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;

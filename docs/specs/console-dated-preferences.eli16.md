@@ -21,3 +21,7 @@ Only the owner can read it, with the same key as the rest of the dashboard. A se
 ## What you need to decide
 
 Nothing. This is a small, read-only addition that a revert fully undoes.
+
+## Update order fix
+
+When an existing agent updates, a step adds the new preferences line to its instructions file. That step used to run before the step that adds the Preferences section the line belongs in. So the first update added the section, and only the second update added the line. The step now runs right after the section is added, so one update does everything and a second update changes nothing.
