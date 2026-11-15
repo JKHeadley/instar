@@ -34,6 +34,7 @@ import { MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION } from '../core/PostUpdateMigr
 import { POOL_MOVE_NUDGE_CLAUDE_MD_LINE, POOL_READINESS_CLAUDE_MD_LINE, RESOURCE_PLACEMENT_CLAUDE_MD_LINE } from '../core/PostUpdateMigrator.js';
 import { CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET } from '../core/PostUpdateMigrator.js';
 import { UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE } from '../core/PostUpdateMigrator.js';
+import { defaultRegistry, type AwarenessRegistry } from '../awareness/registry.js';
 
 export interface AgentIdentity {
   name: string;
@@ -299,6 +300,7 @@ export function generateClaudeMd(
   hasTelegram: boolean,
   hasWhatsApp: boolean = false,
   hasIMessage: boolean = false,
+  awarenessRegistry: AwarenessRegistry = defaultRegistry(),
 ): string {
   let content = `# CLAUDE.md — ${projectName}
 
@@ -2397,7 +2399,9 @@ Rule: I do not state that work landed inside another agent's state unless I have
 
   content += recoveryAwareness(port);
   content += directJobSupervisionQualityAwareness(port);
-  return content;
+  // LAST STEP (docs/specs/awareness-entry-registry.md): the feature notes read from
+  // src/data/awareness/. New awareness text goes there as one file, not above.
+  return awarenessRegistry.withRegistry(content, { port, hasTelegram }, { markers: true }).content;
 }
 
 /** Shared by new installs and the update migration. */

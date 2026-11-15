@@ -160,6 +160,7 @@ import {
   withoutTailStamp,
   type CoreRegionLocation,
 } from '../scaffold/claudeMdLayout.js';
+import { AWARENESS_REGISTRY_MARKER_PREFIX, defaultRegistry, emptyRegistry, findRegistryBlock, holdRegistryBlock, unreportedRegistryErrorLines, withoutRegistryBlock, type AwarenessRegistry } from '../awareness/registry.js';
 import { getMigrationDefaults, applyDefaults, SKILL_LEARNING_DEFAULTS } from '../config/ConfigDefaults.js';
 import { normalizeSkillFrontmatter } from './skillCanonicalFrontmatter.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
@@ -2122,6 +2123,8 @@ export interface MigratorConfig {
   claudeCodePath?: string | null;
   /** The server's configured listen host (absent ⇒ read from config.json). */
   host?: string;
+  /** Test seam: the awareness entry registry (default: the package's `src/data/awareness/`). */
+  awarenessRegistry?: AwarenessRegistry;
 }
 
 /**
@@ -9307,6 +9310,8 @@ setTimeout(() => process.exit(0), 2000);
     // Reference layout (docs/specs/claude-md-reference-layout.md): the instar
     // block between the core markers is regenerated from the canonical full
     // document; the legacy append chain never runs against the small file.
+    // An awareness entry that failed its checks is left out; say so once (awareness-entry-registry spec 3.5).
+    result.errors.push(...unreportedRegistryErrorLines(this.awarenessRegistry()));
     const region = findCoreRegion(original);
     if (region === 'broken') {
       result.upgraded.push(`REVIEW: CLAUDE.md has only one of the instar core markers (or they are out of order), so instar left it untouched. Restore both markers, or remove both to have it converted again. The whole previous file is at ${CLAUDE_MD_LEGACY_BACKUP_REL} if it was converted before.`);
@@ -9372,6 +9377,11 @@ setTimeout(() => process.exit(0), 2000);
   }
 
   private canonicalClaudeMdCache: string | undefined;
+  private canonicalClaudeMdNoRegistryCache: string | undefined;
+
+  private awarenessRegistry(): AwarenessRegistry {
+    return this.config.awarenessRegistry ?? defaultRegistry();
+  }
 
   /**
    * The agent's own name from `.instar/AGENT.md` ("**Name**: Luna" or a
@@ -9398,15 +9408,27 @@ setTimeout(() => process.exit(0), 2000);
    * template, every migration-appended section, and the context-death block.
    * The reference layout's instar block and reference files are built from it.
    */
-  buildCanonicalClaudeMd(): string {
-    if (this.canonicalClaudeMdCache !== undefined) return this.canonicalClaudeMdCache;
+  buildCanonicalClaudeMd(opts: { registry?: false } = {}): string {
+    // `{ registry: false }`: the same build with an empty awareness registry (the
+    // Codex/Gemini mirror's source must never hold registry text). Cached separately.
+    const bare = opts.registry === false;
+    const cached = bare ? this.canonicalClaudeMdNoRegistryCache : this.canonicalClaudeMdCache;
+    if (cached !== undefined) return cached;
     const name = this.config.projectName || 'agent';
     const scratch: MigrationResult = { upgraded: [], skipped: [], errors: [] };
-    let full = generateClaudeMd(name, this.readAgentDisplayName() ?? name, this.config.port, this.config.hasTelegram);
-    full = this.patchClaudeMdContent(full, scratch).content;
+    // Both inner calls get an EMPTY registry: entry text must never take part in the legacy
+    // chain's `content.includes(marker)` guards. One build serves both variants.
+    const none = emptyRegistry();
+    let full = generateClaudeMd(name, this.readAgentDisplayName() ?? name, this.config.port, this.config.hasTelegram, false, false, none);
+    full = this.patchClaudeMdContent(full, scratch, none).content;
     if (!this.readIdentityPins()[CONTEXT_DEATH_MARKER_ID]) full = insertContextDeathClaudeBlock(full);
-    this.canonicalClaudeMdCache = full;
-    return full;
+    this.canonicalClaudeMdNoRegistryCache = full;
+    // MUST STAY THE LAST STEP (awareness-entry-registry spec 3.4): the feature notes go at the
+    // very end without marker lines, so no marker reaches the layout parser and no earlier
+    // section changes its parent or file. `markers: false` is not idempotent: this is its ONE
+    // call, on a document that holds no feature-notes section yet (the registry above is empty).
+    this.canonicalClaudeMdCache = this.awarenessRegistry().withRegistry(full, { port: this.config.port, hasTelegram: this.config.hasTelegram }, { markers: false }).content;
+    return bare ? full : this.canonicalClaudeMdCache;
   }
 
   /** Write the reference files that differ; remove generated ones no longer produced. */
@@ -9481,6 +9503,9 @@ setTimeout(() => process.exit(0), 2000);
           result.errors.push(`CLAUDE.md canonical build: ${err instanceof Error ? err.message : String(err)} — CLAUDE.md left unchanged`);
           return;
         }
+        // Deliberately NOT passed through withoutRegistryBlock (awareness-entry-registry spec 3.4):
+        // instar writes the marked feature-notes block only into a CLAUDE.md WITHOUT core markers,
+        // so text below the core markers never holds one of ours; it is compared as ordinary text.
         const ex = extractOperatorContent(added, full, migratorOnlyText);
         // An older instar's append chain re-adds dozens of sections at once; an
         // operator copying a section or two below the block is left alone.
@@ -9552,7 +9577,12 @@ setTimeout(() => process.exit(0), 2000);
     // nothing in it is operator-written and there is nothing worth backing up.
     const extraction = opts.freshInit
       ? { kept: '', keptUnits: 0, movedUnits: 0, keptTitles: [] as string[], movedDiffering: [] as Array<{ title: string; lines: string[] }> }
-      : extractOperatorContent(legacy, full, migratorOnlyText);
+      // The marked feature-notes block is instar's whatever version wrote it, so it is removed by
+      // its markers before the text comparison. Only this argument: the backup below keeps `legacy`.
+      : extractOperatorContent(withoutRegistryBlock(legacy), full, migratorOnlyText);
+    if (!opts.freshInit && findRegistryBlock(legacy).state === 'broken') {
+      result.upgraded.push('REVIEW: CLAUDE.md had damaged feature-notes marker lines, so that text could not be recognised by its markers and went through the ordinary comparison; check the kept sections for leftover feature notes.');
+    }
     const backupPath = path.join(this.config.projectDir, CLAUDE_MD_LEGACY_BACKUP_REL);
     const differing = extraction.movedDiffering;
     const next = renderLayoutClaudeMd(full, extraction.kept, 'reference', differing.length > 0 ? differingLinesPointer(differing.length) : '');
@@ -9592,8 +9622,11 @@ setTimeout(() => process.exit(0), 2000);
    * (pre-reference-layout) CLAUDE.md, and against `generateClaudeMd()` output
    * to build the canonical full document for the reference layout.
    */
-  private patchClaudeMdContent(input: string, result: MigrationResult): { content: string; patched: boolean } {
-    let content = input;
+  private patchClaudeMdContent(input: string, result: MigrationResult, awarenessRegistry: AwarenessRegistry = this.awarenessRegistry()): { content: string; patched: boolean } {
+    // The marked feature-notes block is held out while the chain runs (a one-line stand-in keeps
+    // its place), so entry text never takes part in the `content.includes(marker)` guards below.
+    const heldFeatureNotes = holdRegistryBlock(input);
+    let content = heldFeatureNotes.text;
     let patched = false;
     // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
     // as a scope fact. Inserted after the "Ask Permission" trap when that
@@ -16800,6 +16833,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.upgraded.push('CLAUDE.md: added PR links ask for the review section');
     }
 
+    // MUST STAY THE LAST STEP (docs/specs/awareness-entry-registry.md). New awareness text is
+    // NOT added above: it goes in src/data/awareness/<id>.md and arrives through this call,
+    // which rebuilds the marked feature-notes block at the end of the file on every update.
+    // The original block goes back where it was first: if the registry then reports the
+    // document broken, it has changed nothing and the block's own bytes are still there.
+    content = heldFeatureNotes.restore(content);
+    const featureNotes = awarenessRegistry.withRegistry(content, { port: this.config.port, hasTelegram: this.config.hasTelegram }, { markers: true });
+    if (featureNotes.broken) {
+      result.errors.push(findRegistryBlock(content).state === 'broken'
+        ? 'CLAUDE.md: the feature-notes marker lines are damaged (one is missing, repeated or out of order), so instar left that section untouched and its notes may be out of date. Restore one start line and one end line, or delete both.'
+        : 'CLAUDE.md: a code block in the file is never closed, so the feature notes could not be written safely; instar left that section untouched and its notes may be out of date. Close the code block.');
+    } else {
+      content = featureNotes.content;
+      // Judged against the INPUT, not the block-stripped working copy: an unchanged block is no change.
+      const notesIn = (doc: string): string => { const b = findRegistryBlock(doc); return b.state === 'well-formed' ? doc.slice(b.start, b.end) : ''; };
+      if (notesIn(content) !== notesIn(input) || (!patched && content !== input)) result.upgraded.push('CLAUDE.md: feature notes updated');
+      if (content !== input) patched = true;
+    }
+
     return { content, patched };
   }
 
@@ -16843,12 +16895,16 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
     // canonical full document the instar block and reference files come from.
     if (findCoreRegion(claudeMd) !== null) {
       try {
-        claudeMd = this.buildCanonicalClaudeMd();
+        claudeMd = this.buildCanonicalClaudeMd({ registry: false });
       } catch (err) {
         result.errors.push(`shadow capabilities: canonical CLAUDE.md build failed: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
+    } else {
+      // The marker loop below must never read feature-notes text (awareness-entry-registry spec 3.4).
+      claudeMd = withoutRegistryBlock(claudeMd);
     }
+    result.errors.push(...unreportedRegistryErrorLines(this.awarenessRegistry()));
 
     // Markers identifying each capability section migrateClaudeMd may have
     // ensured exists in CLAUDE.md. Kept in document order so appended
@@ -17251,7 +17307,9 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
     // capabilities that are appended to framework shadows.
-    const boundaryMarkers = [...markers, "- What's running:", '**SessionReaper**'];
+    // The feature-notes marker prefix bounds a slice at ANY of its marker lines (a damaged block
+    // cannot be removed from the source). It belongs here only, never in `markers`.
+    const boundaryMarkers = [...markers, "- What's running:", '**SessionReaper**', AWARENESS_REGISTRY_MARKER_PREFIX];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
       const shadowPath = path.join(this.config.projectDir, shadowName);
@@ -17267,6 +17325,11 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
 
       let appended = refreshOriginCanaryCleanupAwareness(refreshOriginCanaryStartupAwareness(shadowContent));
       let mirrored = appended === shadowContent ? 0 : 1;
+      // The copy's own feature-notes block is taken out before the loops (they test
+      // `appended.includes(marker)`, and an entry may quote a marker) and rebuilt just before the write.
+      const copyNotesBlock = findRegistryBlock(appended);
+      const heldCopyNotes = holdRegistryBlock(appended);
+      appended = heldCopyNotes.text;
       // A shadow that still carries a SHIPPED older Normal-Chrome section loses it here (whether or not
       // the current section is already present, so a release revert cannot leave both), and the marker
       // loop below mirrors the current section once. An edited older section is kept.
@@ -17396,6 +17459,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       if (claudeMd.includes('**Private job transfer approvals**')) {
         const next = applyJobMeshGuide(appended, jobTransferGuide(this.config.port));
         if (next !== appended) { appended = next; mirrored++; }
+      }
+
+      if (copyNotesBlock.state === 'broken') {
+        result.errors.push(`${shadowName}: the feature-notes marker lines are damaged (${copyNotesBlock.reason}), so instar left that section untouched and its notes may be out of date. Restore one start line and one end line, or delete both.`);
+      } else {
+        // The copy's original block goes back where it was first, so a broken result changes nothing.
+        appended = heldCopyNotes.restore(appended);
+        const notes = this.awarenessRegistry().withRegistry(appended, { port: this.config.port, hasTelegram: this.config.hasTelegram }, { markers: true });
+        const withNotes = notes.content;
+        if (notes.broken) {
+          result.errors.push(`${shadowName}: a code block in the file is never closed, so the feature notes could not be written safely; instar left that section untouched and its notes may be out of date. Close the code block.`);
+        } else if (notes.changed) {
+          // One mirrored change only when the final text differs from the original copy
+          // (line endings aside: a CRLF copy is written back in CRLF below).
+          const lf = (t: string): string => t.replace(/\r\n/g, '\n');
+          const notesOf = (t: string): string => { const b = findRegistryBlock(t); return b.state === 'well-formed' ? lf(t.slice(b.start, b.end)) : ''; };
+          if (mirrored === 0 ? lf(withNotes) !== lf(shadowContent) : notesOf(withNotes) !== notesOf(shadowContent)) mirrored++;
+        }
+        appended = withNotes;
       }
 
       if (mirrored > 0) {

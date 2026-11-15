@@ -329,6 +329,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { unreportedRegistryDegradations } from '../awareness/registry.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
@@ -5196,6 +5197,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       agentName: config.projectName,
       instarVersion: startupVersion,
     });
+    // An awareness entry (src/data/awareness/) that failed its checks is left out of the agent's instructions: say so once.
+    for (const event of unreportedRegistryDegradations()) degradationReporter.report(event);
 
     // HumanAsDetectorLog — treats a human-caught coherence break (a correction,
     // a "you already said", a "why didn't you catch this") as evidence that some
