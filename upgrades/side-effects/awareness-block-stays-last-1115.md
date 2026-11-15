@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-The awareness entry registry (PR #3171, spec `docs/specs/awareness-entry-registry.md`) writes one marked feature-notes block at the END of CLAUDE.md and rebuilds it on every update. PR #3053 adds the first entry. Its Local Verify run failed the idempotency tests (`PostUpdateMigrator-org-intent-runtime`, `mobile-native-capacity-screens-claudemd`). `insertContextDeathClaudeBlock` runs after `migrateClaudeMd`. When the file had no `## Critical Anti-Patterns` section, it appended one AFTER the block. The next update then moved the block back to the end, so CLAUDE.md changed on every run.
+The awareness entry registry (PR #3171, spec `docs/specs/awareness-entry-registry.md`) writes one marked feature-notes block at the END of CLAUDE.md and rebuilds it on every update. PRs #3053 and #3183 add the first entries. Their Local Verify runs failed the idempotency tests (`PostUpdateMigrator-org-intent-runtime`, `mobile-native-capacity-screens-claudemd`). `insertContextDeathClaudeBlock` runs after `migrateClaudeMd`. When the file had no `## Critical Anti-Patterns` section, it appended one AFTER the block. The next update then moved the block back to the end, so CLAUDE.md changed on every run.
 
 The fix: `insertContextDeathClaudeBlock` finds a well-formed registry block (`findRegistryBlock`) and treats its start as the end of the document. It inserts into an existing Critical Anti-Patterns section before that point, or creates the section just before the block. A document with no block takes the same path as before, byte for byte.
 
@@ -46,6 +46,8 @@ CLAUDE.md placement only, for agents whose file lacked the section. No API, conf
 Revert the one function. No state is written beyond CLAUDE.md text, which the next update rebuilds.
 
 ## Tests
+
+- New `tests/unit/awareness-block-stays-last.test.ts` (4 cases: create-section-before-block, insert into a last section without entering the block, second run is a no-op, no-block documents unchanged).
 
 - Two `migrate()` runs on the org-intent fixture are byte-identical (they differed before).
 - `PostUpdateMigrator-org-intent-runtime`, `mobile-native-capacity-screens-claudemd` and the awareness registry tests: 4 files, 88 of 88 passed.
