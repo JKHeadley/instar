@@ -327,3 +327,74 @@ export function filesHeadline({ root, machine }) {
   if (root && !root.ok) return { text: root.kind === 'off' ? 'The file viewer is switched off.' : 'Can’t read the file list.', tone: root.kind === 'off' ? 'unknown' : 'bad', sub: root.text };
   return { text: 'Open a file, or find one by name.', tone: 'ok', sub: machine ? `Files on ${machine}. Each machine has its own.` : null };
 }
+
+// ── finding a file across the whole project (GET /api/files/search) ──────
+
+export const SEARCH_LIMIT = 50;
+/** The search route's address for a query. */
+export function searchUrl(q, limit = SEARCH_LIMIT) {
+  return `/api/files/search?q=${encodeURIComponent(String(q || '').trim())}&limit=${limit}`;
+}
+
+/**
+ * GET /api/files/search → rows like searchLoaded's, or `{ unsupported: true }` when this
+ * server is older and has no search route (a 404 that is not "the file viewer is off"),
+ * so the page falls back to searching the folders it already opened.
+ */
+export function buildSearch(res, q) {
+  const query = String(q || '').trim().toLowerCase();
+  if (!res || res.status !== 200 || !res.data || !Array.isArray(res.data.results)) {
+    const status = res ? res.status : 0;
+    const err = res && res.data && typeof res.data.error === 'string' ? res.data.error : '';
+    if (status === 404 && !/disabled/i.test(err)) return { ok: false, unsupported: true, query };
+    return { ok: false, unsupported: false, query, ...refusalWords(status, res && res.data) };
+  }
+  const rows = res.data.results
+    .filter((e) => e && typeof e.path === 'string' && typeof e.name === 'string' && (e.type === 'file' || e.type === 'directory'))
+    .map((e) => {
+      const p = normPath(e.path);
+      return { key: `find:${p}`, main: e.name, sub: e.type === 'directory' ? `folder · ${folderWords(p)}` : folderWords(p), path: p, type: e.type };
+    });
+  const truncated = res.data.truncated === true;
+  return {
+    ok: true, query, rows, truncated, more: 0,
+    note: truncated ? `Showing the first ${rows.length} matches; type more of the name to narrow it.` : rows.length ? 'Searched every folder you allow this page to browse.' : null,
+    empty: rows.length ? null : 'No file or folder by that name in the folders you allow.',
+  };
+}
+
+// ── image preview (GET /api/files/image) ───────────────────────────────────
+
+/** Largest image the preview route serves (the server's own read limit may be lower). */
+export const IMAGE_PREVIEW_MAX = 5 * 1_048_576;
+/** The only types the page shows; the server checks the real bytes, never SVG. */
+export const PREVIEW_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+/** The preview route's address for a path. */
+export function imageUrl(p) {
+  return `/api/files/image?path=${encodeURIComponent(normPath(p))}`;
+}
+
+/**
+ * Should an opened binary file be previewed? Only the raster types the page knows
+ * (PNG, JPEG, GIF, WebP — never SVG), and only up to 5 MB and the server's own limit.
+ */
+export function previewPlan(f, config = {}) {
+  if (!f || f.kind !== 'binary' || !f.image) return { preview: false, why: null };
+  if (!PREVIEW_TYPES.includes(f.image)) return { preview: false, why: 'This kind of image is not previewed here; download it to look at it.' };
+  const serverMax = Number.isFinite(config.maxFileSize) ? config.maxFileSize : Infinity;
+  const max = Math.min(IMAGE_PREVIEW_MAX, serverMax);
+  if (!Number.isFinite(f.size) || f.size <= 0) return { preview: false, why: 'This image is empty, so there is nothing to preview.' };
+  if (f.size > max) return { preview: false, why: `This image is ${sizeWords(f.size)}; images over ${sizeWords(max)} are not previewed here. Download it to look at it.` };
+  return { preview: true, why: null };
+}
+
+/** The preview route's answer → show it (with its type) or say why not. */
+export function previewResult(status, contentType, data) {
+  if (status === 415) return { ok: false, text: 'This file is named like an image but is not one this page can show, so it is not shown. Download it to look at it.' };
+  if (status === 413) return { ok: false, text: `This image is too large to preview here (over ${sizeWords(data && data.maxSize) || 'the limit'}). Download it to look at it.` };
+  if (status !== 200) return { ok: false, text: `No preview: ${refusalWords(status, data || {}).text}` };
+  const mime = String(contentType || '').split(';')[0].trim().toLowerCase();
+  if (!PREVIEW_TYPES.includes(mime)) return { ok: false, text: 'The server did not send a picture this page can show.' };
+  return { ok: true, mime };
+}

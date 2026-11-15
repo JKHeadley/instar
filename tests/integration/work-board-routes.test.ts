@@ -292,7 +292,7 @@ describe('visibility follows the card\'s conversation', () => {
   });
 });
 
-describe('B24: an agent card asking approval of a spec or design needs its constitution check (Echo Bugs topic 10000002750)', () => {
+describe('B25: an agent card asking approval of a spec or design needs its constitution check (Echo Bugs topic 10000002750)', () => {
   const SPEC_CARD = { title: 'Approve the Work Board phase 2 design', need: 'The design spec is ready; approve it so I can build it.', doneWhen: [{ id: 'd1', text: 'Approved' }], outward: false };
   const fireOn = (needle: string) => async (text: string) => (text.includes(needle)
     ? { hold: true, issue: 'asks approval of a design with no constitution check result', suggestion: 'run the check and add one line with its result' }
@@ -304,7 +304,7 @@ describe('B24: an agent card asking approval of a spec or design needs its const
     const r = await request(c.app).post('/work-board/cards').set(bearer()).send(SPEC_CARD);
     expect(r.status).toBe(422);
     expect(r.body.error).toBe('spec-approval-unchecked');
-    expect(r.body.rule).toBe('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(r.body.rule).toBe('B25_SPEC_APPROVAL_UNCHECKED');
     expect(r.body.suggestion).toMatch(/run the check/);
     expect(seen[0]).toContain('title: Approve the Work Board phase 2 design');
     expect((await request(c.app).get('/work-board').set(bearer())).body.cards ?? []).toHaveLength(0);

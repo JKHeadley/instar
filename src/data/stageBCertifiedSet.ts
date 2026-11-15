@@ -337,7 +337,7 @@ export const STAGE_B_CERTIFIED_SET = {
     },
     {
       "file": "src/core/specConstitutionCheckLedger.ts",
-      "reason": "Constitution-check record store and the B24 rule text for the tone gate (one small JSON file, a peer-merge cache fed by an injected fetch, and a prompt renderer; no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+      "reason": "Constitution-check record store and the B25 rule text for the tone gate (one small JSON file, a peer-merge cache fed by an injected fetch, and a prompt renderer; no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
     },
     {
       "file": "src/core/agent-reach.ts",

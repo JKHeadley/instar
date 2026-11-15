@@ -69,7 +69,7 @@ export interface WorkBoardRouteDeps {
   saveSettings: (patch: Record<string, unknown>) => boolean;
   log?: (event: string, detail: Record<string, unknown>) => void;
   /**
-   * B24 (Echo Bugs topic 10000002750): judge an AGENT-written card text — does it ask
+   * B25 (Echo Bugs topic 10000002750): judge an AGENT-written card text — does it ask
    * the owner to approve a spec or design without carrying its constitution check
    * result? A hold refuses the write with 422 and the way through. Absent ⇒ no judge.
    */
@@ -98,7 +98,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
   };
 
   /**
-   * B24 hold for agent writes. Returns true when the write may proceed; on a hold it
+   * B25 hold for agent writes. Returns true when the write may proceed; on a hold it
    * has written the 422 (or a retryable 503 when the judge could not answer). A
    * person's own write is never judged.
    */
@@ -118,7 +118,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
       deps.log?.('spec-approval-judge-unavailable', {});
       res.status(503).json({
         error: 'spec-approval-judge-unavailable',
-        rule: 'B24_SPEC_APPROVAL_UNCHECKED',
+        rule: 'B25_SPEC_APPROVAL_UNCHECKED',
         retryable: true,
         message: 'The check that reads agent-written cards for a spec or design approval ask could not answer just now. Nothing was written; write the card again in a minute.',
       });
@@ -128,7 +128,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     deps.log?.('spec-approval-held', { issue: v.issue });
     res.status(422).json({
       error: 'spec-approval-unchecked',
-      rule: 'B24_SPEC_APPROVAL_UNCHECKED',
+      rule: 'B25_SPEC_APPROVAL_UNCHECKED',
       issue: v.issue,
       suggestion: v.suggestion,
       message: 'This card asks the owner to approve a spec or design without its constitution check result. Run the built-in constitution check on it, then write the card again with one line giving the result.',

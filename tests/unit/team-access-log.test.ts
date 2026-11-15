@@ -421,3 +421,19 @@ describe('chained rows (Step 2b)', () => {
     expect(toMergeRow(plain as TeamAccessRow, [])).toMatchObject({ origin: 'm1', incarnation: 'v1' });
   });
 });
+
+describe('browser-bind (instar-document-viewer §3.6a)', async () => {
+  const { validateMachineEvent } = await import('../../src/core/TeamAccessEvents.js');
+  const ev = { type: 'browser-bind', keyHash: 'k1', deviceId: 'b1', boundTo: 'mara', linkedByDeviceId: 'p1', linkedByKeyHash: 'pk1', linkedAt: '2026-11-10T20:00:00.000Z', expiresAt: '2026-12-10T20:00:00.000Z', scope: 'documents', signed: { host: 'h', timeMs: '1', sig: 's', bodyB64: 'e30' } };
+  it('validates a link with its signed request, and never binds a computer to the owner', () => {
+    expect(validateMachineEvent(ev)).toMatchObject({ type: 'browser-bind', boundTo: 'mara', scope: 'documents' });
+    expect(validateMachineEvent({ ...ev, boundTo: 'owner' })).toBeNull();
+    expect(validateMachineEvent({ ...ev, boundTo: 'owner-browser' })).toBeNull();
+    expect(validateMachineEvent({ ...ev, signed: undefined })).toBeNull();
+    expect(validateMachineEvent({ ...ev, scope: 'everything' })).toBeNull();
+    // The signing phone key is named, so a peer verifies against exactly that key (not the phone's newest).
+    expect(validateMachineEvent(ev)).toMatchObject({ linkedByKeyHash: 'pk1' });
+    expect(validateMachineEvent({ ...ev, linkedByKeyHash: undefined })).toBeNull();
+    expect(validateMachineEvent({ type: 'browser-unbind', keyHash: 'k1', deviceId: 'b1' })).toEqual({ type: 'browser-unbind', keyHash: 'k1', deviceId: 'b1' });
+  });
+});

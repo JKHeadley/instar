@@ -41,7 +41,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
-  WorkBoardSpecApprovalJudge: { pending: 'wave-3' }, // B24 card judge (spec-approval-constitution-check); graded by its route tests until a bench battery lands
+  WorkBoardSpecApprovalJudge: { pending: 'wave-3' }, // B25 card judge (spec-approval-constitution-check); graded by its route tests until a bench battery lands
   // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
   // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
   // progress observed after a restart) until a bench battery lands.

@@ -367,7 +367,7 @@ import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
-import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
@@ -594,7 +594,10 @@ import type { AutoUpdater } from '../core/AutoUpdater.js';
 import type { AutoDispatcher } from '../core/AutoDispatcher.js';
 import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import type { TelegraphService } from '../publishing/TelegraphService.js';
-import type { PrivateViewer } from '../publishing/PrivateViewer.js';
+import { ViewsReplacedByDocumentsError, type PrivateViewer } from '../publishing/PrivateViewer.js';
+
+/** The words a refused page creation answers with (instar-document-viewer §3.9b). */
+const VIEWS_REPLACED_DETAIL = 'Documents are on for this agent, so new read-only pages are not made. Make a document instead: POST /docs with the same title and markdown. Links to existing pages keep working.';
 import type { TunnelManager } from '../tunnel/TunnelManager.js';
 import type { EvolutionManager } from '../core/EvolutionManager.js';
 import type { EvolutionStatus, EvolutionType, GapCategory } from '../core/types.js';
@@ -785,6 +788,8 @@ import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
 import { foldKeyForConversation } from '../monitoring/FoldHoldStore.js';
 import { RelayRefusedError } from '../core/TelegramRelay.js';
+import { isOperationReference } from '../messaging/telegram-origin/OriginPolicyVerdict.js';
+import { AdvisoryAnswerClosedError } from '../messaging/telegram-origin/types.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { registerEmailRoutes } from './emailRoutes.js';
@@ -792,6 +797,8 @@ import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
+import { callerHasDocumentHome, detectOldViewLink } from '../documents/readablePages.js';
+import { signViewPath } from './middleware.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
 import { detectOperatorErrand } from '../core/operator-errand.js';
 import { detectUnownedHandoff } from '../core/unowned-handoff.js';
@@ -1289,6 +1296,12 @@ export interface RouteContext {
   quotaTracker: QuotaTracker | null;
   publisher: TelegraphService | null;
   viewer: PrivateViewer | null;
+  /** Old-link guarantee (instar-document-viewer §3.9b): true while documents replace new read-only pages. */
+  documentsReplaceViews?: () => boolean;
+  /** A document for something the system writes; null when documents do not replace pages (§3.9b). */
+  publishSystemDocument?: (title: string, markdown: string, preferred?: string | null) => { id: string; url: string; primary: string } | null;
+  /** The current link to a system document that still exists, or null (§3.9b). */
+  systemDocumentLink?: (id: string) => string | null;
   tunnel: TunnelManager | null;
   evolution: EvolutionManager | null;
   watchdog: SessionWatchdog | null;
@@ -4772,6 +4785,21 @@ export function createRoutes(ctx: RouteContext): Router {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal (outbound-jargon-filepath-gap §2.3).
       }
 
+      // instar-document-viewer §3.9b — old-style page link (B24). SIGNAL ONLY, and only while documents
+      // replace pages here and the sender can react to a nudge. Fail-OPEN: a throw skips the signal.
+      if ((channel === 'telegram' || channel === 'app') && kindForSignals === 'reply' && options.noReactionPossible !== true && ctx.documentsReplaceViews?.() === true) {
+        try {
+          // Ownership from facts: a signature made with this agent's key, or one of this machine's own hosts.
+          const ownHosts: string[] = ['localhost', '127.0.0.1'];
+          try { const ext = ctx.tunnel?.getExternalUrl?.('/'); if (ext) ownHosts.push(new URL(ext).host); } catch { /* @silent-fallback-ok: no tunnel host, signature check still applies */ }
+          const key = ctx.config.authToken;
+          const ov = detectOldViewLink(text, { ownHosts, ...(key ? { sigValid: (viewPath: string, sig: string) => signViewPath(viewPath, key) === sig } : {}) });
+          if (ov.detected) signals.oldViewLink = { detected: true, ...(ov.match ? { match: ov.match } : {}), ...(ov.ownership ? { ownership: ov.ownership } : {}) };
+        } catch {
+          // @silent-fallback-ok — detector errors never override the authority; skip the signal.
+        }
+      }
+
       // operator-needs-first-screen §6 — surface referral (B22). SIGNAL ONLY, and only for a
       // sender that can react to a nudge: a caller that treats any hold as final never sees it.
       // Fail-OPEN: a detector throw skips the signal, never withholds.
@@ -5261,6 +5289,10 @@ export function createRoutes(ctx: RouteContext): Router {
               advisoryUnavailable: !result.decisionRef
                 ? 'no-decision-ref'
                 : 'quality-recording-not-live',
+              // native-conversation-forwarded-advisory item 1 — a reply in custody reads
+              // these to tell a verdict (a real rule, or a floor catch) from an outage.
+              ...(result.failedClosed ? { failedClosed: true } : {}),
+              ...(result.degradedToDeterministic ? { degradedToDeterministic: true } : {}),
               latencyMs: result.latencyMs,
             },
           };
@@ -5352,6 +5384,8 @@ export function createRoutes(ctx: RouteContext): Router {
             rule: result.rule,
             issue: result.issue,
             suggestion: result.suggestion,
+            ...(result.failedClosed ? { failedClosed: true } : {}),
+            ...(result.degradedToDeterministic ? { degradedToDeterministic: true } : {}),
             latencyMs: result.latencyMs,
           },
         };
@@ -9240,16 +9274,46 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/chief-of-staff/triage', async (req, res) => {
     if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
     if (!requireMandatePin(req, res)) return;
-    if (!ctx.initiativeTracker || !ctx.viewer) { res.status(503).json({ error: !ctx.initiativeTracker ? 'initiative tracker not available' : 'private viewer not configured' }); return; }
+    if (!ctx.initiativeTracker) { res.status(503).json({ error: 'initiative tracker not available' }); return; }
+    if (!ctx.viewer && ctx.documentsReplaceViews?.() !== true) { res.status(503).json({ error: 'private viewer not configured' }); return; }
     const existing = ctx.state.get<string>('chief-of-staff-triage-view');
-    if (existing && (req.body ?? {}).force !== true && ctx.viewer.get(existing)) { res.json({ ok: true, id: existing, localUrl: `/view/${existing}`, existing: true }); return; }
+    // While documents replace pages (§3.9b) an earlier list is returned only as a document, never as an old page.
+    const replacing = ctx.documentsReplaceViews?.() === true;
+    const existingDoc = ctx.state.get<{ id?: string }>('chief-of-staff-triage-doc');
+    // Reused only while the document still exists, linked on the current address; otherwise made again.
+    const existingDocUrl = replacing && existingDoc?.id && (req.body ?? {}).force !== true ? ctx.systemDocumentLink?.(existingDoc.id) ?? null : null;
+    if (existingDocUrl) { res.json({ ok: true, kind: 'document', id: existingDoc!.id, url: existingDocUrl, existing: true }); return; }
+    if (!replacing && existing && (req.body ?? {}).force !== true && ctx.viewer?.get(existing)) { res.json({ ok: true, id: existing, localUrl: `/view/${existing}`, existing: true }); return; }
     const { buildTriage } = await import('../core/ChiefOfStaffTriage.js');
     // "Active records" in the digest's sense: everything not completed / archived / abandoned — the paused and
     // awaiting-user ones are exactly what the needs-you floor exists for.
     const LIVE = new Set(['active', 'awaiting-user', 'paused', 'halted']);
     const active = (ctx.initiativeTracker.list() as unknown as Array<Record<string, unknown>>).filter((i) => LIVE.has(String(i.status)));
     const list = buildTriage(active.map((i) => ({ id: String(i.id), title: String(i.title ?? i.id), description: typeof i.description === 'string' ? i.description : undefined, status: String(i.status ?? 'active'), lastTouchedAt: String(i.lastTouchedAt ?? i.updatedAt ?? ''), needsUser: i.needsUser === true, needsUserReason: typeof i.needsUserReason === 'string' ? i.needsUserReason : undefined, blockers: Array.isArray(i.blockers) ? (i.blockers as string[]) : [], links: Array.isArray(i.links) ? (i.links as Array<{ url?: string }>) : [] })), new Date());
-    const view = ctx.viewer.create('Chief of Staff — first-run triage', list.markdown, undefined, { source: { type: 'chief-of-staff', id: 'triage' } });
+    // Old-link guarantee (instar-document-viewer §3.9b): while documents replace pages, the list is a
+    // document in the Chief of Staff conversation (or the owner's own), so the owner can comment on it.
+    const cosTopic = ctx.state.get<number>('chief-of-staff-topic');
+    let doc: { id: string; url: string } | null;
+    try {
+      doc = ctx.publishSystemDocument?.('Chief of Staff — first-run triage', list.markdown, typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null) ?? null;
+    } catch (err) {
+      res.status(503).json({ error: 'documents-error', detail: 'The triage list could not be saved as a document.', reason: operatorError(err, res.app?.locals?.stateDir) });
+      return;
+    }
+    if (doc) {
+      if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-doc', { id: doc.id }); } catch { /* @silent-fallback-ok: a standby cannot record the id; the document exists and the response carries its link */ } }
+      res.status(201).json({ ok: true, kind: 'document', id: doc.id, url: doc.url, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
+      return;
+    }
+    if (!ctx.viewer) { res.status(503).json({ error: 'private viewer not configured' }); return; }
+    let view: ReturnType<PrivateViewer['create']>;
+    try {
+      view = ctx.viewer.create('Chief of Staff — first-run triage', list.markdown, undefined, { source: { type: 'chief-of-staff', id: 'triage' } });
+    } catch (err) {
+      // The verdict turned to `replace` between the two checks: say so instead of a 500.
+      if (err instanceof ViewsReplacedByDocumentsError) { res.status(409).json({ error: err.code, detail: 'Documents just switched on; run the triage again.' }); return; }
+      throw err;
+    }
     if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
     res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
   });
@@ -17316,6 +17380,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
     }
   });
+  // `voiceTranscription.local` (docs/specs/backup-on-machine-voice.md), read on every transcription.
+  registerLocalTranscriptionEnabled(() => localTranscriptionEnabledFromConfig(ctx.config));
+
+  // Which transcriber a voice note on THIS machine would use: paid, whisper.cpp on this machine, or
+  // nothing (and what is missing). Fresh on every call; /capabilities shows the cached copy.
+  router.get('/voice-transcription', (_req, res) => {
+    res.json(describeVoiceTranscription({ explicit: configuredVoiceProvider(ctx.config), noCache: true }));
+  });
+
   // Which doors the second-AI-subscription setup itself listed, so a switch-off takes back only those.
   const doorsAddedFile = path.join(ctx.config.stateDir, 'state', 'recommended-services', 'doors-added-by-setup.json');
   const readDoorsAddedBySetup = (): string[] => {
@@ -21272,10 +21345,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof metadata?.toneAdvisoryAckReason === 'string'
         ? metadata.toneAdvisoryAckReason.slice(0, 500)
         : undefined;
-    const toneAdvisoryDecisionRef =
+    const rawToneAdvisoryDecisionRef =
       typeof metadata?.toneAdvisoryDecisionRef === 'string'
         ? metadata.toneAdvisoryDecisionRef.slice(0, 128)
         : undefined;
+    // native-conversation-forwarded-advisory item 4 — an `op:<id>` answer reference names a handed-back reply
+    // on THIS machine. It is resolved here and never reaches the gate or the sealed policy input.
+    const toneAdvisoryDecisionRef = isOperationReference(rawToneAdvisoryDecisionRef) ? undefined : rawToneAdvisoryDecisionRef;
     const toneAdvisoryComplied =
       typeof metadata?.toneAdvisoryComplied === 'string'
         ? metadata.toneAdvisoryComplied.slice(0, 64)
@@ -21357,6 +21433,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the gate skips. Honors the existing `allowDuplicate` escape hatch; brief
     // acks are below the length floor and never suppressed. Recorded only after
     // a successful send (below), so a failed send's retry isn't lost.
+    // ── native-conversation-forwarded-advisory item 5 — the answer withdraws the original first ──
+    // One lookup for local and forwarded rows. A held match makes this send its replacement (the
+    // supersede runs at admission, after the route's own review passed). A match no longer held
+    // sends nothing and answers with the old reply's recorded outcome.
+    if (ctx.telegramOrigin?.service.hasProducerContext()) {
+      const originRuntime = ctx.telegramOrigin;
+      const producer = originRuntime.service.currentProducer();
+      if (isOperationReference(rawToneAdvisoryDecisionRef)) originRuntime.service.dropOperationReference();
+      if (producer.producerKind === 'session' && producer.sessionId) {
+        const answering = (toneAdvisoryComplied || toneAdvisoryAck) && rawToneAdvisoryDecisionRef;
+        let match: Awaited<ReturnType<typeof originRuntime.findAdvisoryAnswer>> = null;
+        if (answering) {
+          try { match = await originRuntime.findAdvisoryAnswer({ sessionId: producer.sessionId, topicId, ref: rawToneAdvisoryDecisionRef! }); }
+          catch { match = null; } // @silent-fallback-ok — an unreadable lookup sends an ordinary reply; it never sends the held one
+        }
+        if (match) {
+          originRuntime.service.setAdvisoryAnswer({ originalId: match.operationId, firstPreparedAt: match.firstPreparedAt, deadlineAt: match.deadlineAt,
+            kind: toneAdvisoryComplied ? 'complied' : 'acked', handedBackAt: match.verdict.at });
+          if (match.state !== 'held' || match.deadlineAt <= Date.now()) {
+            originRuntime.service.settleAdvisoryAnswer('closed');
+            sendOriginHoldResponse(res, new AdvisoryAnswerClosedError(match.operationId));
+            return;
+          }
+        } else {
+          const sessionId = producer.sessionId;
+          void originRuntime.hasHeldAdvisory({ sessionId, topicId }).then(held => held
+            ? originRuntime.countAdvisoryAnswer({ operationId: `session-${sessionId}`, kind: 'unmatched' }) : undefined).catch(() => undefined);
+        }
+      }
+    }
     const originOwnsContent = ctx.telegramOrigin?.service.hasProducerContext() === true;
     if (!originOwnsContent && !allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
       console.log(`[telegram/reply] suppressed duplicate content for ${topicRef(topicId)} (identical text within window)`);
@@ -21447,8 +21553,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied || originProducer?.producerId === 'reply-delivery-notice'
             ? {
+                ...(originProducer?.producerId === 'reply-delivery-notice' ? { noticeClass: 'reply-delivery-notice' } : {}),
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
@@ -29165,6 +29272,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return buildViewTunnelUrl(ctx.tunnel, ctx.config.authToken, viewId);
   }
 
+  /** The calling session for the old-link guarantee (§3.9b); null for the bearer token. */
+  function viewCallerSession(res: import('express').Response): { placeKey: string | null; ownerReach: boolean } | null {
+    const m = res.locals.memorySession as { placeKey?: string | null; audience?: { kind?: string } } | undefined;
+    if (!m) return null;
+    // `system` (scheduler, lifeline, agent-to-agent) is owner reach with no person, as in MemoryAudience.
+    return { placeKey: m.placeKey ?? null, ownerReach: m.audience?.kind === 'open' || m.audience?.kind === 'owner' || m.audience?.kind === 'system' };
+  }
+
   router.post('/view', (req, res) => {
     if (!ctx.viewer) {
       res.status(503).json({ error: 'Private viewer not configured' });
@@ -29200,7 +29315,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    const view = ctx.viewer.create(title, markdown, pin, metadata);
+    // Old-link guarantee (instar-document-viewer §3.9b): while documents replace read-only pages,
+    // a new page is refused and the caller is pointed at POST /docs. Existing pages stay served. A
+    // caller with nowhere a document could live (a session in a Slack channel) still gets a page.
+    const homeless = !callerHasDocumentHome(viewCallerSession(res));
+    if (!homeless && (ctx.documentsReplaceViews?.() === true || ctx.viewer.newViewsAreRefused?.() === true)) {
+      res.status(409).json({
+        error: 'documents-replace-views',
+        detail: 'Documents are on for this agent, so new read-only pages are not made. Make a document instead: POST /docs with the same title and markdown. Links to existing pages keep working. A document made by the agent lands in the owner\'s own conversation unless a session names its own conversation; people in a shared conversation open documents with a paired phone or a linked computer.',
+        use: '/docs',
+      });
+      return;
+    }
+    let view: ReturnType<PrivateViewer['create']>;
+    try {
+      view = ctx.viewer.create(title, markdown, pin, metadata, homeless ? { noDocumentHome: true } : {});
+    } catch (err) {
+      if (err instanceof ViewsReplacedByDocumentsError) { res.status(409).json({ error: 'documents-replace-views', detail: VIEWS_REPLACED_DETAIL, use: '/docs' }); return; }
+      throw err;
+    }
 
     res.status(201).json({
       id: view.id,
@@ -29477,7 +29610,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const updated = ctx.viewer.update(req.params.id, title, markdown);
+    // Rewriting an old page while documents replace pages is refused too (§3.9b): turn it into a document.
+    if (!ctx.viewer.get(req.params.id)) { res.status(404).json({ error: 'View not found' }); return; }
+    const homeless = !callerHasDocumentHome(viewCallerSession(res));
+    let updated: ReturnType<PrivateViewer['update']>;
+    try {
+      updated = ctx.viewer.update(req.params.id, title, markdown, homeless ? { noDocumentHome: true } : {});
+    } catch (err) {
+      if (err instanceof ViewsReplacedByDocumentsError) { res.status(409).json({ error: err.code, detail: 'Documents are on for this agent, so old pages are not rewritten. Turn this one into a document instead: POST /docs {"fromView":"<id>"}, then revise the document.', use: '/docs' }); return; }
+      throw err;
+    }
     if (!updated) {
       res.status(404).json({ error: 'View not found' });
       return;
@@ -32700,6 +32842,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/preferences/session-context', async (_req, res) => {
     const r = await preferencesSessionContext();
     res.status(r.status).json(r.body);
+  });
+
+  // GET /preferences — the STRUCTURED list behind the console's "What I've learned about
+  // you" page: one entry per learned preference with when it was last seen
+  // (`recordedAt`), how often (`dedupeCount`), how sure (`confidence`) and which machine
+  // learned it (`origin`). Same gate and the same source precedence as the session-context
+  // read above (foundation union → WS2.1 merged view → own store), so the page and the
+  // injected block never disagree about what is kept. Read only. Never serves
+  // `violationPattern` or replication bookkeeping; every `learning` passes the credential
+  // scrubber (PreferencesListView). Same bearer auth as every route; a memory-boundary
+  // session token is refused by the default-deny memorySessionGuard (not on its allow-list).
+  router.get('/preferences', async (_req, res) => {
+    try {
+      const cfg = ctx.config.monitoring?.correctionLearning;
+      if (cfg?.enabled !== true) {
+        res.status(503).json({ error: 'correction-learning disabled' });
+        return;
+      }
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const { buildPreferenceList, unionToPreferenceRows } = await import('../core/PreferencesListView.js');
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const stateSyncPrefEnabled = resolveDevAgentGate(
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled,
+        ctx.config as { developmentAgent?: boolean },
+      );
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const list = buildPreferenceList(unionToPreferenceRows(ctx.preferencesUnionReader.readAll(PREF_STORE_KEY)));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const { mergePreferenceViews } = await import('../core/PreferencesSync.js');
+        const merged = mergePreferenceViews({ ownMachineId: selfId, own: manager.getAllForSync(), replicas });
+        const list = buildPreferenceList(merged.map((m) => ({ entry: m, origin: m.winningMachineId, redacted: m.textRedacted === true })));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const list = buildPreferenceList(manager.read().preferences.map((entry) => ({ entry, origin: selfId })));
+      res.json({ ...list, scope: 'local' });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, ctx.config.stateDir) : 'Failed to read preferences' });
+    }
   });
 
   // ── Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) ──

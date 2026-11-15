@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-10T23:43:06.731Z",
+  "slug": "instar-documents-core",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 2059,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/documents/access.ts",
+      "src/documents/anchor.ts",
+      "src/documents/blobs.ts",
+      "src/documents/chain.ts",
+      "src/documents/chunker.ts",
+      "src/documents/diff.ts",
+      "src/documents/fold.ts",
+      "src/documents/projection.ts",
+      "src/documents/rows.ts",
+      "src/documents/store.ts"
+    ],
+    "addedLines": 2059,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

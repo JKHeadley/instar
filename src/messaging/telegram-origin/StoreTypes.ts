@@ -147,7 +147,9 @@ export interface OriginAuditRecord {
     /** native-conversation-base §3a item 2 — late-mark carrier (null on rows that were never replaced). */
     firstPreparedAt?: number | null; lateMarkedAt?: number | null;
     /** a2a-single-agent-identity §4.2 — present only while a named hold is recorded. */
-    holdReason?: string; holdDetail?: Record<string, unknown> | null } | null;
+    holdReason?: string; holdDetail?: Record<string, unknown> | null;
+    /** native-conversation-forwarded-advisory item 2 — the outbound check's verdict (`policy_verdict_json`), never cleared. */
+    policyVerdict?: Record<string, unknown> | null } | null;
   children: Array<{ childId: string; deliveryId: string; destinationJson: string; generation: number; state: string; attempts: number }>;
   attempts: Array<{ attemptId: string; childId: string; materializationId: string; ownerBootId: string; deliveryMachineId: string | null; phase: string; outcome: string | null; receiptJson: string | null; createdAt: number; resolvedAt: number | null; reason?: string | null; nextAttemptAt?: number | null }>;
 }
@@ -219,4 +221,6 @@ export interface HeldOperationRow {
   originMachineId?: string | null;
   sessionId?: string | null;
   harnessId?: string | null;
+  /** native-conversation-forwarded-advisory item 2 — the recorded verdict, when there is one. */
+  policyVerdict?: Record<string, unknown> | null;
 }

@@ -183,6 +183,8 @@ export function mayUseConversation(
   op: ConversationOp = 'read',
   teamFacts: TeamConversationFacts | null = null,
 ): boolean {
+  // A document id is never a conversation (instar-document-viewer §3.2): no document can satisfy this check.
+  if (ref.startsWith('doc:')) return false;
   if (person.role === 'owner') return true;
   if (person.role === 'team') {
     if (!person.userId || !person.tier || !teamFacts) return false;

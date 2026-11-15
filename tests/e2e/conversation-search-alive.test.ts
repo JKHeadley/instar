@@ -22,6 +22,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
+import { FakeEmbedder } from '../helpers/fakeEmbedder.js';
 
 const HOST = 'echo-search-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -34,7 +35,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/conversation-search-alive.test.ts' });
 });
 
-async function boot(developmentAgent: boolean) {
+async function boot(developmentAgent: boolean, conversationEmbedder?: FakeEmbedder) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'search-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -62,14 +63,15 @@ async function boot(developmentAgent: boolean) {
   const topicMemory = new TopicMemory(stateDir);
   await topicMemory.open();
   memories.push(topicMemory);
-  const server = new AgentServer({ topicMemory, config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
+  const server = new AgentServer({ topicMemory, config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, conversationEmbedder });
   servers.push(server);
   return { server, stateDir, spawned };
 }
 
 describe('conversation search — production wiring', () => {
-  it('is alive on a development agent: a phone and the agent token find a word', async () => {
-    const { server } = await boot(true);
+  it('is alive on a development agent: a phone and the agent token find a word, and by meaning', async () => {
+    const embedder = new FakeEmbedder();
+    const { server, stateDir } = await boot(true, embedder);
     const app = server.getApp();
     expect(server.appConversations).not.toBeNull();
     // Pair through the existing path (mint → redeem → owner code → confirm), owner DM stubbed.
@@ -114,6 +116,26 @@ describe('conversation search — production wiring', () => {
     const tokenRead = await auth(request(app).get('/mobile/conversations/search?q=launch'));
     expect(tokenRead.status).toBe(200);
     expect(tokenRead.body.results[0].messageId).toBe('e-agent-1');
+
+    // Meaning search: the server built the index from its own store and the injected model.
+    expect(server.conversationEmbeddings).not.toBeNull();
+    expect(fs.existsSync(path.join(stateDir, 'state', 'conversation-embeddings.db'))).toBe(true);
+    const ticked = await server.conversationEmbeddings!.feeder.tick({ ignoreLoad: true });
+    expect(ticked).toMatchObject({ ran: true, embedded: 1 });
+    expect(embedder.calls).toEqual(['The rocket launch is on Friday']);
+    const meaning = await send('GET', '/mobile/conversations/search?q=spaceship%20liftoff&mode=meaning');
+    expect(meaning.status).toBe(200);
+    expect(meaning.body).toMatchObject({ mode: 'meaning', coverage: 1, partial: false });
+    expect(meaning.body.results.map((h: { messageId: string }) => h.messageId)).toEqual(['e-agent-1']);
+    // The keyword answer carries no meaning field.
+    expect(tokenRead.body.coverage).toBeUndefined();
+  });
+
+  it('answers meaning-unavailable on an agent without the model', async () => {
+    const { server } = await boot(true);
+    expect(server.conversationEmbeddings).toBeNull();
+    const r = await request(server.getApp()).get('/mobile/conversations/search?q=rocket&mode=meaning').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'native-e2e');
+    expect([r.status, r.body.error]).toEqual([503, 'meaning-unavailable']);
   });
 
   it('is dark on a fleet agent (native conversations off)', async () => {

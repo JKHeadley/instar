@@ -65,7 +65,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER, refreshHeldReplyAdvisoryAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { signedPoolReadsAwareness, SIGNED_POOL_READS_AWARENESS_MARKER } from './poolSignedReads.js';
 import { transcriptCopiesAwareness, TRANSCRIPT_COPIES_AWARENESS_MARKER } from './transcriptCheckpoints.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
@@ -1373,7 +1373,9 @@ ${MOBILE_CHAT_CONTENT_LINE}
 export const MOBILE_CHAT_STALE_CONTENT_LINE = '- Refused from the app with 422: pairing invites (`tlinv1:`), `/desktop` codes, and anything credential-shaped (point the operator to a Secret Drop link for secrets).';
 export const MOBILE_CHAT_CONTENT_LINE = '- With native app conversations on, nothing is refused for its content: a pairing invite (`tlinv1:`) or `/desktop` code is removed ("[pairing invite removed]", answer `redacted: true`) and the rest delivered; credential-shaped text is delivered as written with `credentialShaped: true` (the app asks the operator first; the 📱 mirror shows it as "[credential hidden]"). With native conversations off, all three are refused with 422 (point the operator to a Secret Drop link for secrets).';
 /** Pool reads and the approval method on app history rows; inserted after the history bullet on update. */
-export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
+/** The pool line before linked computers (instar-document-viewer §3.6a); replaced on update. */
+export const APP_CONVERSATIONS_POOL_STALE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
+export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
 
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
@@ -1386,8 +1388,10 @@ export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work 
 /** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
 export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
 export const APP_CONVERSATIONS_LIST_PINS_LINE = '- A person can pin whole conversations to the top of their conversation list (the app and the dashboard\'s "Pinned" group). Pins belong to each person (the owner, a team member, a shared person), at most 50, and are the same on every machine. The first page of `GET /mobile/conversations` carries `pinnedRefs` [{ref, atMs}] and `pinnedRows` (full list rows, newest pin first); my own Bearer read sees them only with `?reader=<key>`. Pin or unpin: `POST /mobile/conversations/pins {ref, pinned}` (ref `app:<uuid>`, `telegram:<topicId>` or `slack:<machine>:<id>`; a Bearer call must name `?reader=`). When the operator asks "pin this conversation", that is this, not a pinned message. Off switch: `mobilePairing.native.listPins.enabled: false`.';
-/** Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line. Sniff: "conversations/search". */
-export const APP_CONVERSATIONS_SEARCH_LINE = '- Search conversations by keyword: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switch: `mobilePairing.native.search.enabled: false` (503 `search-off`). Meaning search comes later; for now `mode=keyword` only.';
+/** Keyword and meaning search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line. Sniff: "conversations/search", then "mode=meaning". */
+/** The keyword-only wording of the search line (PR 3162), replaced in place by the migration below. */
+export const APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY = '- Search conversations by keyword: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switch: `mobilePairing.native.search.enabled: false` (503 `search-off`). Meaning search comes later; for now `mode=keyword` only.';
+export const APP_CONVERSATIONS_SEARCH_LINE = '- Search conversations by keyword or by meaning: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `mode=meaning` to find messages that mean the same thing in other words (a local model on this machine, no AI calls; `coverage` says what fraction of this machine\'s messages it has learned so far, and 503 `meaning-unavailable` means search by words instead); add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switches: `mobilePairing.native.search.enabled: false` (503 `search-off`), `mobilePairing.native.search.meaning.enabled: false` (meaning only).';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1409,6 +1413,15 @@ export function MOBILE_PLANS_PEOPLE_LINE(port: number): string {
   return `- The app's native Plans, What I've learned about you and Other agents screens read \`GET /mobile/plans\`, \`GET /mobile/learned\` and \`GET /mobile/agents\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Plans, What I've learned about you and Other agents pages show, plus this machine's channel registry verdicts (no record ids, paths, fingerprints, invite material, message bodies or raw errors). Plans and corrections cover every machine that answers (a machine that didn't is named). When the operator asks "what does my phone show for plans?" or "why does the app say an agent isn't answering?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/agents\`.`;
 }
 export const MOBILE_PLANS_PEOPLE_MARKER = 'GET /mobile/plans';
+/**
+ * GET /preferences — the structured learned-preference list the console's Learned page reads.
+ * One bullet, shared by generateClaudeMd (new agents) and migrateClaudeMd (existing agents).
+ * Sniff: PREFERENCES_LIST_MARKER.
+ */
+export function PREFERENCES_LIST_CLAUDEMD_LINE(port: number): string {
+  return `- See every learned preference with its date: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences\` → \`{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }], total, truncated, scope }\` (read only; newest first; the learning text is credential-scrubbed; 503 when disabled). Use it when the user asks "what have you learned about me, and when?" — it is what the console's "What I've learned about you" page reads.`;
+}
+export const PREFERENCES_LIST_MARKER = '/preferences` → `{ entries:';
 /**
  * The native Messages to you / Insights reads and owner-phone removal (docs/specs/mobile-native-phones-messages.md),
  * one bullet in the Mobile app routes block after the plans-people bullet. Sniff: `GET /mobile/messages`.
@@ -1603,7 +1616,9 @@ export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads
 export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
 /** The voice form of increment 2 before server transcripts were stored (refreshed in place on update). */
 export const APP_MEDIA_PREVIOUS_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
-export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
+/** The voice line before on-machine transcription (docs/specs/backup-on-machine-voice.md); refreshed in place. */
+export const APP_MEDIA_V2_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
+export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same transcriber as Telegram voice notes (a Groq or OpenAI key when set up, else whisper.cpp on this machine; see Voice messages and transcription), and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With nothing to transcribe or a failure the line reads `(transcription unavailable: <plain reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
 /**
  * Files sent from the app into a Telegram topic or a Slack conversation (chat-media §4.9,
  * increment 3). Inserted after the "Reply with files" bullet on update (content-sniffed).
@@ -10185,6 +10200,13 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added held-reply late-delivery awareness');
     }
+    // native-conversation-forwarded-advisory — the advisory line and its two answers, in that same paragraph.
+    const refreshedAdvisory = refreshHeldReplyAdvisoryAwareness(content);
+    if (refreshedAdvisory !== content) {
+      content = refreshedAdvisory;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the held-reply paragraph names the advisory line and its two answers');
+    }
 
     if (!content.includes('Telegram test groups:')) {
       content += '\n' + telegramOriginTestGroupsAwareness();
@@ -11041,7 +11063,7 @@ setTimeout(() => process.exit(0), 2000);
     {
       // Two older forms: increment 1 (phone transcripts only) and increment 2 before server
       // transcripts were stored and followed up late (§4.5.1). Each is refreshed once, in place.
-      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE]) {
+      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE, APP_MEDIA_V2_VOICE_LINE]) {
         const staleVoice = `\`[video:<path>]\`, ${prior} Read the file at that path`;
         if (content.includes(staleVoice)) {
           content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
@@ -11109,6 +11131,11 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(MOBILE_CHAT_STALE_CONTENT_LINE, MOBILE_CHAT_CONTENT_LINE);
       patched = true;
       result.upgraded.push('CLAUDE.md: updated the Mobile operator chat content bullet');
+    }
+    if (content.includes(APP_CONVERSATIONS_POOL_STALE_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_POOL_STALE_LINE, APP_CONVERSATIONS_POOL_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: app conversations pool line names person-phone');
     }
     if (content.includes('Native app conversations') && !content.includes(APP_CONVERSATIONS_POOL_LINE)) {
       const lines = content.split('\n');
@@ -11202,6 +11229,18 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation search line');
+      }
+    }
+
+    // Meaning search (conversation-search §4): the keyword-only search line becomes the keyword-and-meaning line.
+    if (content.includes('/mobile/conversations/search') && !content.includes('mode=meaning')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port)));
+      if (at >= 0) {
+        lines[at] = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
       }
     }
 
@@ -11667,6 +11706,11 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n- **Completion-claim failure ledger.** The verifier records every turn it could not classify, with a fixed reason code, the failed branch and the model, never the claim text. Read it with \`curl -H "Authorization: Bearer \$AUTH" http://localhost:4042/completion-claim/failures\` (\`records\`, \`daily\`, \`gate\`, \`observeOnly\`). It stays observe-only until failures are under 5% on each of the last 7 complete days, even with \`dryRun: false\`. **When to use** (PROACTIVE): asked why the verifier fails, or whether it can leave observe-only → read this, never infer from the stats counters. \`invalid-output\` means the model answered badly; \`component-budget\`, \`daily-spend-cap\` and \`lane-reserve\` mean no model was asked.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Completion-claim failure ledger awareness');
+    }
+    if (!content.includes('Completion-claim replay input')) {
+      content += `\n- **Completion-claim replay input.** On development agents (dark on the fleet), each completion-claim decision row in the local judgment provenance log also keeps the exact scrubbed message and bounded tool evidence the verifier judged, under the machine-local \`_contentFull\` field, plus a content-free prompt sha (\`promptSha256\`, \`captureVersion: claim-replay-input-v1\`). That lets a later replay rebuild the same prompt and prove it matches; a row the 64 KB clamp cut, or whose rebuilt sha differs, is not replay-eligible. \`GET /judgment-provenance\` never serves the captured text. **When to use**: asked whether past claim checks can be replayed or graded → read the provenance rows for \`captureVersion\`; never claim a replay matched without the sha check. Switch: \`monitoring.completionClaimVerification.recordReplayInput\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Completion-claim replay input awareness');
     }
 
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
@@ -15336,6 +15380,23 @@ That envelope is deliberate: learned preferences are **signals, not authoritativ
       content += '\n' + pooledPrefsLine;
       patched = true;
       result.upgraded.push('CLAUDE.md: added pooled-preferences (WS2.1) awareness (Correction & Preference Learning multi-machine extension)');
+    }
+
+    // GET /preferences (structured, dated learned preferences): runs AFTER the Preferences section
+    // is added above, so a first migration places it and a second changes nothing. One bullet after the
+    // session-context bullet of the Preferences section (a "- " line, never the Registry
+    // First table row that also names that route); appended when no such bullet exists.
+    if (content.includes('/preferences/session-context') && !content.includes(PREFERENCES_LIST_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/preferences/session-context'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, PREFERENCES_LIST_CLAUDEMD_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${PREFERENCES_LIST_CLAUDEMD_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added GET /preferences (dated learned preferences) line');
     }
 
     const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;
@@ -20909,6 +20970,29 @@ except Exception:
   fi
 fi
 
+# INSTAR DOCUMENTS (instar-document-viewer §3.7): this conversation's documents, once at start.
+# A session token (mps_) gets its own conversation's list; a 503 (switched off) prints nothing.
+DOCS_CONFIG_FILE="\$INSTAR_DIR/config.json"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -f "\$INSTAR_AGENT_HOME/.instar/config.json" ]; then DOCS_CONFIG_FILE="\$INSTAR_AGENT_HOME/.instar/config.json"; fi
+DOCS_PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$DOCS_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+DOCS_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+if [ -n "\$DOCS_PORT" ] && [ -n "\$DOCS_TOKEN" ]; then
+  DOCS_QUERY=""
+  if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_QUERY="?conversation=telegram:\${INSTAR_TELEGRAM_TOPIC}"; fi
+  DOCS_CTX=\$(curl -s --max-time 3 -H "Authorization: Bearer \${DOCS_TOKEN}" -H "X-Instar-AgentId: \${INSTAR_AGENT_ID:-}" "http://localhost:\${DOCS_PORT}/docs/session-context\${DOCS_QUERY}" 2>/dev/null)
+  DOCS_TEXT=\$(printf '%s' "\$DOCS_CTX" | python3 -c "import sys,json
+try:
+    print((json.load(sys.stdin).get('text') or '').strip())
+except Exception:
+    pass" 2>/dev/null)
+  if [ -n "\$DOCS_TEXT" ]; then
+    echo ""
+    echo "--- DOCUMENTS ---"
+    echo "\$DOCS_TEXT"
+    echo "--- END DOCUMENTS ---"
+  fi
+fi
+
 # SESSION BOOT SELF-KNOWLEDGE injection (spec: session-boot-self-knowledge.md).
 # Fetches /self-knowledge/session-context and injects the deterministic "what I
 # already have" block: vault secret NAMES (never values) + self-asserted
@@ -22480,6 +22564,34 @@ except Exception:
       if [ -n "\$BOOT_PW_BLOCK" ]; then
         echo ""
         echo "\$BOOT_PW_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
+# INSTAR DOCUMENTS re-injection (instar-document-viewer §3.7 — Compaction Parity twin of the
+# session-start DOCUMENTS block): this conversation's documents. Same fail-open contract as the
+# boot fetch: switched off (503) / unreachable -> silent skip, header-only Bearer.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  DOCS_CR_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  DOCS_CR_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -n "\$DOCS_CR_PORT" ] && [ -n "\$DOCS_CR_TOKEN" ]; then
+    DOCS_CR_QUERY=""
+    if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_CR_QUERY="?conversation=telegram:\${INSTAR_TELEGRAM_TOPIC}"; fi
+    DOCS_CR_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$DOCS_CR_TOKEN" \
+      "http://localhost:\${DOCS_CR_PORT}/docs/session-context\${DOCS_CR_QUERY}" 2>/dev/null)
+    if [ -n "\$DOCS_CR_RESPONSE" ]; then
+      DOCS_CR_TEXT=\$(echo "\$DOCS_CR_RESPONSE" | python3 -c "
+import sys, json
+try:
+    print((json.load(sys.stdin).get('text') or '').strip())
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$DOCS_CR_TEXT" ]; then
+        echo ""
+        echo "\$DOCS_CR_TEXT"
         echo ""
       fi
     fi
@@ -24597,6 +24709,12 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Native-conversation-base 3b version (PR #3092), before this PR's token-less
+    // forward change. Shipped through v1.3.1795.
+    '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',
+    // Origin-labelled boot-queue version, before the token-less custody line
+    // (standby-durable-forward-without-token §9). Shipped through v1.3.1739.
+    '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
     // Decision-ref preservation version shipped before origin credentials and
     // receipt-based ambiguous-outcome guidance (through v1.3.1225).
     '609f0fe432fe0c35043e05721658a24bcd21ae5b84fcbf99b37a75298e9499e6',

@@ -186,8 +186,10 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     vi.spyOn(h.runtime.store, 'takeRecoverableAdmissions').mockImplementation(input => take({ ...input, now: due }));
     vi.spyOn(h.runtime.store, 'reserveRecoveryAttempt').mockImplementation(input => reserve({ ...input, now: due }));
     h.runtime.service.options.authorize = () => true;
-    review.mockImplementation(async () => ({ pass: false, advisory: true, rule: 'B21_USER_TASK_SUBSTITUTION',
-      issue: 'Current policy requires a revised response', suggestion: 'Revise', decisionRef: 'current-review', latencyMs: 1 }));
+    // A review that produced no verdict (a capacity shed) is `retain`: reviewed again on the next pace step.
+    // (A verdict on the text in custody is handed back instead: native-conversation-forwarded-advisory.)
+    review.mockImplementation(async () => ({ pass: false, rule: 'CAPACITY_UNAVAILABLE',
+      issue: 'Outbound tone review unavailable', suggestion: 'Held (fail-closed) under load; retry shortly.', latencyMs: 1 }));
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(3); expect(h.network).not.toHaveBeenCalled();
     due += 15 * 60_000;

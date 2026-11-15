@@ -167,6 +167,23 @@ describe('TelegramAdapter inbound media hook', () => {
     await a.stop();
   });
 
+  it('a voice note that cannot be transcribed reaches the session with the plain reason, no path, and the file is still deleted', async () => {
+    // docs/specs/backup-on-machine-voice.md: the agent (not a canned reply) learns why, so it can offer to fix it.
+    const { a, delivered } = adapter();
+    const { TranscriptionUnavailableError } = await import('../../src/core/VoiceTranscription.js');
+    (a as unknown as { transcribeVoice: () => Promise<string> }).transcribeVoice = async () => { throw new TranscriptionUnavailableError(undefined, ['a whisper model file']); };
+    const sent: string[] = [];
+    (a as unknown as { sendToTopic: (t: number, text: string) => Promise<unknown> }).sendToTopic = async (_t, text) => { sent.push(text); return {}; };
+    const seen: TelegramInboundMedia[] = [];
+    a.setInboundMediaHook(async (info) => { seen.push(info); });
+    await (a as unknown as { handleVoiceMessage: (m: unknown, t: number) => Promise<void> }).handleVoiceMessage({ ...base, voice: { file_id: 'f', file_unique_id: 'u', duration: 3 } }, 42);
+    expect(delivered).toEqual(['[voice] (transcription unavailable: the free on-machine transcriber (whisper.cpp) needs a whisper model file, and no transcription service is set up)']);
+    expect(delivered[0]).not.toMatch(/\[voice:/);
+    expect(sent).toEqual([]); // the agent answers, not a canned reply
+    expect(fs.existsSync(seen[0]!.filePath)).toBe(false);
+    await a.stop();
+  });
+
   it('a photo is handed over with its size; a throwing hook never stops delivery', async () => {
     const { a, delivered } = adapter();
     const seen: TelegramInboundMedia[] = [];

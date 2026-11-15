@@ -354,6 +354,8 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // "Bring it back here" (app-conversations-in-the-pool §2.2): the lease holder's CAS, journaled to every
   // machine. Shared, as /pool/transfer is by default.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/pool/bring-back', domain: 'cluster-shared' });
+  // Instar Documents (instar-document-viewer §5.1): machine-signed rows replicated by version-vector pull.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/docs', domain: 'cluster-shared' });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 

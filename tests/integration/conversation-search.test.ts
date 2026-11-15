@@ -31,6 +31,10 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex } from '../../src/memory/ConversationEmbeddingIndex.js';
+import { conversationIndexSources } from '../../src/server/conversationMeaningSearch.js';
+import type { ConversationSearchRouteDeps } from '../../src/server/mobileConversationSearchRoutes.js';
+import { FakeEmbedder } from '../helpers/fakeEmbedder.js';
 
 const HOST = 'echo.example.dev';
 const GRANTED = 50;
@@ -38,18 +42,20 @@ const OTHER = 51;
 const dirs: string[] = [];
 const services: MobilePairingService[] = [];
 const memories: TopicMemory[] = [];
+const indexes: ConversationEmbeddingIndex[] = [];
 const servers: Server[] = [];
 beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null); });
 afterAll(() => {
   ProcessIntegrity.reset();
   for (const s of services) s.stop();
   for (const m of memories) m.close();
+  for (const i of indexes) i.close();
   for (const s of servers) s.close();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/conversation-search.test.ts' });
 });
 
 type Peer = { machineId: string; url: string; kind: 'lan' };
-async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?: boolean } = {}) {
+async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?: boolean; meaning?: boolean; meaningOff?: boolean } = {}) {
   const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-search-int-'));
   dirs.push(dir);
@@ -58,7 +64,7 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
   const config = {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Ann' }, tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
-    mobilePairing: { enabled: true, multiRoute: { enabled: false }, native: { enabled: true, ...(opts.searchOff ? { search: { enabled: false } } : {}) } },
+    mobilePairing: { enabled: true, multiRoute: { enabled: false }, native: { enabled: true, ...(opts.searchOff ? { search: { enabled: false } } : {}), ...(opts.meaningOff ? { search: { meaning: { enabled: false } } } : {}) } },
   };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machine, isRecordingEnabled: () => true });
   const deps = {
@@ -81,6 +87,8 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
   tm.insertMessages([
     { messageId: 11, topicId: GRANTED, text: `the rocket launch for topic ${GRANTED}`, fromUser: true, timestamp: '2026-11-09T10:00:00.000Z', sessionName: null },
     { messageId: 12, topicId: OTHER, text: `secret rocket plans in topic ${OTHER}`, fromUser: false, timestamp: '2026-11-09T10:01:00.000Z', sessionName: null },
+    // A paraphrase: about the same thing, with none of the same words (meaning search finds it, keyword does not).
+    { messageId: 13, topicId: GRANTED, text: 'the spaceship liftoff happened at dawn', fromUser: false, timestamp: '2026-11-09T10:02:00.000Z', sessionName: null },
   ]);
   const topics = () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, sessionName: null }));
   const ctx = {
@@ -100,7 +108,7 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
   }));
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => machine }));
-  app.use(createConversationSearchRouter({
+  const searchDeps: ConversationSearchRouteDeps = {
     config: config as never, pairing, service: svc, machineId: () => machine, topicMemory: () => tm,
     telegramTopics: () => topics().map((t) => ({ topicId: t.topicId, topicName: t.topicName })),
     slack: () => ({
@@ -108,9 +116,21 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
       history: () => [{ ts: '1700000000.000100', text: 'rocket talk in slack', fromUser: true, at: '2026-11-09T11:00:00.000Z' }],
     }),
     pool: { config: config as never, resolvePeerUrls: opts.peers ?? (() => []), recordRopeResult: null },
-  }));
+  };
+  const embedder = new FakeEmbedder();
+  let feeder: ConversationEmbeddingFeeder | null = null;
+  if (opts.meaning) {
+    const index = new ConversationEmbeddingIndex({ dbPath: path.join(dir, 'state', 'conversation-embeddings.db') });
+    index.open();
+    indexes.push(index);
+    feeder = new ConversationEmbeddingFeeder({ index, embedder: () => embedder, sources: () => conversationIndexSources(searchDeps), enabled: () => true, busy: () => false });
+    searchDeps.meaning = () => ({ index, embedder, coverage: () => feeder!.coverage() });
+  }
+  app.use(createConversationSearchRouter(searchDeps));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
-  return { app, pairing, svc, machine };
+  /** Run the background embedder until it has nothing left to do. */
+  const feed = async () => { for (let i = 0; i < 5; i++) await feeder!.tick(); };
+  return { app, pairing, svc, machine, embedder, feed };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; id: string };
@@ -210,8 +230,11 @@ describe('the answers that refuse', () => {
     expect((await send(e, owner, 'GET', '/mobile/conversations/search?q=%20%20')).body.error).toBe('bad-query');
     expect((await send(e, owner, 'GET', `/mobile/conversations/search?q=${'a'.repeat(201)}`)).body.error).toBe('bad-query');
     expect((await send(e, owner, 'GET', '/mobile/conversations/search?q=x&ref=nope')).body.error).toBe('bad-ref');
+    const fuzzy = await send(e, owner, 'GET', '/mobile/conversations/search?q=x&mode=fuzzy');
+    expect([fuzzy.status, fuzzy.body.error]).toEqual([400, 'mode-unsupported']);
+    // No embedding index on this machine: meaning search is unavailable (the app searches by words instead).
     const meaning = await send(e, owner, 'GET', '/mobile/conversations/search?q=x&mode=meaning');
-    expect([meaning.status, meaning.body.error]).toEqual([400, 'mode-unsupported']);
+    expect([meaning.status, meaning.body.error, meaning.body.reason]).toEqual([503, 'meaning-unavailable', 'no-index']);
     expect((await send(e, owner, 'GET', '/mobile/conversations/search?q=x&scope=all')).body.error).toBe('invalid-scope');
     expect((await send(e, owner, 'GET', '/mobile/conversations/search?q=x&ref=telegram:999')).status).toBe(404);
     expect((await send(e, owner, 'GET', '/mobile/conversations/search?q=%3F%21')).body.results).toEqual([]);
@@ -250,5 +273,83 @@ describe('a pool read', () => {
     const local = await bearer(e, '/mobile/conversations/search?q=rocket');
     expect(local.body.results.map((h: { ref: string }) => h.ref)).not.toContain(`app:${peerKey}`);
     expect(local.body.partial).toBe(false);
+  });
+});
+
+describe('meaning search', () => {
+  it('finds a paraphrase keyword search misses, in the same shape, with coverage', async () => {
+    const e = await setup({ meaning: true });
+    const owner = phone(e);
+    const key = await appConversation(e, owner, 'Trip', 'remember the pizza for dinner');
+    await e.feed();
+    const words = await send(e, owner, 'GET', '/mobile/conversations/search?q=rocket%20launch');
+    expect(words.body.results.map((h: { messageId: string }) => h.messageId)).not.toContain('out:13');
+    const r = await send(e, owner, 'GET', '/mobile/conversations/search?q=rocket%20launch&mode=meaning');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ query: 'rocket launch', mode: 'meaning', ref: null, partial: false, failedMachines: [], capped: false, unsearched: [], coverage: 1 });
+    const hits = r.body.results as Array<{ ref: string; messageId: string; rank: number; snippet: string; title: string | null }>;
+    const paraphrase = hits.find((h) => h.messageId === 'out:13');
+    expect(paraphrase).toMatchObject({ ref: `telegram:${GRANTED}`, platform: 'telegram', title: `Topic ${GRANTED}`, fromUser: false, snippet: 'the spaceship liftoff happened at dawn', marks: [] });
+    expect(paraphrase!.rank).toBeGreaterThan(0.3);
+    // Not about launches: the dinner message is not a hit.
+    expect(hits.map((h) => h.ref)).not.toContain(`app:${key}`);
+    for (let i = 1; i < hits.length; i++) expect(hits[i - 1].rank).toBeGreaterThanOrEqual(hits[i].rank);
+    // Inside one conversation.
+    const inside = await send(e, owner, 'GET', `/mobile/conversations/search?q=food&mode=meaning&ref=app:${key}`);
+    expect(inside.body.results.map((h: { messageId: string }) => h.messageId)).toEqual(['Trip-1']);
+  });
+
+  it('a team member gets no hit from a conversation they were not given', async () => {
+    const e = await setup({ meaning: true });
+    const { owner, mia } = await withMember(e);
+    const ownerKey = await appConversation(e, owner, 'Private', 'rocket launch budget numbers');
+    const miaKey = await appConversation(e, mia, 'Mine', 'my rocket launch notes');
+    await e.feed();
+    const r = await send(e, mia, 'GET', '/mobile/conversations/search?q=rocket%20launch&mode=meaning');
+    expect(r.status).toBe(200);
+    const refs = [...new Set(r.body.results.map((h: { ref: string }) => h.ref))].sort();
+    expect(refs).toEqual([`app:${miaKey}`, `telegram:${GRANTED}`].sort());
+    const text = JSON.stringify(r.body);
+    expect(text).not.toContain(ownerKey);
+    expect(text).not.toContain(`telegram:${OTHER}`);
+    expect(text).not.toContain('slack');
+    expect((await send(e, mia, 'GET', `/mobile/conversations/search?q=rocket&mode=meaning&ref=telegram:${OTHER}`)).status).toBe(404);
+  });
+
+  it('answers 503 meaning-unavailable when the model fails or meaning is switched off, and keyword is unchanged', async () => {
+    const e = await setup({ meaning: true });
+    const owner = phone(e);
+    await e.feed();
+    const before = await bearer(e, '/mobile/conversations/search?q=rocket');
+    e.embedder.fail = true;
+    const r = await send(e, owner, 'GET', '/mobile/conversations/search?q=rocket&mode=meaning');
+    expect([r.status, r.body.error, r.body.reason]).toEqual([503, 'meaning-unavailable', 'model-failed']);
+    const after = await bearer(e, '/mobile/conversations/search?q=rocket');
+    expect(after.status).toBe(200);
+    expect(after.body).toEqual(before.body);
+    expect(Object.keys(after.body).sort()).toEqual(['capped', 'failedMachines', 'mode', 'partial', 'query', 'ref', 'results', 'unsearched']);
+    const off = await setup({ meaning: true, meaningOff: true });
+    const o = await send(off, phone(off), 'GET', '/mobile/conversations/search?q=rocket&mode=meaning');
+    expect([o.status, o.body.error, o.body.reason]).toEqual([503, 'meaning-unavailable', 'off']);
+    expect((await bearer(off, '/mobile/conversations/search?q=rocket')).status).toBe(200);
+  });
+
+  it('a pool read merges a peer and names one that did not answer', async () => {
+    const peer = await setup({ machine: 'm2', meaning: true });
+    const peerKey = await appConversation(peer, phone(peer), 'Remote', 'the shuttle orbit and liftoff');
+    await peer.feed();
+    const server = peer.app.listen(0, '127.0.0.1');
+    servers.push(server);
+    await new Promise<void>((r) => server.once('listening', () => r()));
+    const port = (server.address() as AddressInfo).port;
+    const e = await setup({ meaning: true, peers: () => [
+      { machineId: 'm2', url: `http://127.0.0.1:${port}`, kind: 'lan' },
+      { machineId: 'm3', url: 'http://127.0.0.1:9', kind: 'lan' },
+    ] });
+    await e.feed();
+    const r = await bearer(e, '/mobile/conversations/search?q=rocket%20launch&mode=meaning&scope=pool');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ mode: 'meaning', partial: true, failedMachines: ['m3'], coverage: 1 });
+    expect(r.body.results.map((h: { ref: string }) => h.ref)).toContain(`app:${peerKey}`);
   });
 });

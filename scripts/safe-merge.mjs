@@ -638,8 +638,18 @@ export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, ser
 // gh invocation layer (sync is fine — this is a standalone CLI, not server code)
 // ---------------------------------------------------------------------------
 
+/**
+ * Output cap for one gh call. Node's default (1 MiB) is smaller than GitHub's answer for a
+ * large PR (the files list of a 150-file PR with patches; a long review history), and
+ * spawnSync then fails with ENOBUFS: the precheck could not read its own answer and the
+ * merge was refused `contexts-unverifiable` three times running (PR 2900 on 2026-11-08,
+ * PR 3053 on 2026-11-15, each green and authorized). 64 MiB is far above any real answer
+ * and still bounded.
+ */
+export const GH_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 function gh(args, { allowFail = false } = {}) {
-  const r = spawnSync('gh', args, { encoding: 'utf-8' });
+  const r = spawnSync('gh', args, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   if (r.error) throw new Error(`gh spawn failed: ${r.error.message}`);
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.slice(0, 3).join(' ')} exited ${r.status}: ${(r.stderr || '').slice(0, 400)}`);
@@ -1118,7 +1128,7 @@ function mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin }) {
   const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
   if (admin) mergeArgs.push('--admin');
   if (args.deleteBranch) mergeArgs.push('--delete-branch');
-  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8' });
+  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   process.stdout.write(m.stdout ?? '');
   process.stderr.write(m.stderr ?? '');
 

@@ -17,6 +17,9 @@ export interface DesktopStreamSession {
   frameQueued?(): void;
   frameDropped?(): void;
   requestKeyframe?(): void;
+  /** How often to ask for a picture, when the session's video can go faster than
+   * the default 15 a second. Bounded to 50-67 ms (20 to 15 pictures a second). */
+  frameIntervalMs?(): number | undefined;
   fallbackVideo?(): void;
   /** An open, visible viewer counts as use: refresh the grant's idle clock. */
   touch?(): void;
@@ -34,6 +37,7 @@ export interface DesktopStreamSession {
 export type DesktopStreamAdmission = (request: IncomingMessage) => Promise<DesktopStreamSession>;
 
 const FRAME_INTERVAL_MS = 67; // at most 15 video requests per second
+const MIN_FRAME_INTERVAL_MS = 50; // a faster host still gets at most 20 a second
 const MAX_BUFFERED_BYTES = 1_600_000;
 const MAX_VIDEO_BUFFERED_BYTES = 1_400_000; // leave room for control and transport framing
 const MAX_FRAME_BYTES = 1_300_000;
@@ -132,6 +136,7 @@ export class DesktopStreamManager {
       session.release(!terminal && reason === 'transport-lost' ? 'transport-lost' : 'terminal');
       ws.terminate();
     };
+    const frameInterval = (): number => desktopFrameIntervalMs(session.frameIntervalMs?.());
     const nextFrame = async () => {
       if (closed) return;
       const tickStarted = Date.now();
@@ -159,7 +164,7 @@ export class DesktopStreamManager {
             // OS readiness are checked again on the next tick; revocation
             // itself closes this socket through closeGrant immediately.
             if (++captureFailures >= 3) { close('capture-failed'); return; }
-            timer = setTimeout(() => { void nextFrame(); }, FRAME_INTERVAL_MS);
+            timer = setTimeout(() => { void nextFrame(); }, frameInterval());
             timer.unref?.();
             return;
           }
@@ -188,7 +193,7 @@ export class DesktopStreamManager {
       if (!closed) {
         // Pace from the start of this tick: a slow grab already used part of
         // the gap, so waiting the full interval again only lowered the rate.
-        timer = setTimeout(() => { void nextFrame(); }, Math.max(5, FRAME_INTERVAL_MS - (Date.now() - tickStarted)));
+        timer = setTimeout(() => { void nextFrame(); }, Math.max(5, frameInterval() - (Date.now() - tickStarted)));
         timer.unref?.();
       }
     };
@@ -278,6 +283,12 @@ export class DesktopStreamManager {
     ws.on('error', () => close('socket-error'));
     void nextFrame();
   }
+}
+
+/** The pause between picture requests: a session's own pace within 50-67 ms, else 67. */
+export function desktopFrameIntervalMs(requested: number | undefined): number {
+  if (typeof requested !== 'number' || !Number.isFinite(requested)) return FRAME_INTERVAL_MS;
+  return Math.min(FRAME_INTERVAL_MS, Math.max(MIN_FRAME_INTERVAL_MS, Math.round(requested)));
 }
 
 /** Per-stream picture counts for the close log: rates, not content. */

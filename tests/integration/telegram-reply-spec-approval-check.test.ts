@@ -1,11 +1,11 @@
 // safe-fs-allow: test file — tmp state dirs only.
 /**
- * Integration test — B24_SPEC_APPROVAL_UNCHECKED through the real POST /telegram/reply
+ * Integration test — B25_SPEC_APPROVAL_UNCHECKED through the real POST /telegram/reply
  * route (Echo Bugs topic 10000002750).
  *
  * Proves the wiring end-to-end: the route reads this machine's constitution-check
- * ledger on a reply with NO phrase pre-filter, the gate adds the B24 rule and the
- * records to the prompt, and a B24 verdict HOLDS the founding message (422, not
+ * ledger on a reply with NO phrase pre-filter, the gate adds the B25 rule and the
+ * records to the prompt, and a B25 verdict HOLDS the founding message (422, not
  * sent) — and an acknowledgement cannot push it through. A request carrying its
  * check result is delivered. Only the IntelligenceProvider is faked.
  */
@@ -62,11 +62,11 @@ async function reply(url: string, body: Record<string, unknown>) {
   return { status: res.status, body: await res.json().catch(() => ({})) as Record<string, unknown> };
 }
 
-describe('B24 SPEC APPROVAL through POST /telegram/reply', () => {
+describe('B25 SPEC APPROVAL through POST /telegram/reply', () => {
   let server: { url: string; close: () => Promise<void> } | undefined;
   afterEach(async () => { await server?.close(); server = undefined; });
 
-  it('the founding ask reaches the gate with the rule and the ledger records, and a B24 verdict holds it', async () => {
+  it('the founding ask reaches the gate with the rule and the ledger records, and a B25 verdict holds it', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spec-approval-route-'));
     recordSpecConstitutionCheck(stateDir, {
       slug: 'other-spec',
@@ -75,22 +75,22 @@ describe('B24 SPEC APPROVAL through POST /telegram/reply', () => {
     });
     const { provider, prompts } = capture({
       pass: false,
-      rule: 'B24_SPEC_APPROVAL_UNCHECKED',
+      rule: 'B25_SPEC_APPROVAL_UNCHECKED',
       issue: 'asks approval of a design spec with no constitution check result',
       suggestion: 'run the built-in constitution check and carry its result',
     });
     const sent: string[] = [];
     server = await start(new MessagingToneGate(provider), sent, stateDir);
     const res = await reply(server.url, { text: FOUNDING });
-    const p = prompts.find((x) => x.includes('B24 SPEC APPROVAL NEEDS ITS CONSTITUTION CHECK')) ?? '';
+    const p = prompts.find((x) => x.includes('B25 SPEC APPROVAL NEEDS ITS CONSTITUTION CHECK')) ?? '';
     expect(p).not.toBe('');
     expect(p).toContain('"slug":"other-spec"');
     expect(res.status).toBe(422);
-    expect(res.body.rule).toBe('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(res.body.rule).toBe('B25_SPEC_APPROVAL_UNCHECKED');
     expect(sent).toHaveLength(0);
 
-    // An acknowledgement cannot push it through: B24 is a hold, not a nudge.
-    const acked = await reply(server.url, { text: FOUNDING, metadata: { toneAdvisoryAck: 'B24_SPEC_APPROVAL_UNCHECKED', toneAdvisoryAckReason: 'I think it is fine' } });
+    // An acknowledgement cannot push it through: B25 is a hold, not a nudge.
+    const acked = await reply(server.url, { text: FOUNDING, metadata: { toneAdvisoryAck: 'B25_SPEC_APPROVAL_UNCHECKED', toneAdvisoryAckReason: 'I think it is fine' } });
     expect(acked.status).toBe(422);
     expect(sent).toHaveLength(0);
   });

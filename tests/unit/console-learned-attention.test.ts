@@ -54,7 +54,7 @@ describe('the Learned page shows open skill-learning items inline', () => {
     w.scrollTo = vi.fn();
     w.HTMLElement.prototype.scrollIntoView = vi.fn();
     reads = {
-      '/preferences/session-context': ok({ present: false }), '/corrections?limit=20': ok({ records: [], count: 0, totalRecords: 0, nextBefore: null }),
+      '/preferences': ok({ entries: [], total: 0, truncated: false, scope: 'local' }), '/preferences/session-context': ok({ present: false }), '/corrections?limit=20': ok({ records: [], count: 0, totalRecords: 0, nextBefore: null }),
       '/state/conflicts': { ok: false, status: 503, reason: 'off' }, '/pool': ok({ enabled: false, machines: [] }),
       '/skills/learned': ok({ machine: 'Studio', enabled: true, mode: 'shadow', counts: { requests: 0, verified: 0, keys: 0, proposals: 0, skills: 0 }, channels: { telegram: 'measured', slack: 'support-only', app: 'unmeasurable' }, pendingBacklog: 0, classifierFailures24h: 0, abortedUnreachable24h: 0, filtered: {}, skills: [], proposals: [], pending: [], retired: [], llmSpendCentsToday: 0 }),
     };

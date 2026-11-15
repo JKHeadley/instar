@@ -807,6 +807,8 @@ export class DirectDesktopAccess {
         candidateFrameDigest = null;
       },
       requestKeyframe: () => { if (activeCodec === 'h264') forceKeyframe = true; },
+      // Only a live video session may go faster; pictures keep the default pace.
+      frameIntervalMs: () => activeCodec === 'h264' && this.host.captureH264 ? this.host.videoFrameIntervalMs : undefined,
       // A ping from the admitted, still-valid connection keeps a watched
       // session alive; it never revives a grant that has already lapsed.
       touch: () => {

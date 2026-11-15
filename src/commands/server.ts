@@ -909,6 +909,9 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** standby-durable-forward-without-token §10 (holder side / standby side). */
+let tokenlessEvidenceRecorder: import('../messaging/telegram-origin/TokenlessForwardEvidence.js').HolderEvidenceRecorder | undefined;
+let tokenlessEvidenceOutbox: import('../messaging/telegram-origin/TokenlessForwardEvidence.js').StandbyEvidenceOutbox | null = null;
 /** Relay-path row carrier and its watermark (context-budget §14); built beside the row writer. */
 let _topicRowCarrier: import('../memory/topicRowCarrier.js').TopicRowCarrier | null = null;
 let _topicRowWatermark: import('../memory/topicRowWatermark.js').TopicRowWatermarkStore | null = null;
@@ -10502,8 +10505,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
           // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
           // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
-          transcribeVoice: (filePath, mediaType, timeoutMs) => voiceMod.transcribeAudioFile(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
-          voiceProviderName: () => voiceMod.resolveTranscriptionProvider({ explicit: voiceMod.configuredVoiceProvider(config) })?.name,
+          transcribeVoice: (filePath, mediaType, timeoutMs) => voiceMod.transcribeAudioFileDetailed(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+          voiceProviderName: () => voiceMod.describeVoiceTranscription({ explicit: voiceMod.configuredVoiceProvider(config), cachedOnly: true }).active ?? undefined,
           raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
           clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({
@@ -11942,53 +11945,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.warn(`[slack] Stall observed in ${channelId} for ${sessionName} after ${Date.now() - injectedAt}ms: ${messageText.slice(0, 100)}`);
         };
 
-        // Wire voice transcription (reuses Telegram's provider resolution: Groq → OpenAI)
+        // Wire voice transcription through the shared module (docs/specs/backup-on-machine-voice.md):
+        // an explicit `audioTranscriptionProvider` ("groq", "openai" or "local"), else a configured paid
+        // provider, else whisper.cpp on this machine (also the fallback when a paid one fails). 60 s budget.
         slackAdapter.transcribeVoice = async (filePath: string) => {
-          const providers: Record<string, { envKey: string; baseUrl: string; model: string }> = {
-            groq: { envKey: 'GROQ_API_KEY', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3' },
-            openai: { envKey: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1', model: 'whisper-1' },
-          };
-          let provider: { apiKey: string; baseUrl: string; model: string } | null = null;
-          const explicit = (slackConfig.config as Record<string, unknown>).audioTranscriptionProvider as string;
-          if (explicit && providers[explicit.toLowerCase()]) {
-            const p = providers[explicit.toLowerCase()];
-            const apiKey = process.env[p.envKey];
-            if (apiKey) provider = { apiKey, baseUrl: p.baseUrl, model: p.model };
-          }
-          if (!provider) {
-            for (const [, p] of Object.entries(providers)) {
-              const apiKey = process.env[p.envKey];
-              if (apiKey) { provider = { apiKey, baseUrl: p.baseUrl, model: p.model }; break; }
-            }
-          }
-          if (!provider) {
-            // A key the voice-transcription setup stored in the vault (docs/specs/recommended-services.md).
-            const shared = (await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} });
-            if (shared) provider = { apiKey: shared.apiKey, baseUrl: shared.baseUrl, model: shared.model };
-          }
-          if (!provider) throw new Error('No voice transcription provider. Set GROQ_API_KEY or OPENAI_API_KEY.');
-
-          const formData = new FormData();
-          const fileBuffer = fs.readFileSync(filePath);
-          const blob = new Blob([fileBuffer], { type: 'audio/ogg' });
-          formData.append('file', blob, path.basename(filePath));
-          formData.append('model', provider.model);
-
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 60_000);
-          try {
-            const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${provider.apiKey}` },
-              body: formData,
-              signal: controller.signal,
-            });
-            if (!response.ok) throw new Error(`Transcription API error (${response.status}): ${await response.text()}`);
-            const data = await response.json() as { text: string };
-            return data.text;
-          } finally {
-            clearTimeout(timer);
-          }
+          const { transcribeAudioFile } = await import('../core/VoiceTranscription.js');
+          const explicit = (slackConfig.config as Record<string, unknown>).audioTranscriptionProvider;
+          return transcribeAudioFile(filePath, {
+            explicit: typeof explicit === 'string' ? explicit : undefined,
+            mediaType: 'audio/ogg',
+            timeoutMs: 60_000,
+            log: (note) => console.log(`[slack] ${note}`),
+          });
         };
 
         // Wire intelligence provider for LLM-gated stall confirmation
@@ -29850,9 +29818,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             'telegram-origin': async (cmd, sender) => {
               if (!telegramOriginBoot) return { ok: false, reason: 'origin-runtime-unavailable' };
               const { handleOriginMesh } = await import('../messaging/telegram-origin/OriginMesh.js');
+              const { HolderEvidenceRecorder } = await import('../messaging/telegram-origin/TokenlessForwardEvidence.js');
+              tokenlessEvidenceRecorder ??= new HolderEvidenceRecorder(config.stateDir, (featureId, input) => featureEvidence.record(featureId, input));
+              const debtMod = await import('../messaging/telegram-origin/TokenlessHeldDebt.js');
+              if (!debtMod.peerHeldDebtStore()) debtMod.setPeerHeldDebtStore(new debtMod.PeerHeldDebtStore(config.stateDir));
               return handleOriginMesh({ runtime: telegramOriginBoot.runtime,
                 command: cmd as import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand,
-                authenticatedSender: sender,
+                authenticatedSender: sender, evidence: tokenlessEvidenceRecorder, heldDebt: debtMod.peerHeldDebtStore() ?? undefined,
                 resolveKey: machineId => {
                   const manager = coordinator.managers.identityManager;
                   const entry = manager.loadRegistry().machines[machineId];
@@ -33154,6 +33126,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             const originForwardMod = await import('../messaging/telegram-origin/OriginForwardToHolder.js');
             const originConfigMod = await import('../messaging/telegram-origin/OriginConfig.js');
             const hasUsableBotToken = typeof originBotToken === 'string' && originBotToken.length > 0;
+            // standby-durable-forward-without-token §5: a machine WITHOUT the bot token may take the
+            // durable forward when this dev-gated key is live (dark on the fleet; reads dark if unreadable).
+            const tokenlessDurableForwardOn = (): boolean => {
+              try { return resolveDevAgentGate(liveConfig.get<boolean | undefined>('telegramOrigin.tokenlessDurableForward.enabled', undefined), config); }
+              catch { return false; } // @silent-fallback-ok — an unreadable gate reads dark: today's direct relay
+            };
             const forwardSwitchOn = (): boolean => {
               try {
                 const messaging = liveConfig.get('messaging', config.messaging) as Array<{ type?: string; config?: { messageOrigin?: unknown } }> | undefined;
@@ -33242,24 +33220,117 @@ export async function startServer(options: StartOptions): Promise<void> {
               return 'active';
             });
             const tgConfig = () => originTelegramConfig!.config as { chatId: string; formatMode?: import('../messaging/TelegramMarkdownFormatter.js').FormatMode };
+            // §10: a token-less standby carries its evidence outbox to the holder on capabilities/submit.
+            const evidenceMod = await import('../messaging/telegram-origin/TokenlessForwardEvidence.js');
+            const tokenlessOutbox = hasUsableBotToken ? null : new evidenceMod.StandbyEvidenceOutbox(config.stateDir);
+            /** Operations that replaced a placeholder seal (§10 ran metric); bounded to recent ids. */
+            const resealedOperationIds = new Set<string>();
+            tokenlessEvidenceOutbox = tokenlessOutbox;
+            // §9: tell reachable peers a reply is pending here (metadata only), and report how it ended.
+            const debtLedgerMod = await import('../messaging/telegram-origin/TokenlessHeldDebt.js');
+            const heldDebtLedger = hasUsableBotToken ? null : new debtLedgerMod.StandbyHeldDebtLedger(config.stateDir);
+            const reachablePeers = (): Array<{ machineId: string; url: string }> => {
+              try {
+                return meshIdMgr.getActiveMachines().filter(m => m.machineId !== meshSelfId).slice(0, 8)
+                  .flatMap(m => { const url = peerUrl(m.machineId); return url ? [{ machineId: m.machineId, url }] : []; });
+              } catch { return []; } // @silent-fallback-ok — no peers known: the debt stays on this machine only (§9 named risk)
+            };
+            const notifyPeersOfHold = (operation: import('../messaging/telegram-origin/TelegramOriginService.js').OriginPreparedBotOperation, authoredAt: number) => {
+              if (!heldDebtLedger) return;
+              const root = debtLedgerMod.chainRoot(operation.record.operationId);
+              const tokenlessHold = { rootOperationId: root, topicId: operation.record.destination.topicId, authoredAt };
+              void Promise.allSettled(reachablePeers().map(async peer => {
+                const r = await meshClient.send(peer, { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'evidence',
+                  record: operation.admission.record, tokenlessHold } as never, 0, { timeoutMs: 1250 });
+                return (r.ok && (r.result as { ok?: boolean } | undefined)?.ok) ? peer.machineId : null;
+              })).then(results => {
+                const told = results.flatMap(x => x.status === 'fulfilled' && x.value ? [x.value] : []);
+                try { heldDebtLedger.notified(root, told); } catch { /* @silent-fallback-ok — best effort */ }
+              });
+            };
+            const flushHeldOutcomes = () => {
+              if (!heldDebtLedger) return;
+              for (const peerId of heldDebtLedger.peersOwed()) {
+                const url = peerUrl(peerId);
+                if (!url) continue;
+                const outcomes = heldDebtLedger.owed(peerId);
+                if (!outcomes.length) continue;
+                void meshClient.send({ machineId: peerId, url }, { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'capabilities',
+                  forwardContext: { tokenless: true, outcomes } } as never, 0, { timeoutMs: 1250 }).then(r => {
+                  const ack = (r.result as { outcomesAck?: unknown } | undefined)?.outcomesAck;
+                  if (Array.isArray(ack)) heldDebtLedger.acked(peerId, ack.filter((x): x is string => typeof x === 'string'));
+                }).catch(() => undefined); // @silent-fallback-ok — owed outcomes are resent on the next resolution or reachable holder
+              }
+            };
+            const resolveHeldDebt = (operationId: string, outcome: import('../messaging/telegram-origin/TokenlessHeldDebt.js').HeldOutcome) => {
+              if (!heldDebtLedger) return;
+              try { heldDebtLedger.resolved(debtLedgerMod.chainRoot(operationId), outcome); } catch { /* @silent-fallback-ok */ }
+              flushHeldOutcomes();
+            };
+            const withForwardContext = (command: import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand) => {
+              if (!tokenlessOutbox || (command.action !== 'capabilities' && command.action !== 'submit')) return command;
+              const resealed = command.action === 'submit' && resealedOperationIds.has(command.operation.record.operationId);
+              return { ...command, forwardContext: { tokenless: true, resealed, events: tokenlessOutbox.pending() } };
+            };
+            const ackEvidence = <T extends { result?: unknown }>(reply: T): T => {
+              const ack = (reply?.result as { evidenceAck?: unknown } | undefined)?.evidenceAck;
+              if (tokenlessOutbox && Array.isArray(ack)) { try { tokenlessOutbox.ack(ack.filter((x): x is string => typeof x === 'string')); } catch { /* @silent-fallback-ok — evidence only; resent next time */ } }
+              return reply;
+            };
             const sendToHolder = (holder: string, timeoutMs = Math.min(relayTimeoutMs, originForwardMod.FORWARD_RPC_TIMEOUT_MS)) => {
               const url = peerUrl(holder);
+              const raw = sendToHolderRaw(holder, url, timeoutMs);
+              return async (command: import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand) => ackEvidence(await raw(withForwardContext(command)));
+            };
+            const sendToHolderRaw = (holder: string, url: string | null, timeoutMs: number) => {
               return (command: import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand) => {
                 if (!url) return Promise.reject(new Error('origin-peer-unreachable'));
                 // §4.2 — `capabilities` + `submit` share the 30 s attempt budget.
                 return meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs });
               };
             };
+            // §2: one network timeout per holder per recovery tick. A failed probe is remembered for one
+            // tick interval, so the remaining rows skip the dead holder.
+            const PROBE_FAILURE_MEMO_MS = 5_000;
+            const recentProbeFailure = new Map<string, number>();
+            /** The current recovery pass's capabilities answer (§2), reused by that pass's rows. */
+            /** §2 account-changed items: the topics already listed per (sealed, live) pair. */
+            const accountChangedTopics = new Map<string, Set<string>>();
+            const noticeBrakes = await import('../messaging/telegram-origin/TokenlessNoticeBrakes.js');
+            let tickProbe: { holder: string; answer: import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe; at: number } | null = null;
+            const recoveryProbe = async (holder: string): Promise<import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe> =>
+              tickProbe && tickProbe.holder === holder && Date.now() - tickProbe.at < PROBE_FAILURE_MEMO_MS * 2 ? tickProbe.answer : probeHolder(holder);
+            const probeHolder = async (holder: string): Promise<import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe> => {
+              const failedAt = recentProbeFailure.get(holder);
+              if (failedAt !== undefined && Date.now() - failedAt < PROBE_FAILURE_MEMO_MS) return { ok: false, reason: 'origin-peer-unreachable' };
+              let answer: import('../messaging/telegram-origin/OriginForwardToHolder.js').HolderProbe;
+              try { answer = originForwardMod.validHolderCapabilities(await sendToHolder(holder)({ type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'capabilities' })); }
+              catch { answer = { ok: false, reason: 'origin-peer-unreachable' }; } // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+              if (answer.ok) recentProbeFailure.delete(holder); else recentProbeFailure.set(holder, Date.now());
+              return answer;
+            };
+            // §8/§10: with nothing held, a light check still lets re-posts and evidence flow once the holder answers.
+            if (!hasUsableBotToken) {
+              const idleCheck = setInterval(() => {
+                const pending = telegram.pendingHubReposts.size > 0 || (tokenlessOutbox?.pending().length ?? 0) > 0 || (heldDebtLedger?.peersOwed().length ?? 0) > 0;
+                const holder = coordinator.getSyncStatus().leaseHolder;
+                if (!pending || !holder || holder === meshSelfId) return;
+                void probeHolder(holder).then(r => { if (r.ok) { flushHeldOutcomes(); void telegram.repostPendingHubPosts(); } }).catch(() => undefined); // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+              }, 60_000);
+              idleCheck.unref?.();
+            }
             const forwardDeps = (runtime: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime):
               import('../messaging/telegram-origin/OriginForwardToHolder.js').ForwardDeps => ({
               lease: forwardLease,
-              prepare: async (holder, input, operationId) => {
+              prepare: async (holder, input, operationId, sealAccountId) => {
                 const service = runtime.service;
                 const { applyTelegramFormatter } = await import('../messaging/TelegramAdapter.js');
                 const params = applyTelegramFormatter('sendMessage', { chat_id: input.chatId, text: input.text, parse_mode: 'Markdown',
                   ...(input.topicId > 1 ? { message_thread_id: input.topicId } : {}), ...(input.silent ? { disable_notification: true } : {}) },
                   (input.formatMode as import('../messaging/TelegramMarkdownFormatter.js').FormatMode | undefined) ?? tgConfig().formatMode).outgoingParams as import('../messaging/telegram-origin/types.js').BotParameters;
-                const accountId = String(originBotToken).split(':')[0];
+                // Token machines derive the account from their token; a token-less machine is handed the
+                // holder's live account (or the placeholder) by the forward path (§1).
+                const accountId = hasUsableBotToken ? String(originBotToken).split(':')[0] : (sealAccountId ?? originForwardMod.UNRESOLVED_TOKENLESS_ACCOUNT);
                 // native-conversation-base §3a item 2 — a replacement keeps the original's sealed
                 // policy input (the content-check key) and deadline, seals its first draft time,
                 // and is prepared under the original's producer record so it stays a session reply.
@@ -33278,8 +33349,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await service.recordIntent(operation);
                 return operation;
               },
-              submit: async (holder, operation) => {
-                try { return await originForwardMod.submitOriginToHolder({ operation, send: sendToHolder(holder), expectedOwner: holder }); }
+              tokenless: !hasUsableBotToken,
+              onHolderReachable: () => telegram.repostPendingHubPosts(),
+              probe: probeHolder,
+              submit: async (holder, operation, capabilities) => {
+                try { return await originForwardMod.submitOriginToHolder({ operation, send: sendToHolder(holder), expectedOwner: holder, capabilities }); }
                 catch (error) {
                   if (error instanceof QuietRecordedError) await runtime.store.recordOperationState({ operationId: operation.record.operationId,
                     state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId: error.receipt.quietId } });
@@ -33293,6 +33367,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await runtime.service.admit(operation);
                 const recorded = await runtime.store.recordOperationState({ operationId: operation.record.operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> });
                 await runtime.refreshHeldForward({ force: true });
+                if (recorded && !hasUsableBotToken) notifyPeersOfHold(operation, detail.authoredPreparedAt ?? Date.now());
                 return recorded;
               },
               notify: async (holder, topicId) => {
@@ -33301,22 +33376,70 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Three short RPCs (5 s each): the notice must never push the reply
                 // request past its route timeout — worst case settle 15 s + attempt 30 s + notice 15 s.
                 const r = await runtime.service.runAsUnboundAutomation('telegram-server', () => relayOriginBot({ runtime, topicId, text, chatId: tgConfig().chatId,
-                  formatMode: tgConfig().formatMode, send: sendToHolder(holder, 5_000), executionOwnerMachineId: holder }));
+                  formatMode: tgConfig().formatMode, kindMetadata: { noticeClass: 'held-forward-notice' }, send: sendToHolder(holder, 5_000), executionOwnerMachineId: holder }));
                 return Number.isSafeInteger(r.messageId);
               },
               noticeGate: heldNoticeGate,
               audit: heldAudit, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
+              // native-conversation-forwarded-advisory item 5 — an answer to a handed-back forward: a local
+              // supersede (one transaction) before the replacement is submitted as a new operation.
+              advisory: {
+                supersede: async (originalId, next, detail) => {
+                  const answer = runtime.service.currentAdvisoryAnswer();
+                  const ok = await runtime.store.supersedeWithAdmission({ operationId: originalId, admission: next.admission, holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD,
+                    holdDetail: detail as unknown as Record<string, unknown>, ...(answer ? { firstPreparedAt: answer.firstPreparedAt } : {}) });
+                  runtime.service.settleAdvisoryAnswer(ok ? 'superseded' : 'closed');
+                  return ok;
+                },
+                resolve: (operationId, deliveryMachineId, receiptJson) => runtime.store.recordForwardedAcceptance({ operationId, deliveryMachineId, receiptJson }),
+                rehold: (operationId, detail) => runtime.store.recordOperationState({ operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
+                markAdvisory: (operationId, verdict) => runtime.store.markForwardAdvisory({ operationId, verdict: verdict as unknown as Record<string, unknown> }),
+                markRefused: (operationId, verdict) => runtime.store.mergeHoldDetail({ operationId, patch: { ownerVerdict: verdict } }),
+                noteAnsweredInline: operationId => runtime.noteVerdictAnsweredInline(operationId),
+              },
             });
-            if (telegramOriginBoot && hasUsableBotToken && meshSelfId) {
+            // §5: recovery and expiry are always wired on a token-less machine (drain-only), so held
+            // rows still drain after the gate goes dark. The gate only controls creating new holds.
+            if (telegramOriginBoot && meshSelfId) {
               const runtime = telegramOriginBoot.runtime;
               telegram.holderForwardPolicy = {
                 decide: () => originForwardMod.decideHolderForward({ switchOn: forwardSwitchOn(), poolStage: _sessionPoolStage(), route: originForwardMod.classifyLeaseRoute(forwardLease), hasPeer: forwardHasPeer() }),
               };
               // §4.2 — recovery re-forwards the SAME operation; an outcome-unknown
               // attempt is resolved at the old holder's receipt, never re-sent blind.
+              // §2: one capabilities read per recovery pass on a token-less machine, before any row is attempted.
+              // The answer is reused by that pass's rows (tickProbe), so a healthy pass reads once too.
+              if (!hasUsableBotToken) {
+                runtime.options.forwardTickReachable = async () => {
+                  const holder = coordinator.getSyncStatus().leaseHolder;
+                  if (!holder || holder === meshSelfId) return true; // self/settling: the per-row route logic retains it
+                  const answer = await probeHolder(holder);
+                  tickProbe = { holder, answer, at: Date.now() };
+                  if (answer.ok) { flushHeldOutcomes(); void telegram.repostPendingHubPosts(); }
+                  else heldAudit({ ts: Date.now(), phase: 'recovery', outcome: 'retained-holder-unreachable-tick', holder, reason: answer.reason, gateLive: tokenlessDurableForwardOn() });
+                  return answer.ok;
+                };
+              }
               runtime.options.forwardRecovery = async (operation, row) => {
                 const outcome = await originForwardMod.recoverForwardedHold({
                 lease: forwardLease, prepare: forwardDeps(runtime).prepare, submit: forwardDeps(runtime).submit, audit: heldAudit, now: Date.now,
+                tokenless: !hasUsableBotToken, probe: recoveryProbe,
+                onHolderReachable: () => { flushHeldOutcomes(); return telegram.repostPendingHubPosts(); },
+                onResealed: operationId => { resealedOperationIds.add(operationId); if (resealedOperationIds.size > 500) resealedOperationIds.delete(resealedOperationIds.values().next().value as string); },
+                onAccountChanged: async changed => {
+                  // ONE item per (sealed, live) pair. Each new topic is added to it; the same topic on a
+                  // later tick changes nothing, so the item is not re-raised every recovery pass.
+                  const key = `${changed.sealedAccountId}:${changed.liveAccountId}`;
+                  const topic = changed.topicId ?? 'unknown';
+                  if (!noticeBrakes.noteAccountChangedTopic(accountChangedTopics, key, topic)) return;
+                  const named = [...(accountChangedTopics.get(key) ?? [])].map(t => t === 'unknown' ? 'an unknown topic' : topicRef(Number(t))).join(', ');
+                  /* @self-action-controller: tokenless-account-changed-notice */
+                  await telegram.createAttentionItem({ id: `telegram-origin-account-changed:${key}`,
+                    category: 'telegram-origin', priority: 'HIGH', title: 'Held replies are waiting for their original bot',
+                    summary: `Held replies sealed for bot ${changed.sealedAccountId} are waiting: the sending machine now uses bot ${changed.liveAccountId}. They expire unless the original bot returns.`,
+                    description: `Affected: ${named}. Nothing is re-sent automatically.`,
+                    sourceContext: 'telegram-origin-account-changed' }, { hubOnly: true });
+                },
                 // native-conversation-base §3a item 7 — the raw state is read WITH the owner's
                 // outcome, reason and failure; a reasonless `suppressed` is never folded into
                 // "not accepted", which would send a second copy.
@@ -33338,6 +33461,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 onOwnerVerdict: (verdictRow, verdict) => runtime.handOwnerVerdict(verdictRow, verdict),
                 onOwnerUnstatedSettled: unstatedRow => runtime.handOwnerUnstated(unstatedRow),
                 onLateUnmarked: operationId => runtime.countLateUnmarked(operationId),
+                // native-conversation-forwarded-advisory item 3 — the holder handed it back with an advisory.
+                markAdvisory: (operationId, verdict) => runtime.store.markForwardAdvisory({ operationId, verdict: verdict as unknown as Record<string, unknown> }),
+                onAdvisory: advisoryRow => runtime.handAdvisory(advisoryRow),
                 sendLocal: async detail => {
                   const sent = await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
                     provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) }));
@@ -33358,6 +33484,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   if (recovered) telegram.recordRecoveredOutbound(recovered.topicId, recovered.text, recovered.messageId,
                     originForwardMod.recoveredForwardProvenance(row.holdDetail, row.producerKind));
                 }
+                if (outcome === 'sent' || outcome === 'resolved') resolveHeldDebt(row.operationId, 'delivered');
+                if (outcome === 'settled') resolveHeldDebt(row.operationId, 'outcome-unknown');
                 if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;
               };
@@ -33392,33 +33520,54 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await telegram.createAttentionItem(originForwardMod.handBackItem(row), { hubOnly: true });
               };
               runtime.options.onHeldForwardExpired = async row => {
+                if (tokenlessOutbox) { try { tokenlessOutbox.add('expired-undelivered', row.operationId); } catch { /* @silent-fallback-ok — evidence only */ } }
+                resolveHeldDebt(row.operationId, 'expired');
                 const topicId = Number(row.destination.topicId);
                 heldAudit({ phase: 'expired', topicId: row.destination.topicId, operationId: row.operationId, lastAttempt: (row.holdDetail as { lastAttempt?: string } | null)?.lastAttempt ?? null });
                 if (Number.isSafeInteger(topicId)) heldCollapser.clear(topicId);
-                await telegram.createAttentionItem(originForwardMod.heldExpiryItem(row), { hubOnly: true });
+                /* @self-action-controller: held-forward-expiry-report */
+                await telegram.createAttentionItem(originForwardMod.heldExpiryItem(row), { hubOnly: true, noticeClass: 'held-expiry-report' });
               };
             }
             telegram.outboundRelay = async (topicId, text, opts) => {
               if (telegramOriginBoot) {
                 const { TelegramOriginHoldError, OriginForwardSettledLocallyError } = await import('../messaging/telegram-origin/types.js');
                 const tg = tgConfig();
-                if (hasUsableBotToken && meshSelfId) {
+                if (meshSelfId && (hasUsableBotToken || (forwardSwitchOn() && tokenlessDurableForwardOn() && !originForwardMod.isNoticeClass(opts?.kindMetadata)))) {
                   // §4.1/§4.2 — settle, forward to the holder, ladder, then hold durably.
                   const runtime = telegramOriginBoot.runtime;
+                  // native-conversation-forwarded-advisory item 5 — this reply may answer a handed-back forward.
+                  const answer = runtime.service.hasProducerContext() ? runtime.service.currentAdvisoryAnswer() : null;
                   const outcome = await originForwardMod.forwardReplyToHolder(forwardDeps(runtime),
-                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata });
+                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
+                      ...(answer && !answer.settled ? { advisoryReplacementOf: answer.originalId } : {}) });
                   if (outcome.kind === 'local') throw new OriginForwardSettledLocallyError();
                   if (outcome.kind === 'sent') return { messageId: outcome.messageId, topicId, destinationStoreConfirmed: true as const };
                   if (!outcome.noticeDelivered && outcome.noticeSuppressed !== 'already-noticed') void raiseHeldItem({ topicId, holder: outcome.holder, operationId: outcome.operationId, lastAttempt: outcome.lastAttempt, reason: outcome.reason });
-                  throw new TelegramOriginHoldError(originForwardMod.HOLD_REASON_LEASE_NOT_HELD, outcome.operationId, 'held');
+                  const heldError = new TelegramOriginHoldError(originForwardMod.HOLD_REASON_LEASE_NOT_HELD, outcome.operationId, 'held');
+                  if (!hasUsableBotToken) heldError.custody = 'this-machine-only';
+                  throw heldError;
                 }
                 const holder = coordinator.getSyncStatus().leaseHolder;
                 const url = holder ? peerUrl(holder) : null;
                 if (!holder || !url || holder === meshSelfId) throw new TelegramOriginHoldError('origin-credential-owner-unavailable');
-                const { relayOriginBot } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
-                return relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
-                  silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
-                  send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
+                const { relayOriginBot, relayNothingPrepared } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
+                try {
+                  return await relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
+                    silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
+                    send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
+                } catch (error) {
+                  // §10 audit: a notice-class send found the holder unreachable and was deliberately not held (§8).
+                  if (!hasUsableBotToken && relayNothingPrepared(error) && originForwardMod.isNoticeClass(opts?.kindMetadata)) {
+                    heldAudit({ ts: Date.now(), phase: 'notice-not-held', topicId, noticeClass: String(opts?.kindMetadata?.noticeClass), reason: (error as { reason?: string }).reason ?? null, gateLive: tokenlessDurableForwardOn() });
+                  }
+                  // §10 harm signal: the relay could not even prepare a reply while the token-less durable forward was live.
+                  if (relayNothingPrepared(error) && tokenlessEvidenceOutbox && tokenlessDurableForwardOn()
+                    && !originForwardMod.isNoticeClass(opts?.kindMetadata)) {
+                    try { tokenlessEvidenceOutbox.add('not-sent-while-live'); } catch { /* @silent-fallback-ok — evidence only */ }
+                  }
+                  throw error;
+                }
               }
               const r = await relayOutbound(topicId, text, opts, {
                 leaseHolder: () => coordinator.getSyncStatus().leaseHolder,

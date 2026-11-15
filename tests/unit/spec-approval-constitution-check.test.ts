@@ -1,6 +1,6 @@
 // safe-fs-allow: test file — SafeFsExecutor removes only the per-test tmpdir.
 /**
- * B24_SPEC_APPROVAL_UNCHECKED + the spec constitution-check ledger
+ * B25_SPEC_APPROVAL_UNCHECKED + the spec constitution-check ledger
  * (Echo Bugs topic 10000002750, 2026-11-15).
  *
  * The founding case: a design spec was sent to the operator for approval before the
@@ -9,7 +9,7 @@
  *  - every run of the check is recorded (latest per spec, bounded, recency-filtered);
  *  - the rule rides every non-health-alert review with NO phrase pre-filter, carries
  *    both sides of the boundary, and gets the records as bounded untrusted data;
- *  - a B24 verdict is a HOLD — never an acknowledgeable nudge, even under the
+ *  - a B25 verdict is a HOLD — never an acknowledgeable nudge, even under the
  *    advisory migration;
  *  - the Work Board judge holds only on a fire verdict and fails open, named.
  */
@@ -26,7 +26,7 @@ import {
   renderSpecApprovalSection,
   judgeSpecApprovalAsk,
   firstHeading,
-  B24_SPEC_APPROVAL_RULE,
+  B25_SPEC_APPROVAL_RULE,
   SpecCheckPeerCache,
   cleanPeerRecord,
 } from '../../src/core/specConstitutionCheckLedger.js';
@@ -168,13 +168,13 @@ describe('proxied-on-read peer merge', () => {
   });
 });
 
-describe('B24 rule text and records rendering', () => {
+describe('B25 rule text and records rendering', () => {
   it('is not in the pinned static template (dynamic section only)', () => {
-    expect(TONE_GATE_PROMPT_TEMPLATE).not.toContain('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(TONE_GATE_PROMPT_TEMPLATE).not.toContain('B25_SPEC_APPROVAL_UNCHECKED');
   });
 
   it('carries both sides of the boundary, judged by meaning, with under-fire bias', () => {
-    const s = B24_SPEC_APPROVAL_RULE;
+    const s = B25_SPEC_APPROVAL_RULE;
     expect(s).toContain('JUDGE BY MEANING');
     expect(s).toContain('Words do not decide it');
     expect(s).toMatch(/does not report the constitution check result/);
@@ -205,34 +205,34 @@ describe('B24 rule text and records rendering', () => {
   });
 });
 
-describe('B24 in the tone gate', () => {
+describe('B25 in the tone gate', () => {
   it('rides every reply review (no phrase pre-filter) with the records, exactly once', async () => {
     const { provider, last } = capture();
     const gate = new MessagingToneGate(provider);
     const recs = [{ slug: 'work-board-handoff', checkedAt: new Date().toISOString(), standardsChecked: 120, degraded: false, findingsCount: 0, atRisk: [] }];
     await gate.review('Morning. The build is green and nothing needs you.', { channel: 'telegram', specConstitutionChecks: recs });
-    expect(last().split('B24 SPEC APPROVAL NEEDS ITS CONSTITUTION CHECK').length - 1).toBe(1);
+    expect(last().split('B25 SPEC APPROVAL NEEDS ITS CONSTITUTION CHECK').length - 1).toBe(1);
     expect(last()).toContain('"slug":"work-board-handoff"');
   });
 
   it('tells the judge the records are unavailable when none were passed', async () => {
     const { provider, last } = capture();
     await new MessagingToneGate(provider).review(FOUNDING, { channel: 'telegram' });
-    expect(last()).toContain('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(last()).toContain('B25_SPEC_APPROVAL_UNCHECKED');
     expect(last()).toContain('CONSTITUTION CHECK RECORDS: unavailable on this call');
   });
 
   it('is not rendered for health alerts', async () => {
     const { provider, last } = capture();
     await new MessagingToneGate(provider).review('Disk is nearly full on the Studio.', { channel: 'telegram', messageKind: 'health-alert', specConstitutionChecks: [] });
-    expect(last()).not.toContain('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(last()).not.toContain('B25_SPEC_APPROVAL_UNCHECKED');
   });
 
-  it('a B24 verdict holds the message and is never an acknowledgeable nudge', async () => {
-    const { provider } = capture({ pass: false, rule: 'B24_SPEC_APPROVAL_UNCHECKED', issue: 'asks approval of a design spec with no constitution check result', suggestion: 'run the built-in check and carry its result' });
+  it('a B25 verdict holds the message and is never an acknowledgeable nudge', async () => {
+    const { provider } = capture({ pass: false, rule: 'B25_SPEC_APPROVAL_UNCHECKED', issue: 'asks approval of a design spec with no constitution check result', suggestion: 'run the built-in check and carry its result' });
     const r = await new MessagingToneGate(provider).review(FOUNDING, { channel: 'telegram', specConstitutionChecks: [] });
     expect(r.pass).toBe(false);
-    expect(r.rule).toBe('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(r.rule).toBe('B25_SPEC_APPROVAL_UNCHECKED');
     expect(r.advisory).toBeUndefined();
   });
 
@@ -243,11 +243,11 @@ describe('B24 in the tone gate', () => {
   });
 
   it('is registered, classified, blocking, and exempt from the advisory migration', () => {
-    expect(VALID_RULES.has('B24_SPEC_APPROVAL_UNCHECKED')).toBe(true);
-    expect(RULE_CLASSES.B24_SPEC_APPROVAL_UNCHECKED).toBe('signal-driven');
-    expect(RULE_DISPOSITIONS.B24_SPEC_APPROVAL_UNCHECKED).toBe('blocking');
-    expect(ADVISORY_MIGRATION_EXEMPT_RULES.has('B24_SPEC_APPROVAL_UNCHECKED')).toBe(true);
-    expect(resolveRuleDisposition('B24_SPEC_APPROVAL_UNCHECKED', true)).toBe('blocking');
+    expect(VALID_RULES.has('B25_SPEC_APPROVAL_UNCHECKED')).toBe(true);
+    expect(RULE_CLASSES.B25_SPEC_APPROVAL_UNCHECKED).toBe('signal-driven');
+    expect(RULE_DISPOSITIONS.B25_SPEC_APPROVAL_UNCHECKED).toBe('blocking');
+    expect(ADVISORY_MIGRATION_EXEMPT_RULES.has('B25_SPEC_APPROVAL_UNCHECKED')).toBe(true);
+    expect(resolveRuleDisposition('B25_SPEC_APPROVAL_UNCHECKED', true)).toBe('blocking');
   });
 });
 
@@ -256,7 +256,7 @@ describe('Work Board judge', () => {
     const { provider, last } = capture({ fire: true, issue: 'asks the owner to approve a design without its check', suggestion: 'run the check' });
     const v = await judgeSpecApprovalAsk(provider, 'title: Approve the handoff design\nneed: please approve the spec', []);
     expect(v).toEqual({ hold: true, issue: 'asks the owner to approve a design without its check', suggestion: 'run the check' });
-    expect(last()).toContain('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(last()).toContain('B25_SPEC_APPROVAL_UNCHECKED');
     expect(last()).toMatch(/<<<CARD_[0-9a-f]{16}>>>/);
   });
 
@@ -290,7 +290,7 @@ describe('Work Board judge', () => {
 
   it('the section helper bundles rule and records', () => {
     const s = renderSpecApprovalSection([]);
-    expect(s).toContain('=== B24 SPEC APPROVAL NEEDS ITS CONSTITUTION CHECK ===');
+    expect(s).toContain('=== B25 SPEC APPROVAL NEEDS ITS CONSTITUTION CHECK ===');
     expect(s).toContain('may be cited like the others');
   });
 });

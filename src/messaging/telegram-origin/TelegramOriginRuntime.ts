@@ -27,12 +27,18 @@ import { assessOriginActivation, type OriginEnrollmentSnapshot } from './OriginA
 import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
+import { heldExpiryReportDue } from './TokenlessNoticeBrakes.js';
 import { definiteSessionLine, lateDeliverySessionBatch, lateLineForParseMode, lateRecoveredReplyNotice, LATE_REPLY_THRESHOLD_MS, ownerUnstatedSessionLine, uncertainSessionLine } from './SessionDeliveryNotice.js';
 import type { DefiniteFailureCause } from './SessionDeliveryNotice.js';
 import { forwardExpiryArm } from './OriginForwardToHolder.js';
 import type { HeldForwardDetail } from './OriginForwardToHolder.js';
 import { escapeOriginFooter, originFooter } from './OriginPresentation.js';
 import type { HeldOperationRow } from './StoreTypes.js';
+import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
+import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
+import { classifyPolicyRefusal } from './OriginPolicyClassifier.js';
+import { advisoryReference, advisorySessionLine, readPolicyVerdict } from './OriginPolicyVerdict.js';
+import type { PolicyVerdict } from './OriginPolicyVerdict.js';
 
 /** How long an origin keeps full detail in the hot tables; the archive holds it after that. */
 const HOT_DETAIL_MS = 7 * 24 * 60 * 60_000;
@@ -85,6 +91,10 @@ export interface TelegramOriginRuntimeOptions {
   /** §4.2 — recovery of a held FORWARDED operation (execution owner ≠ self).
    * Wired by the server; absent ⇒ such rows are retained, never executed here. */
   forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'settled' | 'retained' | 'skipped'>;
+  /** standby-durable-forward-without-token §2 — ONE reachability check per recovery pass, before any
+   * per-row reservation or attempt. `false` ⇒ every forwarded row is skipped this pass with no
+   * write at all (its ladder is NOT advanced: no attempt was made). Absent ⇒ always reachable. */
+  forwardTickReachable?: () => Promise<boolean>;
   /** §4.2 — a held forward reached its deadline: report it ONCE, honestly. */
   onHeldForwardExpired?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
@@ -185,6 +195,9 @@ export class TelegramOriginRuntime {
       reviewLegacyRecovery: options.reviewLegacyRecovery,
       peerEvidence: options.peerEvidence, diagnoseUnknown: options.diagnoseUnknown,
       diagnosticMode: options.diagnosticMode,
+      // native-conversation-forwarded-advisory item 7 — an answer to a handed-back reply, counted once.
+      onAdvisoryAnswer: answer => this.countAdvisoryAnswer({ operationId: answer.originalId,
+        kind: answer.settled === 'closed' ? 'refused' : answer.kind, handedBackAt: answer.handedBackAt }),
       onHold: ({ operationId, reason, producerKind, operationKind, destination }) => {
         if (producerKind === 'session' && operationKind === 'sendMessage' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
           const uncertain = reason === 'transport-acceptance-unknown' || reason === 'response-without-correlated-receipt' || reason === 'partial-platform-receipt';
@@ -345,7 +358,13 @@ export class TelegramOriginRuntime {
       const counts = (await this.store.getMetrics()).counts ?? {};
       const read = (metric: string) => counts[metric] ?? 0;
       return { lateDeliveries: read('late-delivery'), recoveredUnderThreshold: read('recovered-under-threshold'), lateUnmarked: read('late-unmarked'),
-        ownerUnstated: read('owner-unstated'), definiteNoSession: read('definite-no-session'), neverHandedBack: read('never-handed-back') };
+        ownerUnstated: read('owner-unstated'), definiteNoSession: read('definite-no-session'), neverHandedBack: read('never-handed-back'),
+        // native-conversation-forwarded-advisory item 7 — read at the 2026-11-25 review (G-2).
+        advisoryHandedBack: read('advisory-handed-back'), advisoryLineSent: read('advisory-line'), advisoryNoSession: read('advisory-no-session'),
+        advisoryComplied: read('advisory-complied'), advisoryAcked: read('advisory-acked'), advisoryAnswerRefused: read('advisory-answer-refused'),
+        advisoryExpiredUnanswered: read('advisory-expired-unanswered'), advisoryUnmatchedReply: read('advisory-unmatched-reply'),
+        policyRefusedHandedBack: read('policy-refused-handed-back'),
+        advisoryAnswerDelayCount: read('advisory-complied') + read('advisory-acked'), advisoryAnswerDelaySumSeconds: read('advisory-answer-delay-s') };
     } catch { return { state: 'unknown', reason: 'origin-store-unavailable' }; }
   }
   /**
@@ -370,7 +389,7 @@ export class TelegramOriginRuntime {
     const memory = this.service.heldStatus() as Array<Record<string, unknown> & { operationId: string }>;
     let durable: import('./StoreTypes.js').HeldOperationRow[] = [];
     let complete = true;
-    try { durable = await this.store.listHeldOperations({ limit }); complete = durable.length < limit; } catch { durable = []; complete = false; } // @silent-fallback-ok — not silent: `complete: false` reaches the phone summary, which marks the count incomplete; the store reports its own health
+    try { durable = await this.store.listHeldOperations({ limit, advisory: 'exclude' }); complete = durable.length < limit; } catch { durable = []; complete = false; } // @silent-fallback-ok — not silent: `complete: false` reaches the phone summary, which marks the count incomplete; the store reports its own health
     const seen = new Set(memory.map(row => row.operationId));
     const rows: Array<Record<string, unknown>> = memory.map(row => {
       const match = durable.find(d => d.operationId === row.operationId);
@@ -404,12 +423,14 @@ export class TelegramOriginRuntime {
     if (!input.force && now - this.#heldForwardRefreshedAt < (input.minIntervalMs ?? 30_000)) return;
     this.#heldForwardRefreshedAt = now;
     let rows: import('./StoreTypes.js').HeldOperationRow[];
-    try { rows = await this.store.listHeldOperations({ holdReason: 'lease-not-held', limit: 500 }); }
+    // native-conversation-forwarded-advisory item 3 — a row handed back with an advisory waits for its
+    // author, not for delivery: it is left out of this lookup and carried by its own scan below.
+    try { rows = await this.store.listHeldOperations({ holdReason: 'lease-not-held', limit: 500, advisory: 'exclude' }); }
     catch { return; /* The last known summary stands; the store reports its own health. */ }
     // native-conversation-base §3a item 7 — a row with `ownerVerdict` is ended, not held: it
     // stays `held` only to keep its text, and is left out of every "will still be delivered" count.
     const held = rows.filter(row => row.state === 'held' && !(row.holdDetail as { ownerVerdict?: unknown } | null)?.ownerVerdict);
-    const expired = rows.filter(row => row.state === 'expired' && row.expiryReportedAt === null);
+    const expired = rows.filter(heldExpiryReportDue);
     const unresolved = new Map<string, number>();
     for (const row of held) {
       const unstated = (row.holdDetail as { ownerUnstated?: { settled?: unknown } } | null)?.ownerUnstated;
@@ -441,6 +462,103 @@ export class TelegramOriginRuntime {
       try { await this.handBackExpiredForward(row, now); }
       catch { continue; /* Not marked: reported again on the next refresh, never silently dropped. */ }
     }
+    await this.runAdvisoryScan(now);
+  }
+  /** native-conversation-forwarded-advisory items 3 and 4 — the separate scan for rows handed back with an
+   * advisory (forward rows and this machine's own outbox rows alike): their one session line while held,
+   * and their deadline line once they expired. Bounded to 100 rows per pass, oldest first. */
+  async runAdvisoryScan(now = Date.now()): Promise<void> {
+    let rows: HeldOperationRow[];
+    try { rows = await this.store.listHeldOperations({ limit: 100, advisory: 'only' }); } catch { return; }
+    for (const row of rows) {
+      if (this.closed) return;
+      try {
+        if (row.state === 'held') await this.handAdvisory(row);
+        else await this.handBackExpiredAdvisory(row, now);
+      } catch { continue; /* retried on the next pass */ }
+    }
+  }
+  /** Item 4 — the advisory line, once per operation, retried each pass until recorded. No live session:
+   * nothing is injected and the row waits (counted once). A row with no session author gets no line. */
+  async handAdvisory(row: Pick<HeldOperationRow, 'operationId' | 'producerKind' | 'originMachineId' | 'sessionId' | 'harnessId' | 'deadlineAt' | 'policyVerdict'>): Promise<void> {
+    const verdict = readPolicyVerdict(row.policyVerdict ?? null);
+    if (verdict?.class !== 'advisory') return;
+    const binding = this.authorBinding(row);
+    if (!binding) return;
+    const text = advisorySessionLine({ operationId: await this.originalOperationId(row.operationId), rule: verdict.rule, suggestion: verdict.suggestion,
+      deadlineAt: row.deadlineAt, ref: advisoryReference(verdict, row.operationId) });
+    const sent = await this.sessionLine({ operationId: row.operationId, binding, text, key: 'advisory-line' });
+    if (sent === 'no-session') await this.countOnce(row.operationId, 'advisory-no-session');
+  }
+  /** The advisory row reached its deadline unanswered: one definite line (cause deadline) that also says
+   * "If you already sent a revised version, do nothing.", the hub item, and the row marked reported. */
+  private async handBackExpiredAdvisory(row: HeldOperationRow, now: number): Promise<void> {
+    await this.countOnce(row.operationId, 'advisory-expired-unanswered');
+    await this.raiseHandBackOnce(row);
+    const binding = this.authorBinding(row);
+    if (!binding) { await this.store.markHoldExpiryReported({ operationId: row.operationId, now }); return; }
+    const first = row.firstPreparedAt ?? row.preparedAt;
+    const text = definiteSessionLine({ operationId: await this.originalOperationId(row.operationId), ageMs: now - first, cause: 'deadline', advisoryExpired: true });
+    const sent = await this.sessionLine({ operationId: row.operationId, binding, text });
+    if (sent === 'sent' || sent === 'already' || row.preparedAt < now - HOT_DETAIL_MS) { await this.store.markHoldExpiryReported({ operationId: row.operationId, now }); return; }
+    await this.countOnce(row.operationId, 'definite-no-session');
+  }
+  /** native-conversation-forwarded-advisory item 2 — the outbound check refused a reply in this machine's
+   * custody. A verdict on the text (`advisory` / `refused`) ends this machine's copy in the SAME
+   * conditional transition that records it: a reply written elsewhere is `suppressed` (its author holds
+   * the live copy); one written here is `held` (`tone-advisory`, answerable) or `suppressed`
+   * (`policy-refused`). `retain` (no verdict) changes nothing. A write that loses (claimed, dispatched,
+   * an earlier verdict) changes nothing either, and the caller answers custody. */
+  async endForPolicy(record: Pick<TelegramOriginRecord, 'operationId' | 'originMachineId' | 'producerKind'>, decision: Extract<OriginSendPolicyDecision, { ok: false }>): Promise<{ ended: boolean; verdict: PolicyVerdict | null }> {
+    const self = this.options.identity.originMachineId;
+    const verdict = classifyPolicyRefusal(decision, self, Date.now());
+    if (!verdict) return { ended: false, verdict: null };
+    const authoredHere = record.originMachineId === self;
+    const advisory = verdict.class === 'advisory';
+    const state: 'held' | 'suppressed' = authoredHere && advisory ? 'held' : 'suppressed';
+    const ended = await this.store.recordOperationState({ operationId: record.operationId, state, holdReason: advisory ? 'tone-advisory' : 'policy-refused',
+      policyVerdict: verdict as unknown as Record<string, unknown> }).catch(() => false);
+    if (!ended) return { ended: false, verdict };
+    this.service.forgetTerminalHold(record.operationId);
+    if (authoredHere) await this.countOnce(record.operationId, advisory ? 'advisory-handed-back' : 'policy-refused-handed-back');
+    else await this.countOnce(record.operationId, advisory ? 'advisory-copy-ended' : 'policy-refused-copy-ended');
+    return { ended: true, verdict };
+  }
+  /** native-conversation-forwarded-advisory item 5 — the one lookup for an answer: this machine's
+   * verdict-bearing rows (outbox and forward alike) for this session and topic, matched by the
+   * per-operation answer reference (the gate's `decisionRef`, or `op:<that row's own id>`). */
+  async findAdvisoryAnswer(input: { sessionId: string; topicId: number | null; ref: string }): Promise<{ operationId: string; state: string; deadlineAt: number;
+    firstPreparedAt: number; preparedAt: number; executionOwnerMachineId: string | null; verdict: PolicyVerdict } | null> {
+    const rows = await this.store.listAdvisoryRows({ originMachineId: this.options.identity.originMachineId, sessionId: input.sessionId,
+      topicId: input.topicId === null ? null : String(input.topicId) });
+    for (const row of rows) {
+      const verdict = readPolicyVerdict(row.policyVerdict);
+      if (verdict?.class !== 'advisory') continue;
+      if (advisoryReference(verdict, row.operationId) === input.ref) return { ...row, verdict };
+    }
+    return null;
+  }
+  /** True when this session has a reply to this topic still held for its answer (the unmatched-reply counter). */
+  async hasHeldAdvisory(input: { sessionId: string; topicId: number | null }): Promise<boolean> {
+    const rows = await this.store.listAdvisoryRows({ originMachineId: this.options.identity.originMachineId, sessionId: input.sessionId,
+      topicId: input.topicId === null ? null : String(input.topicId), limit: 20 }).catch(() => []);
+    return rows.some(row => row.state === 'held' && readPolicyVerdict(row.policyVerdict)?.class === 'advisory');
+  }
+  /** Item 7 — count an answer (once per handed-back operation) with its delay; or a refused / unmatched one. */
+  async countAdvisoryAnswer(input: { operationId: string; kind: 'complied' | 'acked' | 'refused' | 'unmatched'; handedBackAt?: number }): Promise<void> {
+    const metric = input.kind === 'complied' ? 'advisory-complied' : input.kind === 'acked' ? 'advisory-acked' : input.kind === 'refused' ? 'advisory-answer-refused' : 'advisory-unmatched-reply';
+    const eventId = input.kind === 'unmatched' ? `${input.operationId}:${metric}:${randomUUID()}` : `${input.operationId}:${metric}`;
+    try {
+      const recorded = await this.store.recordOperationEvent({ eventId, metric });
+      if (recorded && (input.kind === 'complied' || input.kind === 'acked') && input.handedBackAt !== undefined) {
+        await this.store.recordOperationSum({ eventId: `${input.operationId}:answer-delay`, metric: 'advisory-answer-delay-s', amount: Math.max(0, Math.round((Date.now() - input.handedBackAt) / 1000)) });
+      }
+    } catch { /* counters never gate */ }
+  }
+  /** The session read this operation's verdict synchronously (the reply script printed it): no advisory line
+   * later. Only that key: the deadline line (`session-line`) still comes if the session never answers. */
+  async noteVerdictAnsweredInline(operationId: string): Promise<void> {
+    await this.store.recordOperationEvent({ eventId: `${operationId}:advisory-line`, metric: 'advisory-line' }).catch(() => false);
   }
   /** native-conversation-base §3a item 8 — the forward-expiry carrier. The hub item
    * is raised once under its own keyed event; `hold_expiry_reported_at` is written
@@ -484,7 +602,7 @@ export class TelegramOriginRuntime {
   /** §3a items 7, 8 — one session line per operation, whichever carrier reaches it
    * first (`<operationId>:session-line`). Recorded only after it was injected, so a
    * line injected but not recorded is injected again; never one recorded but not sent. */
-  async sessionLine(input: { operationId: string; binding: OriginSessionBinding; text: string; key?: 'session-line' | 'late-line' }): Promise<'sent' | 'already' | 'no-session' | 'failed'> {
+  async sessionLine(input: { operationId: string; binding: OriginSessionBinding; text: string; key?: 'session-line' | 'late-line' | 'advisory-line' }): Promise<'sent' | 'already' | 'no-session' | 'failed'> {
     const key = input.key ?? 'session-line';
     const eventId = `${input.operationId}:${key}`;
     if (await this.store.hasOperationEvent({ eventId, metric: key }).catch(() => false)) return 'already';
@@ -496,13 +614,15 @@ export class TelegramOriginRuntime {
     return 'sent';
   }
   /** §3a item 7 — the owner's verdict: the definite line in the same forward pass, and the hub item. */
-  async handOwnerVerdict(row: HeldOperationRow, verdict: { failure: DefiniteFailureCause }): Promise<void> {
+  async handOwnerVerdict(row: HeldOperationRow, verdict: { failure: DefiniteFailureCause; refusedBy?: 'policy'; rule?: string }): Promise<void> {
     try { await this.raiseHandBackOnce(row); } catch { /* raised again by the forward-expiry pass */ }
     const binding = this.authorBinding(row);
     if (!binding) return;
     const now = Date.now(), first = row.firstPreparedAt ?? row.preparedAt;
     const sent = await this.sessionLine({ operationId: row.operationId, binding,
-      text: definiteSessionLine({ operationId: await this.originalOperationId(row.operationId), ageMs: now - first, cause: verdict.failure }) });
+      text: definiteSessionLine({ operationId: await this.originalOperationId(row.operationId), ageMs: now - first, cause: verdict.failure,
+        ...(verdict.refusedBy === 'policy' ? { policyRule: verdict.rule ?? 'unknown-rule' } : {}) }) });
+    if (verdict.refusedBy === 'policy') await this.countOnce(row.operationId, 'policy-refused-handed-back');
     if (sent === 'no-session' && verdict.failure !== 'refused') await this.countOnce(row.operationId, 'definite-no-session');
   }
   /** §3a item 7 — a second reasonless ending: one session line (the item is per topic, from the refresh). */
@@ -618,6 +738,7 @@ export class TelegramOriginRuntime {
     this.recovering = true;
     let processed = 0, recovered = 0;
     try {
+      const tick: { reachable?: boolean } = {};
       let due: Array<{ admission: import('./StoreTypes.js').OriginAdmission; row: import('./StoreTypes.js').HeldOperationRow }> = [];
       try { due = await this.store.heldForwardAdmissions({ now, limit: 10 }); } catch { return { processed, recovered }; }
       for (const { admission, row } of due) {
@@ -625,6 +746,7 @@ export class TelegramOriginRuntime {
         const operation = { record: parseOriginJson(admission.record.envelopeJson) as unknown as TelegramOriginRecord, admission };
         if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
         try {
+          if (!await this.forwardTickGate(tick)) continue;
           processed++;
           if (!await this.allowQueuedRecovery(operation)) continue;
           const outcome = await this.options.forwardRecovery(operation, row);
@@ -745,6 +867,7 @@ export class TelegramOriginRuntime {
       }
       // Each source contributes at most ten, so a full durable batch cannot
       // permanently hide work retained only in the bounded memory hold buffer.
+      const forwardTick: { reachable?: boolean } = {};
       for (const candidate of candidates.values()) {
         if (this.closed) break;
         const { operation } = candidate;
@@ -762,6 +885,8 @@ export class TelegramOriginRuntime {
             await candidates[0].executor.execute(operation); recovered++;
           } catch (error) {
             if (error instanceof QuietRecordedError) { this.service.forgetTerminalHold(operation.record.operationId); continue; }
+            // native-conversation-forwarded-advisory item 2 — a verdict on the text ends this machine's copy.
+            if (error instanceof OriginSendPolicyRefusal) { await this.endForPolicy(operation.record, error.decision).catch(() => null); continue; }
             console.warn('[telegram-origin] browser recovery retained operation', operation.record.operationId,
               error instanceof Error ? error.name : 'unknown-error');
           }
@@ -780,6 +905,8 @@ export class TelegramOriginRuntime {
               preparedAt: audit.operation.preparedAt, deadlineAt: audit.operation.deadlineAt, executionOwnerMachineId: operation.record.executionOwnerMachineId,
               destination: { accountId: operation.record.destination.accountId, chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId },
               recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
+            // §2: an unreachable holder skips the row before the reservation.
+            if (!await this.forwardTickGate(forwardTick)) continue;
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
             if (!await this.allowQueuedRecovery(operation)) continue;
@@ -795,6 +922,7 @@ export class TelegramOriginRuntime {
         const owners = [this.options.bot, ...(this.options.additionalBots ?? [])].filter(bot =>
           bot.token && bot.accountId === operation.record.destination.accountId);
         if (owners.length !== 1) continue;
+        let sending = operation;
         try {
         if (!candidate.admitted) await this.service.admit(operation);
         // §4.2 — a DIRECT-path `lease-not-held` row (durably `held`, owner = this
@@ -815,7 +943,7 @@ export class TelegramOriginRuntime {
         // timed-out reservation leaves the payload queued and spends no review.
         // native-conversation-base §3a item 2 — a late, unmarked session reply is replaced
         // (`admitted`) with its first line saying so, and the replacement is sent now.
-        const sending = await this.markLateDirect(operation);
+        sending = await this.markLateDirect(operation);
         if (!await this.store.reserveRecoveryAttempt({ operationId: sending.record.operationId })) continue;
         processed++;
         const request = JSON.parse(sending.admission.children[0].materializations[0].requestJson);
@@ -848,6 +976,12 @@ export class TelegramOriginRuntime {
         recovered++;
         } catch (error) {
           if (error instanceof QuietRecordedError) { this.service.forgetTerminalHold(operation.record.operationId); continue; }
+          // native-conversation-forwarded-advisory item 2 — the holder's outbox recovery: a verdict on the
+          // text ends this machine's copy (never reviewed again); a `retain` refusal is retried as before.
+          if (error instanceof OriginSendPolicyRefusal) {
+            const ended = await this.endForPolicy(sending.record, error.decision).catch(() => null);
+            if (ended?.ended) continue;
+          }
           // One held operation must not starve unrelated queued destinations.
           // The service/store retains the authoritative fence and outcome.
           console.warn('[telegram-origin] recovery retained operation', operation.record.operationId,
@@ -881,6 +1015,15 @@ export class TelegramOriginRuntime {
     // A failed transition or a stale snapshot must never fall through to send.
     return true;
   }
+  /** §2 — the pass-scoped reachability answer, read once per pass on the first forwarded row. */
+  private async forwardTickGate(tick: { reachable?: boolean }): Promise<boolean> {
+    if (!this.options.forwardTickReachable) return true;
+    if (tick.reachable === undefined) {
+      try { tick.reachable = await this.options.forwardTickReachable(); }
+      catch { tick.reachable = false; } // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+    }
+    return tick.reachable;
+  }
   /** Shared gate for direct recovery and both forward retry schedulers.
    * native-conversation-base §3a item 1 — a later timestamp no longer ends a
    * queued reply (the causal rule is the only rule): no timestamp comparison is
@@ -903,7 +1046,12 @@ export class TelegramOriginRuntime {
         if (this.closed) break;
         // §3a item 7 — a settled reasonless ending is unresolved, not ended: its session
         // line and per-topic item carry it; the scan raises no per-operation notice for it.
-        if (!row.ownerUnstated) {
+        // 3g item 6 — a copy this machine ended for the outbound check belongs to its author's machine
+        // when another machine wrote it: that machine carries its line and notice.
+        // A reply held for its author's answer is not "delayed by delivery": its own line carries it.
+        const foreignPolicyEnding = row.state === 'suppressed' && row.originMachineId !== this.options.identity.originMachineId;
+        const awaitingAnswer = row.state === 'held' && readPolicyVerdict(row.policyVerdict ?? null)?.class === 'advisory';
+        if (!row.ownerUnstated && !foreignPolicyEnding && !awaitingAnswer) {
           try { await this.options.onSessionDeliveryHeld({ ...row, source: 'scan' }); }
           catch (error) { console.warn('[telegram-origin] session delivery notice retry retained',
             error instanceof Error ? error.name : 'unknown-error'); }
@@ -919,15 +1067,28 @@ export class TelegramOriginRuntime {
    * this machine both wrote and sent (or whose forward the owner settled unknown).
    * Session lines go only to replies authored here; the arm is never the state alone. */
   private async scanSessionLine(row: { operationId: string; state: string; uncertain: boolean; preparedAt: number; firstPreparedAt?: number;
-    originMachineId?: string | null; sessionId?: string | null; harnessId?: string | null; failure?: DefiniteFailureCause | null; ownerUnstated?: boolean }): Promise<void> {
+    originMachineId?: string | null; sessionId?: string | null; harnessId?: string | null; failure?: DefiniteFailureCause | null; ownerUnstated?: boolean;
+    policyVerdict?: Record<string, unknown> | null; deadlineAt?: number }): Promise<void> {
     const binding = this.authorBinding({ producerKind: 'session', originMachineId: row.originMachineId ?? null, sessionId: row.sessionId ?? null, harnessId: row.harnessId ?? null });
     if (!binding) return;
+    const policy = readPolicyVerdict(row.policyVerdict ?? null);
+    // native-conversation-forwarded-advisory item 4 — a reply written and held here with an advisory.
+    if (policy?.class === 'advisory' && row.state === 'held' && row.deadlineAt !== undefined) {
+      await this.handAdvisory({ operationId: row.operationId, producerKind: 'session', originMachineId: row.originMachineId ?? null, sessionId: row.sessionId ?? null,
+        harnessId: row.harnessId ?? null, deadlineAt: row.deadlineAt, policyVerdict: row.policyVerdict ?? null });
+      return;
+    }
     const now = Date.now(), ageMs = now - (row.firstPreparedAt ?? row.preparedAt);
-    const shown = row.ownerUnstated || row.uncertain || ['outcome-unknown', 'known-failed', 'expired'].includes(row.state) ? await this.originalOperationId(row.operationId) : row.operationId;
+    const shown = row.ownerUnstated || row.uncertain || ['outcome-unknown', 'known-failed', 'expired', 'suppressed'].includes(row.state) ? await this.originalOperationId(row.operationId) : row.operationId;
     let text: string | null = null, definite: DefiniteFailureCause | null = null;
     if (row.ownerUnstated) text = ownerUnstatedSessionLine(shown);
     else if (row.uncertain || row.state === 'outcome-unknown') text = uncertainSessionLine({ operationId: shown, ageMs });
-    else if ((row.state === 'known-failed' || row.state === 'expired') && row.failure) { definite = row.failure; text = definiteSessionLine({ operationId: shown, ageMs, cause: row.failure }); }
+    else if ((row.state === 'known-failed' || row.state === 'expired') && row.failure) { definite = row.failure; text = definiteSessionLine({ operationId: shown, ageMs, cause: row.failure,
+      ...(policy?.class === 'advisory' && row.state === 'expired' ? { advisoryExpired: true } : {}) }); }
+    // 3g item 6 — a reply written here and refused by the outbound check on recovery: one definite line.
+    else if (row.state === 'suppressed' && row.failure === 'refused' && policy?.class === 'refused') {
+      definite = 'refused'; text = definiteSessionLine({ operationId: shown, ageMs, cause: 'refused', policyRule: policy.rule });
+    }
     if (!text) return;
     const sent = await this.sessionLine({ operationId: row.operationId, binding, text });
     if (sent === 'no-session' && definite && definite !== 'refused') await this.countOnce(row.operationId, 'definite-no-session');

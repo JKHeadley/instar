@@ -27,7 +27,7 @@ describe('Windows capture rate', () => {
 
   it('paces the next grab from the start of the tick, not after it', () => {
     const ts = readFileSync('src/server/DesktopStreamManager.ts', 'utf8');
-    expect(ts).toContain('Math.max(5, FRAME_INTERVAL_MS - (Date.now() - tickStarted))');
+    expect(ts).toContain('Math.max(5, frameInterval() - (Date.now() - tickStarted))');
   });
 
   it('the relay script reports its request time', () => {

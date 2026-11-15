@@ -7,7 +7,8 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
-import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
+import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
+import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
 import { consolePageUrl } from '../server/dashboardPaths.js';
 import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
@@ -54,7 +55,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { transcribeAudioFile } from '../core/VoiceTranscription.js';
+import { transcribeAudioFile, transcriptionFailureReason } from '../core/VoiceTranscription.js';
 import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
@@ -912,6 +913,86 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
+  /** Attention items whose hub post found the holder unreachable (§8): posted once when it answers.
+   * Persisted (state/pending-hub-reposts.json) so a restart during an outage does not forget them. */
+  readonly pendingHubReposts = new Set<string>();
+  /** Failed re-post attempts per item (persisted with the set): the brake in hubRepostDecision. */
+  private readonly hubRepostAttempts = new Map<string, HubRepostState>();
+  private pendingHubRepostsLoaded = false;
+  private pendingHubRepostsPath(): string { return path.join(this.botStateDir, 'state', 'pending-hub-reposts.json'); }
+  /** Load the persisted re-post set once (idempotent). Accepts the plain id array and the {ids, attempts} form. */
+  loadPendingHubReposts(): void {
+    if (this.pendingHubRepostsLoaded) return;
+    this.pendingHubRepostsLoaded = true;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.pendingHubRepostsPath(), 'utf8')) as unknown;
+      const ids = Array.isArray(raw) ? raw : (raw as { ids?: unknown })?.ids;
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string' && id.length <= 256) this.pendingHubReposts.add(id);
+      const attempts = Array.isArray(raw) ? null : (raw as { attempts?: unknown })?.attempts;
+      if (attempts && typeof attempts === 'object') {
+        for (const [id, st] of Object.entries(attempts as Record<string, { attempts?: unknown; lastAt?: unknown }>)) {
+          if (this.pendingHubReposts.has(id) && typeof st?.attempts === 'number' && typeof st?.lastAt === 'number') this.hubRepostAttempts.set(id, { attempts: st.attempts, lastAt: st.lastAt });
+        }
+      }
+    } catch { /* @silent-fallback-ok — no file yet, or unreadable: start empty */ }
+  }
+  private savePendingHubReposts(): void {
+    try {
+      fs.mkdirSync(path.dirname(this.pendingHubRepostsPath()), { recursive: true });
+      const tmp = `${this.pendingHubRepostsPath()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ ids: [...this.pendingHubReposts], attempts: Object.fromEntries(this.hubRepostAttempts) }));
+      fs.renameSync(tmp, this.pendingHubRepostsPath());
+    } catch { /* @silent-fallback-ok — the in-memory set still drives this process's re-posts */ }
+  }
+  addPendingHubRepost(id: string): void {
+    this.loadPendingHubReposts();
+    if (this.pendingHubReposts.has(id)) return;
+    this.pendingHubReposts.add(id); this.savePendingHubReposts();
+  }
+  deletePendingHubRepost(id: string): void {
+    this.loadPendingHubReposts();
+    this.hubRepostAttempts.delete(id);
+    if (this.pendingHubReposts.delete(id)) this.savePendingHubReposts();
+  }
+  /** Re-post each still-open item whose hub post found the holder unreachable (nothing prepared). The holder's content
+   * dedupe stops a second copy if an earlier attempt did land. */
+  async repostPendingHubPosts(): Promise<number> {
+    // One run at a time: probes fire this without awaiting it.
+    if (this.repostingHubPosts) return 0;
+    this.repostingHubPosts = true;
+    try { return await this.repostPendingHubPostsOnce(); } finally { this.repostingHubPosts = false; }
+  }
+  private repostingHubPosts = false;
+  private async repostPendingHubPostsOnce(now = Date.now()): Promise<number> {
+    this.loadPendingHubReposts();
+    let posted = 0;
+    for (const id of [...this.pendingHubReposts]) {
+      const item = this.getAttentionItem(id);
+      if (!item || item.status !== 'OPEN') { this.deletePendingHubRepost(id); continue; }
+      // Brake (standby-durable-forward-without-token §8): back off after each failed attempt, and give up the
+      // extra hub post after HUB_REPOST_MAX_ATTEMPTS. The item itself stays open on the dashboard.
+      const decision = hubRepostDecision(this.hubRepostAttempts.get(id), now);
+      if (decision === 'wait') continue;
+      if (decision === 'give-up') { this.deletePendingHubRepost(id); continue; }
+      let injected: number | null | undefined;
+      try { injected = this.config.getAttentionHubTopicId?.(); } catch { injected = null; } // @silent-fallback-ok — falls back to the self-healed hub topic below
+      const topicId = item.topicId ?? (typeof injected === 'number' && injected > 0 ? injected : null) ?? await this.ensureAttentionHubTopic().catch(() => null); // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+      if (topicId === null) continue;
+      try {
+        /* @self-action-controller: tokenless-hub-repost */
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `${item.title}\n\n${item.summary ?? item.description ?? ''}`,
+          { kindMetadata: { noticeClass: 'attention-hub-post' } }));
+        this.deletePendingHubRepost(id); posted++;
+      } catch (error) {
+        if (error instanceof TelegramOriginHoldError && error.reason === 'duplicate-content') { this.deletePendingHubRepost(id); continue; }
+        // @silent-fallback-ok — still not reachable (or refused): the item stays eligible after its backoff, never marked posted
+        const prior = this.hubRepostAttempts.get(id);
+        this.hubRepostAttempts.set(id, { attempts: (prior?.attempts ?? 0) + 1, lastAt: now });
+        this.savePendingHubReposts();
+      }
+    }
+    return posted;
+  }
   public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; formatMode?: 'html'; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | QuietReceipt | null>) | null = null;
 
   /**
@@ -4073,13 +4154,16 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts):
-   * the explicit `voiceProvider` config first, then Groq, then OpenAI from the environment.
+   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts): an explicit
+   * `voiceProvider` ("groq", "openai" or "local") first, then a configured paid provider, then
+   * whisper.cpp on this machine (also the fallback when a paid one fails). 60 s budget: updates are
+   * handled one at a time, so a longer wait would hold up every topic.
    */
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
       mediaType: 'audio/ogg',
+      timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
     });
   }
@@ -4889,7 +4973,7 @@ export class TelegramAdapter implements MessagingAdapter {
       ...(item.description !== undefined ? { description: fix(item.description) as string } : {}) };
   }
 
-  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly?: true; recordOnly?: true }): Promise<AttentionItem> {
+  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly?: true; recordOnly?: true; noticeClass?: HubNoticeClass }): Promise<AttentionItem> {
     const item = this.nameAttentionText(rawItem);
     // One row per condition (attention-lifecycle-close-on-cause §3.1): an
     // observation that lands on an existing row refreshes/reopens it instead
@@ -4936,7 +5020,7 @@ export class TelegramAdapter implements MessagingAdapter {
         && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || healthLane)) {
         const hubTopicId = healthLane && this.agentHealthLaneCfg.enabled
           ? await this.routeToAgentHealthLane(admitted.item)
-          : await this.routeToAttentionHub(admitted.item);
+          : await this.routeToAttentionHub(admitted.item, routing?.noticeClass);
         admitted.item.coalesced = true;
         if (hubTopicId !== null) admitted.item.topicId = hubTopicId;
       }
@@ -4976,7 +5060,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // maps (many items share the hub — see the coalesce-path comment below);
     // hub items are managed via /attention (PATCH / dashboard), not /ack.
     if (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || this.selectivity?.isEnforcing()) {
-      const hubTopicId = await this.routeToAttentionHub(attention);
+      const hubTopicId = await this.routeToAttentionHub(attention, routing?.noticeClass);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
       return attention;
@@ -5097,10 +5181,18 @@ export class TelegramAdapter implements MessagingAdapter {
     if (topicId === null) throw new Error('attention-hub-unavailable');
     const message = `${row.title}\n\n${row.summary ?? row.description ?? ''}`;
     try {
-      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, message));
+      // §8 (standby-durable-forward-without-token): a hub post is notice-class, never a durable hold.
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, message, { kindMetadata: { noticeClass: 'attention-hub-post' } }));
     } catch (error) {
+      if (relayNothingPrepared(error)) {
+        // Nothing was sent or held: remember it for one re-post when the holder answers again,
+        // and still FAIL this call, so callers never mistake it for a delivered post.
+        this.addPendingHubRepost(row.id);
+        throw error;
+      }
       if (!(error instanceof TelegramOriginHoldError && error.reason === 'duplicate-content')) throw error;
     }
+    this.deletePendingHubRepost(row.id);
     if (row.hubHeld) return row;
     this.attentionHubLastPost.set(row.id, { at: Date.now(), priority: row.priority });
     return row;
@@ -5278,7 +5370,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // @silent-fallback-ok — best-effort lane post; the item is already recorded in
     // the attention store, so a transient send failure is non-fatal. If the topic
     // was deleted out from under us, drop the cached id so it's recreated next time.
-    const sent = await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, line, { envelope: this.attentionEnvelope(item), formatMode: 'html' })).catch(() => { this.agentHealthTopicId = null; });
+    const sent = await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, line, { envelope: this.attentionEnvelope(item), formatMode: 'html', kindMetadata: { noticeClass: 'attention-hub-post' } })).catch(() => { this.agentHealthTopicId = null; });
     if (sent?.recorded || !sent) { item.hubHeld = true; this.saveAttentionItems(); return null; }
     item.hubHeld = false; this.saveAttentionItems();
     return topicId;
@@ -5459,7 +5551,12 @@ export class TelegramAdapter implements MessagingAdapter {
     return { origin: 'automated', category: categoryForAttention(item.sourceContext, item.lane),
       sourceContext: item.sourceContext ?? item.category ?? 'attention' };
   }
-  private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
+  /** §8 (standby-durable-forward-without-token): every hub post is notice-class, so a token-less
+   * machine never turns it into a durable held reply (an expiry item that is itself held could
+   * expire and raise another). When the holder is unreachable nothing is prepared: the item stays
+   * in the local store and is queued for one re-post when the holder answers. */
+  private async routeToAttentionHub(item: AttentionItem, noticeClass: HubNoticeClass = 'attention-hub-post'): Promise<number | null> {
+    const kindMetadata = { noticeClass };
     const decision = admitItemToHub(item, this.attentionHubFilterMode);
     if (!decision.admit && !this.selectivity?.categoryPushEnabled(categoryForAttention(item.sourceContext, item.lane))) {
       item.hubHeld = true;
@@ -5506,11 +5603,15 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (typeof injected === 'number' && injected > 0) {
       try {
-        const sent = await this.sendToTopic(injected, detail, { envelope: this.attentionEnvelope(item), formatMode: 'html', silent: item.silent === true });
+        const sent = await this.sendToTopic(injected, detail, { envelope: this.attentionEnvelope(item), formatMode: 'html', silent: item.silent === true, kindMetadata });
         if (sent.recorded) { item.hubHeld = true; this.saveAttentionItems(); return null; }
         markPosted();
+        this.deletePendingHubRepost(item.id);
         return injected;
       } catch (err) {
+        // The holder could not be reached and nothing was prepared: no topic self-heal can help
+        // (it needs the same holder). Queue one re-post instead.
+        if (relayNothingPrepared(err)) { this.addPendingHubRepost(item.id); return injected; }
         console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
       }
     }
@@ -5535,9 +5636,12 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true }))
-      .then(markPosted)
-      .catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true, kindMetadata }))
+      .then(() => { markPosted(); this.deletePendingHubRepost(item.id); })
+      .catch((err: unknown) => {
+        if (relayNothingPrepared(err)) { this.addPendingHubRepost(item.id); return; }
+        this.attentionHubTopicId = null;
+      }); // @silent-fallback-ok — the item is recorded in the store; an unreachable holder queues a re-post
     return topicId;
   }
 
@@ -6575,9 +6679,17 @@ export class TelegramAdapter implements MessagingAdapter {
       durationMs: typeof voice.duration === 'number' ? voice.duration * 1000 : undefined,
     });
 
-    // Transcribe
+    // Transcribe. Only the transcription itself decides the failure path: a later throw (logging, a
+    // callback) must never replace the person's words with "transcription unavailable".
+    let transcript: string | null = null;
+    let transcribeError: unknown = null;
     try {
-      const transcript = await this.transcribeVoice(filepath);
+      transcript = await this.transcribeVoice(filepath);
+    } catch (err) {
+      transcribeError = err;
+    }
+    try {
+      if (transcript === null) throw transcribeError ?? new Error('no transcript');
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
@@ -6630,13 +6742,59 @@ export class TelegramAdapter implements MessagingAdapter {
           console.error(`[telegram] Handler error: ${err}`);
         }
       }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const isNotConfigured = errMsg.includes('No voice transcription provider configured');
-      const replyText = isNotConfigured
-        ? "\ud83c\udfa4 I can't read voice notes yet: no transcription service is set up. Ask me to set up voice transcription and I'll do it, with one yes from you."
-        : `(Voice message received but transcription failed: ${errMsg})`;
-      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, replyText)).catch(() => {});
+    } catch (caught) {
+      if (transcript !== null) {
+        // Transcribed fine; something after it failed. The success path already handled its own errors.
+        console.error(`[telegram] Voice delivery error after transcription: ${caught}`);
+        return;
+      }
+      const err = transcribeError ?? caught;
+      // docs/specs/backup-on-machine-voice.md: the session (not a canned reply) learns a voice note
+      // arrived and why it could not be read, so the agent answers and can offer to fix it. No path in
+      // the text: the file is deleted below as before, and the app's media store already has a copy.
+      const reason = transcriptionFailureReason(err);
+      console.warn(`[telegram] Voice transcription failed: ${err instanceof Error ? err.message : String(err)}`);
+      const content = `[voice] (transcription unavailable: ${escapeTypedPathTags(reason)})`;
+      const message: Message = {
+        id: `tg-${msg.message_id}`,
+        userId: msg.from.id.toString(),
+        content,
+        channel: { type: 'telegram', identifier: topicId.toString() },
+        receivedAt: new Date(msg.date * 1000).toISOString(),
+        metadata: {
+          telegramUserId: msg.from.id,
+          username: msg.from.username,
+          firstName: msg.from.first_name,
+          messageThreadId: topicId,
+          voiceDuration: voice.duration,
+          transcriptionFailed: true,
+          media: [],
+        },
+      };
+      try {
+        this.appendToLog({
+          messageId: msg.message_id,
+          topicId,
+          text: content,
+          fromUser: true,
+          timestamp: new Date(msg.date * 1000).toISOString(),
+          sessionName: this.topicToSession.get(topicId) ?? null,
+          senderName: msg.from.first_name,
+          senderUsername: msg.from.username,
+          telegramUserId: msg.from.id,
+          provenance: 'user',
+        });
+      } catch (e) { console.error(`[telegram] Voice failure log error: ${e}`); /* @silent-fallback-ok — logged; the session still gets the line below */ }
+      if (this.onTopicMessage) {
+        try { this.onTopicMessage(message); } catch (e) { console.error(`[telegram] Topic message handler error: ${e}`); /* @silent-fallback-ok — logged, same as the success path; delivery to the handler still runs */ }
+      }
+      if (this.handler) {
+        try { await this.handler(message); } catch (e) { console.error(`[telegram] Handler error: ${e}`); /* @silent-fallback-ok — logged, same as the success path's handler error */ }
+      } else {
+        // No session handler wired: fall back to telling the person directly, in plain words.
+        // @plain-notice-ok: `reason` is one of transcriptionFailureReason's fixed plain phrases, never raw error text
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `\ud83c\udfa4 I couldn't read that voice note: ${reason}.`)).catch(() => {});
+      }
     } finally {
       // Clean up voice file after processing
       try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/messaging/TelegramAdapter.ts:3477' }); } catch { /* ignore */ }

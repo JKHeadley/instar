@@ -55,7 +55,7 @@ import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator
 import { FailedFileDiagnosisPeerService } from './FailedFileDiagnosisPeerService.js';
 import type { DiagnosisMode } from './failedFileDiagnosis.js';
 import type { DiagnosisPeerClient, DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
-import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, oldestUnverifiedAfterGreen, type MainHealthSnapshot } from './mainHealth.js';
+import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, noteHeadSuperseded, oldestUnverifiedAfterGreen, supersededAtFor, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { WaitingList, type Waiter } from './waitingList.js';
@@ -711,6 +711,8 @@ export class LocalVerifyService {
   private inFlight: InFlight | null = null;
   /** The head of the `main` run in flight, when that head was main's observed head at the run's start; else null. */
   private mainRunOnCurrentHead: string | null = null;
+  /** head → when a different `main` head was first observed after it (see `noteHeadSuperseded`). In memory; rebuilt after a restart. */
+  private readonly mainSupersededAt = new Map<string, number>();
   private blockedBy: InFlightIntent | null = null;
   private readonly index = new Map<string, LocalVerifyRecord>();
   private readonly execIndex = new Map<string, LocalVerifyRecord>();
@@ -1274,6 +1276,7 @@ export class LocalVerifyService {
     const o = this.mainObs;
     // A head different from the last one observed: queued PR entries resolved before now re-read their base at start.
     if (o.head !== null && o.head !== sha) this.mainMovedAt = now;
+    noteHeadSuperseded(this.mainSupersededAt, o.head, sha, now);
     if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
     const d = decideMainHeadEnqueue(o, sha, now, MAIN_VERIFY_LIMITS, { healthy: this.health.isHealthy() });
     o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
@@ -3259,7 +3262,12 @@ export class LocalVerifyService {
     if (record.outcome === 'success') {
       const isCurrent = current !== null && (head === current || this.releaseAlias.get(current) === head);
       const coversToStart = this.mainRunOnCurrentHead === head;
-      this.mainObs.oldestUnverifiedAt = oldestUnverifiedAfterGreen(this.mainObs.oldestUnverifiedAt, isCurrent, coversToStart ? Date.parse(record.startedAt) : null);
+      const moved = oldestUnverifiedAfterGreen(
+        this.mainObs.oldestUnverifiedAt, isCurrent, coversToStart ? Date.parse(record.startedAt) : null,
+        supersededAtFor(head, this.mainSupersededAt, this.releaseAlias),
+      );
+      // Never later than now: a record with a skewed start time must not park the clock in the future.
+      this.mainObs.oldestUnverifiedAt = moved === null ? null : Math.min(moved, this.now());
     }
     this.mainRunOnCurrentHead = null;
     const work = this.health.onVerify(head, record.outcome, detail).then(async (action) => {
