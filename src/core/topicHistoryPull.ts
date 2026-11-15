@@ -9,6 +9,7 @@
  */
 
 import type { ForwardedHistoryMessage } from './ForwardedTopicContext.js';
+import { cutUtf8, newestWithinCap, ROW_ENVELOPE_BYTES } from './oversizedRow.js';
 
 /** The most messages one pull returns, matching what the moved session's context uses. */
 export const TOPIC_HISTORY_PULL_MAX_MESSAGES = 50;
@@ -91,4 +92,111 @@ export async function pullMovedTopicHistory(
   }
   if (deps.signedPull || deps.bearerFetch) deps.log?.(`no history reached topic ${topic}; the moved session starts without it`);
   return { messages: [], via: 'none' };
+}
+
+// ── shape: 'pool' (native-conversation-any-machine-access §3d item 4) ──────────────────────────
+//
+// The pool History read of a topic used to ask each machine with this machine's own API token. The
+// pool shape carries what that read carried, so it can replace it: whole rows (no text clip) with
+// `messageId`, `eventId`, `provenance` and the origin join, pages of up to 100 rows, a 512 KiB answer
+// cap, and the `before` / `beforeMessageId` cursor. The answer echoes `shape: 'pool'`, which is how
+// an asking machine tells it from an older machine's default-shape answer.
+
+/** The page of the bearer pool read this replaces. */
+export const TOPIC_HISTORY_POOL_MAX_MESSAGES = 100;
+/** The size at which the pool fan-out already rejects a peer's answer. */
+export const TOPIC_HISTORY_POOL_MAX_BYTES = 512 * 1024;
+export const TOPIC_HISTORY_POOL_TIMEOUT_MS = 5000;
+
+export interface PoolHistoryQuery { topic: number; limit: number; before?: number; beforeMessageId?: number }
+
+export interface PoolRowTruncated { row: string | number; totalBytes: number; from: number; to: number }
+
+export type TopicHistoryPoolResponse =
+  | {
+      ok: true;
+      shape: 'pool';
+      messages: Array<Record<string, unknown>>;
+      historyCursorVersion: 2;
+      truncated?: true;
+      /** With `truncated`: the oldest row returned, as the cursor for the next older page. */
+      oldest?: { before: number; beforeMessageId?: number };
+      rowTruncated?: PoolRowTruncated;
+    }
+  | { ok: false; reason: string; shape: 'pool' };
+
+/** A history row's identity for a continuation: its event id, else its Telegram message id. */
+export function poolRowId(m: Record<string, unknown>): string | number | null {
+  if (typeof m.eventId === 'string' && m.eventId) return m.eventId;
+  if (typeof m.messageId === 'number' && Number.isSafeInteger(m.messageId)) return m.messageId;
+  return null;
+}
+
+function cursorOf(m: Record<string, unknown>): { before: number; beforeMessageId?: number } | undefined {
+  const at = Date.parse(String(m.timestamp));
+  if (!Number.isFinite(at)) return undefined;
+  return { before: at, ...(typeof m.messageId === 'number' && Number.isSafeInteger(m.messageId) && m.messageId > 0 ? { beforeMessageId: m.messageId } : {}) };
+}
+
+export function createTopicHistoryPoolHandler(deps: {
+  /** This machine's own rows for one topic page, oldest first (the plain local read with its origin join). */
+  readPool: ((q: PoolHistoryQuery) => Promise<unknown[] | null>) | null;
+  /** Removes this machine's own API token and PIN from a text, before anything is cut. */
+  clean: (text: string) => string;
+  maxBytes?: number;
+}): (cmd: { topic?: unknown; limit?: unknown; before?: unknown; beforeMessageId?: unknown; row?: unknown; byteFrom?: unknown }) => Promise<TopicHistoryPoolResponse> {
+  const maxBytes = deps.maxBytes ?? TOPIC_HISTORY_POOL_MAX_BYTES;
+  return async (cmd) => {
+    if (!deps.readPool) return { ok: false, reason: 'no-telegram', shape: 'pool' };
+    const topic = cmd.topic;
+    if (typeof topic !== 'number' || !Number.isSafeInteger(topic)) return { ok: false, reason: 'malformed', shape: 'pool' };
+    const asked = typeof cmd.limit === 'number' && Number.isFinite(cmd.limit) ? Math.floor(cmd.limit) : TOPIC_HISTORY_POOL_MAX_MESSAGES;
+    const limit = Math.max(1, Math.min(asked, TOPIC_HISTORY_POOL_MAX_MESSAGES));
+    const q: PoolHistoryQuery = { topic, limit };
+    if (cmd.before !== undefined) {
+      if (typeof cmd.before !== 'number' || !Number.isSafeInteger(cmd.before) || cmd.before < 0) return { ok: false, reason: 'malformed', shape: 'pool' };
+      q.before = cmd.before;
+    }
+    if (cmd.beforeMessageId !== undefined) {
+      if (q.before === undefined || typeof cmd.beforeMessageId !== 'number' || !Number.isSafeInteger(cmd.beforeMessageId) || cmd.beforeMessageId <= 0) return { ok: false, reason: 'malformed', shape: 'pool' };
+      q.beforeMessageId = cmd.beforeMessageId;
+    }
+    const raw = await deps.readPool(q);
+    if (!raw) return { ok: false, reason: 'read-failed', shape: 'pool' };
+    // Whole rows, redacted before anything is cut.
+    const rows = raw.filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+      .map((m) => (typeof m.text === 'string' ? { ...m, text: deps.clean(m.text) } : { ...m }));
+    const budget = Math.max(64, maxBytes - ROW_ENVELOPE_BYTES);
+    if (cmd.row !== undefined) {
+      // A continuation: the same page request plus the row and the byte to read from.
+      if (typeof cmd.row !== 'string' && typeof cmd.row !== 'number') return { ok: false, reason: 'malformed', shape: 'pool' };
+      const from = cmd.byteFrom === undefined ? 0 : cmd.byteFrom;
+      if (typeof from !== 'number' || !Number.isSafeInteger(from) || from < 0) return { ok: false, reason: 'malformed', shape: 'pool' };
+      // An id travels through a query string, so an all-digit event id and a message id compare as text.
+      const row = rows.find((m) => { const id = poolRowId(m); return id !== null && String(id) === String(cmd.row); });
+      if (!row || typeof row.text !== 'string') return { ok: false, reason: 'row-gone', shape: 'pool' };
+      const cut = cutUtf8(row.text, from, budget);
+      if (!cut) return { ok: false, reason: 'bad-byte-range', shape: 'pool' };
+      const c = cursorOf(row);
+      return { ok: true, shape: 'pool', messages: [{ ...row, text: cut.piece }], historyCursorVersion: 2, ...(c ? { oldest: c } : {}),
+        rowTruncated: { row: poolRowId(row) ?? cmd.row, totalBytes: cut.totalBytes, from: cut.from, to: cut.to } };
+    }
+    const base = Buffer.byteLength(JSON.stringify({ ok: true, shape: 'pool', historyCursorVersion: 2, truncated: true, oldest: { before: 0, beforeMessageId: 0 } })) + 512;
+    const { kept, dropped } = newestWithinCap(rows, maxBytes, base);
+    if (kept.length === 0 && rows.length > 0) {
+      // The newest row is alone larger than the cap: return it cut, with the way to read on.
+      const newest = rows[rows.length - 1];
+      const id = poolRowId(newest);
+      const c = cursorOf(newest);
+      if (id === null || typeof newest.text !== 'string') return { ok: false, reason: 'row-too-large', shape: 'pool' };
+      const cut = cutUtf8(newest.text, 0, budget)!;
+      return { ok: true, shape: 'pool', messages: [{ ...newest, text: cut.piece }], historyCursorVersion: 2, truncated: true, ...(c ? { oldest: c } : {}),
+        rowTruncated: { row: id, totalBytes: cut.totalBytes, from: cut.from, to: cut.to } };
+    }
+    if (dropped > 0) {
+      const c = cursorOf(kept[0]);
+      return { ok: true, shape: 'pool', messages: kept, historyCursorVersion: 2, truncated: true, ...(c ? { oldest: c } : {}) };
+    }
+    return { ok: true, shape: 'pool', messages: rows, historyCursorVersion: 2 };
+  };
 }

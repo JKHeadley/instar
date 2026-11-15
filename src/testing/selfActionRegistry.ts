@@ -58,6 +58,7 @@ import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionP
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
+import { selectLeftovers, type ProcRow } from '../localVerify/leftoverReaper.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
@@ -65,6 +66,7 @@ import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js
 import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { decideNeverSilentAction } from '../monitoring/neverSilent/NeverSilentPolicy.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
@@ -3167,7 +3169,7 @@ const localVerifyMainSchedule: SelfActionController = {
 const localVerifyMainDebounce: SelfActionController = {
   id: 'local-verify-main-debounce',
   actionVerb: 'retry-main-verify',
-  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; enqueueMain → decideMainEnqueue)',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; while main is suspect or red the debounce is 2 min capped at 10, so the floor on that path is 2 minutes and this model, which passes no health, does not exercise it; enqueueMain → decideMainEnqueue)',
   modelsPath: 'src/localVerify/LocalVerifyService.ts',
   delegatedGiveUp: 'none needed: the debounce cap (30 min) floors head-changed verifies; at most one is ever pending',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so each restart adds at most one head-changed verify; restarts are operator/updater-driven and dampened.' },
@@ -5432,7 +5434,141 @@ const workBoardPickup: SelfActionController = {
   },
 };
 
+/**
+ * never-silent-conversation-recovery — docs/specs/never-silent-conversation.md §3.3. A conversation
+ * owes an answer and stays silent forever under the pinned fixture: every account looks healthy to
+ * the pool, every swap and engine move "succeeds", and the conversation still never answers. The
+ * REAL table (`decideNeverSilentAction`) plus the watcher's per-incident bookkeeping it is fed:
+ * a swap is offered once (`swapTried` after the first), an engine move adds the engine it left to
+ * `triedFrameworks` (the breaker: never back to an engine already tried in the incident), one action
+ * per evidence revision, and status notices deduped per state revision. So the conversation gets at
+ * most one swap, one move and one notice per distinct state, then only "tell" with nothing new to
+ * say. Moving back needs the conversation idle (never, under the fixture).
+ */
+const neverSilentConversationRecovery: SelfActionController = {
+  id: 'never-silent-conversation-recovery',
+  actionVerb: 'conversation-respawn',
+  models: 'src/monitoring/neverSilent/NeverSilentWatcher.ts (decideNeverSilentAction + swapTried + triedFrameworks breaker + per-revision notice dedupe)',
+  modelsPath: 'src/monitoring/neverSilent/NeverSilentWatcher.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The breaker state (swap attempts, engines tried, notices sent) lives in the durable never-silent store, so a restart resets none of it, and nothing in this controller causes a restart.' },
+  boundK: 5, // one swap + one engine move + at most three distinct status notices
+  perTargetBoundK: 5,
+  ticks: 400,
+  tickMs: 15_000, // the sweep interval
+  makeUnderPressure(f, sink) {
+    const TARGET = 'silent-conversation';
+    let stuck = 'engine-a'; // stand-in engine ids: the model is engine-neutral
+    const tried: string[] = [];
+    let swapTried = false;
+    const noticed = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const fallbackEngine = ['engine-b', 'engine-a'].find((fw) => fw !== stuck && !tried.includes(fw)) ?? null;
+        const d = decideNeverSilentAction({
+          silenceClass: 'engine-login', confidence: 0.99, truncated: false, actionsSinceMessage: 'none',
+          pinned: false, actionsEnabled: true, frameworkFallbackEnabled: true, confidenceFloor: 0.8,
+          sameEngineHealthy: true, fallbackEngine, swapTried, // the pool always reports a healthy alternate under the fixture
+          protectedSession: false, recentlyRestored: false,
+        });
+        let outcome = '';
+        if (d.action === 'swap') { swapTried = true; outcome = 'refused'; sink.emit({ verb: 'account-swap', target: TARGET }); }
+        else if (d.action === 'fallback' && d.target) { tried.push(stuck); stuck = d.target; outcome = 'succeeded'; sink.emit({ verb: 'conversation-respawn', target: TARGET }); }
+        const revision = `${d.action}|${outcome}`;
+        if (d.action !== 'wait' && !noticed.has(revision)) { noticed.add(revision); sink.emit({ verb: 'notify', target: TARGET }); }
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-leftover-reaper: Local Verify's leftover test-process sweep
+ * (docs/specs/machine-memory-care.md §2). It drives the REAL pure selection
+ * (`selectLeftovers`), not a re-model. Pinned worst case: a pool of orphaned
+ * leftovers sits on the machine, and the sweep fires every 10 minutes forever.
+ * The brake is structural: a killed process is gone from the process table, so
+ * each pid is signalled at most once. The sweep creates no processes, so steady
+ * state is zero emissions once the finite pool is cleared. A live run's process
+ * (one with a real parent) is never selected, however long the pressure lasts.
+ */
+const localVerifyLeftoverReaper: SelfActionController = {
+  id: 'local-verify-leftover-reaper',
+  actionVerb: 'kill',
+  models: 'src/localVerify/leftoverReaper.ts (selectLeftovers + reapLeftovers; real pure selection) + LocalVerifyService.sweepLeftovers 10-min cadence',
+  modelsPath: 'src/localVerify/leftoverReaper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The sweep holds no state: after a restart it re-reads the process table, where every process it killed is already gone.' },
+  boundK: 3, // exactly the 3 orphaned leftovers in the fixture
+  perTargetBoundK: 1, // a killed pid leaves the table: never signalled twice
+  ticks: 30,
+  tickMs: 10 * 60_000, // the real sweep cadence
+  makeUnderPressure(f, sink) {
+    const RUNS = '/agents/a/.worktrees/.verify/runs/';
+    let table: ProcRow[] = [
+      { pid: 101, ppid: 1, uid: 501, stat: 'T', ageS: 86_400, command: `node ${RUNS}abc/vitest/w.js` },
+      { pid: 102, ppid: 1, uid: 501, stat: 'S', ageS: 86_400, command: `node ${RUNS}abc/vitest/w2.js` },
+      { pid: 103, ppid: 102, uid: 501, stat: 'S', ageS: 86_400, command: 'sleep 999' },
+      // A live run (real parent): must never be taken, however long the pressure lasts.
+      { pid: 200, ppid: 150, uid: 501, stat: 'S', ageS: 60, command: `node ${RUNS}live/vitest/w.js` },
+      { pid: 150, ppid: 1, uid: 501, stat: 'S', ageS: 60, command: 'node runVerifyMain.js --attempt-token t' },
+    ];
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!f.everySessionBusy()) return;
+        const picked = selectLeftovers(table, new Map(), { prefixes: [{ prefix: RUNS, minAgeS: 0 }], selfPid: 1, uid: 501 });
+        for (const r of picked) sink.emit({ verb: 'kill', target: String(r.pid) });
+        const gone = new Set(picked.map((r) => r.pid));
+        table = table.filter((r) => !gone.has(r.pid));
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-memory-notice: the "machine short of memory" attention item
+ * (docs/specs/machine-memory-care.md §3). Pinned worst case: the machine is
+ * short of memory on every tick forever, and its reading flaps every other tick.
+ * The brake: a notice opens once per episode and stays open until the machine
+ * has read fine for clearAfterMs; a flap inside that window re-uses the open
+ * item. Steady state: one notice for the whole sustained episode.
+ */
+const localVerifyMemoryNotice: SelfActionController = {
+  id: 'local-verify-memory-notice',
+  actionVerb: 'notify',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMemory: open-once notice, closed after MEMORY_CARE.clearAfterMs fine)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the open-notice map is empty; the upserted item has a stable id per machine, so a re-raise reopens the same item instead of adding one.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 60,
+  tickMs: 30_000, // the Local Verify tick
+  makeUnderPressure(f, sink) {
+    const CLEAR_AFTER_MS = 10 * 60_000; // MEMORY_CARE.clearAfterMs
+    let open = false;
+    let healthySince: number | null = null;
+    let n = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const pressured = f.everyAccountHot() && n++ % 2 === 0; // sustained, flapping every other tick
+        const now = f.clock.nowMs();
+        if (pressured) {
+          healthySince = null;
+          if (!open) { open = true; sink.emit({ verb: 'notify', target: 'local-verify:memory-pressure:m5' }); }
+          return;
+        }
+        if (!open) return;
+        if (healthySince === null) healthySince = now;
+        if (now - healthySince >= CLEAR_AFTER_MS) open = false;
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  neverSilentConversationRecovery,
+  localVerifyLeftoverReaper,
+  localVerifyMemoryNotice,
   graphSourceSweepCheckpointRetry,
   graphSourceStatusPollRetry,
   reloginApprovalReminder,

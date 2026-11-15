@@ -161,18 +161,18 @@ This toolkit is meant to be tested against real Claude Code projects. The flow:
   - **The principle**: This is a classic responsibility gap where no one claims failures because "someone else caused them." The standard eliminates this gap — if you see a failure, you own it
   - **Enforcement**: Husky pre-push hook (local), GitHub Actions CI with branch protection (remote), Claude Code test-health-gate hook (session-level)
 
-- **Agent Awareness Standard**: Every feature added to Instar MUST include a corresponding update to the CLAUDE.md template (`src/scaffold/templates.ts` → `generateClaudeMd()`). An agent that doesn't know about a capability effectively doesn't have it. This means:
+- **Agent Awareness Standard**: Every feature added to Instar MUST tell the agent it exists. An agent that doesn't know about a capability effectively doesn't have it. **New awareness text goes in ONE new file, `src/data/awareness/<id>.md`** (format: `src/data/awareness/README.md`; spec: `docs/specs/awareness-entry-registry.md`). The entry is written into every agent's instructions (new agents, existing agents, and the Codex/Gemini copies) as a "Feature notes" paragraph, so do NOT add a section to `generateClaudeMd()` or a block to `patchClaudeMdContent` for it. Only a row under one of the core headings still edits the template (`src/scaffold/templates.ts` → `generateClaudeMd()`). What awareness covers:
   1. **API endpoints** — Add to the Capabilities section with curl examples
   2. **Proactive triggers** — Add to Feature Proactivity ("when user does X → use this")
   3. **Registry lookups** — Add to the "Registry First" table if it answers a state question
   4. **Building blocks** — Add to "Building New Capabilities" if it's a tool the agent should reach for
 
-  The principle: agents interact with users conversationally, not through CLIs. If the template doesn't mention a feature, no agent will ever surface it. The template IS the agent's awareness.
+  The principle: agents interact with users conversationally, not through CLIs. If the agent's instructions don't mention a feature, no agent will ever surface it. The instructions ARE the agent's awareness.
 
 - **Migration Parity Standard**: Any change to agent-installed files (`.claude/settings.json` hooks, `.instar/config.json` defaults, CLAUDE.md template sections, hook scripts, built-in skills) MUST be handled so existing agents receive it on update. New agents get changes via `init`, but existing agents only get them through the update path. A feature that only works for new agents is a broken feature.
   1. **Hook template changes** (`src/data/http-hook-templates.ts`) — Add a migration in `migrateSettings()` that patches existing `.claude/settings.json`
   2. **Config defaults** — Add to `migrateConfig()` with existence checks (only add missing fields)
-  3. **CLAUDE.md sections** — Add to `migrateClaudeMd()` with content-sniffing guards
+  3. **CLAUDE.md sections** — New awareness text is an entry file in `src/data/awareness/`: it needs NO migration, because the feature-notes section is rebuilt for every existing agent on each update (a wording fix or a deleted entry reaches them too). Only a change to a section written the old way, or a row under a core heading, still needs a step in `migrateClaudeMd()` with content-sniffing guards
   4. **Hook scripts** — Add to `migrateHooks()`. Built-in hooks (`instar/` directory) are **always overwritten** on every migration run — never install-if-missing. This ensures agents can't get stuck on broken templates (lesson from `hook-event-reporter.js`: it was install-if-missing, so agents with ESM hosts got stuck on a broken CJS `require('http')` — fixed by switching to always-overwrite). Custom hooks (`custom/` directory) are never touched.
   5. **Built-in skills** — Split into two cases:
      - **Adding a new skill**: No migration needed. `installBuiltinSkills()` is called from `refreshHooksAndSettings()` on every update and is non-destructive (only writes missing SKILL.md files). Just add the skill to the skills registry.

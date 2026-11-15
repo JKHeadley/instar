@@ -287,6 +287,12 @@ describe('NEGATIVE CONTROLS: the same checks catch each fault', () => {
   it('a surfaced row with no refs is never dropped', async () => {
     const { combineNeeds } = await import(path.join(CONSOLE, 'home-model.js'));
     const q = { count: 1, rows: [{ main: 'Automatic merging is stopped', tone: 'attn' }], all: [{ main: 'Automatic merging is stopped', tone: 'attn' }], state: 'attn', line: 'x' };
-    expect(combineNeeds(q, { state: 'ok', count: 0, all: [] }, { rows: [{ main: 'Automatic merging is stopped', tone: 'attn', action: { kind: 'href', href: '#/x' } }], pending: [], failed: [] }).count).toBe(2);
+    // Same words as a queue item: one row (2026-11-14 live check: one row per real thing), and it
+    // is the surfaced row with its link, so the way to act is never lost.
+    const card = combineNeeds(q, { state: 'ok', count: 0, all: [] }, { rows: [{ main: 'Automatic merging is stopped', tone: 'attn', action: { kind: 'href', href: '#/x' } }], pending: [], failed: [] });
+    expect(card.count).toBe(1);
+    expect(card.all[0].action).toEqual({ kind: 'href', href: '#/x' });
+    // Different words: both stay.
+    expect(combineNeeds(q, { state: 'ok', count: 0, all: [] }, { rows: [{ main: 'Merging paused by the operator', tone: 'attn', action: { kind: 'href', href: '#/x' } }], pending: [], failed: [] }).count).toBe(2);
   });
 });

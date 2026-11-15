@@ -67,9 +67,41 @@ import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
 } from './peer.js';
+import { localVerifyRunPrefixes, type LeftoverPrefix, type ReapOptions, type ReapResult } from './leftoverReaper.js';
 
 /** A verify peer's fit for a full verify (resource-aware placement §4). */
-export interface PeerFit { eligible: boolean; reason: string; score: number | null }
+export interface PeerFit {
+  eligible: boolean;
+  reason: string;
+  score: number | null;
+  /** Plain words when the peer is out of the line because it is short of memory (raises the notice). */
+  memoryReason?: string | null;
+}
+
+/**
+ * Machine memory care (docs/specs/machine-memory-care.md): a machine short of memory is out of
+ * the test line, with one notice per episode; and leftover test processes are ended.
+ */
+export const MEMORY_CARE = Object.freeze({
+  /**
+   * The notice closes only after the machine has been fine this long (the hold itself lifts at
+   * once). A machine that flaps keeps ONE open item instead of a new notice per flap.
+   */
+  clearAfterMs: 10 * 60_000,
+  /**
+   * A coordinator held this long starts ONE entry anyway, then holds again for another window:
+   * `main` verifies and replays can run only here, so an endless hold would stop merging.
+   */
+  selfHoldMaxMs: 45 * 60_000,
+  /** The backstop leftover sweep runs at most this often (also once at boot). */
+  sweepEveryMs: 10 * 60_000,
+  /**
+   * A matching process at least this old is a leftover whatever is running: no run lasts this
+   * long (120 min active ceiling plus preflight), so it cannot belong to a live run, on this
+   * agent or any other agent sharing the temp folder.
+   */
+  leftoverMinAgeS: 6 * 60 * 60,
+});
 /** A peer skipped for the same reason is audited at most this often. */
 export const PEER_SKIP_AUDIT_MS = 10 * 60_000;
 
@@ -235,6 +267,15 @@ export interface LocalVerifyServiceSeams {
    * check still refuses a changed verifier.
    */
   installedVerifierVersion?(): string | null;
+  /**
+   * Plain words when THIS machine is short of memory over its last samples (the load
+   * sampler's memory row), else null. Absent or null ⇒ never held for memory.
+   */
+  selfMemoryPressure?(): string | null;
+  /** End leftover test processes under the given prefixes (leftoverReaper.ts). Absent ⇒ no sweep. */
+  reapLeftovers?(prefixes: LeftoverPrefix[], opts?: ReapOptions): Promise<ReapResult>;
+  /** The run temp root (`/tmp` real path on POSIX). Absent ⇒ only the agent's run worktrees are swept. */
+  tempRoot?(): string;
   /** Deduped attention signal (`local-verify:main-red`, `local-verify:main-unverified`, `local-verify:flaky:<file>`). */
   signal?(key: string, detail: Record<string, unknown>): void;
   /** Close a deduped attention item whose condition ended (the main-red hold item, on green). */
@@ -726,6 +767,15 @@ export class LocalVerifyService {
   private peerClient: PeerClient | null = null;
   private peerFitFn: ((machineId: string) => PeerFit) | null = null;
   private readonly peerSkipAudited = new Map<string, number>();
+  /** Machines out of the line for memory now (machineId → since). */
+  private memoryHeld = new Map<string, { since: number; reason: string }>();
+  /** Open memory notices (machineId → when the machine was first seen fine again, or null). */
+  private memoryNoticeOpen = new Map<string, { healthySince: number | null }>();
+  /** Machines evaluated since boot: the first fine reading closes a notice an earlier process left open. */
+  private memoryEvaluated = new Set<string>();
+  private lastLeftoverSweepAt = 0;
+  private leftoverSweeping = false;
+  private tmuxSocketsUnreadableAudited = false;
   private leaseView: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null = null;
   private readonly peerHealth = new Map<string, PeerHealth>();
   private readonly remotePolledAt = new Map<string, number>();
@@ -1043,6 +1093,7 @@ export class LocalVerifyService {
     // restored entry waiting (pump refuses while blockedBy is set).
     await this.reapOrphan();
     this.loadPeerState(); // after the reap: an interrupted peer attempt is tombstoned, never resumed
+    await this.sweepLeftovers('boot');
     await this.rebuildIndex();
     if (!this.cfg.peerOnly) await this.reconcilePreflightReplays();
     if (!this.cfg.peerOnly) this.waiting.load();
@@ -1224,7 +1275,7 @@ export class LocalVerifyService {
     // A head different from the last one observed: queued PR entries resolved before now re-read their base at start.
     if (o.head !== null && o.head !== sha) this.mainMovedAt = now;
     if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
-    const d = decideMainHeadEnqueue(o, sha, now);
+    const d = decideMainHeadEnqueue(o, sha, now, MAIN_VERIFY_LIMITS, { healthy: this.health.isHealthy() });
     o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
     o.handled = d.next.handled; o.immediate = d.next.immediate;
     if (d.enqueue) {
@@ -1694,6 +1745,7 @@ export class LocalVerifyService {
     peers.forEach((peer, i) => {
       let fit: PeerFit;
       try { fit = fitFn(peer.machineId); } catch { fit = { eligible: true, reason: 'fit-unreadable', score: null }; } // @silent-fallback-ok: an unreadable fit keeps today's behaviour for that peer (no filter), never a silent drop
+      this.noteMemory(peer.machineId, fit.eligible ? null : (fit.memoryReason ?? null), 'peer');
       if (fit.eligible) {
         kept.push({ peer, score: typeof fit.score === 'number' && Number.isFinite(fit.score) ? fit.score : Number.POSITIVE_INFINITY, i });
         return;
@@ -1781,6 +1833,10 @@ export class LocalVerifyService {
     if (this.failedFileDiagnosisPeer?.busy() && !await this.failedFileDiagnosisPeer.preempt('peer-full-verify')) return refuse('peer-busy');
     const busy = () => !!this.inFlight || !!this.starting || this.peerState.current?.state === 'running' || this.seams.foreignSuiteHolders().length > 0 || !!this.blockedBy;
     if (busy()) return refuse('peer-busy');
+    // Short of memory: back-pressure (the coordinator offers the PR again later or elsewhere).
+    // Its own heartbeat already says so; this catches a coordinator reading an older report.
+    const mem = this.selfMemory();
+    if (mem) { this.audit({ event: 'peer-run-memory', attemptId: req.attemptId, pr: req.pr, reason: mem }); return refuse('peer-busy'); }
     // A pending update waiting on this verifier must not gain a new restart hold.
     // Treat it as backpressure so the coordinator can offer the PR again later.
     if (this.notePause()) return refuse('peer-busy');
@@ -2220,7 +2276,115 @@ export class LocalVerifyService {
     await this.failedFileDiagnosisPeer?.tick();
     this.pump();
     if (!this.cfg.peerOnly) await this.failedFileDiagnosis?.tick([...this.index.values()]);
+    if (!this.cfg.peerOnly) this.tickMemory();
+    if (this.now() - this.lastLeftoverSweepAt >= MEMORY_CARE.sweepEveryMs) await this.sweepLeftovers('tick');
   }
+
+  /**
+   * Every tick on a coordinator: this machine's own reading (so the notice closes even when
+   * the queue is empty), and a peer no longer configured reads as fine (its notice closes).
+   */
+  private tickMemory(): void {
+    this.noteMemory(this.cfg.machineId, this.selfMemory(), 'self');
+    const peers = new Set(this.configuredPeers().map((p) => p.machineId));
+    for (const id of new Set([...this.memoryHeld.keys(), ...this.memoryNoticeOpen.keys()])) {
+      if (id !== this.cfg.machineId && !peers.has(id)) this.noteMemory(id, null, 'peer');
+    }
+  }
+
+  /** Nothing of this service is running or about to run on this machine. */
+  private localIdle(): boolean {
+    return !this.inFlight && !this.starting && !this.blockedBy && this.peerState.current?.state !== 'running' && !this.failedFileDiagnosisPeer?.busy();
+  }
+
+  /**
+   * Backstop leftover sweep (spec §2b): the run's own end-of-run reap cannot run when the run
+   * child is killed, and piles from older code must go too. This agent's own run and diagnosis
+   * worktrees: any age when this service is idle, else past the run ceiling. Shared temp folders
+   * (`<tmp>/lv-…`, which another agent's run on this host may be using): always past the run
+   * ceiling only (MEMORY_CARE.leftoverMinAgeS).
+   */
+  async sweepLeftovers(why: 'boot' | 'tick'): Promise<ReapResult | null> {
+    if (!this.seams.reapLeftovers || this.leftoverSweeping) return null;
+    this.leftoverSweeping = true;
+    this.lastLeftoverSweepAt = this.now();
+    try {
+      const idle = this.localIdle();
+      let tempRoot: string | null = null;
+      try { tempRoot = this.seams.tempRoot ? this.seams.tempRoot() : null; } catch { tempRoot = null; } // @silent-fallback-ok: an unreadable temp root sweeps only the agent's own run worktrees
+      const { runs, diagnosis, temp } = localVerifyRunPrefixes(this.cfg.agentHome, tempRoot ?? '/nonexistent-temp-root');
+      const own = idle ? 0 : MEMORY_CARE.leftoverMinAgeS;
+      const prefixes: LeftoverPrefix[] = [{ prefix: runs, minAgeS: own }, { prefix: diagnosis, minAgeS: own }];
+      if (tempRoot) for (const t of temp) prefixes.push({ prefix: t, minAgeS: MEMORY_CARE.leftoverMinAgeS });
+      // A run that starts while the process table is read owns fresh matches: the reaper never
+      // takes a process that started after this moment (startedBeforeMs).
+      const r = await this.seams.reapLeftovers(prefixes, { startedBeforeMs: this.now() });
+      if (r.matched > 0) this.audit({ event: 'leftovers-reaped', where: why, matched: r.matched, killed: r.killed, idle, sample: r.sample });
+      // No lsof (minimal Linux/WSL): orphaned tmux servers cannot be seen. Said once per process, never silent.
+      if (r.socketsUnreadable && !this.tmuxSocketsUnreadableAudited) {
+        this.tmuxSocketsUnreadableAudited = true;
+        this.audit({ event: 'leftovers-tmux-sockets-unreadable', detail: 'lsof unavailable: orphaned tmux servers from test runs are not cleared on this machine' });
+      }
+      return r;
+    } catch (e) {
+      this.audit({ event: 'leftovers-reap-failed', where: why, detail: e instanceof Error ? e.message : String(e) });
+      return null;
+    } finally {
+      this.leftoverSweeping = false;
+    }
+  }
+
+  /** This machine's own memory state, read through the seam (null = fine or unknown). */
+  private selfMemory(): string | null {
+    try { return this.seams.selfMemoryPressure ? this.seams.selfMemoryPressure() : null; } catch { return null; } // @silent-fallback-ok: an unreadable memory state never holds the line (today's behaviour)
+  }
+
+  /**
+   * One machine's memory reading (null = fine). Holds/lifts at once; the notice opens on the
+   * first pressured reading and closes after MEMORY_CARE.clearAfterMs of fine readings (and on
+   * the first fine reading after boot, for an item an earlier process left open).
+   * Coordinator-side only, so each episode has one voice.
+   */
+  private noteMemory(machineId: string, reason: string | null, who: 'self' | 'peer'): void {
+    const key = `local-verify:memory-pressure:${machineId}`;
+    const now = this.now();
+    const firstSinceBoot = !this.memoryEvaluated.has(machineId);
+    this.memoryEvaluated.add(machineId);
+    const held = this.memoryHeld.get(machineId);
+    const open = this.memoryNoticeOpen.get(machineId);
+    // One voice: only the lease holder raises or closes notices (a peer with a source checkout
+    // runs this too, for its own hold). Single-machine installs always hold.
+    const voice = this.leaseState().holds;
+    if (reason) {
+      if (!held) {
+        this.memoryHeld.set(machineId, { since: now, reason });
+        this.audit({ event: 'memory-hold', machineId, who, reason });
+      }
+      if (!voice) return;
+      if (open) { open.healthySince = null; return; }
+      this.memoryNoticeOpen.set(machineId, { healthySince: null });
+      const note = who === 'self'
+        ? `This machine is short of memory (${reason}), so it has stopped starting tests of its own. Tests it hands to other machines continue. It starts again by itself when memory recovers; if it stays short, it still runs one test every ${Math.round(MEMORY_CARE.selfHoldMaxMs / 60_000)} minutes so merging never stops completely. To help now: quit what is using the memory on this machine.`
+        : `A test machine (${machineId.slice(0, 8)}) is short of memory (${reason}), so it is out of the test line. The other machines keep testing. It comes back by itself when memory recovers. To help now: quit what is using the memory on that machine.`;
+      try { this.seams.signal?.(key, { machineId, who, reason, note }); } catch { /* @silent-fallback-ok: a signal sink failure never changes the line */ }
+      return;
+    }
+    if (held) {
+      this.memoryHeld.delete(machineId);
+      this.audit({ event: 'memory-hold-cleared', machineId, who, heldMs: now - held.since });
+    }
+    if (!voice) return;
+    if (!open) {
+      // Only where memory care is wired (a memory reader exists): elsewhere no notice was ever raised.
+      if (firstSinceBoot && this.seams.selfMemoryPressure) { try { this.seams.clearSignal?.(key, 'memory fine at boot'); } catch { /* @silent-fallback-ok: the attention lifecycle still expires the row */ } }
+      return;
+    }
+    if (open.healthySince === null) open.healthySince = now;
+    if (now - open.healthySince < MEMORY_CARE.clearAfterMs) return;
+    this.memoryNoticeOpen.delete(machineId);
+    try { this.seams.clearSignal?.(key, 'memory recovered'); } catch { /* @silent-fallback-ok: the attention lifecycle still expires the row */ }
+  }
+
 
   /**
    * Coordinator: publish which accepted peer attempts a planned restart should wait for. The restart
@@ -2629,6 +2793,14 @@ export class LocalVerifyService {
       return null;
     }
     if (this.notePause()) return null; // an update is waiting only on us
+    // Short of memory: this machine starts nothing of its own (peers keep their dispatches).
+    const mem = this.selfMemory();
+    this.noteMemory(this.cfg.machineId, mem, 'self');
+    if (mem) {
+      const held = this.memoryHeld.get(this.cfg.machineId);
+      // Held a full window: one entry may go; start() begins the next window when it does.
+      if (!held || this.now() - held.since < MEMORY_CARE.selfHoldMaxMs) return null;
+    }
     // The files on disk must still be the verifier this server labels records with: an update
     // that landed under us holds the queue for the restart instead of spawning a child that refuses.
     if (this.verifierChangedOnDisk()) return null;
@@ -2766,6 +2938,11 @@ export class LocalVerifyService {
   }
 
   private start(entry: QueueEntry): void {
+    const memHeld = this.memoryHeld.get(this.cfg.machineId);
+    if (memHeld && this.now() - memHeld.since >= MEMORY_CARE.selfHoldMaxMs) {
+      memHeld.since = this.now(); // the one start a long memory hold allows per window
+      this.audit({ event: 'memory-hold-window-start', machineId: this.cfg.machineId, pr: entry.pr, reason: memHeld.reason });
+    }
     const replay = entry.kind === 'main' ? null : this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, ...entry, policyHash: this.policyHash }));
     if (replay && (replay.state === 'pending' || replay.state === 'retryable-error')) {
       try {

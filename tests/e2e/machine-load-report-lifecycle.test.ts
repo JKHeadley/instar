@@ -33,6 +33,7 @@ describe('machine load report — alive after production-shaped init', () => {
   let dir: string;
   let sampler: MachineLoadSampler;
   let server: AgentServer;
+  let registry: MachinePoolRegistry;
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'load-report-e2e-'));
@@ -41,7 +42,7 @@ describe('machine load report — alive after production-shaped init', () => {
     idMgr.registerMachine(identity('m_peer', 'other-box'), 'standby');
     idMgr.recordSelfHardware('m_self', captureHardware('1.3.1436'));
 
-    const registry = new MachinePoolRegistry({
+    registry = new MachinePoolRegistry({
       listMachines: () => idMgr.getActiveMachines().map(({ machineId, entry }) => ({ machineId, nickname: entry.nickname, hardware: entry.hardware })),
       clockSkewToleranceMs: 300_000,
       failoverThresholdMs: 15 * 60_000,
@@ -113,6 +114,25 @@ describe('machine load report — alive after production-shaped init', () => {
     expect(byId.m_peer.loadVerdict).toBe('unknown');
     expect(byId.m_peer.liveness.state).toBe('unknown');
     expect(byId.m_peer.livenessLine).not.toMatch(/offline/i);
+  });
+
+  it('machine memory care: the live report carries real swap numbers and a memory-pressured flag in GET /pool', async () => {
+    await sampler.sampleOnce();
+    await sampler.sampleOnce();
+    const lr = sampler.read()!;
+    registry.recordHeartbeat({ machineId: 'm_self', selfReportedLastSeen: new Date().toISOString(), loadAvg: os.loadavg()[0], loadReport: lr });
+    const res = await request(server.getApp()).get('/pool').set(auth);
+    expect(res.status).toBe(200);
+    const self = res.body.machines.find((m: any) => m.machineId === 'm_self');
+    expect(typeof self.loadReport.memoryPressured).toBe('boolean');
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      // The real reader answered: a real byte count (0 is a real answer on a machine with no swap), never absent.
+      expect(typeof self.loadReport.swapUsedBytes).toBe('number');
+      expect(self.loadReport.swapUsedBytes).toBeGreaterThanOrEqual(0);
+      expect([true, false, null]).toContain(self.loadReport.swapActive);
+    }
+    // The flag and the sampler's own reading agree.
+    expect(self.loadReport.memoryPressured).toBe(sampler.memoryPressure() !== null);
   });
 
   it('the sampler keeps sampling on its cadence and the report identity advances (seq) while bootId holds', async () => {
