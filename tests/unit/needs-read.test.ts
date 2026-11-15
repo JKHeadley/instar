@@ -135,6 +135,12 @@ describe('needs read: the owner', () => {
     expect(a.couldNotCheck).toContain('the work board');
   });
 
+  it('a 503 that says the feature is disabled is off even when it also says "not initialized"', () => {
+    expect(consoleResult({ status: 503, body: { error: 'BlockerLedger not initialized (monitoring.blockerLedger.enabled is false)' } })).toEqual({ ok: false, reason: 'switched off on this agent' });
+    expect(consoleResult({ status: 503, body: { error: 'work-board-disabled' } })).toEqual({ ok: false, reason: 'switched off on this agent' });
+    expect(consoleResult({ status: 503, body: { error: 'work-board-starting' } })).toEqual({ ok: false, reason: 'still starting' });
+  });
+
   it('reads each route once even when two sources share it', async () => {
     const seen: string[] = [];
     await composer({}, seen).owner();

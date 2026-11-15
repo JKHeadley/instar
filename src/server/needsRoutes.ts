@@ -172,6 +172,8 @@ export function consoleResult(r: NeedsSelfRead): Rec {
   // A 503 that says the feature is still starting (or not ready) is not "off": the list must not read it as nothing waiting.
   if (r.status === 503) {
     const err = String(((r.body && typeof r.body === 'object' ? (r.body as Rec).error : '') ?? '')) + ' ' + String(((r.body && typeof r.body === 'object' ? (r.body as Rec).reason : '') ?? ''));
+    // A 503 that says it is disabled ("enabled is false", "disabled", "off") is off, whatever else it says.
+    if (/enabled[^a-z]{0,3}(is[ -])?false|disabled|switched off|not enabled|\boff\b/i.test(err)) return { ok: false, reason: 'switched off on this agent' };
     return /starting|not[ -]?(yet[ -])?(ready|initiali[sz]ed|constructed)|warming/i.test(err) ? { ok: false, reason: 'still starting' } : { ok: false, reason: 'switched off on this agent' };
   }
   if (r.status === 0) return { ok: false, reason: 'the server could not be reached' };

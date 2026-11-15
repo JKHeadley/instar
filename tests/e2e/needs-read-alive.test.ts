@@ -74,6 +74,9 @@ describe('Needs-you read — production wiring', () => {
     expect(first.body.complete).toBe(first.body.couldNotCheck.length === 0);
     for (const s of first.body.sources.filter((x: { state: string }) => x.state === 'failed')) expect(first.body.couldNotCheck).toContain(s.label);
     expect(first.body.count === 0 && first.body.complete).toBe(first.body.items.length === 0 && first.body.couldNotCheck.length === 0);
+    // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
+    // "could not check", even when its 503 also says "not initialized".
+    expect(first.body.couldNotCheck).not.toContain('plans');
 
     // An owner phone, paired through the existing path, gets the same list through its own device rule.
     server.mobilePairing!.deps.fetchFn = (async (url: string) => {

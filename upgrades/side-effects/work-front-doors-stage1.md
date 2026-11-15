@@ -134,6 +134,8 @@ Checked and fine:
 
 **Author, after the re-check:** fixed the new finding. Rows with `peer-pool-unconfigured` are skipped (a store never set up is a complete nothing), and this machine's own failed pooled read is named "on this machine". Unit test `an account store never set up is complete...` covers both. The canary/owner double build (at most two builds, once an hour) is accepted as noted.
 
+**Author, live run on a throwaway agent (after merge-ready):** the "still starting" rule misread `BlockerLedger not initialized (monitoring.blockerLedger.enabled is false)` as starting, so a fresh agent read "could not check plans" forever. A 503 that says the feature is disabled (`enabled is false`, `disabled`, `off`) is now off whatever else it says; unit-tested with that exact message, `work-board-disabled` and `work-board-starting`. Re-run on the throwaway: `complete: true`, one real need, nothing unchecked.
+
 ## Evidence pointers
 
 - Integration: `tests/integration/team-access-routes.test.ts` (member and msp phones through the real middleware).
