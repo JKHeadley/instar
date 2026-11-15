@@ -28,7 +28,7 @@ import { canonicalOrigin, originDigest, parseOriginJson, wireDigest } from './Ca
 import { planBotOrigin } from './OriginBotPlanner.js';
 import { resolveOriginDisplay } from './OriginPresentation.js';
 import { attestOrigin, verifyOriginAttestation } from './OriginAttestation.js';
-import { DEFAULT_ORIGIN_LIMITS, TelegramOriginHoldError } from './types.js';
+import { AdvisoryAnswerClosedError, DEFAULT_ORIGIN_LIMITS, TelegramOriginHoldError } from './types.js';
 import type { BotParameters, OriginDisplaySettings, OriginEvidence, OriginLimits, OriginPlatformReceipt, SealedBotRequest, TelegramOriginProducer, TelegramOriginRecord } from './types.js';
 import type { OriginSessionRegistry } from './OriginSessionRegistry.js';
 import type { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
@@ -53,6 +53,9 @@ export interface OriginServiceStore {
   recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult>;
   recordOperationState(input: {operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;
     holdReason?: string; holdDetail?: Record<string, unknown> | null}): Promise<boolean>;
+  /** native-conversation-forwarded-advisory item 5 — the answer's local supersede (one transaction). */
+  supersedeWithAdmission?(input: { operationId: string; admission: OriginAdmission; holdReason?: string | null; holdDetail: Record<string, unknown> | null;
+    replacementState?: 'held' | 'admitted'; firstPreparedAt?: number }): Promise<boolean>;
   getOrigin(originId: string): Promise<OriginAuditRecord | null>;
   listOrigins(query?: OriginListQuery): Promise<OriginListPage>;
   getMetrics(): Promise<OriginMetrics>;
@@ -62,6 +65,8 @@ export interface OriginServiceOptions {
   /** Fallback record for a Telegram acceptance whose receipt write failed. */
   unrecordedReceipts?: Pick<OriginUnrecordedReceipts, 'append'>;
   sendPolicy?: OriginSendPolicyAuthority;
+  /** native-conversation-forwarded-advisory item 7 — an answer superseded its original, or found it closed. */
+  onAdvisoryAnswer?: (answer: OriginAdvisoryAnswer) => void | Promise<void>;
   authorizeOrigin?: (record: TelegramOriginRecord) => boolean | Promise<boolean>;
   store: OriginServiceStore;
   sessions: OriginSessionRegistry;
@@ -103,7 +108,13 @@ export interface OriginServiceOptions {
 }
 export { ORIGIN_STAGE_DEADLINES_MS, ORIGIN_STAGE_DEADLINE_MAX_MS, type OriginStageDeadlines } from './OriginStageDeadlines.js';
 interface OriginScope { producer: TelegramOriginProducer; operations: string[]; policy?: OriginSendPolicyInput; policyReviewed?: boolean;
-  logicalSendKey?: string; logicalOrdinal?: number; }
+  logicalSendKey?: string; logicalOrdinal?: number;
+  /** native-conversation-forwarded-advisory item 5 — this request answers a handed-back reply. */
+  advisoryAnswer?: OriginAdvisoryAnswer; }
+/** The handed-back reply an answer replaces: the replacement keeps its draft time and deadline. */
+export interface OriginAdvisoryAnswer { originalId: string; firstPreparedAt: number; deadlineAt: number; kind: 'complied' | 'acked'; handedBackAt: number;
+  /** The one operation prepared as the replacement in this request. */
+  preparedId?: string; settled?: 'superseded' | 'closed' }
 export interface OriginPreparedBotOperation { record: TelegramOriginRecord; admission: OriginAdmission; }
 export type OriginBotTransport = ((request: Readonly<SealedBotRequest>) => Promise<Response>) & {
   prepare?: (request: Readonly<SealedBotRequest>) => Promise<{ send: () => Promise<Response>; valid: () => boolean; cancel: () => void }>;
@@ -267,6 +278,33 @@ export class TelegramOriginService {
   markCurrentSendPolicyReviewed(): void {
     const scope = this.#scope.getStore();
     if (scope?.policy) scope.policyReviewed = true;
+  }
+  /** native-conversation-forwarded-advisory item 5 — bind this request to the handed-back reply it answers. */
+  setAdvisoryAnswer(answer: Omit<OriginAdvisoryAnswer, 'preparedId' | 'settled'>): void {
+    const scope = this.#scope.getStore();
+    if (!scope) throw new TelegramOriginHoldError('producer-context-required');
+    scope.advisoryAnswer = { ...answer };
+  }
+  currentAdvisoryAnswer(): OriginAdvisoryAnswer | null {
+    const answer = this.#scope.getStore()?.advisoryAnswer;
+    return answer ? { ...answer } : null;
+  }
+  /** Record how the answer ended (once per request): `superseded` (the replacement now carries the reply) or
+   * `closed` (the original was no longer held; nothing was admitted). */
+  settleAdvisoryAnswer(outcome: 'superseded' | 'closed'): void {
+    const answer = this.#scope.getStore()?.advisoryAnswer;
+    if (!answer || answer.settled) return;
+    answer.settled = outcome;
+    try { void Promise.resolve(this.options.onAdvisoryAnswer?.({ ...answer })).catch(() => undefined); } catch { /* counters never gate */ }
+  }
+  /** An `op:` answer reference is resolved on this machine; it is removed before the policy input is sealed. */
+  dropOperationReference(): void {
+    const policy = this.#scope.getStore()?.policy;
+    const ref = policy?.reaction?.toneAdvisoryDecisionRef;
+    if (policy?.reaction && typeof ref === 'string' && /^op:/.test(ref)) {
+      const { toneAdvisoryDecisionRef: _dropped, ...rest } = policy.reaction;
+      if (Object.keys(rest).length) policy.reaction = rest; else delete policy.reaction;
+    }
   }
   currentSendPolicyInput(text: string, metadata?: unknown): OriginSendPolicyInput {
     return structuredClone(this.#scope.getStore()?.policy ?? originSendPolicyInput(text, metadata));
@@ -460,6 +498,11 @@ export class TelegramOriginService {
     /** native-conversation-base §3a item 2 — a replacement: the original's draft time (sealed in the envelope) and deadline. */
     replacement?: { firstPreparedAt: number; deadlineAt: number } }): OriginPreparedBotOperation {
     const producer = this.currentProducer();
+    // native-conversation-forwarded-advisory item 5 — the answer's replacement keeps the original's draft time
+    // and deadline (3a's carrier). Only the first operation this request prepares is the replacement.
+    const answer = this.#scope.getStore()?.advisoryAnswer;
+    const answering = !!answer && !answer.preparedId && !input.replacement && !input.method.startsWith('edit');
+    if (answering) input = { ...input, replacement: { firstPreparedAt: answer!.firstPreparedAt, deadlineAt: answer!.deadlineAt } };
     let notification = this.notificationForCurrentProducer();
     const addressedTopicId = this.notificationTopicId(input.params.chat_id === undefined ? null : String(input.params.chat_id), input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id));
     const pushDestination = this.notificationGate?.destination?.(notification, addressedTopicId);
@@ -517,6 +560,7 @@ export class TelegramOriginService {
         destinationJson: canonicalOrigin(child.request.destination), canonicalContentDigest: plan.contentDigest,
         materializations: [{ materializationId: child.materializationId, requestJson: canonicalOrigin(child.request), requestDigest: child.requestDigest }] })) };
     this.#scope.getStore()?.operations.push(operationId);
+    if (answering) answer!.preparedId = operationId;
     const operation = { record, admission };
     sealOriginAdmission(operation, this.options.signingKey, now);
     return operation;
@@ -619,9 +663,30 @@ export class TelegramOriginService {
             keyId: key.keyId, keyEpoch: key.keyEpoch, keyFingerprint: wireDigest(key.publicKey), verifiedAt: verified.verifiedAt,
             keyStatusAtAcceptance: 'active' } }), this.#stageDeadline('verifiedEvidenceMs'));
       }
+      const answer = this.#scope.getStore()?.advisoryAnswer;
+      if (answer && answer.preparedId === operation.record.operationId && !answer.settled) {
+        // native-conversation-forwarded-advisory item 5 — the original is withdrawn before anything is sent:
+        // ONE transaction retires the held row and admits this replacement. Refused = nothing admitted.
+        // A supersede that failed or timed out is NOT a recoverable memory hold: a replay outside this
+        // request would admit the replacement plainly while the original stays answerable (two sends).
+        // If it committed late, the durable replacement is recovered once; if not, nothing was admitted.
+        let replaced: boolean;
+        try {
+          replaced = this.options.store.supersedeWithAdmission
+            ? await within(this.options.store.supersedeWithAdmission({ operationId: answer.originalId, admission: operation.admission, holdReason: null, holdDetail: null,
+              replacementState: 'admitted', firstPreparedAt: answer.firstPreparedAt }), this.#stageDeadline('admitMs'))
+            : false;
+        } catch { throw new TelegramOriginHoldError('advisory-answer-unrecorded', operation.record.operationId, 'held'); }
+        if (!replaced) { this.settleAdvisoryAnswer('closed'); throw new AdvisoryAnswerClosedError(answer.originalId); }
+        this.settleAdvisoryAnswer('superseded');
+        return;
+      }
       await within(this.options.store.admit(operation.admission), this.#stageDeadline('admitMs'));
     }
-    catch { return this.#hold(operation, 'execution-admission-unavailable'); }
+    catch (error) {
+      if (error instanceof AdvisoryAnswerClosedError || (error instanceof TelegramOriginHoldError && error.reason === 'advisory-answer-unrecorded')) throw error;
+      return this.#hold(operation, 'execution-admission-unavailable');
+    }
   }
   /** Tokenless origins retain evidence only. The authenticated destination
    * credential owner must independently admit the sealed plan to its outbox. */

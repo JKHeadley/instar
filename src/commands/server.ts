@@ -33381,6 +33381,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               },
               noticeGate: heldNoticeGate,
               audit: heldAudit, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
+              // native-conversation-forwarded-advisory item 5 — an answer to a handed-back forward: a local
+              // supersede (one transaction) before the replacement is submitted as a new operation.
+              advisory: {
+                supersede: async (originalId, next, detail) => {
+                  const answer = runtime.service.currentAdvisoryAnswer();
+                  const ok = await runtime.store.supersedeWithAdmission({ operationId: originalId, admission: next.admission, holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD,
+                    holdDetail: detail as unknown as Record<string, unknown>, ...(answer ? { firstPreparedAt: answer.firstPreparedAt } : {}) });
+                  runtime.service.settleAdvisoryAnswer(ok ? 'superseded' : 'closed');
+                  return ok;
+                },
+                resolve: (operationId, deliveryMachineId, receiptJson) => runtime.store.recordForwardedAcceptance({ operationId, deliveryMachineId, receiptJson }),
+                rehold: (operationId, detail) => runtime.store.recordOperationState({ operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
+                markAdvisory: (operationId, verdict) => runtime.store.markForwardAdvisory({ operationId, verdict: verdict as unknown as Record<string, unknown> }),
+                markRefused: (operationId, verdict) => runtime.store.mergeHoldDetail({ operationId, patch: { ownerVerdict: verdict } }),
+                noteAnsweredInline: operationId => runtime.noteVerdictAnsweredInline(operationId),
+              },
             });
             // §5: recovery and expiry are always wired on a token-less machine (drain-only), so held
             // rows still drain after the gate goes dark. The gate only controls creating new holds.
@@ -33445,6 +33461,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 onOwnerVerdict: (verdictRow, verdict) => runtime.handOwnerVerdict(verdictRow, verdict),
                 onOwnerUnstatedSettled: unstatedRow => runtime.handOwnerUnstated(unstatedRow),
                 onLateUnmarked: operationId => runtime.countLateUnmarked(operationId),
+                // native-conversation-forwarded-advisory item 3 — the holder handed it back with an advisory.
+                markAdvisory: (operationId, verdict) => runtime.store.markForwardAdvisory({ operationId, verdict: verdict as unknown as Record<string, unknown> }),
+                onAdvisory: advisoryRow => runtime.handAdvisory(advisoryRow),
                 sendLocal: async detail => {
                   const sent = await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
                     provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) }));
@@ -33517,8 +33536,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (meshSelfId && (hasUsableBotToken || (forwardSwitchOn() && tokenlessDurableForwardOn() && !originForwardMod.isNoticeClass(opts?.kindMetadata)))) {
                   // §4.1/§4.2 — settle, forward to the holder, ladder, then hold durably.
                   const runtime = telegramOriginBoot.runtime;
+                  // native-conversation-forwarded-advisory item 5 — this reply may answer a handed-back forward.
+                  const answer = runtime.service.hasProducerContext() ? runtime.service.currentAdvisoryAnswer() : null;
                   const outcome = await originForwardMod.forwardReplyToHolder(forwardDeps(runtime),
-                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata });
+                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
+                      ...(answer && !answer.settled ? { advisoryReplacementOf: answer.originalId } : {}) });
                   if (outcome.kind === 'local') throw new OriginForwardSettledLocallyError();
                   if (outcome.kind === 'sent') return { messageId: outcome.messageId, topicId, destinationStoreConfirmed: true as const };
                   if (!outcome.noticeDelivered && outcome.noticeSuppressed !== 'already-noticed') void raiseHeldItem({ topicId, holder: outcome.holder, operationId: outcome.operationId, lastAttempt: outcome.lastAttempt, reason: outcome.reason });

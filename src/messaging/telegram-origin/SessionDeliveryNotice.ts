@@ -52,17 +52,24 @@ export function lateDeliverySessionBatch(entries: ReadonlyArray<{ operationId: s
 }
 
 export type DefiniteFailureCause = 'refused' | 'never-left' | 'deadline';
-/** §3a item 8 — three fixed phrases, chosen from the classified `failure`. */
-export function failureCausePhrase(cause: DefiniteFailureCause): string {
+/** §3a item 8 — three fixed phrases, chosen from the classified `failure`. 3g item 6: a refusal
+ * by the outbound check (`policyRule`) names the check and its rule, never Telegram. The closed
+ * cause set does not grow. */
+export function failureCausePhrase(cause: DefiniteFailureCause, policyRule?: string | null): string {
+  if (cause === 'refused' && policyRule) return `the outbound check refused it (\`${policyRule}\`)`;
   return cause === 'refused' ? 'Telegram refused it'
     : cause === 'never-left' ? 'it could not be sent before its attempts ran out'
     : 'it passed its delivery deadline';
 }
 
-/** §3a item 8 — the session line for a reply that definitely did not arrive. */
-export function definiteSessionLine(input: { operationId: string; ageMs: number; cause: DefiniteFailureCause }): string {
-  return `Your reply \`${input.operationId}\`, written ${replyAge(input.ageMs)} ago, was not delivered (${failureCausePhrase(input.cause)}) and will not be retried. ` +
-    `Its text is at \`GET /telegram/origins/operations/${input.operationId}/text\`. Send it again if it is still needed.`;
+/** §3a item 8 — the session line for a reply that definitely did not arrive.
+ * 3g: a policy refusal ends "Rewrite it before sending again."; an advisory reply that reached
+ * its deadline unanswered adds "If you already sent a revised version, do nothing." */
+export function definiteSessionLine(input: { operationId: string; ageMs: number; cause: DefiniteFailureCause; policyRule?: string | null; advisoryExpired?: boolean }): string {
+  const tail = input.cause === 'refused' && input.policyRule ? 'Rewrite it before sending again.' : 'Send it again if it is still needed.';
+  return `Your reply \`${input.operationId}\`, written ${replyAge(input.ageMs)} ago, was not delivered (${failureCausePhrase(input.cause, input.policyRule)}) and will not be retried. ` +
+    `Its text is at \`GET /telegram/origins/operations/${input.operationId}/text\`. ${tail}` +
+    (input.advisoryExpired ? ' If you already sent a revised version, do nothing.' : '');
 }
 
 /** §3a item 8 — the session line for a reply whose delivery could not be confirmed. */

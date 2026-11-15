@@ -215,6 +215,8 @@ export function authorStatement(audit: OriginAuditRecord | null, verdict: Operat
   if (op.state === 'superseded') return { holding: verdict?.supersededBy ? false : null, delivered: null, supersededBy: verdict?.supersededBy ?? null };
   const detail = op.holdDetail ?? null;
   if (op.state === 'admitted') return { holding: true, delivered: null, supersededBy: null };
+  // native-conversation-forwarded-advisory item 3 — handed back to its session: not sent, and no machine will send it on its own.
+  if (op.state === 'held' && op.policyVerdict && typeof op.policyVerdict === 'object') return { holding: false, delivered: null, supersededBy: null };
   if (op.state === 'held') return { holding: !(detail && typeof detail.ownerVerdict === 'object' && detail.ownerVerdict !== null), delivered: null, supersededBy: null };
   const lastAttempt = typeof detail?.lastAttempt === 'string' ? detail.lastAttempt : null;
   // A forward whose answer was lost is settled by the machine it went to. When
@@ -321,6 +323,9 @@ async function readOne(deps: OutcomeReadDeps, operationId: string, deadlineAt: n
   if (verdict && (verdict.outcome === 'delivered' || verdict.outcome === 'partially-delivered')) return answer(fromVerdict(verdict, self, 1));
   if (verdict?.supersededBy) return { kind: 'follow', successor: verdict.supersededBy, via: 'local', executionOwnerMachineId: remoteOwner };
   if (verdict && isOwner && isAuthor) return answer(fromVerdict(verdict, self, 0));
+  // native-conversation-forwarded-advisory item 3 — the verdict column is read first: this machine wrote it
+  // and holds the only live copy, which waits for the session's answer. Not sent; nothing to ask.
+  if (verdict && isAuthor && audit?.operation?.state === 'held' && verdict.reason === 'tone-advisory') return answer(fromVerdict(verdict, self, 0));
   if (verdict && isAuthor && audit?.operation && (
     (audit.operation.state === 'held' && ((audit.operation.holdDetail?.lastAttempt as string | undefined) ?? 'unsettled') === 'unsettled' && !audit.operation.holdDetail?.ownerVerdict && !audit.operation.holdDetail?.ownerUnstated) ||
     (audit.operation.state === 'admitted' && audit.attempts.length === 0))) {

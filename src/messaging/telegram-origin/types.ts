@@ -190,6 +190,12 @@ export class TelegramOriginHoldError extends Error {
    * machine has the reply until the sending machine is reachable. */
   custody?: 'this-machine-only';
 }
+/** native-conversation-forwarded-advisory item 5 — an answer named a handed-back reply that is no
+ * longer held (it expired, or was already replaced). Nothing is admitted and nothing is sent; the
+ * caller is told to read the old reply's recorded outcome (a 409 that names its operation id). */
+export class AdvisoryAnswerClosedError extends TelegramOriginHoldError {
+  constructor(operationId: string) { super('advisory-answer-closed', operationId, 'held'); this.name = 'AdvisoryAnswerClosedError'; }
+}
 /** The relay failed before preparing or recording anything (holder unreachable,
  * wrong protocol, owner mismatch at the capabilities step): no operation exists.
  * Used only for reporting (standby-durable-forward-without-token §8, §10); the
