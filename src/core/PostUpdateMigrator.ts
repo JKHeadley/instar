@@ -66,6 +66,8 @@ import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsS
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER } from '../messaging/telegram-origin/OriginAwareness.js';
+import { signedPoolReadsAwareness, SIGNED_POOL_READS_AWARENESS_MARKER } from './poolSignedReads.js';
+import { transcriptCopiesAwareness, TRANSCRIPT_COPIES_AWARENESS_MARKER } from './transcriptCheckpoints.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
@@ -10092,6 +10094,20 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram Web K drift and reviewed re-enrollment awareness');
     }
 
+    // native-conversation-any-machine-access §3d — reading another machine's sessions needs no shared token.
+    if (!content.includes(SIGNED_POOL_READS_AWARENESS_MARKER)) {
+      content += '\n' + signedPoolReadsAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added signed pool reads awareness');
+    }
+
+    // native-conversation-any-machine-access §3f — transcript copies on every machine (dark by default).
+    if (!content.includes(TRANSCRIPT_COPIES_AWARENESS_MARKER)) {
+      content += '\n' + transcriptCopiesAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added transcript copies awareness');
+    }
+
     if (!content.includes('Held reply outcome:')) {
       content += '\n' + telegramOriginHeldOutcomeAwareness();
       patched = true;
@@ -17408,6 +17424,8 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [SIGNED_POOL_READS_AWARENESS_MARKER, () => signedPoolReadsAwareness(this.config.port ?? 4040)],
+        [TRANSCRIPT_COPIES_AWARENESS_MARKER, () => transcriptCopiesAwareness(this.config.port ?? 4040)],
         [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         [HELD_REPLY_LATE_AWARENESS_MARKER, telegramOriginHeldLateAwareness],
