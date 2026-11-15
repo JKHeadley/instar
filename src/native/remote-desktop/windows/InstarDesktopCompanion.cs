@@ -599,7 +599,7 @@ namespace InstarDesktop {
   // ---- Live video (H.264) ------------------------------------------------
   /// <summary>Live H.264 for one lease and one screen area. A capture thread keeps
   /// the newest picture; an encode thread turns it into the next access unit and
-  /// holds at most one until a request takes it, so every delta reaches the viewer
+  /// holds at most two until requests take them, so every delta reaches the viewer
   /// in order and the slow WSL hop overlaps the next capture and encode. A stream
   /// that stops producing while it is being asked fails, so the session falls
   /// back to pictures instead of freezing.</summary>
@@ -616,7 +616,8 @@ namespace InstarDesktop {
     readonly Thread captureThread, encodeThread;
     byte[] latest;                 // newest captured BGRA (swapped, never copied, under the lock)
     long latestSequence, encodedSequence;
-    byte[] packet;                 // the next access unit, waiting for a request
+    const int Ready = 2;           // encoded units held for requests: the encoder keeps up with capture
+    readonly Queue<byte[]> packets = new Queue<byte[]>(); // in encoding order, so every delta arrives in order
     bool forceKeyframe = true;
     volatile bool stopped;
     string failure;
@@ -642,16 +643,16 @@ namespace InstarDesktop {
       Interlocked.Exchange(ref lastTakeAt, Environment.TickCount);
       int deadline = Environment.TickCount + waitMs;
       lock (sync) {
-        if (keyframe && (packet == null || packet[0] != 1)) {
-          packet = null;
+        if (keyframe && (packets.Count == 0 || packets.Peek()[0] != 1)) {
+          packets.Clear(); // deltas the viewer can no longer use
           forceKeyframe = true;
           Monitor.PulseAll(sync);
         }
         for (;;) {
           if (failure != null) throw new InvalidOperationException(failure);
           if (stopped) return null; // the lease stopped while this request waited
-          if (packet != null && (!keyframe || packet[0] == 1)) {
-            byte[] taken = packet; packet = null;
+          if (packets.Count > 0 && (!keyframe || packets.Peek()[0] == 1)) {
+            byte[] taken = packets.Dequeue();
             Monitor.PulseAll(sync);
             return taken;
           }
@@ -696,8 +697,8 @@ namespace InstarDesktop {
           while (!stopped) {
             bool keyframe;
             lock (sync) {
-              // Wait for the previous unit to be taken and for a newer picture.
-              while (!stopped && failure == null && (packet != null || latestSequence == encodedSequence)) Monitor.Wait(sync, 250);
+              // Wait for room in the ready queue and for a newer picture.
+              while (!stopped && failure == null && (packets.Count >= Ready || latestSequence == encodedSequence)) Monitor.Wait(sync, 250);
               if (stopped || failure != null) break;
               byte[] swap = picture; picture = latest; latest = swap; // take the newest picture without copying it
               encodedSequence = latestSequence;
@@ -710,7 +711,7 @@ namespace InstarDesktop {
               if (unit == null) continue;
               if (forceKeyframe && unit[0] != 1) continue; // a delta from before the request
               if (unit[0] == 1) forceKeyframe = false;
-              packet = unit;
+              packets.Enqueue(unit);
               lastProducedAt = Environment.TickCount;
               Monitor.PulseAll(sync);
             }

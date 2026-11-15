@@ -29,8 +29,9 @@ Windows session stayed on JPEG.
      (~8 ms), then the Media Foundation H.264 encoder (hardware first — Quick
      Sync/NVENC/AMF async MFT — then Microsoft's software MFT) in baseline
      level 4.0, low-latency, no B-frames, quality-based rate control (quality 70; mean bitrate ≈0.15 bit/pixel at 15/s kept as the fallback target) (~11-20 ms);
-   - at most one encoded access unit waits; a request takes it, so every delta
-     reaches the viewer in order and transport overlaps the next capture.
+   - up to two encoded access units wait in encoding order; a request takes the
+     oldest, so every delta reaches the viewer in order, the encoder keeps up with
+     capture, and transport overlaps the next capture.
    - keyframe requests drop a waiting delta and force an IDR; every keyframe
      carries SPS+PPS (cached from the encoder when it emits a bare IDR).
    - the request validates under the companion gate, then waits for a unit
