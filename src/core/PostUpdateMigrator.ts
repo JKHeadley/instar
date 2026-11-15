@@ -141,6 +141,8 @@ import {
   THREADLINE_PAIR_TOOL_MARKER,
   SOMEONE_ELSES_WORK_TRAP,
   SOMEONE_ELSES_WORK_TRAP_MARKER,
+  APPROVAL_NOT_CHORE_TRAP,
+  APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
 import { generateClaudeMd } from '../scaffold/templates.js';
 import {
@@ -9645,6 +9647,20 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the "Someone Else\'s Work" gravity well');
+    }
+    // Gravity well "Your Turn to Do It" (topic 10000002731): an approval handed
+    // over as a chore. Inserted after the "Someone Else's Work" trap (always
+    // present by now), else appended. Idempotent by the marker sniff.
+    if (!content.includes(APPROVAL_NOT_CHORE_TRAP_MARKER)) {
+      const at = content.indexOf(SOMEONE_ELSES_WORK_TRAP);
+      if (at >= 0) {
+        const end = at + SOMEONE_ELSES_WORK_TRAP.length;
+        content = `${content.slice(0, end)}\n\n${APPROVAL_NOT_CHORE_TRAP}${content.slice(end)}`;
+      } else {
+        content += `\n\n${APPROVAL_NOT_CHORE_TRAP}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the "Your Turn to Do It" gravity well');
     }
     if (!content.includes('### Quiet by Default notifications')) {
       content = content.replace(/^\*\*🩺 Agent Health lane[^\n]*\n/m, '');

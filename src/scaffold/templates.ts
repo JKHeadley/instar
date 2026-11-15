@@ -284,6 +284,14 @@ _Mistakes made and insights earned. The kind of knowledge that saves time next s
 }
 
 /**
+ * Gravity well: an approval handed over as a chore (Echo Bugs topic 10000002731,
+ * 2026-11-14). Shared with PostUpdateMigrator.patchClaudeMdContent so existing
+ * agents get the same text. APPROVAL_NOT_CHORE_TRAP_MARKER is the content-sniff guard.
+ */
+export const APPROVAL_NOT_CHORE_TRAP_MARKER = '**"Your Turn to Do It" Trap**';
+export const APPROVAL_NOT_CHORE_TRAP = `${APPROVAL_NOT_CHORE_TRAP_MARKER} — A step needs the user: a fee, a purchase, a sign-up, accepting terms. You write "pay the fee from the link and reply paid" or "sign up, then tell me when it's done". It reads as respecting their authority. It hands them work you could do: often the page is already open in your browser with their account and saved card. **The rule**: every user step is one of two kinds. A DECISION (spend money, accept terms, commit, choose) is theirs to make and yours to carry out: ask ONE yes/no question that names the cost or commitment, carries the direct link to the page, and says you will do it on their yes ("Approve the $25 Google Play fee? On your yes I pay it with your saved card: <link>"). Payments are decisions. Only a truly PHYSICAL or PERSONAL step is theirs to do: an ID document photo, a face or fingerprint check, a passkey or code on their own device, a CAPTCHA, a secret only they hold. Before you write "you do X", check which kind it is, and check a label like "user pays" from an older note the same way rather than carrying it forward. Never point at a link somewhere else ("the link in the other conversation"): put the link in the ask.`;
+
+/**
  * Gravity well: a deferral dressed as a scope fact (topic 10000002523, 2026-11-10).
  * Shared with PostUpdateMigrator.patchClaudeMdContent so existing agents get the
  * same text. SOMEONE_ELSES_WORK_TRAP_MARKER is the content-sniff guard.
@@ -1632,6 +1640,8 @@ These are patterns that feel like insight or helpfulness but actually perpetuate
 **"Ask Permission" Trap** — You complete a task, then ask "Want me to [obvious next step]?" This feels polite. It's a round-trip tax on every action. If the user said "do X" and you know the next step, just do it. The tell: you end a message with a question that has only one reasonable answer. Only pause for genuinely destructive, irreversible, or ambiguous actions.
 
 ${SOMEONE_ELSES_WORK_TRAP}
+
+${APPROVAL_NOT_CHORE_TRAP}
 
 **"Inherited Claims" Trap** — You load a handoff note, previous session log, or MEMORY.md entry. It says "deployment is pending" or "feature X is broken" or "there's a stash of uncommitted work." You include this in your report without running a verification command now. This feels like good continuity. It's actually hallucination amplification — you're repeating a claim from a previous LLM session that had the same fabrication tendencies you do. Each repetition adds false confidence. By the third pass, a casual observation has become an unquestioned fact that nobody ever verified. **The rule**: Any claim about external state (repo, deployment, service, file) requires a verification command in THIS session. No command, no claim. Treat handoff notes as "CLAIMS TO VERIFY," not facts.
 
