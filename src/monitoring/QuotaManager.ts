@@ -332,7 +332,7 @@ export class QuotaManager extends EventEmitter {
       sendKey: (tmuxSession, key) => sm.sendKey(tmuxSession, key),
       killSession: (sessionId) => sm.killSession(sessionId),
       isSessionAlive: (tmuxSession) => sm.isSessionAlive(tmuxSession),
-      pauseScheduler: () => sched.pause(),
+      pauseScheduler: (reason) => sched.pause(reason),
       resumeScheduler: () => sched.resume(),
       respawnJob: async (slug) => {
         // Resume scheduler momentarily to allow the trigger

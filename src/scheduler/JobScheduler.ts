@@ -100,6 +100,10 @@ const OTHER_CAPACITY_ALERT_MS = 30 * 60_000;
 interface SchedulerStatus {
   running: boolean;
   paused: boolean;
+  /** Why the scheduler is paused (null when running or no reason given). */
+  pauseReason: string | null;
+  /** ISO time the current pause began (null when not paused). */
+  pausedSince: string | null;
   jobCount: number;
   enabledJobs: number;
   queueLength: number;
@@ -211,6 +215,9 @@ export class JobScheduler {
   private promotionCatchUpStore: PromotionCatchUpStore;
   private promotionLeaseProvider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null = null;
   private paused = false;
+  /** Reason + start of the current pause, so it is never an invisible stall. */
+  private pauseReason: string | null = null;
+  private pausedSince: string | null = null;
 
   /** Last on-disk drift fingerprint warned for each agentmd job. */
   private bodyDriftWarnings: Map<string, string> = new Map();
@@ -1550,8 +1557,11 @@ export class JobScheduler {
   /**
    * Pause — cron tasks keep ticking but triggers are skipped.
    */
-  pause(): void {
+  pause(reason?: string): void {
+    if (!this.paused) this.pausedSince = new Date().toISOString();
     this.paused = true;
+    // Latest reason wins; an unexplained pause still reads as paused.
+    this.pauseReason = reason ?? this.pauseReason ?? null;
   }
 
   /**
@@ -1569,6 +1579,8 @@ export class JobScheduler {
    */
   resume(): void {
     this.paused = false;
+    this.pauseReason = null;
+    this.pausedSince = null;
     if (this.failureAlertDeliveryActive) this.activateFailureAlertDelivery();
     this.processQueue();
   }
@@ -1586,6 +1598,8 @@ export class JobScheduler {
     return {
       running: this.running,
       paused: this.paused,
+      pauseReason: this.paused ? this.pauseReason : null,
+      pausedSince: this.paused ? this.pausedSince : null,
       jobCount: this.jobs.length,
       enabledJobs: this.jobs.filter(j => j.enabled).length,
       queueLength: this.queue.length,
@@ -5144,9 +5158,11 @@ export class JobScheduler {
    *  (off-runtime-divergent against an on-config), never healthy. Cheap
    *  property reads ONLY — getStatus() lists sessions and must not be
    *  called from the guards route. */
-  guardStatus(): { enabled: boolean; jobCount: number; pausedJobCount: number } {
+  guardStatus(): { enabled: boolean; jobCount: number; pausedJobCount: number; pauseReason: string | null; pausedSince: string | null } {
     return {
       enabled: this.running && !this.paused,
+      pauseReason: this.paused ? this.pauseReason : null,
+      pausedSince: this.paused ? this.pausedSince : null,
       jobCount: this.jobs.length,
       pausedJobCount: this.jobs.filter((j) => !j.enabled).length,
     };

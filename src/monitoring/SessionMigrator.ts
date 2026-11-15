@@ -106,8 +106,12 @@ export interface SessionMigratorDeps {
   killSession: (sessionId: string) => boolean;
   /** Check if a session is still alive */
   isSessionAlive: (tmuxSession: string) => boolean;
-  /** Pause the scheduler to prevent new spawns */
-  pauseScheduler: () => void;
+  /**
+   * Pause the scheduler to prevent new spawns. `reason` is a human-readable
+   * account of why (surfaced by the scheduler in /status and GET /guards) so a
+   * pause is never an unexplained, invisible stall.
+   */
+  pauseScheduler: (reason?: string) => void;
   /** Resume the scheduler */
   resumeScheduler: () => void;
   /** Respawn a job by slug */
@@ -153,6 +157,19 @@ export interface SessionMigratorDeps {
    * final authority cannot be undermined when usage is already near 100%.
    */
   quotaUsagePercent?: () => number;
+}
+
+/** The outstanding quota-enforcement scheduler pause, as reported in status. */
+export interface EnforcementPauseInfo {
+  result: 'enforced_pause' | 'enforced_kill';
+  /** Human-readable reason, the same text handed to the scheduler. */
+  reason: string;
+  /** 5-hour rate that triggered (or last re-triggered) the pause. */
+  fiveHourPercent: number;
+  /** ISO time the pause first began (kept across re-enforcement). */
+  since: string;
+  /** The release condition, so an operator can see what ends the pause. */
+  resumesWhen: string;
 }
 
 export interface SessionMigratorConfig {
@@ -219,6 +236,8 @@ export class SessionMigrator extends EventEmitter {
    * already starts the scheduler unpaused, so there is nothing to carry over.
    */
   private enforcementPaused = false;
+  /** Why and since when the enforcement pause above is held (null when not held). */
+  private enforcementPauseInfo: EnforcementPauseInfo | null = null;
 
   constructor(config: SessionMigratorConfig) {
     super();
@@ -302,6 +321,49 @@ export class SessionMigrator extends EventEmitter {
     return this.enforcementPaused;
   }
 
+  /** The outstanding quota-enforcement pause (reason, since, trigger), or null. */
+  getEnforcementPause(): EnforcementPauseInfo | null {
+    return this.enforcementPauseInfo ? { ...this.enforcementPauseInfo } : null;
+  }
+
+  /**
+   * Pause the scheduler for quota enforcement and record WHY, so the pause is
+   * visible (scheduler status, GET /guards, migration status) instead of a bare
+   * in-memory boolean. Re-enforcement while already held keeps the original
+   * `since` — the pause's age must not be reset by repeated triggers. Release
+   * stays quota-gated (releaseEnforcementPauseIfRecovered); nothing here lifts
+   * the pause on a timer.
+   */
+  private beginEnforcementPause(
+    result: EnforcementPauseInfo['result'],
+    fiveHourPercent: number,
+    trigger: string,
+  ): void {
+    const resumeBelow = this.thresholds.fiveHourPercent - RESUME_HYSTERESIS_POINTS;
+    const reasonText =
+      `quota enforcement (${result}): 5-hour rate ${fiveHourPercent}% with no alternative account — ${trigger}`;
+    const since = this.enforcementPaused && this.enforcementPauseInfo
+      ? this.enforcementPauseInfo.since
+      : new Date().toISOString();
+    this.deps!.pauseScheduler(reasonText);
+    this.enforcementPaused = true;
+    this.enforcementPauseInfo = {
+      result,
+      reason: reasonText,
+      fiveHourPercent,
+      since,
+      resumesWhen:
+        `5-hour rate below ${resumeBelow}% and weekly below ${this.thresholds.weeklyPercent}% ` +
+        `(re-checked on every quota collection)`,
+    };
+  }
+
+  /** Clear the enforcement-pause flag and its recorded reason together. */
+  private clearEnforcementPause(): void {
+    this.enforcementPaused = false;
+    this.enforcementPauseInfo = null;
+  }
+
   /**
    * Release a quota-enforcement scheduler pause once quota has recovered.
    *
@@ -340,7 +402,7 @@ export class SessionMigrator extends EventEmitter {
       });
       return false;
     }
-    this.enforcementPaused = false;
+    this.clearEnforcementPause();
     this.emit('enforced_resume', {
       fiveHourPercent: fiveHour ?? null,
       weeklyPercent: quotaState.percentUsed,
@@ -409,8 +471,7 @@ export class SessionMigrator extends EventEmitter {
           event.completedAt = new Date().toISOString();
           event.durationMs = Date.now() - startTime;
 
-          this.deps!.pauseScheduler();
-          this.enforcementPaused = true;
+          this.beginEnforcementPause('enforced_kill', fiveHourPercent, reason);
           const killed = await this.haltRunningSessions();
           event.sessionsHalted = killed.map(s => s.jobSlug || s.name);
 
@@ -437,8 +498,7 @@ export class SessionMigrator extends EventEmitter {
             } catch { /* @silent-fallback-ok — best-effort signal, session will be killed at 95% if still running */ }
           }
 
-          this.deps!.pauseScheduler();
-          this.enforcementPaused = true;
+          this.beginEnforcementPause('enforced_pause', fiveHourPercent, reason);
 
           this.emit('enforced_pause', {
             reason,
@@ -485,7 +545,7 @@ export class SessionMigrator extends EventEmitter {
       });
 
       // Step 3: Pause scheduler
-      this.deps!.pauseScheduler();
+      this.deps!.pauseScheduler(`account migration: ${reason}`);
 
       // Step 4: Gracefully halt running sessions
       const haltedSessions = await this.haltRunningSessions();
@@ -515,7 +575,7 @@ export class SessionMigrator extends EventEmitter {
 
         this.deps!.resumeScheduler();
 
-        this.enforcementPaused = false;
+        this.clearEnforcementPause();
 
         event.result = 'rolled_back';
         event.error = switchResult.message;
@@ -554,7 +614,7 @@ export class SessionMigrator extends EventEmitter {
 
       // Step 8: Resume scheduler
       this.deps!.resumeScheduler();
-      this.enforcementPaused = false;
+      this.clearEnforcementPause();
 
       // Step 9: Determine result
       if (restartedSlugs.length === haltedSessions.length) {
@@ -604,7 +664,7 @@ export class SessionMigrator extends EventEmitter {
       }
 
       // Ensure scheduler is resumed even on error
-      try { this.deps!.resumeScheduler(); this.enforcementPaused = false; } catch { // @silent-fallback-ok — best-effort scheduler resume after migration failure
+      try { this.deps!.resumeScheduler(); this.clearEnforcementPause(); } catch { // @silent-fallback-ok — best-effort scheduler resume after migration failure
       }
 
       this.emit('migration_failed', event);
@@ -906,7 +966,7 @@ export class SessionMigrator extends EventEmitter {
     this.saveMigrationState();
 
     // Resume scheduler if it was left paused
-    try { this.deps.resumeScheduler(); this.enforcementPaused = false; } catch { // @silent-fallback-ok — best-effort scheduler resume during crash recovery
+    try { this.deps.resumeScheduler(); this.clearEnforcementPause(); } catch { // @silent-fallback-ok — best-effort scheduler resume during crash recovery
     }
   }
 
@@ -973,9 +1033,11 @@ export class SessionMigrator extends EventEmitter {
     lastMigration: MigrationEvent | null;
     history: MigrationEvent[];
     config: MigrationThresholds;
+    enforcementPause: EnforcementPauseInfo | null;
   } {
     const history = this.loadHistory();
     return {
+      enforcementPause: this.getEnforcementPause(),
       inProgress: this.migrationState != null &&
         this.migrationState.status !== 'idle' &&
         this.migrationState.status !== 'complete' &&
