@@ -10,3 +10,5 @@ The file search and image preview line was a function in PostUpdateMigrator.ts, 
 6. External surfaces: agent instruction text on update; wording is close to the old line.
 7. Multi-machine posture: each machine renders its own instruction file on update, machine-local by design.
 8. Rollback cost: delete the entry file; nothing else references it.
+
+Follow-up commit: the entry now names the file list route; one whole-PR trace covers every changed file, so the decision record lists the entry file.

@@ -23,3 +23,4 @@ Nothing. This is a small, read-only addition that a revert fully undoes.
 ## How agents learn about it
 
 The agent learns about file search from one small text file in the folder of feature notes. Every agent, new or old, gets that note in its instructions on its next update, and a second update changes nothing. Earlier versions of this change edited the big instructions template and the update code directly. That kept colliding with other changes to the same two files, and the update step once ran in the wrong order, so the note moved to the feature notes folder.
+The note follows the same hidden-file rules as the file list, so it never tells the agent a way to reach files it may not show.
