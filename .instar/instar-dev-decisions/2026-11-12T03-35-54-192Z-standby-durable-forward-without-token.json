@@ -1,0 +1,56 @@
+{
+  "ts": "2026-11-12T03:35:54.192Z",
+  "slug": "standby-durable-forward-without-token",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/messaging/telegram-origin/OriginMeshRelay.ts matches relay / delivery path",
+    "safety-invariant proximity: src/messaging/telegram-origin/TokenlessForwardEvidence.ts matches token handling",
+    "safety-invariant proximity: src/messaging/telegram-origin/TokenlessHeldDebt.ts matches token handling",
+    "safety-invariant proximity: src/messaging/telegram-origin/TokenlessNoticeBrakes.ts matches token handling",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 1109,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/feature-ladders.json",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginMeshRelay.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TokenlessForwardEvidence.ts",
+      "src/messaging/telegram-origin/TokenlessHeldDebt.ts",
+      "src/messaging/telegram-origin/TokenlessNoticeBrakes.ts",
+      "src/messaging/telegram-origin/types.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/server/telegramOriginRoutes.ts",
+      "src/templates/scripts/telegram-reply.sh",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1048,
+    "deletedLines": 61
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Four token-less notices are registered in SELF_ACTION_CONTROLLERS with models that call the shipped brakes: hub re-post backs off 1m/5m/30m/2h and gives up after 8 failures (persisted); account-changed item once per bot pair per topic; expiry report once per row via the durable expiryReportedAt marker; gone-machine loss once per entry (report then delete). The ratchet proves each settles to its bound at 1x and 2x horizon and across restarts."
+    }
+  },
+  "verdict": "pass"
+}
