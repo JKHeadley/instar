@@ -174,16 +174,6 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
-    // Never-Silent Conversation (docs/specs/never-silent-conversation.md). `enabled` is
-    // deliberately ABSENT: it is dev-gated (devGatedFeatures 'neverSilent'). Actions that
-    // change anything stay off until the judge is measured (§3.7).
-    neverSilent: {
-      judge: true,
-      actions: false,
-      frameworkFallback: false,
-      confidenceFloor: 0.8,
-      noticeAfterSeconds: 120,
-    },
     // W32 cadence executor consumes authoritative work receipts, persists one
     // result per 30-minute interval, and independently sends 3-hour synthesis.
     // Explicitly dark and dry-run-first; migration is add-missing-only.

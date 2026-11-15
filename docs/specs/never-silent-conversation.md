@@ -420,6 +420,10 @@ same rule, not a dropped rule.
   operator write. A new silence within 6 hours of a move back asks instead of moving (the repair
   did not hold). A failed restart undoes the move, and nothing is written when there is no session
   to restart.
+- **Config (§3.8).** No `ConfigDefaults` block: every `monitoring.neverSilent` key has its
+  default in code (absent ⇒ judge on, actions and engine moves off, floor 0.8, notice after 120 s)
+  and `enabled` is dev-gated, so existing agents need no config migration. The CLAUDE.md section
+  reaches existing agents through `migrateClaudeMd` as specified.
 - **Spend bound.** Judge calls for one incident back off: 60 s, doubling, up to 10 minutes,
   whatever changes on screen.
 - **Startup dialog (§3.3, §1.5).** Instead of a judged keypress, the agent's own launch folder is
