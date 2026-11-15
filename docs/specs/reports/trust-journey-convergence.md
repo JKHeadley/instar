@@ -2,8 +2,8 @@
 
 **Spec:** [docs/specs/trust-journey.md](../trust-journey.md)
 **Slug:** `trust-journey`
-**Converged at:** 2026-11-15T06:25:47Z
-**Iterations:** 6 (the Tier 2 cap), plus one targeted post-cap verification of the round-6 fixes
+**Converged at:** 2026-11-15T06:25:47Z; re-converged 2026-11-15T21:24:36Z
+**Iterations:** 6 (the Tier 2 cap), plus one targeted post-cap verification of the round-6 fixes; then, on 2026-11-15, a revision re-converged in 4 rounds plus one targeted check (section "Revision 2026-11-15" below)
 **Final-round design findings:** see "Convergence verdict"
 
 ## Cross-model review: codex-cli:gpt-6-astra
@@ -62,6 +62,32 @@ Accepted risks and points the gate kept raising, each with its reason:
 - **App-only installs** cannot raise trust until wording item 8 or the custody work lands. This is recorded as PARTIAL in the alignment table.
 - **Precision items** not iterated on: line-number drift, naming, and the architecture checker being absent from the 1.x tree (noted by Astra each round).
 
+## Revision 2026-11-15: recognizing a repeated task by meaning
+
+**Why.** After the first convergence, Justin found that the spec recognized a repeated task by a fixed `service.operation` label: "How does an agent identify a repeated ask or repeated task? They are various levels of categories and we need to be very intelligent about this" [telegram 142440, 2026-11-15 12:29 PST], and "If approvals are way too granular than that will simply overwhelm and exhaust the user. However, if they were too general than a single approval might cover too much" [142440, 12:35 PST]. He also asked why a constitution-aligned review let it through. The answer: Rule 10 (*Intelligence Infers, Keywords Only Guard*) already required meaning here, and the first convergence wrongly listed it as not relevant. The real wording gap (how wide a grant should be) is drafted as constitution change 8.
+
+**What changed.** Decision 14 and section 5a add a meaning layer above the fixed floor, for stage 3. Each ask, approval, correction and undo gets a plain-words description; they are sorted into a per-person ladder of task categories, judged by meaning against every sibling in both orders (the Correction Meaning Grouping method, without its word filter or fallback). Offers are sized to the record: start at the narrowest category that covers what the person approved, climb only on spread, test breadth against records placed outside, and state every correction as an exclusion. Offers cover the exact approved (kind, account, audience, conditions) tuples, never a product of them, and anything beyond the record is a bigger step. At act time, a server-run, tool-less fit check at the lease holder admits only "fits" in both orders on the whole payload, bound to the grant's exact state; anything else asks. Fit runs in shadow and needs a recorded review for its model before it can admit. Meaning calls run on the installation's own model, one origin route per call, with no outside service.
+
+**Changes outside stage 3.** Stage 0 gains two small items: a grant reader rule (`minReader`), so an older build reads a category grant as absent rather than as a whole-kind grant; and a one-action yes that is the displayed `approve <code>` reply, because review showed that any reply to an ask, even "no", could count. Stage 2 keeps each record's payload reference, context line and origin route. Stage 0 is otherwise unchanged and still not blocked by this work.
+
+| Round | Reviewers | Design findings (raw, approx. / themes) | Main changes |
+|---|---|---|---|
+| 1 | 3 internal (6 lenses), Astra, Fable | 36 / 18 | Rewrite of 5a: exact tuples; server-written cards; own model, no required outside service; whole-payload fit; nested time budget, own queue, batching; bounded storage; reader rule; no category, no offer |
+| 2 | internal (all lenses), Astra, Fable | 21 / 17 | Grant combination by specificity; earn-back exception; defined shadow; edge-check bound; reply read in context; full verdict binding; one action per call; agent wording kept from fit; audience rules only as a bigger step |
+| 3 | internal, Astra, Fable | 20 / 16 | Reply read for what it affirms; no per-item message flood; breadth test; reply-to-sender fetched by the server; later and configured asks stay restrictions; model-keyed review; decline keyed by category |
+| 4 (final) | internal, Astra, Fable | 16 / 12 | `approve <code>` yes in stages 0 to 2; one-route rule; tool-less isolated calls; pending marks in the binding; rotated-payload rule; board `categoryTuple`; reviewed-pairs constant |
+| targeted check | security lens, Astra | 3 (security lens) / Astra 0 must-fix, VERDICT YES | Reply reading sees only the sent ask; payload-only descriptions for rotated rows; route computed from the pool account |
+
+**Standards-Conformance Gate:** ran every round. Round 1: 3 flags; round 2: 1; round 3: 2; round 4: 1; targeted check: 1. Every flag repeated a point answered in the first convergence (the account approval path, card expiry, legacy-import frameworks). None concerned the meaning layer.
+
+**Per-round model disclosure:** internal reviewers ran on Claude Opus 5.5; the external pass was GPT 6 Astra through Codex (`launch-astra.sh`, with the operator-goal lines and the required intent check); the clean-door read was Fable 5.2 (`launch-fable.sh`). Gemini was not signed in, so there was no Gemini pass.
+
+**Constitution change 8.** Drafted in `constitution-amendments.md` (agent home, `.instar/lanes/work-front-doors-1114/`): 8a says Rule 10 covers what an approval covered and that a fixed label may only guard an authorized boundary; 8b adds to Rule 104 that a grant is sized to the evidence and the person's attention is a cost; 8c says an offer derived from several approvals stays within each. Astra reviewed it three times: round 1 moved it from Rule 12 to Rule 10 and fixed its authority wording; round 2 removed a bulk not-relevant list; round 3 returned 0 must-fix, VERDICT YES. Neither book was edited.
+
+**Verdict for the revision.** Design findings fell 36 → 21 → 20 → 16 across four rounds, and the remaining items narrowed to single contract sentences in stage 3. The targeted check confirmed the round-4 fixes, and its three findings were fixed in the stricter direction without another full round. No safety, security or data-loss finding is left open. Two accepted residues: route partitioning and conservative decline handling may increase asks, and the stage-3 shadow review measures that before category grants are offered. Stage 3's build must run its listed live proofs; stage 0's build carries, as before, an independent security review of the hook and admission diff, now including the `approve <code>` yes and the reader rule.
+
+Artifacts: `m1-*`, `m2-*`, `m3-*`, `m4-*`, `c8-*`, `c8b-*`, `c8c-*`, `verify2-*` and `gate-m1.json` … `gate-verify2.json` in `.instar/lanes/work-front-doors-1114/tj-converge/`; the round themes in the worktree's `.review/`.
+
 ## Full Findings Catalog
 
 Every reviewer output is kept verbatim in the Echo agent home at `.instar/lanes/work-front-doors-1114/tj-converge/`:
@@ -93,4 +119,4 @@ By the skill's rule, safety findings left open at the cap would mean `convergenc
 
 The last four fixes were not re-reviewed by a further full round. Stage 0's `/instar-dev` build must therefore carry an independent security review of the hook and admission diff, and run the stage-0 live proofs listed in the spec before ship.
 
-Nothing in the spec needs Justin's decision under the constitution as written. The separate constitution-wording list is optional; its item 8 would allow Face ID approval and app-only raises sooner. The spec is ready for the user's review and `approved: true`.
+Nothing in the spec needs Justin's decision under the constitution as written. The separate constitution-wording list is optional; its item 9 would allow Face ID approval and app-only raises sooner, and item 8 (change 8) makes the meaning rule and grant sizing explicit. The spec is ready for the user's review and `approved: true`.
