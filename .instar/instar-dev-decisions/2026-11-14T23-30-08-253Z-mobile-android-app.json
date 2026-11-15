@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-14T23:30:08.253Z",
+  "slug": "mobile-android-app",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 61,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -204,9 +204,11 @@ export interface DeviceRecord {
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
   wrongCodes?: string[];
-  /** Mobile push (docs/specs/mobile-push.md): APNs token, its environment, the notification
-   *  read token's SHA-256, the highest registration revision applied, and the stored version. */
+  /** Mobile push (docs/specs/mobile-push.md): APNs or FCM token, its provider (absent ⇒ `apns`,
+   *  mobile-android-app §2.3), the APNs environment (APNs only), the notification read token's
+   *  SHA-256, the highest registration revision applied, and the stored version. */
   pushToken?: string;
+  pushProvider?: 'apns' | 'fcm';
   pushEnvironment?: 'sandbox' | 'production';
   notifyTokenHash?: string;
   pushRevision?: number;
@@ -297,6 +299,8 @@ export type CreatePendingBrowserResult =
 
 export interface PushRegistration {
   token: string | null;
+  /** Absent ⇒ `apns` (mobile-android-app §2.3). */
+  provider?: 'apns' | 'fcm';
   environment?: 'sandbox' | 'production';
   notifyTokenHash?: string;
   revision: number;
@@ -308,7 +312,9 @@ export type PushRegisterResult =
 
 function samePush(d: DeviceRecord, r: PushRegistration): boolean {
   if (r.token === null) return !d.pushToken;
-  return d.pushToken === r.token && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
+  // A provider change, even with the same token string, is a change (mobile-android-app §2.3).
+  return d.pushToken === r.token && (d.pushProvider ?? 'apns') === (r.provider ?? 'apns')
+    && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
 }
 
 interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[]; browserSetups?: BrowserSetupEntry[] }
@@ -682,7 +688,10 @@ export class DeviceRegistry {
       if (r.token === null) clearPush(d);
       else {
         for (const other of f.devices) if (other.id !== d.id && other.pushToken === r.token) { clearPush(other); other.pushVersion = (other.pushVersion ?? 0) + 1; }
-        d.pushToken = r.token; d.pushEnvironment = r.environment; d.notifyTokenHash = r.notifyTokenHash;
+        d.pushToken = r.token; d.notifyTokenHash = r.notifyTokenHash;
+        d.pushProvider = r.provider ?? 'apns';
+        // An FCM token carries no environment; one left from an APNs registration goes.
+        if (d.pushProvider === 'fcm') delete d.pushEnvironment; else d.pushEnvironment = r.environment;
         d.pushUpdatedAt = new Date(this.now()).toISOString();
       }
       d.pushVersion = (d.pushVersion ?? 0) + 1;
@@ -704,7 +713,7 @@ export class DeviceRegistry {
 }
 
 function clearPush(d: DeviceRecord): void {
-  delete d.pushToken; delete d.pushEnvironment; delete d.notifyTokenHash;
+  delete d.pushToken; delete d.pushProvider; delete d.pushEnvironment; delete d.notifyTokenHash;
   d.pushUpdatedAt = new Date().toISOString();
 }
 

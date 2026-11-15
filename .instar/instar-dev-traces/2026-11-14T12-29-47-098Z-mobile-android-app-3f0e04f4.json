@@ -1,0 +1,56 @@
+{
+  "version": 3,
+  "slug": "mobile-android-app",
+  "sessionId": "895c4567-6a07-475c-8784-508e8d8258aa",
+  "timestamp": "2026-11-14T12:29:47.098Z",
+  "artifactPath": "upgrades/side-effects/mobile-android-app.md",
+  "artifactSha256": "341e19c990aaffedc07785ec60fbc38c0329ec787924458ddf5a9a1dc71c3429",
+  "specPath": "docs/specs/mobile-android-app.md",
+  "coveredFiles": [
+    "docs/specs/mobile-android-app.eli16.md",
+    "docs/specs/mobile-android-app.md",
+    "docs/specs/reports/mobile-android-app-convergence.md",
+    "site/src/pages/.well-known/assetlinks.json.ts",
+    "site/src/pages/pair.astro",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/MobilePush.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/mobile-android-push-alive.test.ts",
+    "tests/integration/mobile-push-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-mobilePushAndroidSection.test.ts",
+    "tests/unit/mobile-push-fcm.test.ts",
+    "tests/unit/site-android-app-links.test.ts",
+    "upgrades/next/mobile-android-app.md",
+    "upgrades/side-effects/mobile-android-app.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Credential (Firebase service-account key), a published app interface (register answer, assetlinks.json) and every machine of the agent; converged + approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/mobile-android-app-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "fcm-pause-trial-retry: under a cause that never clears, trial k waits 30 min x 2^(k-1) and nextFcmTrialAt returns null after 6, so the action count settles at 6 whatever the horizon; the only re-arm is the agent's Bearer recheck, limited to 6 an hour per process and never re-forwarded"
+    }
+  }
+}
