@@ -63,9 +63,11 @@ import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
-import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER, refreshHeldReplyAdvisoryAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER, refreshHeldReplyAdvisoryAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { signedPoolReadsAwareness, SIGNED_POOL_READS_AWARENESS_MARKER } from './poolSignedReads.js';
+import { transcriptCopiesAwareness, TRANSCRIPT_COPIES_AWARENESS_MARKER } from './transcriptCheckpoints.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
@@ -160,6 +162,7 @@ import {
   withoutTailStamp,
   type CoreRegionLocation,
 } from '../scaffold/claudeMdLayout.js';
+import { AWARENESS_REGISTRY_MARKER_PREFIX, defaultRegistry, emptyRegistry, findRegistryBlock, holdRegistryBlock, unreportedRegistryErrorLines, withoutRegistryBlock, type AwarenessRegistry } from '../awareness/registry.js';
 import { getMigrationDefaults, applyDefaults, SKILL_LEARNING_DEFAULTS } from '../config/ConfigDefaults.js';
 import { normalizeSkillFrontmatter } from './skillCanonicalFrontmatter.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
@@ -447,6 +450,7 @@ const CLEAR_SEED_PY = [
   '    pass',
 ].join('\n');
 
+export const MACHINE_MEMORY_CARE_CLAUDE_MD_LINE = `- **Machine memory care (swap counts):** a machine's \`loadReport\` in \`GET /pool\` now carries \`swapUsedBytes\`, \`swapActive\` (paging out since the last sample) and \`memoryPressured\` (its own 2-of-3 memory reading). Swap in use above 10% of memory, with live evidence (paging out at 1 MB/s or more, under 15% memory available, or OS pressure), counts as memory pressure; 25% or more while still paging makes the machine \`impaired\`. Free memory alone never says "fine" while the machine is swapping. On an instar source agent, Local Verify keeps a memory-pressured machine out of the test line by itself (the coordinator stops starting its own tests but still hands work to healthy peers; a peer refuses hand-offs), raises one attention item per episode (\`local-verify:memory-pressure:<machineId>\`), and resumes when memory recovers. Every verify run also ends the test processes it left behind, and a 10-minute backstop clears older ones (audit \`leftovers-reaped\` in \`logs/local-verify.jsonl\`). When the user asks "is this machine OK?" → quote \`memoryPressured\` and the swap figures from \`GET /pool\`, never the free-memory number alone.`;
 export const RESOURCE_PLACEMENT_CLAUDE_MD_LINE = `- **Resource-aware placement (heavy work goes to big machines with room):** placement compares machines by per-core load from FRESH evidence (a load number older than a minute does not count, and a machine with none never wins by default). A machine counts as big enough for heavy work (builds, full test runs, simulators) at 12+ cores and 32+ GB; heavy work goes only to such a machine with headroom right now (fresh verdict not saturated/impaired, under 1.0 load per core including heavy helpers it just accepted), otherwise it waits with a named reason. Local Verify peer hand-offs follow the same rule, so a small machine like a Mac Mini no longer receives full verifies. A job can declare \`workWeight: "heavy"\`; it then skips a machine below that size while another online big machine exists (the job-silence alert explains it). Per machine, \`multiMachine.placement.heavyWork\`: \`allow\` lifts the size rule for that machine, \`deny\` keeps heavy work off it (\`auto\` = by size); it is advertised in that machine's load report. **Before running heavy helper work in an in-session subagent** (a subagent always runs on THIS machine), read \`GET /pool/placement/preview?workWeight=heavy\` (read-only: the choice and one row per machine with size, fresh per-core load, headroom and why). If it picks another machine, or this one has no headroom, start a headless helper instead: \`POST /pool/heavy-work/spawn\` with header \`X-Instar-Request: 1\` and \`{ "name": "...", "prompt": "..." }\` — it picks the machine and starts the helper there through that machine's own \`/sessions/spawn\`. The helper works in THAT machine's agent home: its prompt must fetch its inputs from a shared source (a pushed git branch into a fresh worktree there) and return results through a shared channel (a pushed branch or PR, or a message to my session). Outcomes: 201 started; 409 \`heavy-work-no-machine\` (nothing big enough has room: wait, or run locally only if the preview shows this machine has headroom); 502 \`target-refused\`; 504 \`target-unconfirmed\` — never retry it: read that machine's sessions, finished ones included (\`GET /sessions\` with \`scope=pool\` and \`include=all\`), and check the work's shared results and side effects before ever starting it again.`;
 export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
 
@@ -1087,7 +1091,38 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
 - **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
 - **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
 
+/**
+ * "Every ask carries its links." — named clause under Agent Proposes, Operator
+ * Approves (ratified by Justin, topic 141868, 2026-11-11). Emitted in the CLAUDE.md
+ * template right before SURFACE_REFERRAL_CLAUDEMD_SECTION and inserted for existing
+ * agents by migrateClaudeMd (migrateAskLinksParagraph: the canonical text is a no-op,
+ * a paragraph opening with the ASK_LINKS_CLAUDEMD_MARKER phrase is replaced).
+ */
+export const ASK_LINKS_CLAUDEMD_MARKER = '**Every ask carries its links.**';
+export const ASK_LINKS_CLAUDEMD_SECTION = `**Every ask carries its links.** When a message needs the operator to review, approve or decide, end it with a short *What I need from you* section: one line per ask in plain words, a working link to each item (check it opens first; a private view for private content), and the exact reply that settles it. An authority grant links to its Approve/Decline page instead of a reply.`;
 export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
+
+/**
+ * Pure helper for migrateClaudeMd: converge a CLAUDE.md on the canonical
+ * "Every ask carries its links." paragraph. Exported for tests.
+ */
+export function migrateAskLinksParagraph(content: string): { content: string; changed: boolean; replaced: boolean } {
+  if (content.includes(ASK_LINKS_CLAUDEMD_SECTION)) return { content, changed: false, replaced: false };
+  // A variant: a paragraph opening with the phrase — its continuation lines are the
+  // contiguous non-blank lines that do not start a heading, list item, table or new bold lead.
+  const variant = /^\*\*Every ask carries its links[^\n]*(?:\n(?![ \t]*(?:#|- |\* |\||\*\*))[^\n]+)*/m;
+  if (variant.test(content)) {
+    return { content: content.replace(variant, () => ASK_LINKS_CLAUDEMD_SECTION), changed: true, replaced: true };
+  }
+  const surfaceLead = '**Sending the operator to a page: link, words, and look first.**';
+  const at = content.indexOf(surfaceLead);
+  if (at !== -1 && (at === 0 || content[at - 1] === '\n')) {
+    return { content: `${content.slice(0, at)}${ASK_LINKS_CLAUDEMD_SECTION}\n\n${content.slice(at)}`, changed: true, replaced: false };
+  }
+  const sep = content.endsWith('\n') ? '\n' : '\n\n';
+  return { content: `${content}${sep}${ASK_LINKS_CLAUDEMD_SECTION}\n`, changed: true, replaced: false };
+}
+
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
@@ -1340,6 +1375,7 @@ export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work 
 
 /** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
 export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
+export const APP_CONVERSATIONS_LIST_PINS_LINE = '- A person can pin whole conversations to the top of their conversation list (the app and the dashboard\'s "Pinned" group). Pins belong to each person (the owner, a team member, a shared person), at most 50, and are the same on every machine. The first page of `GET /mobile/conversations` carries `pinnedRefs` [{ref, atMs}] and `pinnedRows` (full list rows, newest pin first); my own Bearer read sees them only with `?reader=<key>`. Pin or unpin: `POST /mobile/conversations/pins {ref, pinned}` (ref `app:<uuid>`, `telegram:<topicId>` or `slack:<machine>:<id>`; a Bearer call must name `?reader=`). When the operator asks "pin this conversation", that is this, not a pinned message. Off switch: `mobilePairing.native.listPins.enabled: false`.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1488,6 +1524,7 @@ ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
 ${APP_CONVERSATIONS_UNREAD_LINE}
 ${DASHBOARD_CONVERSATIONS_LINE}
 ${APP_CONVERSATIONS_PINS_LINE}
+${APP_CONVERSATIONS_LIST_PINS_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -1685,10 +1722,25 @@ A weekly review of a watchlist of similar projects, each idea checked against ou
 }
 
 /**
- * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md).
- * Unique content-sniff marker: `Mobile push notifications`.
+ * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md, docs/specs/mobile-android-app.md §2.5).
+ * Unique content-sniff marker: `Mobile push notifications` (kept in the heading, so the add-if-missing guard never adds a second copy).
  */
 export function MOBILE_PUSH_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile push notifications — the Instar app (iPhone and Android) buzzes when something needs the operator
+
+When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push. Phone notifications go to iPhones through Apple and to Android phones through Google's Firebase. The iPhone key is the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). The Android key is the vault entry \`fcm_service_account_json\` (a Firebase service-account key that can only send notifications). Apple and Google only see "Something needs you" or "New reply"; the phone fetches the real text from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice. A problem with one provider never pauses the other.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, fcmConfigured, pausedReasons: { apns, fcm }, fcmTrials, devices: [{ provider, sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple or Google accepted it, not that the phone showed it.
+- \`keyConfigured: false\` / \`fcmConfigured: false\` → that provider's key is not in my vault; nothing is sent to those phones, and a phone registering is told \`ready: false\`. \`pausedReasons.apns\` clears by itself when the APNs key, key id or team id changes. \`pausedReasons.fcm\` (Google refused the Firebase key, permission or project) is mine to fix: a new key clears it within 30 minutes; after fixing an Android pause any other way (turning the API or role back on), call \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/push/recheck -d '{"provider":"fcm"}'\`, which re-arms the check on every machine.
+- Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
+`;
+}
+
+/**
+ * The pre-Android wording of the section above, kept so a marker-less CLAUDE.md holding it byte-exact
+ * is swapped for the two-provider text (mobile-android-app §2.5). An edited old section is left alone.
+ */
+export function MOBILE_PUSH_CLAUDEMD_SECTION_V1(port: number): string {
   return `\n### Mobile push notifications — the Instar iPhone app buzzes when something needs the operator
 
 When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push, sent straight from me to Apple with the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). Apple only sees "Something needs you"; the phone fetches the title from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice.
@@ -2074,6 +2126,8 @@ export interface MigratorConfig {
   claudeCodePath?: string | null;
   /** The server's configured listen host (absent ⇒ read from config.json). */
   host?: string;
+  /** Test seam: the awareness entry registry (default: the package's `src/data/awareness/`). */
+  awarenessRegistry?: AwarenessRegistry;
 }
 
 /**
@@ -9259,6 +9313,8 @@ setTimeout(() => process.exit(0), 2000);
     // Reference layout (docs/specs/claude-md-reference-layout.md): the instar
     // block between the core markers is regenerated from the canonical full
     // document; the legacy append chain never runs against the small file.
+    // An awareness entry that failed its checks is left out; say so once (awareness-entry-registry spec 3.5).
+    result.errors.push(...unreportedRegistryErrorLines(this.awarenessRegistry()));
     const region = findCoreRegion(original);
     if (region === 'broken') {
       result.upgraded.push(`REVIEW: CLAUDE.md has only one of the instar core markers (or they are out of order), so instar left it untouched. Restore both markers, or remove both to have it converted again. The whole previous file is at ${CLAUDE_MD_LEGACY_BACKUP_REL} if it was converted before.`);
@@ -9324,6 +9380,11 @@ setTimeout(() => process.exit(0), 2000);
   }
 
   private canonicalClaudeMdCache: string | undefined;
+  private canonicalClaudeMdNoRegistryCache: string | undefined;
+
+  private awarenessRegistry(): AwarenessRegistry {
+    return this.config.awarenessRegistry ?? defaultRegistry();
+  }
 
   /**
    * The agent's own name from `.instar/AGENT.md` ("**Name**: Luna" or a
@@ -9350,15 +9411,27 @@ setTimeout(() => process.exit(0), 2000);
    * template, every migration-appended section, and the context-death block.
    * The reference layout's instar block and reference files are built from it.
    */
-  buildCanonicalClaudeMd(): string {
-    if (this.canonicalClaudeMdCache !== undefined) return this.canonicalClaudeMdCache;
+  buildCanonicalClaudeMd(opts: { registry?: false } = {}): string {
+    // `{ registry: false }`: the same build with an empty awareness registry (the
+    // Codex/Gemini mirror's source must never hold registry text). Cached separately.
+    const bare = opts.registry === false;
+    const cached = bare ? this.canonicalClaudeMdNoRegistryCache : this.canonicalClaudeMdCache;
+    if (cached !== undefined) return cached;
     const name = this.config.projectName || 'agent';
     const scratch: MigrationResult = { upgraded: [], skipped: [], errors: [] };
-    let full = generateClaudeMd(name, this.readAgentDisplayName() ?? name, this.config.port, this.config.hasTelegram);
-    full = this.patchClaudeMdContent(full, scratch).content;
+    // Both inner calls get an EMPTY registry: entry text must never take part in the legacy
+    // chain's `content.includes(marker)` guards. One build serves both variants.
+    const none = emptyRegistry();
+    let full = generateClaudeMd(name, this.readAgentDisplayName() ?? name, this.config.port, this.config.hasTelegram, false, false, none);
+    full = this.patchClaudeMdContent(full, scratch, none).content;
     if (!this.readIdentityPins()[CONTEXT_DEATH_MARKER_ID]) full = insertContextDeathClaudeBlock(full);
-    this.canonicalClaudeMdCache = full;
-    return full;
+    this.canonicalClaudeMdNoRegistryCache = full;
+    // MUST STAY THE LAST STEP (awareness-entry-registry spec 3.4): the feature notes go at the
+    // very end without marker lines, so no marker reaches the layout parser and no earlier
+    // section changes its parent or file. `markers: false` is not idempotent: this is its ONE
+    // call, on a document that holds no feature-notes section yet (the registry above is empty).
+    this.canonicalClaudeMdCache = this.awarenessRegistry().withRegistry(full, { port: this.config.port, hasTelegram: this.config.hasTelegram }, { markers: false }).content;
+    return bare ? full : this.canonicalClaudeMdCache;
   }
 
   /** Write the reference files that differ; remove generated ones no longer produced. */
@@ -9433,6 +9506,9 @@ setTimeout(() => process.exit(0), 2000);
           result.errors.push(`CLAUDE.md canonical build: ${err instanceof Error ? err.message : String(err)} — CLAUDE.md left unchanged`);
           return;
         }
+        // Deliberately NOT passed through withoutRegistryBlock (awareness-entry-registry spec 3.4):
+        // instar writes the marked feature-notes block only into a CLAUDE.md WITHOUT core markers,
+        // so text below the core markers never holds one of ours; it is compared as ordinary text.
         const ex = extractOperatorContent(added, full, migratorOnlyText);
         // An older instar's append chain re-adds dozens of sections at once; an
         // operator copying a section or two below the block is left alone.
@@ -9504,7 +9580,12 @@ setTimeout(() => process.exit(0), 2000);
     // nothing in it is operator-written and there is nothing worth backing up.
     const extraction = opts.freshInit
       ? { kept: '', keptUnits: 0, movedUnits: 0, keptTitles: [] as string[], movedDiffering: [] as Array<{ title: string; lines: string[] }> }
-      : extractOperatorContent(legacy, full, migratorOnlyText);
+      // The marked feature-notes block is instar's whatever version wrote it, so it is removed by
+      // its markers before the text comparison. Only this argument: the backup below keeps `legacy`.
+      : extractOperatorContent(withoutRegistryBlock(legacy), full, migratorOnlyText);
+    if (!opts.freshInit && findRegistryBlock(legacy).state === 'broken') {
+      result.upgraded.push('REVIEW: CLAUDE.md had damaged feature-notes marker lines, so that text could not be recognised by its markers and went through the ordinary comparison; check the kept sections for leftover feature notes.');
+    }
     const backupPath = path.join(this.config.projectDir, CLAUDE_MD_LEGACY_BACKUP_REL);
     const differing = extraction.movedDiffering;
     const next = renderLayoutClaudeMd(full, extraction.kept, 'reference', differing.length > 0 ? differingLinesPointer(differing.length) : '');
@@ -9544,8 +9625,11 @@ setTimeout(() => process.exit(0), 2000);
    * (pre-reference-layout) CLAUDE.md, and against `generateClaudeMd()` output
    * to build the canonical full document for the reference layout.
    */
-  private patchClaudeMdContent(input: string, result: MigrationResult): { content: string; patched: boolean } {
-    let content = input;
+  private patchClaudeMdContent(input: string, result: MigrationResult, awarenessRegistry: AwarenessRegistry = this.awarenessRegistry()): { content: string; patched: boolean } {
+    // The marked feature-notes block is held out while the chain runs (a one-line stand-in keeps
+    // its place), so entry text never takes part in the `content.includes(marker)` guards below.
+    const heldFeatureNotes = holdRegistryBlock(input);
+    let content = heldFeatureNotes.text;
     let patched = false;
     // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
     // as a scope fact. Inserted after the "Ask Permission" trap when that
@@ -10010,6 +10094,20 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram Web K drift and reviewed re-enrollment awareness');
     }
 
+    // native-conversation-any-machine-access §3d — reading another machine's sessions needs no shared token.
+    if (!content.includes(SIGNED_POOL_READS_AWARENESS_MARKER)) {
+      content += '\n' + signedPoolReadsAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added signed pool reads awareness');
+    }
+
+    // native-conversation-any-machine-access §3f — transcript copies on every machine (dark by default).
+    if (!content.includes(TRANSCRIPT_COPIES_AWARENESS_MARKER)) {
+      content += '\n' + transcriptCopiesAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added transcript copies awareness');
+    }
+
     if (!content.includes('Held reply outcome:')) {
       content += '\n' + telegramOriginHeldOutcomeAwareness();
       patched = true;
@@ -10378,6 +10476,23 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
+    }
+
+    // "Every ask carries its links." (Agent Proposes, Operator Approves named clause,
+    // ratified 2026-11-11 topic 141868) — Agent Awareness + Migration Parity. Content-
+    // sniffed: the canonical line is a no-op; a hand-added variant that opens with
+    // "**Every ask carries its links" is replaced so every agent converges on one text;
+    // otherwise it is placed right before the surface-referral paragraph (as the
+    // template does), or appended when that paragraph is not found.
+    {
+      const askLinks = migrateAskLinksParagraph(content);
+      if (askLinks.changed) {
+        content = askLinks.content;
+        patched = true;
+        result.upgraded.push(askLinks.replaced
+          ? 'CLAUDE.md: replaced a variant of "Every ask carries its links" with the canonical line'
+          : 'CLAUDE.md: added "Every ask carries its links"');
+      }
     }
 
     // Agent Awareness Standard + Migration Parity: an existing agent that does not
@@ -11004,6 +11119,18 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // Conversation-list pins (docs/specs/conversation-list-pins.md): the bullet after the pinned messages line.
+    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes(APP_CONVERSATIONS_LIST_PINS_LINE)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_LIST_PINS_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the conversation-list pins line');
+      }
+    }
+
     // Native Accounts / Spend / Resource usage reads (docs/specs/mobile-native-capacity-screens.md): one
     // bullet after the probe bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_CAPACITY_SCREENS_MARKER)) {
@@ -11300,6 +11427,18 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.
+    // Android (mobile-android-app §2.5): the exact pre-Android section is swapped for the two-provider
+    // one; an operator-edited old section is left alone with one REVIEW line. Runs before add-if-missing.
+    {
+      const v1 = MOBILE_PUSH_CLAUDEMD_SECTION_V1(port);
+      if (content.includes(v1)) {
+        content = content.replace(v1, MOBILE_PUSH_CLAUDEMD_SECTION(port));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile push notifications section now covers Android phones too');
+      } else if (content.includes('### Mobile push notifications — the Instar iPhone app buzzes') && !content.includes('/mobile/push/recheck')) {
+        result.upgraded.push('REVIEW: CLAUDE.md: the Mobile push notifications section was edited, so instar left it alone; it still describes iPhone-only push. Android phones now get notifications through Firebase (vault fcm_service_account_json; GET /mobile/push shows fcmConfigured and pausedReasons; POST /mobile/push/recheck after fixing an Android pause).');
+      }
+    }
     if (!content.includes('Mobile push notifications')) {
       content += MOBILE_PUSH_CLAUDEMD_SECTION(port);
       patched = true;
@@ -11646,6 +11785,18 @@ setTimeout(() => process.exit(0), 2000);
         : content + '\n' + BUILTIN_SCHEDULE_EDIT_AWARENESS;
       patched = true;
       result.upgraded.push('CLAUDE.md: documented durable built-in job schedule edits');
+    }
+
+    // Per-job thinking mode (job-launch-intent-record, Migration parity). Sniffed on the PHRASE, not
+    // the bare word `thinkingMode` (the topic-profile propose bullet already contains that). Placed
+    // right after the built-in schedule bullet when present, as in generateClaudeMd; else appended.
+    if (!content.includes(JOB_THINKING_MODE_SNIFF)) {
+      const anchor = content.indexOf(BUILTIN_SCHEDULE_EDIT_AWARENESS);
+      content = anchor !== -1
+        ? content.slice(0, anchor + BUILTIN_SCHEDULE_EDIT_AWARENESS.length) + JOB_THINKING_MODE_AWARENESS + content.slice(anchor + BUILTIN_SCHEDULE_EDIT_AWARENESS.length)
+        : content + (content.endsWith('\n') ? '' : '\n') + JOB_THINKING_MODE_AWARENESS;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the per-job thinkingMode field and its launch record');
     }
 
     const coverageGuidance = applyJobMeshGuide(content, jobCoverageGuide(port));
@@ -13993,6 +14144,14 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
     // that carry the pool section learn heavy-work placement, the read-only preview and the
     // placed-helper route. Idempotent via the unique 'Resource-aware placement (heavy work'
     // marker (deliberately not containing '/pool/placement', an older migration's marker).
+    // Machine memory care (2026-11-14, docs/specs/machine-memory-care.md): agents that carry
+    // the pool section learn that swap now counts and where to read it. Idempotent via the
+    // unique 'Machine memory care (swap counts' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Machine memory care (swap counts')) {
+      content += '\n' + MACHINE_MEMORY_CARE_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added machine memory care line');
+    }
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Resource-aware placement (heavy work')) {
       content += '\n' + RESOURCE_PLACEMENT_CLAUDE_MD_LINE + '\n';
       patched = true;
@@ -16706,6 +16865,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.upgraded.push('CLAUDE.md: added PR links ask for the review section');
     }
 
+    // MUST STAY THE LAST STEP (docs/specs/awareness-entry-registry.md). New awareness text is
+    // NOT added above: it goes in src/data/awareness/<id>.md and arrives through this call,
+    // which rebuilds the marked feature-notes block at the end of the file on every update.
+    // The original block goes back where it was first: if the registry then reports the
+    // document broken, it has changed nothing and the block's own bytes are still there.
+    content = heldFeatureNotes.restore(content);
+    const featureNotes = awarenessRegistry.withRegistry(content, { port: this.config.port, hasTelegram: this.config.hasTelegram }, { markers: true });
+    if (featureNotes.broken) {
+      result.errors.push(findRegistryBlock(content).state === 'broken'
+        ? 'CLAUDE.md: the feature-notes marker lines are damaged (one is missing, repeated or out of order), so instar left that section untouched and its notes may be out of date. Restore one start line and one end line, or delete both.'
+        : 'CLAUDE.md: a code block in the file is never closed, so the feature notes could not be written safely; instar left that section untouched and its notes may be out of date. Close the code block.');
+    } else {
+      content = featureNotes.content;
+      // Judged against the INPUT, not the block-stripped working copy: an unchanged block is no change.
+      const notesIn = (doc: string): string => { const b = findRegistryBlock(doc); return b.state === 'well-formed' ? doc.slice(b.start, b.end) : ''; };
+      if (notesIn(content) !== notesIn(input) || (!patched && content !== input)) result.upgraded.push('CLAUDE.md: feature notes updated');
+      if (content !== input) patched = true;
+    }
+
     return { content, patched };
   }
 
@@ -16749,12 +16927,16 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
     // canonical full document the instar block and reference files come from.
     if (findCoreRegion(claudeMd) !== null) {
       try {
-        claudeMd = this.buildCanonicalClaudeMd();
+        claudeMd = this.buildCanonicalClaudeMd({ registry: false });
       } catch (err) {
         result.errors.push(`shadow capabilities: canonical CLAUDE.md build failed: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
+    } else {
+      // The marker loop below must never read feature-notes text (awareness-entry-registry spec 3.4).
+      claudeMd = withoutRegistryBlock(claudeMd);
     }
+    result.errors.push(...unreportedRegistryErrorLines(this.awarenessRegistry()));
 
     // Markers identifying each capability section migrateClaudeMd may have
     // ensured exists in CLAUDE.md. Kept in document order so appended
@@ -16882,6 +17064,8 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       '**File-path feedback is always a NUDGE',
       // B22 is server-side too, so every framework's agents meet the same nudge.
       '**Sending the operator to a page: link, words, and look first',
+      // "Every ask carries its links": a messaging rule, so every framework's agents need it.
+      '**Every ask carries its links.**',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must
@@ -17155,7 +17339,9 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
     // capabilities that are appended to framework shadows.
-    const boundaryMarkers = [...markers, "- What's running:", '**SessionReaper**'];
+    // The feature-notes marker prefix bounds a slice at ANY of its marker lines (a damaged block
+    // cannot be removed from the source). It belongs here only, never in `markers`.
+    const boundaryMarkers = [...markers, "- What's running:", '**SessionReaper**', AWARENESS_REGISTRY_MARKER_PREFIX];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
       const shadowPath = path.join(this.config.projectDir, shadowName);
@@ -17171,6 +17357,11 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
 
       let appended = refreshOriginCanaryCleanupAwareness(refreshOriginCanaryStartupAwareness(shadowContent));
       let mirrored = appended === shadowContent ? 0 : 1;
+      // The copy's own feature-notes block is taken out before the loops (they test
+      // `appended.includes(marker)`, and an entry may quote a marker) and rebuilt just before the write.
+      const copyNotesBlock = findRegistryBlock(appended);
+      const heldCopyNotes = holdRegistryBlock(appended);
+      appended = heldCopyNotes.text;
       // A shadow that still carries a SHIPPED older Normal-Chrome section loses it here (whether or not
       // the current section is already present, so a release revert cannot leave both), and the marker
       // loop below mirrors the current section once. An edited older section is kept.
@@ -17240,6 +17431,8 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [SIGNED_POOL_READS_AWARENESS_MARKER, () => signedPoolReadsAwareness(this.config.port ?? 4040)],
+        [TRANSCRIPT_COPIES_AWARENESS_MARKER, () => transcriptCopiesAwareness(this.config.port ?? 4040)],
         [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         [HELD_REPLY_LATE_AWARENESS_MARKER, telegramOriginHeldLateAwareness],
@@ -17300,6 +17493,25 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       if (claudeMd.includes('**Private job transfer approvals**')) {
         const next = applyJobMeshGuide(appended, jobTransferGuide(this.config.port));
         if (next !== appended) { appended = next; mirrored++; }
+      }
+
+      if (copyNotesBlock.state === 'broken') {
+        result.errors.push(`${shadowName}: the feature-notes marker lines are damaged (${copyNotesBlock.reason}), so instar left that section untouched and its notes may be out of date. Restore one start line and one end line, or delete both.`);
+      } else {
+        // The copy's original block goes back where it was first, so a broken result changes nothing.
+        appended = heldCopyNotes.restore(appended);
+        const notes = this.awarenessRegistry().withRegistry(appended, { port: this.config.port, hasTelegram: this.config.hasTelegram }, { markers: true });
+        const withNotes = notes.content;
+        if (notes.broken) {
+          result.errors.push(`${shadowName}: a code block in the file is never closed, so the feature notes could not be written safely; instar left that section untouched and its notes may be out of date. Close the code block.`);
+        } else if (notes.changed) {
+          // One mirrored change only when the final text differs from the original copy
+          // (line endings aside: a CRLF copy is written back in CRLF below).
+          const lf = (t: string): string => t.replace(/\r\n/g, '\n');
+          const notesOf = (t: string): string => { const b = findRegistryBlock(t); return b.state === 'well-formed' ? lf(t.slice(b.start, b.end)) : ''; };
+          if (mirrored === 0 ? lf(withNotes) !== lf(shadowContent) : notesOf(withNotes) !== notesOf(shadowContent)) mirrored++;
+        }
+        appended = withNotes;
       }
 
       if (mirrored > 0) {

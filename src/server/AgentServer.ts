@@ -221,6 +221,7 @@ import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
+import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
@@ -1094,6 +1095,9 @@ export class AgentServer {
   private apprenticeshipMatrixAcceptance: MatrixAcceptanceStore | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
+  /** native-conversation-any-machine-access §3f: the source's transcript copy pass (null: dark). */
+  private transcriptCheckpointTick: (() => Promise<void>) | null = null;
+  private transcriptCheckpointTimer: ReturnType<typeof setInterval> | null = null;
   private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
@@ -1467,6 +1471,8 @@ export class AgentServer {
     readMarkers?: ConversationReadMarkerStore | null;
     /** The machine's hybrid logical clock in ms, for a baseline that never runs behind a peer's time (§3.2). */
     readMarkersHlcNowMs?: () => number;
+    /** Conversation-list pins (docs/specs/conversation-list-pins.md), built by server.ts on the replication path. Absent ⇒ a local store is built here. */
+    conversationListPins?: ConversationListPinStore | null;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
@@ -1526,6 +1532,12 @@ export class AgentServer {
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
+    /** native-conversation-any-machine-access §3d: one signed read of a peer — see RouteContext.meshSignedRead. */
+    meshSignedRead?: (machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<import('../core/MeshRpcClient.js').MeshRpcClientResult>;
+    /** native-conversation-any-machine-access §3f: transcript copies — see RouteContext.transcriptCopies. */
+    transcriptCopies?: import('./routes.js').RouteContext['transcriptCopies'];
+    /** §3f: the source's copy pass, run on the token-ledger poller's cadence. */
+    transcriptCheckpointTick?: () => Promise<void>;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -1836,6 +1848,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.transcriptCheckpointTick = options.transcriptCheckpointTick ?? null;
     this.syncDashboardPinVersion();
     this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
@@ -2112,7 +2125,7 @@ export class AgentServer {
         return options.telegram.sendOwnerDMWithButton(text, [
           ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
           ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
-        ]);
+        ], { reportHeld: true });
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
@@ -2181,9 +2194,13 @@ export class AgentServer {
           const teamId = this.config.mobilePairing?.push?.teamId;
           return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
         },
+        // Android (docs/specs/mobile-android-app.md §2.3): the Firebase service-account key, read before each send.
+        fcmKey: () => pushKeys.get('fcm_service_account_json'),
+        // An approval notice reaches an Android phone only when it can approve: active owner phone with a presence key.
+        canApprove: (deviceId) => { const d = mp.devices.get(deviceId); return !!d?.presenceKey && activeOwnerPhone(mp, deviceId); },
         fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
         reportDegradation: (what, err) => DegradationReporter.getInstance().report({
-          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          feature: what, primary: 'send a push notification to a paired phone', fallback: "no push for this event; the item is still in the app and the agent's other channels",
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
         }),
       });
@@ -6354,6 +6371,8 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      meshSignedRead: options.meshSignedRead ?? null,
+      transcriptCopies: options.transcriptCopies ?? null,
       mutualSshHealth: options.mutualSshHealth ?? (() => {
         if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
         const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
@@ -7220,6 +7239,8 @@ export class AgentServer {
       }));
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
         unread: this.conversationUnread,
+        // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
+        listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         mediaEnabled: isMobileMediaEnabled(options.config),
@@ -9005,6 +9026,13 @@ export class AgentServer {
         // codex_token_sessions table — closing the "ledger blind to Codex"
         // gap. process.cwd() is the agent's project dir (launchd sets the
         // server's working directory to it), matching session_meta.cwd.
+
+        // §3f: with no token-ledger poller to ride, the copy pass keeps the same 60 s cadence itself.
+        if (this.transcriptCheckpointTick && !this.tokenLedger) {
+          const tick = this.transcriptCheckpointTick;
+          this.transcriptCheckpointTimer = setInterval(() => { void tick().catch(() => { /* @silent-fallback-ok — the pass records its own errors as evidence */ }); }, 60_000);
+          if (typeof this.transcriptCheckpointTimer.unref === 'function') this.transcriptCheckpointTimer.unref();
+        }
         if (this.tokenLedger) {
           try {
             this.tokenLedgerPoller = new TokenLedgerPoller({
@@ -9017,11 +9045,19 @@ export class AgentServer {
               afterTick: async () => {
                 await this.apprenticeshipCycleSlaMonitor?.tick();
                 await this.geminiCapacityEscalationMonitor?.tick();
+                // §3f: copy new transcript rows on the same cadence that sees them grow.
+                await this.transcriptCheckpointTick?.();
               },
             });
             this.tokenLedgerPoller.start();
           } catch (err) {
             console.warn('[instar] token-ledger poller start failed:', err);
+            // §3f: the copy pass must not stop with the poller; it keeps the same cadence itself.
+            if (this.transcriptCheckpointTick && !this.transcriptCheckpointTimer) {
+              const tick = this.transcriptCheckpointTick;
+              this.transcriptCheckpointTimer = setInterval(() => { void tick().catch(() => { /* @silent-fallback-ok — the pass records its own errors as evidence */ }); }, 60_000);
+              if (typeof this.transcriptCheckpointTimer.unref === 'function') this.transcriptCheckpointTimer.unref();
+            }
           }
 
           // ── Burn-detection auto-heal system ──────────────────────────
@@ -9681,6 +9717,7 @@ export class AgentServer {
       try { if (this.reconSweepTimer) clearInterval(this.reconSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       this.featureMetricsPruneTimer = null;
     }
+    if (this.transcriptCheckpointTimer) { clearInterval(this.transcriptCheckpointTimer); this.transcriptCheckpointTimer = null; }
     if (this.tokenLedger) {
       try {
         this.tokenLedger.close();

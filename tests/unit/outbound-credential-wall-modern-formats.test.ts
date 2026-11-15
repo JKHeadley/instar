@@ -131,12 +131,14 @@ describe('test 2b — every in-scope pattern copy carries the modern family', ()
     'src/monitoring/ClaimObservation.ts',
     'src/commands/testAsSelfValidation.ts',
     'src/core/PostUpdateMigrator.ts',
+    'src/core/liveTailRedaction.ts',
+    'src/commands/postDriveTranscriptAudit.ts',
   ];
   it.each(COPIES)('%s carries the modern sk-family prefix set', (rel) => {
     const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     expect(src).toContain('sk-(?:proj|svcacct|admin|None|or-v1)-');
   });
-  it.each(COPIES.filter((c) => !['src/core/redactUrl.ts', 'scripts/audit-secret-patterns.mjs', 'src/commands/testAsSelfValidation.ts'].includes(c)))(
+  it.each(COPIES.filter((c) => !['src/core/redactUrl.ts', 'scripts/audit-secret-patterns.mjs', 'src/commands/testAsSelfValidation.ts', 'src/core/liveTailRedaction.ts', 'src/commands/postDriveTranscriptAudit.ts'].includes(c)))(
     '%s carries a github_pat_ pattern',
     (rel) => {
       const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');

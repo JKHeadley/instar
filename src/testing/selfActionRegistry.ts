@@ -58,6 +58,7 @@ import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionP
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
+import { selectLeftovers, type ProcRow } from '../localVerify/leftoverReaper.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
@@ -73,6 +74,7 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
+import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
@@ -5254,6 +5256,41 @@ const browserActivationEffectRetry: SelfActionController = {
 };
 
 /**
+ * fcm-pause-trial-retry — mobile-android-app §2.3. While Android push is paused (Google refused the
+ * key, permission or project), the 15-second tick arms one trial send at a time: 30 minutes after the
+ * pause, then doubling (1, 2, 4, 8, 16 h), and none after 6 refused trials. Under a cause that never
+ * clears the loop settles at 6 trials, horizon-independent; only the agent's own recheck after a fix
+ * re-arms it (rate-limited to 6 an hour, not a self-triggered path). Modeled on the REAL schedule
+ * function the service uses.
+ */
+const fcmPauseTrialRetry: SelfActionController = {
+  id: 'fcm-pause-trial-retry',
+  actionVerb: 'retry',
+  models: 'src/core/MobilePush.ts (MobilePushService.fcmPauseTick + sendFcm trial — nextFcmTrialAt, stops after FCM_MAX_TRIALS)',
+  modelsPath: 'src/core/MobilePush.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'refusedTrials and nextTrialAt are persisted in mobile-push-state.json (pausedFcm), so a restart resumes the same schedule; only the in-memory arm flag is lost, which only delays a trial.' },
+  boundK: FCM_MAX_TRIALS,
+  perTargetBoundK: FCM_MAX_TRIALS,
+  ticks: 4 * 60 * 24 * 7,
+  tickMs: 15_000,
+  makeUnderPressure(f, sink) {
+    let refused = 0;
+    let nextAt: number | null = f.clock.nowMs() + FCM_TRIAL_BASE_MS;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (nextAt === null || now < nextAt || !f.targetAlwaysRejects()) return;
+        sink.emit({ verb: 'retry', target: 'fcm-trial' });
+        sink.emitTimesMs.push(now);
+        refused += 1;
+        nextAt = nextFcmTrialAt(refused, now);
+      },
+    };
+  },
+};
+
+/**
  * peer-place-session-tick — memory-privacy-agent-places §4. The 60-second tick ends
  * another agent's place session when it is idle past the limit or no longer admitted.
  * Modeled on the REAL PlaceSessionRegistry. A kill removes the record, and the tick
@@ -5396,7 +5433,94 @@ const workBoardPickup: SelfActionController = {
   },
 };
 
+
+/**
+ * local-verify-leftover-reaper: Local Verify's leftover test-process sweep
+ * (docs/specs/machine-memory-care.md §2). It drives the REAL pure selection
+ * (`selectLeftovers`), not a re-model. Pinned worst case: a pool of orphaned
+ * leftovers sits on the machine, and the sweep fires every 10 minutes forever.
+ * The brake is structural: a killed process is gone from the process table, so
+ * each pid is signalled at most once. The sweep creates no processes, so steady
+ * state is zero emissions once the finite pool is cleared. A live run's process
+ * (one with a real parent) is never selected, however long the pressure lasts.
+ */
+const localVerifyLeftoverReaper: SelfActionController = {
+  id: 'local-verify-leftover-reaper',
+  actionVerb: 'kill',
+  models: 'src/localVerify/leftoverReaper.ts (selectLeftovers + reapLeftovers; real pure selection) + LocalVerifyService.sweepLeftovers 10-min cadence',
+  modelsPath: 'src/localVerify/leftoverReaper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The sweep holds no state: after a restart it re-reads the process table, where every process it killed is already gone.' },
+  boundK: 3, // exactly the 3 orphaned leftovers in the fixture
+  perTargetBoundK: 1, // a killed pid leaves the table: never signalled twice
+  ticks: 30,
+  tickMs: 10 * 60_000, // the real sweep cadence
+  makeUnderPressure(f, sink) {
+    const RUNS = '/agents/a/.worktrees/.verify/runs/';
+    let table: ProcRow[] = [
+      { pid: 101, ppid: 1, uid: 501, stat: 'T', ageS: 86_400, command: `node ${RUNS}abc/vitest/w.js` },
+      { pid: 102, ppid: 1, uid: 501, stat: 'S', ageS: 86_400, command: `node ${RUNS}abc/vitest/w2.js` },
+      { pid: 103, ppid: 102, uid: 501, stat: 'S', ageS: 86_400, command: 'sleep 999' },
+      // A live run (real parent): must never be taken, however long the pressure lasts.
+      { pid: 200, ppid: 150, uid: 501, stat: 'S', ageS: 60, command: `node ${RUNS}live/vitest/w.js` },
+      { pid: 150, ppid: 1, uid: 501, stat: 'S', ageS: 60, command: 'node runVerifyMain.js --attempt-token t' },
+    ];
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!f.everySessionBusy()) return;
+        const picked = selectLeftovers(table, new Map(), { prefixes: [{ prefix: RUNS, minAgeS: 0 }], selfPid: 1, uid: 501 });
+        for (const r of picked) sink.emit({ verb: 'kill', target: String(r.pid) });
+        const gone = new Set(picked.map((r) => r.pid));
+        table = table.filter((r) => !gone.has(r.pid));
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-memory-notice: the "machine short of memory" attention item
+ * (docs/specs/machine-memory-care.md §3). Pinned worst case: the machine is
+ * short of memory on every tick forever, and its reading flaps every other tick.
+ * The brake: a notice opens once per episode and stays open until the machine
+ * has read fine for clearAfterMs; a flap inside that window re-uses the open
+ * item. Steady state: one notice for the whole sustained episode.
+ */
+const localVerifyMemoryNotice: SelfActionController = {
+  id: 'local-verify-memory-notice',
+  actionVerb: 'notify',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMemory: open-once notice, closed after MEMORY_CARE.clearAfterMs fine)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the open-notice map is empty; the upserted item has a stable id per machine, so a re-raise reopens the same item instead of adding one.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 60,
+  tickMs: 30_000, // the Local Verify tick
+  makeUnderPressure(f, sink) {
+    const CLEAR_AFTER_MS = 10 * 60_000; // MEMORY_CARE.clearAfterMs
+    let open = false;
+    let healthySince: number | null = null;
+    let n = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const pressured = f.everyAccountHot() && n++ % 2 === 0; // sustained, flapping every other tick
+        const now = f.clock.nowMs();
+        if (pressured) {
+          healthySince = null;
+          if (!open) { open = true; sink.emit({ verb: 'notify', target: 'local-verify:memory-pressure:m5' }); }
+          return;
+        }
+        if (!open) return;
+        if (healthySince === null) healthySince = now;
+        if (now - healthySince >= CLEAR_AFTER_MS) open = false;
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  localVerifyLeftoverReaper,
+  localVerifyMemoryNotice,
   graphSourceSweepCheckpointRetry,
   graphSourceStatusPollRetry,
   reloginApprovalReminder,
@@ -5524,6 +5648,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   readMarkerEmitCoalesce,
   readMarkerCatchUpRetry,
   browserActivationEffectRetry,
+  fcmPauseTrialRetry,
   emailFallbackRetry,
   workBoardPickup,
 ];
