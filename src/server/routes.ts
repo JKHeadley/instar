@@ -366,7 +366,7 @@ import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
-import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
@@ -17339,6 +17339,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
     }
   });
+  // `voiceTranscription.local` (docs/specs/backup-on-machine-voice.md), read on every transcription.
+  registerLocalTranscriptionEnabled(() => localTranscriptionEnabledFromConfig(ctx.config));
+
+  // Which transcriber a voice note on THIS machine would use: paid, whisper.cpp on this machine, or
+  // nothing (and what is missing). Fresh on every call; /capabilities shows the cached copy.
+  router.get('/voice-transcription', (_req, res) => {
+    res.json(describeVoiceTranscription({ explicit: configuredVoiceProvider(ctx.config), noCache: true }));
+  });
+
   // Which doors the second-AI-subscription setup itself listed, so a switch-off takes back only those.
   const doorsAddedFile = path.join(ctx.config.stateDir, 'state', 'recommended-services', 'doors-added-by-setup.json');
   const readDoorsAddedBySetup = (): string[] => {
@@ -21470,8 +21479,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied || originProducer?.producerId === 'reply-delivery-notice'
             ? {
+                ...(originProducer?.producerId === 'reply-delivery-notice' ? { noticeClass: 'reply-delivery-notice' } : {}),
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
@@ -32758,6 +32768,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/preferences/session-context', async (_req, res) => {
     const r = await preferencesSessionContext();
     res.status(r.status).json(r.body);
+  });
+
+  // GET /preferences — the STRUCTURED list behind the console's "What I've learned about
+  // you" page: one entry per learned preference with when it was last seen
+  // (`recordedAt`), how often (`dedupeCount`), how sure (`confidence`) and which machine
+  // learned it (`origin`). Same gate and the same source precedence as the session-context
+  // read above (foundation union → WS2.1 merged view → own store), so the page and the
+  // injected block never disagree about what is kept. Read only. Never serves
+  // `violationPattern` or replication bookkeeping; every `learning` passes the credential
+  // scrubber (PreferencesListView). Same bearer auth as every route; a memory-boundary
+  // session token is refused by the default-deny memorySessionGuard (not on its allow-list).
+  router.get('/preferences', async (_req, res) => {
+    try {
+      const cfg = ctx.config.monitoring?.correctionLearning;
+      if (cfg?.enabled !== true) {
+        res.status(503).json({ error: 'correction-learning disabled' });
+        return;
+      }
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const { buildPreferenceList, unionToPreferenceRows } = await import('../core/PreferencesListView.js');
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const stateSyncPrefEnabled = resolveDevAgentGate(
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled,
+        ctx.config as { developmentAgent?: boolean },
+      );
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const list = buildPreferenceList(unionToPreferenceRows(ctx.preferencesUnionReader.readAll(PREF_STORE_KEY)));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const { mergePreferenceViews } = await import('../core/PreferencesSync.js');
+        const merged = mergePreferenceViews({ ownMachineId: selfId, own: manager.getAllForSync(), replicas });
+        const list = buildPreferenceList(merged.map((m) => ({ entry: m, origin: m.winningMachineId, redacted: m.textRedacted === true })));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const list = buildPreferenceList(manager.read().preferences.map((entry) => ({ entry, origin: selfId })));
+      res.json({ ...list, scope: 'local' });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, ctx.config.stateDir) : 'Failed to read preferences' });
+    }
   });
 
   // ── Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) ──

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-video",
+  "sessionId": "78230c6e-4975-46d5-b94e-971d7dc5dbfe",
+  "timestamp": "2026-11-15T01:12:26.953Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-video.md",
+  "artifactSha256": "fde67bdfb16704babc6f9d245c1641694acafa82b733e76db9f73bb0e4823dca",
+  "coveredFiles": [
+    "docs/specs/windows-desktop-video.eli16.md",
+    "src/core/WindowsDesktopHost.ts",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "tests/unit/windows-desktop-video.test.ts",
+    "upgrades/side-effects/windows-desktop-video.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "review fixes inside the dark-by-default video path",
+  "eli16Path": "docs/specs/windows-desktop-video.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-video.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

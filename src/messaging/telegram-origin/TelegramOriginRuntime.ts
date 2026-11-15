@@ -27,6 +27,7 @@ import { assessOriginActivation, type OriginEnrollmentSnapshot } from './OriginA
 import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
+import { heldExpiryReportDue } from './TokenlessNoticeBrakes.js';
 import { definiteSessionLine, lateDeliverySessionBatch, lateLineForParseMode, lateRecoveredReplyNotice, LATE_REPLY_THRESHOLD_MS, ownerUnstatedSessionLine, uncertainSessionLine } from './SessionDeliveryNotice.js';
 import type { DefiniteFailureCause } from './SessionDeliveryNotice.js';
 import { forwardExpiryArm } from './OriginForwardToHolder.js';
@@ -85,6 +86,10 @@ export interface TelegramOriginRuntimeOptions {
   /** §4.2 — recovery of a held FORWARDED operation (execution owner ≠ self).
    * Wired by the server; absent ⇒ such rows are retained, never executed here. */
   forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'settled' | 'retained' | 'skipped'>;
+  /** standby-durable-forward-without-token §2 — ONE reachability check per recovery pass, before any
+   * per-row reservation or attempt. `false` ⇒ every forwarded row is skipped this pass with no
+   * write at all (its ladder is NOT advanced: no attempt was made). Absent ⇒ always reachable. */
+  forwardTickReachable?: () => Promise<boolean>;
   /** §4.2 — a held forward reached its deadline: report it ONCE, honestly. */
   onHeldForwardExpired?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
@@ -409,7 +414,7 @@ export class TelegramOriginRuntime {
     // native-conversation-base §3a item 7 — a row with `ownerVerdict` is ended, not held: it
     // stays `held` only to keep its text, and is left out of every "will still be delivered" count.
     const held = rows.filter(row => row.state === 'held' && !(row.holdDetail as { ownerVerdict?: unknown } | null)?.ownerVerdict);
-    const expired = rows.filter(row => row.state === 'expired' && row.expiryReportedAt === null);
+    const expired = rows.filter(heldExpiryReportDue);
     const unresolved = new Map<string, number>();
     for (const row of held) {
       const unstated = (row.holdDetail as { ownerUnstated?: { settled?: unknown } } | null)?.ownerUnstated;
@@ -618,6 +623,7 @@ export class TelegramOriginRuntime {
     this.recovering = true;
     let processed = 0, recovered = 0;
     try {
+      const tick: { reachable?: boolean } = {};
       let due: Array<{ admission: import('./StoreTypes.js').OriginAdmission; row: import('./StoreTypes.js').HeldOperationRow }> = [];
       try { due = await this.store.heldForwardAdmissions({ now, limit: 10 }); } catch { return { processed, recovered }; }
       for (const { admission, row } of due) {
@@ -625,6 +631,7 @@ export class TelegramOriginRuntime {
         const operation = { record: parseOriginJson(admission.record.envelopeJson) as unknown as TelegramOriginRecord, admission };
         if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
         try {
+          if (!await this.forwardTickGate(tick)) continue;
           processed++;
           if (!await this.allowQueuedRecovery(operation)) continue;
           const outcome = await this.options.forwardRecovery(operation, row);
@@ -745,6 +752,7 @@ export class TelegramOriginRuntime {
       }
       // Each source contributes at most ten, so a full durable batch cannot
       // permanently hide work retained only in the bounded memory hold buffer.
+      const forwardTick: { reachable?: boolean } = {};
       for (const candidate of candidates.values()) {
         if (this.closed) break;
         const { operation } = candidate;
@@ -780,6 +788,8 @@ export class TelegramOriginRuntime {
               preparedAt: audit.operation.preparedAt, deadlineAt: audit.operation.deadlineAt, executionOwnerMachineId: operation.record.executionOwnerMachineId,
               destination: { accountId: operation.record.destination.accountId, chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId },
               recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
+            // §2: an unreachable holder skips the row before the reservation.
+            if (!await this.forwardTickGate(forwardTick)) continue;
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
             if (!await this.allowQueuedRecovery(operation)) continue;
@@ -880,6 +890,15 @@ export class TelegramOriginRuntime {
     }
     // A failed transition or a stale snapshot must never fall through to send.
     return true;
+  }
+  /** §2 — the pass-scoped reachability answer, read once per pass on the first forwarded row. */
+  private async forwardTickGate(tick: { reachable?: boolean }): Promise<boolean> {
+    if (!this.options.forwardTickReachable) return true;
+    if (tick.reachable === undefined) {
+      try { tick.reachable = await this.options.forwardTickReachable(); }
+      catch { tick.reachable = false; } // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+    }
+    return tick.reachable;
   }
   /** Shared gate for direct recovery and both forward retry schedulers.
    * native-conversation-base §3a item 1 — a later timestamp no longer ends a

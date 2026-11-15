@@ -258,7 +258,7 @@ import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
-import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
+import { transcribeAudioFileDetailed, configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
 import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
@@ -297,7 +297,7 @@ import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../co
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
 import { LinuxAutoDesktopHost } from '../core/HyprlandDesktopHost.js';
-import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
+import { WindowsDesktopHost, resolveWindowsDesktopVideo } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
@@ -3763,7 +3763,8 @@ export class AgentServer {
                 // PowerShell interop can reach the Windows-local companion even
                 // when WSL's TCP path to the host is filtered by Windows.
                 return new WindowsDesktopHost(companion.endpoint, companion.secret,
-                  windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000);
+                  windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000,
+                  { video: resolveWindowsDesktopVideo(options.config) });
               })();
           this.directDesktopAccess = new DirectDesktopAccess(
           this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),
@@ -4923,6 +4924,9 @@ export class AgentServer {
           // wrapper with no routing surface, so resolving from it would silently disable the
           // general-envelope gate in production while unit tests still passed.
           resolveFramework: buildCompletionClaimFrameworkResolver(options.intelligence),
+          // CMT-1679: exact replay input on the provenance row, live on dev agents and
+          // dark on the fleet (byte-identical rows there). Machine-local, never served.
+          recordReplayInput: resolveDevAgentGate(cfg.recordReplayInput, options.config),
           stateDir: options.config.stateDir,
           enabled: true,
           dryRun: cfg.dryRun !== false,
@@ -6701,8 +6705,8 @@ export class AgentServer {
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
             // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
             // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
-            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
-            voiceProviderName: () => resolveTranscriptionProvider({ explicit: configuredVoiceProvider(options.config) })?.name,
+            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFileDetailed(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+            voiceProviderName: () => describeVoiceTranscription({ explicit: configuredVoiceProvider(options.config), cachedOnly: true }).active ?? undefined,
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
@@ -7576,7 +7580,9 @@ export class AgentServer {
         selfMachineId: teamSelfId,
         peers: () => this.teamSwitchPeers(),
         knownMachines: () => {
-          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false)); } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
+          try {
+            return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false));
+          } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
         },
         applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
         reportsOn: (setting, machineId) => {
@@ -7589,6 +7595,17 @@ export class AgentServer {
         reportError: (err) => pairingSvc.reportTeamFault('TeamAccess.switch', err),
       });
       this.teamSwitchApplier = teamSwitches;
+      // standby-durable-forward-without-token §9: a machine the owner recorded as gone closes its
+      // held-reply debt as a LOSS (one attention item each), never by silent deletion. Wired once here.
+      void import('../messaging/telegram-origin/TokenlessHeldDebt.js').then(m => m.setHeldDebtGoneCheck(
+        id => pairingSvc.teamLog()?.isGone(id) ?? false,
+        entry => {
+          /* @self-action-controller: held-debt-loss-notice */
+          void options.telegram?.createAttentionItem({ id: `telegram-origin-held-lost:${entry.originMachineId}:${entry.rootOperationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A reply was lost with a removed machine',
+            summary: `A reply${entry.topicId == null ? '' : ` to ${topicRef(entry.topicId)}`} was waiting on machine ${entry.originMachineId}, which the owner marked as gone. It may not have reached you; check the conversation before asking for it again.`,
+            sourceContext: 'telegram-origin-held-debt' }, { hubOnly: true }).catch(() => undefined); // @silent-fallback-ok — the loss is also visible in the held-debt status
+        })).catch(() => undefined); // @silent-fallback-ok — closure then waits for the next status read wiring
       this.app.use(createTeamRouter(pairingSvc, {
         signer: () => loadMachineSigner(options.config.stateDir),
         applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),

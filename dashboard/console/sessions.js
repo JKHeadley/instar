@@ -3,7 +3,8 @@
 // session full-screen on a phone (list beside it on a desktop): the live terminal (the
 // same xterm library and WebSocket protocol the legacy tab uses, streamed from another
 // machine through the relay), a multi-line composer, a Keys tray with Stop (Ctrl+C)
-// last, red and confirmed, and a "⋯" menu with the door switch, Details and Close.
+// last, red and confirmed, and a "⋯" menu with the door switch, Paste long text, Details
+// and Close. "Paste to a session" under the list opens the paste sheet (paste.js).
 // Every route here is adapter (a): the bearer token is enough, so there is no PIN.
 // Every value goes through textContent; no alert(), no confirm().
 
@@ -17,6 +18,7 @@ import { createInputTracker } from './input-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
+import { openPasteSheet, pasteOnMessage } from './paste.js';
 
 const XTERM_JS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js';
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -149,6 +151,7 @@ function paintList(box, m, openKey) {
       text: on ? `Hide ${m.internalCount} internal session${m.internalCount === 1 ? '' : 's'} (jobs and helpers)` : `Show ${m.internalCount} internal session${m.internalCount === 1 ? '' : 's'} (jobs and helpers)`,
       onclick: () => { setShowInternal(!on); paint(); } }));
   }
+  parts.push(el('div', { class: 'page-primary sess-paste' }, el('button', { class: 'btn-quiet', type: 'button', text: 'Paste to a session', 'data-paste': '1', onclick: () => pasteSheet(null) })));
   parts.push(el('p', { class: 'foot-note' }, el('a', { href: legacyHref('sessions'), text: 'Open sessions in the legacy dashboard' })));
   setKids(box, parts);
   if (focused) {
@@ -204,6 +207,7 @@ function wsSend(msg) { if (st.ws && st.ws.readyState === 1) { st.ws.send(JSON.st
 
 function onMessage(msg) {
   if (!onPage()) { leaveView(); closeWs(); return; }
+  pasteOnMessage(msg);
   const v = st.view;
   switch (msg.type) {
     case 'sessions': st.wsList = Array.isArray(msg.sessions) ? msg.sessions : []; paint(); break;
@@ -618,6 +622,8 @@ function moreSheet(view) {
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
   if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: `Switch ${DOOR.word} and model`, 'data-door': '1', onclick: () => doorSheet(view) }));
+  // A stored paste only reaches this machine's sessions; another machine's session takes long text in its own message box.
+  if (!s.remote && s.type !== 'job') actions.append(el('button', { class: 'btn-quiet btn-inline', type: 'button', text: 'Paste long text', 'data-paste-here': '1', onclick: () => pasteSheet(view.key) }));
   blocks.push(actions, closeBlock(view));
   const t = s.telemetry || {};
   blocks.push(details({
@@ -627,6 +633,13 @@ function moreSheet(view) {
     eventCount: t.eventCount ?? null, lastActivity: t.lastActivity || null,
   }, ['tmuxSession', 'id', 'machineId', 'model', 'startedAt', 'lastActivity', 'toolsUsed', 'backgroundTasks', 'eventCount']));
   sheet({ title: view.titleSub.closest('.sess-open').querySelector('.sess-title').textContent }, ...blocks);
+}
+
+/** The paste sheet (paste.js): the target asked (most recent preselected), or fixed to one session. */
+function pasteSheet(fixedKey) {
+  const m = st.model && st.model.ok ? st.model : null;
+  const rows = m ? (fixedKey ? m.allRows : m.rows) : [];
+  openPasteSheet({ ctx: st.ctx, rows, fixedKey, openHref });
 }
 
 function closeBlock(view) {

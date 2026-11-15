@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "claim-replay-input",
+  "sessionId": "f93a016d-9095-4f49-a995-06bf3bc23d48",
+  "timestamp": "2026-11-14T22:44:28.176Z",
+  "artifactPath": "upgrades/side-effects/claim-replay-input.md",
+  "artifactSha256": "4b74ccc51f4416a2f0d441796814dfa82b784532ca17d924c63ef30be6578f18",
+  "coveredFiles": [
+    "docs/specs/claim-replay-input-capture.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/monitoring/ClaimClauseArbiter.ts",
+    "src/monitoring/CompletionClaimVerifier.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/claim-replay-input-lifecycle.test.ts",
+    "tests/integration/claim-replay-input-provenance.test.ts",
+    "tests/unit/claim-replay-input-capture.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/next/claim-replay-input.md",
+    "upgrades/side-effects/claim-replay-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dev-gated observability capture on an observe-only verifier; fleet rows byte-identical; a revert or the flag fully undoes it.",
+  "eli16Path": "docs/specs/claim-replay-input-capture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/claim-replay-input.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1412,6 +1412,15 @@ export function MOBILE_PLANS_PEOPLE_LINE(port: number): string {
 }
 export const MOBILE_PLANS_PEOPLE_MARKER = 'GET /mobile/plans';
 /**
+ * GET /preferences — the structured learned-preference list the console's Learned page reads.
+ * One bullet, shared by generateClaudeMd (new agents) and migrateClaudeMd (existing agents).
+ * Sniff: PREFERENCES_LIST_MARKER.
+ */
+export function PREFERENCES_LIST_CLAUDEMD_LINE(port: number): string {
+  return `- See every learned preference with its date: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences\` → \`{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }], total, truncated, scope }\` (read only; newest first; the learning text is credential-scrubbed; 503 when disabled). Use it when the user asks "what have you learned about me, and when?" — it is what the console's "What I've learned about you" page reads.`;
+}
+export const PREFERENCES_LIST_MARKER = '/preferences` → `{ entries:';
+/**
  * The native Messages to you / Insights reads and owner-phone removal (docs/specs/mobile-native-phones-messages.md),
  * one bullet in the Mobile app routes block after the plans-people bullet. Sniff: `GET /mobile/messages`.
  */
@@ -1605,7 +1614,9 @@ export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads
 export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
 /** The voice form of increment 2 before server transcripts were stored (refreshed in place on update). */
 export const APP_MEDIA_PREVIOUS_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
-export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
+/** The voice line before on-machine transcription (docs/specs/backup-on-machine-voice.md); refreshed in place. */
+export const APP_MEDIA_V2_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
+export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same transcriber as Telegram voice notes (a Groq or OpenAI key when set up, else whisper.cpp on this machine; see Voice messages and transcription), and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With nothing to transcribe or a failure the line reads `(transcription unavailable: <plain reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
 /**
  * Files sent from the app into a Telegram topic or a Slack conversation (chat-media §4.9,
  * increment 3). Inserted after the "Reply with files" bullet on update (content-sniffed).
@@ -11043,7 +11054,7 @@ setTimeout(() => process.exit(0), 2000);
     {
       // Two older forms: increment 1 (phone transcripts only) and increment 2 before server
       // transcripts were stored and followed up late (§4.5.1). Each is refreshed once, in place.
-      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE]) {
+      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE, APP_MEDIA_V2_VOICE_LINE]) {
         const staleVoice = `\`[video:<path>]\`, ${prior} Read the file at that path`;
         if (content.includes(staleVoice)) {
           content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
@@ -11674,6 +11685,11 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n- **Completion-claim failure ledger.** The verifier records every turn it could not classify, with a fixed reason code, the failed branch and the model, never the claim text. Read it with \`curl -H "Authorization: Bearer \$AUTH" http://localhost:4042/completion-claim/failures\` (\`records\`, \`daily\`, \`gate\`, \`observeOnly\`). It stays observe-only until failures are under 5% on each of the last 7 complete days, even with \`dryRun: false\`. **When to use** (PROACTIVE): asked why the verifier fails, or whether it can leave observe-only → read this, never infer from the stats counters. \`invalid-output\` means the model answered badly; \`component-budget\`, \`daily-spend-cap\` and \`lane-reserve\` mean no model was asked.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Completion-claim failure ledger awareness');
+    }
+    if (!content.includes('Completion-claim replay input')) {
+      content += `\n- **Completion-claim replay input.** On development agents (dark on the fleet), each completion-claim decision row in the local judgment provenance log also keeps the exact scrubbed message and bounded tool evidence the verifier judged, under the machine-local \`_contentFull\` field, plus a content-free prompt sha (\`promptSha256\`, \`captureVersion: claim-replay-input-v1\`). That lets a later replay rebuild the same prompt and prove it matches; a row the 64 KB clamp cut, or whose rebuilt sha differs, is not replay-eligible. \`GET /judgment-provenance\` never serves the captured text. **When to use**: asked whether past claim checks can be replayed or graded → read the provenance rows for \`captureVersion\`; never claim a replay matched without the sha check. Switch: \`monitoring.completionClaimVerification.recordReplayInput\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Completion-claim replay input awareness');
     }
 
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
@@ -15343,6 +15359,23 @@ That envelope is deliberate: learned preferences are **signals, not authoritativ
       content += '\n' + pooledPrefsLine;
       patched = true;
       result.upgraded.push('CLAUDE.md: added pooled-preferences (WS2.1) awareness (Correction & Preference Learning multi-machine extension)');
+    }
+
+    // GET /preferences (structured, dated learned preferences): runs AFTER the Preferences section
+    // is added above, so a first migration places it and a second changes nothing. One bullet after the
+    // session-context bullet of the Preferences section (a "- " line, never the Registry
+    // First table row that also names that route); appended when no such bullet exists.
+    if (content.includes('/preferences/session-context') && !content.includes(PREFERENCES_LIST_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('/preferences/session-context'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, PREFERENCES_LIST_CLAUDEMD_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${PREFERENCES_LIST_CLAUDEMD_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added GET /preferences (dated learned preferences) line');
     }
 
     const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;
@@ -24655,6 +24688,12 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Native-conversation-base 3b version (PR #3092), before this PR's token-less
+    // forward change. Shipped through v1.3.1795.
+    '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',
+    // Origin-labelled boot-queue version, before the token-less custody line
+    // (standby-durable-forward-without-token §9). Shipped through v1.3.1739.
+    '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
     // Decision-ref preservation version shipped before origin credentials and
     // receipt-based ambiguous-outcome guidance (through v1.3.1225).
     '609f0fe432fe0c35043e05721658a24bcd21ae5b84fcbf99b37a75298e9499e6',

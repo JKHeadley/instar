@@ -27,7 +27,7 @@ import { DeviceRegistry } from './MobileDeviceKeys.js';
 import { assertGraphLocalPath } from './GraphLocalFiles.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
-import { TranscriptionUnavailableError } from './VoiceTranscription.js';
+import { TranscriptionFailedError, TranscriptionUnavailableError, transcriptionFailureReason } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
 import { MAY_NOT_BE_DELIVERED, type AppPoolHandle } from './appConversationPool.js';
 import fs from 'node:fs';
@@ -100,11 +100,13 @@ export interface AppConversationServiceDeps {
   clearAttention?: (conditionKey: string) => void;
   /**
    * Server-side voice transcription (docs/specs/mobile-native-chat-media.md §4.5.1, increment 2):
-   * the shared `transcribeAudioFile` Telegram voice notes use. Rejects with
-   * `TranscriptionUnavailableError` when no provider is configured. Absent ⇒ every voice note
-   * without a phone transcript reads "transcription unavailable".
+   * the shared transcription Telegram voice notes use (paid provider, else whisper.cpp on this machine,
+   * docs/specs/backup-on-machine-voice.md). Resolves to the text, or `{ text, provider }` naming the
+   * provider that actually produced it (the stored transcript's label). Rejects with
+   * `TranscriptionUnavailableError` when nothing can transcribe, `TranscriptionFailedError` (plain
+   * `reason`) on failure. Absent ⇒ every voice note without a phone transcript reads "transcription unavailable".
    */
-  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string>;
+  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string | { text: string; provider: string }>;
   /** How long one dispatch waits for a server transcript (default 60 s, the spec's fixed deadline). */
   transcribeDeadlineMs?: number;
   /** At most this many provider calls run at once in this process (default 3). */
@@ -114,7 +116,7 @@ export interface AppConversationServiceDeps {
    * at the ceiling ends "timed out waiting"; a running call gets only what is left of it.
    */
   transcribeCeilingMs?: number;
-  /** The provider name stored on a transcript event (e.g. `groq`); absent ⇒ `server`. */
+  /** Fallback provider label when `transcribeVoice` returns bare text (e.g. `groq`); absent ⇒ `server`. */
   voiceProviderName?: () => string | undefined;
 }
 
@@ -516,10 +518,16 @@ export class AppConversationService {
       .then(
         (raw): VoiceOutcome => this.storeTranscript(conversationKey, messageId, a, raw, entry.late),
         (err: unknown): VoiceOutcome => {
-          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: 'no transcription provider is configured' };
+          // Not-installed and per-note outcomes (silent, busy, too long) carry their plain reason and are
+          // not degradation reports; only real faults are (spec: What the person and the agent see).
+          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: transcriptionFailureReason(err) };
+          if (err instanceof TranscriptionQueueTimeout) { this.report('voice transcription', err); return { ok: false, reason: 'timed out waiting' }; }
+          if (err instanceof TranscriptionCeilingTimeout) { this.report('voice transcription', err); return { ok: false, reason: 'the transcription service timed out' }; }
+          if (err instanceof TranscriptionFailedError) {
+            if (err.fault) this.report('voice transcription', err);
+            return { ok: false, reason: err.reason };
+          }
           this.report('voice transcription', err);
-          if (err instanceof TranscriptionQueueTimeout) return { ok: false, reason: 'timed out waiting' };
-          if (err instanceof TranscriptionCeilingTimeout) return { ok: false, reason: 'the transcription service timed out' };
           return { ok: false, reason: 'the transcription service failed' };
         },
       )
@@ -541,7 +549,7 @@ export class AppConversationService {
    * gets the remaining time (passed to the provider as its own timeout) and is abandoned at the
    * ceiling. The slot is held until the provider call itself settles, so at most N ever run.
    */
-  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string> {
+  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string | { text: string; provider: string }> {
     const ceilingMs = this.deps.transcribeCeilingMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS;
     const startedAt = Date.now();
     if (!(await this.acquireTranscribeSlot(ceilingMs))) throw new TranscriptionQueueTimeout();
@@ -577,10 +585,12 @@ export class AppConversationService {
   }
 
   /** Scrub, then store the transcript as its own unsigned event (§4.5.1). The session gets it either way. */
-  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, raw: string, late: boolean): VoiceOutcome {
+  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, result: string | { text: string; provider: string }, late: boolean): VoiceOutcome {
+    const raw = typeof result === 'string' ? result : result.text;
     const scrubbed = scrubServerTranscript(raw, this.inboundScan);
     const machineId = this.deps.machineId();
-    const provider = (this.deps.voiceProviderName?.() ?? 'server').toLowerCase();
+    // The provider that produced THIS text (no shared "last provider" state, so concurrent transcripts can't swap labels).
+    const provider = (typeof result === 'string' ? (this.deps.voiceProviderName?.() ?? 'server') : result.provider).toLowerCase();
     try {
       this.store.append({
         eventId: transcriptEventId(a.attachmentId, machineId), kind: 'transcript', conversationKey, messageId,

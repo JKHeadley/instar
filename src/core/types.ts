@@ -3772,6 +3772,11 @@ export interface ExternalServicePermissions {
 
 export interface InstarConfig {
   /**
+   * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
+   * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
+   */
+  voiceTranscription?: { local?: boolean };
+  /**
    * PR links in outbound replies (src/messaging/prLinkReviewRequest.ts): when a reply links an open PR
    * this agent authored, the reviewer is requested on GitHub and read back before the reply goes out.
    * On by default. `reviewer` is a GitHub login; absent → the repository owner when that owner is a user.
@@ -3845,6 +3850,8 @@ export interface InstarConfig {
     peerClaimRefused?: boolean;
     /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
     guidedSetup?: { enabled?: boolean };
+    /** Windows: H.264 video from the companion instead of pictures. `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    windowsVideo?: { enabled?: boolean };
     /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
     lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
   };
@@ -8105,6 +8112,13 @@ export interface MonitoringConfig {
     maxConcurrentPerTopic?: number;
     queueTtlMs?: number;
     redactIdentifiers?: boolean;
+    /**
+     * CMT-1679: record the arbiter's exact replay input (scrubbed message + bounded
+     * evidence) under the provenance row's machine-local `_contentFull`, plus a
+     * content-free prompt sha for parity. Dev-gated: OMITTED from ConfigDefaults so
+     * resolveDevAgentGate decides (live on dev agents, dark on the fleet).
+     */
+    recordReplayInput?: boolean;
   };
   /**
    * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER
