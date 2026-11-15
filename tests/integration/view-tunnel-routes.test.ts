@@ -67,6 +67,28 @@ describe('View & Tunnel routes integration', () => {
     project.cleanup();
   });
 
+  describe('POST /view while documents replace pages (instar-document-viewer §3.9b)', () => {
+    it('refuses a new page with documents-replace-views, and existing pages stay served', async () => {
+      const before = await request(app).post('/view').send({ title: 'Before', markdown: '# before' }).expect(201);
+      viewer.setNewViewGuard(() => true);
+      try {
+        const res = await request(app).post('/view').send({ title: 'New', markdown: '# new' }).expect(409);
+        expect(res.body.error).toBe('documents-replace-views');
+        expect(res.body.use).toBe('/docs');
+        expect(res.body.detail).toContain('Links to existing pages keep working');
+        expect(viewer.get(before.body.id)?.title).toBe('Before');
+        // Rewriting an old page is refused too, and points at fromView.
+        const put = await request(app).put(`/view/${before.body.id}`).send({ title: 'Rewritten', markdown: '# new text' }).expect(409);
+        expect(put.body.error).toBe('documents-replace-views');
+        expect(put.body.detail).toContain('fromView');
+        expect(viewer.get(before.body.id)?.title).toBe('Before');
+      } finally {
+        viewer.setNewViewGuard(() => false);
+      }
+      await request(app).post('/view').send({ title: 'After', markdown: '# after' }).expect(201);
+    });
+  });
+
   describe('POST /view', () => {
     it('creates a private view and returns metadata', async () => {
       const res = await request(app)

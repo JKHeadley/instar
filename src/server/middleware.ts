@@ -290,6 +290,14 @@ export function authMiddleware(
       return;
     }
 
+    // Instar Documents page (docs/specs/instar-document-viewer.md §3.6): the shell, its static files,
+    // the open-code/cookie exchange, cookie reads and device-signed writes carry their own auth in
+    // documentPageRoutes.ts. Exact shapes only; every other /docs route stays behind the bearer gate.
+    if (DOC_PAGE_PATH(req.method, req.path)) {
+      next();
+      return;
+    }
+
     // Mobile device keys: device-signed requests are judged by their signature and an exact
     // allowlist, never by a bearer token, and never reach /internal/*.
     if (deviceAuth && req.headers['x-instar-device'] !== undefined) {
@@ -989,4 +997,17 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     error: isStorageFailure(err) ? `Storage error on ${storageMachineName(req.app?.locals?.stateDir)}. Please check available space and storage permissions.` : 'Internal server error',
     timestamp: new Date().toISOString(),
   });
+}
+
+const DOC_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const DOC_PAGE_GET = new RegExp(`^/docs/(?:_assets/[a-z0-9-]+\\.(?:js|css)|${DOC_UUID}(?:/page-data|/page-compare)?)$`);
+const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+)$`);
+/** The document page's self-authenticating routes (documentPageRoutes.ts). */
+export function DOC_PAGE_PATH(method: string, p: string): boolean {
+  // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).
+  if (method === 'POST' && p === '/docs/_link/status') return true;
+  if (method === 'POST' && p === '/docs/_link/nonce') return true;
+  if (method === 'GET') return DOC_PAGE_GET.test(p);
+  if (method === 'POST') return DOC_PAGE_POST.test(p);
+  return false;
 }
