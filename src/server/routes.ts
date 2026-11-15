@@ -4823,10 +4823,11 @@ export function createRoutes(ctx: RouteContext): Router {
           if (errand.errand) signals.operatorErrand = { errand: true, phrase: errand.phrase };
         }
         if (kindForSignals !== 'health-alert') {
-          const registry =
-            ctx.playwrightRegistry?.() ??
-            new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
-          agentReach = buildAgentReach(registry);
+          // The SAME registry the /playwright-profiles routes build, so the reach also
+          // carries the vault's entry NAMES (never values) and each account's stored
+          // roles: the B17 HELD-ACCESS sub-clause (Echo Bugs topic 10000002770) needs
+          // them to tell "asking for access I already hold" from a genuine ask.
+          agentReach = buildAgentReach(buildPlaywrightRegistry());
         }
       } catch {
         // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
