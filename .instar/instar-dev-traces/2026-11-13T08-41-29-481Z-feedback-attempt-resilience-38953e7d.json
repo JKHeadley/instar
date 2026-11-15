@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "feedback-attempt-resilience",
+  "sessionId": "c7ebcf37-5ca7-419f-a005-cf4c9107a40b",
+  "timestamp": "2026-11-13T08:41:29.481Z",
+  "artifactPath": "upgrades/side-effects/feedback-attempt-resilience.md",
+  "artifactSha256": "69119835275434b9d6a2cd9228de5775e2a553accab1ec87174e75df09d08cf6",
+  "coveredFiles": [
+    "docs/specs/feedback-triage-and-execution.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-attempt-resilience.md",
+    "upgrades/side-effects/feedback-attempt-resilience.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two narrow executor fixes that only stop discarding attempts (bounded re-verify after restarts, test-file narrowing with fallback); no new authority; revert fully undoes.",
+  "eli16Path": "docs/specs/feedback-triage-and-execution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-attempt-resilience.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -7,7 +7,7 @@ import { renderNotifications } from './notifications.js';
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
+  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, needsCardList, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath } from './nav-model.js';
 import { fillPartial } from './home-model.js';
@@ -30,6 +30,7 @@ import { renderLearned } from './learned.js';
 import { topicNameMap } from './topic-names.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
+import { renderContext } from './context.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
@@ -297,7 +298,7 @@ const CARDS = [
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
 
-const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
+const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'not every check answered', stale: 'out of date' };
 
 function actionHref(action) {
   if (!action) return null;
@@ -360,7 +361,7 @@ function paintCard(def, model, repaint = false) {
   card.querySelector('.dot').className = dotClass(model.state);
   const age = card.querySelector('.card-age');
   const word = STATE_WORD[model.state];
-  age.textContent = [model.coverage && !word ? model.coverage : word, model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
+  age.textContent = [model.coverageWords || (model.coverage && !word ? model.coverage : word), model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
   card.toggleAttribute('data-partial', Boolean(model.coverage));
 
   const value = card.querySelector('.card-value');
@@ -395,7 +396,9 @@ function paintCard(def, model, repaint = false) {
     body.append(meter);
   }
   const expandedNow = expanded.has(def.id);
-  const list = expandedNow && model.all ? model.all : model.rows;
+  // "What needs you": the headline names and links the first item, so the list does not repeat it.
+  const listed = def.id === 'needs' ? needsCardList(model, Boolean(actionHref(model.all?.[0]?.action))) : { rows: model.rows, all: model.all };
+  const list = expandedNow && listed.all ? listed.all : listed.rows;
   if (list && list.length) {
     const rows = el('div', { class: 'rows' });
     for (const r of list) {
@@ -433,9 +436,9 @@ function paintCard(def, model, repaint = false) {
   if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
-  const extra = model.all ? model.all.length - model.rows.length : (model.more || 0);
-  if (model.all && extra > 0) {
-    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
+  const extra = listed.all ? listed.all.length - listed.rows.length : (model.more || 0);
+  if (listed.all && extra > 0) {
+    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${listed.all.length}` });
     b.addEventListener('click', () => { if (expanded.has(def.id)) expanded.delete(def.id); else expanded.add(def.id); paintCard(def, model, true); });
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));
@@ -536,10 +539,10 @@ function loadHome() {
     if ((key === 'attention' || key === 'pool' || key === 'systemTopics') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
     if ((key === 'sessions' || key === 'pool' || key === 'topics') && results.sessions) set('doing', annotate(buildDoing(results.sessions, Date.now(), names, topicNameMap(results.topics)), results.sessions));
     if (key === 'pool' && results.pool) set('running', annotate(buildRunning(results.pool), results.pool));
-    if ((key === 'commitments' || key === 'pool') && results.commitments) {
+    if ((key === 'commitments' || key === 'pool' || key === 'topics') && results.commitments) {
       const pool = results.pool;
       const peers = pool?.ok && Array.isArray(pool.data?.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
-      set('promised', annotate(buildPromised(results.commitments, Date.now(), peers), results.commitments));
+      set('promised', annotate(buildPromised(results.commitments, Date.now(), peers, { topicNames: topicNameMap(results.topics), machineNames: names }), results.commitments));
     }
     if ((key === 'guards' || key === 'mandate') && results.guards && results.mandate) set('allowed', annotate(buildAllowed(results.guards, results.mandate), results.guards, results.mandate));
   };
@@ -729,6 +732,7 @@ const NATIVE = {
   'settings/learned': renderLearned,
   'settings/inside': renderInside,
   'settings/files': renderFiles,
+  'settings/context': renderContext,
 };
 
 // Pages that exist only in phone mode: the Work page's Pace card, on its own.

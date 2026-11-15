@@ -133,9 +133,11 @@ export function isInternalSession(s) {
 /** The History read for a session: its conversation record, a page at a time. A session
  *  on another machine is read through this machine, which asks the owner. */
 export const HISTORY_PAGE = 150;
-export function historyUrl(s, before = null) {
+export function historyUrl(s, before = null, beforeIndex = null) {
   const q = new URLSearchParams({ limit: String(HISTORY_PAGE) });
   if (before != null) q.set('before', String(before));
+  // A page that ended inside one record (a capped read of another machine) continues by entry index.
+  if (before != null && beforeIndex) q.set('beforeIndex', String(beforeIndex));
   if (s.remote && s.machineId) q.set('machineId', s.machineId);
   return `/sessions/${encodeURIComponent(s.tmuxSession)}/transcript?${q}`;
 }

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "relogin-recovered-condition",
+  "sessionId": "94177e2d-85a2-4315-9510-e63211d04631",
+  "timestamp": "2026-10-27T00:18:39.088Z",
+  "artifactPath": "upgrades/side-effects/relogin-recovered-condition.md",
+  "artifactSha256": "d681055f38d3b9076283e4a52b41f260f087d5bd678b26540166786d4ae1fa40",
+  "coveredFiles": [
+    "docs/specs/relogin-recovered-condition.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SubscriptionReloginAttention.ts",
+    "src/core/SubscriptionReloginRuntime.ts",
+    "src/core/SubscriptionReloginService.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/subscription-relogin-recovered-attention-alive.test.ts",
+    "tests/integration/subscription-relogin-recovered-attention.test.ts",
+    "tests/unit/PostUpdateMigrator-assistedRelogin.test.ts",
+    "tests/unit/subscription-relogin-recovered-condition.test.ts",
+    "upgrades/next/relogin-recovered-condition.md",
+    "upgrades/side-effects/relogin-recovered-condition.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow, revert-reversible fix to one Attention producer: suppresses a failure notice and closes its row only on server-verified sign-in; no new authority, config or state",
+  "eli16Path": "docs/specs/relogin-recovered-condition.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relogin-recovered-condition.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

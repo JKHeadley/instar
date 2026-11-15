@@ -122,6 +122,7 @@ export default defineConfig({
           items: [
             { label: 'CLI Commands', slug: 'reference/cli' },
             { label: 'API Endpoints', slug: 'reference/api' },
+            { label: 'Blocker, Authorization, Failure & Framework-Issue Routes', slug: 'reference/ledger-and-request-routes' },
             { label: 'Configuration', slug: 'reference/configuration' },
             { label: 'File Structure', slug: 'reference/file-structure' },
             { label: 'Hooks', slug: 'reference/hooks' },

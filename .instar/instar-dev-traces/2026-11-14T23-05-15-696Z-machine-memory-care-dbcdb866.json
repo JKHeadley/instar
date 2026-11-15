@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "slug": "machine-memory-care",
+  "sessionId": "b74422e8-f308-4db6-b08a-77625178c763",
+  "timestamp": "2026-11-14T23:05:15.696Z",
+  "artifactPath": "upgrades/side-effects/machine-memory-care.md",
+  "artifactSha256": "fabb17c6d69b784e156e85c80cf6edb3705e2b98b2a664eb313161c512f9bf51",
+  "specPath": "docs/specs/machine-memory-care.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-14T23-02-38-723Z-machine-memory-care.json",
+    ".instar/instar-dev-decisions/2026-11-14T23-03-05-536Z-machine-memory-care.json",
+    ".instar/instar-dev-traces/2026-11-14T23-02-01-971Z-machine-memory-care-4d1cf1e8.json",
+    "docs/specs/machine-memory-care.eli16.md",
+    "docs/specs/machine-memory-care.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/machineLoadReport.ts",
+    "src/core/machineResourceProfile.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/leftoverReaper.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/scaffold/templates.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/e2e/machine-load-report-lifecycle.test.ts",
+    "tests/integration/localVerify/leftoverReaper.real.test.ts",
+    "tests/unit/PostUpdateMigrator-machineMemoryCare.test.ts",
+    "tests/unit/localVerify/leftoverReaper.test.ts",
+    "tests/unit/localVerify/machineMemoryCare.test.ts",
+    "tests/unit/machine-load-report.test.ts",
+    "upgrades/next/machine-memory-care.md",
+    "upgrades/side-effects/machine-memory-care.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New authority to end processes and a modified Local Verify start gate; two independent review rounds",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "local-verify-leftover-reaper: a killed pid leaves the process table, the sweep spawns nothing, so emissions are bounded by the finite leftover pool (K=3, per-pid 1) at a 10-min cadence; local-verify-memory-notice: open-once notice per episode, closed only after 10 min fine, so a sustained or flapping episode yields one notice"
+    }
+  }
+}

@@ -800,3 +800,165 @@ describe('EnrollmentWizard — a login that succeeded without telling instar', (
     expect(store.get('codex-justin')!.status).toBe('completed');
   });
 });
+
+describe('EnrollmentWizard — a follow-me login whose account already works (compliance loop G10)', () => {
+  // Observed 2026-11-13: Mama PC re-drove a follow-me login for an account that
+  // was active and reading quota the whole time, 1113 times in 11 days, because
+  // the completion sweep only accepts an auth-revision CHANGE since the latest
+  // reissue, and every reissue takes a new baseline.
+  const T0 = Date.parse('2026-11-13T00:00:00Z');
+  let dir: string;
+  let clock: number;
+  let store: PendingLoginStore;
+  let drives: number;
+  let probes: number;
+
+  function wizard(probe: () => Promise<{ email?: string; unavailable?: boolean; reason?: string }>, withOracle = true) {
+    return new EnrollmentWizard({
+      store,
+      now: () => clock,
+      driveLogin: async () => { drives++; return { verificationUrl: 'https://claude.com/oauth?n=' + drives, userCode: 'C' + drives, ttlMs: 15 * 60_000 }; },
+      ...(withOracle ? { oracle: { resolveSlotTenant: async () => { probes++; return probe(); } } as never } : {}),
+      ensureReady: () => ({ patched: false, reason: 'already interactive-ready' }),
+    });
+  }
+  const healthy = { accountIsHealthy: () => true };
+
+  function issue(opts: { expectedEmail?: string; framework?: 'claude-code' | 'codex-cli' } = {}) {
+    const codex = opts.framework === 'codex-cli';
+    store.issue({
+      id: 'sagemind-justin', label: 'sagemind-justin',
+      provider: codex ? 'openai' : 'anthropic', framework: opts.framework ?? 'claude-code',
+      kind: codex ? 'device-code' : 'url-code-paste', verificationUrl: 'https://claude.com/oauth',
+      ...(codex ? { userCode: 'ABCD-EFGH' } : {}),
+      configHome: '/home/echo/.claude-followme-sagemind-justin',
+      ...('expectedEmail' in opts ? (opts.expectedEmail ? { expectedEmail: opts.expectedEmail } : {}) : { expectedEmail: 'justin@sagemindai.io' }),
+      authRevisionBaseline: 'baseline',
+      ttlMs: 15 * 60_000,
+    });
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-signedin-'));
+    clock = T0; drives = 0; probes = 0;
+    store = new PendingLoginStore({ stateDir: dir, now: () => clock });
+  });
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/enrollment-wizard.test.ts:signedin-cleanup' }); } catch { /* @silent-fallback-ok */ }
+  });
+
+  it('expired Claude login, healthy account, slot answers as expected → closed, no new code, loop over', async () => {
+    issue();
+    const w = wizard(async () => ({ email: ' Justin@SageMindAI.io ' }));
+    clock = T0 + 16 * 60_000;
+    expect(await w.reissueExpired(healthy)).toEqual([]);
+    expect(drives).toBe(0);
+    expect(probes).toBe(1);
+    expect(store.get('sagemind-justin')!.status).toBe('completed');
+    // The next sweep has nothing to reissue or probe.
+    clock = T0 + 40 * 60_000;
+    expect(await w.reissueExpired(healthy)).toEqual([]);
+    expect(probes).toBe(1);
+    expect(drives).toBe(0);
+  });
+
+  it('restart recovery closes it instead of re-driving', async () => {
+    issue();
+    const w = wizard(async () => ({ email: 'justin@sagemindai.io' }));
+    expect(await w.recoverAfterRestart(healthy)).toEqual([]);
+    expect(drives).toBe(0);
+    expect(store.get('sagemind-justin')!.status).toBe('completed');
+  });
+
+  it('an account the pool does NOT hold healthy (signed out, drifted, rate-limited) is never probed and is re-driven', async () => {
+    issue();
+    const w = wizard(async () => ({ email: 'justin@sagemindai.io' }));
+    clock = T0 + 16 * 60_000;
+    expect((await w.reissueExpired({ accountIsHealthy: () => false })).length).toBe(1);
+    expect(probes).toBe(0);
+    expect(drives).toBe(1);
+    expect(store.get('sagemind-justin')!.status).toBe('pending');
+  });
+
+  it('a Codex login is never closed by this path, even when its slot names the expected account', async () => {
+    // A Codex slot's identity comes from the id_token on disk, which still names
+    // the account after its refresh token died: not proof the sign-in works.
+    issue({ framework: 'codex-cli' });
+    const w = wizard(async () => ({ email: 'justin@sagemindai.io' }));
+    clock = T0 + 16 * 60_000;
+    expect((await w.reissueExpired(healthy)).length).toBe(1);
+    expect(probes).toBe(0);
+    expect(drives).toBe(1);
+  });
+
+  it('a DIFFERENT account in the slot → re-driven as before', async () => {
+    issue();
+    const w = wizard(async () => ({ email: 'echo@sagemindai.io' }));
+    clock = T0 + 16 * 60_000;
+    expect((await w.reissueExpired(healthy)).map((l) => l.id)).toEqual(['sagemind-justin']);
+    expect(drives).toBe(1);
+    expect(store.get('sagemind-justin')!.status).toBe('pending');
+  });
+
+  for (const [name, make] of [
+    ['an unreadable slot', () => wizard(async () => ({ unavailable: true, reason: '401' }))],
+    ['a throwing probe', () => wizard(async () => { throw new Error('network'); })],
+    ['no oracle', () => wizard(async () => ({ email: 'justin@sagemindai.io' }), false)],
+  ] as const) {
+    it(`${name} → re-driven as before`, async () => {
+      issue();
+      const w = make();
+      clock = T0 + 16 * 60_000;
+      expect((await w.reissueExpired(healthy)).length).toBe(1);
+      expect(drives).toBe(1);
+    });
+  }
+
+  it('a login without an expected email is never probed', async () => {
+    issue({ expectedEmail: undefined });
+    const w = wizard(async () => ({ email: 'justin@sagemindai.io' }));
+    clock = T0 + 16 * 60_000;
+    await w.reissueExpired(healthy);
+    expect(probes).toBe(0);
+    expect(drives).toBe(1);
+  });
+
+  it('without the deps (route and dead-pane callers) behaviour is unchanged', async () => {
+    issue();
+    const w = wizard(async () => ({ email: 'justin@sagemindai.io' }));
+    clock = T0 + 16 * 60_000;
+    expect((await w.reissueExpired()).length).toBe(1);
+    expect(await w.refresh('sagemind-justin')).not.toBeNull();
+    expect(probes).toBe(0);
+    expect(drives).toBe(2);
+  });
+
+  it('a login cancelled while the probe ran stays cancelled', async () => {
+    issue();
+    const w = wizard(async () => { store.abandon('sagemind-justin'); return { email: 'justin@sagemindai.io' }; });
+    clock = T0 + 16 * 60_000;
+    // Not closed by this path; the old reissue attempt that follows is refused
+    // by the store for a terminal login, so it stays cancelled.
+    expect(await w.reissueExpired(healthy)).toEqual([]);
+    expect(store.get('sagemind-justin')!.status).toBe('abandoned');
+  });
+
+  it('an account that stops being healthy while the probe ran → re-driven, not closed', async () => {
+    issue();
+    let ok = true;
+    const w = wizard(async () => { ok = false; return { email: 'justin@sagemindai.io' }; });
+    clock = T0 + 16 * 60_000;
+    expect((await w.reissueExpired({ accountIsHealthy: () => ok })).length).toBe(1);
+    expect(drives).toBe(1);
+    expect(store.get('sagemind-justin')!.status).toBe('pending');
+  });
+
+  it('a health check that throws → re-driven as before', async () => {
+    issue();
+    const w = wizard(async () => ({ email: 'justin@sagemindai.io' }));
+    clock = T0 + 16 * 60_000;
+    expect((await w.reissueExpired({ accountIsHealthy: () => { throw new Error('pool unreadable'); } })).length).toBe(1);
+    expect(probes).toBe(0);
+    expect(drives).toBe(1);
+  });
+});

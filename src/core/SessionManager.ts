@@ -50,6 +50,7 @@ import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStart
 const squash = (text: string): string => text.replace(/\s+/g, '');
 import { extractGeminiFinalAssistantBlock, meaningfulTail, meaningfulNonBlankTail } from './paneText.js';
 import { ensureClaudeFirstRunAnswered } from './ensureInteractiveReady.js';
+import { PROJECT_TRUST_SEEDERS } from '../providers/adapters/engineSessionHooks.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
 
@@ -115,7 +116,11 @@ import {
   resolveInteractiveLaunchModel,
   resolveModelForFramework,
   computeGrokInteractiveOptIn,
+  clampThinkingMode,
+  type LaunchIntentOutcome,
 } from './frameworkSessionLaunch.js';
+import { createCliVersionReader, defaultCliVersionReaderDeps, CLI_VERSION_UNKNOWN, type CliVersionReader } from './cliVersionReader.js';
+import { boundLaunchRecord, type JobRunLaunch } from '../scheduler/JobRunHistory.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
 import { codexSupportsGpt61Sol } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
@@ -1379,6 +1384,16 @@ export class SessionManager extends EventEmitter {
   private lastClaudeBinaryPruneAt = 0;
   /** Version of the last claude-code binary resolveLaunchBinary chose, keyed by the path it returned. */
   private readonly claudeLaunchVersions = new Map<string, string | null>();
+  /**
+   * Launch record (docs/specs/job-launch-intent-record.md §4): the CLI version reader, and the
+   * binary each recorded launch actually ran (the retained per-version copy, read from the final
+   * tmux argv), keyed by session id so probeLaunchVersion probes exactly that binary. Bounded.
+   */
+  private readonly cliVersionReader: CliVersionReader = createCliVersionReader(defaultCliVersionReaderDeps({
+    retainerVersion: (p) => this.claudeLaunchVersions.get(p) ?? null,
+  }));
+  private readonly launchBinaries = new Map<string, string>();
+  private static readonly LAUNCH_BINARIES_MAX = 512;
   /**
    * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
    * the in-server wiring that decides, per spawn, whether a session gets the
@@ -4561,6 +4576,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * the operator asked for "a real session with real intelligence", not the template's tier.
      */
     useAgentDefaultModel?: boolean;
+    /**
+     * Per-job thinking mode (docs/specs/job-launch-intent-record.md §3). Passed to whichever builder
+     * launches (headless or rerouted interactive), which clamps it to the enum and translates or
+     * drops it; the returned session's `launch` records the outcome. Absent → unchanged launch.
+     */
+    thinkingMode?: import('./topicProfileValidation.js').ThinkingMode;
   }): Promise<Session> {
     if (options.cwd !== undefined) {
       const worktreesRoot = path.resolve(this.config.projectDir, '.worktrees');
@@ -4782,7 +4803,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`confined-tools-unavailable: this job's tool list cannot be applied on ${headlessFramework}, so it was not started`);
     }
     if (await this.shouldRerouteToInteractive(headlessFramework)) {
-      const gate = this.evaluateRerouteGate(options.name, Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:')));
+      const gate = this.evaluateRerouteGate(options.name,
+        options.jobSlug && options.triggeredBy?.startsWith('scheduler:') ? 'scheduled-job' : options.confinement ? 'confined' : 'ordinary');
       if (gate.allow) {
         return await this.spawnReroutedInteractive({
           sessionId,
@@ -4817,7 +4839,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // jobs leave it unset and keep the workspace-write sandbox.
       ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
       ...(options.ultracode ? { ultracode: true } : {}),
+      ...(options.thinkingMode !== undefined ? { thinkingMode: options.thinkingMode } : {}),
     });
+    const headlessLaunchCapture: { launch?: JobRunLaunch } = {};
 
     // Extra claude-code headless flags, spliced before the `-p` prompt positional
     // (argv structure: [binary, --dangerously-skip-permissions, (--model X)?, -p,
@@ -4964,7 +4988,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // (its synchronous timing is part of the spawn contract) but still funnels
       // through withSyncOp so a drift during the blocking spawn is classed as an
       // event-loop BLOCK, not sleep.
-      withSyncOp(() => execFileSync(this.config.tmuxPath, [
+      withSyncOp(() => execFileSync(this.config.tmuxPath, this.captureLaunchRecord(headlessLaunchCapture, headlessBinaryPath, headlessSpec, options.thinkingMode, [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', resolvedCwd,
@@ -5041,7 +5065,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_TEST=',
         ...omitAuthEnvFlags,
         ...headlessSpec.argv,
-      ], { encoding: 'utf-8' }));
+      ]), { encoding: 'utf-8' }));
 
       // Increase tmux scrollback buffer for dashboard history support
       try {
@@ -5088,6 +5112,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // headless one-shot signals completion by process exit — today's behavior).
       launchLane: 'headless',
       completionMode: 'exit',
+      // job-launch-intent-record §3: captured from the final tmux argv/env just before the spawn.
+      ...(headlessLaunchCapture.launch ? { launch: headlessLaunchCapture.launch } : {}),
       // EVO-008: set ONLY after the final argv passed the confinement contract check.
       ...(headlessConfined ? { confinedTools: headlessConfined } : {}),
       ...(options.confinement ? { confinedConfigHome: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
@@ -5149,17 +5175,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // must use their actual gate, not the scheduler's reserved global slot.
     if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions) return 'saturated';
     if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
-    return this.countReroutedInteractiveSessions() >= this.rerouteAdmissionCap(false)
+    return this.countReroutedInteractiveSessions() >= this.rerouteAdmissionCap('confined')
       || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
   }
 
-  private rerouteAdmissionCap(scheduledJob: boolean): number {
+  /**
+   * How many rerouted sessions may be live when a spawn of this kind is admitted. Ordinary spawns
+   * (conversations, builders, A2A) leave the last slot for a scheduler job and, from four slots
+   * up, the one before it for a confined feedback-executor spawn while a live executor asks for it
+   * (`setConfinedRerouteReserve`); so neither can be held at zero
+   * by ordinary traffic (2026-11-12: builders held every ordinary slot for hours and the executor
+   * started nothing). A confined spawn keeps the scheduler's slot. A small host reserves less: a
+   * one-slot host reserves nothing, and below four slots only the scheduler's slot is kept.
+   */
+  private rerouteAdmissionCap(kind: 'scheduled-job' | 'confined' | 'ordinary'): number {
     const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
-    // A one-slot host cannot reserve without blocking all conversations.
-    return !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
+    if (kind === 'scheduled-job' || maxRerouted <= 1) return maxRerouted;
+    if (kind === 'confined') return maxRerouted - 1;
+    return maxRerouted >= 4 && this.confinedRerouteReserve() ? maxRerouted - 2 : maxRerouted - 1;
   }
 
-  private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {
+  /**
+   * Whether ordinary spawns keep a slot free for confined spawns. Off until a live feedback executor
+   * turns it on (`setConfinedRerouteReserve`), so an agent that runs no executor keeps every
+   * ordinary slot it had.
+   */
+  private confinedRerouteReserve: () => boolean = () => false;
+
+  /** The feedback executor's wiring: reserve a slot only while it is enabled and live. */
+  setConfinedRerouteReserve(active: () => boolean): void {
+    this.confinedRerouteReserve = () => { try { return active() === true; } catch { return false; } }; // @silent-fallback-ok: an unreadable switch reserves nothing (the pre-reserve behaviour)
+  }
+
+  private evaluateRerouteGate(spawnName: string, kind: 'scheduled-job' | 'confined' | 'ordinary' = 'ordinary'): { allow: boolean } {
     const mode = this.config.subscriptionPathMode ?? 'off';
     const reroutedCount = this.countReroutedInteractiveSessions();
     const pressure = this.currentMemoryPressure();
@@ -5167,7 +5215,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Keep one of the existing memory-bounded slots for scheduled jobs when
     // conversations would otherwise fill the entire lane. A one-slot host
     // cannot reserve without blocking all conversations, so retain its cap.
-    const admissionCap = this.rerouteAdmissionCap(scheduledJob);
+    const admissionCap = this.rerouteAdmissionCap(kind);
     if (reroutedCount < admissionCap && !pressureElevated) {
       return { allow: true };
     }
@@ -5309,7 +5357,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(launchModel ? { defaultModel: launchModel } : {}),
       ...(options.sessionId ? { sessionId: options.sessionId } : {}),
       ...(!options.sessionId && options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+      // Per-job thinking mode (job-launch-intent-record §2): the interactive builder already maps
+      // it; it clamps first and returns the applied/dropped record from the same branches.
+      ...(options.thinkingMode !== undefined ? { thinkingMode: options.thinkingMode } : {}),
     });
+    const reroutedLaunchCapture: { launch?: JobRunLaunch } = {};
 
     // Splice the load-bearing headless flags into the INTERACTIVE argv. Both
     // --allowedTools and --strict-mcp-config --mcp-config {} are valid
@@ -5423,7 +5475,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // §B: excluded from §A async conversion (spawn timing is contractual) but
       // funnels through withSyncOp so a drift during this blocking spawn reads as
       // an event-loop BLOCK, not sleep.
-      withSyncOp(() => execFileSync(this.config.tmuxPath, [
+      withSyncOp(() => execFileSync(this.config.tmuxPath, this.captureLaunchRecord(reroutedLaunchCapture, binaryPath, launchSpec, options.thinkingMode, [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', resolvedCwd,
@@ -5491,7 +5543,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_TEST=',
         ...confinedEnvFlags,
         ...launchSpec.argv,
-      ], { encoding: 'utf-8' }));
+      ]), { encoding: 'utf-8' }));
 
       try {
         withSyncOp(() => execFileSync(this.config.tmuxPath, [
@@ -5519,6 +5571,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       cwd: resolvedCwd, // the spawn tree; see the headless record above
       maxDurationMinutes: options.maxDurationMinutes,
       ...(reroutedConfined ? { confinedTools: reroutedConfined } : {}),
+      // job-launch-intent-record §3: captured from the final tmux argv/env just before the spawn.
+      ...(reroutedLaunchCapture.launch ? { launch: reroutedLaunchCapture.launch } : {}),
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
@@ -7111,6 +7165,97 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * non-blocking prune of unused old versions — prune never deletes a version
    * a live process maps.
    */
+  /**
+   * Build a session's launch record from the EXACT tmux argument list about to be spawned
+   * (docs/specs/job-launch-intent-record.md §3, "Verify the state, not its symbol"), and return
+   * that list unchanged so the call site passes it straight to `execFileSync`.
+   *
+   * Every `applied` entry the builder reported is corroborated against the final arguments: an
+   * env entry (`NAME=value`) must be the last `-e NAME=...` value, an argv entry must appear among
+   * the launch argv (from the launched binary on), as a token or a `key="value"` assignment. If any
+   * cannot be found, no record is written (the scheduler then logs an `error`), never a fabricated
+   * one. The record carries the validated requested value only, never raw input; `cliVersion` is
+   * the cached value or 'unknown' (the async probe patches it later, never delaying the spawn).
+   * Signal only: a failure here never blocks the spawn.
+   */
+  private captureLaunchRecord(
+    sink: { launch?: JobRunLaunch },
+    binaryPath: string,
+    outcome: Partial<LaunchIntentOutcome>,
+    requestedThinkingMode: unknown,
+    tmuxArgs: string[],
+  ): string[] {
+    try {
+      const applied = outcome.applied ?? [];
+      const dropped = outcome.dropped ?? [];
+      const binaryAt = tmuxArgs.indexOf(binaryPath);
+      const launchArgv = binaryAt >= 0 ? tmuxArgs.slice(binaryAt) : [];
+      const env = new Map<string, string>();
+      const envEnd = binaryAt >= 0 ? binaryAt : tmuxArgs.length;
+      for (let i = 0; i < envEnd - 1; i++) {
+        if (tmuxArgs[i] !== '-e') continue;
+        const pair = tmuxArgs[i + 1];
+        const eq = pair.indexOf('=');
+        if (eq > 0) env.set(pair.slice(0, eq), pair.slice(eq + 1));
+      }
+      // A confined spawn starts the CLI through `/usr/bin/env -i <pairs> <binary>`: the CLI sees
+      // ONLY those pairs, so the tmux `-e` flags do not reach it. Corroborate against the pairs.
+      const envI = tmuxArgs.indexOf('/usr/bin/env');
+      if (envI >= 0 && envI < envEnd && tmuxArgs[envI + 1] === '-i') {
+        env.clear();
+        for (let i = envI + 2; i < envEnd; i++) {
+          const eq = tmuxArgs[i].indexOf('=');
+          if (eq > 0) env.set(tmuxArgs[i].slice(0, eq), tmuxArgs[i].slice(eq + 1));
+        }
+      }
+      const corroborated = applied.every((a) => {
+        if (a.channel === 'env') {
+          const eq = a.value.indexOf('=');
+          return eq > 0 && env.get(a.value.slice(0, eq)) === a.value.slice(eq + 1);
+        }
+        return launchArgv.some((t, i) => i > 0 && (t === a.value || t.endsWith(`=${JSON.stringify(a.value)}`)));
+      });
+      if (binaryAt < 0 || !corroborated) {
+        console.warn('[SessionManager] launch record not written: the final launch did not carry what the builder reported');
+        return tmuxArgs;
+      }
+      const clamp = clampThinkingMode(requestedThinkingMode);
+      sink.launch = boundLaunchRecord({
+        cliVersion: this.cliVersionReader.cached(binaryPath),
+        requested: clamp.mode ? { thinkingMode: clamp.mode } : {},
+        applied: applied.map((a) => ({ ...a })),
+        dropped: dropped.map((d) => ({ ...d })),
+      });
+      if (this.launchBinaries.size >= SessionManager.LAUNCH_BINARIES_MAX) {
+        const oldest = this.launchBinaries.keys().next().value;
+        if (oldest !== undefined) this.launchBinaries.delete(oldest);
+      }
+      const sessionIdFlag = tmuxArgs.find((t) => t.startsWith('INSTAR_SESSION_ID='));
+      if (sessionIdFlag) this.launchBinaries.set(sessionIdFlag.slice('INSTAR_SESSION_ID='.length), binaryPath);
+    } catch (err) {
+      // @silent-fallback-ok — the record is observability; the spawn proceeds without it and the
+      // scheduler's evidence log records the missing launch as an error.
+      console.warn(`[SessionManager] launch record capture failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return tmuxArgs;
+  }
+
+  /**
+   * The CLI version of the binary this session actually launched (the retained copy recorded at
+   * spawn, never the configured path), via the async `--version` probe (job-launch-intent-record
+   * §4). Bounded at ~2 s; 'unknown' when it can't be read or the session has no launch record.
+   * The scheduler calls this after the start row is written and patches only `launch.cliVersion`.
+   */
+  async probeLaunchVersion(session: Pick<Session, 'id'>): Promise<string> {
+    const bin = this.launchBinaries.get(session.id);
+    if (!bin) return CLI_VERSION_UNKNOWN;
+    try {
+      return await this.cliVersionReader.probe(bin);
+    } finally {
+      this.launchBinaries.delete(session.id);
+    }
+  }
+
   resolveLaunchBinary(framework: IntelligenceFramework, binaryPath: string): string {
     if (framework !== 'claude-code') return binaryPath;
     // Native hook events (D4 / Multi-machine posture): re-validate the
@@ -8270,6 +8415,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
+    // Never-Silent Conversation §1.5: a session in a folder its engine home never trusted can stop
+    // at a "trust this folder?" dialog and never answer. Record the agent's own launch folder first,
+    // through the engine's own seeder (adapter table). Under vitest the default home is skipped: it is
+    // the operator's real home.
+    const trustSeeder = PROJECT_TRUST_SEEDERS[framework];
+    if (trustSeeder) {
+      const seeded = trustSeeder(launchSpec.envOverrides, options?.cwd ?? this.config.projectDir, { allowDefaultHome: !process.env.VITEST });
+      if (seeded.result.patched) console.log(`[SessionManager] ${framework}: trusted the launch folder in ${seeded.home}`);
+      else if (seeded.result.reason !== 'already-recorded' && seeded.result.reason !== 'no-home') {
+        console.warn(`[SessionManager] ${framework}: could not record folder trust in ${seeded.home} — ${seeded.result.reason}`);
+      }
+    }
     const memoryScoped = Boolean(memoryPlan?.scopeDir && memoryPlan.settingsPath);
     if (memoryScoped) {
       applyMemorySessionLaunch(launchSpec.argv, memoryPlan!.settingsPath!, memoryPlan!.scopeDir!);

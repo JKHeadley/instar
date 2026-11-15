@@ -1038,6 +1038,9 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Offer-list buttons (docs/specs/recommended-services.md, Offers). Wired by the recommended-services routes. */
   private recommendedOfferHandler: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
   setRecommendedOfferHandler(fn: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.recommendedOfferHandler = fn; }
+  /** Never-Silent Conversation one-tap ask (`ns:m:<24 hex>`). The handler owns the nonce check and idempotency. */
+  private neverSilentAskHandler: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
+  setNeverSilentAskHandler(fn: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.neverSilentAskHandler = fn; }
 
   /** One offer list with its buttons, in the owner's conversation. The message id is the delivery proof the offer ledger records. */
   async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
@@ -1934,6 +1937,8 @@ export class TelegramAdapter implements MessagingAdapter {
        *  topic. Writes no outbound history row (the inbound row already exists) and
        *  touches neither stall nor promise tracking. */
       operatorMirror?: boolean;
+      /** One row of inline buttons (never-silent-conversation: the one-tap "Move to Codex" ask). */
+      inlineButtons?: Array<{ text: string; data: string }>;
     },
   ): Promise<SendResult> {
     // NOT the chokepoint, and this comment is the correction of a claim that stood here.
@@ -1958,6 +1963,9 @@ export class TelegramAdapter implements MessagingAdapter {
       chat_id: this.config.chatId,
       text,
     };
+    if (options?.inlineButtons?.length) {
+      params.reply_markup = { inline_keyboard: [options.inlineButtons.map((b) => ({ text: b.text, callback_data: b.data }))] };
+    }
     if (!isGeneralTopic(topicId)) {
       params.message_thread_id = topicId;
     }
@@ -2463,7 +2471,32 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
+  /** sendOwnerDMWithButton with `reportHeld`: a send that may still land (kept for retry, or its outcome unknown) answers this instead of null. */
+  static readonly OWNER_DM_HELD = -1;
+  /**
+   * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
+   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
+   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
+   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   */
+  static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
+    'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
+    'credential-capacity-unavailable',
+  ]);
+
+  /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */
+  static ownerDMOutcome(err: unknown): number | null {
+    if (!(err instanceof TelegramOriginHoldError)) return null;
+    // Telegram took it; only our own record of it is missing.
+    if (err.outcome === 'accepted-unrecorded') { const id = Number(err.delivered?.messageId); return Number.isFinite(id) && id > 0 ? id : TelegramAdapter.OWNER_DM_HELD; }
+    // Telegram may already have it: the owner can be holding live buttons.
+    if (err.outcome === 'outcome-unknown') return TelegramAdapter.OWNER_DM_HELD;
+    if (err.outcome === 'held' && err.operationId && TelegramAdapter.OWNER_DM_RETRIED_HOLDS.includes(err.reason)) return TelegramAdapter.OWNER_DM_HELD;
+    return null;
+  }
+
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
+    opts?: { reportHeld?: boolean }): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
@@ -2487,6 +2520,8 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
       console.warn(`[telegram] sendOwnerDMWithButton failed: ${err instanceof Error ? err.message : String(err)}`);
+      // A held send is kept and retried by the origin store and may still land; a caller that asked can wait for it.
+      if (opts?.reportHeld) return TelegramAdapter.ownerDMOutcome(err);
       return null;
     }
   }
@@ -6956,6 +6991,20 @@ export class TelegramAdapter implements MessagingAdapter {
     // `rs:n:` is S-class (a no: less action, undoable on the confirm page, bounded per hour by the handler),
     // so anyone in the owner's conversation may tap it. `rs:y:` is P-class and owner-only; the handler also
     // limits it to address services. The nonce is single-use on the handler's side.
+    // ── Never-Silent one-tap ask (docs/specs/never-silent-conversation.md, Frontloaded Decision 2).
+    // P-class (it moves the conversation to another engine): owner-only, judged by the handler.
+    if (query.data.startsWith('ns:')) {
+      const approver = this.getConfiguredApprover();
+      const fromIsOwner = approver !== undefined && query.from.id === approver;
+      let statusText = 'That button is no longer active.';
+      if (this.neverSilentAskHandler) {
+        try { statusText = await this.neverSilentAskHandler({ data: query.data, fromIsOwner }); }
+        catch { statusText = "Couldn't take that. It stays where it is and I'll tell you here when it's fixed."; }
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: statusText, show_alert: statusText.length > 60 }).catch(() => {});
+      return;
+    }
+
     if (query.data.startsWith('rs:')) {
       const m = /^rs:([ny]):([0-9a-f]{32})$/.exec(query.data);
       if (!m) {
