@@ -54,3 +54,7 @@ Revert the commit; no state, no migration.
 ## Conclusion
 
 Ratchet answers with real handling, no baseline raised.
+
+## Framework-name baseline (2026-11-14)
+
+Main gained a framework-id ratchet. This slice moved two framework-id literals from src/server/routes.ts into the new src/core/sessionTranscriptPull.ts; scripts/framework-name-ratchet-baseline.json now follows (routes.ts 14 -> 12, sessionTranscriptPull.ts 0 -> 2), total unchanged at 1135. No code change.

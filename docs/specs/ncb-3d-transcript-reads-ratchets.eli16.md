@@ -7,3 +7,5 @@ The first check makes sure that when the server answers a request with an error 
 The second check counts error-catching spots that quietly carry on as if nothing went wrong. Two new spots were counted. One is not quiet at all: it always answers the caller with an error; the checker only counted it because a nearby comment used the word "fallback". The other skips a half-written last line of a transcript file while reading it backwards, which is the right thing to do and matches how the same file is already read forwards. Both are now marked with the reason.
 
 Neither check's limit was raised. Nothing else changes for users.
+
+**Update (2026-11-14):** the count of hard-coded engine names now follows two names that moved into a new file. Nothing behaves differently.

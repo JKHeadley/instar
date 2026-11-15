@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "ncb-3d-transcript-reads-ratchets",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-15T01:57:43.639Z",
+  "artifactPath": "upgrades/side-effects/ncb-3d-transcript-reads-ratchets.md",
+  "artifactSha256": "507f4e22da8730330d44f49070dc8a70a6fac194fa5423e3cb2ca91b5a4d7edf",
+  "coveredFiles": [
+    "docs/specs/ncb-3d-transcript-reads-ratchets.eli16.md",
+    "scripts/framework-name-ratchet-baseline.json",
+    "upgrades/side-effects/ncb-3d-transcript-reads-ratchets.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Baseline bookkeeping for two moved literals; total unchanged; no code change.",
+  "eli16Path": "docs/specs/ncb-3d-transcript-reads-ratchets.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ncb-3d-transcript-reads-ratchets.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
