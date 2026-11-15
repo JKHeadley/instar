@@ -935,6 +935,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-raised); color: inherit; font: inherit; }
 .pref-card:hover { border-color: var(--accent); }
 .pref-quote { font-size: 15.5px; font-weight: 600; line-height: 1.4; color: var(--text-strong); text-wrap: pretty; overflow-wrap: anywhere; }
+.pref-new { align-self: flex-start; height: 22px; color: var(--accent); border-color: var(--accent); }
 .learned-change { margin-top: var(--s-2); }
 
 /* ── Files (people-settings.md: Files) ────────────────────────────────────── */

@@ -1533,6 +1533,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       enabled: ctx.config.monitoring?.correctionLearning?.enabled === true,
       endpoints: [
         'GET /preferences/session-context — structured block of active learned preferences (503 when disabled; { present:false } when none)',
+        'GET /preferences — every learned preference as dated entries ({ entries:[{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }], total, truncated, scope }; credential-scrubbed; 503 when disabled)',
         'GET /corrections — list distilled, scrubbed correction/preference records (toApiView strips raw text; pagination: ?limit, ?before=<ISO> keyset cursor, ?since=<ISO> lower-bound, ?kind, ?status)',
         'GET /corrections/:id — one record (scrubbed_summary + metadata only)',
         'POST /corrections — agent-diagnosed one-tap (requires X-Instar-Request: 1)',
