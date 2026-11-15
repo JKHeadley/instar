@@ -240,7 +240,7 @@ import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { MachineEvidenceStore } from '../core/MachineEvidenceStore.js';
 import { AttentionConditionStore, baseKeyOfItemId } from '../core/AttentionConditionStore.js';
-import { resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
+import { clearRecoveredReloginAttention, resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
 import { SubscriptionReloginApprovalReminder, DEFAULT_APPROVAL_REMINDER_HOURS, waitingSinceMs, approvalReminderSummary } from '../core/SubscriptionReloginApprovalReminder.js';
 import { createOperatorLinkOriginResolver, PublicLinkPendingError } from '../server/dashboardPaths.js';
 import { DEFAULT_SLOW_RETRY, outsideQuietHours } from '../core/SubscriptionReloginService.js';
@@ -18211,7 +18211,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               getEpisode: (id) => subscriptionReloginRuntime?.store.get(id) ?? null,
               listEpisodes: (accountId) => subscriptionReloginRuntime?.store.list({ accountId, limit: 50 }) ?? [],
               localMachineId: subscriptionPoolMachineId,
-              localCellHealthy: (accountId) => subscriptionPool.get(accountId)?.status === 'active',
+              // Verified, not just labelled: pool active + matching identity + a live login check.
+              localCellHealthy: (accountId) => (subscriptionPoolMachineId
+                ? subscriptionReloginRuntime?.cellVerifiedHealthy(accountId, subscriptionPoolMachineId) ?? false : false),
             }));
         }
         subscriptionReloginRuntime = createSubscriptionReloginRuntime({ stateDir: config.stateDir,
@@ -18287,6 +18289,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
           onPhoneTap: notify ? (episode, key) => notify(episode, key, 'phone-tap') : undefined,
+          // A failed/refused repair whose account is verified signed in again closes its own
+          // attention row (Self-Heal Before Notify) instead of waiting for a hand clear.
+          onConditionCleared: telegram ? (episode) => {
+            const closed = clearRecoveredReloginAttention(episode, (match, resolution) => telegram!.clearAttentionCondition(match, resolution));
+            if (closed > 0) console.log(`[subscription-relogin] ${episode.accountId}: signed in again (verified) — closed ${closed} attention row(s)`);
+          } : undefined,
           allowedScopes: reloginCfg.allowedScopes ?? [], tickMs: reloginCfg.tickMs,
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
