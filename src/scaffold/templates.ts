@@ -18,7 +18,7 @@ import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
 import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.js";
-import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from "../scheduler/InstallBuiltinJobs.js";
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS } from "../scheduler/InstallBuiltinJobs.js";
 import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js';
 
 // The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
@@ -27,13 +27,14 @@ import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js'
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
 import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, SLACK_MENTIONS_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION, USAGE_LEDGER_CLAUDEMD_SECTION, TELEGRAM_FILES_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
-import { ATTRIBUTION_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { ATTRIBUTION_CLAUDEMD_SECTION, ASK_LINKS_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { QUIET_NOTIFICATIONS_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { RECOMMENDED_SERVICES_CLAUDEMD_SECTION, EMAIL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { POOL_MOVE_NUDGE_CLAUDE_MD_LINE, POOL_READINESS_CLAUDE_MD_LINE, RESOURCE_PLACEMENT_CLAUDE_MD_LINE } from '../core/PostUpdateMigrator.js';
 import { CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET } from '../core/PostUpdateMigrator.js';
 import { UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE } from '../core/PostUpdateMigrator.js';
+import { defaultRegistry, type AwarenessRegistry } from '../awareness/registry.js';
 
 export interface AgentIdentity {
   name: string;
@@ -299,6 +300,7 @@ export function generateClaudeMd(
   hasTelegram: boolean,
   hasWhatsApp: boolean = false,
   hasIMessage: boolean = false,
+  awarenessRegistry: AwarenessRegistry = defaultRegistry(),
 ): string {
   let content = `# CLAUDE.md — ${projectName}
 
@@ -443,7 +445,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 ${jobCoverageGuide(port).capability}
 ${jobTransferGuide(port).capability}
 - **Enabling/disabling a BUILT-IN job — edit \`.instar/jobs/schedule/<slug>.json\`, NOT the \`.md\`.** The \`enabled:\` line in \`.instar/jobs/instar/<slug>.md\` looks authoritative and is NOT: built-in job markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as built-in hooks), so an edit there is silently reverted at the next update — the file shows your new value until then, which is the worst kind of wrong. The DURABLE setting is \`enabled\` in \`.instar/jobs/schedule/<slug>.json\`, which the installer explicitly PRESERVES across regeneration and which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change applies at the next restart — on a machine with a configured restart window, that means the window, not immediately. Custom jobs under \`jobs/user/\` are never touched by any of this.
-${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
+${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}${JOB_THINKING_MODE_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
 
 **Sessions** — Spawn and manage Claude Code sessions.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
@@ -1945,6 +1947,8 @@ Your messages to the user pass an always-on LLM gate (the tone gate) before they
 
 ${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}
 
+${ASK_LINKS_CLAUDEMD_SECTION}
+
 ${SURFACE_REFERRAL_CLAUDEMD_SECTION}
 
 ${ATTRIBUTION_CLAUDEMD_SECTION.replace(/\$\{port\}/g, String(port))}
@@ -2395,7 +2399,9 @@ Rule: I do not state that work landed inside another agent's state unless I have
 
   content += recoveryAwareness(port);
   content += directJobSupervisionQualityAwareness(port);
-  return content;
+  // LAST STEP (docs/specs/awareness-entry-registry.md): the feature notes read from
+  // src/data/awareness/. New awareness text goes there as one file, not above.
+  return awarenessRegistry.withRegistry(content, { port, hasTelegram }, { markers: true }).content;
 }
 
 /** Shared by new installs and the update migration. */

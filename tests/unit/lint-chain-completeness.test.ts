@@ -43,6 +43,7 @@ const REQUIRED_LINTS = [
   // the inverse check caught that I had not, which is the ratchet working on
   // the author who wrote the previous entry's note about exactly this.
   'lint-framework-list-completeness.mjs',
+  'lint-framework-name-ratchet.mjs',
   // 2026-09-21 (wedge-sentinel-undefined-tick): refuses `{ ...DEFAULTS, ...cfg }`
   // merges that let an undefined value erase a default — the mechanism behind
   // ContextWedgeSentinel's ~1ms scan loop. Registered in the same change.
@@ -90,6 +91,8 @@ const REQUIRED_LINTS = [
   'lint-migration-consumer-completeness.js',
   'lint-ecosystem-adoption.mjs',
   'lint-plain-user-notices.mjs',
+  // Advisory (always exits 0): names awareness text added the old way instead of as a file in src/data/awareness/.
+  'lint-awareness-entry-registry.mjs',
   'lint-model-registry-freshness.mjs',
   'lint-nature-chains.mjs',
   'lint-no-blocking-process-scans.js',
