@@ -92,6 +92,38 @@ describe('/subscription-pool enrollment — E2E feature-alive', () => {
     expect(body.logins[0].reissueCount).toBe(1);
   });
 
+  it('LIVE: after a restart, a Claude follow-me login whose account already works leaves the Pending Logins surface (G10)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-e2e-signedin-'));
+    const slot = path.join(dir, '.claude-followme-sagemind-justin');
+    // A follow-me re-auth login persisted by a previous boot.
+    const store1 = new PendingLoginStore({ stateDir: dir });
+    store1.issue({
+      id: 'sagemind-justin', label: 'sagemind-justin', provider: 'anthropic', framework: 'claude-code',
+      kind: 'url-code-paste', configHome: slot, verificationUrl: 'https://claude.com/oauth',
+      expectedEmail: 'justin@sagemindai.io',
+    });
+
+    // Production boot: fresh store + wizard over the same state dir, restart
+    // recovery with the pool-upsert deps, slot answers as the expected account.
+    const store2 = new PendingLoginStore({ stateDir: dir });
+    let drives = 0;
+    const wizard2 = new EnrollmentWizard({
+      store: store2,
+      driveLogin: async () => { drives++; return ART; },
+      oracle: { resolveSlotTenant: async () => ({ email: 'justin@sagemindai.io' }) } as never,
+      ensureReady: () => ({ patched: false, reason: 'already interactive-ready' }),
+    });
+    await wizard2.recoverAfterRestart({ accountIsHealthy: (login) => login.id === 'sagemind-justin' });
+    server = await bootApp({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), enrollmentWizard: wizard2 });
+    const res = await fetch(server.url + '/subscription-pool/pending-logins');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.logins).toEqual([]);
+    expect(drives).toBe(0);
+    // Durable: a third boot reads it as completed, not pending.
+    expect(new PendingLoginStore({ stateDir: dir }).get('sagemind-justin')!.status).toBe('completed');
+  });
+
   it('FEATURE ALIVE: completing a claude-code enrollment leaves its config home interactive-ready (2026-06-09 incident)', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-e2e-ready-'));
     // The home exactly as headless `claude auth login` leaves it: an
