@@ -66,6 +66,8 @@ import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsS
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER } from '../messaging/telegram-origin/OriginAwareness.js';
+import { signedPoolReadsAwareness, SIGNED_POOL_READS_AWARENESS_MARKER } from './poolSignedReads.js';
+import { transcriptCopiesAwareness, TRANSCRIPT_COPIES_AWARENESS_MARKER } from './transcriptCheckpoints.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
@@ -139,6 +141,8 @@ import {
   THREADLINE_PAIR_TOOL_MARKER,
   SOMEONE_ELSES_WORK_TRAP,
   SOMEONE_ELSES_WORK_TRAP_MARKER,
+  APPROVAL_NOT_CHORE_TRAP,
+  APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
 import { generateClaudeMd } from '../scaffold/templates.js';
 import {
@@ -448,6 +452,7 @@ const CLEAR_SEED_PY = [
   '    pass',
 ].join('\n');
 
+export const MACHINE_MEMORY_CARE_CLAUDE_MD_LINE = `- **Machine memory care (swap counts):** a machine's \`loadReport\` in \`GET /pool\` now carries \`swapUsedBytes\`, \`swapActive\` (paging out since the last sample) and \`memoryPressured\` (its own 2-of-3 memory reading). Swap in use above 10% of memory, with live evidence (paging out at 1 MB/s or more, under 15% memory available, or OS pressure), counts as memory pressure; 25% or more while still paging makes the machine \`impaired\`. Free memory alone never says "fine" while the machine is swapping. On an instar source agent, Local Verify keeps a memory-pressured machine out of the test line by itself (the coordinator stops starting its own tests but still hands work to healthy peers; a peer refuses hand-offs), raises one attention item per episode (\`local-verify:memory-pressure:<machineId>\`), and resumes when memory recovers. Every verify run also ends the test processes it left behind, and a 10-minute backstop clears older ones (audit \`leftovers-reaped\` in \`logs/local-verify.jsonl\`). When the user asks "is this machine OK?" → quote \`memoryPressured\` and the swap figures from \`GET /pool\`, never the free-memory number alone.`;
 export const RESOURCE_PLACEMENT_CLAUDE_MD_LINE = `- **Resource-aware placement (heavy work goes to big machines with room):** placement compares machines by per-core load from FRESH evidence (a load number older than a minute does not count, and a machine with none never wins by default). A machine counts as big enough for heavy work (builds, full test runs, simulators) at 12+ cores and 32+ GB; heavy work goes only to such a machine with headroom right now (fresh verdict not saturated/impaired, under 1.0 load per core including heavy helpers it just accepted), otherwise it waits with a named reason. Local Verify peer hand-offs follow the same rule, so a small machine like a Mac Mini no longer receives full verifies. A job can declare \`workWeight: "heavy"\`; it then skips a machine below that size while another online big machine exists (the job-silence alert explains it). Per machine, \`multiMachine.placement.heavyWork\`: \`allow\` lifts the size rule for that machine, \`deny\` keeps heavy work off it (\`auto\` = by size); it is advertised in that machine's load report. **Before running heavy helper work in an in-session subagent** (a subagent always runs on THIS machine), read \`GET /pool/placement/preview?workWeight=heavy\` (read-only: the choice and one row per machine with size, fresh per-core load, headroom and why). If it picks another machine, or this one has no headroom, start a headless helper instead: \`POST /pool/heavy-work/spawn\` with header \`X-Instar-Request: 1\` and \`{ "name": "...", "prompt": "..." }\` — it picks the machine and starts the helper there through that machine's own \`/sessions/spawn\`. The helper works in THAT machine's agent home: its prompt must fetch its inputs from a shared source (a pushed git branch into a fresh worktree there) and return results through a shared channel (a pushed branch or PR, or a message to my session). Outcomes: 201 started; 409 \`heavy-work-no-machine\` (nothing big enough has room: wait, or run locally only if the preview shows this machine has headroom); 502 \`target-refused\`; 504 \`target-unconfirmed\` — never retry it: read that machine's sessions, finished ones included (\`GET /sessions\` with \`scope=pool\` and \`include=all\`), and check the work's shared results and side effects before ever starting it again.`;
 export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
 
@@ -1971,6 +1976,21 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 - **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
 - Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
 - Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
+/**
+ * The Never-Silent Conversation section, one definition for fresh agents and updated ones.
+ * Sniff key for the migrator: `/never-silent/incidents`. Spec: docs/specs/never-silent-conversation.md
+ */
+export function NEVER_SILENT_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Never-silent conversations
+
+A message someone sends to a conversation ends in exactly one of two things: a reply from me, or a plain message from Instar in that conversation saying what went wrong and what is being done. Each inbound message is recorded until it is answered; one that is still unanswered after about two minutes is looked at by a judge that runs on a DIFFERENT engine from the stuck one (Jev first, then a Codex or Claude referee), from the screen since the message, the engine's own login check and the account list. Instar then tells the person, from fixed wording, even when the judge is down. When actions are on, an expired login moves the conversation to another signed-in account or to the other engine and re-delivers the waiting message; a conversation the operator set to an engine is asked first, with one "Move to …" button, and is never moved without that tap. A Codex session also starts with its own folder already trusted, so it cannot stall at "Trust this folder?".
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/never-silent/incidents\` (\`?open=1\` for what is waiting now): each conversation's waiting messages, the judged reason, the action and every notice sent. 503 = off on this agent (\`monitoring.neverSilent.enabled\`; on for development agents). Log: \`logs/never-silent.jsonl\`.
+- **When to use** (PROACTIVE): someone asks "why did that conversation go quiet?", "why didn't you answer?", or says a reply never came → read \`/never-silent/incidents\` first and answer from it in plain words.
+- Actions that change anything (\`monitoring.neverSilent.actions\`, \`.frameworkFallback\`) are off until the judge has been measured against real screens; with them off, Instar still tells the person the reason.
 `;
 }
 
@@ -9654,6 +9674,20 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the "Someone Else\'s Work" gravity well');
     }
+    // Gravity well "Your Turn to Do It" (topic 10000002731): an approval handed
+    // over as a chore. Inserted after the "Someone Else's Work" trap (always
+    // present by now), else appended. Idempotent by the marker sniff.
+    if (!content.includes(APPROVAL_NOT_CHORE_TRAP_MARKER)) {
+      const at = content.indexOf(SOMEONE_ELSES_WORK_TRAP);
+      if (at >= 0) {
+        const end = at + SOMEONE_ELSES_WORK_TRAP.length;
+        content = `${content.slice(0, end)}\n\n${APPROVAL_NOT_CHORE_TRAP}${content.slice(end)}`;
+      } else {
+        content += `\n\n${APPROVAL_NOT_CHORE_TRAP}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the "Your Turn to Do It" gravity well');
+    }
     if (!content.includes('### Quiet by Default notifications')) {
       content = content.replace(/^\*\*🩺 Agent Health lane[^\n]*\n/m, '');
       content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
@@ -10100,6 +10134,20 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + telegramOriginBrowserDriftAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Telegram Web K drift and reviewed re-enrollment awareness');
+    }
+
+    // native-conversation-any-machine-access §3d — reading another machine's sessions needs no shared token.
+    if (!content.includes(SIGNED_POOL_READS_AWARENESS_MARKER)) {
+      content += '\n' + signedPoolReadsAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added signed pool reads awareness');
+    }
+
+    // native-conversation-any-machine-access §3f — transcript copies on every machine (dark by default).
+    if (!content.includes(TRANSCRIPT_COPIES_AWARENESS_MARKER)) {
+      content += '\n' + transcriptCopiesAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added transcript copies awareness');
     }
 
     if (!content.includes('Held reply outcome:')) {
@@ -12308,6 +12356,15 @@ Rule: I do not state that work landed inside another agent's state unless I have
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
       }
+      // A failed repair whose account is verified signed in again closes its own row (relogin self-heal).
+      const recoveredSentence = 'A failure whose account is then verified signed in again (pool active, matching identity, a live login check of ok: by a later repair, by hand, or by the provider) sends no failure notice and closes its own attention row with the resolution "signed in again (verified on this machine)"; the user asks "why did that sign-in alert disappear?" → this.';
+      const slowRetryEndForRecovered = 'When the user asks "why did that repair start again by itself?" \u2192 this.';
+      if (content.includes(slowRetryEndForRecovered) && !content.includes('why did that sign-in alert disappear?')) {
+        // Inserted BEFORE the bullet's closing sentence, which other migrations use as their anchor.
+        content = content.replace(slowRetryEndForRecovered, recoveredSentence + ' ' + slowRetryEndForRecovered);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+      }
       // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
       const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
       if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
@@ -14136,6 +14193,14 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
     // that carry the pool section learn heavy-work placement, the read-only preview and the
     // placed-helper route. Idempotent via the unique 'Resource-aware placement (heavy work'
     // marker (deliberately not containing '/pool/placement', an older migration's marker).
+    // Machine memory care (2026-11-14, docs/specs/machine-memory-care.md): agents that carry
+    // the pool section learn that swap now counts and where to read it. Idempotent via the
+    // unique 'Machine memory care (swap counts' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Machine memory care (swap counts')) {
+      content += '\n' + MACHINE_MEMORY_CARE_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added machine memory care line');
+    }
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Resource-aware placement (heavy work')) {
       content += '\n' + RESOURCE_PLACEMENT_CLAUDE_MD_LINE + '\n';
       patched = true;
@@ -14550,6 +14615,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
     } else {
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
+    // Never-Silent Conversation (never-silent-conversation spec). Idempotent via the route path.
+    if (!content.includes('/never-silent/incidents')) {
+      content += '\n' + NEVER_SILENT_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-silent conversations section');
+    } else {
+      result.skipped.push('CLAUDE.md: never-silent conversations section already present');
     }
 
     // Disk Steward (disk-steward spec). Idempotent via content-sniffing on the route path.
@@ -17319,6 +17393,10 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
       // the disk?" and "clear disk on <machine>" from the same section.
       '## Disk Steward',
+      // never-silent-conversation: the watcher, its incidents route and the notices are
+      // server-side and framework-neutral; a Codex session answering "why did that go
+      // quiet?" must find the same section.
+      '## Never-silent conversations',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
@@ -17415,6 +17493,8 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [SIGNED_POOL_READS_AWARENESS_MARKER, () => signedPoolReadsAwareness(this.config.port ?? 4040)],
+        [TRANSCRIPT_COPIES_AWARENESS_MARKER, () => transcriptCopiesAwareness(this.config.port ?? 4040)],
         [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         [HELD_REPLY_LATE_AWARENESS_MARKER, telegramOriginHeldLateAwareness],

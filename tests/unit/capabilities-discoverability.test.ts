@@ -43,6 +43,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/usherRoutes.ts',
   'src/server/queuePaceRoutes.ts',
   'src/server/maturationLadderRoutes.ts',
+  'src/server/neverSilentRoutes.ts',
   'src/server/mobilePairingRoutes.ts',
   'src/server/mobileConversationRoutes.ts',
   'src/server/ecosystemIdeaRoutes.ts',

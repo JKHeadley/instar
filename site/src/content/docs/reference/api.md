@@ -380,6 +380,17 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
 - `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
 
+## /authorization-requests
+
+Operator authorization requests: an agent proposes a time-boxed floor-action grant for a registered Slack user; nothing is granted until the operator approves with the PIN. See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `POST /authorization-requests` — propose a grant (inert until approved)
+- `GET /authorization-requests` — list requests (`?status=`), each with its server-written card
+- `GET /authorization-requests/:id` — one request
+- `POST /authorization-requests/:id/approve` — PIN-gated approval; issues the signed grant mandate
+- `POST /authorization-requests/:id/deny` — PIN-gated decline (`denyReason` required)
+- `POST /authorization-requests/:id/withdraw` — the proposing agent withdraws its pending request
+
 ## /autonomous
 - `POST /autonomous/register` — server-side start snapshot for an autonomous run (scope-accretion R30): the server mints the runId, snapshots the `scopeAccretion` config + sweep base-root start-SHAs, and clamps `endAt` to `now + maxDurationMs`. One registration per active run (409 while the existing record is active).
 - `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
@@ -421,6 +432,18 @@ These authenticated endpoints manage the bounded, per-topic Codex checklist. The
 - `GET /backups`
 - `POST /backups`
 - `POST /backups/:id/restore`
+
+## /blockers
+
+Blocker Ledger and Self-Unblock checklist runs (signal-only; 503 while the ledger is off; writes need `X-Instar-Request: 1`). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /blockers` — list entries (`?limit`, `?offset`, `?includeArchived=1`)
+- `GET /blockers/:id` — one entry with its history and evidence
+- `POST /blockers` — open an entry (`detectedText`, `origin`)
+- `POST /blockers/:id/advance` — move one pipeline step with that step's evidence
+- `POST /blockers/:id/settle` — settle as `resolved` or `true-blocker`
+- `POST /blockers/self-unblock-run` — run the Self-Unblock checklist against a `service:scope` target and store the run
+- `GET /blockers/self-unblock-runs` — recent checklist runs with per-probe results
 
 ## /build
 - `POST /build/heartbeat`
@@ -539,6 +562,14 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /evolution/learnings`
 - `POST /evolution/proposals`
 
+## /failures
+
+Failure-Learning Loop reads (503 while failure learning is off). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /failures/analysis` — ledger analysis plus the rollout stage (`?sinceDays=`)
+- `GET /failures/insights` — analyzer insights (`?status`, `?before`, `?limit`)
+- `GET /failures/:id` — one failure record
+
 ## /features
 - `DELETE /features/discovery-data`
 - `GET /features`
@@ -573,6 +604,17 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /flows/:flowId/resume`
 - `POST /flows/:flowId/start-step`
 - `POST /flows/:flowId/wait`
+
+## /framework-issues
+
+The framework-issue ledger from framework onboarding (observability only, never gates). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /framework-issues` — list issues (`?framework`, `?bucket`, `?status`, `?limit`)
+- `GET /framework-issues/playbook` — carry-over lessons for `?targetFramework=`
+- `GET /framework-issues/capture-stats` — mentor runs against observations written
+- `GET /framework-issues/observability` — bucket spread, leak and loop counts
+- `POST /framework-issues/observe` — record an engineering-discovered issue
+- `POST /framework-issues/:id/promote` — change playbook status (`extracted` needs a non-Echo attester)
 
 ## /git
 - `GET /git/log`

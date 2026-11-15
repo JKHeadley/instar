@@ -99,6 +99,11 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(typeof seams.installedVerifierVersion).toBe('function');
     expect(seams.installedVerifierVersion!()).toBe(computeVerifierVersion(path.dirname(DIST_ENTRY), undefined, { protectedList: PROTECTED_PATH_PREFIXES }));
     expect(seams.installedVerifierVersion!()).toMatch(/^vh\d+:[0-9a-f]{32}$/);
+    // Machine memory care wiring integrity: without explicit deps a test-built service never
+    // signals the test host; memory reads are live; the temp root is the verifier's real one.
+    expect(seams.reapLeftovers).toBeUndefined();
+    expect(seams.selfMemoryPressure!()).toBeNull();
+    expect(seams.tempRoot!()).toBe(fs.realpathSync(fs.existsSync('/tmp') ? '/tmp' : os.tmpdir()));
     await built.service!.boot();
     // The production server calls this same wiring after peer wiring. The default
     // remains dark, but the read surface and installed child entry must be alive.
@@ -169,6 +174,38 @@ describe('local-verify lifecycle (production wiring)', () => {
       mainHealth: { state: 'healthy', mainHeadSha: base },
     })).toMatchObject({ state: 'failure', reason: 'verify-failed' });
     svc.shutdown();
+  });
+
+  it('machine memory care: production wiring sweeps through the real reaper and reads memory live', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const sent: Array<[number, string]> = [];
+    let memory: string | null = null;
+    const runs = `${home}/.worktrees/.verify/runs/`;
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+      selfMemoryPressure: () => memory,
+      // A fake process table (never the test host's): one orphaned stopped worker in a run worktree,
+      // one agent session whose prompt names that path but still has its parent.
+      reapDeps: {
+        listProcesses: async () => `  4242     1   ${uid} T 18-00:00:00 node ${runs}abc/node_modules/vitest/w.js\n  4243  4000   ${uid} S 01:00:00 claude -p "look at ${runs}abc"\n`,
+        listTmuxSockets: async () => '',
+        kill: (pid, sig) => { sent.push([pid, sig]); },
+        selfPid: process.pid,
+        uid,
+      },
+    });
+    expect(built.service).not.toBeNull();
+    const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    memory = 'only 3% of memory available';
+    expect(seams.selfMemoryPressure!()).toBe('only 3% of memory available');
+    memory = null;
+    await built.service!.boot(); // the boot sweep runs through the real reapLeftovers
+    expect(sent).toEqual([[4242, 'SIGCONT'], [4242, 'SIGKILL']]);
+    const audit = fs.readFileSync(path.join(stateDir, 'logs', 'local-verify.jsonl'), 'utf-8');
+    expect(audit).toContain('"event":"leftovers-reaped"');
+    built.service!.shutdown();
   });
 
   it('production wiring publishes and clears a real host priority claim', async () => {

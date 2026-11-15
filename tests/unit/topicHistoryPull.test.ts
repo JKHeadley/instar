@@ -72,3 +72,79 @@ describe('pullMovedTopicHistory', () => {
     expect(res.messages.map((m) => m.text)).toEqual(['good']);
   });
 });
+
+// native-conversation-any-machine-access §3d item 4: the pool shape.
+import { createTopicHistoryPoolHandler, TOPIC_HISTORY_POOL_MAX_MESSAGES, type TopicHistoryPoolResponse } from '../../src/core/topicHistoryPull.js';
+import { bearerFallbackPermitted } from '../../src/core/poolSignedReads.js';
+
+describe('topic-history-pull, shape: pool', () => {
+  const TOKEN = 'tok-0123456789abcdef-secret';
+  const clean = (s: string) => s.split(TOKEN).join('[redacted]');
+  const poolRow = (i: number, text = `row ${i}`) => ({
+    messageId: 100 + i, eventId: `ev-${i}`, fromUser: i % 2 === 0, text, timestamp: new Date(Date.UTC(2026, 10, 11, 0, 0, i)).toISOString(),
+    provenance: { kind: 'test' }, origin: { recorded: true },
+  });
+  type Ok = Extract<TopicHistoryPoolResponse, { ok: true }>;
+  const ok = async (p: Promise<TopicHistoryPoolResponse>): Promise<Ok> => { const r = await p; if (!r.ok) throw new Error(JSON.stringify(r)); return r; };
+
+  it('echoes the shape, keeps whole rows with their ids, provenance and origin, and passes the cursor through', async () => {
+    const seen: unknown[] = [];
+    const h = createTopicHistoryPoolHandler({ clean, readPool: async (q) => { seen.push(q); return [poolRow(1, 'x'.repeat(5000))]; } });
+    const r = await ok(h({ topic: 5, limit: 500, before: 1_700_000_000_000, beforeMessageId: 9 }));
+    expect(r.shape).toBe('pool');
+    expect(r.messages[0]).toMatchObject({ messageId: 101, eventId: 'ev-1', provenance: { kind: 'test' }, origin: { recorded: true } });
+    expect((r.messages[0].text as string).length).toBe(5000);
+    expect(seen).toEqual([{ topic: 5, limit: TOPIC_HISTORY_POOL_MAX_MESSAGES, before: 1_700_000_000_000, beforeMessageId: 9 }]);
+    expect(await h({ topic: 5, beforeMessageId: 9 })).toEqual({ ok: false, reason: 'malformed', shape: 'pool' });
+    expect(await createTopicHistoryPoolHandler({ clean, readPool: null })({ topic: 5 })).toEqual({ ok: false, reason: 'no-telegram', shape: 'pool' });
+  });
+
+  it('a capped answer keeps the newest rows and returns truncated with the oldest cursor', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => poolRow(i, 'r'.repeat(400)));
+    const r = await ok(createTopicHistoryPoolHandler({ clean, maxBytes: 10_000, readPool: async () => rows })({ topic: 5 }));
+    expect(r.truncated).toBe(true);
+    expect(r.messages[r.messages.length - 1].eventId).toBe('ev-49');
+    expect(r.oldest).toEqual({ before: Date.parse(String(r.messages[0].timestamp)), beforeMessageId: r.messages[0].messageId });
+    expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThanOrEqual(10_000);
+  });
+
+  it('one row larger than the cap between two ordinary rows is returned alone with rowTruncated; its continuation reads the rest byte for byte on UTF-8 boundaries; a token across the cut is in neither piece; paging with before reaches the older row without the remainder', async () => {
+    const big = `${'漢é'.repeat(2000)}${TOKEN}${'ü'.repeat(3000)}`;
+    const all = [poolRow(1, 'older'), poolRow(2, big), poolRow(3, 'newer')];
+    // A minimal history store: rows strictly before the cursor, oldest first.
+    const readPool = async (q: { limit: number; before?: number }) => all.filter((m) => q.before === undefined || Date.parse(m.timestamp) < q.before).slice(-q.limit);
+    const maxBytes = 8 * 1024 + 3000;
+    const h = createTopicHistoryPoolHandler({ clean, maxBytes, readPool });
+    const p1 = await ok(h({ topic: 5, limit: 2 }));
+    expect(p1.messages.map((m) => m.text)).toEqual(['newer']);
+    const p2 = await ok(h({ topic: 5, ...p1.oldest }));
+    expect(p2.messages).toHaveLength(1);
+    const marker = p2.rowTruncated!;
+    expect(marker.row).toBe('ev-2');
+    expect(marker.from).toBe(0);
+    const redacted = clean(big);
+    expect(marker.totalBytes).toBe(Buffer.byteLength(redacted));
+    const pieces = [p2.messages[0].text as string];
+    let to = marker.to;
+    for (let g = 0; to < marker.totalBytes && g < 50; g++) {
+      const c = await ok(h({ topic: 5, ...p1.oldest, row: 'ev-2', byteFrom: to }));
+      expect(c.rowTruncated!.from).toBe(to);
+      expect(c.messages[0].text).not.toContain('�');
+      pieces.push(c.messages[0].text as string);
+      to = c.rowTruncated!.to;
+    }
+    expect(pieces.length).toBeGreaterThan(1);
+    expect(pieces.join('')).toBe(redacted);
+    for (const p of pieces) expect(p).not.toContain(TOKEN.slice(0, 12));
+    const p3 = await ok(h({ topic: 5, ...p2.oldest }));
+    expect(p3.messages.map((m) => m.text)).toEqual(['older']);
+    expect(await h({ topic: 5, ...p1.oldest, row: 'ev-2', byteFrom: 1 })).toEqual({ ok: false, reason: 'bad-byte-range', shape: 'pool' });
+    expect(await h({ topic: 5, ...p1.oldest, row: 'ev-99' })).toEqual({ ok: false, reason: 'row-gone', shape: 'pool' });
+  });
+
+  it('an older peer: a default-shape answer (no shape echo) permits the bearer hop; a pool answer does not', () => {
+    const older = createTopicHistoryPullHandler({ readHistory: () => [row('hi')] })({ topic: 5 });
+    expect(bearerFallbackPermitted('historyPool', { status: 200, ok: true, result: older }, '1.3.1700')).toBe(true);
+    expect(bearerFallbackPermitted('historyPool', { status: 200, ok: true, result: { ok: true, shape: 'pool', messages: [] } }, '1.3.1740')).toBe(false);
+  });
+});
