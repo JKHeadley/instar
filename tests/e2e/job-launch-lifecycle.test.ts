@@ -14,7 +14,7 @@
  *   4. Its run row carries `launch.applied` thinkingMode low on argv, and the spawned process
  *      really received `--effort low`.
  *   5. The start row reads cliVersion 'unknown' (the retainer cannot read the mock's version: the
- *      mock answers `--version` only outside the project dir, after 1 s); the async probe, run from
+ *      mock answers `--version` only outside the project dir, after 0.2 s); the async probe, run from
  *      a neutral temp cwd, then lands 2.1.322, and the row before and after differs ONLY in
  *      launch.cliVersion.
  *
@@ -101,7 +101,12 @@ if [ "$1" = "--version" ]; then
   # dir (the server's own cwd: ClaudeBinaryRetainer's sync read, boot checks) fails, so the
   # retainer holds a null version and the start row must read 'unknown' until the async patch.
   case "$(pwd -P)" in "$(cd ${JSON.stringify(project)} && pwd -P)"*) exit 1 ;; esac
-  sleep 1
+  # 0.2 s, not 1 s: the product kills this probe at 2 s (CLI_VERSION_PROBE_TIMEOUT_MS) and then
+  # keeps 'unknown' by design. A 1 s answer left a 1 s margin for bash start-up, which a verify
+  # machine under load used up (six runs on 2026-11-15), so the row stayed 'unknown' and the
+  # "version lands" test failed on a correct product. The delay only has to make the answer
+  # asynchronous; the start-row ordering is proved deterministically in the unit tier.
+  sleep 0.2
   echo "2.1.322 (Claude Code)"; exit 0
 fi
 printf '%s\\n' "--launch--" "$@" >> ${JSON.stringify(argvLog)}
