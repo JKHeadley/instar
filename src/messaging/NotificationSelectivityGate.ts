@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { QuietNotificationStore } from './QuietNotificationStore.js';
 import type { QuietNotificationSink } from './QuietNotificationStore.js';
-import { CONVERSATION_CATEGORIES, SIGNIFICANT_TABLE, isNotificationCategory, notificationCategories } from './notificationCategories.js';
+import { CONVERSATION_CATEGORIES, PROTECTED_DELIVERY_CATEGORIES, SIGNIFICANT_TABLE, isNotificationCategory, notificationCategories } from './notificationCategories.js';
 import type { NotificationCategoryId, SignificantClass } from './notificationCategories.js';
 
 export interface OutboundEnvelope {
@@ -59,7 +59,7 @@ export function isVerifiedJobEnvelope(value: unknown): boolean {
 export class NotificationSelectivityGate {
   public pushDestination: ((category: NotificationCategoryId) => { chatId: string; topicId: number } | null) | null = null;
   destination(envelope: OutboundEnvelope, addressedTopicId?: number): { chatId: string; topicId: number } | null {
-    if (!this.isEnforcing() || isVerifiedReplyEnvelope(envelope) || CONVERSATION_CATEGORIES.has(envelope.category)) return null;
+    if (!this.isEnforcing() || isVerifiedReplyEnvelope(envelope) || PROTECTED_DELIVERY_CATEGORIES.has(envelope.category)) return null;
     // An opted-in job stays only in the topic the operator chose it in, never wherever it addressed.
     const config = this.config();
     if (addressedTopicId !== undefined && this.jobOptedIn(envelope, config) && config.push?.jobTopics?.[envelope.verifiedJobSlug!] === addressedTopicId) return null;
@@ -147,6 +147,19 @@ export class NotificationSelectivityGate {
     return this.inbound.get(topicId)?.some(row => row.id === id && row.operator && this.now() - row.at <= 900000) === true;
   }
   latestInbound(topicId: number): string | undefined { return this.inbound.get(topicId)?.at(-1)?.id; }
+  /**
+   * The topic's latest message from the operator within `withinMs`, or null (pairing outcome
+   * notice §3.4: the request a pairing link answers).
+   */
+  recentOperatorInbound(topicId: number, withinMs: number): string | null {
+    const rows = this.inbound.get(topicId) ?? [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i]!;
+      if (this.now() - row.at > withinMs) return null;
+      if (row.operator) return row.id;
+    }
+    return null;
+  }
   private budget(key: string, max: number): boolean {
     let state = this.budgets.get(key);
     if (!state || this.now() - state.since >= 600000) { state = { count: 0, since: this.now(), summary: false }; this.budgets.set(key, state); }
@@ -164,6 +177,13 @@ export class NotificationSelectivityGate {
       return result('deliver', 'verified-reply');
     }
     if (envelope?.origin === 'verified-reply') this.metrics.eatenReplyCounterfactual++;
+    // Pairing outcome (mobile-pairing-outcome-notice §3.4): the route sets this category only for the
+    // in-process pairing-outcome producer, whose anchor (the operator's own message in this topic)
+    // was verified at mint. The in-memory inbound rows are not re-checked: they do not survive a
+    // restart and keep only 20 per topic, so a re-check would quiet legitimate late outcomes.
+    if (category === 'pairing-outcome') {
+      return envelope?.inboundMessageId ? result('deliver', 'requested-follow-up') : result('record', 'unanchored-follow-up');
+    }
     if (CONVERSATION_CATEGORIES.has(category)) {
       // Never-Silent Conversation: the notice that a person's message went unanswered is the ONE
       // outcome besides a reply (spec §2). It is produced only by the internal never-silent
@@ -349,7 +369,7 @@ export class NotificationSelectivityGate {
       preferences: this.preferences?.status(),
       soakEvidence: { ...this.evidence, healthy: this.evidenceHealthy, scope: 'this-machine', resetAfterUncleanShutdown: true, cleanDays: this.evidence.observingSince ? Math.max(0, (this.now() - Date.parse(this.evidence.observingSince)) / 86400000) : 0, operatorFlipRequired: true },
       counters: { ...this.metrics, ...this.store.counters() }, store: { ...this.store.health },
-      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !CONVERSATION_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: this.config().push?.categories?.[id] === true || this.config().legacy?.[id] === true })) };
+      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !PROTECTED_DELIVERY_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: this.config().push?.categories?.[id] === true || this.config().legacy?.[id] === true })) };
   }
   async bootContextPool(topicId: number): Promise<string> {
     await this.store.ready;

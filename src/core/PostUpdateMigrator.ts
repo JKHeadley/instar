@@ -1327,11 +1327,18 @@ export const PAIRING_APPROVE_DASHBOARD_BULLET = `- After the PIN, the same page 
 /** mobile-owner-presence-pin §2.7: Remote Desktop with Face ID and the Dashboard PIN page. Its own marker. */
 export const OWNER_PRESENCE_BULLET = `- **Remote Desktop and the dashboard PIN on the owner's phone.** The owner phone opens Remote Desktop with Face ID instead of the dashboard PIN: \`POST /mobile/desktop-unlock\` gives it a desktop-only, 15-minute session tied to that phone (still no API token; its desktop calls are signed by the phone). Its Dashboard PIN page shows the PIN after Face ID (\`POST /mobile/dashboard-pin/reveal\`), and the owner is told privately, without the PIN (the first reveal per phone in any 10 minutes; every reveal is audited; no private chat, no reveal). When the operator asks "what's my dashboard PIN?" from the app, point them to that page. Off switch: \`mobilePairing.ownerPresence.enabled: false\`; audit: \`.instar/state/mobile-owner-presence-audit.jsonl\`.`;
 
+/** docs/specs/mobile-pairing-outcome-notice.md §3.6: the pairing outcome is the device list. Its own content-sniff marker. */
+export const PAIRING_OUTCOME_BULLET = `- **The pairing outcome is the device list, never a log line.** Mint with \`topicId\` (the Mint example fills it from \`$INSTAR_TOPIC_ID\`; pass it whatever the example shows) and one plain line is posted in this conversation when the phone pairs or fails; the response's \`outcomeNotice\` says whether it will be (\`null\` comes with \`outcomeNoticeReason\`). Before telling anyone how a pairing went, read \`GET /mobile/devices?scope=pool\`: on this machine's rows \`status: "active"\` = paired, and \`pairingOutcomes\` lists the outcome of each recent link minted here, by \`watchId\` (a link minted on another machine is answered there). A held, slow or failed owner-message log line is not a failed pairing: the message can arrive late and still be approved. Off switch: \`mobilePairing.outcomeNotice.enabled: false\`.`;
+/** The bullet's stable marker: a later rewording of the bullet must not insert a second copy. */
+export const PAIRING_OUTCOME_MARKER = '**The pairing outcome is the device list';
+/** The Mint example's body before and after §3.6's topicId splice (port-independent patch). */
+export const PAIRING_MINT_BODY_OLD = `-d '{"label":"Justin iPhone"}'`;
+export const PAIRING_MINT_BODY_NEW = `-d '{"label":"Justin iPhone","topicId":"'"\${INSTAR_TOPIC_ID:-}"'"}'`;
 export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
 
 The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone stores no API token and never gets an operator session; its signed requests are limited to a fixed list (reads, confirm and revoke itself, plus the owner phone's console sign-in). An owner phone opens the console without the dashboard PIN: after the owner's Face ID or passcode, the app gets a one-minute, single-use ticket (\`POST /mobile/console-ticket\`) that the console trades once for the same token a PIN unlock returns, in a web view that keeps nothing on disk; PIN-confirmed actions still ask for the PIN, and MSP phones and phones without a passcode still see the PIN box (off switch: \`mobilePairing.consoleTicket.enabled: false\`; audit: \`.instar/state/mobile-console-tickets.jsonl\`). Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
-- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
+- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes ${PAIRING_MINT_BODY_NEW}\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
 ${PAIRING_APPROVE_BULLET}
 ${PAIRING_INTRODUCER_BULLET}
@@ -1339,6 +1346,7 @@ ${OWNER_PRESENCE_BULLET}
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
+${PAIRING_OUTCOME_BULLET}
 - Revoke one phone (always allowed): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/devices/DEVICE_ID/revoke\`. \`202 pending\` means no machine holding that phone confirmed yet; the phone may keep access until one does.
 - **When to use** (PROACTIVE): "add you to my phone / the Instar app" → mint and send the link; "I lost my phone / revoke my old phone" → list devices and revoke.
 `;
@@ -10924,6 +10932,23 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace('\n- **Never ask the operator for the ', `\n${OWNER_PRESENCE_BULLET}\n- **Never ask the operator for the `);
       patched = true;
       result.upgraded.push('CLAUDE.md: Mobile pairing link section describes Remote Desktop with Face ID and the PIN page');
+    }
+    // mobile-pairing-outcome-notice §3.6: the outcome bullet before "Revoke one phone" (its own marker),
+    // and the Mint body gains the topicId splice (its own marker; port-independent).
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_OUTCOME_MARKER) && content.includes('\n- Revoke one phone')) {
+      content = content.replace('\n- Revoke one phone', `\n${PAIRING_OUTCOME_BULLET}\n- Revoke one phone`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Mobile pairing link section says the pairing outcome is the device list');
+    }
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_MINT_BODY_NEW)) {
+      const mintIdx = content.split('\n').findIndex((l) => l.startsWith('- Mint: ') && l.includes('/mobile/pairing-codes') && l.includes(PAIRING_MINT_BODY_OLD));
+      if (mintIdx >= 0) {
+        const lines = content.split('\n');
+        lines[mintIdx] = lines[mintIdx]!.replace(PAIRING_MINT_BODY_OLD, PAIRING_MINT_BODY_NEW);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile pairing link Mint example passes the conversation topicId');
+      }
     }
     if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && !content.includes(PAIRING_APPROVE_DASHBOARD_BULLET) && content.includes('\n- A phone approved this way is labelled')) {
       content = content.replace('\n- A phone approved this way is labelled', `\n${PAIRING_APPROVE_DASHBOARD_BULLET}\n- A phone approved this way is labelled`);

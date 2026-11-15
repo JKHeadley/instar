@@ -4,7 +4,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import type { Router } from 'express';
 import type { RouteContext } from './routes.js';
-import { CONVERSATION_CATEGORIES, isNotificationCategory, isNotificationJobSlug } from '../messaging/notificationCategories.js';
+import { PROTECTED_DELIVERY_CATEGORIES, isNotificationCategory, isNotificationJobSlug } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope } from '../messaging/NotificationSelectivityGate.js';
 
 /** Uses the existing authenticated router; preference writes additionally require operator proof. */
@@ -83,7 +83,7 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
     const category = req.params.id;
     if (!gate || !gate.preferences) { res.status(503).json({ error: 'Notification preferences are unavailable' }); return; }
     if (!isNotificationCategory(category) || typeof req.body?.enabled !== 'boolean') { res.status(400).json({ error: 'Choose a registered category and whether it should push' }); return; }
-    if (CONVERSATION_CATEGORIES.has(category)) { res.status(400).json({ error: 'Conversation replies and delivery notices are protected automatically; choose an automated report category' }); return; }
+    if (PROTECTED_DELIVERY_CATEGORIES.has(category)) { res.status(400).json({ error: 'Conversation replies and delivery notices are protected automatically; choose an automated report category' }); return; }
     const surface = req.body.confirmedBy;
     const topicId = Number(req.body.topicId), messageId = String(req.body.confirmingMessageId ?? '');
     const pin = surface === 'dashboard-pin' && ctx.verifyDashboardOperatorSession?.(req.headers['x-instar-operator-session'] as string | undefined) === true;

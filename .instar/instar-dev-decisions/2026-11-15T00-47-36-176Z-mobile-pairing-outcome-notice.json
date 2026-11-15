@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-15T00:47:36.176Z",
+  "slug": "mobile-pairing-outcome-notice",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 881,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePairing.ts",
+      "src/core/PairingOutcomeText.ts",
+      "src/core/PairingOutcomeWatches.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/system-templates.ts",
+      "src/messaging/telegram-origin/OriginAutomationReply.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/notificationRoutes.ts",
+      "src/server/pairingOutcomeNotice.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 861,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
