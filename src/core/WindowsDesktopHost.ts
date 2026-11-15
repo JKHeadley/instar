@@ -2,7 +2,17 @@
  * It never captures WSL's own display. The companion must authenticate every
  * local request and revoke on a lost heartbeat independently of this process. */
 import { createHmac, createHash, randomBytes } from 'node:crypto';
+import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 import { parseDesktopDisplays, validDesktopInput, validDisplayId, type DesktopDisplayList, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
+
+/** Windows video switch: an explicit setting wins; omitted is live on a
+ * development agent and dark on the fleet until measured. */
+export function resolveWindowsDesktopVideo(config: {
+  developmentAgent?: boolean; remoteDesktop?: { windowsVideo?: { enabled?: boolean } };
+}): boolean {
+  const explicit = config.remoteDesktop?.windowsVideo?.enabled;
+  return typeof explicit === 'boolean' ? explicit : config.developmentAgent === true;
+}
 
 const FRAME_LIMIT = 1_250_000;
 const JSON_LIMIT = 4_096;
@@ -18,16 +28,29 @@ export class WindowsDesktopHost implements DesktopHost {
   private generation = 0;
   private leaseId: string | null = null;
   private readonly pending = new Set<AbortController>();
+  /** Present only when video is switched on: the companion encodes H.264 and
+   * DirectDesktopAccess falls back to pictures for the session on any failure. */
+  captureH264?: (forceKeyframe: boolean) => Promise<DesktopH264Frame | null>;
 
   constructor(private readonly endpoint: string, private readonly secret: Buffer,
     private readonly send: typeof fetch = fetch,
-    private readonly requestTimeoutMs: number = REQUEST_TIMEOUT_MS) {
+    private readonly requestTimeoutMs: number = REQUEST_TIMEOUT_MS,
+    options: { video?: boolean } = {}) {
     const url = new URL(endpoint);
     if (url.protocol !== 'http:' || url.username || url.password || url.search || url.hash
       || url.pathname !== '/' || secret.length !== 32
       || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1_000 || requestTimeoutMs > 5_000) {
       throw new Error('windows-desktop-companion-config-invalid');
     }
+    if (options.video === true) this.captureH264 = forceKeyframe => this.captureVideo(forceKeyframe);
+  }
+
+  /** One access unit from the companion's live encoder, or null when it has no
+   * new picture yet. An older companion refuses the operation, which throws. */
+  private async captureVideo(forceKeyframe: boolean): Promise<DesktopH264Frame | null> {
+    const packet = await this.call('capture-h264',
+      this.onDisplay({ leaseId: this.requireLease(), keyframe: forceKeyframe === true }), FRAME_LIMIT, 'video/h264');
+    return packet.length ? parseNativeH264(packet) : null;
   }
 
   async probe(): Promise<DesktopProbe> {
@@ -213,7 +236,7 @@ export class WindowsDesktopHost implements DesktopHost {
         throw new Error('windows-desktop-companion-refused');
       }
       const relayMs = Number(response.headers.get('x-instar-relay-ms'));
-      if (op === 'capture' && Number.isFinite(relayMs) && relayMs >= 0) {
+      if ((op === 'capture' || op === 'capture-h264') && Number.isFinite(relayMs) && relayMs >= 0) {
         this.captureWindowsMs.count++;
         this.captureWindowsMs.total += relayMs;
         this.captureWindowsMs.max = Math.max(this.captureWindowsMs.max, relayMs);

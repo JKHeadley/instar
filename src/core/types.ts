@@ -3845,6 +3845,8 @@ export interface InstarConfig {
     peerClaimRefused?: boolean;
     /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
     guidedSetup?: { enabled?: boolean };
+    /** Windows: H.264 video from the companion instead of pictures. `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    windowsVideo?: { enabled?: boolean };
     /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
     lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
   };

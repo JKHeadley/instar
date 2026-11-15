@@ -38,6 +38,8 @@ namespace InstarDesktop {
     static Form Banner;
     static Point? BannerPlace;
     static Thread BannerThread;
+    // Live H.264 for the current lease (null until the viewer asks for video).
+    static VideoStream Video;
 
     [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
@@ -193,7 +195,7 @@ namespace InstarDesktop {
         string[] first = lines[0].Split(' ');
         if (first.Length != 3 || first[0] != "POST" || !first[1].StartsWith("/") || first[2] != "HTTP/1.1") return;
         string op = first[1].Substring(1);
-        if (op != "probe" && op != "displays" && op != "capture" && op != "cursor" && op != "input"
+        if (op != "probe" && op != "displays" && op != "capture" && op != "capture-h264" && op != "cursor" && op != "input"
           && op != "start" && op != "heartbeat" && op != "stop" && op != "release"
           && op != "prepare-update" && op != "cancel-update" && op != "commit-update") return;
         Dictionary<string,string> headers = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
@@ -217,6 +219,21 @@ namespace InstarDesktop {
           if (!leaseless && !ValidLease(lease)) throw new InvalidDataException();
           object result; string type = "application/json";
           bool exitAfterWrite = false;
+          if (op == "capture-h264") {
+            // Validated under the gate; the short wait for a frame happens
+            // outside it so a heartbeat or Stop is never queued behind video.
+            bool keyframe = command.ContainsKey("keyframe") && command["keyframe"] is bool && (bool)command["keyframe"];
+            VideoStream video;
+            lock (Gate) {
+              if (Active && (Now() - LastHeartbeat > 5000 || !InteractiveDesktop())) StopLocked();
+              if (!OwnsLease(lease) || !InteractiveDesktop()) throw new InvalidOperationException();
+              video = VideoFor(lease, ShownArea(command));
+            }
+            byte[] unit = video.Take(keyframe, keyframe ? 300 : 50);
+            // Empty means no new picture yet; the caller simply asks again.
+            Write(stream, 200, "video/h264", unit ?? new byte[0]);
+            return;
+          }
           lock (Gate) {
             ExpireUpdate();
             if (Active && (Now() - LastHeartbeat > 5000 || !InteractiveDesktop())) StopLocked();
@@ -490,7 +507,22 @@ namespace InstarDesktop {
       BannerThread.IsBackground = true; BannerThread.SetApartmentState(ApartmentState.STA); BannerThread.Start();
       if (!ready.WaitOne(2000) || !BannerShown) throw new InvalidOperationException();
     }
+    /// <summary>The lease's live stream for this area, started on first use and
+    /// restarted for a new area or after it went idle. A failed stream stays
+    /// failed for its lease so the caller falls back to pictures once.</summary>
+    static VideoStream VideoFor(string lease, Rectangle area) {
+      if (Video != null && Video.Lease == lease && Video.Area == area && !Video.Idle) return Video;
+      if (Video != null && Video.Lease == lease && Video.Failed) return Video;
+      StopVideo();
+      Video = new VideoStream(lease, area);
+      return Video;
+    }
+    static void StopVideo() {
+      VideoStream video = Video; Video = null;
+      if (video != null) video.Dispose();
+    }
     static void StopLocked() {
+      StopVideo();
       string priorLease = LeaseId;
       Active = false; LeaseId = null; BannerShown = false; ReleaseHeld();
       if (priorLease != null) CancelLease(priorLease);
@@ -546,6 +578,721 @@ namespace InstarDesktop {
         try { Handle(server.AcceptTcpClient()); }
         catch { /* Per-client errors never drop the companion's stop watchdog. */ }
       }
+    }
+  }
+
+  // ---- Live video (H.264) ------------------------------------------------
+  /// <summary>Live H.264 for one lease and one screen area. A capture thread keeps
+  /// the newest picture; an encode thread turns it into the next access unit and
+  /// holds at most one until a request takes it, so every delta reaches the viewer
+  /// in order and the slow WSL hop overlaps the next capture and encode.</summary>
+  internal sealed class VideoStream : IDisposable {
+    const int IdleStopMs = 4000;
+    public readonly string Lease;
+    public readonly Rectangle Area;
+    public readonly Size Size;
+    readonly object sync = new object();
+    readonly Thread captureThread, encodeThread;
+    byte[] latest, spare;          // newest captured BGRA, and the buffer being filled
+    long latestSequence, encodedSequence;
+    byte[] packet;                 // the next access unit, waiting for a request
+    bool forceKeyframe = true;
+    volatile bool stopped;
+    volatile string failure;
+    long lastTakeAt;
+    public string EncoderName = "";
+
+    public VideoStream(string lease, Rectangle area) {
+      Lease = lease; Area = area; Size = ScreenGrabber.VideoSize(area);
+      lastTakeAt = Environment.TickCount;
+      captureThread = new Thread(CaptureLoop); captureThread.IsBackground = true; captureThread.Name = "instar-video-capture";
+      encodeThread = new Thread(EncodeLoop); encodeThread.IsBackground = true; encodeThread.Name = "instar-video-encode";
+      captureThread.Start(); encodeThread.Start();
+    }
+
+    public bool Failed { get { return failure != null; } }
+    public bool Idle { get { return Environment.TickCount - Interlocked.Read(ref lastTakeAt) > IdleStopMs; } }
+
+    /// <summary>The waiting access unit, or null after waitMs with none ready. A
+    /// keyframe request discards a waiting delta and waits for the forced IDR.</summary>
+    public byte[] Take(bool keyframe, int waitMs) {
+      Interlocked.Exchange(ref lastTakeAt, Environment.TickCount);
+      int deadline = Environment.TickCount + waitMs;
+      lock (sync) {
+        if (keyframe && (packet == null || packet[0] != 1)) {
+          packet = null;
+          forceKeyframe = true;
+          Monitor.PulseAll(sync);
+        }
+        for (;;) {
+          if (failure != null) throw new InvalidOperationException(failure);
+          if (packet != null && (!keyframe || packet[0] == 1)) {
+            byte[] taken = packet; packet = null;
+            Monitor.PulseAll(sync);
+            return taken;
+          }
+          int left = deadline - Environment.TickCount;
+          if (left <= 0 || stopped) return null;
+          Monitor.Wait(sync, left);
+        }
+      }
+    }
+
+    void CaptureLoop() {
+      try {
+        using (ScreenGrabber grabber = new ScreenGrabber(Area.Width, Area.Height)) {
+          while (!stopped && !Idle) {
+            byte[] picture = grabber.Grab(Area);
+            lock (sync) {
+              if (spare == null || spare.Length != picture.Length) spare = new byte[picture.Length];
+              Buffer.BlockCopy(picture, 0, spare, 0, picture.Length);
+              byte[] swap = latest; latest = spare; spare = swap;
+              latestSequence++;
+              Monitor.PulseAll(sync);
+            }
+          }
+        }
+      } catch (Exception error) { Fail("capture: " + error.Message); }
+    }
+
+    void EncodeLoop() {
+      try {
+        using (FrameConverter converter = new FrameConverter(Area.Width, Area.Height, Size.Width, Size.Height))
+        using (H264Encoder encoder = H264Encoder.Create(Size.Width, Size.Height, Bitrate(Size), true)) {
+          EncoderName = encoder.Name;
+          byte[] picture = null;
+          while (!stopped && !Idle) {
+            bool keyframe;
+            lock (sync) {
+              // Wait for the previous unit to be taken and for a newer picture.
+              while (!stopped && (packet != null || latestSequence == encodedSequence)) Monitor.Wait(sync, 250);
+              if (stopped) break;
+              if (picture == null || picture.Length != latest.Length) picture = new byte[latest.Length];
+              Buffer.BlockCopy(latest, 0, picture, 0, latest.Length);
+              encodedSequence = latestSequence;
+              keyframe = forceKeyframe;
+            }
+            byte[] unit = encoder.EncodeNv12(converter.Convert(picture), keyframe, 500);
+            if (unit == null) continue;
+            lock (sync) {
+              if (forceKeyframe && unit[0] != 1) continue; // a delta from before the request
+              if (unit[0] == 1) forceKeyframe = false;
+              packet = unit;
+              Monitor.PulseAll(sync);
+            }
+          }
+        }
+      } catch (Exception error) { Fail("encode: " + error.Message); }
+    }
+
+    /// <summary>About 0.15 bits per pixel at 15 pictures a second: sharp text, within the 10 Mbps stream budget.</summary>
+    internal static int Bitrate(Size size) {
+      return Math.Max(1000000, Math.Min(6000000, (int)((long)size.Width * size.Height * 15 * 15 / 100)));
+    }
+
+    void Fail(string reason) {
+      lock (sync) { if (failure == null) failure = reason; Monitor.PulseAll(sync); }
+    }
+
+    public void Dispose() {
+      stopped = true;
+      lock (sync) Monitor.PulseAll(sync);
+    }
+  }
+
+  /// <summary>Copies (and, when needed, scales) one screen area into a reused
+  /// 32-bit top-down DIB with a single GDI StretchBlt.</summary>
+  internal sealed class ScreenGrabber : IDisposable {
+    [StructLayout(LayoutKind.Sequential)] struct BitmapInfoHeader {
+      public int Size; public int Width; public int Height; public short Planes; public short BitCount;
+      public int Compression; public int SizeImage; public int XPelsPerMeter; public int YPelsPerMeter; public int ClrUsed; public int ClrImportant;
+    }
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr window);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BitmapInfoHeader info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr value);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr value);
+    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr dc, int x, int y, IntPtr previous);
+    [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dest, int dx, int dy, int dw, int dh, IntPtr source, int sx, int sy, int sw, int sh, uint rop);
+    [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dest, int dx, int dy, int dw, int dh, IntPtr source, int sx, int sy, uint rop);
+    [DllImport("gdi32.dll")] static extern bool GdiFlush();
+    const uint SourceCopy = 0x00CC0020;
+    const int Halftone = 4;
+
+    public readonly int Width, Height;
+    readonly IntPtr memory, bitmap, previous, bits;
+    readonly byte[] pixels;
+    bool disposed;
+
+    public ScreenGrabber(int width, int height) {
+      Width = width; Height = height;
+      IntPtr screen = GetDC(IntPtr.Zero);
+      try {
+        memory = CreateCompatibleDC(screen);
+        BitmapInfoHeader info = new BitmapInfoHeader();
+        info.Size = Marshal.SizeOf(typeof(BitmapInfoHeader)); info.Width = width; info.Height = -height;
+        info.Planes = 1; info.BitCount = 32;
+        bitmap = CreateDIBSection(screen, ref info, 0, out bits, IntPtr.Zero, 0);
+        if (memory == IntPtr.Zero || bitmap == IntPtr.Zero || bits == IntPtr.Zero) throw new InvalidOperationException("dib");
+        previous = SelectObject(memory, bitmap);
+        SetStretchBltMode(memory, Halftone);
+        SetBrushOrgEx(memory, 0, 0, IntPtr.Zero);
+      } finally { ReleaseDC(IntPtr.Zero, screen); }
+      pixels = new byte[width * height * 4];
+    }
+
+    /// <summary>The returned array is reused by the next Grab.</summary>
+    public byte[] Grab(Rectangle area) {
+      if (disposed) throw new ObjectDisposedException("grabber");
+      IntPtr screen = GetDC(IntPtr.Zero);
+      if (screen == IntPtr.Zero) throw new InvalidOperationException("screen-dc");
+      try {
+        bool ok = area.Width == Width && area.Height == Height
+          ? BitBlt(memory, 0, 0, Width, Height, screen, area.Left, area.Top, SourceCopy)
+          : StretchBlt(memory, 0, 0, Width, Height, screen, area.Left, area.Top, area.Width, area.Height, SourceCopy);
+        if (!ok) throw new InvalidOperationException("blt");
+      } finally { ReleaseDC(IntPtr.Zero, screen); }
+      GdiFlush();
+      Marshal.Copy(bits, pixels, 0, pixels.Length);
+      return pixels;
+    }
+
+    /// <summary>The largest even size at most 1920x1080 with the area's shape.</summary>
+    public static Size VideoSize(Rectangle area) {
+      double scale = Math.Min(1, Math.Min(1920.0 / area.Width, 1080.0 / area.Height));
+      int width = Math.Max(2, (int)(area.Width * scale) & ~1), height = Math.Max(2, (int)(area.Height * scale) & ~1);
+      return new Size(width, height);
+    }
+
+    public void Dispose() {
+      if (disposed) return;
+      disposed = true;
+      SelectObject(memory, previous); DeleteObject(bitmap); DeleteDC(memory);
+    }
+  }
+
+  /// <summary>Scales a top-down BGRA picture and converts it to NV12 with the
+  /// Windows Video Processor MFT (SIMD on the CPU, area-averaged scaling).</summary>
+  internal sealed class FrameConverter : IDisposable {
+    static readonly Guid VideoProcessorClsid = new Guid("88753B26-5B24-49BD-B2E7-0C445C78C982");
+    static readonly Guid MediaTypeVideo = new Guid("73646976-0000-0010-8000-00AA00389B71");
+    static readonly Guid FormatRGB32 = new Guid("00000016-0000-0010-8000-00AA00389B71");
+    static readonly Guid FormatNV12 = new Guid("3231564E-0000-0010-8000-00AA00389B71");
+    static readonly Guid MtMajorType = new Guid("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
+    static readonly Guid MtSubtype = new Guid("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
+    static readonly Guid MtFrameSize = new Guid("1652c33d-d6b2-4012-b834-72030849a37d");
+    static readonly Guid MtFrameRate = new Guid("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");
+    static readonly Guid MtPixelAspect = new Guid("c6376a1e-8d0a-4027-be45-6d9a0ad39bb6");
+    static readonly Guid MtInterlace = new Guid("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
+    static readonly Guid MtDefaultStride = new Guid("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
+    public readonly int SourceWidth, SourceHeight, Width, Height;
+    readonly IMFTransform transform;
+    readonly byte[] output;
+    bool disposed;
+
+    public FrameConverter(int sourceWidth, int sourceHeight, int width, int height) {
+      SourceWidth = sourceWidth; SourceHeight = sourceHeight; Width = width; Height = height;
+      H264Encoder.Startup();
+      transform = (IMFTransform)Activator.CreateInstance(Type.GetTypeFromCLSID(VideoProcessorClsid));
+      IMFMediaType input; H264Encoder.Check(H264Encoder.MFCreateMediaType(out input), "vp-input");
+      Describe(input, FormatRGB32, sourceWidth, sourceHeight);
+      H264Encoder.Set32(input, MtDefaultStride, (uint)(sourceWidth * 4));
+      H264Encoder.Check(transform.SetInputType(0, input, 0), "vp-set-input");
+      IMFMediaType nv12; H264Encoder.Check(H264Encoder.MFCreateMediaType(out nv12), "vp-output");
+      Describe(nv12, FormatNV12, width, height);
+      H264Encoder.Set32(nv12, MtDefaultStride, (uint)width);
+      H264Encoder.Check(transform.SetOutputType(0, nv12, 0), "vp-set-output");
+      output = new byte[width * height * 3 / 2];
+      transform.ProcessMessage(0x10000000, IntPtr.Zero); // begin streaming
+      transform.ProcessMessage(0x10000003, IntPtr.Zero); // start of stream
+    }
+
+    static void Describe(IMFMediaType type, Guid subtype, int width, int height) {
+      H264Encoder.SetGuid(type, MtMajorType, MediaTypeVideo); H264Encoder.SetGuid(type, MtSubtype, subtype);
+      H264Encoder.Set32(type, MtInterlace, 2);
+      H264Encoder.Set64(type, MtFrameSize, (ulong)width << 32 | (uint)height);
+      H264Encoder.Set64(type, MtFrameRate, 15UL << 32 | 1); H264Encoder.Set64(type, MtPixelAspect, 1UL << 32 | 1);
+    }
+
+    /// <summary>The returned array is reused by the next call.</summary>
+    public byte[] Convert(byte[] bgra) {
+      if (disposed) throw new ObjectDisposedException("converter");
+      IMFSample sample = H264Encoder.MemorySample(bgra, bgra.Length, 0);
+      try { H264Encoder.Check(transform.ProcessInput(0, sample, 0), "vp-input-frame"); }
+      finally { Marshal.ReleaseComObject(sample); }
+      IMFSample target = H264Encoder.MemorySample(null, output.Length, 0);
+      try {
+        MftOutputDataBuffer[] buffers = new MftOutputDataBuffer[1];
+        buffers[0].Sample = Marshal.GetComInterfaceForObject(target, typeof(IMFSample));
+        uint status;
+        int hr = transform.ProcessOutput(0, 1, buffers, out status);
+        Marshal.Release(buffers[0].Sample);
+        if (buffers[0].Events != IntPtr.Zero) Marshal.Release(buffers[0].Events);
+        H264Encoder.Check(hr, "vp-output-frame");
+        H264Encoder.CopyOut(target, output);
+        Settle();
+        return output;
+      } finally { Marshal.ReleaseComObject(target); }
+    }
+
+    /// <summary>The processor may keep the input for another output; ask until it
+    /// says it needs more input so the next picture is accepted.</summary>
+    void Settle() {
+      for (int i = 0; i < 2; i++) {
+        IMFSample spare = H264Encoder.MemorySample(null, output.Length, 0);
+        try {
+          MftOutputDataBuffer[] buffers = new MftOutputDataBuffer[1];
+          buffers[0].Sample = Marshal.GetComInterfaceForObject(spare, typeof(IMFSample));
+          uint status;
+          int hr = transform.ProcessOutput(0, 1, buffers, out status);
+          Marshal.Release(buffers[0].Sample);
+          if (buffers[0].Events != IntPtr.Zero) Marshal.Release(buffers[0].Events);
+          if (hr < 0) return; // MF_E_TRANSFORM_NEED_MORE_INPUT: ready for the next picture
+        } finally { Marshal.ReleaseComObject(spare); }
+      }
+    }
+
+    public void Dispose() {
+      if (disposed) return;
+      disposed = true;
+      try { Marshal.ReleaseComObject(transform); } catch { /* already released */ }
+    }
+  }
+
+  [ComImport, Guid("2cd2d921-c447-44a7-a13c-4adabfc247e3"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFAttributes {
+    void GetItem(); void GetItemType(); void CompareItem(); void Compare();
+    [PreserveSig] int GetUINT32([In] ref Guid key, out uint value);
+    void GetUINT64(); void GetDouble(); void GetGUID(); void GetStringLength(); void GetString(); void GetAllocatedString();
+    [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size, out uint written);
+    void GetAllocatedBlob(); void GetUnknown(); void SetItem(); void DeleteItem(); void DeleteAllItems();
+    [PreserveSig] int SetUINT32([In] ref Guid key, uint value);
+    [PreserveSig] int SetUINT64([In] ref Guid key, ulong value);
+    void SetDouble();
+    [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
+    void SetString(); void SetBlob(); void SetUnknown(); void LockStore(); void UnlockStore(); void GetCount(); void GetItemByIndex(); void CopyAllItems();
+  }
+  [ComImport, Guid("44ae0fa8-ea31-4109-8d2e-4cae4997c555"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFMediaType {
+    void GetItem(); void GetItemType(); void CompareItem(); void Compare();
+    [PreserveSig] int GetUINT32([In] ref Guid key, out uint value);
+    void GetUINT64(); void GetDouble(); void GetGUID(); void GetStringLength(); void GetString(); void GetAllocatedString();
+    [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size, out uint written);
+    void GetAllocatedBlob(); void GetUnknown(); void SetItem(); void DeleteItem(); void DeleteAllItems();
+    [PreserveSig] int SetUINT32([In] ref Guid key, uint value);
+    [PreserveSig] int SetUINT64([In] ref Guid key, ulong value);
+    void SetDouble();
+    [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
+    void SetString(); void SetBlob(); void SetUnknown(); void LockStore(); void UnlockStore(); void GetCount(); void GetItemByIndex(); void CopyAllItems();
+  }
+  [ComImport, Guid("c40a00f2-b93a-4d80-ae8c-5a1c634f58e4"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFSample {
+    void GetItem(); void GetItemType(); void CompareItem(); void Compare();
+    [PreserveSig] int GetUINT32([In] ref Guid key, out uint value);
+    void GetUINT64(); void GetDouble(); void GetGUID(); void GetStringLength(); void GetString(); void GetAllocatedString();
+    void GetBlobSize(); void GetBlob(); void GetAllocatedBlob(); void GetUnknown(); void SetItem(); void DeleteItem(); void DeleteAllItems();
+    [PreserveSig] int SetUINT32([In] ref Guid key, uint value);
+    void SetUINT64(); void SetDouble(); void SetGUID(); void SetString(); void SetBlob(); void SetUnknown(); void LockStore(); void UnlockStore(); void GetCount(); void GetItemByIndex(); void CopyAllItems();
+    void GetSampleFlags(); void SetSampleFlags(); void GetSampleTime();
+    [PreserveSig] int SetSampleTime(long time);
+    void GetSampleDuration();
+    [PreserveSig] int SetSampleDuration(long duration);
+    void GetBufferCount(); void GetBufferByIndex();
+    [PreserveSig] int ConvertToContiguousBuffer(out IMFMediaBuffer buffer);
+    [PreserveSig] int AddBuffer(IMFMediaBuffer buffer);
+  }
+  [ComImport, Guid("045FA593-8799-42b8-BC8D-8968C6453507"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFMediaBuffer {
+    [PreserveSig] int Lock(out IntPtr data, out int maxLength, out int currentLength);
+    [PreserveSig] int Unlock();
+    [PreserveSig] int GetCurrentLength(out int length);
+    [PreserveSig] int SetCurrentLength(int length);
+  }
+  [ComImport, Guid("7FEE9E9A-4A89-47a6-899C-B6A53A70FB67"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFActivate {
+    void GetItem(); void GetItemType(); void CompareItem(); void Compare(); void GetUINT32(); void GetUINT64(); void GetDouble(); void GetGUID();
+    void GetStringLength(); void GetString(); void GetAllocatedString(); void GetBlobSize(); void GetBlob(); void GetAllocatedBlob(); void GetUnknown();
+    void SetItem(); void DeleteItem(); void DeleteAllItems(); void SetUINT32(); void SetUINT64(); void SetDouble(); void SetGUID(); void SetString();
+    void SetBlob(); void SetUnknown(); void LockStore(); void UnlockStore(); void GetCount(); void GetItemByIndex(); void CopyAllItems();
+    [PreserveSig] int ActivateObject([In] ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object value);
+    [PreserveSig] int ShutdownObject();
+  }
+  [StructLayout(LayoutKind.Sequential)] struct MftOutputStreamInfo { public uint Flags; public uint Size; public uint Alignment; }
+  [StructLayout(LayoutKind.Sequential)] struct MftOutputDataBuffer { public uint StreamId; public IntPtr Sample; public uint Status; public IntPtr Events; }
+  [ComImport, Guid("bf94c121-5b05-4e6f-8000-ba598961414d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFTransform {
+    void GetStreamLimits(); void GetStreamCount();
+    [PreserveSig] int GetStreamIDs(uint inputSize, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] uint[] inputIds, uint outputSize, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] uint[] outputIds);
+    void GetInputStreamInfo();
+    [PreserveSig] int GetOutputStreamInfo(uint stream, out MftOutputStreamInfo info);
+    [PreserveSig] int GetAttributes(out IMFAttributes attributes);
+    void GetInputStreamAttributes(); void GetOutputStreamAttributes(); void DeleteInputStream(); void AddInputStreams();
+    void GetInputAvailableType();
+    [PreserveSig] int GetOutputAvailableType(uint stream, uint index, out IMFMediaType type);
+    [PreserveSig] int SetInputType(uint stream, IMFMediaType type, uint flags);
+    [PreserveSig] int SetOutputType(uint stream, IMFMediaType type, uint flags);
+    void GetInputCurrentType();
+    [PreserveSig] int GetOutputCurrentType(uint stream, out IMFMediaType type);
+    void GetInputStatus(); void GetOutputStatus(); void SetOutputBounds(); void ProcessEvent();
+    [PreserveSig] int ProcessMessage(uint message, IntPtr param);
+    [PreserveSig] int ProcessInput(uint stream, IMFSample sample, uint flags);
+    [PreserveSig] int ProcessOutput(uint flags, uint count, [In, Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] MftOutputDataBuffer[] buffers, out uint status);
+  }
+  [ComImport, Guid("DF598932-F10C-4E39-BBA2-C308F101DAA3"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFMediaEvent {
+    void GetItem(); void GetItemType(); void CompareItem(); void Compare(); void GetUINT32(); void GetUINT64(); void GetDouble(); void GetGUID();
+    void GetStringLength(); void GetString(); void GetAllocatedString(); void GetBlobSize(); void GetBlob(); void GetAllocatedBlob(); void GetUnknown();
+    void SetItem(); void DeleteItem(); void DeleteAllItems(); void SetUINT32(); void SetUINT64(); void SetDouble(); void SetGUID(); void SetString();
+    void SetBlob(); void SetUnknown(); void LockStore(); void UnlockStore(); void GetCount(); void GetItemByIndex(); void CopyAllItems();
+    [PreserveSig] int GetType(out uint type);
+    void GetExtendedType();
+    [PreserveSig] int GetStatus(out int status);
+  }
+  [ComImport, Guid("2CD0BD52-BCD5-4B89-B62C-EADC0C031E7D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMFMediaEventGenerator {
+    [PreserveSig] int GetEvent(uint flags, out IMFMediaEvent value);
+  }
+  [ComImport, Guid("901db4c7-31ce-41a2-85dc-8fa0bf41b8da"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface ICodecAPI {
+    void IsSupported(); void IsModifiable(); void GetParameterRange(); void GetParameterValues(); void GetDefaultValue(); void GetValue();
+    [PreserveSig] int SetValue([In] ref Guid api, [In] ref object value);
+  }
+
+  /// <summary>Encodes NV12 desktop pictures as Annex B H.264 access units.
+  /// Constrained to the viewer contract: baseline, level 4.0, at most 1920x1080,
+  /// even dimensions, every keyframe carrying SPS + PPS + IDR.</summary>
+  internal sealed class H264Encoder : IDisposable {
+    static readonly Guid CategoryVideoEncoder = new Guid("f79eac7d-e545-4387-bdee-d647d7bde42a");
+    static readonly Guid MediaTypeVideo = new Guid("73646976-0000-0010-8000-00AA00389B71");
+    static readonly Guid FormatNV12 = new Guid("3231564E-0000-0010-8000-00AA00389B71");
+    static readonly Guid FormatH264 = new Guid("34363248-0000-0010-8000-00AA00389B71");
+    static readonly Guid MtMajorType = new Guid("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
+    static readonly Guid MtSubtype = new Guid("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
+    static readonly Guid MtFrameSize = new Guid("1652c33d-d6b2-4012-b834-72030849a37d");
+    static readonly Guid MtFrameRate = new Guid("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");
+    static readonly Guid MtPixelAspect = new Guid("c6376a1e-8d0a-4027-be45-6d9a0ad39bb6");
+    static readonly Guid MtInterlace = new Guid("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
+    static readonly Guid MtAvgBitrate = new Guid("20332624-fb0d-4d9e-bd0d-cbf6786c102e");
+    static readonly Guid MtProfile = new Guid("ad76a80b-2d5c-4e0b-b375-64e520137036");
+    static readonly Guid MtLevel = new Guid("96f66574-11c5-4015-8666-bff516436da7");
+    static readonly Guid MtSequenceHeader = new Guid("3c036de7-3ad0-4c9e-9216-ee6d6ac21cb3");
+    static readonly Guid AsyncUnlock = new Guid("e5666d6b-3422-4eb6-a421-da7db1f8e207");
+    static readonly Guid LowLatency = new Guid("9c27891a-ed7a-40e1-88e8-b22727a024ee");
+    static readonly Guid ApiRateControl = new Guid("1c0608e9-370c-4710-8a58-cb6181c42423");
+    static readonly Guid ApiMeanBitrate = new Guid("f7222374-2144-4815-b550-a37f8e12ee52");
+    static readonly Guid ApiGopSize = new Guid("95f31b26-95a4-41aa-9303-246a7fc6eef1");
+    static readonly Guid ApiBPictures = new Guid("8d390aac-dc5c-4200-b57f-814d04babab2");
+    static readonly Guid ApiForceKeyframe = new Guid("398c1b98-8353-475a-9ef2-8f265d260345");
+    static readonly Guid IidTransform = new Guid("bf94c121-5b05-4e6f-8000-ba598961414d");
+
+    const uint EnumSync = 0x1, EnumAsync = 0x2, EnumHardware = 0x4, EnumSortAndFilter = 0x40;
+    const uint MessageFlush = 0x0, MessageBeginStreaming = 0x10000000, MessageStartOfStream = 0x10000003;
+    const uint ProvidesSamples = 0x100, CanProvideSamples = 0x200;
+    const int NeedMoreInput = unchecked((int)0xC00D6D72), StreamChange = unchecked((int)0xC00D6D61);
+    const int NoEventsAvailable = unchecked((int)0xC00D3E80), NotAccepting = unchecked((int)0xC00D36B5);
+    const uint NeedInputEvent = 601, HaveOutputEvent = 602;
+    const int MaxAccessUnit = 1250000 - 5;
+    static bool started;
+
+    [StructLayout(LayoutKind.Sequential)] struct RegisterTypeInfo { public Guid Major; public Guid Sub; }
+    internal static void Startup() { if (!started) { Check(MFStartup(0x20070, 0), "startup"); started = true; } }
+    [DllImport("mfplat.dll")] static extern int MFStartup(uint version, uint flags);
+    [DllImport("mfplat.dll")] static extern int MFTEnumEx(Guid category, uint flags, ref RegisterTypeInfo input,
+      ref RegisterTypeInfo output, out IntPtr activates, out uint count);
+    [DllImport("mfplat.dll")] internal static extern int MFCreateMediaType(out IMFMediaType type);
+    [DllImport("mfplat.dll")] internal static extern int MFCreateSample(out IMFSample sample);
+    [DllImport("mfplat.dll")] internal static extern int MFCreateMemoryBuffer(int length, out IMFMediaBuffer buffer);
+    [DllImport("ole32.dll")] static extern void CoTaskMemFree(IntPtr value);
+
+    public readonly int Width, Height;
+    public readonly bool Hardware;
+    public readonly string Name;
+    readonly IMFTransform transform;
+    readonly IMFMediaEventGenerator events;
+    readonly ICodecAPI codec;
+    readonly uint inputStream, outputStream;
+    readonly bool providesSamples;
+    readonly int outputSize;
+    readonly int pictureBytes;
+    readonly Stopwatch clock = Stopwatch.StartNew();
+    int pendingNeedInput;
+    readonly Queue<byte[]> ready = new Queue<byte[]>();
+    byte[] parameterSets; // SPS + PPS NAL units with start codes
+    bool disposed;
+
+    internal static void Check(int hr, string where) { if (hr < 0) throw new InvalidOperationException(where + " 0x" + hr.ToString("X8")); }
+
+    H264Encoder(IMFTransform transform, bool hardware, string name, int width, int height, int bitrate) {
+      this.transform = transform; Hardware = hardware; Name = name; Width = width; Height = height;
+      if (hardware) {
+        IMFAttributes attributes;
+        Check(transform.GetAttributes(out attributes), "attributes");
+        Guid key = AsyncUnlock; Check(attributes.SetUINT32(ref key, 1), "async-unlock");
+        key = LowLatency; attributes.SetUINT32(ref key, 1);
+        events = (IMFMediaEventGenerator)transform;
+      }
+      codec = transform as ICodecAPI;
+      uint[] inputs = new uint[1], outputs = new uint[1];
+      if (transform.GetStreamIDs(1, inputs, 1, outputs) >= 0) { inputStream = inputs[0]; outputStream = outputs[0]; }
+      SetCodecValue(LowLatency, true); // VT_BOOL
+      SetCodec(ApiRateControl, 0u); // CBR keeps each picture's size predictable
+      SetCodec(ApiMeanBitrate, (uint)bitrate);
+      SetCodec(ApiGopSize, 450u);
+      SetCodec(ApiBPictures, 0u);
+
+      IMFMediaType output; Check(MFCreateMediaType(out output), "output-type");
+      SetGuid(output, MtMajorType, MediaTypeVideo); SetGuid(output, MtSubtype, FormatH264);
+      Set32(output, MtAvgBitrate, (uint)bitrate); Set32(output, MtInterlace, 2);
+      Set64(output, MtFrameSize, (ulong)width << 32 | (uint)height);
+      Set64(output, MtFrameRate, 15UL << 32 | 1); Set64(output, MtPixelAspect, 1UL << 32 | 1);
+      Set32(output, MtProfile, 66); Set32(output, MtLevel, 40);
+      Check(transform.SetOutputType(outputStream, output, 0), "set-output");
+      IMFMediaType input; Check(MFCreateMediaType(out input), "input-type");
+      SetGuid(input, MtMajorType, MediaTypeVideo); SetGuid(input, MtSubtype, FormatNV12);
+      Set32(input, MtInterlace, 2);
+      Set64(input, MtFrameSize, (ulong)width << 32 | (uint)height);
+      Set64(input, MtFrameRate, 15UL << 32 | 1); Set64(input, MtPixelAspect, 1UL << 32 | 1);
+      Check(transform.SetInputType(inputStream, input, 0), "set-input");
+      ReadSequenceHeader();
+
+      MftOutputStreamInfo info; Check(transform.GetOutputStreamInfo(outputStream, out info), "output-info");
+      providesSamples = (info.Flags & (ProvidesSamples | CanProvideSamples)) != 0;
+      outputSize = Math.Max((int)info.Size, width * height * 3 / 2);
+      pictureBytes = width * height * 3 / 2;
+      transform.ProcessMessage(MessageFlush, IntPtr.Zero);
+      Check(transform.ProcessMessage(MessageBeginStreaming, IntPtr.Zero), "begin-streaming");
+      Check(transform.ProcessMessage(MessageStartOfStream, IntPtr.Zero), "start-of-stream");
+    }
+
+    void SetCodec(Guid api, uint value) { SetCodecValue(api, value); }
+    void SetCodecValue(Guid api, object boxed) {
+      if (codec == null) return;
+      codec.SetValue(ref api, ref boxed); // optional: an encoder that refuses keeps its default // optional: an encoder that refuses keeps its default
+    }
+    internal static void Set32(IMFMediaType type, Guid key, uint value) { Check(type.SetUINT32(ref key, value), "set32"); }
+    internal static void Set64(IMFMediaType type, Guid key, ulong value) { Check(type.SetUINT64(ref key, value), "set64"); }
+    internal static void SetGuid(IMFMediaType type, Guid key, Guid value) { Check(type.SetGUID(ref key, ref value), "setguid"); }
+
+    void ReadSequenceHeader() {
+      IMFMediaType current;
+      if (transform.GetOutputCurrentType(outputStream, out current) < 0 || current == null) return;
+      Guid key = MtSequenceHeader; uint size;
+      if (current.GetBlobSize(ref key, out size) < 0 || size < 8 || size > 4096) return;
+      byte[] blob = new byte[size]; uint written;
+      if (current.GetBlob(ref key, blob, size, out written) < 0) return;
+      byte[] sets = KeepNals(blob, (int)written, 7, 8);
+      if (sets.Length > 0) parameterSets = sets;
+    }
+
+    /// <summary>Hardware first (Quick Sync, NVENC, AMF), then Microsoft's software encoder.</summary>
+    public static H264Encoder Create(int width, int height, int bitrate, bool allowHardware) {
+      if (width < 2 || height < 2 || width > 1920 || height > 1080 || (width & 1) != 0 || (height & 1) != 0) {
+        throw new ArgumentException("geometry");
+      }
+      Startup();
+      List<Exception> failures = new List<Exception>();
+      foreach (bool hardware in allowHardware ? new bool[] { true, false } : new bool[] { false }) {
+        RegisterTypeInfo input = new RegisterTypeInfo(); input.Major = MediaTypeVideo; input.Sub = FormatNV12;
+        RegisterTypeInfo output = new RegisterTypeInfo(); output.Major = MediaTypeVideo; output.Sub = FormatH264;
+        IntPtr list; uint count;
+        uint flags = EnumSortAndFilter | (hardware ? EnumHardware | EnumAsync : EnumSync);
+        if (MFTEnumEx(CategoryVideoEncoder, flags, ref input, ref output, out list, out count) < 0 || count == 0) continue;
+        try {
+          for (int i = 0; i < count; i++) {
+            IntPtr item = Marshal.ReadIntPtr(list, i * IntPtr.Size);
+            IMFActivate activate = (IMFActivate)Marshal.GetObjectForIUnknown(item);
+            Marshal.Release(item);
+            try {
+              object value; Guid iid = IidTransform;
+              Check(activate.ActivateObject(ref iid, out value), "activate");
+              return new H264Encoder((IMFTransform)value, hardware, (hardware ? "hardware-" : "software-") + i, width, height, bitrate);
+            } catch (Exception error) {
+              failures.Add(error);
+              try { activate.ShutdownObject(); } catch { /* best effort */ }
+            }
+          }
+        } finally { CoTaskMemFree(list); }
+      }
+      throw new InvalidOperationException("no-h264-encoder" + (failures.Count > 0 ? ": " + failures[0].Message : ""));
+    }
+
+    /// <summary>One NV12 picture (width x height, tight stride) in.</summary>
+    public byte[] EncodeNv12(byte[] picture, bool keyframe, int timeoutMs) {
+      if (disposed) throw new ObjectDisposedException("encoder");
+      if (picture.Length != pictureBytes) throw new ArgumentException("picture");
+      if (keyframe) SetCodec(ApiForceKeyframe, 1u);
+      IMFSample sample = MemorySample(picture, picture.Length, clock.ElapsedTicks * 10000000L / Stopwatch.Frequency);
+      long deadline = clock.ElapsedMilliseconds + timeoutMs;
+      if (!Hardware) {
+        Check(transform.ProcessInput(inputStream, sample, 0), "input");
+        byte[] produced = Drain();
+        if (produced != null) ready.Enqueue(produced);
+      } else {
+        bool submitted = false;
+        while (clock.ElapsedMilliseconds < deadline && !(submitted && ready.Count > 0)) {
+          IMFMediaEvent ev;
+          int hr = events.GetEvent(1, out ev);
+          if (hr == NoEventsAvailable) {
+            if (!submitted && pendingNeedInput > 0) { pendingNeedInput--; Check(transform.ProcessInput(inputStream, sample, 0), "input"); submitted = true; continue; }
+            Thread.Sleep(1); continue;
+          }
+          Check(hr, "event");
+          uint type; ev.GetType(out type);
+          Marshal.ReleaseComObject(ev);
+          if (type == NeedInputEvent) pendingNeedInput++;
+          else if (type == HaveOutputEvent) { byte[] produced = Drain(); if (produced != null) ready.Enqueue(produced); }
+        }
+      }
+      Marshal.ReleaseComObject(sample);
+      while (ready.Count > 0) { byte[] packet = Package(ready.Dequeue()); if (packet != null) return packet; }
+      return null;
+    }
+
+    /// <summary>A system-memory sample of `length` bytes, filled from `bytes` when given.</summary>
+    internal static IMFSample MemorySample(byte[] bytes, int length, long time) {
+      IMFSample sample; Check(MFCreateSample(out sample), "sample");
+      IMFMediaBuffer buffer; Check(MFCreateMemoryBuffer(length, out buffer), "buffer");
+      try {
+        if (bytes != null) {
+          IntPtr data; int max, current;
+          Check(buffer.Lock(out data, out max, out current), "lock");
+          try { Marshal.Copy(bytes, 0, data, length); } finally { buffer.Unlock(); }
+          buffer.SetCurrentLength(length);
+        }
+        Check(sample.AddBuffer(buffer), "add-buffer");
+      } finally { Marshal.ReleaseComObject(buffer); }
+      sample.SetSampleTime(time);
+      sample.SetSampleDuration(666666);
+      return sample;
+    }
+
+    /// <summary>Copies a sample's bytes into `target` (exact length required).</summary>
+    internal static void CopyOut(IMFSample sample, byte[] target) {
+      IMFMediaBuffer contiguous; Check(sample.ConvertToContiguousBuffer(out contiguous), "contiguous");
+      try {
+        IntPtr data; int max, length;
+        Check(contiguous.Lock(out data, out max, out length), "out-lock");
+        try {
+          if (length < target.Length) throw new InvalidOperationException("short-sample");
+          Marshal.Copy(data, target, 0, target.Length);
+        } finally { contiguous.Unlock(); }
+      } finally { Marshal.ReleaseComObject(contiguous); }
+    }
+
+    byte[] Drain() {
+      for (int attempt = 0; attempt < 3; attempt++) {
+        IMFSample provided = null;
+        if (!providesSamples) {
+          IMFMediaBuffer buffer; Check(MFCreateMemoryBuffer(outputSize, out buffer), "out-buffer");
+          Check(MFCreateSample(out provided), "out-sample");
+          provided.AddBuffer(buffer); Marshal.ReleaseComObject(buffer);
+        }
+        MftOutputDataBuffer[] buffers = new MftOutputDataBuffer[1];
+        buffers[0].StreamId = outputStream;
+        buffers[0].Sample = provided == null ? IntPtr.Zero : Marshal.GetComInterfaceForObject(provided, typeof(IMFSample));
+        uint status;
+        int hr = transform.ProcessOutput(0, 1, buffers, out status);
+        if (buffers[0].Events != IntPtr.Zero) Marshal.Release(buffers[0].Events);
+        IMFSample result = null;
+        if (buffers[0].Sample != IntPtr.Zero) {
+          result = (IMFSample)Marshal.GetObjectForIUnknown(buffers[0].Sample);
+          Marshal.Release(buffers[0].Sample);
+        }
+        if (provided != null) Marshal.ReleaseComObject(provided);
+        if (hr == NeedMoreInput) { if (result != null) Marshal.ReleaseComObject(result); return null; }
+        if (hr == StreamChange) {
+          if (result != null) Marshal.ReleaseComObject(result);
+          IMFMediaType type;
+          Check(transform.GetOutputAvailableType(outputStream, 0, out type), "stream-change");
+          Check(transform.SetOutputType(outputStream, type, 0), "stream-change-set");
+          ReadSequenceHeader();
+          if (Hardware) return null; // an async encoder announces the real output with its own event
+          continue;
+        }
+        Check(hr, "output");
+        if (result == null) return null;
+        try {
+          IMFMediaBuffer contiguous; Check(result.ConvertToContiguousBuffer(out contiguous), "contiguous");
+          IntPtr data; int max, length;
+          Check(contiguous.Lock(out data, out max, out length), "out-lock");
+          byte[] bytes = new byte[length];
+          Marshal.Copy(data, bytes, 0, length);
+          contiguous.Unlock();
+          Marshal.ReleaseComObject(contiguous);
+          return bytes;
+        } finally { Marshal.ReleaseComObject(result); }
+      }
+      return null;
+    }
+
+    /// <summary>[keyflag][width u16be][height u16be][Annex B], the native packet
+    /// the WSL side parses. A keyframe always carries SPS + PPS.</summary>
+    byte[] Package(byte[] unit) {
+      bool hasSps = false, hasPps = false, hasIdr = false, hasSlice = false;
+      List<int[]> nals = Nals(unit, unit.Length);
+      foreach (int[] nal in nals) {
+        int type = unit[nal[0]] & 0x1f;
+        if (type == 7) hasSps = true; else if (type == 8) hasPps = true;
+        else if (type == 5) hasIdr = true; else if (type == 1) hasSlice = true;
+      }
+      if (hasSps && hasPps) { byte[] sets = KeepNals(unit, unit.Length, 7, 8); if (sets.Length > 0) parameterSets = sets; }
+      if (!hasIdr && !hasSlice) return null;
+      // Re-emit with 4-byte start codes only; prepend cached parameter sets to a bare IDR.
+      List<byte> body = new List<byte>(unit.Length + 64);
+      if (hasIdr && !(hasSps && hasPps)) {
+        if (parameterSets == null) return null;
+        body.AddRange(parameterSets);
+      }
+      foreach (int[] nal in nals) {
+        int type = unit[nal[0]] & 0x1f;
+        if (type == 9) continue; // access unit delimiters are noise to the viewer
+        body.Add(0); body.Add(0); body.Add(0); body.Add(1);
+        for (int i = nal[0]; i < nal[0] + nal[1]; i++) body.Add(unit[i]);
+      }
+      if (body.Count > MaxAccessUnit) return null;
+      byte[] packet = new byte[5 + body.Count];
+      packet[0] = (byte)(hasIdr ? 1 : 0);
+      packet[1] = (byte)(Width >> 8); packet[2] = (byte)Width;
+      packet[3] = (byte)(Height >> 8); packet[4] = (byte)Height;
+      body.CopyTo(packet, 5);
+      return packet;
+    }
+
+    /// <summary>[offset, length] of each NAL payload, 3- or 4-byte start codes.</summary>
+    static List<int[]> Nals(byte[] data, int length) {
+      List<int> starts = new List<int>();
+      for (int i = 0; i + 2 < length; i++) {
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) { starts.Add(i + 3); i += 2; }
+      }
+      List<int[]> result = new List<int[]>();
+      for (int s = 0; s < starts.Count; s++) {
+        int end = s + 1 < starts.Count ? starts[s + 1] - 3 : length;
+        while (end > starts[s] && data[end - 1] == 0) end--; // trailing zero of a 4-byte start code
+        if (end > starts[s]) result.Add(new int[] { starts[s], end - starts[s] });
+      }
+      return result;
+    }
+
+    static byte[] KeepNals(byte[] data, int length, int first, int second) {
+      List<byte> kept = new List<byte>();
+      foreach (int[] nal in Nals(data, length)) {
+        int type = data[nal[0]] & 0x1f;
+        if (type != first && type != second) continue;
+        kept.Add(0); kept.Add(0); kept.Add(0); kept.Add(1);
+        for (int i = nal[0]; i < nal[0] + nal[1]; i++) kept.Add(data[i]);
+      }
+      return kept.ToArray();
+    }
+
+    public void Dispose() {
+      if (disposed) return;
+      disposed = true;
+      try { Marshal.ReleaseComObject(transform); } catch { /* already released */ }
     }
   }
 }
