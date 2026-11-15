@@ -12,4 +12,6 @@ The helper also now works on the next picture while the current one is still tra
 
 **Who gets it.** It is switched on for our own development machines first and switched off for everyone else until it has been measured in real use. It can be turned off on any machine with one setting, and that takes effect right away.
 
+**How it was checked.** On Mama PC, through the real Remote Desktop page in Chrome, the dashboard decoded 15.6 video pictures a second at 1728x1080; an automatic test that talks to Mama's helper the same way the agent does measured 15.5 a second and checks the video decodes cleanly.
+
 **What you need to decide.** Nothing. This is an improvement that ships switched off for other users; the only open item is Justin trying it on Mama PC and saying whether it feels smooth.

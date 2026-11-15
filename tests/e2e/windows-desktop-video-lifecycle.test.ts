@@ -8,7 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { isWslHost } from '../../src/core/DesktopHost.js';
+import { isWslHost } from '../../src/core/wslPlatform.js';
+import { desktopFrameIntervalMs } from '../../src/server/DesktopStreamManager.js';
 import { discoverWindowsDesktopCompanion } from '../../src/core/WindowsDesktopCompanionDiscovery.js';
 import { windowsDesktopLocalSend } from '../../src/core/WindowsDesktopLocalTransport.js';
 import { WindowsDesktopHost, resolveWindowsDesktopVideo } from '../../src/core/WindowsDesktopHost.js';
@@ -47,13 +48,15 @@ describe('Windows desktop video production boot', () => {
         if (frame?.keyframe) { keyframe = frame.data; units.push(frame.data); }
       }
       expect(keyframe, 'first keyframe within 10 s').not.toBeNull();
-      // Same pacing as DesktopStreamManager: at most one request every 67 ms.
+      // Same pacing as DesktopStreamManager for this host's video session.
+      const interval = desktopFrameIntervalMs(host.videoFrameIntervalMs);
+      expect(interval).toBe(50);
       const started = Date.now();
       let next = started;
       while (Date.now() - started < 10_000) {
         const frame = await host.captureH264!(false);
         if (frame) units.push(frame.data); else empty++;
-        next += 67;
+        next += interval;
         const wait = next - Date.now();
         if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait)); else next = Date.now();
       }
@@ -61,7 +64,7 @@ describe('Windows desktop video production boot', () => {
       console.log(`windows video: ${units.length - 1} pictures in 10 s = ${fps.toFixed(1)} fps, ${empty} empty, `
         + `avg ${Math.round(units.reduce((sum, unit) => sum + unit.length, 0) / units.length)} bytes, `
         + `windows-side ${JSON.stringify(host.captureTiming())}`);
-      expect(fps).toBeGreaterThanOrEqual(15 * 0.93); // 67 ms pacing tops out just under 15
+      expect(fps).toBeGreaterThanOrEqual(15);
       const ffmpeg = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find(path => existsSync(path));
       if (ffmpeg) {
         const decoded = spawnSync(ffmpeg, ['-v', 'error', '-f', 'h264', '-i', 'pipe:0', '-f', 'null', '-'],
