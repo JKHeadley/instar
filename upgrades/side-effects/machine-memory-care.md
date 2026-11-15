@@ -114,6 +114,8 @@ Findings fell from 7 (three of them design-level) to 5 (one blocking, and that o
 
 Verdict: Concur, after the round-2 fixes.
 
+After review, the first full Local Verify run found two guard tests failing, and both are fixed. The three sampler reads that report an unreadable signal as null now carry the `@silent-fallback-ok` reason, which is what `no-silent-fallbacks` checks for. The `ps` call in `leftoverReaper.ts` now passes `maxBuffer` where it is called, which `ps-table-max-buffer` checks. Behaviour is unchanged.
+
 ## Class-Closure Declaration (display-only mirror)
 
 - **Class:** `unbounded-self-action`. **Closure:** `guard`, enforced by the ratchet in `tests/unit/self-action-convergence.test.ts`.

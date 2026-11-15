@@ -522,9 +522,9 @@ export class MachineLoadSampler {
     const loadPerCore = cores && typeof la === 'number' && Number.isFinite(la) ? la / cores : null;
     const cpuIdlePct = safe(() => this.cpuIdleDelta(), null);
     const [memAvailablePct, memPressureNative, swap] = await Promise.all([
-      this.d.readMemAvailablePct().catch(() => null),
-      this.d.readNativePressure().catch(() => null),
-      this.d.readSwap().catch(() => null),
+      this.d.readMemAvailablePct().catch(() => null), // @silent-fallback-ok: an unreadable signal is reported as null (missing), never a substituted value
+      this.d.readNativePressure().catch(() => null), // @silent-fallback-ok: an unreadable signal is reported as null (missing), never a substituted value
+      this.d.readSwap().catch(() => null), // @silent-fallback-ok: an unreadable signal is reported as null (missing), never a substituted value
     ]);
     const totalMem = safe(() => this.d.totalmem(), null);
     const swapUsedBytes = swap && typeof swap.usedBytes === 'number' && Number.isFinite(swap.usedBytes) && swap.usedBytes >= 0 ? swap.usedBytes : null;

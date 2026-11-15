@@ -213,9 +213,12 @@ export async function reapLeftovers(deps: ReapDeps, prefixes: LeftoverPrefix[], 
 }
 
 /** `okOnError`: lsof exits 1 when nothing matched, and its output is still the answer. */
-function execOut(cmd: string, args: string[], timeoutMs: number, okOnError = false): Promise<string | null> {
+const READ_MAX_BUFFER = 64 * 1024 * 1024;
+
+function execOut(cmd: string, args: string[], opts: { timeoutMs: number; maxBuffer: number; okOnError?: boolean }): Promise<string | null> {
+  const okOnError = opts.okOnError === true;
   return new Promise((resolve) => {
-    execFile(cmd, args, { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+    execFile(cmd, args, { encoding: 'utf-8', timeout: opts.timeoutMs, maxBuffer: opts.maxBuffer }, (err, stdout) => {
       // A missing binary or a timeout is unreadable; only a plain non-zero exit is an answer.
       const exitedNonZero = !!err && typeof (err as NodeJS.ErrnoException & { code?: unknown }).code === 'number' && !(err as { killed?: boolean }).killed;
       if (err && !(okOnError && exitedNonZero)) { resolve(null); return; }
@@ -242,8 +245,8 @@ export function localVerifyRunPrefixes(agentHome: string, tempRoot: string): { r
 /** The real process-table readers and signal sender (POSIX). */
 export function realReapDeps(): ReapDeps {
   return {
-    listProcesses: () => execOut('ps', ['-A', '-ww', '-o', 'pid=,ppid=,uid=,stat=,etime=,command='], 10_000),
-    listTmuxSockets: () => execOut('lsof', ['-nP', '-a', '-U', '-c', 'tmux', '-F', 'pn'], 10_000, true),
+    listProcesses: () => execOut('ps', ['-A', '-ww', '-o', 'pid=,ppid=,uid=,stat=,etime=,command='], { timeoutMs: 10_000, maxBuffer: READ_MAX_BUFFER }),
+    listTmuxSockets: () => execOut('lsof', ['-nP', '-a', '-U', '-c', 'tmux', '-F', 'pn'], { timeoutMs: 10_000, maxBuffer: READ_MAX_BUFFER, okOnError: true }),
     kill: (pid, signal) => { process.kill(pid, signal); },
     selfPid: process.pid,
     uid: typeof process.getuid === 'function' ? process.getuid() : -1,
