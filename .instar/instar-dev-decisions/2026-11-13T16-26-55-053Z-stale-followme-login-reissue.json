@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-13T16:26:55.053Z",
+  "slug": "stale-followme-login-reissue",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/EnrollmentWizard.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/enrollment-wizard.test.ts#expired Claude login, healthy account, slot answers as expected → closed, no new code, loop over",
+      "howCaught": "Control-loop edge: reissue tick -> re-drive -> new pending login -> next expiry -> re-drive. Steady-state bound: for a Claude login whose account the pool holds active and whose slot answers live as the expected email, the loop ends after one identity read; the test asserts no re-drive and no further read on the next sweep. Settling brake: completing the login removes it from the expired set. Other logins keep the pre-existing one re-drive per 15-minute TTL."
+    },
+    "component": "EnrollmentWizard"
+  },
+  "verdict": "pass"
+}
