@@ -15,8 +15,13 @@ if [[ ! -x "$prefix/bin/tmux" ]]; then
   if ! command -v cc >/dev/null || ! command -v make >/dev/null || \
      ! command -v bison >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists libevent ncurses || \
      [[ ! -f /usr/include/utempter.h ]]; then
-    timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-    timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    # apt spends every Acquire::Retries on the same URI before moving to the next
+    # mirror in the runner's configured mirror list (actions/runner-images
+    # configure-apt.sh). No per-URI retry plus a short timeout lets a stalled mirror
+    # try configured alternates within the same 180s bound.
+    apt_acquire=(-o Acquire::Retries=0 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+    timeout --kill-after=10s 180s sudo apt-get "${apt_acquire[@]}" update
+    timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_acquire[@]}" install -y \
       build-essential pkg-config bison libevent-dev libncurses-dev libutempter-dev
   fi
   build_root=$(mktemp -d "$RUNNER_TEMP/instar-tmux-build.XXXXXX")
