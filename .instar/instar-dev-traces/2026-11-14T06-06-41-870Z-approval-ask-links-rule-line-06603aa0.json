@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "approval-ask-links-rule-line",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T06:06:41.870Z",
+  "artifactPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "artifactSha256": "0c1d03fbdcc89b6bc2983617f4382d077e4fa9ac4912adfd0d5a5f60cc95c161",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-12T02-16-50-800Z-approval-ask-links-rule-line.json",
+    ".instar/instar-dev-traces/2026-11-12T02-15-41-553Z-approval-ask-links-rule-line-40edef66.json",
+    ".instar/instar-dev-traces/2026-11-12T02-21-11-190Z-approval-ask-links-rule-line-4297907f.json",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/ask-links-clause-interaction-family-2026-11-11.json",
+    "docs/specs/approval-ask-links-rule-line.eli16.md",
+    "docs/specs/reports/ask-links-clause-interaction-review-2026-11-11.md",
+    "docs/standards-registry-area-audits.json",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-askLinks.test.ts",
+    "upgrades/next/every-ask-carries-its-links.md",
+    "upgrades/side-effects/approval-ask-links-rule-line.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR independent second-pass review of the Tier-1 rule-line change (CLAUDE.md awareness line, its migration and test, the registry clause); reviewer concurred.",
+  "eli16Path": "docs/specs/approval-ask-links-rule-line.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

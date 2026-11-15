@@ -222,6 +222,7 @@ import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
+import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
@@ -1468,6 +1469,8 @@ export class AgentServer {
     readMarkers?: ConversationReadMarkerStore | null;
     /** The machine's hybrid logical clock in ms, for a baseline that never runs behind a peer's time (§3.2). */
     readMarkersHlcNowMs?: () => number;
+    /** Conversation-list pins (docs/specs/conversation-list-pins.md), built by server.ts on the replication path. Absent ⇒ a local store is built here. */
+    conversationListPins?: ConversationListPinStore | null;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
@@ -2113,7 +2116,7 @@ export class AgentServer {
         return options.telegram.sendOwnerDMWithButton(text, [
           ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
           ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
-        ]);
+        ], { reportHeld: true });
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
@@ -2182,9 +2185,13 @@ export class AgentServer {
           const teamId = this.config.mobilePairing?.push?.teamId;
           return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
         },
+        // Android (docs/specs/mobile-android-app.md §2.3): the Firebase service-account key, read before each send.
+        fcmKey: () => pushKeys.get('fcm_service_account_json'),
+        // An approval notice reaches an Android phone only when it can approve: active owner phone with a presence key.
+        canApprove: (deviceId) => { const d = mp.devices.get(deviceId); return !!d?.presenceKey && activeOwnerPhone(mp, deviceId); },
         fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
         reportDegradation: (what, err) => DegradationReporter.getInstance().report({
-          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          feature: what, primary: 'send a push notification to a paired phone', fallback: "no push for this event; the item is still in the app and the agent's other channels",
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
         }),
       });
@@ -7223,6 +7230,8 @@ export class AgentServer {
       }));
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
         unread: this.conversationUnread,
+        // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
+        listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         mediaEnabled: isMobileMediaEnabled(options.config),

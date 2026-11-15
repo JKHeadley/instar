@@ -2471,7 +2471,32 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
+  /** sendOwnerDMWithButton with `reportHeld`: a send that may still land (kept for retry, or its outcome unknown) answers this instead of null. */
+  static readonly OWNER_DM_HELD = -1;
+  /**
+   * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
+   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
+   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
+   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   */
+  static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
+    'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
+    'credential-capacity-unavailable',
+  ]);
+
+  /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */
+  static ownerDMOutcome(err: unknown): number | null {
+    if (!(err instanceof TelegramOriginHoldError)) return null;
+    // Telegram took it; only our own record of it is missing.
+    if (err.outcome === 'accepted-unrecorded') { const id = Number(err.delivered?.messageId); return Number.isFinite(id) && id > 0 ? id : TelegramAdapter.OWNER_DM_HELD; }
+    // Telegram may already have it: the owner can be holding live buttons.
+    if (err.outcome === 'outcome-unknown') return TelegramAdapter.OWNER_DM_HELD;
+    if (err.outcome === 'held' && err.operationId && TelegramAdapter.OWNER_DM_RETRIED_HOLDS.includes(err.reason)) return TelegramAdapter.OWNER_DM_HELD;
+    return null;
+  }
+
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
+    opts?: { reportHeld?: boolean }): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
@@ -2495,6 +2520,8 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
       console.warn(`[telegram] sendOwnerDMWithButton failed: ${err instanceof Error ? err.message : String(err)}`);
+      // A held send is kept and retried by the origin store and may still land; a caller that asked can wait for it.
+      if (opts?.reportHeld) return TelegramAdapter.ownerDMOutcome(err);
       return null;
     }
   }

@@ -1361,6 +1361,18 @@ describe('related-test failure keys', () => {
   });
 });
 
+describe('filesNamingTest', () => {
+  it('keeps the files that contain the named test, and all of them when none do or the text is unknown', async () => {
+    const { filesNamingTest } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const texts: Record<string, string | null> = { 'tests/a.test.ts': "it('never routes the gate to gemini', () => {})", 'tests/b.test.ts': "it('other', () => {})", 'tests/c.test.ts': null };
+    const read = (f: string) => texts[f] ?? null;
+    expect(filesNamingTest(['tests/a.test.ts', 'tests/b.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/a.test.ts']);
+    expect(filesNamingTest(['tests/a.test.ts', 'tests/b.test.ts'], 'routing > never routes the gate to gemini', read)).toEqual(['tests/a.test.ts']);
+    expect(filesNamingTest(['tests/b.test.ts', 'tests/c.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/c.test.ts']);
+    expect(filesNamingTest(['tests/b.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/b.test.ts']);
+  });
+});
+
 describe('already-fixed claim in the session result', () => {
   it('keeps a hex fixedByCommit only on not-reproducible', async () => {
     const { parseSessionResult } = await import('../../../src/feedback-factory/execute/executorSession.js');

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "approval-ask-links-rule-line",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T23:47:30.158Z",
+  "artifactPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "artifactSha256": "e1258dd1ec3a77cca9e7a1ae8c02332e65ed0b2f93c0da8d8baf7b0d51792e3b",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-12T02-16-50-800Z-approval-ask-links-rule-line.json",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/ask-links-clause-interaction-family-2026-11-11.json",
+    "docs/specs/approval-ask-links-rule-line.eli16.md",
+    "docs/specs/reports/ask-links-clause-interaction-review-2026-11-11.md",
+    "docs/standards-registry-area-audits.json",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-askLinks.test.ts",
+    "upgrades/next/every-ask-carries-its-links.md",
+    "upgrades/side-effects/approval-ask-links-rule-line.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Approved standards clause plus its CLAUDE.md line, brought up to date with main; no content change (byte-identical clause, independent second pass concurred).",
+  "eli16Path": "docs/specs/approval-ask-links-rule-line.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
