@@ -41,7 +41,7 @@ afterAll(() => {
 
 const CARD = { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false };
 
-function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | null } = {}) {
+function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | null; specApprovalJudge?: WorkBoardRouteDeps['specApprovalJudge'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-board-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }, { id: 'adriana', name: 'Adriana', channels: [], permissions: ['user'] }]));
@@ -85,6 +85,7 @@ function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | n
     ensureConversation: async () => {}, removeConversation: async (ck) => { removed.push(ck); },
     behind: () => null, lastWrittenOn: () => null, repliedAfterQuestion: () => false, brokenAttachments: () => [], when: (iso) => iso,
     saveSettings: () => true,
+    ...(opts.specApprovalJudge ? { specApprovalJudge: opts.specApprovalJudge } : {}),
   };
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
@@ -288,5 +289,56 @@ describe('visibility follows the card\'s conversation', () => {
     expect((await request(c.app).get(`/work-board/cards/${made.cardId}`).set(msp)).status).toBe(200);
     const tap = await request(c.app).post(`/work-board/cards/${made.cardId}/tap`).set(msp).send({ action: 'hold', pin: PIN });
     expect(tap.status).toBe(403); expect(tap.body.error).toBe('person-required');
+  });
+});
+
+describe('B24: an agent card asking approval of a spec or design needs its constitution check (Echo Bugs topic 10000002750)', () => {
+  const SPEC_CARD = { title: 'Approve the Work Board phase 2 design', need: 'The design spec is ready; approve it so I can build it.', doneWhen: [{ id: 'd1', text: 'Approved' }], outward: false };
+  const fireOn = (needle: string) => async (text: string) => (text.includes(needle)
+    ? { hold: true, issue: 'asks approval of a design with no constitution check result', suggestion: 'run the check and add one line with its result' }
+    : { hold: false });
+
+  it('holds the agent\'s card with 422 and the way through; nothing is written', async () => {
+    const seen: string[] = [];
+    const c = setup({ specApprovalJudge: async (t) => { seen.push(t); return fireOn('approve it so I can build')(t); } });
+    const r = await request(c.app).post('/work-board/cards').set(bearer()).send(SPEC_CARD);
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe('spec-approval-unchecked');
+    expect(r.body.rule).toBe('B24_SPEC_APPROVAL_UNCHECKED');
+    expect(r.body.suggestion).toMatch(/run the check/);
+    expect(seen[0]).toContain('title: Approve the Work Board phase 2 design');
+    expect((await request(c.app).get('/work-board').set(bearer())).body.cards ?? []).toHaveLength(0);
+  });
+
+  it('lets the card through once it carries the check result, and never judges a person\'s own card', async () => {
+    let calls = 0;
+    const c = setup({ specApprovalJudge: async (t) => { calls++; return fireOn('approve it so I can build')(t); } });
+    const ok = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...SPEC_CARD, need: 'Constitution check ran 03:20, nothing at risk. Approve the design?' });
+    expect(ok.status).toBe(201);
+    const person = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...SPEC_CARD, pin: PIN });
+    expect(person.status).toBe(201);
+    expect(calls).toBe(1);
+  });
+
+  it('holds an agent waiting-on question the same way', async () => {
+    const c = setup({ specApprovalJudge: fireOn('sign off on the spec') });
+    const made = await request(c.app).post('/work-board/cards').set(bearer()).send(CARD);
+    expect(made.status).toBe(201);
+    const q = await request(c.app).post(`/work-board/cards/${made.body.cardId}/records`).set(bearer()).send({ kind: 'waiting-on', principal: 'owner', question: 'Can you sign off on the spec?' });
+    expect(q.status).toBe(422);
+    expect(q.body.error).toBe('spec-approval-unchecked');
+  });
+
+  it('a judge that cannot answer holds the agent write with a retryable 503; nothing is written', async () => {
+    const c = setup({ specApprovalJudge: async () => ({ hold: false, unavailable: true }) });
+    const r = await request(c.app).post('/work-board/cards').set(bearer()).send(SPEC_CARD);
+    expect(r.status).toBe(503);
+    expect(r.body.error).toBe('spec-approval-judge-unavailable');
+    expect(r.body.retryable).toBe(true);
+  });
+
+  it('an agent with no LLM provider at all is not refused every card write', async () => {
+    const c = setup({ specApprovalJudge: async () => ({ hold: false, noProvider: true }) });
+    expect((await request(c.app).post('/work-board/cards').set(bearer()).send(SPEC_CARD)).status).toBe(201);
   });
 });

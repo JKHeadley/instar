@@ -1,0 +1,4 @@
+---
+title: Spec approvals carry the constitution check
+---
+Before you ask the operator to approve a spec or design, run the built-in constitution check on it, fold in anything it flags, and put one plain line in the request with the result: when it ran and which standards were at risk, or that none were. The check is the same one /spec-converge runs each round; run it directly with `curl -s -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:{{port}}/spec/conformance-check -d '{"markdown": "<the spec or design text>"}'` (or `{"specPath": "<file under docs/specs>"}`). Every run is recorded, and the message reviewer (rule B24) holds an approval request that does not carry its result, or claims a check with no record. Work Board cards are held the same way. If the check is down, say so and why in the request; that is a stated result. Changes to the constitution itself go through their own process.
