@@ -255,6 +255,10 @@ export interface DeviceRecord {
   /** The key hash of the phone key that signed the link (stays the signer across a phone key rotation). */
   linkedByKeyHash?: string;
   linkExpiresAt?: string;
+  /** The pairing-outcome watch this phone's link carried (docs/specs/mobile-pairing-outcome-notice.md §3.2). */
+  outcomeWatchId?: string;
+  /** The original pending deadline; `expiresAt` is overwritten by boot and lease-loss expiry (§3.3). */
+  pendingDeadline?: string;
 }
 
 export type BrowserEffectKind = 'revokeReplaced' | 'notice';
@@ -387,12 +391,27 @@ export class DeviceRegistry {
   }
 
   list(): DeviceRecord[] { return this.normalize(this.read()).devices; }
+
+  /**
+   * Like `list()`, but a registry file that exists and cannot be read or parsed THROWS instead of
+   * reading as empty (docs/specs/mobile-pairing-outcome-notice.md §3.3: unknown is not an outcome).
+   */
+  listStrict(): DeviceRecord[] {
+    let text: string;
+    try { text = fs.readFileSync(this.file, 'utf-8'); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const raw = JSON.parse(text) as { devices?: unknown };
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.devices)) throw new Error('mobile-devices.json has no devices list');
+    return this.list();
+  }
   get(id: string): DeviceRecord | null { return this.list().find((d) => d.id === id) ?? null; }
 
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team' }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -405,6 +424,8 @@ export class DeviceRegistry {
       status: 'pending', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
       ...(row.userId ? { userId: row.userId } : {}),
+      // Pairing outcome notice (§3.2): joined in this same write, so no crash window separates them.
+      ...(row.outcomeWatchId ? { outcomeWatchId: row.outcomeWatchId, pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString() } : {}),
       // Only a non-owner role is written: absent already means owner, so an owner phone's record
       // stays byte-identical to the shape older builds read.
       ...(row.role && row.role !== 'owner' ? { role: row.role } : {}),

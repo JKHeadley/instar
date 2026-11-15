@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -1319,6 +1320,8 @@ export class AgentServer {
     publisher?: TelegraphService;
     viewer?: PrivateViewer;
     jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
+    /** Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.4): posts one automation reply as the pairing-outcome producer. */
+    mobilePairingAutomationReply?: import('./pairingOutcomeNotice.js').AutomationPost;
     tunnel?: TunnelManager;
     /**
      * Multi-route own names (docs/specs/mobile-multi-route.md): inject the Tailscale CLI and the
@@ -2194,6 +2197,21 @@ export class AgentServer {
         : (process.env.VITEST ? null : defaultTailscaleExec(wslWindowsHostAddress() !== null)),
       isWsl: wslWindowsHostAddress() !== null,
       ...(options.mobileRoutes?.fetchFn ? { fetchFn: options.mobileRoutes.fetchFn } : {}),
+      // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): a line in the topic that asked for the link.
+      ...(options.mobilePairingAutomationReply ? { outcomeNotice: createPairingOutcomeNotice({
+        post: options.mobilePairingAutomationReply,
+        port: options.config.port,
+        authToken: options.config.authToken ?? '',
+        available: () => !!options.telegram && !!options.telegramOrigin?.service,
+        recentOperatorInbound: (topicId, withinMs) => options.telegram?.selectivity?.recentOperatorInbound(topicId, withinMs) ?? null,
+        upsertAttention: async (item) => {
+          if (!options.telegram) throw new Error('Telegram not configured');
+          return options.telegram.upsertAttentionItem({
+            id: item.id, title: item.title, summary: item.summary, description: item.summary, priority: 'NORMAL',
+            category: 'mobile-pairing', sourceContext: 'mobile-pairing-outcome', contextTopicIds: [item.topicId],
+          } as Parameters<NonNullable<typeof options.telegram>['upsertAttentionItem']>[0]);
+        },
+      }) } : {}),
       raiseAttention: (title, body) => {
         void options.telegram?.createAttentionItem({
           id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',

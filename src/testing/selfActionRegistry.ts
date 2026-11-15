@@ -76,6 +76,7 @@ import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS }
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
+import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
@@ -5565,7 +5566,55 @@ const localVerifyMemoryNotice: SelfActionController = {
   },
 };
 
+/**
+ * pairing-outcome-notice-retry — docs/specs/mobile-pairing-outcome-notice.md §3.4. The reconciler
+ * retries a decided outcome line (30 s doubling, 5 min cap) only inside the 1 h window after it was
+ * decided, then fails it and upserts one attention item per topic (30 s doubling, 10 min cap), giving
+ * up after MAX_ESCALATION_ATTEMPTS per process with one report. Under a target that always rejects
+ * both, the count settles at 15 sends + 12 upserts, horizon-independent.
+ */
+const pairingOutcomeNoticeRetry: SelfActionController = {
+  id: 'pairing-outcome-notice-retry',
+  actionVerb: 'retry',
+  models: 'src/core/PairingOutcomeWatches.ts (sendDue within SEND_WINDOW_MS + escalateFailed with MAX_ESCALATION_ATTEMPTS)',
+  modelsPath: 'src/core/PairingOutcomeWatches.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The send window is measured from the persisted decidedAt, so a restart cannot extend it; the upsert counter is per process, so each boot adds at most 12 attempts per topic.' },
+  boundK: 15 + MAX_ESCALATION_ATTEMPTS,
+  perTargetBoundK: 15,
+  ticks: 24 * 120,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const decidedAt = f.clock.nowMs();
+    let sendAttempts = 0, nextSendAt = decidedAt, failed = false;
+    let escAttempts = 0, nextEscAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!f.targetAlwaysRejects()) return;
+        if (!failed && now >= nextSendAt) {
+          if (now - decidedAt > PAIRING_SEND_WINDOW_MS) { failed = true; }
+          else {
+            sink.emit({ verb: 'retry', target: 'pairing-outcome-send' });
+            sink.emitTimesMs.push(now);
+            sendAttempts += 1;
+            const next = now + sendRetryDelayMs(sendAttempts);
+            if (next - decidedAt > PAIRING_SEND_WINDOW_MS) failed = true; else nextSendAt = next;
+          }
+        }
+        if (failed && escAttempts < MAX_ESCALATION_ATTEMPTS && now >= nextEscAt) {
+          sink.emit({ verb: 'retry', target: 'pairing-outcome-attention' });
+          sink.emitTimesMs.push(now);
+          escAttempts += 1;
+          nextEscAt = now + escalationRetryDelayMs(escAttempts);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
   localVerifyLeftoverReaper,
   localVerifyMemoryNotice,

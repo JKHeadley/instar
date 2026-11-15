@@ -1,4 +1,5 @@
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
+import { PairingOutcomeWatches, type SendResult as OutcomeSendResult, type OperationResult as OutcomeOperationResult } from '../core/PairingOutcomeWatches.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamSwitchLine } from '../core/TeamSwitches.js';
@@ -152,6 +153,20 @@ export interface MobilePairingDeps {
    * Resolves true once raised.
    */
   raiseBrowserNotice?: BrowserNoticeRaiser;
+  /**
+   * Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): whether a line can be
+   * posted (Telegram adapter AND origin service running), the classified sender, and the per-topic
+   * attention item for a line that could not be posted. Absent ⇒ no watches; mints answer
+   * `outcomeNotice: null`.
+   */
+  outcomeNotice?: {
+    available: () => boolean;
+    send: (topicId: number, text: string, logicalSendId: string, anchorInboundId: string | null) => Promise<OutcomeSendResult>;
+    checkOperation: (operationId: string) => Promise<OutcomeOperationResult>;
+    /** The operator's latest message in the topic within `withinMs` (the request a link answers). */
+    recentOperatorInbound: (topicId: number, withinMs: number) => string | null;
+    escalate: (topicId: number, lines: string[]) => Promise<boolean>;
+  };
 }
 
 /** The default people lookup: the registry on disk (read-only, no writes) plus `config.users`. */
@@ -255,6 +270,11 @@ export function isMobileUnreadEnabled(config: InstarConfig): boolean {
   return isMobileNativeEnabled(config) && config.mobilePairing?.native?.unread?.enabled !== false;
 }
 
+/** Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): omitted = on, read live. */
+export function isOutcomeNoticeEnabled(config: InstarConfig): boolean {
+  return (config.mobilePairing as { outcomeNotice?: { enabled?: boolean } } | undefined)?.outcomeNotice?.enabled !== false;
+}
+
 /** `mobilePairing.approve.enabled` (docs/specs/mobile-pairing-approve.md §3.6): omitted ⇒ on wherever pairing is on. Read live. */
 export function isPairingApproveEnabled(config: InstarConfig): boolean {
   return isMobilePairingEnabled(config) && config.mobilePairing?.approve?.enabled !== false;
@@ -316,6 +336,10 @@ export class MobilePairingService {
   pushPoolCtx: PoolCtx | null = null;
   /** Browser devices (dashboard-conversations-browser-device): activation, effects, recovery. */
   readonly browser: BrowserDeviceController;
+  /** Pairing outcome watches (docs/specs/mobile-pairing-outcome-notice.md); null when not wired. */
+  readonly outcomes: PairingOutcomeWatches | null;
+  /** Codes live in this process only, so a new process voids every link (§3.2 codeEpoch). */
+  readonly bootId = crypto.randomUUID();
 
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
@@ -353,6 +377,42 @@ export class MobilePairingService {
     // before a lease move can never confirm after the lease comes back.
     this.leaseTimer = setInterval(() => this.leaseTick(), 5_000);
     this.leaseTimer.unref?.();
+    const on = deps.outcomeNotice;
+    this.outcomes = on ? new PairingOutcomeWatches({
+      stateDir: deps.stateDir,
+      agentName: () => deps.config.projectName,
+      listDevices: () => this.devices.listStrict(),
+      codeEpoch: () => this.bootId,
+      send: on.send,
+      checkOperation: on.checkOperation,
+      escalate: on.escalate,
+      enabled: () => isOutcomeNoticeEnabled(deps.config),
+      reportDegradation: deps.reportDegradation,
+      now,
+    }) : null;
+    this.outcomes?.start();
+  }
+
+  /**
+   * Record a pairing-outcome watch for a just-minted code (§3.1). The link is minted either way;
+   * the result is the response's `outcomeNotice` / `outcomeNoticeReason`.
+   */
+  watchOutcome(code: string, rawTopicId: unknown, label: string | null, codeExpiresAt: number):
+    { outcomeNotice: { topicId: number; watchId: string } | null; outcomeNoticeReason?: string } | null {
+    if (rawTopicId === undefined || rawTopicId === null || rawTopicId === '') return null;
+    const topicId = typeof rawTopicId === 'number' ? rawTopicId : (typeof rawTopicId === 'string' && /^-?\d{1,16}$/.test(rawTopicId.trim()) ? Number(rawTopicId.trim()) : NaN);
+    if (!Number.isSafeInteger(topicId) || topicId === 0) return { outcomeNotice: null, outcomeNoticeReason: 'topicId was not a conversation number, so no line will be posted.' };
+    if (topicId < 0) return { outcomeNotice: null, outcomeNoticeReason: 'Pairing results are posted only in Telegram conversations for now, so no line will be posted here.' };
+    if (!isOutcomeNoticeEnabled(this.deps.config)) return { outcomeNotice: null, outcomeNoticeReason: 'Pairing result lines are switched off on this agent.' };
+    if (!this.outcomes || !this.deps.outcomeNotice?.available()) return { outcomeNotice: null, outcomeNoticeReason: 'This agent cannot post in Telegram right now, so no line will be posted.' };
+    let anchor: string | null = null;
+    try { anchor = this.deps.outcomeNotice.recentOperatorInbound(topicId, 15 * 60_000); } catch { anchor = null; } // @silent-fallback-ok — no anchor means the line goes to the quiet feed, and the response says so
+    const r = this.outcomes.record({ topicId, label, codeExpiresAt, anchorInboundId: anchor });
+    if (!r.ok) return { outcomeNotice: null, outcomeNoticeReason: r.reason };
+    this.codes.attachWatch(code, r.id);
+    return anchor
+      ? { outcomeNotice: { topicId, watchId: r.id } }
+      : { outcomeNotice: { topicId, watchId: r.id }, outcomeNoticeReason: 'No recent message from you in this conversation, so the result will go to the quiet feed.' };
   }
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -443,7 +503,7 @@ export class MobilePairingService {
     }
   }
 
-  stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); }
+  stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); this.outcomes?.stop(); }
 
   // ── People and roles (docs/specs/mobile-app-people-and-roles.md) ──
 
@@ -1227,17 +1287,22 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
+    // Pairing outcome notice §3.2: a phone used the link (same synchronous block as the take).
+    svc.outcomes?.markTaken(r.watchId);
     // §3.2 step 3: an honest phone sends to the link's own origin. A code with no bound origin
     // (minted before this change, in this process) keeps the old rule: the eligible host.
     if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
-      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner' });
+      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner',
+        ...(r.watchId ? { outcomeWatchId: r.watchId } : {}) });
     } catch (err) {
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: registry write', context: { routeKind: eligible.kind } });
       res.status(500).json(storageErrorResponse({ error: 'Could not record the device. Ask for a new link.' }, svc.deps.stateDir));
@@ -1246,6 +1311,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     if (!created.ok) {
       const status = created.reason === 'duplicate-key' ? 409 : 429;
       featureEvidence.record('mobilePairing', { kind: 'held', reason: `redeem refused: ${created.reason}`, context: { routeKind: eligible.kind, status } });
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
       res.status(status).json({ error: created.reason });
       return;
     }
@@ -1317,6 +1383,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       svc.declineNonces.delete(nonce);
       svc.confirm.drop(device.id);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the pending device expires on its own
+      svc.outcomes?.markOutcome(r.watchId, 'not-delivered');
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: confirmation code not delivered', context: { deviceId: device.id, routeKind: eligible.kind } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
       return;
@@ -1398,8 +1465,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
       { userId: chosenPerson.userId, role: chosenPerson.role });
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
+    // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.1): never refuses the link.
+    const notice = svc.watchOutcome(m.code, mintBody.topicId, label, m.expiresAt);
     // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
     res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind,
+      ...(notice ?? {}),
       person: { name: chosenPerson.name, role: chosenPerson.role, userId: chosenPerson.userId },
       // Where the operator will read the code when it is shown on the dashboard (no Telegram owner).
       ...(approval === 'dashboard' ? { codePageUrl: codePageUrlForOrigin(origin) } : {}) });
@@ -1415,10 +1485,12 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return;
     }
     const local = svc.devices.list().map((d) => publicDeviceView(d, machine, svc));
-    if (req.query.scope !== 'pool' || !poolCtx) { res.json({ devices: local }); return; }
+    // Pairing outcome notice §3.6: this machine's recent link outcomes, owner callers only.
+    const outcomes = svc.outcomes ? { pairingOutcomes: svc.outcomes.outcomes() } : {};
+    if (req.query.scope !== 'pool' || !poolCtx) { res.json({ devices: local, ...outcomes }); return; }
     const pool = await fetchPoolDevices(poolCtx);
     const devices = [...local, ...pool.rows].sort((a, b) => String(b.pairedAt).localeCompare(String(a.pairedAt)));
-    res.json({ devices, pool: { failed: pool.failed } });
+    res.json({ devices, pool: { failed: pool.failed }, ...outcomes });
   });
 
   // ── Dashboard pairing approval (mobile-native-conversations §4.4) ──
