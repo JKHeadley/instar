@@ -71,6 +71,8 @@ Proxied-on-read: each machine records its own checks; the reviewing server merge
 
 **Stage-B certified set:** `src/core/specConstitutionCheckLedger.ts` enters the tone gate's import closure; it is listed under `excluded` in `src/data/stageBCertifiedSet.ts` with its reason (agent-reach precedent), and declares its own report type so the conformance reviewer and registry parser stay out of that closure.
 
+**LLM census (found by the local verify, 2026-11-15):** the card judge `WorkBoardSpecApprovalJudge` is registered as a `gate` in `componentCategories.ts`, has a row in `docs/LLM-ROUTING-REGISTRY.md`, is declared untrusted-input (exposed to all), not a claims judge, bench `pending: wave-3` (pinned visibly; the bench battery lives outside this repo), parser contract covered by its unit test, and provenance `pending:backlog:decision-quality-enrolment` (pinned).
+
 ## 8. Rollback cost
 
 Revert the PR and release. The ledger file is left behind, inert. No migration, no config, no agent state repair.

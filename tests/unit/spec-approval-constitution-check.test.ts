@@ -294,3 +294,34 @@ describe('Work Board judge', () => {
     expect(s).toContain('may be cited like the others');
   });
 });
+
+describe('Work Board judge parser contract (the reply shape the prompt teaches is the shape the parser accepts)', () => {
+  const TAUGHT = '{"fire": true|false, "issue": "<one sentence, empty when not firing>", "suggestion": "<one sentence, empty when not firing>"}';
+
+  it('the prompt teaches exactly the JSON shape the parser reads', async () => {
+    const { provider, last } = capture({ fire: false, issue: '', suggestion: '' });
+    await judgeSpecApprovalAsk(provider, 'title: x', []);
+    expect(last()).toContain(TAUGHT);
+  });
+
+  it('a taught-shape fire reply holds; a taught-shape no-fire reply passes', async () => {
+    const fire: IntelligenceProvider = { evaluate: async () => '{"fire": true, "issue": "asks approval with no check", "suggestion": "run the check"}' };
+    expect(await judgeSpecApprovalAsk(fire, 'x', [])).toEqual({ hold: true, issue: 'asks approval with no check', suggestion: 'run the check' });
+    const pass: IntelligenceProvider = { evaluate: async () => '{"fire": false, "issue": "", "suggestion": ""}' };
+    expect(await judgeSpecApprovalAsk(pass, 'x', [])).toEqual({ hold: false });
+  });
+
+  it('prose around the object is tolerated; a non-boolean fire never holds', async () => {
+    const wrapped: IntelligenceProvider = { evaluate: async () => 'Verdict:\n{"fire": true, "issue": "i", "suggestion": "s"}\nDone.' };
+    expect((await judgeSpecApprovalAsk(wrapped, 'x', [])).hold).toBe(true);
+    const stringly: IntelligenceProvider = { evaluate: async () => '{"fire": "true", "issue": "i", "suggestion": "s"}' };
+    expect(await judgeSpecApprovalAsk(stringly, 'x', [])).toEqual({ hold: false });
+  });
+
+  it('a fire with empty issue/suggestion still holds, with the default way through', async () => {
+    const bare: IntelligenceProvider = { evaluate: async () => '{"fire": true, "issue": "", "suggestion": ""}' };
+    const v = await judgeSpecApprovalAsk(bare, 'x', []);
+    expect(v.hold).toBe(true);
+    expect(v.suggestion).toMatch(/Run the built-in constitution check/);
+  });
+});

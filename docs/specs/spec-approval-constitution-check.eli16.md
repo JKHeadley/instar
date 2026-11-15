@@ -27,3 +27,4 @@ The reviewer is an AI reading for meaning, not a list of trigger words, because 
 Nothing. This uses the constitution as it stands and changes no standard. It ships on for Echo with the next release. Undoing it is a plain revert.
 
 One bookkeeping note: the new record-keeping file is listed in the release check's list of code outside the message-delivery path it certifies, the same way the previous fix's helper was.
+The Work Board check's AI calls are counted under the same token-use category as the message reviewer's.

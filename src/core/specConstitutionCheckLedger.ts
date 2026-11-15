@@ -121,6 +121,7 @@ export function recentSpecConstitutionChecks(stateDir: string): SpecConstitution
   try {
     text = fs.readFileSync(ledgerPath(stateDir), 'utf-8');
   } catch (err) {
+    // @silent-fallback-ok — ENOENT is the real "no checks recorded yet" state, not a fallback; every other error is rethrown
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
   }
@@ -238,6 +239,7 @@ export function recordSpecConstitutionCheck(
     fs.renameSync(tmp, file);
     return rec;
   } catch (err) {
+    // @silent-fallback-ok — logged; a missed record only means a later approval ask is held until the agent re-runs the check (fails toward the check, never toward a pass)
     console.error(`[spec-constitution-check-ledger] record failed: ${(err as Error).message}`);
     return null;
   }
