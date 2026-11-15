@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "cb-context-card",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-11T00:24:47.266Z",
+  "artifactPath": "upgrades/side-effects/cb-context-card.md",
+  "artifactSha256": "159114bce9493df57a5381230ebaa563cf261a75b6d3081120281e9980f8fc09",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/context-model.js",
+    "dashboard/console/context.js",
+    "dashboard/console/nav-model.js",
+    "dashboard/console/needs-model.js",
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "tests/e2e/console-context-page-alive.test.ts",
+    "tests/integration/console-static-serving.test.ts",
+    "tests/unit/ContextBudgetSentinel.test.ts",
+    "tests/unit/console-context.test.ts",
+    "tests/unit/console-needs-first-screen.test.ts",
+    "upgrades/next/cb-context-card.md",
+    "upgrades/side-effects/cb-context-card.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "operator surface reading sentinel state; Home count",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Adds a read-only console page and a Home-count source, and one notice-title wording change; it fixes no defect in an agent-authored artifact and adds no self-triggered controller (no loop, retry, respawn or notify of its own)."
+  }
+}

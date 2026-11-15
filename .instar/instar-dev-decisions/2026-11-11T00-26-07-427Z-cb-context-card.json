@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-11T00:26:07.427Z",
+  "slug": "cb-context-card",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/ContextBudgetSentinel.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Adds a read-only console page and a Home-count source, and one notice-title wording change; it fixes no defect in an agent-authored artifact and adds no self-triggered controller (no loop, retry, respawn or notify of its own)."
+  },
+  "verdict": "pass"
+}

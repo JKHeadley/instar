@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-11T16:36:39.129Z",
+  "slug": "cb-context-card",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/ContextBudgetSentinel.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "re-landing of an already-reviewed slice commit onto main; no change to its content"
+  },
+  "verdict": "pass"
+}
