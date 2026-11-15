@@ -4,14 +4,15 @@
 import { spawn } from 'node:child_process';
 
 const MAX_REPLY_CHARS = 1_800_000;
-const ALLOWED = new Set(['probe', 'displays', 'capture', 'cursor', 'input', 'start', 'heartbeat', 'stop', 'release']);
+const ALLOWED = new Set(['probe', 'displays', 'capture', 'capture-h264', 'cursor', 'input', 'start', 'heartbeat', 'stop', 'release']);
+const REPLY_TYPES = new Set(['application/json', 'image/jpeg', 'video/h264']);
 
 type LocalReply = { status?: unknown; type?: unknown; body?: unknown; ms?: unknown };
 
 function parseReply(text: string): Response {
   const reply = JSON.parse(text.trim()) as LocalReply;
   if (!Number.isInteger(reply.status) || (reply.status as number) < 200 || (reply.status as number) > 599
-    || (reply.type !== 'application/json' && reply.type !== 'image/jpeg')
+    || typeof reply.type !== 'string' || !REPLY_TYPES.has(reply.type)
     || typeof reply.body !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(reply.body)) {
     throw new Error('invalid');
   }
@@ -128,7 +129,8 @@ export function windowsDesktopLocalSend(endpoint: string, script: string): typeo
       mac: headers.get('X-Instar-Desktop-Mac') };
     const line = JSON.stringify(request) + '\n';
     if (Buffer.byteLength(line) > 12_000) throw new Error('windows-desktop-local-transport-request-too-large');
-    const lane = operation === 'capture' ? lanes.capture : lanes.control;
+    // Pictures and video share a lane so neither ever delays a click or key.
+    const lane = operation === 'capture' || operation === 'capture-h264' ? lanes.capture : lanes.control;
     if (!lane.unsupported) {
       try {
         const reply = await lane.request(JSON.stringify({ ...request, operation }) + '\n', init?.signal);
