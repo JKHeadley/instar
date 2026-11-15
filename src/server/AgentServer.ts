@@ -209,6 +209,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { getMigrationDefaults } from '../config/ConfigDefaults.js';
 import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
+import { createNeverSilentRoutes } from './neverSilentRoutes.js';
 import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
 import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
@@ -7156,6 +7157,8 @@ export class AgentServer {
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.startMaturationLadder(options, routeCtx);
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    // Never-Silent Conversation (docs/specs/never-silent-conversation.md §4): 503 while off.
+    this.app.use(createNeverSilentRoutes());
     this.app.use(createMaturationLadderRoutes({
       enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
       ladder: () => this.maturationLadder,

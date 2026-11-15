@@ -19879,6 +19879,153 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── Never-Silent Conversation (docs/specs/never-silent-conversation.md) ──────────
+    // Every inbound conversation message ends in a reply or a plain Instar notice. Dev-gated;
+    // the actions that change anything (swap, engine move) are separately switched and off.
+    try {
+      const nsCfg = () => {
+        const raw = liveConfig.get<Record<string, unknown> | undefined>('monitoring.neverSilent',
+          (config.monitoring as { neverSilent?: Record<string, unknown> } | undefined)?.neverSilent) ?? {};
+        const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d);
+        return {
+          enabled: resolveDevAgentGate(typeof raw.enabled === 'boolean' ? raw.enabled : undefined, config),
+          judge: raw.judge !== false,
+          actions: raw.actions === true,
+          frameworkFallback: raw.frameworkFallback === true,
+          confidenceFloor: typeof raw.confidenceFloor === 'number' ? raw.confidenceFloor : 0.8,
+          noticeAfterMs: num(raw.noticeAfterSeconds, 120) * 1000,
+        };
+      };
+      const { buildNeverSilent } = await import('../monitoring/neverSilent/neverSilentWiring.js');
+      const { setNeverSilentInstance } = await import('../server/neverSilentRoutes.js');
+      const { sendNeverSilentTelegramNotice } = await import('../messaging/telegram-origin/OriginDeterministicSend.js');
+      const { SecretStore: NsSecretStore } = await import('../core/SecretStore.js');
+      // One referee provider per engine, built on first use (own breaker each); every call names its
+      // account explicitly, so the referee never runs on the stuck engine's ambient login.
+      const { LlmCircuitBreaker: NsBreaker } = await import('../core/LlmCircuitBreaker.js');
+      const { buildIntelligenceProvider: nsBuild } = await import('../core/intelligenceProviderFactory.js');
+      const nsReferees = new Map<string, import('../core/types.js').IntelligenceProvider | null>();
+      const nsRefereeFor = (fw: string) => {
+        if (!nsReferees.has(fw)) {
+          let p: import('../core/types.js').IntelligenceProvider | null = null;
+          try { p = nsBuild({ framework: fw as import('../core/intelligenceProviderFactory.js').IntelligenceFramework, breaker: new NsBreaker() }); }
+          catch { p = null; /* @silent-fallback-ok — no CLI for that engine: the next engine, or undetermined (still told) */ }
+          nsReferees.set(fw, p);
+        }
+        return nsReferees.get(fw) ?? null;
+      };
+      const nsTelegram = telegram;
+      const neverSilent = buildNeverSilent({
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        config: nsCfg,
+        sessionForTelegramTopic: (topicId) => nsTelegram?.getSessionForTopic(topicId) ?? null,
+        sessionForSlackChannel: (key) => _slackAdapter?.getSessionForChannel(key) ?? null,
+        sessionFacts: (tmux) => {
+          const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === tmux);
+          const framework = sessionManager.frameworkForSession(tmux) ?? null;
+          // The login home comes from the session's pool account (engine-neutral); a session with
+          // no account is read from its own environment, never a guessed default.
+          const acct = s?.subscriptionAccountId ? subscriptionPool.list().find((a) => a.id === s.subscriptionAccountId) : undefined;
+          return {
+            framework,
+            accountId: s?.subscriptionAccountId ?? null,
+            configHome: acct?.configHome ?? sessionManager.configHomeForSession(tmux) ?? null,
+            alive: sessionManager.isSessionAlive(tmux),
+            startedAt: s?.startedAt ? Date.parse(s.startedAt) : null,
+          };
+        },
+        isProtected: (tmux) => config.sessions.protectedSessions.includes(tmux),
+        capturePane: (tmux) => sessionManager.captureOutput(tmux, 200),
+        poolAccounts: () => subscriptionPool.list().map((a) => ({ id: a.id, framework: a.framework, configHome: a.configHome, status: a.status, statusCause: a.statusCause ?? null })),
+        loginCheck: (id) => quotaPoller.loginCheck(id),
+        observeLoginExpired: async (configHome, tmux) => (await quotaPoller.observeCliLoginExpired({ configHome, session: tmux })).reason,
+        repairStarted: (accountId) => {
+          if (!accountId || !subscriptionReloginRuntimeRef) return false;
+          try {
+            return subscriptionReloginRuntimeRef.store.list({ accountId })
+              .some((e) => !['succeeded', 'refused', 'cancelled', 'failed'].includes(e.state));
+          } catch { return false; /* @silent-fallback-ok — wording only */ }
+        },
+        swap: async (session) => {
+          if (!_quotaAwareScheduler || !session.accountId) return { swapped: false, reason: 'no-scheduler-or-account' };
+          const r = await _quotaAwareScheduler.onQuotaPressure({ sessionName: session.tmuxSession, exhaustedAccountId: session.accountId, nowMs: Date.now(), callerClass: 'reactive-swap' });
+          return { swapped: !!(r as { swapped?: boolean }).swapped, reason: (r as { reason?: string }).reason };
+        },
+        profileFor: (topicId) => _topicProfileStore?.resolve(topicId) ?? null,
+        writeFramework: async (topicId, framework, updatedBy) => {
+          if (!_topicProfileStore) return false;
+          try {
+            await _topicProfileStore.mutate(topicId, { framework: framework as import('../core/intelligenceProviderFactory.js').IntelligenceFramework | null, updatedBy }, { shiftPrevious: true });
+            return true;
+          } catch (err) { console.warn(`[never-silent] profile write refused: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        respawnTopic: async (topicId, tmux, text) => {
+          if (!nsTelegram || !tmux) return false;
+          await respawnSessionForTopic(sessionManager, nsTelegram, tmux, topicId, text, topicMemory);
+          return true;
+        },
+        readJevKey: () => {
+          try { const v = new NsSecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get('typesafe_api_key'); return typeof v === 'string' && v ? v : null; }
+          catch { return null; } // @silent-fallback-ok — no key ⇒ the referee alone
+        },
+        refereeFor: nsRefereeFor,
+        sendTelegramNotice: async (topicId, text, inboundMessageId, button) => {
+          if (!nsTelegram) return null;
+          const r = await sendNeverSilentTelegramNotice(nsTelegram, topicId, text, inboundMessageId, button ? [button] : undefined) as { recorded?: boolean; messageId?: number };
+          return r && r.recorded !== true && typeof r.messageId === 'number' ? String(r.messageId) : null;
+        },
+        sendSlackNotice: async (key, text) => {
+          if (!_slackAdapter) return null;
+          const ts = await _slackAdapter.sendToChannel(key, text);
+          return ts || null;
+        },
+        evidence: (kind, reason, context) => {
+          const flat: Record<string, string | number | boolean | null> = {};
+          for (const [k, v] of Object.entries(context)) {
+            if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') flat[k] = v;
+          }
+          featureEvidence.record('monitoring.neverSilent', { kind, reason, context: flat });
+        },
+      });
+      setNeverSilentInstance({ store: neverSilent.store, enabled: () => nsCfg().enabled });
+      if (nsTelegram) {
+        nsTelegram.setNeverSilentAskHandler((tap) => neverSilent.handleTelegramTap(tap));
+        const priorNs = nsTelegram.onMessageLogged;
+        nsTelegram.onMessageLogged = (entry) => {
+          if (priorNs) priorNs(entry);
+          try {
+            if (entry.topicId == null || entry.topicId === 2) return;
+            if (entry.fromUser && entry.telegramUserId && nsTelegram.isInboundRefused?.(entry.topicId, entry.telegramUserId)) return;
+            neverSilent.observeLogged('telegram', String(entry.topicId), {
+              messageId: String(entry.messageId), text: entry.text, fromUser: entry.fromUser, provenance: entry.provenance, senderName: entry.senderName,
+            });
+          } catch { /* @silent-fallback-ok — observation only; the sweep still runs */ }
+        };
+      }
+      if (_slackAdapter) {
+        const slack = _slackAdapter;
+        const priorSlackNs = slack.onMessageLogged;
+        slack.onMessageLogged = (entry) => {
+          if (priorSlackNs) priorSlackNs(entry);
+          try {
+            if (!entry.channelId || slack.isSystemChannel(String(entry.channelId))) return;
+            // Top-level channel messages only in this version: an agent reply is logged without its
+            // thread, so a thread message could be closed by an answer elsewhere (never-silent §5a).
+            if (entry.fromUser && entry.threadTs) return;
+            const key = String(entry.channelId);
+            neverSilent.observeLogged('slack', key, {
+              messageId: String(entry.messageId), text: entry.text, fromUser: entry.fromUser, provenance: entry.provenance, senderName: entry.senderName,
+            });
+          } catch { /* @silent-fallback-ok — observation only */ }
+        };
+      }
+      neverSilent.start();
+      if (nsCfg().enabled) console.log(pc.green('  Never-silent conversations: on (actions ' + (nsCfg().actions ? 'on' : 'off') + ')'));
+    } catch (err) {
+      console.warn(`[never-silent] not started: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Start CaffeinateManager (prevents macOS system sleep)
     const { CaffeinateManager } = await import('../core/CaffeinateManager.js');
     const caffeinateManager = new CaffeinateManager({ stateDir: config.stateDir });
