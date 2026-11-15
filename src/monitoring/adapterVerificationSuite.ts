@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { takeEngineCheckpoint, restoreEngineCheckpoint } from './engineCheckpoint.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { CLAUDE_CODE_FRAMEWORK, type ClaudeOrCodexEngine } from '../core/frameworkFacts.js';
 
 export type CapabilityState = 'supported' | 'partial' | 'synthesized' | 'absent';
 
@@ -40,7 +41,7 @@ export interface CapabilityResult { state: CapabilityState; evidence: string }
 export interface AdapterSuiteResult {
   schema: 'adapter-suite/1';
   /** The engine measured (Claude Code: this module; Codex: `codexAdapterSuite.ts`). */
-  engine: 'claude-code' | 'codex-cli';
+  engine: ClaudeOrCodexEngine;
   version: string;
   machine: string;
   ranAt: number;
@@ -146,7 +147,7 @@ export function evaluateSuite(e: SuiteEvidence): Record<AdapterCapability, Capab
       : { state: 'absent', evidence: 'no refused tool_result carried the deny reason' };
   r.cleanStopSignals = UNMEASURED('pane pattern, SubagentTracker and child processes are Instar-side signals, not engine capabilities');
   r.costModel = UNMEASURED('first-party pricing table; no engine probe');
-  r.frameworkDiscriminator = e.frameworkSeenByHook === 'claude-code'
+  r.frameworkDiscriminator = e.frameworkSeenByHook === CLAUDE_CODE_FRAMEWORK
     ? { state: 'supported', evidence: 'INSTAR_FRAMEWORK reached the hook environment' }
     : { state: 'absent', evidence: 'INSTAR_FRAMEWORK was not visible to hooks' };
   return r;
@@ -256,7 +257,7 @@ export function runClaudeCodeAdapterSuite(o: {
     },
   };
   fs.writeFileSync(path.join(W, '.claude', 'settings.json'), JSON.stringify(settings, null, 2));
-  const env: NodeJS.ProcessEnv = { ...process.env, ...(o.env ?? {}), INSTAR_FRAMEWORK: 'claude-code' };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(o.env ?? {}), INSTAR_FRAMEWORK: CLAUDE_CODE_FRAMEWORK };
   delete env.INSTAR_ADAPTER_SUITE_CLI; // the suite's own process flag never reaches the engine or its hooks
   /** Every step but the tool-policy one runs with tools off: a probe session never writes memory or files, nor reads the probe's own files for its tokens. */
   const NO_TOOLS = '--disallowedTools=Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,Read,Grep,Glob';
@@ -319,7 +320,7 @@ export function runClaudeCodeAdapterSuite(o: {
 
   if (e.version === 'unknown') e.errors.push('engine version unreadable');
   const result: AdapterSuiteResult = {
-    schema: 'adapter-suite/1', engine: 'claude-code', version: e.version, machine: o.machine,
+    schema: 'adapter-suite/1', engine: CLAUDE_CODE_FRAMEWORK, version: e.version, machine: o.machine,
     ranAt: started, durationMs: now() - started, capabilities: evaluateSuite(e),
     inconclusive: e.errors.length > 0, errors: e.errors,
   };

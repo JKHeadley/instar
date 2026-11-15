@@ -417,6 +417,7 @@ import { mergeDefaults } from '../core/mergeDefaults.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
 import { isConfigureOnlyMandate } from '../coordination/AccountFollowMeMandateDelivery.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -13700,7 +13701,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             degradation: (r: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => DegradationReporter.getInstance().report(r),
           },
         };
-        const canaryInstance = new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() });
+        const canaryInstance = new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== CODEX_CLI_FRAMEWORK || codexCanaryOn() });
         const sentinelAttention = async (n: { id: string; title: string; summary: string; priority: 'NORMAL' | 'HIGH' | 'URGENT' }) => {
           if (!telegram) throw new Error('no attention channel'); // kept in the sentinel's durable outbox and retried
           await telegram.createAttentionItem({ ...n, category: 'context-budget', sourceContext: 'context-budget-sentinel' });
@@ -13733,7 +13734,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 projectDir: config.projectDir, stateDir: config.stateDir, port: config.port,
                 hasTelegram: config.messaging?.some((m: { type?: string }) => m.type === 'telegram') ?? false,
                 projectName: config.projectName,
-                claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+                claudeCodePath: config.sessions?.frameworkBinaryPaths?.[CLAUDE_CODE_FRAMEWORK] ?? config.sessions?.claudePath ?? null,
                 host: config.host,
               }).repairCompactionRecoveryHooks(),
               readMarker: (cid) => readMarkerForHeal(config.stateDir, cid),
@@ -13785,7 +13786,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // The Codex adapter's suite (§9.6, Phase 1 S17): the same switch, and only where the
           // Codex adapter is live (the contextBudget.enabled dev gate) and a codex binary is found.
           ...(liveConfig.get<boolean>('contextBudget.adapterSuite.enabled', false) === true && codexCanaryOn() && codexBinForSuite
-            ? { codexAdapterSuite: productionAdapterSuite({ stateDir: config.stateDir, machine: built.holderId, claudePath: codexBinForSuite, engine: 'codex-cli' }) }
+            ? { codexAdapterSuite: productionAdapterSuite({ stateDir: config.stateDir, machine: built.holderId, claudePath: codexBinForSuite, engine: CODEX_CLI_FRAMEWORK }) }
             : {}),
           audit: (e) => { if (e.event !== 'gate:attempt-finished') console.log(pc.dim(`  [context-budget-sentinel] ${e.event}${e.reason ? `: ${e.reason}` : ''}`)); },
         });
@@ -17877,7 +17878,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     // flow before serving dashboard traffic so a persisted code is never backed
     // by a dead pane. Renewal suppresses browser launch and stores only the fresh
     // public URL/code, preserving the existing credential boundary.
-    const recoveredLogins = await enrollmentWizard.recoverAfterRestart();
+    // A Claude follow-me login whose account this pool already holds active, as
+    // the expected email with no identity drift, and whose slot answers a live
+    // identity read as that email, is closed instead of re-driven (account
+    // compliance loop G10: Mama PC re-drove one such login 1113 times over 11
+    // days). Local state only here; the wizard does the live read.
+    const alreadySignedIn = {
+      accountIsHealthy: (login: import('../core/PendingLoginStore.js').PendingLogin): boolean => {
+        const account = subscriptionPool.get(login.id);
+        if (!account || account.status !== 'active' || account.identityDrifted === true) return false;
+        const want = (login.expectedEmail ?? '').trim().toLowerCase();
+        return want.length > 0 && (account.email ?? '').trim().toLowerCase() === want;
+      },
+    };
+    const recoveredLogins = await enrollmentWizard.recoverAfterRestart(alreadySignedIn);
     if (recoveredLogins.length > 0) {
       console.log(pc.green(`  Restored ${recoveredLogins.length} pending login flow(s) after restart`));
     }
@@ -17894,7 +17908,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // it" contract true.
     const enrollReissueTimer = setInterval(() => {
       enrollmentWizard
-        .reissueExpired()
+        .reissueExpired(alreadySignedIn)
         .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
       enrollmentWizard
         .sweepFollowMeCompletions({

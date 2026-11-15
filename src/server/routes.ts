@@ -825,6 +825,7 @@ import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
+import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 
 /**
  * Build the /whoami request handler.
@@ -9221,7 +9222,7 @@ export function createRoutes(ctx: RouteContext): Router {
           sessionBound: (topicId, sessionId) => {
             try {
               return (ctx.sessionManager?.listRunningSessions?.() ?? []).some((s: { telegramTopicId?: number; framework?: string; claudeSessionId?: string }) =>
-                s.telegramTopicId === topicId && s.framework === 'codex-cli' && s.claudeSessionId === sessionId);
+                s.telegramTopicId === topicId && s.framework === CODEX_CLI_FRAMEWORK && s.claudeSessionId === sessionId);
             } catch { return false; } // @silent-fallback-ok — an unreadable session list offers nothing (today's output)
           },
           stageNow: (topic) => {

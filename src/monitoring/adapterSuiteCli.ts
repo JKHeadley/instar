@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { runClaudeCodeAdapterSuite, writeSuiteResult, adapterSuiteDir } from './adapterVerificationSuite.js';
 import { runCodexAdapterSuite, removeThrowawayProjectTrust, CODEX_ENGINE } from './codexAdapterSuite.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 
 /** Work directories older than this (a killed run's leftovers) are swept at the next run. */
 const STALE_WORK_MS = 60 * 60_000;
@@ -28,7 +29,7 @@ const WORK_PREFIX = 'instar-adapter-suite-';
 export function runAdapterSuiteCli(argvIn: string[], tmpRoot: string = os.tmpdir()): { ok: true; version: string; file: string } | { ok: false; error: string } {
   const flag = (name: string) => argvIn.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
   const argv = argvIn.filter((a) => !a.startsWith('--'));
-  const engine = flag('engine') ?? 'claude-code';
+  const engine = flag('engine') ?? CLAUDE_CODE_FRAMEWORK;
   const [stateDir, machine, claudeBin = 'claude'] = argv;
   if (!stateDir || !machine) return { ok: false, error: 'usage: adapterSuiteCli <stateDir> <machine> [claudeBin]' };
   // Sweep leftovers of killed runs (the kill skips this process's own cleanup).

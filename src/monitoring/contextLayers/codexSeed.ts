@@ -50,9 +50,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { classifyCodexRolloutEntry, codexRolloutLineMayMatter, CODEX_SEED_HEADER } from '../CodexRolloutParser.js';
 import { seedMarkerPath } from '../compactionSeedMarker.js';
+import { CODEX_CLI_FRAMEWORK } from '../../core/frameworkFacts.js';
 
 /** The framework discriminator value a Codex session carries (`INSTAR_FRAMEWORK`). */
-export const CODEX_FRAMEWORK = 'codex-cli';
+export const CODEX_FRAMEWORK = CODEX_CLI_FRAMEWORK;
 /** A topic whose packet failed verification is not rebuilt more often than this. */
 export const FAILURE_BACKOFF_MS = 5 * 60_000;
 /** Seeded epochs remembered per session (the canary reads them; bounded). */

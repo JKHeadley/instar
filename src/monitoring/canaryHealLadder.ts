@@ -35,6 +35,7 @@ import type { CanaryDetection, CompactionCanary } from './compactionCanary.js';
 import type { HealReinjectOutcome } from './CompactionSentinel.js';
 import { markerEpoch } from './contextEpoch.js';
 import type { SeedMarker } from './compactionSeedMarker.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 
 export const CANARY_HEAL_LADDER_ID = 'context-budget-canary-heal';
 export const HEAL_MAX_ATTEMPTS = 3;
@@ -220,7 +221,7 @@ export class CanaryHealLadder {
 
   /** Why this divergence happened, for the ladder (deterministic, over file and session evidence). */
   classify(d: CanaryDetection, newestBoundary: string | null): HealCause {
-    if (d.engine !== 'claude-code') return 'unhealable-engine';
+    if (d.engine !== CLAUDE_CODE_FRAMEWORK) return 'unhealable-engine';
     if (newestBoundary !== null && newestBoundary !== d.boundaryUuid) return 'superseded';
     const live = this.d.liveSession(d.sessionId);
     if (!live) return 'session-gone';

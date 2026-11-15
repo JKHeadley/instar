@@ -36,8 +36,9 @@ import {
   ADAPTER_CAPABILITIES, type AdapterCapability, type AdapterSuiteResult, type CapabilityResult, type CommandResult, type RunCommand,
 } from './adapterVerificationSuite.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 
-export const CODEX_ENGINE = 'codex-cli' as const;
+export const CODEX_ENGINE = CODEX_CLI_FRAMEWORK;
 
 /** Environment keys that bind a process to a channel topic: the suite refuses to run under any of them. */
 export const CHANNEL_TOPIC_ENV = ['INSTAR_TELEGRAM_TOPIC', 'INSTAR_SLACK_CHANNEL', 'INSTAR_TOPIC_ID', 'INSTAR_SESSION_ID', 'INSTAR_TMUX_SESSION'] as const;

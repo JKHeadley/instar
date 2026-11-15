@@ -75,6 +75,7 @@ import type { PressTickOutcome, SyntheticPress } from './syntheticPress.js';
 import { readSuiteResults, adapterSuiteDir, type AdapterSuiteResult } from './adapterVerificationSuite.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK, type ClaudeOrCodexEngine } from '../core/frameworkFacts.js';
 
 export const CONTEXT_BUDGET_SENTINEL_TICK_MS = 5 * 60_000;
 export const QUARANTINE_RECONCILE_BOUND_MS = 15 * 60_000;
@@ -393,8 +394,8 @@ export class ContextBudgetSentinel {
         if (on && this.d.heal) { const h = this.d.heal; clean = await this.step('heal', () => h.tick()) && clean; }
         if (on && this.d.press) { const pr = this.d.press; clean = await this.step('press', () => pr.tick()) && clean; }
       }
-      if (this.d.adapterSuite) clean = await this.step('adapter-suite', () => this.maybeRunAdapterSuite('claude-code')) && clean;
-      if (this.d.codexAdapterSuite) clean = await this.step('adapter-suite-codex', () => this.maybeRunAdapterSuite('codex-cli')) && clean;
+      if (this.d.adapterSuite) clean = await this.step('adapter-suite', () => this.maybeRunAdapterSuite(CLAUDE_CODE_FRAMEWORK)) && clean;
+      if (this.d.codexAdapterSuite) clean = await this.step('adapter-suite-codex', () => this.maybeRunAdapterSuite(CODEX_CLI_FRAMEWORK)) && clean;
       if (this.d.layers && this.d.liveTopics) clean = await this.step('layer-freshness', () => this.checkFreshness()) && clean;
       if (this.d.holdHealth) clean = await this.step('hold-health', () => this.checkHolds()) && clean;
       if (this.d.liveTopics) clean = await this.step('eligible-without-fold', () => this.observeEligible()) && clean;
@@ -531,14 +532,14 @@ export class ContextBudgetSentinel {
   private suiteRunning = false;
 
   /** Start the suite (not awaited) when this engine version has no recorded result and no recent attempt. */
-  private maybeRunAdapterSuite(engine: 'claude-code' | 'codex-cli'): void {
-    const k = engine === 'codex-cli' ? this.d.codexAdapterSuite! : this.d.adapterSuite!;
+  private maybeRunAdapterSuite(engine: ClaudeOrCodexEngine): void {
+    const k = engine === CODEX_CLI_FRAMEWORK ? this.d.codexAdapterSuite! : this.d.adapterSuite!;
     if (this.suiteRunning) return;
     const v = k.currentVersion();
     if (!v) return;
-    if (readSuiteResults(this.d.stateDir).some((r) => (r.engine ?? 'claude-code') === engine && r.version === v)) return;
+    if (readSuiteResults(this.d.stateDir).some((r) => (r.engine ?? CLAUDE_CODE_FRAMEWORK) === engine && r.version === v)) return;
     // Attempts are keyed per engine (Claude Code keeps the bare version, as recorded before).
-    const version = engine === 'codex-cli' ? `codex-cli@${v}` : v;
+    const version = engine === CODEX_CLI_FRAMEWORK ? `codex-cli@${v}` : v;
     const f = path.join(adapterSuiteDir(this.d.stateDir), 'attempts.json');
     let attempts: Record<string, { count: number; lastAt: number }> = {};
     try { attempts = JSON.parse(fs.readFileSync(f, 'utf-8')) as typeof attempts; } catch { attempts = {}; } // @silent-fallback-ok — no attempts yet
@@ -636,7 +637,7 @@ export class ContextBudgetSentinel {
       if (raised.has(k) || this.d.ownsTopic(x.topicKey) !== true) continue;
       this.enqueue({ notice: {
         id: `context-budget-torn-record-${x.topicKey}-${x.foldId}`,
-        title: `A context fold record on ${topicRef(x.topicKey)} is unreadable`,
+        title: `A context fold record on ${topicRef(x.topicKey)} (fold ${x.foldId}) is unreadable`,
         summary: `The record for fold ${x.foldId} is damaged, so the conversation's pause and its saved copy are kept in place rather than released on a guess. It needs a look before that conversation can continue normally.`,
         priority: 'URGENT',
       } });
@@ -940,7 +941,7 @@ export class ContextBudgetSentinel {
         let attempts: Record<string, { count: number; lastAt: number }> = {};
         try { attempts = JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), 'attempts.json'), 'utf-8')) as typeof attempts; } catch { attempts = {}; } // @silent-fallback-ok — no attempts yet
         const results = readSuiteResults(this.d.stateDir);
-        const recorded = (key: string) => results.some((r) => key.startsWith('codex-cli@') ? r.engine === 'codex-cli' && `codex-cli@${r.version}` === key : (r.engine ?? 'claude-code') === 'claude-code' && r.version === key);
+        const recorded = (key: string) => results.some((r) => key.startsWith('codex-cli@') ? r.engine === CODEX_CLI_FRAMEWORK && `codex-cli@${r.version}` === key : (r.engine ?? CLAUDE_CODE_FRAMEWORK) === CLAUDE_CODE_FRAMEWORK && r.version === key);
         const gaveUp = Object.entries(attempts).filter(([v, a]) => a.count >= SUITE_MAX_ATTEMPTS && !recorded(v)).map(([v]) => v);
         const readLast = (name: string): Record<string, unknown> | null => {
           try { return JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), name), 'utf-8')) as Record<string, unknown>; } catch { return null; } // @silent-fallback-ok — no run yet

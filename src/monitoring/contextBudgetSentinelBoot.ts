@@ -19,6 +19,7 @@ import type { CanarySession } from './compactionCanary.js';
 import { RECOVERY_MARKER } from './compactionCanary.js';
 import { buildHealReseedPayload, prepareHealInjectionText } from '../messaging/shared/compactionResumePayload.js';
 import { pressTargetRefusal, pressTopicKey, type PressCandidate, type PressTargetChecks } from './syntheticPress.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK, type ClaudeOrCodexEngine } from '../core/frameworkFacts.js';
 
 /**
  * Is a tmux session alive? `true` / `false` only on a definite answer; a
@@ -54,7 +55,7 @@ export function productionSentinelSessionDeps(o: {
   const topicSessions = (topicKey: string) => o.sessions.listRunningSessions().filter((s) => String(s.telegramTopicId ?? '') === topicKey);
   return {
     candidates: (topicKey): FoldCandidate[] => topicSessions(topicKey).map((s) => {
-      const configHome = s.framework === 'claude-code' && typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
+      const configHome = s.framework === CLAUDE_CODE_FRAMEWORK && typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
       const tp = s.claudeSessionId && s.framework
         ? resolveFrameworkTranscriptPath({ framework: s.framework, sessionId: s.claudeSessionId, projectDir: (s as { cwd?: string }).cwd ?? o.projectDir, ...(configHome ? { configHome } : {}) })
         : '';
@@ -104,7 +105,7 @@ export function makeCodexRolloutFinder(o: { now?: () => number; fullWalk?: (sess
   const now = o.now ?? Date.now;
   const found = new Map<string, string>();
   const lastFullWalk = new Map<string, number>();
-  const fullWalk = o.fullWalk ?? ((sid, root, projectDir) => resolveFrameworkTranscriptPath({ framework: 'codex-cli', sessionId: sid, projectDir, rootOverride: root }));
+  const fullWalk = o.fullWalk ?? ((sid, root, projectDir) => resolveFrameworkTranscriptPath({ framework: CODEX_CLI_FRAMEWORK, sessionId: sid, projectDir, rootOverride: root }));
   return (sessionId, codexHome, projectDir) => {
     const key = `${codexHome}\u0000${sessionId}`;
     const hit = found.get(key);
@@ -154,22 +155,22 @@ export function productionCanarySessions(o: {
   return () => {
     const codexOn = o.codex?.enabled() === true;
     return o.sessions.listRunningSessions()
-      .filter((s) => !!s.claudeSessionId && (s.framework === 'claude-code' || (codexOn && s.framework === 'codex-cli')))
+      .filter((s) => !!s.claudeSessionId && (s.framework === CLAUDE_CODE_FRAMEWORK || (codexOn && s.framework === CODEX_CLI_FRAMEWORK)))
       .map((s): CanarySession | null => {
         const projectDir = (s as { cwd?: string }).cwd ?? o.projectDir;
-        if (s.framework === 'codex-cli') {
+        if (s.framework === CODEX_CLI_FRAMEWORK) {
           // Codex: topic-bound sessions only (the synthetic press targets Claude throwaways).
           if (typeof s.telegramTopicId !== 'number') return null;
           const home = homeFor(s.tmuxSession, s.claudeSessionId as string);
-          return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath: findRollout(s.claudeSessionId as string, home, projectDir), engine: 'codex-cli' };
+          return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath: findRollout(s.claudeSessionId as string, home, projectDir), engine: CODEX_CLI_FRAMEWORK };
         }
         // In scope (§9.1): topic-bound sessions, plus the throwaway sessions the synthetic press targets.
         const topicKey = typeof s.telegramTopicId === 'number' ? String(s.telegramTopicId)
           : pressTargetRefusal(s as PressCandidate, o.pressChecks ?? {}) === null ? pressTopicKey(s.id) : null;
         if (!topicKey) return null;
         const configHome = typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
-        const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: s.claudeSessionId as string, projectDir, ...(configHome ? { configHome } : {}) });
-        return { topicKey, claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
+        const transcriptPath = resolveFrameworkTranscriptPath({ framework: CLAUDE_CODE_FRAMEWORK, sessionId: s.claudeSessionId as string, projectDir, ...(configHome ? { configHome } : {}) });
+        return { topicKey, claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: CLAUDE_CODE_FRAMEWORK };
       })
       .filter((x): x is CanarySession => x !== null && x.transcriptPath !== '');
   };
@@ -224,7 +225,7 @@ export function productionPressCandidates(sessions: SentinelSessionSource): () =
 export function productionAdapterSuite(o: {
   stateDir: string; machine: string; claudePath: string; now?: () => number;
   /** The engine measured (default Claude Code). Codex (S17): `claudePath` is then the codex binary. */
-  engine?: 'claude-code' | 'codex-cli';
+  engine?: ClaudeOrCodexEngine;
   /** The command that runs the suite entry (default: this Node with the compiled `adapterSuiteCli.js` beside this module). */
   cli?: string[];
 }): NonNullable<ContextBudgetSentinelDeps['adapterSuite']> {
@@ -248,7 +249,7 @@ export function productionAdapterSuite(o: {
     run: () => new Promise<void>((resolve, reject) => {
       const cmd = o.cli ?? [process.execPath, fileURLToPath(new URL('./adapterSuiteCli.js', import.meta.url))];
       // Its own process GROUP (detached), so the 10-minute kill also ends the engine calls under it.
-      const codex = o.engine === 'codex-cli';
+      const codex = o.engine === CODEX_CLI_FRAMEWORK;
       const args = codex ? [o.stateDir, o.machine, '--engine=codex-cli', `--codex-bin=${o.claudePath}`] : [o.stateDir, o.machine, o.claudePath];
       const env = codex ? { ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' } : applyClaudeChildAuth({ ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' });
       const child = spawn(cmd[0], [...cmd.slice(1), ...args], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env });

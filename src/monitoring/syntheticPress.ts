@@ -15,6 +15,7 @@
 import path from 'node:path';
 import { SelfHealGate, SqliteSelfHealEpisodeStore, type SelfHealEpisodeStore, type SelfHealGateDeps, type SelfHealRemediationResult, type SelfHealSpec } from '../core/SelfHealGate.js';
 import type { CompactionCanary } from './compactionCanary.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 
 export const PRESS_TARGET_PREFIX = 'cb-press-';
 export const SYNTHETIC_PRESS_ID = 'context-budget-synthetic-press';
@@ -49,7 +50,7 @@ export function pressTargetRefusal(s: PressCandidate, c: PressTargetChecks = {})
   if (mapped !== null && mapped !== undefined && mapped !== '' && mapped !== 0) return 'channel-bound';
   if (!s.name.startsWith(PRESS_TARGET_PREFIX)) return 'not-throwaway';
   if (s.jobSlug) return 'job-session';
-  if (s.framework !== undefined && s.framework !== 'claude-code') return 'not-claude-code';
+  if (s.framework !== undefined && s.framework !== CLAUDE_CODE_FRAMEWORK) return 'not-claude-code';
   if (!s.claudeSessionId) return 'no-engine-session';
   let prot = true;
   try { prot = c.isProtected?.(s.tmuxSession) ?? false; } catch { prot = true; } // @silent-fallback-ok — unknown protection refuses
@@ -154,7 +155,7 @@ export class SyntheticPress {
     try { on = this.d.switchOn(); } catch { on = false; } // @silent-fallback-ok — an unreadable switch presses nothing
     if (!on) return 'off';
     const rep = this.d.canary.report(true);
-    if (rep.groups.some((g) => g.machine === this.d.machineId && g.engine === 'claude-code' && g.synthetic >= 1)) return 'not-needed';
+    if (rep.groups.some((g) => g.machine === this.d.machineId && g.engine === CLAUDE_CODE_FRAMEWORK && g.synthetic >= 1)) return 'not-needed';
     if (this.d.canary.pressPending()) return 'pending';
     const target = this.d.candidates().find((s) => pressTargetRefusal(s, this.d.checks) === null && this.d.isIdle(s.tmuxSession));
     if (!target) return 'no-target';

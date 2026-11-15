@@ -27,3 +27,5 @@ One limit, said plainly: a question could appear in the few milliseconds between
 ## What you need to decide
 
 Nothing.
+
+Amendment, 2026-11-12: the shared pool of session slots kept filling up with other builder sessions, so the feedback fix workers couldn't start for hours. Now ordinary sessions always leave one slot free for the fix workers, just as they already left one free for scheduled jobs. Nothing else changes: the total number of slots and the memory check stay the same.

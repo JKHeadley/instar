@@ -18,6 +18,7 @@ import { CONTEXT_LAYERS_FEATURE_ID } from './contextLayersBoot.js';
 import { isSystemOrProxyMessage } from '../../messaging/shared/isSystemOrProxyMessage.js';
 import { StandingPacketStager, type PacketRowSource } from './standingPacket.js';
 import { topicRef } from '../../messaging/shared/topicRef.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../../core/frameworkFacts.js';
 
 /** The TopicMemory surface the packet reads. */
 export interface PacketTopicMemory {
@@ -70,7 +71,7 @@ export function wireStandingPacket(o: {
     intent: o.intent,
     debounceMs: o.debounceMs,
     sessionsForTopic: (topicId) => o.sessions()
-      .filter((s) => s.telegramTopicId === topicId && (s.framework ?? 'claude-code') === 'claude-code' && /^[A-Za-z0-9_-]{1,128}$/.test(s.id))
+      .filter((s) => s.telegramTopicId === topicId && (s.framework ?? CLAUDE_CODE_FRAMEWORK) === CLAUDE_CODE_FRAMEWORK && /^[A-Za-z0-9_-]{1,128}$/.test(s.id))
       .map((s) => s.id),
     liveSessionIds: () => o.sessions().map((s) => s.id),
     onStaged: (topicKey, p) => {
