@@ -90,12 +90,70 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     expect(h.casCalls.at(-1)).toEqual({ type: 'claim', machineId: 'm_mini' });
   });
 
+  it('the forced-close hand-off fires AFTER the target claim, naming the epoch the claim lands at', async () => {
+    // The transferring CAS advances 4 → 5; the claim lands at 6. The target only resumes a
+    // conversation it owns, so the hand-off must follow the claim, not precede it.
+    let rec = activeRec();
+    const order: string[] = [];
+    const h = harness({
+      quietAfterPolls: Infinity,
+      deps: {
+        readOwnership: () => rec,
+        cas: (action) => {
+          order.push(action.type);
+          if (action.type === 'transfer') rec = { ...rec, status: 'transferring', transferTo: 'm_mini', ownershipEpoch: 5 } as SessionOwnershipRecord;
+          if (action.type === 'claim') rec = { ...rec, status: 'active', ownerMachineId: 'm_mini', ownershipEpoch: 6 } as SessionOwnershipRecord;
+          return { ok: true };
+        },
+        notifyInterrupted: (topic, target, handoff) => { order.push(`handoff:${topic}:${target}:${handoff.claimEpoch}`); },
+      },
+    });
+    const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    expect(out.status).toBe('drained-interrupted');
+    expect(order).toEqual(['transfer', 'claim', 'handoff:13481:m_mini:6']);
+  });
+
+  it('a backstop claim that already landed on the target names ITS epoch (never one past it)', async () => {
+    // The record reads transferring at the drain start, then (while the close ran) the
+    // reconciler's backstop claim made it active on the target at epoch 6.
+    let rec = activeRec();
+    const handoffs: number[] = [];
+    const h = harness({
+      quietAfterPolls: Infinity,
+      deps: {
+        readOwnership: () => rec,
+        cas: (action) => {
+          if (action.type === 'transfer') rec = { ...rec, status: 'transferring', transferTo: 'm_mini', ownershipEpoch: 5 } as SessionOwnershipRecord;
+          if (action.type === 'claim') return { ok: false, reason: 'already-claimed' };
+          return { ok: true };
+        },
+        terminateSession: async () => {
+          rec = { ...rec, status: 'active', ownerMachineId: 'm_mini', ownershipEpoch: 6 } as SessionOwnershipRecord;
+          return { terminated: true };
+        },
+        notifyInterrupted: (_t, _g, handoff) => { handoffs.push(handoff.claimEpoch); },
+      },
+    });
+    await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    expect(handoffs).toEqual([6]);
+  });
+
+  it('a lost claim still hands off (the target waits for the reconciler backstop claim)', async () => {
+    const h = harness({ quietAfterPolls: Infinity, casOk: (a) => a.type !== 'claim' });
+    const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    expect(out.status).toBe('drained-interrupted');
+    expect(out.claimLanded).toBe(false);
+    expect(h.notifyInterrupted).toHaveBeenCalledTimes(1);
+  });
+
   it('the forced-close notice carries no internal reason text; the bound stays in the audit row (Rule 8)', async () => {
     const h = harness({ quietAfterPolls: Infinity });
     await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
     // Only the topic and the target cross the seam — the 2026-11-03 notice pasted
     // "drain bound (30000ms) reached — final turn may be partial" into user text.
-    expect(h.notifyInterrupted.mock.calls[0]).toEqual(['13481', 'm_mini']);
+    // (plus the claim epoch the target's resume waits for — a number, never reason text;
+    // this harness's record never advances, so it reads transferring epoch 4 → claim 5)
+    expect(h.notifyInterrupted.mock.calls[0]).toEqual(['13481', 'm_mini', { claimEpoch: 5 }]);
     const done = h.audits.find((a: Record<string, unknown>) => a.event === 'drain-completed-interrupted' || a.type === 'drain-completed-interrupted' || JSON.stringify(a).includes('drain-completed-interrupted'));
     expect(JSON.stringify(done)).toContain('drainBoundMs');
   });

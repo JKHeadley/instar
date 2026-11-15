@@ -459,6 +459,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Advice-only grouping of the owner\'s unassigned conversations into proposed efforts. Deterministic floors drop invalid groups; every surviving group is graded by the owner\'s own Accept or Reject before anything moves.',
   },
   {
+    decisionPoint: 'never-silent-conversation-judge',
+    component: 'ConversationSilenceJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Names why a conversation that owes an answer went silent, from scrubbed screen text and structured login and pool facts. It decides nothing alone: a deterministic table behind floors decides, the person is told either way, and every verdict is logged per incident (logs/never-silent.jsonl) for the held-out measurement that gates actions.',
+  },
+  {
     decisionPoint: 'ecosystem-idea-review',
     component: 'EcosystemIdeaReview',
     status: 'pending:backlog:decision-quality-enrolment',

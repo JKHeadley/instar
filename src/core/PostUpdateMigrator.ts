@@ -141,6 +141,8 @@ import {
   THREADLINE_PAIR_TOOL_MARKER,
   SOMEONE_ELSES_WORK_TRAP,
   SOMEONE_ELSES_WORK_TRAP_MARKER,
+  APPROVAL_NOT_CHORE_TRAP,
+  APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
 import { generateClaudeMd } from '../scaffold/templates.js';
 import {
@@ -1395,11 +1397,18 @@ export const PAIRING_APPROVE_DASHBOARD_BULLET = `- After the PIN, the same page 
 /** mobile-owner-presence-pin §2.7: Remote Desktop with Face ID and the Dashboard PIN page. Its own marker. */
 export const OWNER_PRESENCE_BULLET = `- **Remote Desktop and the dashboard PIN on the owner's phone.** The owner phone opens Remote Desktop with Face ID instead of the dashboard PIN: \`POST /mobile/desktop-unlock\` gives it a desktop-only, 15-minute session tied to that phone (still no API token; its desktop calls are signed by the phone). Its Dashboard PIN page shows the PIN after Face ID (\`POST /mobile/dashboard-pin/reveal\`), and the owner is told privately, without the PIN (the first reveal per phone in any 10 minutes; every reveal is audited; no private chat, no reveal). When the operator asks "what's my dashboard PIN?" from the app, point them to that page. Off switch: \`mobilePairing.ownerPresence.enabled: false\`; audit: \`.instar/state/mobile-owner-presence-audit.jsonl\`.`;
 
+/** docs/specs/mobile-pairing-outcome-notice.md §3.6: the pairing outcome is the device list. Its own content-sniff marker. */
+export const PAIRING_OUTCOME_BULLET = `- **The pairing outcome is the device list, never a log line.** Mint with \`topicId\` (the Mint example fills it from \`$INSTAR_TOPIC_ID\`; pass it whatever the example shows) and one plain line is posted in this conversation when the phone pairs or fails; the response's \`outcomeNotice\` says whether it will be (\`null\` comes with \`outcomeNoticeReason\`). Before telling anyone how a pairing went, read \`GET /mobile/devices?scope=pool\`: on this machine's rows \`status: "active"\` = paired, and \`pairingOutcomes\` lists the outcome of each recent link minted here, by \`watchId\` (a link minted on another machine is answered there). A held, slow or failed owner-message log line is not a failed pairing: the message can arrive late and still be approved. Off switch: \`mobilePairing.outcomeNotice.enabled: false\`.`;
+/** The bullet's stable marker: a later rewording of the bullet must not insert a second copy. */
+export const PAIRING_OUTCOME_MARKER = '**The pairing outcome is the device list';
+/** The Mint example's body before and after §3.6's topicId splice (port-independent patch). */
+export const PAIRING_MINT_BODY_OLD = `-d '{"label":"Justin iPhone"}'`;
+export const PAIRING_MINT_BODY_NEW = `-d '{"label":"Justin iPhone","topicId":"'"\${INSTAR_TOPIC_ID:-}"'"}'`;
 export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
 
 The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone stores no API token and never gets an operator session; its signed requests are limited to a fixed list (reads, confirm and revoke itself, plus the owner phone's console sign-in). An owner phone opens the console without the dashboard PIN: after the owner's Face ID or passcode, the app gets a one-minute, single-use ticket (\`POST /mobile/console-ticket\`) that the console trades once for the same token a PIN unlock returns, in a web view that keeps nothing on disk; PIN-confirmed actions still ask for the PIN, and MSP phones and phones without a passcode still see the PIN box (off switch: \`mobilePairing.consoleTicket.enabled: false\`; audit: \`.instar/state/mobile-console-tickets.jsonl\`). Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
-- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
+- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes ${PAIRING_MINT_BODY_NEW}\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
 ${PAIRING_APPROVE_BULLET}
 ${PAIRING_INTRODUCER_BULLET}
@@ -1407,6 +1416,7 @@ ${OWNER_PRESENCE_BULLET}
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
+${PAIRING_OUTCOME_BULLET}
 - Revoke one phone (always allowed): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/devices/DEVICE_ID/revoke\`. \`202 pending\` means no machine holding that phone confirmed yet; the phone may keep access until one does.
 - **When to use** (PROACTIVE): "add you to my phone / the Instar app" → mint and send the link; "I lost my phone / revoke my old phone" → list devices and revoke.
 `;
@@ -1446,6 +1456,8 @@ export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work 
 /** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
 export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
 export const APP_CONVERSATIONS_LIST_PINS_LINE = '- A person can pin whole conversations to the top of their conversation list (the app and the dashboard\'s "Pinned" group). Pins belong to each person (the owner, a team member, a shared person), at most 50, and are the same on every machine. The first page of `GET /mobile/conversations` carries `pinnedRefs` [{ref, atMs}] and `pinnedRows` (full list rows, newest pin first); my own Bearer read sees them only with `?reader=<key>`. Pin or unpin: `POST /mobile/conversations/pins {ref, pinned}` (ref `app:<uuid>`, `telegram:<topicId>` or `slack:<machine>:<id>`; a Bearer call must name `?reader=`). When the operator asks "pin this conversation", that is this, not a pinned message. Off switch: `mobilePairing.native.listPins.enabled: false`.';
+/** Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line. Sniff: "conversations/search". */
+export const APP_CONVERSATIONS_SEARCH_LINE = '- Search conversations by keyword: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switch: `mobilePairing.native.search.enabled: false` (503 `search-off`). Meaning search comes later; for now `mode=keyword` only.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1595,6 +1607,7 @@ ${APP_CONVERSATIONS_UNREAD_LINE}
 ${DASHBOARD_CONVERSATIONS_LINE}
 ${APP_CONVERSATIONS_PINS_LINE}
 ${APP_CONVERSATIONS_LIST_PINS_LINE}
+${APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port))}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -2042,6 +2055,21 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 - **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
 - Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
 - Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
+/**
+ * The Never-Silent Conversation section, one definition for fresh agents and updated ones.
+ * Sniff key for the migrator: `/never-silent/incidents`. Spec: docs/specs/never-silent-conversation.md
+ */
+export function NEVER_SILENT_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Never-silent conversations
+
+A message someone sends to a conversation ends in exactly one of two things: a reply from me, or a plain message from Instar in that conversation saying what went wrong and what is being done. Each inbound message is recorded until it is answered; one that is still unanswered after about two minutes is looked at by a judge that runs on a DIFFERENT engine from the stuck one (Jev first, then a Codex or Claude referee), from the screen since the message, the engine's own login check and the account list. Instar then tells the person, from fixed wording, even when the judge is down. When actions are on, an expired login moves the conversation to another signed-in account or to the other engine and re-delivers the waiting message; a conversation the operator set to an engine is asked first, with one "Move to …" button, and is never moved without that tap. A Codex session also starts with its own folder already trusted, so it cannot stall at "Trust this folder?".
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/never-silent/incidents\` (\`?open=1\` for what is waiting now): each conversation's waiting messages, the judged reason, the action and every notice sent. 503 = off on this agent (\`monitoring.neverSilent.enabled\`; on for development agents). Log: \`logs/never-silent.jsonl\`.
+- **When to use** (PROACTIVE): someone asks "why did that conversation go quiet?", "why didn't you answer?", or says a reply never came → read \`/never-silent/incidents\` first and answer from it in plain words.
+- Actions that change anything (\`monitoring.neverSilent.actions\`, \`.frameworkFallback\`) are off until the judge has been measured against real screens; with them off, Instar still tells the person the reason.
 `;
 }
 
@@ -3077,14 +3105,23 @@ export function insertContextDeathClaudeBlock(input: string): string {
     `<!-- /${markerId} -->`,
   ].join('\n');
   let content = input;
+  // The awareness-registry feature-notes block must stay the LAST thing in the file
+  // (docs/specs/awareness-entry-registry.md): this step can run after the registry wrote it,
+  // so it inserts before the block instead of past it. Without that, the next update moves
+  // the block back to the end and CLAUDE.md changes on every run.
+  const notes = findRegistryBlock(content);
+  const limit = notes.state === 'well-formed' ? notes.start : content.length;
   // Anchor: end of "Critical Anti-Patterns" (just before next `## ` heading) —
   // falls back to append if section absent.
-  const antiPatternsIdx = content.indexOf('## Critical Anti-Patterns');
+  const antiPatternsIdx = content.slice(0, limit).indexOf('## Critical Anti-Patterns');
   if (antiPatternsIdx >= 0) {
     const afterHeader = antiPatternsIdx + '## Critical Anti-Patterns'.length;
-    const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
-    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
+    const nextHeadingIdx = content.slice(0, limit).indexOf('\n## ', afterHeader);
+    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : limit;
     content = content.slice(0, insertAt) + '\n' + claudeBlock + '\n' + content.slice(insertAt);
+  } else if (limit < content.length) {
+    const beforeNotes = content.slice(0, limit).replace(/\n+$/, '');
+    content = beforeNotes + '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n\n' + content.slice(limit);
   } else {
     content += '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n';
   }
@@ -9730,6 +9767,20 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the "Someone Else\'s Work" gravity well');
     }
+    // Gravity well "Your Turn to Do It" (topic 10000002731): an approval handed
+    // over as a chore. Inserted after the "Someone Else's Work" trap (always
+    // present by now), else appended. Idempotent by the marker sniff.
+    if (!content.includes(APPROVAL_NOT_CHORE_TRAP_MARKER)) {
+      const at = content.indexOf(SOMEONE_ELSES_WORK_TRAP);
+      if (at >= 0) {
+        const end = at + SOMEONE_ELSES_WORK_TRAP.length;
+        content = `${content.slice(0, end)}\n\n${APPROVAL_NOT_CHORE_TRAP}${content.slice(end)}`;
+      } else {
+        content += `\n\n${APPROVAL_NOT_CHORE_TRAP}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the "Your Turn to Do It" gravity well');
+    }
     if (!content.includes('### Quiet by Default notifications')) {
       content = content.replace(/^\*\*🩺 Agent Health lane[^\n]*\n/m, '');
       content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
@@ -10966,6 +11017,23 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: Mobile pairing link section describes Remote Desktop with Face ID and the PIN page');
     }
+    // mobile-pairing-outcome-notice §3.6: the outcome bullet before "Revoke one phone" (its own marker),
+    // and the Mint body gains the topicId splice (its own marker; port-independent).
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_OUTCOME_MARKER) && content.includes('\n- Revoke one phone')) {
+      content = content.replace('\n- Revoke one phone', `\n${PAIRING_OUTCOME_BULLET}\n- Revoke one phone`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Mobile pairing link section says the pairing outcome is the device list');
+    }
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_MINT_BODY_NEW)) {
+      const mintIdx = content.split('\n').findIndex((l) => l.startsWith('- Mint: ') && l.includes('/mobile/pairing-codes') && l.includes(PAIRING_MINT_BODY_OLD));
+      if (mintIdx >= 0) {
+        const lines = content.split('\n');
+        lines[mintIdx] = lines[mintIdx]!.replace(PAIRING_MINT_BODY_OLD, PAIRING_MINT_BODY_NEW);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile pairing link Mint example passes the conversation topicId');
+      }
+    }
     if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && !content.includes(PAIRING_APPROVE_DASHBOARD_BULLET) && content.includes('\n- A phone approved this way is labelled')) {
       content = content.replace('\n- A phone approved this way is labelled', `\n${PAIRING_APPROVE_DASHBOARD_BULLET}\n- A phone approved this way is labelled`);
       patched = true;
@@ -11205,6 +11273,19 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation-list pins line');
+      }
+    }
+
+    // Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line.
+    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes('/mobile/conversations/search')) {
+      const lines = content.split('\n');
+      const listPinsAt = lines.findIndex((l) => l === APP_CONVERSATIONS_LIST_PINS_LINE);
+      const at = listPinsAt >= 0 ? listPinsAt : lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port)));
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the conversation search line');
       }
     }
 
@@ -12392,6 +12473,15 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(skillDrivenEnd, skillDrivenEnd + '\n' + "- **Failed sign-in repairs retry slowly** \u2014 a repair that ended `failed` on a budget or transient reason (not a safety refusal, not an operator cancel) tries again on its own while the account stays signed out: 6 hours after the failure, then 24 hours apart, at most 3 times per incident. Unattended identities restart with no tap; approval-mode accounts are re-offered for one tap. The next try time is `nextAttemptAt` on the episode in `GET /subscription-relogin` and shows on the dashboard cell. A failure notice is held while a retry will still follow; approval re-offers never go out 23:00–08:00 local; a helper-reported hard line (CAPTCHA, phone check, wrong account, unexpected site) or too few stored backup codes (fewer than a full run plus one; any backup-code account on the Mac helper path) holds the account at approval. Stop one repair's retries: \"Don't retry on its own\" on its failed cell. Off switch: `subscriptionPool.assistedRelogin.slowRetry.enabled: false`. When the user asks \"why did that repair start again by itself?\" \u2192 this.");
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
+      }
+      // A failed repair whose account is verified signed in again closes its own row (relogin self-heal).
+      const recoveredSentence = 'A failure whose account is then verified signed in again (pool active, matching identity, a live login check of ok: by a later repair, by hand, or by the provider) sends no failure notice and closes its own attention row with the resolution "signed in again (verified on this machine)"; the user asks "why did that sign-in alert disappear?" → this.';
+      const slowRetryEndForRecovered = 'When the user asks "why did that repair start again by itself?" \u2192 this.';
+      if (content.includes(slowRetryEndForRecovered) && !content.includes('why did that sign-in alert disappear?')) {
+        // Inserted BEFORE the bullet's closing sentence, which other migrations use as their anchor.
+        content = content.replace(slowRetryEndForRecovered, recoveredSentence + ' ' + slowRetryEndForRecovered);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
       }
       // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
       const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
@@ -14643,6 +14733,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
     } else {
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
+    // Never-Silent Conversation (never-silent-conversation spec). Idempotent via the route path.
+    if (!content.includes('/never-silent/incidents')) {
+      content += '\n' + NEVER_SILENT_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-silent conversations section');
+    } else {
+      result.skipped.push('CLAUDE.md: never-silent conversations section already present');
     }
 
     // Disk Steward (disk-steward spec). Idempotent via content-sniffing on the route path.
@@ -17480,6 +17579,10 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
       // the disk?" and "clear disk on <machine>" from the same section.
       '## Disk Steward',
+      // never-silent-conversation: the watcher, its incidents route and the notices are
+      // server-side and framework-neutral; a Codex session answering "why did that go
+      // quiet?" must find the same section.
+      '## Never-silent conversations',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming

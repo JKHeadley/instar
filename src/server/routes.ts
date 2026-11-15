@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { historyTextFor } from '../core/inboundMedia.js';
@@ -4792,20 +4793,23 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       // Reach-aware B17 (Echo Bugs topic 10000002506): the operator-errand SIGNAL plus
       // the AGENT REACH context (browser-profile accounts + what the agent's own key
-      // reads). Built only when an errand-shaped ask is present in a reply, so every
-      // other review is unchanged. Fail-OPEN: any error leaves both undefined and the
+      // reads). The errand signal (and with it the REACH sub-clause) fires only on
+      // an errand-shaped reply. The reach DATA is also built for every non-health-
+      // alert review: the B17 APPROVAL-NOT-ERRAND sub-clause (Echo Bugs topic
+      // 10000002731) reads it to tell "the agent could do this step on a yes" from
+      // "only the operator can". Fail-OPEN: any error leaves both undefined and the
       // gate runs exactly as before.
       let agentReach: import('../core/agent-reach.js').AgentReach | undefined;
       try {
         if (kindForSignals === 'reply') {
           const errand = detectOperatorErrand(text);
-          if (errand.errand) {
-            signals.operatorErrand = { errand: true, phrase: errand.phrase };
-            const registry =
-              ctx.playwrightRegistry?.() ??
-              new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
-            agentReach = buildAgentReach(registry);
-          }
+          if (errand.errand) signals.operatorErrand = { errand: true, phrase: errand.phrase };
+        }
+        if (kindForSignals !== 'health-alert') {
+          const registry =
+            ctx.playwrightRegistry?.() ??
+            new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
+          agentReach = buildAgentReach(registry);
         }
       } catch {
         // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
@@ -21545,7 +21549,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         && typeof metadata?.inboundMessageId === 'string'
         ? { origin: 'automated' as const, category: 'presence-standby' as const,
           sourceContext: 'presence-proxy', inboundMessageId: metadata.inboundMessageId }
-        : undefined;
+        // Pairing outcome (docs/specs/mobile-pairing-outcome-notice.md §3.4): only the in-process
+        // producer reaches this branch, and its anchor (the operator's message the link answers)
+        // was verified at mint. Without an anchor the line falls through to an ordinary notice.
+        : originProducer?.producerKind === 'server-automation' && originProducer.producerId === PAIRING_OUTCOME_PRODUCER
+          && typeof metadata?.inboundMessageId === 'string' && /^\d{1,20}$/.test(metadata.inboundMessageId)
+          ? { origin: 'automated' as const, category: 'pairing-outcome' as const,
+            sourceContext: PAIRING_OUTCOME_PRODUCER, inboundMessageId: metadata.inboundMessageId }
+          : undefined;
       const sendOptions = {
         envelope: conversationNotice ?? (originProducer?.producerKind !== 'server-automation' && !(originProducer?.sessionId && ctx.state.getSession(originProducer.sessionId)?.jobSlug) && !isProxy && !isSystemTemplate && !notificationJobSession && !metadataJobSlug && senderClass !== 'script'
           && (messageKind === undefined || messageKind === 'reply')

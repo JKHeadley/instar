@@ -73,6 +73,17 @@ export const MAIN_VERIFY_LIMITS = Object.freeze({
   debounceMs: 10 * MIN,
   /** …but no later than this after the first unverified head. */
   debounceCapMs: 30 * MIN,
+  /**
+   * While `main` is suspect or red the wait is short: merging is closed until a green
+   * `main` verify, so waiting only keeps it closed. Two minutes = the head read the same
+   * on its first sight and two further reconcile passes (reads spanning 2 minutes), which absorbs one stale read of the previous
+   * (failed) head. So while unhealthy the floor between head-changed verifies is 2 minutes
+   * (a head that settles, then moves), not the healthy 10; a head that changes on every
+   * read is paced by the 10-minute cap. Each verify still needs the one slot, one entry is
+   * pending at most, and merging is closed for the whole time.
+   */
+  unhealthyDebounceMs: 2 * MIN,
+  unhealthyDebounceCapMs: 10 * MIN,
   /** An `error` (not a failure) re-queues with backoff at most this many times per head. */
   errorRetries: 3,
   errorBackoffMs: 5 * MIN,
@@ -120,20 +131,31 @@ export function oldestUnverifiedAfterGreen(
  * `main` verify is enqueued for it now. Enqueued once per head (`handled`), after 10
  * minutes of an unchanged head, or 30 minutes after the first unverified head, or at
  * once after boot / lease acquisition (`immediate`).
+ *
+ * `opts.healthy === false` (main is suspect or red) shortens the wait to
+ * `unhealthyDebounceMs` unchanged, capped at `unhealthyDebounceCapMs` (never longer than
+ * the limits passed in): merging is closed until a green `main` verify, so the long wait
+ * only keeps it closed. On 2026-11-15 a repair merged at 01:13Z and `main` was not
+ * re-verified until a restart at 02:24Z; two green PRs sat at `main-red · repair-only`
+ * meanwhile. Not zero: the head is read from GitHub once a minute and one stale read of
+ * the previous (failed) head must not start a verify of it. Still once per head (`handled`).
  */
 export function decideMainHeadEnqueue(
   prev: MainHeadObservation,
   sha: string,
   now: number,
   limits: { debounceMs: number; debounceCapMs: number } = MAIN_VERIFY_LIMITS,
+  opts: { healthy?: boolean } = {},
 ): { next: MainHeadObservation; enqueue: boolean } {
   const next: MainHeadObservation = { ...prev };
   if (sha !== next.head) { next.head = sha; next.since = now; }
   if (sha === next.handled) return { next, enqueue: false };
   if (next.firstUnverifiedAt === null) next.firstUnverifiedAt = now;
+  const debounceMs = opts.healthy === false ? Math.min(limits.debounceMs, MAIN_VERIFY_LIMITS.unhealthyDebounceMs) : limits.debounceMs;
+  const debounceCapMs = opts.healthy === false ? Math.min(limits.debounceCapMs, MAIN_VERIFY_LIMITS.unhealthyDebounceCapMs) : limits.debounceCapMs;
   const ready = next.immediate
-    || now - next.since >= limits.debounceMs
-    || now - next.firstUnverifiedAt >= limits.debounceCapMs;
+    || now - next.since >= debounceMs
+    || now - next.firstUnverifiedAt >= debounceCapMs;
   if (!ready) return { next, enqueue: false };
   next.immediate = false;
   next.handled = sha;

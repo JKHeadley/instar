@@ -406,6 +406,7 @@ export async function renderConversations(main) {
 export function conversationsTile() {
   return el('div', { class: 'tiles' }, el('a', { class: 'tile', href: PAGE },
     el('span', { class: 't-icon', icon: 'chat' }),
-    el('span', {}, el('span', { class: 't-name', text: 'Conversations' }),
-      el('span', { class: 't-desc', text: 'Your efforts and the conversations behind them.' }))));
+    // Named for what it holds, so it is not a second "Conversations" next to the chats tile.
+    el('span', {}, el('span', { class: 't-name', text: 'Efforts' }),
+      el('span', { class: 't-desc', text: 'Each piece of work you started, and the conversations behind it.' }))));
 }

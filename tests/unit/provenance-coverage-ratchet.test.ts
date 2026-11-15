@@ -109,6 +109,8 @@ const PENDING_BASELINE = [
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
   // conversation-graph-suggestions (2026-11-13): advice-only groupings, graded by owner Accept/Reject until enrolled.
   'conversation-graph-suggestions::ConversationGraphSuggestions::backlog:decision-quality-enrolment',
+  // never-silent-conversation: verdicts are logged per incident today; enrolment rides the same backlog (CMT-1781)
+  'never-silent-conversation-judge::ConversationSilenceJudge::backlog:decision-quality-enrolment',
   // context-budget-layered-summaries Phase 1 S8 (2026-11-10): chunk/C2 summaries; enrolment queued with the Phase 2 fold probes.
   'context-layer-chunk::ContextLayerChunk::backlog:decision-quality-enrolment',
   // context-budget-layered-summaries Phase 1 S9 (2026-11-10): H3; enrolment queued with the Phase 2 fold probes.
