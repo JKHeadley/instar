@@ -69,6 +69,8 @@ Proxied-on-read: each machine records its own checks; the reviewing server merge
 
 **Status surfaces:** new `GET /spec/constitution-checks` returns this machine's records only and says so by design (it is the per-machine leg of the merged read, never a fleet answer).
 
+**Stage-B certified set:** `src/core/specConstitutionCheckLedger.ts` enters the tone gate's import closure; it is listed under `excluded` in `src/data/stageBCertifiedSet.ts` with its reason (agent-reach precedent), and declares its own report type so the conformance reviewer and registry parser stay out of that closure.
+
 ## 8. Rollback cost
 
 Revert the PR and release. The ledger file is left behind, inert. No migration, no config, no agent state repair.

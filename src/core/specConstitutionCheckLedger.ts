@@ -28,7 +28,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
-import type { ConformanceReport } from './reviewers/standards-conformance.js';
+
+/**
+ * The fields of a conformance report this ledger reads (structurally the
+ * ConformanceReport of src/core/reviewers/standards-conformance.ts). Declared here
+ * rather than imported so the outbound gate's import closure does not grow by the
+ * reviewer and the registry parser.
+ */
+export interface CheckReportFields {
+  findings: Array<{ standard: string }>;
+  standardsChecked: number;
+  degraded: boolean;
+  checkedAt: string;
+}
 
 export interface SpecConstitutionCheckRecord {
   /** Spec slug (frontmatter `slug:`, else file basename, else first heading). */
@@ -203,7 +215,7 @@ export class SpecCheckPeerCache {
  */
 export function recordSpecConstitutionCheck(
   stateDir: string,
-  input: { slug: string; markdown: string; report: ConformanceReport },
+  input: { slug: string; markdown: string; report: CheckReportFields },
 ): SpecConstitutionCheckRecord | null {
   const title = firstHeading(input.markdown);
   const slug = clamp(input.slug || labelFromHeading(title) || 'untitled', 120);
