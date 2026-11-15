@@ -41,7 +41,8 @@ function fakes(withModel: boolean, withBinary = true): void {
   vi.stubEnv('XDG_DATA_HOME', path.join(home, 'data'));
   vi.stubEnv('INSTAR_FFMPEG', path.join(bin, 'ffmpeg'));
   vi.stubEnv('INSTAR_WHISPER_CLI', withBinary ? path.join(bin, 'whisper-cli') : path.join(bin, 'absent'));
-  vi.stubEnv('PATH', withBinary ? process.env.PATH ?? '' : bin);
+  // PATH is left intact: server boot needs system tools (e.g. ssh-keygen on a fresh home). The
+  // "nothing installed" case is made by the empty model folder in the fake HOME, which holds on any machine.
   if (withModel) {
     const model = Buffer.alloc(1024 * 1024 + 16);
     model.write('lmgg', 0, 'latin1');
