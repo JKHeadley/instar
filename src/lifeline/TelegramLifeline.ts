@@ -1,4 +1,8 @@
 import { isNotificationCategory } from '../messaging/notificationCategories.js';
+import { escapeTypedPathTags } from '../core/inboundMedia.js';
+
+/** One file the lifeline forwards to its own server (§3c). `localPath` goes to 127.0.0.1 only. */
+interface LifelineForwardMedia { kind: 'photo' | 'document'; platformMessageId: string; filename: string; localPath: string }
 import { QuietRecordedError, notificationContext, isVerifiedReplyEnvelope } from '../messaging/NotificationSelectivityGate.js';
 import { LiveConfig } from '../config/LiveConfig.js';
 import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
@@ -1393,7 +1397,9 @@ export class TelegramLifeline {
     if (!msg.text) return;
 
     const topicId = msg.message_thread_id ?? 1;
-    const text = msg.text;
+    // native-conversation-base §3c item 1: a path tag a person typed is inert before it is forwarded
+    // or queued. Commands are unaffected.
+    const text = escapeTypedPathTags(msg.text);
 
     // Handle lifeline-specific commands directly (bypass server)
     if (text.startsWith('/lifeline')) {
@@ -1413,7 +1419,7 @@ export class TelegramLifeline {
     // Forward to server if healthy
     if (this.supervisor.healthy) {
       const fwd: ForwardAck = {};
-      const forwarded = await this.forwardToServer(topicId, text, msg, fwd);
+      const forwarded = await this.forwardToServer(topicId, text, msg, fwd, []);
       if (forwarded) {
         // Delivery confirmation — user knows message reached the server. Never for a message the
         // server's inbound gate refused (it already told the sender it was not delivered).
@@ -1485,19 +1491,24 @@ export class TelegramLifeline {
 
     let content: string;
     let photoPath: string | undefined;
+    // §3c: the caption is person text (escaped). The leading tag is the lifeline's own, for an older
+    // server; a current server takes the file from `media` and drops the tag.
+    const safeCaption = escapeTypedPathTags(caption);
+    let media: LifelineForwardMedia[] | undefined;
     try {
       photoPath = await this.downloadPhoto(photo.file_id, msg.message_id);
-      content = caption ? `[image:${photoPath}] ${caption}` : `[image:${photoPath}]`;
+      content = safeCaption ? `[image:${photoPath}] ${safeCaption}` : `[image:${photoPath}]`;
+      media = [{ kind: 'photo', platformMessageId: String(msg.message_id), filename: path.basename(photoPath), localPath: photoPath }];
     } catch (err) {
       // Download failed — forward caption or placeholder so message isn't silently dropped
-      content = caption ? `[image:download-failed] ${caption}` : '[image:download-failed]';
+      content = safeCaption ? `[image:download-failed] ${safeCaption}` : '[image:download-failed]';
       console.error(`[lifeline] Failed to download photo: ${err}`);
     }
 
     const serverWasHealthy = this.supervisor.healthy;
     if (serverWasHealthy) {
       const fwd: ForwardAck = {};
-      const forwarded = await this.forwardToServer(topicId, content, msg, fwd);
+      const forwarded = await this.forwardToServer(topicId, content, msg, fwd, media);
       if (forwarded) {
         if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
@@ -1594,18 +1605,21 @@ export class TelegramLifeline {
 
     let content: string;
     let documentPath: string | undefined;
+    const safeCaption = escapeTypedPathTags(caption);
+    let media: LifelineForwardMedia[] | undefined;
     try {
       documentPath = await this.downloadDocument(doc.file_id, msg.message_id, doc.file_name);
-      content = caption ? `[document:${documentPath}] ${caption}` : `[document:${documentPath}]`;
+      content = safeCaption ? `[document:${documentPath}] ${safeCaption}` : `[document:${documentPath}]`;
+      media = [{ kind: 'document', platformMessageId: String(msg.message_id), filename: doc.file_name || path.basename(documentPath), localPath: documentPath }];
     } catch (err) {
-      content = caption ? `[document:download-failed] ${caption}` : '[document:download-failed]';
+      content = safeCaption ? `[document:download-failed] ${safeCaption}` : '[document:download-failed]';
       console.error(`[lifeline] Failed to download document: ${err}`);
     }
 
     const serverWasHealthy = this.supervisor.healthy;
     if (serverWasHealthy) {
       const fwd: ForwardAck = {};
-      const forwarded = await this.forwardToServer(topicId, content, msg, fwd);
+      const forwarded = await this.forwardToServer(topicId, content, msg, fwd, media);
       if (forwarded) {
         if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
@@ -1896,8 +1910,9 @@ export class TelegramLifeline {
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
     ack?: ForwardAck,
+    media?: LifelineForwardMedia[],
   ): Promise<boolean> {
-    return (await this.forwardToServerClassified(topicId, text, rawMsg, ack)) === 'ok';
+    return (await this.forwardToServerClassified(topicId, text, rawMsg, ack, media)) === 'ok';
   }
 
   /**
@@ -1911,6 +1926,12 @@ export class TelegramLifeline {
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
     ack?: ForwardAck,
+    /**
+     * native-conversation-base §3c: the files, with this machine's download paths, for the local
+     * server only. `[]` for plain text (a current lifeline), absent on a queue replay: the server then
+     * reads only a tag at position 0, as for an older lifeline.
+     */
+    media?: LifelineForwardMedia[],
   ): Promise<ForwardOutcome> {
     // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
     // server's /internal/telegram-forward handler passes these to
@@ -1962,6 +1983,7 @@ export class TelegramLifeline {
           ? { topicName: (rawMsg as TelegramUpdate['message'])!.reply_to_message!.forum_topic_created!.name }
           : {}),
         ...(isForwarded ? { forwarded: true } : {}),
+        ...(media ? { media } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),
         ...(includeVersion ? { lifelineVersion: this.lifelineVersion } : {}),

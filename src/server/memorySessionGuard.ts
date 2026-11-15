@@ -51,6 +51,11 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   { method: 'POST', pattern: /^\/threadline\/session-reply$/, limit: 'any', requirePlacePrefix: PEER_PLACE_PREFIX },
   // An earlier file of this conversation: the route's own bind check holds it to the session's conversation.
   { method: 'GET', pattern: /^\/app\/media-path\/[^/]+$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Work Board (work-board-asks §4): a scoped session reads, and writes records on, the ONE card whose
+  // conversation is its own. The handler checks that binding (`placeKey === app:<the card's conversation>`);
+  // no lanes read, no create, no tap.
+  { method: 'GET', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}\/records$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   { method: 'POST', pattern: /^\/messaging\/preflight$/, limit: 'any' },
   { method: 'POST', pattern: /^\/events\/delivery-failed$/, limit: 'any' },
   { method: 'POST', pattern: /^\/telegram\/origins\/operations\/[^/]+\/outcome$/, limit: 'any' },

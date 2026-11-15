@@ -323,6 +323,62 @@ export class TopicResumeMap {
   }
 
   /**
+   * The names of the tmux sessions whose active pane exists and is not dead,
+   * read with ONE tmux call for every session.
+   *
+   * This used to be one `display-message` per topic session, each a
+   * synchronous subprocess on the server's main thread, every minute: the
+   * largest single source of subprocess spawns in a profile of a loaded server
+   * (2026-11-13). `list-sessions` evaluates the same pane formats against each
+   * session's active pane, so the answer per session is the one
+   * `display-message -t =name:` gave: compared on 40 live single-window
+   * sessions, 4 of them with a dead pane, and on a throwaway server with a
+   * three-window session whose current window has two panes (both forms give
+   * the active pane of the current window), tmux 3.7c.
+   *
+   * The separator is `||`, as it was in the per-session probe, and NOT a tab:
+   * a tmux client that is not flagged UTF-8 (no TMUX and no UTF-8 locale in its
+   * environment, e.g. a server started by launchd directly) replaces
+   * non-printable characters in what it prints with `_`, which would turn every
+   * line into one field and every session into "not live" without any error.
+   * A line is read from the right, so a `||` inside a session name is harmless.
+   *
+   * Any failure (no tmux server, a timeout, a non-zero exit) reads as "no live
+   * panes": the heartbeat then writes nothing and every mapping is kept, the
+   * same direction a failed per-session probe took.
+   */
+  private readLivePanes(): Set<string> {
+    const live = new Set<string>();
+    const probe = withSyncOp(() => spawnSync(this.tmuxPath, ['list-sessions', '-F', '#{session_name}||#{pane_id}||#{pane_dead}'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }));
+    if (probe.status !== 0) return live;
+    let lines = 0;
+    let parsed = 0;
+    for (const line of String(probe.stdout ?? '').split('\n')) {
+      if (!line.trim()) continue;
+      lines++;
+      const deadAt = line.lastIndexOf('||');
+      const paneAt = deadAt > 1 ? line.lastIndexOf('||', deadAt - 2) : -1;
+      if (paneAt <= 0) continue;
+      parsed++;
+      const name = line.slice(0, paneAt);
+      const paneId = line.slice(paneAt + 2, deadAt);
+      const paneDead = line.slice(deadAt + 2).trim();
+      if (paneId && paneDead !== '1') live.add(name);
+    }
+    if (lines > 0 && parsed === 0 && !this.warnedUnreadableTmuxList) {
+      // tmux answered, but in a shape this cannot read: without this line the
+      // heartbeat would stop refreshing mappings with nothing to show for it.
+      this.warnedUnreadableTmuxList = true;
+      console.warn(`[TopicResumeMap] tmux list-sessions returned ${lines} line(s) in an unreadable shape; no resume mapping will be refreshed. First line: ${JSON.stringify(String(probe.stdout).split('\n')[0].slice(0, 120))}`);
+    }
+    return live;
+  }
+  private warnedUnreadableTmuxList = false;
+
+  /**
    * Proactive resume heartbeat: update the topic→UUID mapping for all active
    * topic-linked sessions. Called periodically (e.g., every 60s).
    *
@@ -342,19 +398,12 @@ export class TopicResumeMap {
 
       // Count how many sessions have known UUIDs vs unknown
       const activeSessions: Array<{ topicId: number; sessionName: string; claudeSessionId?: string; framework?: string }> = [];
+      // Verify Claude is actually running in each pane. A crashed Claude keeps
+      // its tmux session (remain-on-exit failed), so existence alone counted
+      // dead panes as live: the pane must exist and not be dead.
+      const livePanes = this.readLivePanes();
       for (const [topicId, info] of topicSessions) {
-        // Verify Claude is actually running in the pane. A crashed Claude keeps
-        // its tmux session (remain-on-exit failed), so `has-session` alone
-        // counted dead panes as live. One display-message call reads both.
-        // Measured on tmux 3.6a: a MISSING session exits 0 with empty fields,
-        // so an empty pane id means gone; pane_dead `1` means the process exited.
-        const probe = withSyncOp(() => spawnSync(this.tmuxPath, ['display-message', '-t', `=${info.sessionName}:`, '-p', '#{pane_id}||#{pane_dead}'], {
-          encoding: 'utf-8',
-          timeout: 5000,
-        }));
-        if (probe.status !== 0) continue;
-        const [paneId, paneDead] = String(probe.stdout ?? '').trim().split('||');
-        if (!paneId || paneDead === '1') continue;
+        if (!livePanes.has(info.sessionName)) continue;
         activeSessions.push({ topicId, sessionName: info.sessionName, claudeSessionId: info.claudeSessionId, framework: info.framework });
       }
 

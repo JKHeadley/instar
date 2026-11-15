@@ -45,6 +45,8 @@ export interface PruneRequest {
   trigger: 'auto' | 'manual';
   dryRun: boolean;
   measure: boolean;
+  /** Also measure the whole home folder by owner (§3.7a). */
+  wholeDisk?: boolean;
   requestedBy?: { sessionId?: string; topicId?: number } | null;
 }
 
@@ -73,7 +75,7 @@ export class PruneRunner {
     const input: PruneChildInput = {
       runId, agent: this.cfg.agent, agentHome: this.cfg.agentHome, trigger: req.trigger, requestedBy: req.requestedBy ?? null,
       dryRun: req.dryRun, npmCacheMaxGiB: this.cfg.npmCacheMaxGiB(), categoryBudgetMs: this.cfg.categoryBudgetMs ?? 10 * 60_000,
-      measure: req.measure, resultPath: record.resultPath, auditPath: this.cfg.auditPath,
+      measure: req.measure, wholeDisk: req.wholeDisk ?? false, runDeadlineAt: record.deadline, resultPath: record.resultPath, auditPath: this.cfg.auditPath,
     };
     // Intent first: a crash between here and the spawn is resolvable at boot by the run id.
     this.seams.writeFile(this.runFile, JSON.stringify(record));

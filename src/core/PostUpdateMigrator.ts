@@ -63,10 +63,11 @@ import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
-import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
+import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
 import os from 'node:os';
@@ -1086,7 +1087,38 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
 - **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
 - **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
 
+/**
+ * "Every ask carries its links." — named clause under Agent Proposes, Operator
+ * Approves (ratified by Justin, topic 141868, 2026-11-11). Emitted in the CLAUDE.md
+ * template right before SURFACE_REFERRAL_CLAUDEMD_SECTION and inserted for existing
+ * agents by migrateClaudeMd (migrateAskLinksParagraph: the canonical text is a no-op,
+ * a paragraph opening with the ASK_LINKS_CLAUDEMD_MARKER phrase is replaced).
+ */
+export const ASK_LINKS_CLAUDEMD_MARKER = '**Every ask carries its links.**';
+export const ASK_LINKS_CLAUDEMD_SECTION = `**Every ask carries its links.** When a message needs the operator to review, approve or decide, end it with a short *What I need from you* section: one line per ask in plain words, a working link to each item (check it opens first; a private view for private content), and the exact reply that settles it. An authority grant links to its Approve/Decline page instead of a reply.`;
 export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
+
+/**
+ * Pure helper for migrateClaudeMd: converge a CLAUDE.md on the canonical
+ * "Every ask carries its links." paragraph. Exported for tests.
+ */
+export function migrateAskLinksParagraph(content: string): { content: string; changed: boolean; replaced: boolean } {
+  if (content.includes(ASK_LINKS_CLAUDEMD_SECTION)) return { content, changed: false, replaced: false };
+  // A variant: a paragraph opening with the phrase — its continuation lines are the
+  // contiguous non-blank lines that do not start a heading, list item, table or new bold lead.
+  const variant = /^\*\*Every ask carries its links[^\n]*(?:\n(?![ \t]*(?:#|- |\* |\||\*\*))[^\n]+)*/m;
+  if (variant.test(content)) {
+    return { content: content.replace(variant, () => ASK_LINKS_CLAUDEMD_SECTION), changed: true, replaced: true };
+  }
+  const surfaceLead = '**Sending the operator to a page: link, words, and look first.**';
+  const at = content.indexOf(surfaceLead);
+  if (at !== -1 && (at === 0 || content[at - 1] === '\n')) {
+    return { content: `${content.slice(0, at)}${ASK_LINKS_CLAUDEMD_SECTION}\n\n${content.slice(at)}`, changed: true, replaced: false };
+  }
+  const sep = content.endsWith('\n') ? '\n' : '\n\n';
+  return { content: `${content}${sep}${ASK_LINKS_CLAUDEMD_SECTION}\n`, changed: true, replaced: false };
+}
+
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
@@ -1339,6 +1371,7 @@ export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work 
 
 /** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
 export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
+export const APP_CONVERSATIONS_LIST_PINS_LINE = '- A person can pin whole conversations to the top of their conversation list (the app and the dashboard\'s "Pinned" group). Pins belong to each person (the owner, a team member, a shared person), at most 50, and are the same on every machine. The first page of `GET /mobile/conversations` carries `pinnedRefs` [{ref, atMs}] and `pinnedRows` (full list rows, newest pin first); my own Bearer read sees them only with `?reader=<key>`. Pin or unpin: `POST /mobile/conversations/pins {ref, pinned}` (ref `app:<uuid>`, `telegram:<topicId>` or `slack:<machine>:<id>`; a Bearer call must name `?reader=`). When the operator asks "pin this conversation", that is this, not a pinned message. Off switch: `mobilePairing.native.listPins.enabled: false`.';
 /** Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line. Sniff: "conversations/search". */
 export const APP_CONVERSATIONS_SEARCH_LINE = '- Search conversations by keyword: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switch: `mobilePairing.native.search.enabled: false` (503 `search-off`). Meaning search comes later; for now `mode=keyword` only.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
@@ -1489,6 +1522,7 @@ ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
 ${APP_CONVERSATIONS_UNREAD_LINE}
 ${DASHBOARD_CONVERSATIONS_LINE}
 ${APP_CONVERSATIONS_PINS_LINE}
+${APP_CONVERSATIONS_LIST_PINS_LINE}
 ${APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port))}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
@@ -1577,6 +1611,22 @@ ${APP_MEDIA_TO_PLATFORM_LINE}
 - **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
 - Sizes and counts are in the authenticated \`/health\` → \`appMedia\`; a count reading null has not been measured yet. Gate: \`mobilePairing.native.media.enabled\` (omitted ⇒ the development-agent gate; needs \`mobilePairing.native.enabled\`); \`mobilePairing.native.media.maxStoreBytes\` caps the store (default 20 GiB).
 - **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads \`not-here\` and a download answers 202 \`fetching\`. A message whose file has not arrived reads \`[file still copying: <name>]\`, and one \`[file now available: <path>]\` line follows when it lands. \`/health?scope=pool\` → \`appMediaPool\` shows every machine; \`singleCopyBlobs\` counts files only this machine holds (null when it cannot be measured, never a guessed 0).
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for Telegram files on any machine (docs/specs/native-conversation-base.md
+ * §3c). Its own section, sniffed by its exact heading.
+ */
+export const TELEGRAM_FILES_CLAUDEMD_MARKER = '### Telegram files on any machine';
+export function TELEGRAM_FILES_CLAUDEMD_SECTION(port: number): string {
+  return `\n${TELEGRAM_FILES_CLAUDEMD_MARKER}
+
+A photo, file, video or voice note sent in a Telegram topic travels by attachment id, never as a path in the text. The machine running my session builds the file line itself: \`[image:<path>]\` or \`[document:<path>] (…)\` when the file is here; \`[file still copying: <name>]\` and later one \`[file now available: <path>]\` line when it arrives; and, if it has not arrived after 5 minutes, one line saying so (the wait goes on, and a late file still gets its line). Where files are not copied between machines, the line says the file is stored on another machine and cannot be opened here.
+- **Text is never a path.** A tag a person types (\`[image:/etc/hostname]\` and the \`document\`, \`video\`, \`voice\` and \`file\` forms) reaches me as \`[typed image:/etc/hostname]\`: it is their text, not a file. This holds on Telegram, Slack and iMessage.
+- **Fetch it myself:** \`curl -H "Authorization: Bearer $AUTH" -H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN" "http://localhost:${port}/conversation-media/path?conversationKey=telegram:<topicId>&platformMessageId=<id>"\` (or \`&attachmentId=<id>\`) returns \`{path}\`, or 404 \`not-on-this-machine\` with the reason. The id is in the line I was given ("attachment \`<id>\`").
+- \`GET /conversation-media/status\` shows this machine's waiting files and the event lag it observed.
+- **When to use** (PROACTIVE): "did you see my photo?" while I only have a "still copying" or "has not arrived" line → fetch it with the route above before answering; never claim to have seen a file I could not open.
 `;
 }
 
@@ -1671,10 +1721,25 @@ A weekly review of a watchlist of similar projects, each idea checked against ou
 }
 
 /**
- * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md).
- * Unique content-sniff marker: `Mobile push notifications`.
+ * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md, docs/specs/mobile-android-app.md §2.5).
+ * Unique content-sniff marker: `Mobile push notifications` (kept in the heading, so the add-if-missing guard never adds a second copy).
  */
 export function MOBILE_PUSH_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile push notifications — the Instar app (iPhone and Android) buzzes when something needs the operator
+
+When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push. Phone notifications go to iPhones through Apple and to Android phones through Google's Firebase. The iPhone key is the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). The Android key is the vault entry \`fcm_service_account_json\` (a Firebase service-account key that can only send notifications). Apple and Google only see "Something needs you" or "New reply"; the phone fetches the real text from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice. A problem with one provider never pauses the other.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, fcmConfigured, pausedReasons: { apns, fcm }, fcmTrials, devices: [{ provider, sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple or Google accepted it, not that the phone showed it.
+- \`keyConfigured: false\` / \`fcmConfigured: false\` → that provider's key is not in my vault; nothing is sent to those phones, and a phone registering is told \`ready: false\`. \`pausedReasons.apns\` clears by itself when the APNs key, key id or team id changes. \`pausedReasons.fcm\` (Google refused the Firebase key, permission or project) is mine to fix: a new key clears it within 30 minutes; after fixing an Android pause any other way (turning the API or role back on), call \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/push/recheck -d '{"provider":"fcm"}'\`, which re-arms the check on every machine.
+- Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
+`;
+}
+
+/**
+ * The pre-Android wording of the section above, kept so a marker-less CLAUDE.md holding it byte-exact
+ * is swapped for the two-provider text (mobile-android-app §2.5). An edited old section is left alone.
+ */
+export function MOBILE_PUSH_CLAUDEMD_SECTION_V1(port: number): string {
   return `\n### Mobile push notifications — the Instar iPhone app buzzes when something needs the operator
 
 When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push, sent straight from me to Apple with the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). Apple only sees "Something needs you"; the phone fetches the title from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice.
@@ -1918,7 +1983,7 @@ export function DISK_STEWARD_CLAUDEMD_SECTION(port: number | string): string {
 ## Disk Steward
 
 Every machine watches its own free space (every 15 minutes, inside the agent server, standbys included) and posts in the "Disk space (all machines)" topic when it gets low: under 15% or 100 GiB free (capped at 30% of small disks), more often under 10% or 60 GiB or when it is on track to fill within 3 days, and always when it reaches the 5% line where uploads are refused. Before warning it clears two tool caches if its cleanup is on (npm cache over 5 GiB, Xcode build files older than a day) and stays quiet if that fixed it. Only the awake machine posts, for every machine; each post names the machine. Cleanup is off by default and on for development agents; it never touches worktrees, agent state or the operator's files.
-- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders, and \`wholeDisk\`: once a day, which agents and home folders use the whole disk, with what was not opened) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
 - **When to use** (PROACTIVE): someone asks how full a machine is, why an upload was refused, or what is taking the space → read \`/disk-steward?scope=pool\` and answer from it in plain words.
 - Someone replies "clear disk on <machine>" in the Disk space topic → find that machine's id in \`/disk-steward?scope=pool\`, then \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/disk-steward/prune -d '{"machineId":"<id>","requestedBy":{"topicId":<topic>}}'\` (202 with a run id; \`GET /disk-steward/prune/<runId>\` for the result). It clears only the two caches, on that machine, and posts what it freed.
 - Someone asks to turn on the worktree cleaner on a machine → set \`monitoring.agentWorktreeReaper\` to \`{ "enabled": true, "dryRun": false }\` in that machine's config, restart it, and report its first pass (\`GET /worktrees/agent-reaper\`). It keeps any worktree that is in use, linked to by another checkout, or holds anything it cannot prove is rebuildable.
@@ -10002,11 +10067,25 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-any-machine-access §3e — the dashboard reply box and its session line.
+    if (!content.includes(DASHBOARD_INPUT_AWARENESS_MARKER)) {
+      content += '\n' + dashboardInputAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard reply box awareness');
+    }
+
     // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
     if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
       content += '\n' + telegramOriginOwnerReadAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
+    }
+
+    // native-conversation-base §3a — held replies are delivered late and marked; the session lines.
+    if (!content.includes(HELD_REPLY_LATE_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginHeldLateAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added held-reply late-delivery awareness');
     }
 
     if (!content.includes('Telegram test groups:')) {
@@ -10343,6 +10422,23 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
+    }
+
+    // "Every ask carries its links." (Agent Proposes, Operator Approves named clause,
+    // ratified 2026-11-11 topic 141868) — Agent Awareness + Migration Parity. Content-
+    // sniffed: the canonical line is a no-op; a hand-added variant that opens with
+    // "**Every ask carries its links" is replaced so every agent converges on one text;
+    // otherwise it is placed right before the surface-referral paragraph (as the
+    // template does), or appended when that paragraph is not found.
+    {
+      const askLinks = migrateAskLinksParagraph(content);
+      if (askLinks.changed) {
+        content = askLinks.content;
+        patched = true;
+        result.upgraded.push(askLinks.replaced
+          ? 'CLAUDE.md: replaced a variant of "Every ask carries its links" with the canonical line'
+          : 'CLAUDE.md: added "Every ask carries its links"');
+      }
     }
 
     // Agent Awareness Standard + Migration Parity: an existing agent that does not
@@ -10787,6 +10883,12 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added App conversation media section');
     }
+    // native-conversation-base §3c: Telegram files by attachment id, typed tags inert, the fetch route.
+    if (!content.includes(TELEGRAM_FILES_CLAUDEMD_MARKER)) {
+      content += TELEGRAM_FILES_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram files on any machine section');
+    }
     // Increment 3 (dashboard pairing and push without Telegram): its own section, by exact heading.
     if (!content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER)) {
       content += PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION();
@@ -10963,10 +11065,23 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // Conversation-list pins (docs/specs/conversation-list-pins.md): the bullet after the pinned messages line.
+    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes(APP_CONVERSATIONS_LIST_PINS_LINE)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_LIST_PINS_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the conversation-list pins line');
+      }
+    }
+
     // Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line.
     if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes('/mobile/conversations/search')) {
       const lines = content.split('\n');
-      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      const listPinsAt = lines.findIndex((l) => l === APP_CONVERSATIONS_LIST_PINS_LINE);
+      const at = listPinsAt >= 0 ? listPinsAt : lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
       if (at >= 0) {
         lines.splice(at + 1, 0, APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port)));
         content = lines.join('\n');
@@ -11271,6 +11386,18 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.
+    // Android (mobile-android-app §2.5): the exact pre-Android section is swapped for the two-provider
+    // one; an operator-edited old section is left alone with one REVIEW line. Runs before add-if-missing.
+    {
+      const v1 = MOBILE_PUSH_CLAUDEMD_SECTION_V1(port);
+      if (content.includes(v1)) {
+        content = content.replace(v1, MOBILE_PUSH_CLAUDEMD_SECTION(port));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile push notifications section now covers Android phones too');
+      } else if (content.includes('### Mobile push notifications — the Instar iPhone app buzzes') && !content.includes('/mobile/push/recheck')) {
+        result.upgraded.push('REVIEW: CLAUDE.md: the Mobile push notifications section was edited, so instar left it alone; it still describes iPhone-only push. Android phones now get notifications through Firebase (vault fcm_service_account_json; GET /mobile/push shows fcmConfigured and pausedReasons; POST /mobile/push/recheck after fixing an Android pause).');
+      }
+    }
     if (!content.includes('Mobile push notifications')) {
       content += MOBILE_PUSH_CLAUDEMD_SECTION(port);
       patched = true;
@@ -11617,6 +11744,18 @@ setTimeout(() => process.exit(0), 2000);
         : content + '\n' + BUILTIN_SCHEDULE_EDIT_AWARENESS;
       patched = true;
       result.upgraded.push('CLAUDE.md: documented durable built-in job schedule edits');
+    }
+
+    // Per-job thinking mode (job-launch-intent-record, Migration parity). Sniffed on the PHRASE, not
+    // the bare word `thinkingMode` (the topic-profile propose bullet already contains that). Placed
+    // right after the built-in schedule bullet when present, as in generateClaudeMd; else appended.
+    if (!content.includes(JOB_THINKING_MODE_SNIFF)) {
+      const anchor = content.indexOf(BUILTIN_SCHEDULE_EDIT_AWARENESS);
+      content = anchor !== -1
+        ? content.slice(0, anchor + BUILTIN_SCHEDULE_EDIT_AWARENESS.length) + JOB_THINKING_MODE_AWARENESS + content.slice(anchor + BUILTIN_SCHEDULE_EDIT_AWARENESS.length)
+        : content + (content.endsWith('\n') ? '' : '\n') + JOB_THINKING_MODE_AWARENESS;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the per-job thinkingMode field and its launch record');
     }
 
     const coverageGuidance = applyJobMeshGuide(content, jobCoverageGuide(port));
@@ -16853,6 +16992,8 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       '**File-path feedback is always a NUDGE',
       // B22 is server-side too, so every framework's agents meet the same nudge.
       '**Sending the operator to a page: link, words, and look first',
+      // "Every ask carries its links": a messaging rule, so every framework's agents need it.
+      '**Every ask carries its links.**',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must
@@ -17211,7 +17352,9 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
+        [HELD_REPLY_LATE_AWARENESS_MARKER, telegramOriginHeldLateAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
@@ -18394,6 +18537,30 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       let added = false;
       for (const [k, v] of Object.entries(defaults)) { if (cos[k] === undefined) { cos[k] = v; added = true; } }
       if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+    }
+
+    // Work Board (docs/specs/work-board-asks.md, Migration and rollout): the owner-tunable defaults,
+    // each added only when missing. `enabled` is deliberately NOT written: omitted follows the
+    // dev-agent gate (live on a development agent, dark on the fleet).
+    {
+      const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = {
+        softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+      };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) {
+        if (wb[k] === undefined) { wb[k] = v; added = true; continue; }
+        if (v && typeof v === 'object' && wb[k] && typeof wb[k] === 'object' && !Array.isArray(wb[k])) {
+          const cur = wb[k] as Record<string, unknown>;
+          for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) { if (cur[k2] === undefined) { cur[k2] = v2; added = true; } }
+        }
+      }
+      if (added) { config.workBoard = wb; patched = true; result.upgraded.push('config.json: Work Board defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+      // `multiMachine.stateSync.workBoard` is NOT written here: the runtime forces the store on with the
+      // feature (server.ts, as for the Chief of Staff), so no flag in the file turns replication on, and
+      // a migration that touched `multiMachine` would not be a no-op on its second run.
     }
 
     // An already-configured verifier gets the explicit dark diagnosis default;

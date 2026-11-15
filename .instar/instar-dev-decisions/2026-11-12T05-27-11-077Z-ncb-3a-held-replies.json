@@ -1,0 +1,52 @@
+{
+  "ts": "2026-11-12T05:27:11.077Z",
+  "slug": "ncb-3a-held-replies",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1176,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/feature-ladders.json",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginContentDedup.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/messaging/telegram-origin/types.ts",
+      "src/server/routes.ts",
+      "src/server/telegramOriginRoutes.ts",
+      "src/messaging/telegram-origin/QueuedReplySupersession.ts"
+    ],
+    "addedLines": 950,
+    "deletedLines": 226
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "src/testing/selfActionRegistry.ts#telegram-origin-forward-ladder",
+      "howCaught": "Every replacement this slice adds (late mark, the one replacement after a reasonless ending, holder change) runs inside an existing ladder step and keeps the original 6 h deadlineAt, so the modeled bound of 31 attempts per reply holds; an ownerVerdict or settled ownerUnstated row nulls ladder.nextAt and submits nothing; the hand-back line is injected at most once per operation (keyed event) and a no-session row stops at the store purge horizon."
+    }
+  },
+  "verdict": "pass"
+}

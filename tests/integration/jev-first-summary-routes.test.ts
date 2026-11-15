@@ -5,6 +5,9 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import { JevFirstDecision, type JevPoint } from '../../src/core/JevFirstDecision.js';
+import { buildPromptJevFirst, promptDetectState } from '../../src/core/JevFirstPrompt.js';
+import { InputDetector } from '../../src/monitoring/PromptGate.js';
+import { setFeatureMetricsRecorder } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
 
 const AUTH = 'jev-first-integration';
 function app(ledger: FeatureMetricsLedger | null) {
@@ -59,6 +62,32 @@ describe('Jev-first summary HTTP pipeline', () => {
         disagreements: 0, bigModelCallsAvoided: 1, bigModelTokensSaved: null,
       })]);
     } finally { ledger.close(); }
+  });
+
+  it('PromptGate prompt-detect shadow rows reach the summary; the incumbent still decides', async () => {
+    const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    setFeatureMetricsRecorder(ledger);
+    try {
+      const rows: unknown[] = [];
+      const { gateway, getPoint } = buildPromptJevFirst({ stateDir: '/tmp/none', developmentAgent: true,
+        readConfig: () => ({ enabled: true, stage: 'shadow' }),
+        provenance: () => ({ recordDecisionFlushed: (r: unknown) => { rows.push(r); return `p-${rows.length}`; } }) as never,
+        readKey: () => 'test-key',
+        askJev: async () => ({ model: 'jev-1.13.0', probability: 0.04, ms: 9, tokensIn: 55 }) });
+      const detector = new InputDetector({ detectionWindowLines: 50, enabled: true,
+        intelligence: { evaluate: async () => 'NO_PROMPT' } as never,
+        jevFirst: gateway, getJevPoint: getPoint, jevState: promptDetectState });
+      for (let i = 0; i < 3; i++) detector.onCapture('int-session', 'All done here.\n❯ \n');
+      for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+      await detector.lastJevShadow;
+      expect(rows).toHaveLength(1);
+      const res = await request(app(ledger)).get('/jev-first/summary?sinceHours=24')
+        .set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.points).toEqual([expect.objectContaining({
+        id: 'prompt-detect', decisions: 1, jevSettled: 0, incumbentHandled: 1, jevCalls: 1, jevTokensIn: 55,
+      })]);
+    } finally { setFeatureMetricsRecorder(null); ledger.close(); }
   });
 
   it('returns 503 when the metrics substrate is unavailable', async () => {

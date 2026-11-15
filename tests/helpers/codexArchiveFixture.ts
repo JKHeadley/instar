@@ -83,9 +83,26 @@ export function buildLargeArchive(
 }
 
 /** A tmux stand-in that reports a live pane for every session (TopicResumeMap probes it). */
-export function writeTmuxStub(dir: string): string {
+/**
+ * A fake tmux. `liveSessions` is required on purpose: a stub that lists nothing makes
+ * the resume heartbeat skip every session, and a test asserting "nothing changed"
+ * would then pass without reaching the code it tests.
+ */
+export function writeTmuxStub(dir: string, liveSessions: string[]): string {
   const file = path.join(dir, 'tmux-stub.sh');
-  fs.writeFileSync(file, '#!/bin/sh\n# display-message -p "#{pane_id}||#{pane_dead}" → live pane; has-session → 0\necho "%1||0"\nexit 0\n');
+  // list-sessions -F "#{session_name}||#{pane_id}||#{pane_dead}" → one live pane per name in
+  // the sidecar file; display-message -p "#{pane_id}||#{pane_dead}" → live pane; has-session → 0.
+  fs.writeFileSync(`${file}.sessions`, liveSessions.map((name) => `${name}\n`).join(''));
+  fs.writeFileSync(file, [
+    '#!/bin/sh',
+    'if [ "$1" = "list-sessions" ]; then',
+    '  while IFS= read -r name; do printf \'%s||%%1||0\\n\' "$name"; done < "$0.sessions"',
+    '  exit 0',
+    'fi',
+    'echo "%1||0"',
+    'exit 0',
+    '',
+  ].join('\n'));
   fs.chmodSync(file, 0o755);
   return file;
 }

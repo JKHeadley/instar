@@ -73,9 +73,12 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
+import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
+import { pickupBudgetLeft } from '../core/WorkBoardPickupController.js';
+import { DEFAULT_WORK_BOARD_SETTINGS } from '../core/WorkBoardService.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -5252,6 +5255,41 @@ const browserActivationEffectRetry: SelfActionController = {
 };
 
 /**
+ * fcm-pause-trial-retry — mobile-android-app §2.3. While Android push is paused (Google refused the
+ * key, permission or project), the 15-second tick arms one trial send at a time: 30 minutes after the
+ * pause, then doubling (1, 2, 4, 8, 16 h), and none after 6 refused trials. Under a cause that never
+ * clears the loop settles at 6 trials, horizon-independent; only the agent's own recheck after a fix
+ * re-arms it (rate-limited to 6 an hour, not a self-triggered path). Modeled on the REAL schedule
+ * function the service uses.
+ */
+const fcmPauseTrialRetry: SelfActionController = {
+  id: 'fcm-pause-trial-retry',
+  actionVerb: 'retry',
+  models: 'src/core/MobilePush.ts (MobilePushService.fcmPauseTick + sendFcm trial — nextFcmTrialAt, stops after FCM_MAX_TRIALS)',
+  modelsPath: 'src/core/MobilePush.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'refusedTrials and nextTrialAt are persisted in mobile-push-state.json (pausedFcm), so a restart resumes the same schedule; only the in-memory arm flag is lost, which only delays a trial.' },
+  boundK: FCM_MAX_TRIALS,
+  perTargetBoundK: FCM_MAX_TRIALS,
+  ticks: 4 * 60 * 24 * 7,
+  tickMs: 15_000,
+  makeUnderPressure(f, sink) {
+    let refused = 0;
+    let nextAt: number | null = f.clock.nowMs() + FCM_TRIAL_BASE_MS;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (nextAt === null || now < nextAt || !f.targetAlwaysRejects()) return;
+        sink.emit({ verb: 'retry', target: 'fcm-trial' });
+        sink.emitTimesMs.push(now);
+        refused += 1;
+        nextAt = nextFcmTrialAt(refused, now);
+      },
+    };
+  },
+};
+
+/**
  * peer-place-session-tick — memory-privacy-agent-places §4. The 60-second tick ends
  * another agent's place session when it is idle past the limit or no longer admitted.
  * Modeled on the REAL PlaceSessionRegistry. A kill removes the record, and the tick
@@ -5350,6 +5388,45 @@ const reloginApprovalReminder: SelfActionController = {
           sink.emit({ verb: 'notify', target: `relogin:${due.episode.id}` });
           sent.add(due.key);
         }
+      },
+    };
+  },
+};
+
+/**
+ * work-board-pickup (docs/specs/work-board-asks.md §6): an approved card is handed to its
+ * conversation's session; the hand-over that spends (a session spawn or inject) is refused for
+ * ever. The real brake: spending attempts are counted from replicated `dispatching` records and
+ * park at the cap (a settling state); a failure park re-arms ONCE on an ownership change; nothing
+ * else but a person's tap adds an attempt. Waiting for capacity is a free read and emits nothing.
+ */
+const workBoardPickup: SelfActionController = {
+  id: 'work-board-pickup',
+  actionVerb: 'pickup-spawn',
+  models: 'src/core/WorkBoardPickupController.ts (pickupBudgetLeft: cap from replicated dispatching records, park, one ownership re-arm per park)',
+  modelsPath: 'src/core/WorkBoardPickupController.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt count and the park are replicated records (dispatching / dispatched), so a restart or a new owner folds the same count and mints no new budget; only the next free-check time is in memory.' },
+  boundK: DEFAULT_WORK_BOARD_SETTINGS.pickup.maxSpendingAttempts + 1,
+  perTargetBoundK: DEFAULT_WORK_BOARD_SETTINGS.pickup.maxSpendingAttempts + 1,
+  ticks: 3 * 1440,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'card-pickup';
+    const cap = DEFAULT_WORK_BOARD_SETTINGS.pickup.maxSpendingAttempts;
+    let attempts = 0;
+    let park: { retriesGranted: number; rearmed: boolean; attemptsSincePark: number } | null = null;
+    let tick = 0;
+    return {
+      tick() {
+        tick += 1;
+        sink.considered += 1;
+        // An ownership change every 100 ticks: it may re-arm a failure park once, and only once.
+        if (park && tick % 100 === 0 && !park.rearmed) park.rearmed = true;
+        if (pickupBudgetLeft(cap, attempts, park) <= 0) { if (!park) park = { retriesGranted: 0, rearmed: false, attemptsSincePark: 0 }; return; }
+        attempts += 1;
+        if (park) park.attemptsSincePark += 1;
+        sink.emit({ verb: 'pickup-spawn', target: TARGET });
+        if (!f.targetAlwaysRejects()) attempts = cap + 99; // (never under the pinned fixture)
       },
     };
   },
@@ -5483,5 +5560,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   readMarkerEmitCoalesce,
   readMarkerCatchUpRetry,
   browserActivationEffectRetry,
+  fcmPauseTrialRetry,
   emailFallbackRetry,
+  workBoardPickup,
 ];

@@ -327,6 +327,37 @@ describe('Conversations page', () => {
     expect(idb.stores.get('device')?.has('m1')).toBe(true);
   });
 
+  it('conversation-list pins: a Pinned group leads the list, and Pin posts the row\'s ref signed (conversation-list-pins)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const at = new Date().toISOString();
+    const rows = [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: at, lastPreview: '' }, { id: 7, platform: 'telegram', title: 'Ops', lastActivity: at, lastPreview: '' }];
+    let pinned: unknown[] = [rows[1]];
+    let pinCall: Call | null = null;
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: rows, nextCursor: null, pinnedRefs: [], pinnedRows: pinned } };
+      if (c.url === '/mobile/conversations/pins' && c.method === 'POST') { pinCall = c; pinned = [rows[0], rows[1]]; return { status: 200, body: { ok: true, changed: true, pinned: [] } }; }
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const labels = () => [...doc.querySelectorAll('.chat-group-label')].map((x) => x.textContent);
+    expect(labels()).toEqual(['Pinned', 'All conversations']);
+    const titles = () => [...doc.querySelectorAll('.chat-row-title')].map((x) => x.textContent);
+    expect(titles()).toEqual(['Ops', 'Plans']);
+    expect(doc.querySelector('.chat-list-unpin')?.textContent).toBe('Unpin');
+    // Pin "Plans" from its button.
+    ([...doc.querySelectorAll('.chat-list-pin')].find((b) => b.textContent === 'Pin') as HTMLButtonElement).click();
+    for (let i = 0; i < 10; i++) await flush();
+    expect(pinCall).not.toBeNull();
+    expect(verifySigned(pinCall!, publicKey).ok).toBe(true);
+    expect(JSON.parse(pinCall!.body!)).toEqual({ ref: `app:${UUID}`, pinned: true });
+    expect(titles()).toEqual(['Plans', 'Ops']);
+    expect(doc.querySelectorAll('.chat-list-unpin')).toHaveLength(2);
+  });
+
   it('a 401 answered "revoked" deletes the key and shows the setup card', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');

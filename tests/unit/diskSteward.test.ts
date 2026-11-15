@@ -20,6 +20,7 @@ function harness(o: { holder?: boolean; prune?: boolean; freeAfterPrune?: number
   let free = 200 * GiB;
   const sent: DuePost[] = [];
   const runs: Array<{ trigger: string; dryRun: boolean }> = [];
+  const wholeDiskAsks: boolean[] = [];
   const logs: Array<Record<string, unknown>> = [];
   const degrades: string[] = [];
   const result = (dryRun: boolean): PruneChildResult => ({
@@ -35,8 +36,11 @@ function harness(o: { holder?: boolean; prune?: boolean; freeAfterPrune?: number
     runner: {
       start: (req) => {
         runs.push({ trigger: req.trigger, dryRun: req.dryRun });
+        wholeDiskAsks.push(!!req.wholeDisk);
         if (!req.dryRun && o.freeAfterPrune !== undefined) free = o.freeAfterPrune;
-        return { record: { runId: 'r' + runs.length, deadline: now + 30 * MIN, resultPath: '', startedAt: now, trigger: req.trigger, dryRun: req.dryRun }, done: Promise.resolve(result(req.dryRun)) };
+        return { record: { runId: 'r' + runs.length, deadline: now + 30 * MIN, resultPath: '', startedAt: now, trigger: req.trigger, dryRun: req.dryRun }, done: Promise.resolve({ ...result(req.dryRun), ...(req.wholeDisk ? { wholeDisk: {
+          at: now, partial: false, usedBytes: TOTAL - free, measuredBytes: 100 * GiB, notOpenedBytes: TOTAL - free - 100 * GiB,
+          owners: [{ owner: '~/Projects', agent: false, bytes: 100 * GiB, paths: [] }] } } : {}) }) };
       },
       running: () => null,
     },
@@ -50,7 +54,7 @@ function harness(o: { holder?: boolean; prune?: boolean; freeAfterPrune?: number
   };
   const make = () => new DiskSteward(deps);
   return {
-    deps, make, sent, runs, logs, degrades,
+    deps, make, sent, runs, wholeDiskAsks, logs, degrades,
     setFree: (g: number) => { free = g * GiB; },
     advance: (ms: number) => { now += ms; },
     async tickAll(s: DiskSteward) { await s.tick(); await s.settle(); await s.tick(); },
@@ -119,6 +123,28 @@ describe('DiskSteward', () => {
     h.advance(15 * MIN); await h.tickAll(s);
     expect(h.sent.at(-1)!.kind).toBe('recovery');
     expect(s.status().level).toBe('ok');
+  });
+
+  it('critical with nothing to clear: repeats back off to once a day, and a 2% drop posts again at once (2026-11-12)', async () => {
+    const h = harness({ prune: true, freeAfterPrune: 30 * GiB });
+    const s = h.make();
+    await s.tick();
+    h.setFree(30); h.advance(15 * MIN);
+    await h.tickAll(s);
+    expect(h.sent.filter((p) => p.kind === 'alert')).toHaveLength(1);
+    expect(h.sent[0].critical).toBe(true);
+    // Four days with the disk steady: the old fixed 2 h repeat posted 48 times.
+    for (let i = 0; i < 4 * 96; i++) { h.advance(15 * MIN); await h.tickAll(s); }
+    const steady = h.sent.filter((p) => p.kind === 'alert').length;
+    expect(steady).toBeLessThanOrEqual(9);
+    expect(steady).toBeGreaterThanOrEqual(4);
+    const times = h.sent.slice(-2).map((p) => p.createdAt);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(23 * 60 * MIN);
+    // Free space falls by 2% of the disk: the next post comes at the base 2 h.
+    h.setFree(10);
+    const before = h.sent.length;
+    for (let i = 0; i < 9; i++) { h.advance(15 * MIN); await h.tickAll(s); }
+    expect(h.sent.length).toBeGreaterThan(before);
   });
 
   it('a restart restores the level and does not post again', async () => {
@@ -190,5 +216,25 @@ describe('DiskSteward', () => {
     expect(h.degrades.filter((d) => d === 'DiskSteward.measure')).toHaveLength(1);
     expect(h.sent).toEqual([]);
     expect(s.status().measured).toBe(false);
+  });
+
+  it('measures the whole disk by owner at most once a day and carries it in the post and the status', async () => {
+    const h = harness();
+    const s = h.make();
+    await s.tick();
+    h.setFree(120); h.advance(15 * MIN);
+    await h.tickAll(s);
+    expect(h.wholeDiskAsks).toEqual([true]);
+    expect(h.sent[0].wholeDisk?.owners[0]).toMatchObject({ owner: '~/Projects', bytes: 100 * GiB });
+    expect(s.status().wholeDisk?.usedBytes).toBe(TOTAL - 120 * GiB);
+    // Later runs inside the day (the 6 h folder sizes) do not walk the whole disk again.
+    for (let i = 0; i < 4 * 23; i++) { h.advance(15 * MIN); await h.tickAll(s); }
+    expect(h.wholeDiskAsks.filter(Boolean)).toHaveLength(1);
+    // Past a day, the next run walks it again. Here the warn posts at 0 h and 6 h, then
+    // repeats at 54 h: the 9 GiB plan is under 1% of the disk, so the repeat backed off (§3.5).
+    for (let i = 0; i < 4 * 33; i++) { h.advance(15 * MIN); await h.tickAll(s); }
+    expect(h.wholeDiskAsks.filter(Boolean)).toHaveLength(2);
+    // It survives a restart.
+    expect(h.make().status().wholeDisk?.owners[0].owner).toBe('~/Projects');
   });
 });

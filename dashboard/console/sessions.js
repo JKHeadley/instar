@@ -13,6 +13,7 @@ import {
   platformAllowsDoor, platformAllowsMachine, newRequestId, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
   canSwitchDoor, profileKeyOf, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
+import { createInputTracker } from './input-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
@@ -59,6 +60,9 @@ const st = {
   wsList: null, ws: null, wsUp: false, wsTries: 0, wsTimer: null,
   view: null, // { key, s, term, fit, pre, following, pending, loaded, exhausted, loading, statusLine }
   switching: new Map(), // tmuxSession → 'switching…' while a door switch lands
+  // Composer drafts per open-session key (§3e of native-conversation-any-machine-access):
+  // kept for the life of the page, so leaving a session never drops a draft.
+  inputs: new Map(), // key → { tracker, s }
 };
 
 export async function renderSessions(main, ctx) {
@@ -181,6 +185,8 @@ function connectWs() {
   };
   ws.onclose = () => {
     const was = st.wsUp; st.wsUp = false; st.ws = null;
+    // This page's socket is gone: every composer waits for the machine to say what it can do again.
+    for (const x of st.inputs.values()) x.tracker.linkDown();
     if (was) { paint(); setStatus('Live output paused, reconnecting.'); }
     // Reconnect with backoff while the page is on screen.
     if (onPage() && st.wsTries < 10) {
@@ -204,9 +210,39 @@ function onMessage(msg) {
     case 'output': if (v && msg.session === v.s.tmuxSession) writeOutput(msg.data || ''); break;
     case 'history': if (v && msg.session === v.s.tmuxSession) writeHistory(msg); break;
     case 'session_ended': if (v && msg.session === v.s.tmuxSession) markEnded(); break;
-    case 'error': { const w = streamErrorWords(msg); if (w && v && (!msg.session || msg.session === v.s.tmuxSession)) setStatus(w); break; }
+    case 'input_caps': case 'input_ack': inputFrame(msg); break;
+    case 'error': {
+      if (inputFrame(msg)) break; // an answer about a typed message, shown with that message
+      const w = streamErrorWords(msg); if (w && v && (!msg.session || msg.session === v.s.tmuxSession)) setStatus(w); break;
+    }
     default: break;
   }
+}
+
+/** Hand an input frame to the composer of the session it is about. True when one took it. */
+function inputFrame(msg) {
+  let took = false;
+  for (const x of st.inputs.values()) {
+    if (x.s.tmuxSession !== msg.session) continue;
+    // A frame relayed from another machine carries its machineId: it belongs only to the
+    // composer for that machine's session; a frame without one only to a local session.
+    if (msg.machineId ? !(x.s.remote && x.s.machineId === msg.machineId) : x.s.remote) continue;
+    if (x.tracker.onFrame(msg)) took = true;
+  }
+  return took;
+}
+
+/** The composer's draft tracker for one session, made once per page. */
+function inputFor(key, s) {
+  let x = st.inputs.get(key);
+  if (x) { x.s = s; return x; }
+  x = { s, tracker: null };
+  x.tracker = createInputTracker({
+    send: (extra) => wsSend(frame('key' in extra ? 'key' : 'input', x.s, extra)),
+    onChange: () => { if (st.view && st.view.key === key && st.view.paintInput) st.view.paintInput(); },
+  });
+  st.inputs.set(key, x);
+  return x;
 }
 
 // ── The open session ──────────────────────────────────────────────────────
@@ -232,6 +268,7 @@ const stripAnsi = (s) => String(s).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').rep
 function updateViewTitle(row) {
   const v = st.view;
   v.s = { ...v.s, ...row.session };
+  const x = st.inputs.get(v.key); if (x) x.s = v.s;
   const sw = st.switching.get(v.s.tmuxSession);
   v.titleSub.textContent = sw ? `${v.s.machineNickname} · ${sw}` : titleLine(v.s);
 }
@@ -257,6 +294,8 @@ function openView(box, row) {
     title: s.remote ? `Attaching works for sessions on this machine; open ${s.machineNickname}’s own console to attach there.` : 'Attach a screenshot or file' });
   if (s.remote) attachBtn.disabled = true;
   const chips = el('div', { class: 'sess-attachments', hidden: true });
+  // Unresolved messages sit above the composer, which stays free for a new one.
+  const draftsBox = el('div', { class: 'sess-drafts', hidden: true, 'aria-live': 'polite' });
   const files = [];
   const paintChips = () => {
     chips.hidden = !files.length;
@@ -282,6 +321,33 @@ function openView(box, row) {
   const tabs = el('div', { class: 'sess-tabs', role: 'group', 'aria-label': 'View' }, liveTab, historyTab);
   const view = { key: row.key, s, titleSub, statusLine, termBox, historyBox, history: null, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
   st.view = view;
+  const input$ = inputFor(row.key, s);
+  let wasSending = false;
+  // The composer follows the draft model: it clears a message only on that message's own answer.
+  view.paintInput = () => {
+    if (st.view !== view) return;
+    const m = input$.tracker.view();
+    if (m.sending) { input.value = m.sending.text; input.rows = composerRows(m.sending.text); }
+    else if (m.returned) { input.value = m.returned.text; input.rows = composerRows(m.returned.text); }
+    else if (wasSending) { input.value = ''; input.rows = 1; }
+    wasSending = Boolean(m.sending);
+    input.readOnly = m.composer.readOnly;
+    input.classList.toggle('sending', Boolean(m.sending));
+    sendBtn.disabled = m.composer.disabled;
+    input.placeholder = m.composer.words || 'Message…';
+    const n = input$.tracker.takeNotice();
+    if (n) setStatus(n);
+    else if (m.composer.words && m.composer.readOnly) setStatus(m.composer.words);
+    draftsBox.hidden = !m.drafts.length;
+    setKids(draftsBox, m.drafts.map((dr) => el('div', { class: 'sess-draft', 'data-draft': dr.id },
+      el('p', { class: 'sess-draft-text', text: dr.text }),
+      el('p', { class: 'sess-draft-words', role: 'status', text: dr.words }),
+      el('div', { class: 'confirm-row' }, dr.controls.map((c) => c === 'send-again'
+        ? el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send again', 'data-send-again': dr.id, onclick: () => input$.tracker.retry(dr.id) })
+        : c === 'copy'
+          ? el('button', { class: 'btn-quiet', type: 'button', text: 'Copy', 'data-copy': dr.id, onclick: () => { try { navigator.clipboard.writeText(dr.text); } catch { /* the text stays on screen */ } } })
+          : el('button', { class: 'btn-quiet', type: 'button', text: 'Discard', 'data-discard': dr.id, onclick: () => input$.tracker.discard(dr.id) }))))));
+  };
 
   // Keys: the ordinary ones, then Stop separated, red, and asked once.
   const keyRow = el('div', { class: 'keys-row' }, KEYS.map((k) => el('button', { class: 'chip key-chip', type: 'button', text: k.label, 'aria-label': k.aria || null, 'data-key': k.key, onclick: () => sendKey(k.key) })));
@@ -311,9 +377,17 @@ function openView(box, row) {
       sendBtn.disabled = false; setStatus('');
       text = attachmentMessage(text, paths);
     }
-    if (!wsSend(frame('input', view.s, { text }))) { setStatus('Not sent: live updates are paused. Your text is still here.'); return; }
+    const r = input$.tracker.sendText(text);
+    if (!r.ok) {
+      // Nothing was sent. Uploaded attachments are already named in the text, so they leave the tray.
+      if (files.length) { input.value = text; input.rows = composerRows(text); files.length = 0; paintChips(); }
+      setStatus(r.words); return;
+    }
     files.length = 0; paintChips();
-    input.value = ''; input.rows = 1; input.focus();
+    // The text stays in the box, marked as sending, until its own answer arrives.
+    if (r.unresolved) { input.value = ''; input.rows = 1; }
+    view.paintInput();
+    input.focus();
   };
   input.addEventListener('paste', (e) => {
     const pasted = [...((e.clipboardData && e.clipboardData.files) || [])];
@@ -349,10 +423,12 @@ function openView(box, row) {
     statusLine,
     el('div', { class: 'sess-term-wrap' }, termBox, historyBox, resume),
     chips,
+    draftsBox,
     composer,
     tray));
 
   if (s.remote) setStatus(`Streaming from ${s.machineNickname}…`);
+  view.paintInput();
   startTerminal(view);
 }
 
@@ -437,7 +513,9 @@ function writeHistory(msg) {
 
 function sendKey(key) {
   if (!st.view) return;
-  if (!wsSend(frame('key', st.view.s, { key }))) setStatus('Not sent: live updates are paused.');
+  if (!st.wsUp) { setStatus('Not sent: live updates are paused.'); return; }
+  const r = inputFor(st.view.key, st.view.s).tracker.sendKey(key);
+  if (!r.ok) setStatus(r.words);
 }
 
 // ── History: the conversation record, newest at the bottom, older on scroll-up ──

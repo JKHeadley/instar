@@ -55,7 +55,7 @@ import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator
 import { FailedFileDiagnosisPeerService } from './FailedFileDiagnosisPeerService.js';
 import type { DiagnosisMode } from './failedFileDiagnosis.js';
 import type { DiagnosisPeerClient, DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
-import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, type MainHealthSnapshot } from './mainHealth.js';
+import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, oldestUnverifiedAfterGreen, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { WaitingList, type Waiter } from './waitingList.js';
@@ -668,6 +668,8 @@ export class LocalVerifyService {
   private readonly policyHash: string;
   private readonly queue: QueueEntry[] = [];
   private inFlight: InFlight | null = null;
+  /** The head of the `main` run in flight, when that head was main's observed head at the run's start; else null. */
+  private mainRunOnCurrentHead: string | null = null;
   private blockedBy: InFlightIntent | null = null;
   private readonly index = new Map<string, LocalVerifyRecord>();
   private readonly execIndex = new Map<string, LocalVerifyRecord>();
@@ -2837,6 +2839,13 @@ export class LocalVerifyService {
     // Phase 2: patch pid/pgid (detached: the child's pid IS its pgid).
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
+    // A `main` run covers every merge up to its start only if it starts on main's head as observed
+    // then. A run of an older head (it waited in the queue, an error retry, the re-run after a first
+    // failure) leaves a newer merge uncovered, so its green must not move the unverified clock.
+    if (entry.kind === 'main') {
+      const cur = this.mainObs.head;
+      this.mainRunOnCurrentHead = cur !== null && (entry.headSha === cur || this.releaseAlias.get(cur) === entry.headSha) ? entry.headSha : null;
+    }
     this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt,
       preflightAllowanceMs: input.preflightMode && input.preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0 };
     this.publishSuitePriority(true);
@@ -3066,7 +3075,12 @@ export class LocalVerifyService {
       return;
     }
     const current = this.mainObs.head;
-    if (record.outcome === 'success' && current !== null && (head === current || this.releaseAlias.get(current) === head)) this.mainObs.oldestUnverifiedAt = null;
+    if (record.outcome === 'success') {
+      const isCurrent = current !== null && (head === current || this.releaseAlias.get(current) === head);
+      const coversToStart = this.mainRunOnCurrentHead === head;
+      this.mainObs.oldestUnverifiedAt = oldestUnverifiedAfterGreen(this.mainObs.oldestUnverifiedAt, isCurrent, coversToStart ? Date.parse(record.startedAt) : null);
+    }
+    this.mainRunOnCurrentHead = null;
     const work = this.health.onVerify(head, record.outcome, detail).then(async (action) => {
       if (this.health.isHealthy()) this.clearMainFailure();
       if (action === 'rerun') this.enqueueMain(head, 'rerun');

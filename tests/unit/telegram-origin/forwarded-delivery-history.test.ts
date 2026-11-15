@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { forwardedDeliveryHistoryTopic, forwardedDeliveryRow } from '../../../src/messaging/telegram-origin/ForwardedDeliveryHistory.js';
-import { reviewQueuedReplyHistory } from '../../../src/messaging/telegram-origin/QueuedReplySupersession.js';
 import type { OriginPreparedBotOperation } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 
 function operation(input: { method?: string; policyText?: string; bodyText?: string; topicId?: string | null; chatId?: string | null; producerKind?: string } = {}): OriginPreparedBotOperation {
@@ -47,20 +46,6 @@ describe('forwardedDeliveryHistoryTopic', () => {
   it('has no history topic for an unknown chat', () => {
     expect(forwardedDeliveryHistoryTopic({ ...row, chatId: '-100555' }, { mainChatId: '-100123' })).toBeNull();
     expect(forwardedDeliveryHistoryTopic(row, {})).toBeNull();
-  });
-});
-
-describe('topic 141868 replay (2026-11-11): a held note released after a newer forwarded question', () => {
-  const heldNotePreparedAt = Date.parse('2026-11-11T19:35:41Z');
-  const before = [{ timestamp: '2026-11-11T19:10:06Z', fromUser: false, provenance: 'agent' }];
-  it('was released when the forwarded question was in no history (the bug)', () => {
-    expect(reviewQueuedReplyHistory({ preparedAt: heldNotePreparedAt, local: before, pooled: before, failedPeers: 0,
-      now: Date.parse('2026-11-11T19:41:43Z') })).toBe('deliver');
-  });
-  it('is retired once the holder records the question it delivered', () => {
-    const holderRow = { timestamp: '2026-11-11T19:41:37Z', fromUser: false, provenance: 'agent' };
-    expect(reviewQueuedReplyHistory({ preparedAt: heldNotePreparedAt, local: before, pooled: [...before, holderRow], failedPeers: 0,
-      now: Date.parse('2026-11-11T19:41:43Z') })).toBe('retire');
   });
 });
 

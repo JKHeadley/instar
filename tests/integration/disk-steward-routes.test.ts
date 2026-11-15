@@ -95,6 +95,8 @@ describe('Disk Steward routes', () => {
     expect(res.status).toBe(200);
     expect(res.body.machine).toEqual({ id: 'm_self', name: 'Self' });
     expect(res.body.level).toBe('warn');
+    // §3.7a: the whole-disk field is always present; null until the first daily measurement.
+    expect(res.body).toHaveProperty('wholeDisk', null);
     const byId = Object.fromEntries(res.body.peers.map((p: { machineId: string }) => [p.machineId, p]));
     expect(byId.m_dark.error).toBeTruthy();
     expect(byId.m_dark.status).toBeUndefined();

@@ -65,6 +65,8 @@ import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
 import { topicRef } from './shared/topicRef.js';
+import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
+import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -795,6 +797,17 @@ export class TelegramAdapter implements MessagingAdapter {
   private inboundMediaHook: TelegramInboundMediaHook | null = null;
 
   setInboundMediaHook(hook: TelegramInboundMediaHook | null): void { this.inboundMediaHook = hook; }
+
+  /**
+   * native-conversation-base §3c: a file the lifeline downloaded and forwarded is captured into the
+   * media store exactly like a polled one, so it can follow the session to another machine. Returns
+   * the capture state the message's `media[]` entry carries.
+   */
+  captureForwardedMedia(info: TelegramInboundMedia): 'pending' | 'off' {
+    if (!this.inboundMediaHook) return 'off';
+    void this.copyInboundMedia(info);
+    return 'pending';
+  }
 
   /**
    * Hand one downloaded file to the inbound media hook. Bounded: at most 30 s is waited, and any
@@ -2450,7 +2463,32 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
+  /** sendOwnerDMWithButton with `reportHeld`: a send that may still land (kept for retry, or its outcome unknown) answers this instead of null. */
+  static readonly OWNER_DM_HELD = -1;
+  /**
+   * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
+   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
+   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
+   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   */
+  static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
+    'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
+    'credential-capacity-unavailable',
+  ]);
+
+  /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */
+  static ownerDMOutcome(err: unknown): number | null {
+    if (!(err instanceof TelegramOriginHoldError)) return null;
+    // Telegram took it; only our own record of it is missing.
+    if (err.outcome === 'accepted-unrecorded') { const id = Number(err.delivered?.messageId); return Number.isFinite(id) && id > 0 ? id : TelegramAdapter.OWNER_DM_HELD; }
+    // Telegram may already have it: the owner can be holding live buttons.
+    if (err.outcome === 'outcome-unknown') return TelegramAdapter.OWNER_DM_HELD;
+    if (err.outcome === 'held' && err.operationId && TelegramAdapter.OWNER_DM_RETRIED_HOLDS.includes(err.reason)) return TelegramAdapter.OWNER_DM_HELD;
+    return null;
+  }
+
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
+    opts?: { reportHeld?: boolean }): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
@@ -2474,6 +2512,8 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
       console.warn(`[telegram] sendOwnerDMWithButton failed: ${err instanceof Error ? err.message : String(err)}`);
+      // A held send is kept and retried by the origin store and may still land; a caller that asked can wait for it.
+      if (opts?.reportHeld) return TelegramAdapter.ownerDMOutcome(err);
       return null;
     }
   }
@@ -6287,7 +6327,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Handle text messages
     if (!msg.text) return;
 
-    const text = msg.text;
+    // native-conversation-base §3c item 1: a path tag a person typed is inert from here on —
+    // before the text is forwarded, queued or logged. Commands are unaffected.
+    const text = escapeTypedPathTags(msg.text);
 
     const desktopApproval = this.consumeDesktopApproval({
       text, topicId: numericTopicId, senderUid: String(msg.from.id), trusted: true,
@@ -6321,6 +6363,8 @@ export class TelegramAdapter implements MessagingAdapter {
         username: msg.from.username,
         firstName: msg.from.first_name,
         messageThreadId: numericTopicId,
+        // A new poller sends `media` on every message (empty here), so a receiver can tell it from an old one.
+        media: [],
         // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
         // ANY profile-ingress recognition — carry the platform forward
         // metadata so the server-side parse can reject it deterministically.
@@ -6529,10 +6573,13 @@ export class TelegramAdapter implements MessagingAdapter {
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
+      // A transcript is person-derived text: typed path tags in it are inert (§3c item 1). The
+      // voice file itself is deleted below; the session reads the transcript, as before.
+      const safeTranscript = escapeTypedPathTags(transcript);
       const message: Message = {
         id: `tg-${msg.message_id}`,
         userId: msg.from.id.toString(),
-        content: `[voice] ${transcript}`,
+        content: `[voice] ${safeTranscript}`,
         channel: { type: 'telegram', identifier: topicId.toString() },
         receivedAt: new Date(msg.date * 1000).toISOString(),
         metadata: {
@@ -6542,6 +6589,7 @@ export class TelegramAdapter implements MessagingAdapter {
           messageThreadId: topicId,
           voiceFile: filepath,
           voiceDuration: voice.duration,
+          media: [],
         },
       };
 
@@ -6549,7 +6597,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
-        text: `[voice] ${transcript}`,
+        text: `[voice] ${safeTranscript}`,
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
@@ -6609,9 +6657,13 @@ export class TelegramAdapter implements MessagingAdapter {
         width: photo.width, height: photo.height,
       });
 
-      const content = caption
-        ? `[image:${filepath}] ${caption}`
-        : `[image:${filepath}]`;
+      // native-conversation-base §3c: the file travels as a structured field; the text carries
+      // only the path-free sentence and the person's caption, escaped. The path stays in process.
+      const media: InboundMediaLocal[] = [{
+        kind: 'photo', platformMessageId: String(msg.message_id), filename: mediaDisplayName(path.basename(filepath)),
+        capture: this.inboundMediaHook ? 'pending' : 'off', localPath: filepath,
+      }];
+      const content = composeInboundPayload(caption, toWireMedia(media));
 
       const message: Message = {
         id: `tg-${msg.message_id}`,
@@ -6625,14 +6677,15 @@ export class TelegramAdapter implements MessagingAdapter {
           firstName: msg.from.first_name,
           messageThreadId: topicId,
           photoPath: filepath,
+          media,
         },
       };
 
-      // Log it (including sender identity for multi-user topics)
+      // Log it (including sender identity for multi-user topics). Never a path (§3c item 3).
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
-        text: content,
+        text: historyTextFor(caption, media),
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
@@ -6683,9 +6736,11 @@ export class TelegramAdapter implements MessagingAdapter {
         at: new Date(msg.date * 1000).toISOString(),
       });
 
-      const content = caption
-        ? `[document:${filepath}] ${caption}`
-        : `[document:${filepath}]`;
+      const media: InboundMediaLocal[] = [{
+        kind: 'document', platformMessageId: String(msg.message_id), filename: mediaDisplayName(doc.file_name || path.basename(filepath).replace(/^\d{10,}-/, '')),
+        capture: this.inboundMediaHook ? 'pending' : 'off', localPath: filepath,
+      }];
+      const content = composeInboundPayload(caption, toWireMedia(media));
 
       const message: Message = {
         id: `tg-${msg.message_id}`,
@@ -6701,14 +6756,15 @@ export class TelegramAdapter implements MessagingAdapter {
           documentPath: filepath,
           documentName: doc.file_name,
           documentMimeType: doc.mime_type,
+          media,
         },
       };
 
-      // Log it
+      // Log it. Never a path (§3c item 3).
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
-        text: content,
+        text: historyTextFor(caption, media),
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
