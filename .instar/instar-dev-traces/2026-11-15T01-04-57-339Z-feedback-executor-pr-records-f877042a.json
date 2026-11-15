@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-pr-records",
+  "sessionId": "c857b224-fd56-43e3-b547-1fd179b6c5c4",
+  "timestamp": "2026-11-15T01:04:57.339Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-pr-records.md",
+  "artifactSha256": "68d0719509a29e95367b0e387db2b9830390cb52ba1c3228ca016de8727f7691",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/prRecords.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two source files, about 200 lines; adds trusted record files to executor PRs; no new allow/deny authority",
+  "eli16Path": "docs/specs/feedback-executor-pr-records.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-executor-pr-records.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

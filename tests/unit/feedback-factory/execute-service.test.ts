@@ -449,7 +449,14 @@ describe('verification and publication', () => {
     // Canary marker files never reach a change set.
     expect(Object.keys(push.files).some((k) => k.includes('feedback-canary'))).toBe(false);
     // The publish clone is the base tree plus the change set: the base's own .claude/ is untouched there.
-    expect(Object.keys(push.files).sort()).toEqual(['.claude/settings.json', 'package.json', 'src/thing.ts', 'tests/fix.test.ts']);
+    // Plus the decision record and release fragment trusted code writes (the CI floor requires both).
+    const records = Object.keys(push.files).filter((k) => k.startsWith('.instar/instar-dev-decisions/') || k.startsWith('upgrades/next/'));
+    expect(Object.keys(push.files).filter((k) => !records.includes(k)).sort()).toEqual(['.claude/settings.json', 'package.json', 'src/thing.ts', 'tests/fix.test.ts']);
+    expect(records).toHaveLength(2);
+    const record = JSON.parse(push.files[records.find((k) => k.endsWith('.json'))!]);
+    expect(record).toMatchObject({ source: 'feedback-executor', localPrecommitGate: 'not-run', scope: { files: ['src/thing.ts'] } });
+    expect(record.feedback.initiativeId).toBe(initiativeId);
+    expect(push.files[records.find((k) => k.endsWith('.md'))!]).toMatch(/^<!-- bump: patch -->\n## What Changed/);
     const pr = h.prs.get(100)!;
     expect(pr.labels).toContain('hold');
     expect(pr.body).toMatch(/## ELI16/);
@@ -859,6 +866,8 @@ describe('verification and publication', () => {
     await h.exec.tick();
     expect(h.execStore.latestFor(id)).toMatchObject({ state: 'spec-pr-open' });
     expect(Object.keys(h.pushes[0].files)).toContain(draft);
+    // A spec PR must stay exactly one new file: no decision record or release fragment is added.
+    expect(Object.keys(h.pushes[0].files).some((k) => k.startsWith('.instar/instar-dev-decisions/') || k.startsWith('upgrades/next/'))).toBe(false);
     expect(h.review.calls).toHaveLength(1);
     expect(h.review.leads).toEqual(['astra']);
     expect(h.review.calls[0]).toContain('automated spec draft');

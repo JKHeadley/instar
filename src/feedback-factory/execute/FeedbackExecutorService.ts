@@ -38,6 +38,7 @@ import {
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, readBaseFile, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
+import { prRecordEntries, type PrRecordInput } from './prRecords.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, vitestFailureKeys, failuresAllPreexisting, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
 import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
@@ -229,6 +230,7 @@ function readTextIfPresent(file: string, maxBytes = 8 * 1024 * 1024): string | n
 }
 /** Why a related-tests run counted as "don't know" rather than a pass or a failure. */
 export type RelatedInconclusive = false | 'timed-out' | 'preexisting';
+type PrText = { title: string; body: string; message: string; records: Omit<PrRecordInput, 'at' | 'entries' | 'secretGateOperatorApproved'> };
 
 export class FeedbackExecutorService {
   private readonly now: () => number;
@@ -1406,7 +1408,8 @@ export class FeedbackExecutorService {
     return { ok: true, relatedInconclusive };
   }
 
-  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult, relatedInconclusive: RelatedInconclusive = false): { title: string; body: string; message: string } {
+  /** `relatedInconclusive` undefined = not recorded (a held change set published after the operator's approval). */
+  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult, relatedInconclusive?: RelatedInconclusive): PrText {
     const triage = this.opts.triageStore.get(row.initiativeId);
     // The triage schema already bounds the summary (400 printable chars); it is PR text, not model input.
     const summary = String(triage?.summary ?? 'a reported problem').replace(/\s+/g, ' ');
@@ -1438,7 +1441,8 @@ export class FeedbackExecutorService {
       PR_BODY_FOOTER,
     ].join('\n');
     const message = `${title}\n\nFeedback initiative ${row.initiativeId}, cluster ${row.clusterId}, attempt ${row.attempt}.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n`;
-    return { title, body, message };
+    const records = { kind, initiativeId: row.initiativeId, clusterId: row.clusterId, attempt: row.attempt, baseSha: row.baseSha ?? null, summary, testFiles: result.testFiles, testName: result.testName, related: relatedInconclusive };
+    return { title, body, message, records };
   }
 
   private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string, relatedInconclusive: RelatedInconclusive = false): Promise<void> {
@@ -1555,7 +1559,7 @@ export class FeedbackExecutorService {
     return { ok: true, prNumber: this.opts.store.get(row.attemptId)!.prNumber! };
   }
 
-  private async publish(row: ExecutionRow, epoch: number, entries: ChangeEntry[], text: { title: string; body: string; message: string }, kind: 'fix' | 'spec',
+  private async publish(row: ExecutionRow, epoch: number, sessionEntries: ChangeEntry[], text: PrText, kind: 'fix' | 'spec',
     slug: string, approver: string, operatorDecisionRef: string | null): Promise<boolean> {
     const p = this.attemptPaths(row);
     const identity = this.opts.commitIdentity();
@@ -1570,6 +1574,10 @@ export class FeedbackExecutorService {
     }
     let externalStarted = false;
     try {
+      // The decision record and release fragment every instar PR carries, written here by trusted code
+      // (the session's own commits never pass the local pre-commit gate). Applied after the session's
+      // entries, so a same-named file from the session can never stand in for them.
+      const entries = [...sessionEntries, ...prRecordEntries({ ...text.records, at: new Date(this.now()).toISOString(), entries: sessionEntries, secretGateOperatorApproved: operatorDecisionRef !== null })];
       applyChangeSet(p.publishClone, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute publish clone delete') });
       let codeowners: string | null = null;
       try { codeowners = fs.readFileSync(path.join(p.publishClone, '.github', 'CODEOWNERS'), 'utf8'); } catch { codeowners = null; } // @silent-fallback-ok: no CODEOWNERS file → no owner note
