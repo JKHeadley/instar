@@ -2,7 +2,7 @@
 // Reads only; the one frequent write is Rename (bearer). Identity reviews stay in
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
-import { buildMachinesPage, ropesFor, healthOf, poolUsageOf, machineCarePool } from './machines-model.js';
+import { buildMachinesPage, ropesFor, healthOf, poolUsageOf, machineCarePool, desktopPermissionFixes } from './machines-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
@@ -11,7 +11,7 @@ const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'do
 export async function renderMachines(main, ctx) {
   const { get } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
-  const [pool, health, guards, sessions, care, resources] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000), get('/mobile/resources', 8000)]);
+  const [pool, health, guards, sessions, care, resources, attention] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000), get('/mobile/resources', 8000), get('/attention?scope=pool&status=OPEN', 8000)]);
   const usage = poolUsageOf(resources);
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};
@@ -39,8 +39,24 @@ export async function renderMachines(main, ctx) {
     card.addEventListener('click', () => openMachine(m, { get, health, guards, names, usage }));
     return card;
   }));
+  // A machine whose remote desktop lost its Mac permission: the problem and its one fix, first.
+  const query = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const wantFix = query.get('fix') === 'desktop-permission' ? query.get('m') : null;
+  const fixes = desktopPermissionFixes(attention, Object.fromEntries(page.machines.map((m) => [m.id, m.name]))) || [];
+  fixes.sort((a, b) => Number(b.machineId === wantFix) - Number(a.machineId === wantFix));
+  const fixCards = fixes.map((f) => el('section', { class: 'need-card desktop-fix', id: `fix-${f.machineId}`, 'data-operator-need': 'desktop-permission' },
+    el('h2', { class: 'need-title', text: f.title }),
+    el('p', { class: 'need-sub', text: f.why }),
+    f.locked ? el('p', { class: 'need-line', text: f.locked }) : null,
+    el('p', { class: 'need-line', text: f.action }),
+    el('p', { class: 'need-sub', text: f.ifMissing }),
+    el('p', { class: 'confirm-row' }, el('a', { class: 'btn-primary btn-inline', href: f.retryHref, text: `Then open ${f.machine}’s remote desktop` }))));
+  const wantedGone = wantFix && !fixes.some((f) => f.machineId === wantFix) && attention && attention.ok;
   setKids(main, 
     pageHead({ eyebrow: 'Capacity · Machines', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
+    ...fixCards,
+    wantedGone ? note('Remote desktop on that Mac no longer reports a permission problem.') : null,
+    wantFix && attention && !attention.ok ? note(`Couldn't check the remote desktop permission: ${attention.reason || 'no answer'}.`) : null,
     !sessions.ok ? note(`Couldn't count sessions: ${sessions.reason}.`) : null,
     // warning-path: card click opens the machine, which says what isn't answering
     usage.ok ? note(['Resource use, last hour: ' + usage.summary, usage.busiest].filter(Boolean).join(' · ')) : note(`Can’t tell resource use: ${usage.reason}.`),

@@ -4,7 +4,7 @@
 // home-model.js, so Home's card and this page can never disagree.
 
 import { isActiveCommitment, waitsOnOperator, isInternalFollowUp, isMissed, needsPromiseReview, lastTouched, STALE_DAYS, REPLICA_FRESH_MS, ago, failure } from './home-model.js';
-import { verifiedDisplayName } from './display-identity.js';
+import { verifiedDisplayName, plainReferenceText } from './display-identity.js';
 
 export { failure };
 
@@ -56,7 +56,7 @@ function machineName(id, names) {
 }
 
 /** A row in plain words. */
-export function toRow(c, now = Date.now(), names = {}) {
+export function toRow(c, now = Date.now(), names = {}, topicNames = {}) {
   const due = nextDue(c);
   const waiting = waitingOnWords(c);
   const bits = [];
@@ -80,9 +80,10 @@ export function toRow(c, now = Date.now(), names = {}) {
     origin: c.originMachineId || null,
     replica: c.viewSource === 'replica',
     priority: priorityOf(c),
-    main: (waitsOnOperator(c)
+    // Plain words in the list; the ids the promise names stay in its details.
+    main: plainReferenceText((waitsOnOperator(c)
       ? verifiedDisplayName(c.userRequest, c.id) || verifiedDisplayName(c.agentResponse, c.id)
-      : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable',
+      : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable', { topicNames, machineNames: names }),
     sub: bits.join(' · '),
     end: ago(c.createdAt, now) || '',
     record: c,
@@ -93,7 +94,7 @@ export function toRow(c, now = Date.now(), names = {}) {
  * Sort every promise into the page's sections.
  * Returns { ok, sections:{waiting,missed,dueSoon,carrying,handled,closed}, counts, coverage, headline }.
  */
-export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null, peerIds = null, names = {}, priority = 'all' } = {}) {
+export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null, peerIds = null, names = {}, priority = 'all', topicNames = {} } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read promises: ${res.reason}.` };
   if (res.data && res.data.enabled === false) return { ok: false, reason: 'Promise tracking is switched off on this agent.' };
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments : null;
@@ -128,7 +129,7 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   const byNewest = (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0);
   const byPriorityThenNewest = (a, b) => priorityRank(a) - priorityRank(b) || byNewest(a, b);
   for (const k of Object.keys(s)) s[k].sort(k === 'dueSoon' ? (a, b) => nextDue(a) - nextDue(b) : k === 'closed' ? (a, b) => Date.parse(b.resolvedAt) - Date.parse(a.resolvedAt) : byPriorityThenNewest);
-  const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => toRow(c, now, names))]));
+  const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => toRow(c, now, names, topicNames))]));
   const counts = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.length]));
 
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
