@@ -1851,6 +1851,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // preserves today's behavior exactly; a single-machine agent is a strict no-op.
     stateSync: {
       aggregateJournalBudgetBytes: 67108864, // 64 MiB (§10.2)
+      // native-conversation-any-machine-access §3f: session transcripts copied to every machine as
+      // checkpoints of whole redacted rows. A copy cannot be recalled once it lands, so it ships dark on
+      // every agent (a DARK_GATE_EXCLUSIONS entry) until its live date (CMT-047, 2026-12-02).
+      sessionTranscripts: {
+        enabled: false,
+        bytesPerDay: 268435456, // 256 MiB of source rows per machine per day
+      },
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
       maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)

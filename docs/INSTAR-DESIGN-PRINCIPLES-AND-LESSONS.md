@@ -80,7 +80,7 @@ If you see these in a spec without a paired hook/gate/code change, the spec is w
 **Translation (six required mechanisms):**
 1. Hook template changes → migration in `migrateSettings()` patching existing `.claude/settings.json`
 2. Config defaults → `migrateConfig()` with existence checks (only add missing fields)
-3. CLAUDE.md sections → `migrateClaudeMd()` with content-sniffing guards
+3. CLAUDE.md sections → new awareness text is an entry file in `src/data/awareness/` and needs no migration (the feature-notes section is rebuilt for existing agents on every update); only a section written the old way, or a row under a core heading, still needs `migrateClaudeMd()` with content-sniffing guards
 4. **Built-in hooks** (`instar/` directory) → **always overwritten** in `migrateHooks()` (lesson from `hook-event-reporter.js` ESM/CJS wedge — never install-if-missing)
 5. Built-in skills → adding new = no migration; updating existing content = idempotent migration in `PostUpdateMigrator`
 6. Idempotency mandatory — every migration safe to run multiple times
@@ -126,7 +126,7 @@ If you see these in a spec without a paired hook/gate/code change, the spec is w
 
 ### P5. Agent Awareness Standard
 
-**Statement:** Every feature added to Instar MUST include a corresponding update to the CLAUDE.md template (`src/scaffold/templates.ts` → `generateClaudeMd()`). An agent that doesn't know about a capability effectively doesn't have it.
+**Statement:** Every feature added to Instar MUST tell the agent it exists. An agent that doesn't know about a capability effectively doesn't have it. New awareness text goes in ONE new file, `src/data/awareness/<id>.md` (format in `src/data/awareness/README.md`, spec `docs/specs/awareness-entry-registry.md`), not in `generateClaudeMd()` or `patchClaudeMdContent`; only a row under a core heading still edits the template (`src/scaffold/templates.ts` → `generateClaudeMd()`).
 
 **Source:** `CLAUDE.md` ("Standards" section).
 
@@ -137,7 +137,7 @@ If you see these in a spec without a paired hook/gate/code change, the spec is w
 - Building blocks → "Building New Capabilities" if it's a tool to reach for
 
 **Design-pipeline application:**
-- Any spec proposing a new agent-facing capability MUST ship its CLAUDE.md template addition in the same PR.
+- Any spec proposing a new agent-facing capability MUST ship its awareness text (an entry file in `src/data/awareness/`, or a row under a core heading in the template) in the same PR.
 - Conversely: avoid bloating CLAUDE.md with content that should live in ContextHierarchy Tier 2 segments, Playbook items, or Self-Knowledge Tree probes (see L1 below). Awareness ≠ inline-everything.
 
 **Backtrack-tells:**

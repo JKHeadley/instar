@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-13T02:03:32.190Z",
+  "slug": "slack-jsonl-import",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 480,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/memory/TopicMemory.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 434,
+    "deletedLines": 46
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Present since Slack support shipped: importFromJsonl admits a line only when it carries entry.topicId, and Slack's logger writes channelId. PR #3044 fixed the live write and deliberately did not touch the import, so both halves of this gap (unreplayable history, and a rebuild that deletes Slack rows and restores none) are still live on main - re-verified on upstream/main 700b2a913 before coding. Measured on copies of two live stores: 671 importable Slack messages absent from their databases. The maintainer asked for this shape on Threadline thread-c0a32f35 after closing PR #2773 as superseded by #3044."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

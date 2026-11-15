@@ -11,6 +11,8 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  * When augmenting an existing project, only missing files are created.
  */
 
+import { signedPoolReadsAwareness } from "../core/poolSignedReads.js";
+import { transcriptCopiesAwareness } from "../core/transcriptCheckpoints.js";
 import { dashboardInputAwareness } from "../server/dashboardInputAwareness.js";
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { conversationsAwareness, conversationsSuggestionsAwareness } from '../messaging/shared/conversationGraphChat.js';
@@ -31,9 +33,10 @@ import { ATTRIBUTION_CLAUDEMD_SECTION, ASK_LINKS_CLAUDEMD_SECTION, SURFACE_REFER
 import { QUIET_NOTIFICATIONS_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { RECOMMENDED_SERVICES_CLAUDEMD_SECTION, EMAIL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
-import { POOL_MOVE_NUDGE_CLAUDE_MD_LINE, POOL_READINESS_CLAUDE_MD_LINE, RESOURCE_PLACEMENT_CLAUDE_MD_LINE } from '../core/PostUpdateMigrator.js';
+import { MACHINE_MEMORY_CARE_CLAUDE_MD_LINE, POOL_MOVE_NUDGE_CLAUDE_MD_LINE, POOL_READINESS_CLAUDE_MD_LINE, RESOURCE_PLACEMENT_CLAUDE_MD_LINE } from '../core/PostUpdateMigrator.js';
 import { CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET } from '../core/PostUpdateMigrator.js';
 import { UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE } from '../core/PostUpdateMigrator.js';
+import { defaultRegistry, type AwarenessRegistry } from '../awareness/registry.js';
 
 export interface AgentIdentity {
   name: string;
@@ -299,6 +302,7 @@ export function generateClaudeMd(
   hasTelegram: boolean,
   hasWhatsApp: boolean = false,
   hasIMessage: boolean = false,
+  awarenessRegistry: AwarenessRegistry = defaultRegistry(),
 ): string {
   let content = `# CLAUDE.md — ${projectName}
 
@@ -664,6 +668,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
 ${POOL_READINESS_CLAUDE_MD_LINE}
 ${POOL_MOVE_NUDGE_CLAUDE_MD_LINE}
 ${RESOURCE_PLACEMENT_CLAUDE_MD_LINE}
+${MACHINE_MEMORY_CARE_CLAUDE_MD_LINE}
 - **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (closed by the transfer's drain step when the current machine can drain, otherwise within ~2 reaper ticks) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
@@ -2059,6 +2064,8 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
   content += '\n' + messageOriginAllPlatformsAwareness(port);
   content += '\n' + conversationsAwareness();
   content += '\n' + conversationsSuggestionsAwareness();
+  content += '\n' + signedPoolReadsAwareness(port);
+  content += '\n' + transcriptCopiesAwareness(port);
   // native-conversation-any-machine-access §3e: the dashboard reply box and its session line.
   content += '\n' + dashboardInputAwareness();
 
@@ -2410,7 +2417,9 @@ Rule: I do not state that work landed inside another agent's state unless I have
 
   content += recoveryAwareness(port);
   content += directJobSupervisionQualityAwareness(port);
-  return content;
+  // LAST STEP (docs/specs/awareness-entry-registry.md): the feature notes read from
+  // src/data/awareness/. New awareness text goes there as one file, not above.
+  return awarenessRegistry.withRegistry(content, { port, hasTelegram }, { markers: true }).content;
 }
 
 /** Shared by new installs and the update migration. */
