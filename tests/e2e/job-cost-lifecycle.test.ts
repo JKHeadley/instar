@@ -123,7 +123,13 @@ describe('job-cost production lifecycle', () => {
       }, sessions as any, state, stateDir);
       scriptScheduler.setScriptStartOffsetEnabled(false);
       scriptScheduler.setConfigReader(() => ({}));
-      scriptScheduler.start();
+      // Not started, on purpose. start() arms a wall-clock cron for every enabled built-in job
+      // (26 of them; commitment-detection and health-check fire every 5 minutes), and a tick is a
+      // real trigger: commitment-detection spawns a session on the mock, and a health-check tick
+      // holds the script slot so the trigger below returns 'skipped'. The counts below mean
+      // "sessions started by THIS test's triggers", so a tick landing inside the test failed it
+      // (`expected 1 to be +0`) on a correct product. triggerJob loads the live job set itself.
+      expect(scriptScheduler.getStatus().running).toBe(false);
       expect(await scriptScheduler.triggerJob('script-job-supervisor', 'fleet-e2e')).toBe('skipped');
       expect(sessions._spawnCount).toBe(0);
       expect(scriptScheduler.getRunHistory().query({ slug: 'script-job-supervisor', limit: 1 }).runs).toEqual([]);
