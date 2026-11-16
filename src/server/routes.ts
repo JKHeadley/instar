@@ -1245,6 +1245,10 @@ export interface RouteContext {
   /** SEC-002b: verify a dst_ scoped dashboard session token for SSE/WS auth (returns false when the
    *  feature is dark). Mirrors the authMiddleware dst_ branch for the streaming surfaces. */
   dashboardScopedSessionVerify?: (token: string | undefined) => boolean;
+  /** SEC-045: true iff the token's FAMILY is still alive (live-OR-tombstone resolved). The per-delivery
+   *  stream-liveness check uses THIS, not the live-token verify — a stream whose token merely rotated
+   *  must stay open; only a revoked/past-deadline family closes it. */
+  dashboardScopedSessionFamilyLive?: (token: string | undefined) => boolean;
   /** SEC-002b: register a callback fired when a dst_ token's session FAMILY is invalidated (revoke /
    *  PIN rotation), so an open SSE/WS stream closes instead of outliving revocation. Returns an
    *  unregister function. */
@@ -20733,6 +20737,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Auth checked inline since SSE connections don't go through normal middleware cleanly.
 
   router.get('/jobs/events', (req, res) => {
+    // SEC-045 per-delivery liveness: if the stream is authed by a dst_ scoped session, its token is
+    // captured here so the heartbeat can re-verify the family each tick and end a stream whose family
+    // passed its deadline (or was revoked) between prune sweeps — tighter than the 60s prune alone.
+    let scopedStreamToken: string | null = null;
     // Inline auth check for SSE — supports both Authorization header and ?token= query param
     // (EventSource API cannot send custom headers, so token in query is required for browser SSE)
     if (ctx.config.authToken) {
@@ -20757,9 +20765,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(403).json({ error: 'Invalid token' });
         return;
       }
-      if (scopedOk && ctx.dashboardScopedSessionOnInvalidated) {
-        const unregister = ctx.dashboardScopedSessionOnInvalidated(tokenValue, () => { try { res.end(); } catch { /* already closed */ } });
-        res.on('close', () => { try { unregister(); } catch { /* noop */ } });
+      if (scopedOk) {
+        scopedStreamToken = tokenValue; // per-delivery liveness re-check (heartbeat)
+        if (ctx.dashboardScopedSessionOnInvalidated) {
+          const unregister = ctx.dashboardScopedSessionOnInvalidated(tokenValue, () => { try { res.end(); } catch { /* already closed */ } });
+          res.on('close', () => { try { unregister(); } catch { /* noop */ } });
+        }
       }
     }
 
@@ -20778,6 +20789,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Heartbeat every 15 seconds
     const heartbeat = setInterval(() => {
+      // SEC-045 per-delivery liveness: a scoped stream whose FAMILY passed its deadline (or was
+      // revoked between prune ticks) stops at the next heartbeat. Checks FAMILY liveness (live-OR-
+      // tombstone), not live-token verify — otherwise an ordinary token rotation would force-close a
+      // perfectly healthy stream every refresh cycle.
+      if (scopedStreamToken && ctx.dashboardScopedSessionFamilyLive?.(scopedStreamToken) !== true) {
+        try { res.end(); } catch { /* already closed */ }
+        return;
+      }
       eventId++;
       res.write(`id: ${eventId}\nevent: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
     }, 15_000);
@@ -20802,6 +20821,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const poller = setInterval(() => {
+      // SEC-045 per-delivery liveness: stop a dead-family scoped stream before the next delta, too
+      // (the spec's "very next delivery attempt", not only the 15s heartbeat).
+      if (scopedStreamToken && ctx.dashboardScopedSessionFamilyLive?.(scopedStreamToken) !== true) {
+        try { res.end(); } catch { /* already closed */ }
+        return;
+      }
       if (!ctx.scheduler) return;
       for (const job of ctx.scheduler.getJobs()) {
         const st = ctx.state.getJobState(job.slug);

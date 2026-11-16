@@ -591,6 +591,10 @@ export class AgentServer {
       this.dashboardOperatorSessions.clear();
       // A new PIN ends every "a human is here" proof, the phone's desktop sessions included.
       this.phoneDesktopSessions.clear();
+      // SEC-044: a new PIN must also end every live scoped dashboard session (dst_). `revokeAll`
+      // fires each family's onFamilyInvalidated listeners (closing open WS/SSE streams) and clears
+      // the token/family/tombstone maps — a stolen dst_ does not survive a PIN rotation.
+      this.dashboardSessionStore.revokeAll();
     }
     this.dashboardPinVersion = version;
     return available;
@@ -991,6 +995,9 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  /** SEC-045: scheduled deadline enforcement for dst_ families — closes a past-deadline family's
+   *  streams without waiting for the next unlock. */
+  private dashboardSessionPruneTimer: ReturnType<typeof setInterval> | null = null;
   /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
   private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
   /** Queue pace (docs/specs/queue-pace.md): tick-row sink, ledger, tuner and their timers. */
@@ -1922,6 +1929,13 @@ export class AgentServer {
     this.dashboardSessionStore = new DashboardSessionStore(
       (this.config as { security?: { dashboardScopedToken?: Record<string, number> } }).security?.dashboardScopedToken,
     );
+    // SEC-045: scheduled sweep so a dst_ family's streams close at its absolute deadline without
+    // waiting for the next unlock to run prune(). Cheap no-op on an empty store; unref'd so it never
+    // holds the event loop open.
+    this.dashboardSessionPruneTimer = setInterval(() => {
+      try { this.dashboardSessionStore.prune(); } catch { /* @silent-fallback-ok: housekeeping sweep is best-effort */ }
+    }, 60_000);
+    this.dashboardSessionPruneTimer.unref?.();
     this.transcriptCheckpointTick = options.transcriptCheckpointTick ?? null;
     this.syncDashboardPinVersion();
     this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
@@ -2263,6 +2277,34 @@ export class AgentServer {
       const token = header.startsWith('Bearer ') ? header.slice(7) : '';
       if (token.startsWith('dst_')) this.dashboardSessionStore.revokeFamily(token);
       res.json({ revoked: true });
+    });
+    // SEC-045: explicit owner "sign out all dashboard sessions on THIS agent" control. Scope is this
+    // agent-server only (not a fleet-wide "everywhere" — PIN rotation is the fleet-wide path). Gated
+    // identically to the credential/step-up surface: the MASTER token, OR a dst_ session that has
+    // proven a FRESH PIN step-up — so a plain stolen dst_ cannot sign everyone out. Dark-gated (404
+    // when the feature is off), like the sibling session endpoints.
+    this.app.post('/dashboard/session/revoke-all', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      const header = String(req.headers.authorization ?? '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      let masterOk = false;
+      if (configRef.authToken && token.length === configRef.authToken.length && token.length > 0) {
+        try {
+          masterOk = timingSafeEqual(
+            createHash('sha256').update(token).digest(),
+            createHash('sha256').update(configRef.authToken).digest(),
+          );
+        } catch { masterOk = false; }
+      }
+      const stepUpOk = token.startsWith('dst_')
+        && this.dashboardSessionStore.verify(token)
+        && this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined);
+      if (!masterOk && !stepUpOk) {
+        res.status(403).json({ error: 'step-up-required', reason: 'Re-enter your PIN to sign out all dashboard sessions on this agent.' });
+        return;
+      }
+      this.dashboardSessionStore.revokeAll();
+      res.json({ revoked: true, scope: 'this-agent' });
     });
     // Fresh-PIN step-up for credential operations. It verifies the LIVE PIN, so it MUST share the
     // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It consumes the
@@ -6272,6 +6314,10 @@ export class AgentServer {
       dashboardScopedSessionVerify: (token: string | undefined) =>
         (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
         && typeof token === 'string' && token.startsWith('dst_') && this.dashboardSessionStore.verify(token),
+      // SEC-045: FAMILY-liveness for the per-delivery stream re-check (does not over-close on rotation).
+      dashboardScopedSessionFamilyLive: (token: string | undefined) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && typeof token === 'string' && token.startsWith('dst_') && this.dashboardSessionStore.familyLiveForToken(token),
       dashboardScopedSessionOnInvalidated: (token: string, cb: () => void) => this.dashboardSessionStore.onFamilyInvalidated(token, cb),
       conversationGraphDelegationRuntime: options.conversationGraphDelegationRuntime,
       conversationGraphDelegationRemoteRuntime: options.conversationGraphDelegationRemoteRuntime,
@@ -9866,6 +9912,7 @@ export class AgentServer {
   async stop(): Promise<void> {
     await this.stopGraphSourceInventory();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
+    if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }
     if (this.documentPullTimer) clearInterval(this.documentPullTimer);
     if (this.documentRecheckTimer) { clearInterval(this.documentRecheckTimer); this.documentRecheckTimer = null; }
     this.attribution?.stop();

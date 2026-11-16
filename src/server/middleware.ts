@@ -189,6 +189,10 @@ export function isThreadlinePublicRoute(method: string, reqPath: string): boolea
 const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/sync-status', '/identity-recovery/rotate'];
 const DST_CREDENTIAL_EXACT = new Set<string>([
   '/identity-recovery/rotate',
+  // SEC-045: "sign out all dashboard sessions on this agent" needs a fresh-PIN step-up. The route is
+  // registered pre-authMiddleware and self-gates (master OR step-up), so this entry is defense-in-
+  // depth: if the route is ever moved onto the authed router, it keeps its step-up requirement.
+  '/dashboard/session/revoke-all',
 ]);
 export function isDashboardCredentialRoute(method: string, reqPath: string): boolean {
   const p = reqPath.replace(/\/+$/, '').toLowerCase() || '/';

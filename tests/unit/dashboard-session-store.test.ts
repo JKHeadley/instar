@@ -119,6 +119,130 @@ describe('DashboardSessionStore', () => {
   });
 });
 
+describe('DashboardSessionStore — revocation completeness (SEC-044 + SEC-045)', () => {
+  it('STRICT reuse: re-presenting a CONSUMED token invalidates the whole family', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, now: c.now });
+    const t1 = s.issue();
+    c.advance(10);
+    const t2 = s.refresh(t1.token)!;        // t1 consumed, t2 live
+    expect(s.verify(t2.token)).toBe(true);
+    // a thief (or a lost-ACK retry) re-presents the already-spent t1 → fork → family dies
+    expect(s.refresh(t1.token)).toBeNull();
+    expect(s.verify(t2.token)).toBe(false); // the live successor is killed too (fail-safe)
+  });
+
+  it('owner logout with an already-CONSUMED token still ends the family (tombstone anchor)', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, now: c.now });
+    const t1 = s.issue();
+    c.advance(10);
+    const t2 = s.refresh(t1.token)!;        // t1 consumed; t2 is the "thief's" live successor
+    s.revokeFamily(t1.token);               // owner logs out with the ORIGINAL (now-consumed) token
+    expect(s.verify(t2.token)).toBe(false); // family ended despite t1 being consumed (SEC-045 core)
+  });
+
+  it('owner logout with an EXPIRED unconsumed token still ends the family (tombstone-on-expiry)', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, now: c.now });
+    const owner = s.issue();
+    let closed = 0;
+    s.onFamilyInvalidated(owner.token, () => { closed++; });
+    c.advance(CFG.ttlMs + 1);               // token expires; family still within its absolute cap
+    expect(s.verify(owner.token)).toBe(false); // expired (also tombstones it, family alive)
+    s.revokeFamily(owner.token);            // resolves via the tombstone → invalidates
+    expect(closed).toBe(1);
+  });
+
+  it('a capacity-EVICTED token still revokes its family (tombstone-on-evict)', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, maxTokens: 2, maxFamilies: 8, now: c.now });
+    const a = s.issue();
+    let closed = 0;
+    s.onFamilyInvalidated(a.token, () => { closed++; });
+    s.issue(); s.issue();                   // mint pressure evicts a.token (oldest) while family A is alive
+    expect(s.verify(a.token)).toBe(false);  // gone from the live map
+    s.revokeFamily(a.token);                // still resolves via the tombstone
+    expect(closed).toBe(1);
+  });
+
+  it('per-family tombstone cap fail-safe: a breach invalidates the OFFENDING family', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, perFamilyTombstoneCap: 3, now: c.now });
+    let t = s.issue();
+    let invalidated = false;
+    for (let i = 0; i < 10; i++) {
+      c.advance(5);
+      const n = s.refresh(t.token);
+      if (n === null) { invalidated = true; break; }
+      t = n;
+    }
+    expect(invalidated).toBe(true);         // breached the cap; the family was killed, nothing minted
+    expect(s.verify(t.token)).toBe(false);
+  });
+
+  it('family-COUNT bound: a new unlock past the cap invalidates the OLDEST family', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, maxFamilies: 2, maxTokens: 16, now: c.now });
+    const a = s.issue();
+    let aClosed = 0;
+    s.onFamilyInvalidated(a.token, () => { aClosed++; });
+    const b = s.issue();
+    const d = s.issue();                     // 3rd unlock past cap 2 → oldest (A) invalidated
+    expect(aClosed).toBe(1);
+    expect(s.verify(a.token)).toBe(false);
+    expect(s.verify(b.token)).toBe(true);
+    expect(s.verify(d.token)).toBe(true);
+    expect(s.familyCount()).toBeLessThanOrEqual(2);
+  });
+
+  it('prune() invalidates a past-deadline family and closes its streams without a new unlock', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, now: c.now });
+    const t = s.issue();
+    let closed = 0;
+    s.onFamilyInvalidated(t.token, () => { closed++; });
+    c.advance(CFG.absoluteMaxMs + 1);        // family past its absolute deadline
+    s.prune();                               // scheduled sweep — NOT triggered by an issue()
+    expect(closed).toBe(1);                  // stream closed by prune, not by the next unlock
+    expect(s.familyCount()).toBe(0);
+  });
+
+  it('revokeAll also clears tombstones (full reset)', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, now: c.now });
+    const t1 = s.issue();
+    c.advance(5);
+    s.refresh(t1.token);                     // creates a tombstone for t1
+    expect(s.tombstoneCount()).toBeGreaterThan(0);
+    s.revokeAll();
+    expect(s.tombstoneCount()).toBe(0);
+    expect(s.familyCount()).toBe(0);
+    expect(s.refresh(t1.token)).toBeNull();  // a consumed token after reset is just unknown, not a crash
+  });
+
+  it('familyLiveForToken stays TRUE across a token rotation (SSE stream must not over-close)', () => {
+    const c = fixedClock();
+    const s = new DashboardSessionStore({ ...CFG, now: c.now });
+    const t1 = s.issue();
+    expect(s.familyLiveForToken(t1.token)).toBe(true);
+    c.advance(10);
+    const t2 = s.refresh(t1.token)!;         // t1 consumed (tombstoned), family still alive
+    // a stream opened with the OLD t1 must still read its family as LIVE (not get force-closed)
+    expect(s.familyLiveForToken(t1.token)).toBe(true);
+    expect(s.familyLiveForToken(t2.token)).toBe(true);
+    // ...until the family is actually revoked
+    s.revokeFamily(t2.token);
+    expect(s.familyLiveForToken(t1.token)).toBe(false);
+    expect(s.familyLiveForToken(t2.token)).toBe(false);
+    // and a different family is dead past its absolute deadline
+    const u = s.issue();
+    c.advance(CFG.absoluteMaxMs + 1);
+    expect(s.familyLiveForToken(u.token)).toBe(false);
+    expect(s.familyLiveForToken(undefined)).toBe(false);
+  });
+});
+
 import { isDashboardCredentialRoute } from '../../src/server/middleware.js';
 
 describe('isDashboardCredentialRoute (dst_ step-up deny-list)', () => {
