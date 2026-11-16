@@ -20,3 +20,7 @@ Spec: `docs/specs/owner-approved-action-stdio-transport.md` (converged 3 rounds 
 ## Second-pass review (independent)
 
 This is an auth gate on an irreversible action, so Phase 5 requires an independent second-pass before the gate flips. The implementation is complete, unit-tested (15 tests: `performApprovedDelete` incl. the hostile-caller no-mutation property; `evaluateLoopbackGuard` tunnel-refusal; `approvedDeleteViaHttp` outcome-unknown), tsc-clean, dark. The independent second-pass of the wiring (same store shared across both transports; the handler performs no local `remove`; the dark path byte-identical; the route exposes no approval-creating action) is scheduled as part of the pre-flip gate alongside the live phone-tap proof over the stdio transport. **Verdict pending the pre-flip second-pass + the live proof; the DARK merge carries only un-exercised-dark-code risk, which the e2e alive test covers.**
+
+## Follow-up correction
+
+- The new `POST /threadline/approved-delete` route is a mutating route and must be classified in the write-domain registry (tests/unit/write-domain-conformance-ratchet.test.ts). Added it to `buildWriteDomainRegistry` as `machine-local` with a `per-machine-path` convergence story (it deletes from this machine's git-sync-excluded ConversationStore + ThreadResumeMap), matching the sibling /threadline/ack and /threadline/session-reply entries. No runtime behaviour change.

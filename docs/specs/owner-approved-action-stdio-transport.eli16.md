@@ -30,3 +30,4 @@ Reviewers (including a non-Claude GPT reviewer reading the real code) found the 
 ## What you actually need to decide
 
 Whether this design is sound to build. It ships **dark** (off), and even when on it adds no friction to normal use — deleting still works, it just shows one Face-ID card first. The one honest trade-off: a delete now needs the agent server reachable (it already does for everything else). The live phone-tap proof still gates the switch being flipped; approving this spec only authorizes building it.
+
