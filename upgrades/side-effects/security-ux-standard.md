@@ -45,3 +45,9 @@ Not required (no gate, sentinel or runtime decision).
 ## Evidence pointers
 - Approved text: `.instar/state/security/ux-standard-draft.md` (agent home), diffed byte-identical against the inserted article before commit.
 - Lints: registry insertion placement, code back-reference, tree parentage, single governing obligation, documented-only countdown, bounded judgment input, hierarchy `--check` all clean.
+
+## Second-pass review (independent)
+
+**Reviewer:** independent second-pass subagent (Explore, fresh context), 2026-11-15, given only the two-commit diff (`git diff 17b43300a..HEAD`), not the author's conclusion. Audited: the new standard's text and placement in docs/STANDARDS-REGISTRY.md; the ratchet count bump (98→99); the Interaction family-audit JSON canonical form + hash reconciliation (auditSha256/areaSha256/convergenceSha256); the constitution-alignment-map row uniqueness (1.x article #99); the eli16 + upgrades/next fragments; whole-change integrity.
+
+Findings: all checks pass — the standard makes a clear, enforceable claim correctly placed under *The User Experience Is the Product*; 98→99 is exact (99 `**Rule.**` lines and 99 `### ` headings), not off-by-one; both JSON files are canonical and every hash reconciles; the alignment-map row is unique (the other `| 99 |` is in the separate 2.0 numbering space); the operator approval (telegram 141385/143443, 2026-11-15) is cited consistently. **Verdict: Concur with the review.**
