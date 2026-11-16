@@ -85,6 +85,11 @@ Concur with the review. Traced independently: the new device rule (`src/server/m
 
 ## Evidence pointers
 
+- Results (2026-11-15): `tests/integration/mac-qr-pairing.test.ts` 7/7, `tests/e2e/mac-qr-pairing-alive.test.ts` 1/1, `tests/unit/site-pair-drop.test.ts` 7/7; existing pairing unit tests (`mobile-pairing`, `mobile-app-people-roles`, `mobile-browser-devices`, `browser-device-taps`, `mobile-pairing-word-code`) 138/138.
+- Live on the throwaway agent (`mac-proof-1114.dawn-tunnel.dev`, this branch's build): the seeded owner phone's device-signed mint answered 200 with a 5-minute expiry and the owner person; the iPhone app in the simulator paired with the agent and was approved as an owner device.
+- Changes after the first draft of this review, reviewed in spec rounds 4 and 5: the Telegram line names the computer's label as its own claim ("it calls itself …"); the drop point reports the cache path it used (`X-Pair-Drop-Store`) and a per-load instance tag (`X-Pair-Drop-Instance`), and refuses the library's per-instance memory fallback (503). Neither changes a decision point above.
+- Still to come: the Vercel firewall rate rule on `/api/pair-drop/*` (its id is recorded here when created) and the full Mac-to-phone live run on the preview deployment.
+
 - Integration: `tests/integration/mac-qr-pairing.test.ts`. E2E: `tests/e2e/mac-qr-pairing-alive.test.ts`. Site: `tests/unit/site-pair-drop.test.ts`.
 - Spec reviews: `.instar/lanes/mac-qr/{fable,astra}-r{1,2,3}.md` in the agent home.
 
