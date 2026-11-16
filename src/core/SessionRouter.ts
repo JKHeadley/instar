@@ -229,6 +229,13 @@ export interface SessionRouterDeps {
    */
   reclaimPlacement?: (sessionKey: string, placedOn: string) => boolean;
   /**
+   * fb-faa9d074-e09: take an ACTIVE record held by `fromMachine` for this machine (a guarded
+   * force-claim: only while `fromMachine` is still the active owner). Used only when that owner
+   * cannot take the message — gone, or alive without durable receive — after the message waited.
+   * Returns true when the record now names this machine. Absent → the message stays queued.
+   */
+  takeOverFromPeer?: (sessionKey: string, fromMachine: string) => boolean;
+  /**
    * Is a session for this key already running on THIS machine? Placement for an unowned
    * key honours it, so turning the pool on never hops a conversation that is mid-flight.
    * Absent means no live-session knowledge, so placement decides as before.
@@ -314,7 +321,7 @@ export class SessionRouter {
     // entry runs out at the queue's limits and the phone is told in words.
     if (isAppOwnershipKey(msg.sessionKey)) return false;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(() => this.placeAndClaim(msg, 'failover', true));
+    const next = prior.catch(() => undefined).then(() => this.takeOverFromNonReceiver(msg) ?? this.placeAndClaim(msg, 'failover', true));
     const tail = next.then(() => undefined, () => undefined);
     this.chains.set(msg.sessionKey, tail);
     void tail.then(() => {
@@ -420,6 +427,56 @@ export class SessionRouter {
     }
     this.deps.markOwnerSuspect?.(target);
     return queue('app-owner-unreachable');
+  }
+
+  /**
+   * fb-faa9d074-e09: the forced re-place for a message that waited on a LIVE owner which cannot
+   * take forwarded messages (no durable receive). Re-placing would choose that owner again (it is
+   * alive, and often the conversation's preferred machine), so the message would wait out its
+   * tries and expire unanswered. Delivery beats placement: after the full wait, this machine takes
+   * the conversation and answers here. Any other state returns null (normal forced re-place).
+   */
+  private takeOverFromNonReceiver(msg: InboundMessage): Promise<RouteOutcome> | null {
+    const own = this.deps.resolveOwnership(msg.sessionKey);
+    if (own.status !== 'active' || !own.owner || own.owner === this.deps.selfMachineId) return null;
+    if (!this.deps.isMachineAlive(own.owner)) return null;
+    if ((this.deps.ownerSupportsForward?.(own.owner) ?? null) !== false) return null;
+    // Every mandatory placement check still holds for THIS machine (online, workspace, quota,
+    // not refusing work, a hard pin elsewhere): the takeover only skips cost, never policy.
+    if (!this.localPlacementAllowed(msg)) return null;
+    if (!this.tryTakeOver(msg.sessionKey, own.owner)) return null;
+    this.deps.log?.(`${msg.sessionKey}: owner ${own.owner} cannot take forwarded messages — answering on this machine`);
+    return Promise.resolve({ action: 'handled-locally', owner: this.deps.selfMachineId, detail: 'owner-lacks-receive-takeover', acked: true });
+  }
+
+  /** Would placement, offered only this machine, place the conversation here with no escalation? */
+  private localPlacementAllowed(msg: InboundMessage): boolean {
+    try {
+      const self = this.deps.selfMachineId;
+      const decision = this.deps.placement.decide({
+        sessionKey: msg.sessionKey,
+        topicMetadata: msg.topicMetadata ?? {},
+        machineRegistry: this.deps.machineRegistry().filter((m) => m.machineId === self),
+        currentOwner: undefined,
+        reason: 'failover',
+        ...(msg.channel ? { channel: msg.channel } : {}),
+      });
+      return decision.outcome === 'placed' && decision.chosenMachine === self && !decision.escalationReason;
+    } catch (err) { // @silent-fallback-ok — logged; no takeover, the normal forced re-place runs
+      this.deps.log?.(`local placement check for ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+      return false;
+    }
+  }
+
+  /** The guarded takeover; any fault reads as "not taken" (the message stays queued). */
+  private tryTakeOver(sessionKey: string, fromMachine: string): boolean {
+    if (!this.deps.takeOverFromPeer) return false;
+    try {
+      return this.deps.takeOverFromPeer(sessionKey, fromMachine) === true;
+    } catch (err) { // @silent-fallback-ok — logged; the message stays in durable custody
+      this.deps.log?.(`takeOverFromPeer for ${sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+      return false;
+    }
   }
 
   private async dispatchOne(msg: InboundMessage, stopGeneration: number): Promise<RouteOutcome> {
@@ -563,11 +620,17 @@ export class SessionRouter {
       const held = this.deps.resolveOwnership(msg.sessionKey);
       if (held.owner && held.owner !== this.deps.selfMachineId) {
         const cas = this.deps.casClaimOwnership(msg.sessionKey, this.deps.selfMachineId, held.epoch);
-        if (!cas.ok) {
+        // A plain claim never succeeds over the peer's ACTIVE record ('place' refuses to steal a
+        // live session), so a routing-only message whose peer cannot take it would queue here until
+        // it expired (fb-faa9d074-e09). A peer that is gone is taken over here (a live peer without
+        // durable receive is taken over only by the queue's forced attempt, after the full wait).
+        const tookOver = !cas.ok && held.status === 'active' && !this.deps.isMachineAlive(held.owner)
+          && this.tryTakeOver(msg.sessionKey, held.owner);
+        if (!cas.ok && !tookOver) {
           const q = this.deps.queueMessage(msg, 'routing-only-claim-lost');
           return { action: 'queued', detail: 'routing-only-claim-lost', acked: q === 'queued' || q === 'already-queued' };
         }
-        this.deps.confirmClaim?.(msg.sessionKey, this.deps.selfMachineId);
+        if (cas.ok) this.deps.confirmClaim?.(msg.sessionKey, this.deps.selfMachineId);
       }
       await this.deps.handleLocally(msg);
       return { action: 'handled-locally', owner: this.deps.selfMachineId, detail: 'routing-only', acked: true };

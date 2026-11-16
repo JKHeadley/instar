@@ -43,6 +43,12 @@ export interface NeverSilentDeps {
   config: () => NeverSilentConfig;
   judge: ConversationSilenceJudge | null;
   resolveSession: (platform: ConversationPlatform, key: string) => SessionFacts | null;
+  /**
+   * With no session here: is the waiting message held in this machine's inbound queue for
+   * the other machine that runs the conversation? Returns that machine's id, or null.
+   * Absent ⇒ never (single-machine installs).
+   */
+  awaitingMachine?: (platform: ConversationPlatform, key: string) => string | null;
   capturePane: (tmuxSession: string) => string | null;
   authStatus: (framework: string | null, configHome: string | null) => Promise<{ loggedIn: boolean | null; detail?: string } | null>;
   accountFacts: (accountId: string | null) => { id: string | null; status: string | null; loginCheck: string | null; statusCause?: string | null } | null;
@@ -225,8 +231,11 @@ export class NeverSilentWatcher {
     const pane = session ? (this.safe(() => this.d.capturePane(session.tmuxSession), null) ?? '') : '';
     const auth = session ? await this.safeAsync(() => this.d.authStatus(session.framework, session.configHome), null) : null;
     const account = this.safe(() => this.d.accountFacts(session?.accountId ?? null), null);
+    // No session here can mean the message is held for the machine that runs the conversation,
+    // not that a session stopped (fb-faa9d074-e09: "the session stopped running" for one that never began).
+    const awaiting = session ? null : this.safe(() => this.d.awaitingMachine?.(incident.platform, incident.conversationKey) ?? null, null);
     const revision = crypto.createHash('sha256').update(JSON.stringify({
-      pane, auth, account: account?.status, check: account?.loginCheck, s: session?.tmuxSession, st: session?.startedAt, open: open.map((o) => o.id),
+      pane, auth, account: account?.status, check: account?.loginCheck, s: session?.tmuxSession, st: session?.startedAt, open: open.map((o) => o.id), aw: awaiting,
     })).digest('hex').slice(0, 16);
     // Unchanged evidence reuses the last verdict (no new call), except a working-slow one, which is
     // re-judged — but never sooner than the backoff allows, whatever changed on screen.
@@ -239,6 +248,11 @@ export class NeverSilentWatcher {
         evidence: incident.evidence ?? '', truncated: incident.cachedVerdict?.truncated ?? false,
         actionsSinceMessage: incident.cachedVerdict?.actionsSinceMessage ?? 'unknown', calls: 0,
       } };
+    }
+    if (!session && awaiting) {
+      const v: SilenceVerdict = { silenceClass: 'waiting-for-machine', confidence: 1, route: 'structural', evidence: `message held for machine ${awaiting}`, truncated: false, actionsSinceMessage: 'none', calls: 0 };
+      this.recordVerdict(incident, v, revision);
+      return { v, revision };
     }
     if (!session) {
       const v: SilenceVerdict = { silenceClass: 'crashed', confidence: 1, route: 'structural', evidence: 'no session for this conversation', truncated: false, actionsSinceMessage: 'unknown', calls: 0 };

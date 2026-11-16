@@ -16,7 +16,7 @@ import { DEVICE_LIMIT_MODEL } from '../../core/CodexDeviceLimitJudge.js';
 import type { IntelligenceOptions, IntelligenceProvider } from '../../core/types.js';
 import type { SilenceClass } from './NeverSilentStore.js';
 
-export const SILENCE_CLASSES: Readonly<Record<Exclude<SilenceClass, 'undetermined'>, string>> = {
+export const SILENCE_CLASSES: Readonly<Record<Exclude<SilenceClass, 'undetermined' | 'waiting-for-machine'>, string>> = {
   'engine-login': 'The AI engine cannot run because its sign-in or login ran out, was revoked, is missing, or is being refused (any wording).',
   'usage-or-subscription-wall': 'The engine is refusing work because a usage limit, rate limit, quota, plan or subscription limit was reached.',
   'startup-dialog': 'The session is waiting at a question or dialog shown at start-up (for example asking to trust a folder, accept terms, or choose an option) and has not begun the work.',

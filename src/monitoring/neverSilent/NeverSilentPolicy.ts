@@ -83,6 +83,7 @@ function cause(cls: SilenceClass, fw: string | null): string {
     case 'startup-dialog': return 'the session stopped at a question when it started';
     case 'crashed': return 'the session stopped running';
     case 'message-not-delivered': return "your message didn't reach the session";
+    case 'waiting-for-machine': return "it's waiting for the other machine that runs this conversation, which can't take messages yet";
     default: return "I couldn't tell why yet";
   }
 }
