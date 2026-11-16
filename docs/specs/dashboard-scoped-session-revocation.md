@@ -102,7 +102,7 @@ This fix is not an independent feature — it completes the revocation side of `
 - **fleet:** enabled fleet-wide only after dev-agent-live passes AND the SEC-002b graduation criteria are met; revocation is per-machine, so each machine graduates its own store.
 - **graduation criterion:** the SEC-002b live dashboard proof passes AND all four store-lifecycle invariants are verified live on the dev agent against a real browser plus real WS/SSE streams (not only unit tests).
 - **dark-window:** ships dark behind `security.dashboardScopedToken.enabled` (default false); it flips only together with SEC-002b, never independently, so it has no standalone dark window of its own.
-- **ladder:** security.dashboardScopedToken
+- **ladder:** not applicable: this revocation-completeness fix adds no feature flag of its own; it hardens the existing dark `security.dashboardScopedToken` feature (SEC-002b), whose own ladder entry is a separate follow-up.
 
 ## Open questions
 
