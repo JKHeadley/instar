@@ -66,7 +66,7 @@ describe('recommended services: production wiring', () => {
     const jev = list.body.services.find((row: { service: string }) => row.service === 'jev');
     // The six live-proven recipes are available on every agent, with no proving list; the other three are not.
     expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: true });
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'telegram', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription', 'email']);
 
     const noPin = await request(app).post('/recommended-services/jev/no').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noPin.status).toBe(403);
@@ -182,11 +182,8 @@ describe('recommended services: production wiring', () => {
     expect(sync.body.error).toBe('not-granted-here');
   });
 
-  it('the Telegram recipe is dark on a fleet agent and reachable on a proving agent through the real wiring', async () => {
-    const plain = boot(true);
-    const plainList = await request(plain.server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
-    expect(plainList.body.services.find((row: { service: string }) => row.service === 'telegram').available).toBe(false);
-    const { server } = boot(true, { recommendedServices: { provingRecipes: ['telegram-v1'] } });
+  it('the Telegram recipe, proven live 2026-11-09, is available on a fleet agent through the real wiring', async () => {
+    const { server } = boot(true);
     const app = server.getApp();
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.body.services.find((row: { service: string }) => row.service === 'telegram').available).toBe(true);
@@ -216,7 +213,7 @@ describe('recommended services: production wiring', () => {
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.status).toBe(200);
     expect(list.body.offersLive).toBe(false);
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'telegram', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription', 'email']);
     // The recipe is wired: verify gets past "no-recipe" and stops at the missing yes.
     const verify = await request(app).post('/recommended-services/tailscale/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
