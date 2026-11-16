@@ -1123,6 +1123,11 @@ export class TelegramAdapter implements MessagingAdapter {
   private neverSilentAskHandler: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
   setNeverSilentAskHandler(fn: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.neverSilentAskHandler = fn; }
 
+  /** Remove the inline buttons from one message (a Chief of Staff ask that was replaced or answered). Best-effort. */
+  async clearInlineButtons(chatId: string, messageId: number): Promise<void> {
+    await this.apiCall('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
+  }
+
   /** One offer list with its buttons, in the owner's conversation. The message id is the delivery proof the offer ledger records. */
   async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
     try {
@@ -1298,7 +1303,7 @@ export class TelegramAdapter implements MessagingAdapter {
   isInboundRefused: ((topicId: number, senderId: number) => boolean) | null = null;
 
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
-  onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string }) => Promise<'ok' | 'ignored'>) | null = null;
+  onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string; chatId?: string; messageId?: number }) => Promise<'ok' | 'ignored' | 'paused' | 'resumed' | 'recheck-failed' | 'write-failed'>) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
   public onPromptTextResponse: ((sessionName: string, text: string) => boolean) | null = null;
   /** Callback when relay lease should extend idle timeout for a session */
@@ -7096,8 +7101,15 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       let answer = 'Not available right now.';
       try {
-        const r = this.onChiefOfStaffTap ? await this.onChiefOfStaffTap({ data: query.data, fromUserId: query.from.id, callbackQueryId: query.id }) : null;
-        answer = r === 'ok' ? 'Done.' : r === 'ignored' ? 'That action no longer applies.' : answer;
+        // The tapped message's chat and id travel with the tap: an owner pause/resume must match the exact ask message
+        // the server sent (spec cos-owner-pause-record §3.2).
+        const r = this.onChiefOfStaffTap ? await this.onChiefOfStaffTap({ data: query.data, fromUserId: query.from.id, callbackQueryId: query.id, ...(query.message ? { chatId: String(query.message.chat.id), messageId: query.message.message_id } : {}) }) : null;
+        answer = r === 'ok' ? 'Done.'
+          : r === 'paused' ? "Paused. I won't start, restart or nudge it from here on; anything already under way may still finish."
+          : r === 'resumed' ? 'Resumed.'
+          : r === 'recheck-failed' ? "Your original message changed or can't be confirmed as yours, so nothing changed; ask me again."
+          : r === 'write-failed' ? "Couldn't save that; tap again in a minute."
+          : r === 'ignored' ? 'That action no longer applies.' : answer;
       } catch (err) { /* @silent-fallback-ok: the tap answers with a plain failure line; the handler's own log carries the cause */
         console.warn(`[telegram] chief-of-staff tap failed: ${err instanceof Error ? err.message : String(err)}`);
       }

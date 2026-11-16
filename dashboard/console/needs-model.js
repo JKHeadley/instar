@@ -55,6 +55,8 @@ export function chiefOfStaffNeedRows(cos, now) {
     : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : String(p.conversationKey || 'a project'));
   for (const p of d.projects) {
     if (!p || typeof p !== 'object') continue;
+    // The owner paused it (spec cos-owner-pause-record §3.3): they already decided, so it asks nothing of them.
+    if (p.pausedBy) continue;
     if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', projectHref(p)));
     else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', projectHref(p)));
     else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', projectHref(p)));

@@ -19,9 +19,10 @@
 import crypto from 'node:crypto';
 import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
-  buildCheckEvent, buildLastTick, buildLifecycleEvent, buildRenewal,
-  type BindingState, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
+  buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
+  type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import { composePauseAsk, type OwnerPauseSource } from './cosOwnerPauseSource.js';
 import type { ChiefOfStaffActionProtocol, CosProtocolOutcome } from './ChiefOfStaffActionProtocol.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -176,16 +177,17 @@ export interface BoundProject {
 }
 
 /**
- * The owner's pause on a project. Nothing writes it yet: the Chief of Staff's owner-pause route (brief
- * cos-owner-pause-record.md) will, either as BindingState.pausedBy or the binding's own pausedBy, so both are read.
- * That route checks the owner's message reference; this reader only refuses incomplete records: { who, at, quote, messageRef }, set only from the
- * owner's logged words (the Chief of Staff's pause route, fb-c35a437b-e9c). Anything malformed reads as no pause.
+ * The owner's pause on a project: BindingState.pausedBy, folded from the owner's own Telegram tap on a pause ask
+ * (spec cos-owner-pause-record; fb-c35a437b-e9c). A binding record never carries a pause (its validator drops the
+ * field), so `binding.pausedBy` stays unset; both are read for safety. This reader only refuses incomplete records
+ * { who, at, quote, messageRef }: anything malformed reads as no pause.
  */
 export function ownerPause(binding: Record<string, unknown> | null | undefined): { who: string; at: string; quote: string; messageRef: string } | null {
   const p = binding?.pausedBy as Record<string, unknown> | null | undefined;
   if (!p || typeof p !== 'object') return null;
-  const ok = (v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 2000;
-  if (!ok(p.who) || !ok(p.at) || !ok(p.quote) || !ok(p.messageRef)) return null;
+  const ok = (v: unknown, max = OWNER_PAUSE_FIELD_MAX) => typeof v === 'string' && v.length > 0 && v.length <= max;
+  // The quote is the owner's whole message, up to Telegram's own limit (spec cos-owner-pause-record §3.5).
+  if (!ok(p.who) || !ok(p.at) || !ok(p.quote, OWNER_PAUSE_QUOTE_MAX) || !ok(p.messageRef)) return null;
   return { who: String(p.who), at: String(p.at), quote: String(p.quote), messageRef: String(p.messageRef) };
 }
 
@@ -207,6 +209,8 @@ export function boundProjects(union: UnionEntry[]): BoundProject[] {
 export function planDue(projects: BoundProject[], states: Map<string, ProjectCheckState>, dirty: Set<string>, now: number, gapMinutes: number): BoundProject[] {
   const due: BoundProject[] = [];
   for (const p of projects) {
+    // The owner paused it (spec cos-owner-pause-record §3.3): no check, no judge spend, no restart, no redirect.
+    if (p.binding?.pausedBy) continue;
     const st = states.get(p.conversationKey);
     const last = st?.lastCheckAt ? Date.parse(st.lastCheckAt) : null;
     const nextAt = st?.nextCheckAt ? Date.parse(st.nextCheckAt) : null;
@@ -348,8 +352,42 @@ export interface ChiefOfStaffLoopDeps {
   rootConversationKey?: () => string | null;
   /** Grade a judge decision later (decision-quality meter); best-effort. */
   gradeDecision?: (decisionRef: string, grade: 'right' | 'wrong', note: string) => void;
+  /** The owner pause / resume ask (spec cos-owner-pause-record §3.2). Wired only on the machine that receives
+   *  Telegram button presses; absent elsewhere, so an ask can never be sent from a machine its tap cannot reach. */
+  pauseAsk?: PauseAskDeps;
   log?: (line: string) => void;
 }
+
+/** One open ask, machine-local (it lives where the owner's callback for that exact message arrives). */
+export interface PauseAsk { key: string; action: 'pause' | 'resume'; marker: string; ownerText: string; writtenIn: string | null; sentAt: string; chatId: string; askMessageId: number }
+
+export interface PauseAskDeps {
+  /** Send the ask with its one button; returns the chat and message actually used, 'unconfirmed' when the send was
+   *  held or its outcome is unknown, null when it failed. `ownerTextFirst` is sent whole, first, when given. */
+  send: (text: string, button: { label: string; id: string }, ownerTextFirst?: string) => Promise<{ chatId: string; messageId: number } | 'unconfirmed' | null>;
+  /** Best-effort: remove the button from an ask that was replaced or answered. */
+  removeButtons?: (chatId: string, messageId: number) => Promise<void>;
+  store: { load: () => Record<string, PauseAsk>; save: (asks: Record<string, PauseAsk>) => void };
+  ownerName: () => string | null;
+  /** Machines whose reported build is older than this one (a warning to the owner, never a block). */
+  olderMachines: () => string[];
+  /** The display name of the conversation a cited message was written in, when known. */
+  conversationName: (conversation: string) => string | null;
+  /** `chiefOfStaff.ownerPause.asks` (default on): off refuses PAUSE asks only. */
+  asksEnabled: () => boolean;
+  /** Whether THIS machine receives the owner's button presses (it polls Telegram, or its lifeline does and forwards). */
+  receivesCallbacks: () => boolean;
+}
+
+export type PauseAskResult =
+  | { ok: true; askId: string; olderMachines: string[] }
+  | { ok: false; status: 422 | 503; reason: string };
+
+/** Re-check outcomes that mean "could not look", not "the source changed": they never block the owner's tap. */
+const RECHECK_UNAVAILABLE: ReadonlySet<string> = new Set(['unreachable', 'unverifiable', 'not-found', 'pinned-copy', 'owner-unknown', 'identity-unverified']);
+
+/** What a Chief of Staff tap did; the adapter turns it into the owner's one-line answer. */
+export type OwnerTapResult = 'ok' | 'ignored' | 'paused' | 'resumed' | 'recheck-failed' | 'write-failed';
 
 // ── the loop ─────────────────────────────────────────────────────────────────
 
@@ -407,20 +445,34 @@ export class ChiefOfStaffLoop {
   markDirty(conversationKey: string): void { this.dirty.add(conversationKey); }
 
   /** Loop health with the lease derived NOW from the records (a check-in shows live at once, not after the next tick). */
-  status(): LoopHealth {
+  status(): LoopHealth & { unknownLifecycleEvents: Record<string, number> } {
     let lease = { ...this.health.lease };
-    try { const l = this.lease(this.d.now(), this.unionMemo()); lease = { live: l.live, expiresAt: l.expiresAt, renewedAt: l.renewedAt }; } catch { /* @silent-fallback-ok: an unreadable union leaves the last tick's lease in the status; lastError carries the cause on the next tick */ }
-    return { ...this.health, lease };
+    let unknown: Record<string, number> = {};
+    try {
+      const union = this.unionMemo();
+      const l = this.lease(this.d.now(), union); lease = { live: l.live, expiresAt: l.expiresAt, renewedAt: l.renewedAt };
+      // Lifecycle events this build does not know (kept, ignored by every fold): visible by name, never silent.
+      unknown = unknownLifecycleEvents(union);
+    } catch { /* @silent-fallback-ok: an unreadable union leaves the last tick's lease in the status; lastError carries the cause on the next tick */ }
+    return { ...this.health, lease, unknownLifecycleEvents: unknown };
   }
 
   /** §2.4 step 2(c) input for the protocol: the derived action gate for one conversation. */
-  actionGate(conversationKey: string): { nextActionAllowedAt: string | null; newestCheckAgeMs: number | null } {
+  actionGate(conversationKey: string): { nextActionAllowedAt: string | null; newestCheckAgeMs: number | null; paused: boolean } {
     let union: UnionEntry[] = [];
-    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union reads as a lagging fold ⇒ the protocol rejects (safe side) */ return { nextActionAllowedAt: null, newestCheckAgeMs: Number.POSITIVE_INFINITY }; }
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union reads as a lagging fold ⇒ the protocol rejects (safe side) */ return { nextActionAllowedAt: null, newestCheckAgeMs: Number.POSITIVE_INFINITY, paused: false }; }
     const cfg = this.d.config();
     const p = boundProjects(union).find((x) => x.conversationKey === conversationKey);
     const st = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p?.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(this.d.now()), p?.binding);
-    return { nextActionAllowedAt: st.nextActionAllowedAt, newestCheckAgeMs: st.lastCheckAt ? this.d.now() - Date.parse(st.lastCheckAt) : null };
+    // The owner's pause fences execution too (spec cos-owner-pause-record §3.3), read from the same fresh union.
+    const paused = !!foldBindingState(union).get(conversationKey)?.pausedBy;
+    return { nextActionAllowedAt: st.nextActionAllowedAt, newestCheckAgeMs: st.lastCheckAt ? this.d.now() - Date.parse(st.lastCheckAt) : null, paused };
+  }
+
+  /** True when the owner has paused this conversation's project (reconciler / backstop stand-down, spec §3.3).
+   *  THROWS when the union is unreadable, so a caller that stands down on a throwing read does exactly that. */
+  isOwnerPaused(conversationKey: string): boolean {
+    return !!foldBindingState(this.unionMemo()).get(conversationKey)?.pausedBy;
   }
 
   /** Read-path memo (2 s): the app list and the console poll these; the union fold must not run per request. Carrier for the durable fix: CMT-1415 (store compaction). */
@@ -439,13 +491,13 @@ export class ChiefOfStaffLoop {
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
-  projectsSummary(): Array<{ conversationKey: string; goal: string; title: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null }> {
+  projectsSummary(): Array<{ conversationKey: string; goal: string; title: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null }> {
     let union: UnionEntry[] = [];
     try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union lists no projects; the loop health shows lastError */ return []; }
     const cfg = this.d.config(); const now = new Date(this.d.now());
     return boundProjects(union).map((p) => {
       const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
-      return { conversationKey: p.conversationKey, goal: p.goal, title: this.label(p), lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt };
+      return { conversationKey: p.conversationKey, goal: p.goal, title: this.label(p), lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt, pausedBy: p.binding.pausedBy ?? null };
     });
   }
 
@@ -485,7 +537,7 @@ export class ChiefOfStaffLoop {
     const st = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(this.d.now()), p.binding);
     const checks = union.filter((e) => e.data.recordType === 'check-event' && e.data.conversationKey === conversationKey).map((e) => ({ at: e.data.at, verdict: e.data.verdict, evidenceIds: e.data.evidenceIds, progressSeen: e.data.progressSeen, note: e.data.note })).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 50);
     const intents = [...foldIntentState(union).values()].filter((s) => s.conversationKey === conversationKey).map((s) => ({ intentKey: s.intentKey, action: s.action, state: s.state, runId: s.runId, open: s.open }));
-    return { conversationKey, goal: p.goal, doneDefinition: p.doneDefinition, linked: p.linked, checkCadenceHours: p.checkCadenceHours, state: st, checks, intents };
+    return { conversationKey, goal: p.goal, doneDefinition: p.doneDefinition, linked: p.linked, checkCadenceHours: p.checkCadenceHours, state: st, pausedBy: p.binding.pausedBy ?? null, checks, intents };
   }
 
   /** §4: the derived operator lease (shared with the protocol's `operatorLeaseLive`). */
@@ -699,6 +751,8 @@ export class ChiefOfStaffLoop {
   derivedNeeds(union: UnionEntry[], projects: BoundProject[], states: Map<string, ProjectCheckState>, cfg: ChiefOfStaffLoopConfig, leaseLive: boolean): NoteItem[] {
     const out: NoteItem[] = [];
     for (const p of projects) {
+      // The owner paused it: the owner already decided, so it asks nothing of them (spec cos-owner-pause-record §3.3).
+      if (p.binding?.pausedBy) continue;
       const st = states.get(p.conversationKey); if (!st) continue;
       if (st.parked || st.breakerTripped) out.push({ kind: 'needs-you', text: `${this.label(p)} is parked after ${st.restartsWithoutProgress} restarts without progress${st.breakerTripped ? ' (breaker)' : ''}. Unpark?`, action: { label: `Unpark: ${cutAtWord(this.label(p), 30)}`, id: `cos:unpark:${p.conversationKey}` } });
       else if (st.lastVerdict === 'waiting-on-user') {
@@ -728,11 +782,15 @@ export class ChiefOfStaffLoop {
     if (!dueByClock) return;
     const transient = this.pendingNote.splice(0, this.pendingNote.length);
     const derived = this.derivedNeeds(union, projects, states, cfg, lease.live);
+    // Resurfacing (spec cos-owner-pause-record §3.3): a note that goes out anyway lists what the owner paused, so a
+    // conditional pause ("until throughput is solved") is never forgotten; a paused project alone never triggers a note.
+    const pausedLines: NoteItem[] = projects.filter((p) => p.binding?.pausedBy).map((p) => ({ kind: 'result', text: `Paused by you: ${this.label(p)} since ${p.binding.pausedBy!.at.slice(0, 10)}.` }));
     // Dedupe by the tap id (then the text), derived first: the transient "Confirm it's done?" and the derived "waiting on you"
     // collapse on the shared cos:confirm-done id; every other transient line (refuted twice, an immediate that waited,
     // a project parked THIS tick) survives — nothing is ever dropped as a class.
     const seen = new Set<string>(); const items: NoteItem[] = [];
     for (const i of [...derived, ...transient]) { const k = i.action?.id ?? i.text; if (seen.has(k) || seen.has(i.text)) continue; seen.add(k); seen.add(i.text); items.push(i); }
+    if (items.length) items.push(...pausedLines);
     const expiresIn = lease.expiresAt ? Date.parse(lease.expiresAt) - now : null;
     const statusUrl = this.safe(() => this.d.statusUrl(), null);
     const text = composeNote(items, cfg.noteSectionCap, typeof statusUrl === 'string' && /^https:\/\//.test(statusUrl) ? statusUrl : null, expiresIn);
@@ -772,8 +830,107 @@ export class ChiefOfStaffLoop {
   }
 
   /** Owner taps (verified by the caller): unpark / confirm-done. */
-  async ownerTap(actionId: string, by: 'owner-tap'): Promise<'ok' | 'ignored'> {
+  /**
+   * The agent asks the owner to pause or resume a project (spec cos-owner-pause-record §3.2). Only with the owner's
+   * own cited message (the source floor), only from the machine that receives the owner's button presses. The ask
+   * decides nothing: the owner's tap on this exact message does.
+   */
+  /** The source floor (cosOwnerPauseSource.checkOwnerPauseSource over the attribution resolver and the verified owner
+   *  id), bound once attribution is running; until then asks answer `attribution-unavailable`. */
+  private pauseSourceCheck: ((marker: string) => Promise<OwnerPauseSource>) | null = null;
+  bindPauseSourceCheck(fn: ((marker: string) => Promise<OwnerPauseSource>) | null): void { this.pauseSourceCheck = fn; }
+
+  async requestOwnerPause(conversationKey: string, action: 'pause' | 'resume', marker: string): Promise<PauseAskResult> {
+    const pa = this.d.pauseAsk;
+    if (!pa || !this.safe(() => pa.receivesCallbacks(), false)) return { ok: false, status: 503, reason: 'not-callback-machine' };
+    const check = this.pauseSourceCheck;
+    if (!check) return { ok: false, status: 503, reason: 'attribution-unavailable' };
+    if (action === 'pause' && !this.safe(() => pa.asksEnabled(), true)) return { ok: false, status: 503, reason: 'asks-off' };
+    this.memo = null;
+    let union: UnionEntry[];
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union sends no ask; the caller gets a named 503 */ return { ok: false, status: 503, reason: 'union-unreadable' }; }
+    // A pause needs an open project; a resume needs a paused one, open or closed (a pause survives close, spec §3.2).
+    const bs = foldBindingState(union).get(conversationKey);
+    if (!bs?.bindingHlc || !bs.confirmed || !bs.binding || (action === 'pause' && bs.closed)) return { ok: false, status: 422, reason: 'no-project' };
+    if (action === 'resume' && !bs.pausedBy) return { ok: false, status: 422, reason: 'not-paused' };
+    const project = boundProjects(union).find((x) => x.conversationKey === conversationKey) ?? { conversationKey, binding: bs, goal: String(bs.binding.goal ?? ''), doneDefinition: [], checkCadenceHours: 24, linked: { repos: [], branches: [], domains: [] } };
+    const src = await check(marker);
+    if (!src.ok) return { ok: false, status: src.reason === 'unreachable' || src.reason === 'owner-unknown' ? 503 : 422, reason: src.reason };
+    const writtenIn = this.safe(() => pa.conversationName(src.ref.conversation), null);
+    const older = this.safe(() => pa.olderMachines(), [] as string[]);
+    const ask = composePauseAsk({ action, title: this.label(project), ownerText: src.ownerText, marker: src.marker, writtenIn, date: src.at.slice(0, 10), olderMachines: older });
+    const askId = crypto.randomBytes(8).toString('hex');
+    const label = `${action === 'pause' ? 'Pause' : 'Resume'}: ${cutAtWord(this.label(project), 30)}`;
+    let sent: { chatId: string; messageId: number } | 'unconfirmed' | null = null;
+    try { sent = await pa.send(ask.text, { label, id: `cos:${action === 'pause' ? 'p' : 'r'}:${askId}` }, ask.separateOwnerMessage ? src.ownerText : undefined); } catch { /* @silent-fallback-ok: a failed send writes no ask record; the caller gets a named 503 */ sent = null; }
+    if (sent === 'unconfirmed') return { ok: false, status: 503, reason: 'send-unconfirmed' };
+    if (!sent) return { ok: false, status: 503, reason: 'send-failed' };
+    // One open ask per project, whichever action: the new one replaces any older one, whose button is removed.
+    const asks = this.safe(() => pa.store.load(), {} as Record<string, PauseAsk>);
+    for (const [id, a] of Object.entries(asks)) if (a.key === conversationKey) { delete asks[id]; void pa.removeButtons?.(a.chatId, a.askMessageId).catch(() => { /* @silent-fallback-ok: a leftover button finds no ask and answers "no longer applies" */ }); }
+    asks[askId] = { key: conversationKey, action, marker: src.marker, ownerText: src.ownerText, writtenIn, sentAt: new Date(this.d.now()).toISOString(), chatId: sent.chatId, askMessageId: sent.messageId };
+    pa.store.save(asks);
+    return { ok: true, askId, olderMachines: older };
+  }
+
+  /** The owner tapped Pause / Resume on an ask (the adapter has already refused anyone but the owner). */
+  private async ownerPauseTap(kind: 'p' | 'r', askId: string, tap: { chatId?: string; messageId?: number } | undefined): Promise<OwnerTapResult> {
+    const pa = this.d.pauseAsk;
+    if (!pa) return 'ignored';
+    const asks = this.safe(() => pa.store.load(), {} as Record<string, PauseAsk>);
+    const ask = asks[askId];
+    // Only the exact message the server sent for this ask: a button on any other message does nothing.
+    if (!ask || !tap || String(tap.chatId) !== String(ask.chatId) || tap.messageId !== ask.askMessageId) return 'ignored';
+    if ((kind === 'p') !== (ask.action === 'pause')) return 'ignored';
+    // Attributed words are verified when they are enforced, not only when cited.
+    let recheck: OwnerPauseSource;
+    try { recheck = this.pauseSourceCheck ? await this.pauseSourceCheck(ask.marker) : { ok: false, reason: 'unreachable' }; } catch { /* @silent-fallback-ok: a re-check that cannot run writes nothing; the owner is told and the ask is kept */ recheck = { ok: false, reason: 'unreachable' }; }
+    // A CONTRADICTION refuses (edited, removed, no longer the owner's own human message); UNAVAILABILITY does not —
+    // the words were verified when the ask was written, and the tap proves who and now (spec §3.2).
+    if (recheck.ok ? recheck.ownerText !== ask.ownerText : !RECHECK_UNAVAILABLE.has(recheck.reason)) return 'recheck-failed';
+    // The re-check was the only await: this nonce must still be the project's current ask.
+    if (!this.safe(() => pa.store.load(), {} as Record<string, PauseAsk>)[askId]) return 'ignored';
+    this.memo = null;
+    let union: UnionEntry[];
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: nothing is written without reading the current state; the ask is kept */ return 'write-failed'; }
+    const event = ask.action === 'pause' ? 'owner-pause' as const : 'owner-resume' as const;
+    // One ask decides once (a redelivered callback, or a crash between the write and the ask delete). From here to the
+    // emit there is no await, so two callbacks cannot both pass this check.
+    const already = ownerPauseEventForAsk(union, askId);
+    if (already) {
+      this.clearAsksFor(ask.key);
+      // Answer from the CURRENT state: a replayed old pause after a later resume must not tell the owner "Paused."
+      const pausedNow = !!foldBindingState(union).get(ask.key)?.pausedBy;
+      if (already === 'owner-pause' && pausedNow) return 'paused';
+      if (already === 'owner-resume' && !pausedNow) return 'resumed';
+      return 'ignored';
+    }
+    const bs = foldBindingState(union).get(ask.key);
+    if (!bs?.bindingHlc || !bs.confirmed || (event === 'owner-pause' && bs.closed)) return 'ignored';
+    const rec: OwnerPauseRecord = { who: this.safe(() => pa.ownerName(), null) || 'owner', at: new Date(this.d.now()).toISOString(), quote: ask.ownerText, messageRef: ask.marker };
+    const r = this.d.journal.emit(`lifecycle:${ask.key}:${this.d.now()}`, buildOwnerPauseEvent(ask.key, event, bs.bindingHlc, rec, askId));
+    if (r.outcome !== 'emitted' && r.outcome !== 'accepted') return 'write-failed';
+    if (r.seq !== undefined && this.d.journal.awaitDurable) { try { await this.d.journal.awaitDurable(r.seq); } catch { /* @silent-fallback-ok: not durable ⇒ the ask is kept and the owner told to tap again; a second tap finds this event by askId and writes nothing new */ return 'write-failed'; } }
+    this.memo = null;
+    this.clearAsksFor(ask.key);
+    return event === 'owner-pause' ? 'paused' : 'resumed';
+  }
+
+  /** Remove every open ask for a project (its decision is recorded); best-effort button removal. */
+  private clearAsksFor(conversationKey: string): void {
+    const pa = this.d.pauseAsk; if (!pa) return;
+    this.safe(() => {
+      const asks = pa.store.load(); let changed = false;
+      for (const [id, a] of Object.entries(asks)) if (a.key === conversationKey) { delete asks[id]; changed = true; void pa.removeButtons?.(a.chatId, a.askMessageId).catch(() => { /* @silent-fallback-ok: a leftover button finds no ask and answers "no longer applies" */ }); }
+      if (changed) pa.store.save(asks);
+      return true;
+    }, false);
+  }
+
+  async ownerTap(actionId: string, by: 'owner-tap', tap?: { chatId?: string; messageId?: number }): Promise<OwnerTapResult> {
     this.memo = null; // the tap's writes must be visible to the next read
+    const pm = /^cos:(p|r):([a-f0-9]{16})$/.exec(actionId);
+    if (pm && by === 'owner-tap') return this.ownerPauseTap(pm[1] as 'p' | 'r', pm[2], tap);
     const m = /^cos:(unpark|confirm-done):(.+)$/.exec(actionId);
     if (!m || by !== 'owner-tap') return 'ignored';
     const [, kind, conversationKey] = m;
