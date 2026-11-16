@@ -158,6 +158,10 @@ export class AutonomyProfileManager {
    * Set the autonomy profile. Returns the new resolved state.
    * This is the main entry point for conversational autonomy changes.
    */
+  /** Durable change-log hook (trust-journey 6a): told of every switch, with the proof for a raise. */
+  private changeObserver: ((from: AutonomyProfileLevel, to: AutonomyProfileLevel, proof: OperatorProof | null) => void) | null = null;
+  setChangeObserver(fn: ((from: AutonomyProfileLevel, to: AutonomyProfileLevel, proof: OperatorProof | null) => void) | null): void { this.changeObserver = fn; }
+
   setProfile(level: AutonomyProfileLevel, reason: string, proof?: OperatorProof | null): ResolvedAutonomyState {
     const oldProfile = this.state.profile;
     // A profile whose permissions are wider than the current one is a raise (trust-journey
@@ -186,6 +190,7 @@ export class AutonomyProfileManager {
 
     // Apply profile defaults to config file
     this.applyProfileToConfig(level);
+    try { this.changeObserver?.(oldProfile, level, proof ?? null); } catch { /* @silent-fallback-ok: the writer reports its own failures */ }
 
     return this.getResolvedState();
   }

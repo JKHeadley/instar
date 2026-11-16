@@ -123,7 +123,7 @@ export interface TrustElevationSuggestion {
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Default trust for operations when no explicit config exists */
-const DEFAULT_TRUST: Record<OperationMutability, TrustLevel> = {
+export const DEFAULT_TRUST: Record<OperationMutability, TrustLevel> = {
   read: 'autonomous',
   write: 'log',
   modify: 'approve-always',
@@ -143,6 +143,8 @@ export class AdaptiveTrust {
   private profilePath: string;
   private profile: TrustProfile;
   private changeLog: TrustChangeEvent[] = [];
+  /** Durable change-log hook (trust-journey 6a): told of every change, with the proof for a raise. */
+  private changeObserver: ((event: TrustChangeEvent, proof: OperatorProof | null) => void) | null = null;
   private trustRecovery: TrustRecovery | null = null;
 
   constructor(config: AdaptiveTrustConfig) {
@@ -156,6 +158,23 @@ export class AdaptiveTrust {
    * When set, incidents are forwarded for recovery tracking, and
    * successful operations increment recovery counters.
    */
+  /** Registers the durable change-log writer. */
+  setChangeObserver(fn: ((event: TrustChangeEvent, proof: OperatorProof | null) => void) | null): void {
+    this.changeObserver = fn;
+  }
+
+  /**
+   * The proof check at load (trust-journey section 6): restores one operation to a stricter level
+   * from the committed change log. Only ever narrows; a request for a wider level is ignored.
+   */
+  restoreFromCommittedLog(service: string, operation: OperationMutability, level: TrustLevel, reason: string): TrustChangeEvent | null {
+    const current = this.getTrustLevel(service, operation).level;
+    if (isTrustLevelRaise(current, level) || current === level) return null;
+    const event = this.setTrustLevel(service, operation, level, 'revoked', reason);
+    this.save();
+    return event;
+  }
+
   setTrustRecovery(recovery: TrustRecovery): void {
     this.trustRecovery = recovery;
   }
@@ -272,7 +291,7 @@ export class AdaptiveTrust {
       throw new TrustRaiseRefusedError(raiseRefusal([`${service} ${operation}: ${current} → ${level}`]));
     }
     this.ensureServiceTrust(service);
-    const event = this.setTrustLevel(service, operation, level, 'user-explicit', userStatement);
+    const event = this.setTrustLevel(service, operation, level, 'user-explicit', userStatement, proof ?? null);
     this.save();
     return event;
   }
@@ -409,7 +428,8 @@ export class AdaptiveTrust {
     operation: OperationMutability,
     level: TrustLevel,
     source: TrustSource,
-    reason: string
+    reason: string,
+    proof: OperatorProof | null = null,
   ): TrustChangeEvent {
     const serviceTrust = this.ensureServiceTrust(service);
     const current = serviceTrust.operations[operation];
@@ -437,6 +457,7 @@ export class AdaptiveTrust {
     this.profile.global.lastEventAt = now;
 
     this.changeLog.push(event);
+    try { this.changeObserver?.(event, proof); } catch { /* @silent-fallback-ok: the writer reports its own failures; a narrowing still applies */ }
     return event;
   }
 
