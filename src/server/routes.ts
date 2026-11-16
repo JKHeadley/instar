@@ -760,6 +760,7 @@ import {
   relayUnknownSenderTrustCounters,
   resolveRelayUnknownSenderTrustMode,
 } from '../threadline/relayUnknownSenderTrust.js';
+import { resolveHttpPeerTrust, httpPeerTrustCounters } from '../threadline/httpPeerTrust.js';
 import {
   encryptToPinnedCounters,
   encryptToPinnedModeName,
@@ -6095,6 +6096,8 @@ export function createRoutes(ctx: RouteContext): Router {
       base.threadline = {
         ...(base.threadline as object ?? {}),
         localRouteTrust: { ...localRouteTrustMode(), trustManagerWired: !!ctx.unifiedTrust?.trustManager, ...localRouteTrustCounters },
+        // HTTP peer trust (docs/specs/threadline-http-peer-trust.md): admission counters. AUTHED only.
+        httpPeerTrust: { trustManagerWired: !!ctx.unifiedTrust?.trustManager, ...httpPeerTrustCounters },
         // A2A local-route signed envelope: mode + in-memory counters. The
         // rollout evidence is logs/relay-agent-signature.jsonl, not this block.
         localRouteSignature: {
@@ -44157,6 +44160,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         localAgent: ctx.config.projectName,
         version: '1.0',
         stateDir: ctx.config.stateDir,
+        // HTTP peer trust (docs/specs/threadline-http-peer-trust.md): a handshake is not a
+        // grant. The receive path asks the SAME trust manager and resolver the relay's
+        // unknown-sender check uses. Ships ON; only an explicit
+        // `threadline.httpPeerTrust.enabled: false` restores the previous behaviour.
+        // Direct peer protocol (same spec §0): closed unless the owner sets
+        // `threadline.directPeerProtocol.enabled: true` (read live). No Instar code uses it.
+        directPeerProtocol: () => {
+          let live: boolean | undefined;
+          try { live = ctx.liveConfig?.get<boolean | undefined>('threadline.directPeerProtocol.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+          const boot = (ctx.config.threadline as { directPeerProtocol?: { enabled?: boolean } } | undefined)?.directPeerProtocol?.enabled;
+          return (live ?? boot) === true;
+        },
+        httpPeerTrust: {
+          enabled: () => {
+            let live: boolean | undefined;
+            try { live = ctx.liveConfig?.get<boolean | undefined>('threadline.httpPeerTrust.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+            const boot = (ctx.config.threadline as { httpPeerTrust?: { enabled?: boolean } } | undefined)?.httpPeerTrust?.enabled;
+            return (live ?? boot) !== false;
+          },
+          resolve: (fingerprint: string, wireType: unknown) => {
+            const tm = ctx.unifiedTrust?.trustManager;
+            return tm ? resolveHttpPeerTrust(tm, fingerprint, typeof wireType === 'string' ? wireType : 'message') : null;
+          },
+        },
         // peer-conversation-homebase-topic §2.6 — user-meant messages land in the peer's topic.
         peerHomebaseRelay: ctx.peerHomebaseRelay,
         conversationBound: (threadId: string) => ctx.conversationStore?.get(threadId)?.boundTopicId != null,
