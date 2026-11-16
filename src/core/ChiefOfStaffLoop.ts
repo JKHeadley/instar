@@ -175,6 +175,20 @@ export interface BoundProject {
   initiativeId?: string;
 }
 
+/**
+ * The owner's pause on a project. Nothing writes it yet: the Chief of Staff's owner-pause route (brief
+ * cos-owner-pause-record.md) will, either as BindingState.pausedBy or the binding's own pausedBy, so both are read.
+ * That route checks the owner's message reference; this reader only refuses incomplete records: { who, at, quote, messageRef }, set only from the
+ * owner's logged words (the Chief of Staff's pause route, fb-c35a437b-e9c). Anything malformed reads as no pause.
+ */
+export function ownerPause(binding: Record<string, unknown> | null | undefined): { who: string; at: string; quote: string; messageRef: string } | null {
+  const p = binding?.pausedBy as Record<string, unknown> | null | undefined;
+  if (!p || typeof p !== 'object') return null;
+  const ok = (v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 2000;
+  if (!ok(p.who) || !ok(p.at) || !ok(p.quote) || !ok(p.messageRef)) return null;
+  return { who: String(p.who), at: String(p.at), quote: String(p.quote), messageRef: String(p.messageRef) };
+}
+
 export function boundProjects(union: UnionEntry[]): BoundProject[] {
   const out: BoundProject[] = [];
   for (const bs of foldBindingState(union).values()) {
@@ -432,6 +446,22 @@ export class ChiefOfStaffLoop {
     return boundProjects(union).map((p) => {
       const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
       return { conversationKey: p.conversationKey, goal: p.goal, title: this.label(p), lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt };
+    });
+  }
+
+  /**
+   * Work front doors stage 2a: every bound project with its done list and where each item stands, from ONE
+   * union read (projectDetail reads the union per project). Null when the union is unreadable, so a caller
+   * can say "could not check" instead of showing no projects.
+   */
+  projectsOverview(): Array<{ conversationKey: string; title: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; parked: boolean; doneDefinition: Array<{ id: string; text: string }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null }> | null {
+    let union: UnionEntry[] = [];
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: null tells the caller the projects could not be read; the loop health shows lastError */ return null; }
+    const cfg = this.d.config(); const now = new Date(this.d.now());
+    return boundProjects(union).map((p) => {
+      const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
+      const done = (Array.isArray(p.doneDefinition) ? p.doneDefinition : []).map((d: { id?: unknown; text?: unknown }) => ({ id: String(d.id ?? ''), text: String(d.text ?? '') })).filter((d) => d.id && d.text);
+      return { conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems, pausedBy: ownerPause(p.binding as unknown as Record<string, unknown>) ?? ownerPause(p.binding.binding) };
     });
   }
 

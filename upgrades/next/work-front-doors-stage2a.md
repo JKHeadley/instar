@@ -1,0 +1,24 @@
+# Projects on the Work door
+
+<!-- bump: patch -->
+
+## What Changed
+
+The Work page now has a Projects section right after "Waiting on you". It lists every project the Chief of Staff tracks, where each one stands in plain words (Waiting on you, Moving, Stalled, Drifting, "I stopped retrying: needs a look", Says it's done, Done, Not known yet), its done list with each item marked, and the work-board cards that belong to it, each linking to its card and its conversation. Finished projects and cards in no project are folded below. It also shows when the board is switched off.
+
+A new read, `GET /work/projects` (and `GET /mobile/work/projects` for paired phones, with its own device rule and rate bucket), returns the same list for every surface. A card belongs to a project when its project key is the project's conversation. Only the owner gets project names; anyone else's phone gets an empty answer. A part that could not be read is named in `couldNotCheck`, never shown as no projects. When the Chief of Staff records an owner's pause from their own words, the project reads "Paused by you" with their words under it; a project the tracker gave up on reads "I stopped retrying", never paused.
+
+## What to Tell Your User
+
+- **Your projects on the Work page**: "The Work page now shows every project I'm tracking for you, where each one stands, what's left on its done list, and the cards that belong to it. Tap a project to see its cards and open its conversation."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Projects with their cards | `GET /work/projects` (bearer) or `GET /mobile/work/projects` (paired phone; owner gets names) |
+| Projects on the console | Open the dashboard: Work |
+
+## Evidence
+
+- Unit: `tests/unit/work-projects-read.test.ts`; integration: `tests/integration/team-access-routes.test.ts` (owner, member and shared-machine phones through the real device middleware); e2e: `tests/e2e/work-projects-alive.test.ts`.

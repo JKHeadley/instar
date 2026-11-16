@@ -406,7 +406,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 34: conversation-search opened GET /mobile/conversations/search to guests (searching is reading).
     // 43: work-front-doors (decision 2) opened GET /mobile/needs to guests; the route filters per viewer.
     // 43: all of the above together (31 + 8 document routes + work-board, pins, search and needs).
-    expect(open).toBe(43);
+    // 44: work-front-doors stage 2a opened GET /mobile/work/projects to guests; only the owner gets project names.
+    expect(open).toBe(44);
   });
 
   it.each([

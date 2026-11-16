@@ -1562,3 +1562,22 @@ a.needs-row:hover { background: var(--surface-raised); }
 .desktop-fix { margin-bottom: var(--s-4); }
 .desktop-fix .confirm-row { margin: var(--s-2) 0 0; }
 .desktop-fix p { margin: 0; }
+
+/* Projects on the Work door (work-front-doors stage 2a) */
+.projects-section .project-row { border: 1px solid var(--hairline); border-radius: var(--r-md, 12px); background: var(--surface); margin: 0 0 var(--s-2); }
+.projects-section .project-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; cursor: pointer; list-style: none; min-height: 44px; box-sizing: border-box; }
+.projects-section .project-summary::-webkit-details-marker { display: none; }
+.projects-section .project-summary .dot { margin-top: 6px; }
+.projects-section .project-text { display: flex; flex-direction: column; min-width: 0; }
+.projects-section .project-title { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+.projects-section .project-state { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.projects-section .tone-attn .project-state, .projects-section .tone-bad .project-state { color: var(--text); }
+.projects-section .project-body { padding: 0 12px 12px 30px; }
+.projects-section .project-goal { margin: 0 0 var(--s-2); color: var(--text); overflow-wrap: anywhere; }
+.projects-section .project-done, .projects-section .project-cards { list-style: none; padding: 0; margin: 0 0 var(--s-2); }
+.projects-section .project-done li, .projects-section .project-cards li { padding: 4px 0; overflow-wrap: anywhere; }
+.projects-section .done-pass .done-mark { color: var(--ok, var(--text-strong)); }
+.projects-section .done-fail .done-mark { color: var(--bad); }
+.projects-section .project-chat { margin-left: var(--s-2); }
+.projects-section .projects-finished, .projects-section .projects-loose { margin-top: var(--s-3); }
+.projects-section .projects-finished > summary, .projects-section .projects-loose > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }

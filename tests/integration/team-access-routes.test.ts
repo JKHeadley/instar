@@ -22,6 +22,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { mountNeedsRoutes } from '../../src/server/needsRoutes.js';
+import { mountProjectsRoutes } from '../../src/server/workProjectsRoutes.js';
 
 const HOST = 'echo.example.dev';
 const dirs: string[] = [];
@@ -103,6 +104,12 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     boardFor: (req) => { boardAsked.push(String(req.headers['x-instar-device'] ?? 'bearer')); return { status: 200, body: { lanes: [{ lane: 'waiting-on-you', cards: [{ id: 'wc_00000000000000aa', title: 'A shared card', needLine: 'Waiting on you' }] }, { lane: 'with-agent', cards: [] }, { lane: 'waiting-on-others', cards: [] }, { lane: 'done', cards: [] }, { lane: 'archived', cards: [] }], waitingOnYou: 1, policy: 'every-agent-card', behind: null, settings: { softOpenCards: 30 } } }; },
     consoleDir: path.resolve(__dirname, '../../dashboard/console'),
     agentName: () => 'echo', machineId: () => 'm1',
+  });
+  // Projects on the Work door (work-front-doors stage 2a): one tracked project with the shared card in it.
+  mountProjectsRoutes(router, {
+    projects: () => [{ conversationKey: 'telegram:42', title: 'Secret launch', goal: 'Ship it', lastVerdict: 'moving', lastCheckAt: null, parked: false, doneDefinition: [], doneItems: null }],
+    boardFor: () => ({ status: 200, body: { lanes: [{ lane: 'waiting-on-you', cards: [{ id: 'wc_00000000000000aa', title: 'A shared card', projectKey: 'telegram:42' }] }] } }),
+    bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
   });
   app.use(router);
   return { app, svc, gate, spy, dir, boardAsked };
@@ -1191,5 +1198,36 @@ describe('the Needs-you list through the real middleware (work-front-doors decis
     const e = await setup();
     const owner = phone(e);
     expect((await send(e, owner, 'GET', '/needs/canary')).status).toBe(403);
+  });
+});
+
+describe('Projects on the Work door through the real middleware (work-front-doors stage 2a)', () => {
+  it('the owner phone gets the projects with their cards', async () => {
+    const e = await setup();
+    const r = await send(e, phone(e), 'GET', '/mobile/work/projects');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.viewer.role).toBe('owner');
+    expect(r.body.projects.map((p: { title: string }) => p.title)).toEqual(['Secret launch']);
+    expect(r.body.projects[0].cards.map((c: { id: string }) => c.id)).toEqual(['wc_00000000000000aa']);
+  });
+
+  it('a member\'s phone reaches the route but gets no project names (spec §4.4)', async () => {
+    const e = await setup();
+    expect((await send(e, phone(e), 'POST', '/mobile/team/invites', firstInvite('p-1'))).status).toBe(200);
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    const r = await send(e, member, 'GET', '/mobile/work/projects');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.viewer.role).toBe('member');
+    expect(r.body.projects).toEqual([]);
+    expect(r.body.notInProject).toEqual([]);
+    expect(JSON.stringify(r.body)).not.toContain('Secret launch');
+  });
+
+  it('a shared-machine (msp) phone gets no project names either', async () => {
+    const e = await setup();
+    const r = await send(e, phone(e, { userId: 'mo', role: 'msp' }), 'GET', '/mobile/work/projects');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.viewer.role).toBe('msp');
+    expect(JSON.stringify(r.body)).not.toContain('Secret launch');
   });
 });

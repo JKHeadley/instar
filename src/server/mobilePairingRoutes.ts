@@ -2446,6 +2446,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/mobile\/work-board$/, 'guest'],
   // The Needs-you list (work-front-doors decision 2): the route filters per viewer; a team phone gets only what it may already read.
   ['GET', /^\/mobile\/needs$/, 'guest'],
+  // Projects on the Work door (work-front-doors stage 2a): any person may ask; only the owner gets project names (the handler answers others empty).
+  ['GET', /^\/mobile\/work\/projects$/, 'guest'],
   // Searching is reading (conversation-search): only conversations and messages this person may read.
   ['GET', /^\/mobile\/conversations\/search$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
@@ -2677,6 +2679,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // phone may already read, e.g. the work board when its rule admits them). Read-only, its own bucket;
     // its team tier is named in TEAM_ROUTE_TIERS (guest).
     { method: 'GET', re: /^\/mobile\/needs$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'needs-reads' },
+    // Projects on the Work door (work-front-doors stage 2a): read-only, its own bucket; the handler gives project
+    // names to the owner only and an empty answer to anyone else (spec §4.4). Team tier in TEAM_ROUTE_TIERS (guest).
+    { method: 'GET', re: /^\/mobile\/work\/projects$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'projects-reads' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.

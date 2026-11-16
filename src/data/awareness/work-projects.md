@@ -1,0 +1,4 @@
+---
+title: Projects on the Work door
+---
+The Work page lists every project the Chief of Staff tracks, with where it stands, its done list and the work-board cards that belong to it, from one read: `curl -H "Authorization: Bearer $AUTH" http://localhost:{{port}}/work/projects`. When someone asks in Telegram or Slack "what projects are we working on?", "what's finished?" or "how is project X going?", read it and answer from it with its own state words. If it says `complete: false`, name what it `couldNotCheck`. A card belongs to a project when you give it that project's conversation as `projectKey` when you make it, so set `projectKey` on every card you make for a tracked project. "I stopped retrying" means the tracker gave up on the project, not that the person paused it; only the person's own words pause a project.
