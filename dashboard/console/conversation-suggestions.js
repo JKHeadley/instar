@@ -224,7 +224,10 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
     // One Accept (or Continue); true when this suggestion is finished. "Accept all projects" calls it too.
     const run = async () => {
       accept.disabled = true; reject.disabled = true;
-      const out = await acceptSuggestion(s, { send, onStep: (t) => { words.textContent = t; } });
+      // While it runs, no page refresh may redraw over it (ui.js refreshHeld).
+      box.setAttribute('data-interaction-open', '');
+      const out = await acceptSuggestion(s, { send, onStep: (t) => { words.textContent = t; } })
+        .finally(() => box.removeAttribute('data-interaction-open'));
       if (!current()) return false;
       if (out.done && out.placedElsewhere) {
         finished = true;

@@ -11,7 +11,7 @@ afterEach(async () => {
   dom?.window.close(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
-async function boot(hash: string, handler: (url: string, options?: any) => { status?: number; body: unknown } | Promise<{status?:number;body:unknown}>) {
+async function boot(hash: string, handler: (url: string, options?: any) => { status?: number; body: unknown } | Promise<{status?:number;body:unknown}>, ctx?: { selfRefreshing: () => void }) {
   vi.resetModules();
   dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}` });
   for (const key of ['window', 'document', 'location', 'history', 'localStorage', 'sessionStorage']) vi.stubGlobal(key, (dom.window as any)[key]);
@@ -29,7 +29,7 @@ async function boot(hash: string, handler: (url: string, options?: any) => { sta
   });
   const { renderConversations } = await import('../../dashboard/console/conversations.js');
   const main = dom.window.document.querySelector('main')!;
-  const render = () => renderConversations(main);
+  const render = () => renderConversations(main, ctx as any);
   await render();
   expect(requests).toHaveLength(0); // No owner read before PIN proof.
   (main.querySelector('button') as HTMLButtonElement).click();
@@ -42,6 +42,35 @@ async function boot(hash: string, handler: (url: string, options?: any) => { sta
 }
 
 describe('native console Conversations', () => {
+  it('Review suggestions refreshes itself: the 30 s page re-run never reloads it or cancels an Accept', async () => {
+    const calls: string[] = [];
+    const ctx = { selfRefreshing: vi.fn() };
+    let release!: () => void;
+    const startGate = new Promise<void>((r) => { release = r; });
+    const f = await boot('#/work/conversations?view=suggestions', async (url) => {
+      calls.push(url);
+      if (url.endsWith('/conversation-graph/suggestions')) return { body: { state: 'ready', items: [{ id: 'sg-0123456789abcdef0123', title: 'Project one', reason: '', frontDoor: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: 5 }, members: [{ ref: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: 5 }, title: 'Five' }] }] } };
+      if (url.endsWith('/start')) { await startGate; return { status: 404, body: {} }; }
+      return { status: 404, body: {} };
+    }, ctx);
+    expect(ctx.selfRefreshing).toHaveBeenCalled();
+    const { refreshHeld } = await import('../../dashboard/console/ui.js');
+    expect(refreshHeld(f.main)).toBe(false);
+    ([...f.main.querySelectorAll('button')].find((b) => b.textContent === 'Accept') as HTMLButtonElement).click();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(refreshHeld(f.main)).toBe(true); // an Accept in progress holds any page refresh
+    release();
+    for (let i = 0; i < 8; i++) await flush();
+    expect(refreshHeld(f.main)).toBe(false);
+    expect(f.main.textContent).toContain('no longer available'); // the stop is said in words, never silent
+  });
+
+  it('the ordinary Conversations list keeps the console page refresh', async () => {
+    const ctx = { selfRefreshing: vi.fn() };
+    await boot('#/work/conversations', (url) => ({ body: url.includes('/pending') ? { items: [] } : { ...page([row(1)]), capabilities: {} } }), ctx);
+    expect(ctx.selfRefreshing).not.toHaveBeenCalled();
+  });
+
   it('clears private DOM on PIN-proof expiry without waiting for page refresh or sheet dismissal', async()=>{
     const f=await boot('#/work/conversations',url=>({body:url.includes('/pending')?{items:[]}:{...page([{...row(0),title:'PRIVATE-EXPIRY-CANARY'}]),capabilities:{ownerCorrections:true}}}));
     expect(f.main.textContent).toContain('PRIVATE-EXPIRY-CANARY');
