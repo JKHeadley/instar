@@ -58,6 +58,23 @@ export interface AgentAck {
   at: number;
 }
 
+/**
+ * One row of the host restart ledger (`restarts.jsonl`). This slice writes only
+ * `boot-observed`: one per OS boot, attributed to an episode once the actuator exists,
+ * else `unattributed`, or `first-seen` for the first boot the ledger ever saw.
+ */
+export interface RestartLedgerRow {
+  type: 'boot-observed';
+  bootAt: number;
+  previousBootAt: number | null;
+  attribution: 'unattributed' | 'first-seen' | string;
+  observedBy: string;
+  at: number;
+}
+
+/** A boot time this close to the ledger's last is the same boot. */
+const LEDGER_SAME_BOOT_MS = 60_000;
+
 export interface ReserveInput {
   openedBy: string;
   restartAt: number;
@@ -224,6 +241,48 @@ export class HostMaintenanceStore {
       atomicWriteFileSync(this.wedgeStatePath, JSON.stringify(state), { mode: 0o644, operation: 'HostMaintenanceStore.writeWedgeState' });
       return true;
     }) === true;
+  }
+
+  private get restartsPath(): string { return path.join(this.dir, 'restarts.jsonl'); }
+
+  /** Every readable ledger row, oldest first. A torn or foreign line is skipped. */
+  readRestartRows(): RestartLedgerRow[] {
+    let raw: string;
+    try { raw = fs.readFileSync(this.restartsPath, 'utf-8'); } catch { return []; } // @silent-fallback-ok — no ledger yet
+    const rows: RestartLedgerRow[] = [];
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line) as RestartLedgerRow;
+        if (row?.type === 'boot-observed' && Number.isFinite(row.bootAt)) rows.push(row);
+      } catch { /* @silent-fallback-ok — a torn line is skipped */ }
+    }
+    return rows;
+  }
+
+  /**
+   * Records this OS boot once, under the host lock, so co-resident agents never write it
+   * twice. Returns the row for this boot (new or already there) and the boot before it.
+   * Null when the lock cannot be taken this tick.
+   */
+  observeBoot(bootAt: number, agent: string): { row: RestartLedgerRow; previousBootAt: number | null; added: boolean } | null {
+    return this.withLock(() => {
+      const rows = this.readRestartRows();
+      const last = rows[rows.length - 1] ?? null;
+      if (last && Math.abs(last.bootAt - bootAt) <= LEDGER_SAME_BOOT_MS) {
+        return { row: last, previousBootAt: last.previousBootAt, added: false };
+      }
+      const row: RestartLedgerRow = {
+        type: 'boot-observed',
+        bootAt,
+        previousBootAt: last?.bootAt ?? null,
+        attribution: last ? 'unattributed' : 'first-seen',
+        observedBy: agent,
+        at: this.now(),
+      };
+      fs.appendFileSync(this.restartsPath, JSON.stringify(row) + '\n', { mode: 0o644 });
+      return { row, previousBootAt: row.previousBootAt, added: true };
+    });
   }
 
   private readJsonFile<T>(file: string): T | null {

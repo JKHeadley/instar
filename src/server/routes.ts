@@ -87,6 +87,7 @@ import { seatNotMovedReason } from '../core/poolTransferReason.js';
 import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
+import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import {
   fetchMaintenancePool,
@@ -15863,7 +15864,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(await maintenancePoolView('status', async () => {
         const local = getActiveDrainRehearsal();
         return local
-          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null } as Record<string, unknown> }
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null } as Record<string, unknown> }
           : { reason: 'not-enabled' };
       }));
       return;
@@ -15875,7 +15876,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
     // Wedge detection (Part E) rides it too, dry-run: null where the sampler is not wired, never a guessed value.
-    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null });
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null });
   });
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside
@@ -31646,6 +31647,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (decision.staleSecretHint) res.setHeader('X-Instar-Lifeline-Secret-Stale', '1');
+    // The post-restart proof's lifeline row: a verified proof since this boot.
+    if (decision.verified) noteLifelineProof();
     res.json({ ok: true, verified: decision.verified, mode: decision.mode });
   });
 

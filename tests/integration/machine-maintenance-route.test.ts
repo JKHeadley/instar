@@ -17,6 +17,7 @@ import { HostMaintenanceStore } from '../../src/monitoring/machineMaintenance/Ho
 import { DEFAULT_MACHINE_MAINTENANCE } from '../../src/monitoring/machineMaintenance/planner.js';
 import { BrowserCareSweep, normalizeBrowserCare, setActiveBrowserCare } from '../../src/monitoring/machineMaintenance/BrowserCare.js';
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
+import { PostRestartProof, setActivePostRestartProof } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -74,6 +75,36 @@ describe('GET /machine-maintenance (integration)', () => {
     expect(res.body.declaredKinds.length).toBeGreaterThan(5);
     expect(res.body.evidence).toMatchObject({ nights: 0, nightsNeeded: 14, met: false });
     expect(reads).toBe(0);
+  });
+
+  it('carries restartProof: null when not wired, then the proof record once wired (boot recorded, first-seen)', async () => {
+    setActiveDrainRehearsal(new DrainRehearsal({
+      agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
+      store: new HostMaintenanceStore({ dir: path.join(dir, 'host') }), enabled: () => true, settings: () => DEFAULT_MACHINE_MAINTENANCE,
+      readSignals: async () => { throw new Error('no read'); }, census: async () => { throw new Error('no read'); },
+      resumeQueue: () => null, coResidentAgents: () => [], holdsLease: () => null, ownUser: 'me',
+    }));
+    try {
+      let res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.body.restartProof).toBeNull();
+      const pass = async () => ({ state: 'pass' as const, reason: 'ok' });
+      const proof = new PostRestartProof({
+        agentName: 'echo', store: new HostMaintenanceStore({ dir: path.join(dir, 'host') }), readBootAt: async () => 1_000_000_000,
+        isMaintainer: () => true, enabled: () => true,
+        baselinePath: path.join(dir, 'b.json'), proofPath: path.join(dir, 'p.json'), logPath: path.join(dir, 'l.jsonl'),
+        readers: {
+          serverHealth: pass, lifelineProofAt: () => null, relay: pass, tunnel: pass,
+          desktop: async () => ({ ready: true, screenPermission: true }), signedOutLogins: async () => 0, coResidentAgents: async () => [],
+        },
+      });
+      await proof.tick();
+      setActivePostRestartProof(proof);
+      res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.restartProof).toMatchObject({ bootAt: 1_000_000_000, lastProof: { verdict: 'no-baseline', attribution: 'first-seen' }, unattributedLast7Days: 0 });
+    } finally {
+      setActivePostRestartProof(null);
+    }
   });
 
   it('carries browserCare beside the drain status: watch-only, with the sweep\'s verdicts', async () => {
