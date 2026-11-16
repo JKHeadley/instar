@@ -8,6 +8,7 @@ import { effortActionControls } from './conversation-effort-actions.js';
 import { erasureControls } from './conversation-erasure.js';
 import { machineControls } from './conversation-machines.js';
 import { renderSuggestions } from './conversation-suggestions.js';
+import { openMakeCard, sourceKeyFor, messageIdFor } from './make-card.js';
 
 const PAGE = '#/work/conversations';
 const ROOTS = '/conversation-graph/roots';
@@ -101,14 +102,19 @@ function itemRow(item, state) {
     el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
 }
 
-function messageRow(message) {
+function messageRow(message, node) {
   const time = Date.parse(message.at);
+  // "Make a card" from this message (work-front-doors stage 2b): only where the conversation can be a card's source.
+  const canCard = node && sourceKeyFor(node.ref) && messageIdFor(message) && message.text;
+  const makeCard = canCard ? el('button', { type: 'button', class: 'btn-quiet btn-inline conversation-make-card', text: 'Make a card',
+    onclick: () => openMakeCard(message, node.ref, { onMade: (cardId) => { location.hash = `#/work/board?card=${encodeURIComponent(cardId)}`; } }) }) : null;
   return el('article', { class: `conversation-message${message.fromUser ? ' from-user' : ''}` },
     el('div', { class: 'need-sub' },
       el('span', { text: message.fromUser ? (message.senderName || 'You') : message.fromWorkBoard ? 'Work board' : 'Agent' }),
       Number.isFinite(time) ? el('time', { datetime: message.at, text: new Date(time).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }) }) : null),
     el('p', { class: 'conversation-message-text', text: message.text }),
-    message.attachmentCount ? el('p', { class: 'need-sub', text: `${message.attachmentCount} attachment${message.attachmentCount === 1 ? '' : 's'} · Open the original conversation to view.` }) : null);
+    message.attachmentCount ? el('p', { class: 'need-sub', text: `${message.attachmentCount} attachment${message.attachmentCount === 1 ? '' : 's'} · Open the original conversation to view.` }) : null,
+    makeCard);
 }
 
 async function transcript(node, controller, current, main, retry) {
@@ -121,7 +127,7 @@ async function transcript(node, controller, current, main, retry) {
   if (result.needsUnlock) { unlock(main, retry); return null; }
   const model = result.ok ? historyModel(result.data, node.source) : { ok: false };
   if (!model.ok) { region.replaceChildren(note('The original history could not be loaded.')); return region; }
-  const messages = el('div', { class: 'conversation-messages' }, model.messages.map(messageRow));
+  const messages = el('div', { class: 'conversation-messages' }, model.messages.map((m) => messageRow(m, node)));
   const status = el('p', { class: 'need-sub', role: 'status' });
   const seen = new Set(model.messages.map((m) => m.key));
   region.replaceChildren(messages, status);
@@ -140,7 +146,7 @@ async function transcript(node, controller, current, main, retry) {
       if (!earlier.ok) { status.textContent = 'Earlier messages could not be loaded.'; more.disabled = false; return; }
       const added = earlier.messages.filter((m) => !seen.has(m.key));
       added.forEach((m) => seen.add(m.key));
-      messages.prepend(...added.map(messageRow));
+      messages.prepend(...added.map((m) => messageRow(m, node)));
       more.hidden = !earlier.before || earlier.before === before;
       before = earlier.before;
       more.disabled = false;

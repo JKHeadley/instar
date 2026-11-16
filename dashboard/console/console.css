@@ -1586,3 +1586,5 @@ a.needs-row:hover { background: var(--surface-raised); }
 /* "N more things need you. Show all": a full-width button that keeps the strip's frame (2026-11-16). */
 .needs-strip > button.needs-more { display: block; width: 100%; box-sizing: border-box; text-align: left; font: inherit; font-size: 13px; color: var(--accent, var(--text-strong)); background: var(--surface); border-left: 1px solid var(--strip-line); border-right: 1px solid var(--strip-line); border-top: 0; cursor: pointer; min-height: 36px; padding: 6px 14px; }
 .needs-strip > button.needs-more:hover { text-decoration: underline; }
+/* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
+.conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
