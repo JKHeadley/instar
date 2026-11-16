@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-15T23:05:00.000Z",
-      "auditRef": "docs/audits/security-ux-standard-interaction-family-2026-11-15.json",
-      "auditSha256": "37e2c86540f26c215bb8b747b97b102a979c6eda450290c1dac68a9af6314d61",
-      "areaSha256": "8801d52fac6f70db4d8163c5a581283edbc780cf9b02a8d3618d30dcb4933ccb",
+      "lastAuditedAt": "2026-11-16T11:10:00.000Z",
+      "auditRef": "docs/audits/interaction-family-merge-2026-11-16.json",
+      "auditSha256": "fcd3484c9f53925425776f531f6119d3d9afc1321b5c47d58bed317880aa947c",
+      "areaSha256": "86dc5d748e6ac492a27e70d1628380eb9ca532dc70b29db507ec9795098df55b",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
-      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
-      "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
+      "lastAuditedAt": "2026-11-16T06:30:00.000Z",
+      "auditRef": "docs/audits/trust-journey-amendments-substrate-family-2026-11-15.json",
+      "auditSha256": "d5778801623322a61960dc9a7d33d09fc5a4de819fac46cb402115cd9a4b9de5",
+      "areaSha256": "b32a7f199cb411534aa4734c847be545ac99c2182c6582449822bf7b99ca441a",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26
