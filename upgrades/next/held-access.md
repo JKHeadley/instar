@@ -1,0 +1,22 @@
+<!-- bump: patch -->
+## What Changed
+
+Agents no longer ask the user for access they already hold. On Nov 15 an agent asked its operator for an Apple ID password or a manual certificate upload after one API key was refused, while its own vault held that password and one of its browser profiles was signed in to that Apple account (Echo Bugs topic 10000002770). The profile was registered under "google" only and the vault was never shown to the outbound message gate, and the gate's REACH sub-clause let any request for a secret through.
+
+- Outbound message gate: a new B17 HELD-ACCESS sub-clause, judged by meaning on every reply and automated message (never health alerts), with no phrase pre-filter. A message that asks the user for access (a password, key, token, certificate, sign-in, or a manual upload or portal step) that the agent's reach shows it appears to hold is held, with a suggestion to use the listed route. One refused route is not exhaustion while another remains. A holding only counts when it is for the same account the ask is about. A lasting credential the agent truly lacks should be asked for once through a Secret Drop link and kept in the vault (the gate's suggestion says so). One-time codes, CAPTCHAs and face, fingerprint or passkey checks still pass. Holding access settles whether the agent can, never whether it may: an account change no standing grant covers is still one yes/no approval. An ask the user explicitly said they would do themselves passes. When unsure, the gate lets the message through.
+- The REACH sub-clause's blanket "a secret" exemption now covers only one-time codes, CAPTCHAs and secrets the reach does not show the agent holding.
+- The gate's reach data now includes which browser accounts have a stored password or code generator (from the profile registry's bindings) and the vault entry NAMES not tied to any account (never values, capped at 80 with a count of the rest; an unreadable vault is reported as unknown). The gate is told never to quote a vault name back.
+- New awareness entry "Access you already hold": check profiles, vault names and memory before asking; register a sign-in you find; ask for a missing lasting credential once through Secret Drop.
+
+## What to Tell Your User
+
+I won't ask you for a password, key or sign-in I already have. Before asking, I check my signed-in browsers and my vault. If I truly don't have something lasting, I ask once through a secure link and keep it, so you aren't asked again. Codes sent to your phone and CAPTCHAs still come to you.
+
+## Summary of New Capabilities
+
+- No new routes or settings. Message gate rule B17 sub-clause, wider reach data, one awareness entry.
+
+## Evidence
+
+- Unit: `tests/unit/held-access-false-blocker.test.ts` (stored roles and unbound vault names in the reach, bound names never listed, unreadable vault reported as unknown, cap with count, no name cut by the per-line belt; sub-clause on every non-health-alert review with no signal; both sides of the boundary in the text; REACH carve-out narrowed; founding case held, Secret Drop ask passes). `tests/unit/reach-aware-false-blocker.test.ts` and `tests/unit/approval-not-errand.test.ts` still green.
+- Integration: `tests/integration/telegram-reply-held-access.test.ts` (real reply route: the founding ask is held under B17 and a Secret Drop ask is delivered; with no test override the route reads a real encrypted vault through the production registry: names present and values absent, no vault file reads "none", an undecryptable vault reads "UNKNOWN").
