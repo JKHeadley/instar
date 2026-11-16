@@ -29,5 +29,14 @@
       "version": "c6ba465a6e04",
       "verified": true
     }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as machine-wedge-canary-reap, an Eternal Sentinel: it ends only the canary its own sample launched, one per sample, each pid once, at the sampler's single-flight 2-minute floor; a cleared wedge or a new boot stops it."
+    }
   }
 }
