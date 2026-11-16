@@ -45,3 +45,7 @@ This began declared Tier-1 (dark, reversible) and was re-tiered to **Tier-2** mi
 - **[LOW, fixed] per-delivery check only on the 15s heartbeat, not the 5s poller** — added the same family-live check to the job-state poller so a dead-family stream stops at its very next delivery (the spec's wording), not only on the heartbeat.
 
 Re-verified after the fixes: tsc clean; 21 unit tests pass.
+
+## Follow-up correction
+
+- The awareness entry `src/data/awareness/dashboard-scoped-session-revocation.md` used an `id:` front-matter key, but the awareness-entry-registry allows only `title` (and optional `requires`). This made the registry log one error on every migration run and failed all ~67 PostUpdateMigrator unit tests. Fixed to `title:`. No runtime change.

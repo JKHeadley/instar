@@ -30,3 +30,4 @@ The scoped-token feature already groups every pass from one unlock into a "famil
 ## What you need to decide
 
 Nothing yet — this ships switched off, like the feature it completes. It's a correctness fix to dark code, fully reversible by a revert. The only later decision is the separate, already-tracked one: when to actually flip the scoped-session feature on, after its full live dashboard test.
+
