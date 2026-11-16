@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "browser-reenrollment-test-clock",
+  "sessionId": "ac148f3f-0693-49e0-8f74-e31de9bbc953",
+  "timestamp": "2026-11-16T03:19:11.358Z",
+  "artifactPath": "upgrades/side-effects/browser-reenrollment-test-clock.md",
+  "artifactSha256": "6bd5fedb2424dd51831f54991d5b939c2a6a1b504642eb639ebed8a7880b21d7",
+  "coveredFiles": [
+    "docs/specs/browser-reenrollment-test-clock.eli16.md",
+    "tests/unit/telegram-origin/browser-reenrollment.test.ts",
+    "upgrades/next/browser-reenrollment-test-clock.md",
+    "upgrades/side-effects/browser-reenrollment-test-clock.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: one unit test waits for the millisecond clock to advance; no product code; a revert undoes it.",
+  "eli16Path": "docs/specs/browser-reenrollment-test-clock.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/browser-reenrollment-test-clock.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

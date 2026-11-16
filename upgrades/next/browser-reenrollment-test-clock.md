@@ -1,0 +1,10 @@
+<!-- bump: patch -->
+<!-- internal-only -->
+## What Changed
+
+Test only. `tests/unit/telegram-origin/browser-reenrollment.test.ts` asserted that a second browser enrollment produces a different proof digest from the first. The digest covers `checkedAt`, a millisecond clock reading, so two enrollments inside the same millisecond produce the same digest and the assertion failed on a fast machine (2026-11-16, Local Verify run of PR 3212 on the M5, a change that touches none of it). The test now waits until the clock has moved past the first enrollment's `checkedAt` before the second enrollment. No product code changes.
+
+## Evidence
+
+- `npx vitest run tests/unit/telegram-origin/browser-reenrollment.test.ts`: 11 passed, three runs in a row.
+- The failing run: M5 run-detail for PR 3212 at 2026-11-16T03:15:56Z, `browser-reenrollment.test.ts:95`, "expected '9adcec23…' not to be '9adcec23…'".
