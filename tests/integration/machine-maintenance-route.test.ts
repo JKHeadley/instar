@@ -20,6 +20,7 @@ import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../s
 import { PostRestartProof, setActivePostRestartProof } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
 import { EnrolmentStatusReader, setActiveEnrolmentStatusReader } from '../../src/monitoring/machineMaintenance/enrolmentReadiness.js';
 import { EnrolmentController, setActiveEnrolmentController } from '../../src/monitoring/machineMaintenance/EnrolmentController.js';
+import { RestartNowController, setActiveRestartNowController } from '../../src/monitoring/machineMaintenance/RestartNowController.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -148,6 +149,40 @@ describe('GET /machine-maintenance (integration)', () => {
       expect(sent).toBe(1);
     } finally {
       setActiveEnrolmentController(null);
+    }
+  });
+
+  it('POST /machine-maintenance/restart-now/offer: 401 without a bearer, 503 dark, a card when clear, 409 with the plain reason when held; nothing restarts from the route', async () => {
+    expect((await request(app()).post('/machine-maintenance/restart-now/offer')).status).toBe(401);
+    expect((await request(app()).post('/machine-maintenance/restart-now/offer').set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+    const sent: string[] = [];
+    let dispatched = 0;
+    let s1 = false;
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    setActiveRestartNowController(new RestartNowController({
+      hostDir: path.join(dir, 'host'), agent: 'echo', machineLabel: () => 'Mac Studio', store,
+      dispatch: async () => { dispatched += 1; return { dispatched: false, reason: 'test-process' }; },
+      enrolled: async () => true, enabled: () => true, ingressArmed: () => true,
+      readHolds: async () => [{ id: 'S1', active: s1, label: 'OS update installing', evidence: s1 ? 'softwareupdated' : null, provenLive: false }],
+      readBootAt: async () => Date.now() - 3 * 24 * 3_600_000,
+      sendOwner: async (text) => { sent.push(text); return 1; }, noticeSessions: async () => 0,
+      setTimer: () => () => {},
+    }));
+    try {
+      const a = await request(app()).post('/machine-maintenance/restart-now/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(a.status).toBe(200);
+      expect(a.body).toMatchObject({ result: 'offered', named: [], recentBoot: false });
+      expect(sent[0]).toMatch(/Restart Mac Studio now\?/);
+      s1 = true;
+      const b = await request(app()).post('/machine-maintenance/restart-now/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(b.status).toBe(409);
+      expect(b.body.reason).toMatch(/OS update installing/);
+      const status = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(status.status).toBe(503);
+      expect(dispatched).toBe(0);
+      expect(store.readLedger()).toEqual([]);
+    } finally {
+      setActiveRestartNowController(null);
     }
   });
 

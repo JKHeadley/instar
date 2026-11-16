@@ -27617,7 +27617,72 @@ export async function startServer(options: StartOptions): Promise<void> {
             log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
           });
           ec.setActiveEnrolmentController(controller);
-          tg.setMachineCareTapHandler((tap) => controller.onTap(tap));
+
+          // Restart now (Part E operator trigger, CMT-1199 third slice): the first caller of
+          // the restart actuator. Started only by the owner's tap on its card.
+          const platformForRestart = process.platform === 'darwin' ? 'darwin' : isWslHost() ? 'wsl' : process.platform === 'linux' ? 'linux' : null;
+          if (platformForRestart) {
+            const rn = await import('../monitoring/machineMaintenance/RestartNowController.js');
+            const { RestartActuator } = await import('../monitoring/machineMaintenance/RestartActuator.js');
+            const { makeReadOnlyRunner: rnRunner, readMachineSignals: rnSignals, readSafetyHolds: rnHolds } = await import('../monitoring/machineMaintenance/readings.js');
+            const restartStore = new HostMaintenanceStore();
+            const restartBootAt = async () => {
+              if (process.platform !== 'darwin') return Math.round(Date.now() - os.uptime() * 1000);
+              const out = await wedgeRead('bootTime');
+              return out === null ? null : parseBootTime(out);
+            };
+            const readHolds = async () => {
+              try { return rnHolds(await rnSignals(rnRunner(config.sessions.tmuxPath)), os.userInfo().username); }
+              catch { return null; } // @silent-fallback-ok — unread holds refuse the restart
+            };
+            // The actuator's fresh check runs inside the host lock, so it reads holds taken just before dispatch.
+            let holdsBeforeDispatch: Awaited<ReturnType<typeof readHolds>> = null;
+            const actuator = new RestartActuator({
+              store: restartStore,
+              platform: platformForRestart,
+              agent: config.projectName,
+              readBootAt: restartBootAt,
+              freshCheck: () => {
+                if (!mmEnabled()) return 'machine care switched off';
+                if (holdsBeforeDispatch === null) return 'safety holds unread';
+                const hard = holdsBeforeDispatch.find((h) => (h.id === 'S1' || h.id === 'S2') && h.active);
+                return hard ? `${hard.label.toLowerCase()} (${hard.id})` : null;
+              },
+              isThrowaway: () => throwaway,
+              sudoList: async () => { const r = await runCmd('sudo', ['-n', '-l']); return r.code === 0 ? r.stdout : null; },
+            });
+            const restartNow = new rn.RestartNowController({
+              hostDir: path.join(os.homedir(), '.instar', 'host-maintenance'),
+              agent: config.projectName,
+              machineLabel: () => coordinator.identity?.name || os.hostname(),
+              store: restartStore,
+              dispatch: async (input) => { holdsBeforeDispatch = await readHolds(); return actuator.dispatch(input); },
+              enrolled: async () => { if (!reader) return null; const st = await reader.read(); return st.enrolled; },
+              enabled: mmEnabled,
+              ingressArmed: ec.enrolmentTapsProvable,
+              readHolds,
+              readBootAt: restartBootAt,
+              sendOwner: async (text, buttons) => {
+                const topic = tg.getLifelineTopicId();
+                if (topic === undefined) return null;
+                return buttons.length ? tg.sendOfferList(topic, text, buttons) : withNotificationEnvelope(stampNotification(), async () => tg.sendToTopic(topic, text)).then(() => 0);
+              },
+              noticeSessions: async (text) => {
+                let n = 0;
+                for (const s of sessionManager.listRunningSessions()) if (sessionManager.injectInternalMessage(s.tmuxSession, text, 'machine-restart-now')) n += 1;
+                return n;
+              },
+              log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+            });
+            rn.setActiveRestartNowController(restartNow);
+            void restartNow.resume();
+          }
+
+          tg.setMachineCareTapHandler((tap) => {
+            const restartNow = /^mc:rn[xc]?:/.test(tap.data) ? (async () => (await import('../monitoring/machineMaintenance/RestartNowController.js')).getActiveRestartNowController())() : null;
+            if (!restartNow) return controller.onTap(tap);
+            return restartNow.then((c) => (c ? c.onTap(tap) : 'That button is no longer active.'));
+          });
         }
 
         // Honest lock reading (Part A): a read of the session, never the flag alone.

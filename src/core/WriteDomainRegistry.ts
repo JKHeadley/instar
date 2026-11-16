@@ -376,6 +376,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'writes ~/.instar/host-maintenance/enrol-offers.json for this physical machine; outside the agent home, never git-synced',
   } });
+  // Restart now offer (CMT-1199): the card's nonce lives in ~/.instar/host-maintenance on THIS machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/restart-now/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/restart-now.<agent>.json for this physical machine; outside the agent home, never git-synced',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
