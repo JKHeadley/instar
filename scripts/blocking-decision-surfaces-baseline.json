@@ -182,8 +182,8 @@
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
-      "sha256": "ef56b003da3f252ea526e0f88e99d7066059e476fc9a42d90c5215e555430178",
-      "reason": "Re-declared 2026-11-04 (normal-chrome-linux: for a browser password it refuses stdout, --run and --consume, which is a refusal of its own operation on a value the person marked for one site; it gates no message or session). boundary case: secret-handoff error/consume semantics, not an enforcement block"
+      "sha256": "95987fa796b51a59147b936cc0abd0527f1ffe25986cf4734281d8f81b7ca806",
+      "reason": "Re-declared 2026-11-16 (secret-drop-self-mint-hardening: adds #N field selection and shows unsafe names by position; still makes no blocking decision). Previously 2026-11-04 (normal-chrome-linux: for a browser password it refuses stdout, --run and --consume, which is a refusal of its own operation on a value the person marked for one site; it gates no message or session). boundary case: secret-handoff error/consume semantics, not an enforcement block"
     },
     {
       "path": "src/templates/scripts/secret-get.mjs",

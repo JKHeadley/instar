@@ -37,7 +37,8 @@ guarded only by "you're on this machine."
 - Normally: nothing. Pages, phone links, transfers and notices all work as today.
 - In a session that was already running when the update landed, until it restarts: its
   new requests won't produce the "secret received" message and show as "unverified". The
-  page and the secret still work, and the agent is told why.
+  page and the secret still work, and the agent is told in plain words to restart the
+  session to get those messages back.
 - A few malformed names are refused with a plain reason. Normal names, in any language,
   still work.
 - With the dashboard's new (not yet turned on) phone sign-in mode: reading a pasted secret

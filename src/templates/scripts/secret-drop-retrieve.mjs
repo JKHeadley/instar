@@ -18,6 +18,7 @@
  *     → suitable for piping: `... password | gh secret set X`
  *
  *   node .instar/scripts/secret-drop-retrieve.mjs <token> --names
+ *     (a field whose name is unsafe to type in a command is shown, and selected, as #N)
  *     → prints field names + lengths to stderr; nothing to stdout
  *     → use to discover what fields the submission contains
  *
@@ -162,14 +163,22 @@ if (browserMode && !browserHost) {
   process.exit(1);
 }
 
+// A field is named by its name when that is safe to type in a command, else by its
+// 1-based position `#N` (the server gives the same references as body.fieldRefs).
+const fieldNames = Object.keys(values);
+const SHELL_UNSAFE = /[\s`$'"\\;|&<>()*?!#~\[\]{}^\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
+const refOf = (name, i) => (name.length > 0 && !SHELL_UNSAFE.test(name) ? name : `#${i + 1}`);
+const origin = body?.origin === 'unverified' ? ' [unverified origin: made without the agent key]' : '';
+
 if (mode === '--names') {
-  // Field-name listing for debugging — names + lengths only, never values.
+  // Field references for debugging — references + lengths only, never values.
   // A browser password's length is not shown either.
-  for (const k of Object.keys(values)) {
+  if (origin) process.stderr.write(`retrieve: this request${origin}\n`);
+  fieldNames.forEach((k, i) => {
     const v = values[k];
     const len = typeof v === 'string' ? v.length : -1;
-    process.stderr.write(browserHost ? `  ${k}\n` : `  ${k} (length ${len})\n`);
-  }
+    process.stderr.write(browserHost ? `  ${refOf(k, i)}\n` : `  ${refOf(k, i)} (length ${len})\n`);
+  });
   process.exit(0);
 }
 
@@ -178,10 +187,12 @@ if (browserHost && !browserMode) {
   process.exit(1);
 }
 
-const v = values[mode];
+const posMatch = /^#(\d{1,3})$/.exec(mode);
+const fieldName = posMatch ? fieldNames[Number(posMatch[1]) - 1] : mode;
+const v = fieldName === undefined ? undefined : values[fieldName];
 if (typeof v !== 'string') {
   process.stderr.write(`retrieve: field '${mode}' not found (available: `
-    + Object.keys(values).join(', ') + ')\n');
+    + fieldNames.map(refOf).join(', ') + ')\n');
   process.exit(1);
 }
 

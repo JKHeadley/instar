@@ -2,7 +2,11 @@
 title: "Secret Drop self-mint hardening — only a caller that proves the agent's key can reach a session; unproven requests stay bounded and clearly marked"
 slug: "secret-drop-self-mint-hardening"
 author: "echo"
-status: draft
+parent-principle: "Session Input Is a Principal"
+status: approved
+approved: true
+approved-by: "echo-chief-of-staff as maintainer (message 20572847, 2026-11-16): no constitution text, revertible fix to existing behaviour, not a new user restriction; condition: a pre-update session that hits the new check gets a plain line saying what to do, never a silent failure"
+review-convergence: "2026-11-16T23:05:00Z"
 eli16-overview: "docs/specs/secret-drop-self-mint-hardening.eli16.md"
 review-iterations: 10
 review-report: "docs/specs/reports/secret-drop-self-mint-hardening-convergence.md"
@@ -71,10 +75,12 @@ re-derives it from the request.
 6. **Notice files go to a private, owner-checked location**, and reading a value with a
    scoped dashboard credential asks for the existing PIN step-up.
 
-**Deliberately left for follow-up work** (they limit a nuisance or improve the experience,
-and do not change whether the hole is closed): a per-machine bound on keyless requests,
-a cross-machine listing of received drops, server-generated field ids for keyless drops,
-and retiring the keyless route once pre-update sessions are gone.
+**Deliberately left for follow-up work** <!-- tracked: CMT-1870 --> <!-- tracked: CMT-1871 --> (they improve
+the experience and do not change whether the hole is closed): a cross-machine listing of
+received drops, server-generated field ids for keyless drops, an origin marker on the
+owner's phone and console lists (CMT-1870), and retiring the keyless route once pre-update
+sessions are gone (CMT-1871). Unverified requests already have their own share of the
+pending cap.
 
 ## Decision points touched
 
@@ -117,8 +123,8 @@ machine-local-justification: hardware-bound-resource
 3. **The pre-update transient** lasts one session lifetime; it is reported to the agent in
    the response, not only in logs. No forced restart.
 4. **The keyless route is kept for now**, since pre-update helpers can only use it;
-   removing it would break them rather than degrade them. A follow-up commitment removes
-   keyless creation in a release at least 30 days later.
+   removing it would break them rather than degrade them. A follow-up commitment <!-- tracked: CMT-1871 -->
+   removes keyless creation in a release at least 30 days later.
 5. **Live-proof matrix** covers the dashboard's test request, updated and simulated-old
    helpers, the phone's "Ask for a secret", and peer transfers.
 6. **Peer-transfer compatibility is a release gate.**
@@ -161,6 +167,14 @@ machine-local-justification: hardware-bound-resource
   (pre-existing).
 - **Consumed values linger on paired machines** (pre-existing, tracked).
 - **SEC-056** (signed-submit encoding): separate fix.
+
+## Carriers for the follow-up work <!-- tracked: CMT-1870 --> <!-- tracked: CMT-1871 -->
+
+The follow-up work <!-- tracked: CMT-1870 --> <!-- tracked: CMT-1871 --> in this spec and the commitments that carry it (frozen excerpts from the registry, 2026-11-16):
+
+> **CMT-1870** — "Build the deferred <!-- tracked: CMT-1870 --> keyless-request improvements: a cross-machine listing of received drops, server-generated field ids for keyless drops (so no caller-written field name is shown to the agent), and an origin marker on the phone/console waiting lists."
+
+> **CMT-1871** — "In a release at least 30 days after the Secret Drop self-mint hardening release is installed fleet-wide, remove keyless request creation (the bearer-free mint route and the helper fallback)."
 
 ## Open questions
 

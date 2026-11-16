@@ -45,6 +45,7 @@ import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserPr
 import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
+import { type MintAuth, classifyGatedMint, keylessMintAdmission, mintReachesSession, mintIsUnverified, validateFieldNames, cleanFreeText, untrustedForAgent, fieldRef, KEYLESS_RECEIPT_NOTICE, KEYLESS_BROWSER_REFUSAL } from './secretDropMintPolicy.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -29944,9 +29945,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // instead of silently waiting on a value that never arrives. Added
   // 2026-05-20 in response to the topic-10873 lost-SMS-code incident.
   secretDrop.onStuckConsumer((event) => {
-    if (!event.topicId || !ctx.sessionManager) return;
+    // Only a request that may reach a session ever notifies one (secret-drop-self-mint-hardening).
+    if (!mintReachesSession(event.mintAuth) || !event.topicId || !ctx.sessionManager) return;
     const topicId = event.topicId;
-    const systemMsg = `[secret-drop-stuck] Secret "${event.label}" was submitted but has not been consumed by an agent process. ` +
+    const systemMsg = `[secret-drop-stuck] Secret ${untrustedForAgent(event.label, event.token, false)} was submitted but has not been consumed by an agent process. ` +
       `If you weren't expecting this, the consumer may have hit a bug. ` +
       `The submission will auto-clean in ~${event.minutesUntilCleanup} minute(s). ` +
       (event.browserHost
@@ -29988,24 +29990,37 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // { opts } ready for secretDrop.create().
   function validateSecretRequestBody(
     body: any,
+    mintAuth: MintAuth,
   ): { error: string } | { opts: CreateSecretRequestOptions } {
-    const { label, description, fields, topicId, ttlMs, senderVerification, browserHost } = body ?? {};
+    const { label: rawLabel, description: rawDescription, fields: rawFields, topicId, ttlMs, senderVerification, browserHost } = body ?? {};
 
-    if (!label || typeof label !== 'string' || label.length > 256) {
+    if (!rawLabel || typeof rawLabel !== 'string' || rawLabel.length > 256) {
       return { error: '"label" must be a non-empty string under 256 characters' };
     }
-    if (description !== undefined && (typeof description !== 'string' || description.length > 1024)) {
+    // Free text: controls, line separators, bidi and zero-width characters are removed.
+    const label = cleanFreeText(rawLabel);
+    if (!label.trim()) return { error: '"label" must contain visible text' };
+    if (rawDescription !== undefined && (typeof rawDescription !== 'string' || rawDescription.length > 1024)) {
       return { error: '"description" must be a string under 1024 characters' };
     }
-    if (fields !== undefined) {
-      if (!Array.isArray(fields) || fields.length === 0 || fields.length > 10) {
+    const description = typeof rawDescription === 'string' ? cleanFreeText(rawDescription) : undefined;
+    let fields: CreateSecretRequestOptions['fields'];
+    if (rawFields !== undefined) {
+      if (!Array.isArray(rawFields) || rawFields.length === 0 || rawFields.length > 10) {
         return { error: '"fields" must be an array of 1-10 items' };
       }
-      for (const f of fields) {
-        if (!f.name || typeof f.name !== 'string' || !f.label || typeof f.label !== 'string') {
+      for (const f of rawFields) {
+        if (!f || !f.name || typeof f.name !== 'string' || !f.label || typeof f.label !== 'string') {
           return { error: 'Each field must have a "name" and "label"' };
         }
+        if (f.label.length > 256) return { error: 'Each field "label" must be at most 256 characters' };
+        if (!cleanFreeText(f.label).trim()) return { error: 'Each field "label" must contain visible text' };
       }
+      // A request not made with the agent's key gets the stricter, shell-safe naming rule:
+      // its names are offered to the agent inside a retrieve command.
+      const nameError = validateFieldNames(rawFields.map((f: { name: string }) => f.name), mintAuth !== 'master' && mintAuth !== 'owner-phone');
+      if (nameError) return { error: nameError };
+      fields = rawFields.map((f: Record<string, unknown>) => ({ ...f, label: cleanFreeText(String(f.label)) })) as CreateSecretRequestOptions['fields'];
     }
     if (topicId !== undefined && (typeof topicId !== 'number' || !Number.isInteger(topicId))) {
       return { error: '"topicId" must be an integer' };
@@ -30036,7 +30051,40 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    return { opts: { label, description, fields, topicId, ttlMs, senderVerification, browserHost } };
+    if (browserHost !== undefined && mintAuth === 'none') {
+      return { error: KEYLESS_BROWSER_REFUSAL };
+    }
+
+    return { opts: { label, description, fields, topicId, ttlMs, senderVerification, browserHost, mintAuth } };
+  }
+
+  // A session started before the update sends keyless requests (its helper is old code that
+  // drops new answer fields). So it is never left to fail silently, the server tells the LIVE
+  // session already bound to the named conversation, once per hour per conversation, with a
+  // fixed server-written line (no caller text, never a spawn).
+  const keylessTopicNoticeAt = new Map<number, number>();
+  function noticeKeylessTopic(topicId: number): void {
+    const now = Date.now();
+    if ((keylessTopicNoticeAt.get(topicId) ?? 0) > now - 60 * 60 * 1000) return;
+    try {
+      const regPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+      if (!fs.existsSync(regPath) || !ctx.sessionManager) return;
+      const target = JSON.parse(fs.readFileSync(regPath, 'utf-8')).topicToSession?.[String(topicId)] ?? null;
+      if (target && ctx.sessionManager.isSessionAlive(target)) {
+        // The hourly slot is spent only when the line is actually delivered.
+        keylessTopicNoticeAt.set(topicId, now);
+        ctx.sessionManager.injectPasteNotification(target, `<system-reminder>[secret-drop-notice] ${KEYLESS_RECEIPT_NOTICE}</system-reminder>`);
+      }
+    } catch (err) {
+      // @silent-fallback-ok — the answer itself also carries the notice for current helpers
+      console.error('[secret-drop] keyless-request notice failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** The plain line a mint answer carries when its request cannot notify a conversation. */
+  function mintAnswerExtras(mintAuth: MintAuth, askedForTopic: boolean): Record<string, unknown> {
+    if (mintReachesSession(mintAuth) || !askedForTopic) return {};
+    return { receiptNotice: 'disabled', notice: KEYLESS_RECEIPT_NOTICE };
   }
 
   // An operator's yes to the browser install on an existing Linux agent: sets the flag for this
@@ -30066,7 +30114,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // Create a new secret request (agent-facing, requires auth)
   router.post('/secrets/request', (req, res) => {
-    const validated = validateSecretRequestBody(req.body);
+    // Who is asking decides what the request may reach (secret-drop-self-mint-hardening).
+    const mintAuth = classifyGatedMint(req.headers as Record<string, unknown>, ctx.config.authToken, res.locals?.dashboardScopedSession === true);
+    const validated = validateSecretRequestBody(req.body, mintAuth);
     if ('error' in validated) {
       res.status(400).json({ error: validated.error });
       return;
@@ -30078,6 +30128,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         token,
         ...urls,
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
+        ...mintAnswerExtras(mintAuth, validated.opts.topicId !== undefined),
       });
     } catch (err) {
       res.status(429).json({ error: operatorError(err, res.app?.locals?.stateDir) });
@@ -30101,16 +30152,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // SEALED-HANDOFF §keystone ("a localhost-only loopback that does not require
   // the externalized bearer — NOT by scraping the vault").
   router.post('/threadline/secrets/request', (req, res) => {
-    const remote = req.socket?.remoteAddress;
-    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
-      res.status(403).json({ error: 'Self-mint is localhost-only' });
+    // Only this machine's own loopback, at the port the request arrived on, and nothing a
+    // browser or proxy sends. A request here carries no key, so it is keyless ('none'):
+    // it gets a working paste page but can never name a conversation or reach a session.
+    const admitted = keylessMintAdmission(req as unknown as Parameters<typeof keylessMintAdmission>[0]);
+    if (!admitted.ok) {
+      res.status(403).json({ error: admitted.error });
       return;
     }
-    if (req.headers['x-forwarded-for']) {
-      res.status(403).json({ error: 'Self-mint rejects forwarded (X-Forwarded-For) requests' });
-      return;
-    }
-    const validated = validateSecretRequestBody(req.body);
+    const validated = validateSecretRequestBody(req.body, 'none');
     if ('error' in validated) {
       res.status(400).json({ error: validated.error });
       return;
@@ -30122,7 +30172,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         token,
         ...urls,
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
+        ...mintAnswerExtras('none', validated.opts.topicId !== undefined),
       });
+      if (validated.opts.topicId !== undefined) noticeKeylessTopic(validated.opts.topicId);
     } catch (err) {
       res.status(429).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
@@ -30237,6 +30289,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         store.set(`secretDrops.${req.params.token}`, {
+          mintAuth: submission.mintAuth ?? 'none',
           label: submission.label,
           topicId: submission.topicId ?? null,
           receivedAt: submission.receivedAt,
@@ -30249,8 +30302,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // Only a request from the agent's key or the owner's phone reaches a conversation or a
+    // session. Each sink checks the stored class itself, so a request created before this
+    // change (no class = unverified) never reaches one even if it still carries a topic.
+    const reachesSession = mintReachesSession(submission.mintAuth);
+
     // Send Telegram confirmation if topic is configured
-    if (submission.topicId && ctx.telegram) {
+    if (reachesSession && submission.topicId && ctx.telegram) {
       const fieldCount = Object.keys(submission.values).length;
       const confirmMsg = `\u2705 Secret received for "${submission.label}" (${fieldCount} field${fieldCount !== 1 ? 's' : ''}).`;
       withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(submission.topicId!, confirmMsg)).catch(() => {
@@ -30260,16 +30318,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Route a system message to the agent session so it can respond conversationally.
     // Uses the same inject-or-spawn pattern as Telegram forwarding.
-    if (submission.topicId && ctx.sessionManager) {
+    if (reachesSession && submission.topicId && ctx.sessionManager) {
       const topicId = submission.topicId;
       const fieldCount = Object.keys(submission.values).length;
-      const fieldNames = Object.keys(submission.values).join(', ');
+      // Field names come from the request's declared fields (submit keeps only those).
+      const fieldNames = Object.keys(submission.values).map((n, i) => fieldRef(n, i)).join(', ');
+      const quotedLabel = untrustedForAgent(submission.label, req.params.token, false);
       const systemMsg = submission.browserHost
-        ? `[secret-drop-received] The password "${submission.label}" for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
+        ? `[secret-drop-received] The password ${quotedLabel} for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
           `Focus that page's password box, then run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name> --browser. ` +
           `That is the only way it can leave; it goes straight into the box and you never see it. ` +
           `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`
-        : `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
+        : `[secret-drop-received] Secret ${quotedLabel} was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
         `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name>. ` +
         `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
         `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +
@@ -30405,6 +30465,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({
       pending: pending.map(p => ({
         ...p,
+        // A request not made with the agent's key (or the owner's phone/dashboard) is marked.
+        origin: mintIsUnverified(p.mintAuth) ? 'unverified' : 'verified',
+        fieldRefs: p.fields.map((n, i) => fieldRef(n, i)),
         ...secretDropUrl(p.token),
       })),
     });
@@ -30446,10 +30509,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         const durable = store.get(`secretDrops.${token}`) as
-          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string> }
+          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string>; mintAuth?: MintAuth }
           | undefined;
         if (durable && durable.values) {
           submission = {
+            mintAuth: durable.mintAuth, // absent on records stored before this change = unverified
             values: durable.values,
             receivedAt: durable.receivedAt ?? new Date().toISOString(),
             label: durable.label ?? 'Secret',
@@ -30473,7 +30537,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(404).json({ error: 'No submission found for this token' });
       return;
     }
-    res.json({ ...submission, consumed: consume });
+    // An explicit shape: nothing internal leaks through a spread. Values are returned exactly.
+    const names = Object.keys(submission.values);
+    res.json({
+      values: submission.values,
+      receivedAt: submission.receivedAt,
+      label: submission.label,
+      ...(submission.topicId !== undefined ? { topicId: submission.topicId } : {}),
+      ...(submission.browserHost ? { browserHost: submission.browserHost } : {}),
+      origin: mintIsUnverified(submission.mintAuth) ? 'unverified' : 'verified',
+      fieldRefs: names.map((n, i) => fieldRef(n, i)),
+      consumed: consume,
+    });
   });
 
   // ── Tunnel Status ──────────────────────────────────────────────
