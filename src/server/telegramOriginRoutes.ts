@@ -213,7 +213,8 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
   // reads exactly like an unknown one.
   router.get('/telegram/origins/operations/:operationId/text', async (req, res) => {
     const operationId = req.params.operationId;
-    if (!/^[A-Za-z0-9-]{8,64}$/.test(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    // `~` admits derived successor ids, as the outcome route does (fb-b7abf24e-6cb).
+    if (!/^[A-Za-z0-9~-]{8,96}$/.test(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
     if (principalOf(req).kind !== 'token' || devicePersonOf(req) !== null) { res.status(403).json({ error: 'device-token-refused' }); return; }
     const runtime = deps.runtime();
     if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId }); return; }
