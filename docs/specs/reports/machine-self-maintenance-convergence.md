@@ -171,3 +171,13 @@ Frontloaded decisions 16, cheap-to-change tags surviving 0, contested-then-clear
 ## Conclusion
 
 Not formally converged. The operator accepted the design with an amendment, the amended text had one external read, and its three design findings are fixed without a further read. He then accepted at the cap with `go` (top of this report), so the build gate is open on that acceptance, not on a converged review.
+
+## Round 10: round 9's three fixes read (2026-11-16)
+
+Run on 2026-11-16 before any increment makes the drain real, which is the condition the Maturation plan sets. One external read, `codex-cli`, model `gpt-6-astra` (OpenAI), read-only, given the whole spec and round 9's findings and asked only whether the three fixes are correct and whether they added a new safety or data-loss defect.
+
+- S1, S2 and the off switch inside `claimRung` for every caller and rung, operator passes enumerated: **fixed**.
+- `undoYield()` with a durable yield row, covering roll, Skip, expiry, refused Rung 1, verified cancellation and Keep running: **fixed**.
+- Receipts in a `receipting` phase before `armed`, so D3 can delay or roll: **fixed**.
+
+New serious findings: none. Verdict: **CLEAR**. This is a scoped read of the three fixes, not a fresh full review; the earlier rounds' acceptance at the cap still stands as recorded above.

@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HostMaintenanceStore, WedgeMaintainerClaim } from './HostMaintenanceStore.js';
-import type { ProbeResult, ProbeRunner } from './readings.js';
+import { parseCanaryProcesses, type CanaryProcess, type ProbeResult, type ProbeRunner } from './readings.js';
 import { consoleSessionFromOwner, readF1, readF2, readF4, type FamilyReading, type LoadReading, type WedgePlatform } from './wedgeEvidence.js';
 import {
   CANDIDATE_FAMILIES, JUDGE_ACTIONS, currentCandidate, emptyWindow, isFresh, nextSampleDelay, observe, recentlyRestarted, rungsFor, singleFamilyRun,
@@ -38,6 +38,8 @@ export const JUDGE_MAX_PER_DAY = 6;
 export const CANDIDATE_BREAKER_PER_DAY = 3;
 const PS_TIMEOUT_MS = 5_000;
 const F1_TIMEOUT_MS = 10_000;
+/** How long a launched canary gets to run and quit before a leftover counts against the launch. */
+export const CANARY_SETTLE_MS = 2_000;
 const MAX_EPISODES = 20;
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
 /** A boot time this much later than the recorded one is a new boot. */
@@ -99,6 +101,16 @@ export interface WedgeMonitorDeps {
   canaryAvailable?: () => boolean;
   /** macOS: this agent's OS user, compared with the console owner for F1 eligibility. */
   ownUser?: string;
+  /** macOS: this agent's uid; only this user's canary processes are read or ended. */
+  ownUid?: number;
+  /**
+   * macOS: ends one leftover canary of this user (SIGKILL; a stopped process still dies).
+   * A canary quits at once on a healthy machine, so any instance left over is stuck, and
+   * ending it is what stops a wedge from also piling up processes. Absent: never ends one.
+   */
+  endCanary?: (pid: number) => boolean;
+  /** Waits before the leftover read. Default: a real timer of CANARY_SETTLE_MS. */
+  settle?: (ms: number) => Promise<void>;
   loadReading: () => LoadReading | null;
   /** Session spawns that failed for system reasons in the last 30 minutes; null when not counted. */
   spawnSystemFailures30m: () => number | null;
@@ -288,6 +300,28 @@ export class WedgeMonitor {
     return bounded(started.catch(() => ({ ok: false, stdout: null, ms: 0, timedOut: false, code: 'probe-error' } as ProbeResult)), timeoutMs + WEDGE_PROBE_GUARD_MS, timedOut);
   }
 
+  private async listCanaries(): Promise<CanaryProcess[] | null> {
+    const uid = this.deps.ownUid;
+    if (uid === undefined) return null;
+    const r = await this.runProbe('canaryProcesses', PS_TIMEOUT_MS);
+    return r.ok && r.stdout !== null ? parseCanaryProcesses(r.stdout, uid) : null;
+  }
+
+  private endCanaries(list: CanaryProcess[]): number {
+    const end = this.deps.endCanary;
+    if (!end) return 0;
+    let n = 0;
+    for (const c of list) {
+      try { if (end(c.pid)) n += 1; } catch { /* @silent-fallback-ok — one that could not be ended is read again next sample */ }
+    }
+    return n;
+  }
+
+  private async endLeftoverCanaries(): Promise<number | null> {
+    const left = await this.listCanaries();
+    return left === null ? null : this.endCanaries(left);
+  }
+
   private async sample(): Promise<void> {
     const platform = this.deps.platform;
     const bootAt = await bounded(this.deps.readBootAt(), WEDGE_READ_BOUND_MS, null);
@@ -303,6 +337,9 @@ export class WedgeMonitor {
     let canary = false;
     try { canary = mac && this.deps.canaryAvailable?.() === true; } catch { canary = false; } // @silent-fallback-ok — no canary: F1 reads unknown with that reason
     const f1Name = platform === 'linux' ? 'userUnitProbe' as const : platform === 'wsl' ? 'interopProbe' as const : canary ? 'guiCanary' as const : null;
+    // Leftovers from earlier launches are stuck (the canary quits at once when the GUI path
+    // works). End them first, so this probe's own canary is the only one read afterward.
+    const reapedBefore = canary ? await this.endLeftoverCanaries() : null;
     const [ps, f1Probe, tasklist, lockState, consoleOwner, kernelZone] = await Promise.all([
       this.runProbe('processStates', PS_TIMEOUT_MS),
       f1Name ? this.runProbe(f1Name, F1_TIMEOUT_MS) : Promise.resolve(null),
@@ -314,7 +351,17 @@ export class WedgeMonitor {
     const at = this.now();
 
     const consoleSession = mac ? consoleSessionFromOwner(consoleOwner, this.deps.ownUser) : null;
-    const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState, consoleSession });
+    let canaryLeftover: { stopped: number; alive: number } | null | undefined;
+    let reapedAfter: number | null = null;
+    if (canary && f1Probe) {
+      try { await (this.deps.settle ?? ((ms) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); })))(CANARY_SETTLE_MS); } catch { /* @silent-fallback-ok — a failed wait reads the table at once */ }
+      const left = await this.listCanaries();
+      canaryLeftover = left === null ? null : { stopped: left.filter((c) => c.stopped).length, alive: left.filter((c) => !c.stopped).length };
+      // A stopped canary will never quit by itself: end it now rather than at the next sample.
+      if (left) reapedAfter = this.endCanaries(left.filter((c) => c.stopped));
+    }
+    const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState, consoleSession, canaryLeftover });
+    if (f1.reading.detail && (reapedBefore || reapedAfter)) f1.reading.detail = { ...f1.reading.detail, canariesEnded: (reapedBefore ?? 0) + (reapedAfter ?? 0) };
     if (f1.passed) this.durable.f1PassedThisBoot = true;
     const f2 = readF2({ platform, ps, priorCounts: this.durable.uninterruptibleCounts, tasklist, kernelZone });
     if (f2.count !== null) this.durable.uninterruptibleCounts = [...this.durable.uninterruptibleCounts, f2.count].slice(-3);

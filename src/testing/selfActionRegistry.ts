@@ -4292,6 +4292,60 @@ const machineWedgeNotice: SelfActionController = {
   },
 };
 
+/**
+ * machine-wedge-canary-reap — the F1 canary cleanup (machine-self-maintenance Part E;
+ * WedgeMonitor.endLeftoverCanaries + endCanaries, fb-92ed1f8b-3a2). Each sample launches
+ * one canary; on a wedged GUI path it is left stopped and the sampler ends it. The pressure:
+ * a wedge that never clears, sampled every 2 minutes forever. Convergence shape: an Eternal
+ * Sentinel. It ends only what its own sample launched (one canary per sample, each pid once),
+ * so its rate is the sampler's single-flight cadence and nothing accumulates: without it the
+ * stopped canaries pile up instead (11 in 20 h on the Studio).
+ */
+const machineWedgeCanaryReap: SelfActionController = {
+  id: 'machine-wedge-canary-reap',
+  actionVerb: 'canary-reap',
+  models: 'src/monitoring/machineMaintenance/WedgeMonitor.ts (sample: endLeftoverCanaries before the launch, endCanaries of a stopped canary after it)',
+  modelsPath: 'src/monitoring/machineMaintenance/WedgeMonitor.ts',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: 1,
+  ticks: 720,
+  tickMs: 2 * 60_000,
+  eternalSentinel: {
+    reason: 'Cleanup of its own probe: one stuck canary ended per wedge sample, each pid once, at the sampler cadence; a new boot or a cleared wedge stops it.',
+    rateFloorMs: 2 * 60_000,
+  },
+  delegatedGiveUp: 'The wedge sampler cadence (single-flight, 2-minute floor while positive) and the boot that ends the wedge',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMachineWedgeCanaryReap(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineWedgeCanaryReap(f, sink);
+  },
+};
+
+function makeMachineWedgeCanaryReap(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const CADENCE_MS = 2 * 60_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // The sampler is single-flight with its next sample scheduled from the last one, held
+      // in the host store's wedge state, so a reconstruction does not sample early.
+      const last = f.durableState.get('machine-wedge:last-sample') as number | undefined;
+      if (last !== undefined && now - last < CADENCE_MS) return;
+      f.durableState.set('machine-wedge:last-sample', now);
+      // Before the launch: leftovers were already ended last sample, so none remain.
+      // The launch: on a wedged path the new canary is left stopped. After: end it, once.
+      if (f.targetAlwaysRejects()) {
+        const n = ((f.durableState.get('machine-wedge:canary-seq') as number | undefined) ?? 0) + 1;
+        f.durableState.set('machine-wedge:canary-seq', n);
+        sink.emit({ verb: 'canary-reap', target: `canary:${n}` });
+      }
+    },
+  };
+}
+
 function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
   const WINDOW_MS = 20 * 60_000;
   const MIN_OBS = 3;
@@ -5934,6 +5988,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  machineWedgeCanaryReap,
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
   appPoolEnforcer,
