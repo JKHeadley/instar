@@ -85,7 +85,7 @@ export interface DoneItemEvaluatorDeps {
 
 const PAGE_ITEM_RE = /page\s+(https?:\/\/\S+)\s+contains\s+"([^"]+)"/i;
 /** `PR owner/repo#123 merged` — the §1.3 "PR merged into the default branch" form. */
-const PR_ITEM_RE = /\bPR\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d{1,7})\s+merged\b/i;
+const PR_ITEM_ALL_RE = /\bPR\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d{1,7})\s+merged\b/gi;
 
 /**
  * The deterministic evaluators §1.3 names, by the item's own text. Only links the owner
@@ -103,18 +103,26 @@ export function buildDoneItemEvaluator(d: DoneItemEvaluatorDeps): (item: { id: s
       if (body === null) return 'unknown';
       return body.includes(page[2]!) ? 'pass' : 'fail';
     }
-    const pr = PR_ITEM_RE.exec(item.text);
-    if (pr) {
-      const repo = pr[1]!; const num = pr[2]!;
-      if (!d.gh || !project.linked.repos.some((r) => r.toLowerCase() === repo.toLowerCase())) return 'unknown';
-      const r = await d.gh(['api', `repos/${repo}/pulls/${num}`, '--jq', '{merged_at: .merged_at, state: .state, base: .base.ref}']);
-      if (r.code !== 0) return 'unknown';
-      let row: { merged_at?: string | null; state?: string; base?: string };
-      // RULE 3: EXEMPT — parses the GitHub pulls API's JSON through gh (structured contract), not provider state text; a parse failure reads as `unknown` (P20).
-      try { row = JSON.parse(r.stdout) as typeof row; } catch { /* @silent-fallback-ok: unparseable PR state is `unknown` (P20) */ return 'unknown'; }
-      const base = (await d.defaultBranch(repo)) ?? 'main';
-      if (row.merged_at) return row.base === base ? 'pass' : 'fail';
-      return row.state === 'open' || row.state === 'closed' ? 'fail' : 'unknown';
+    // An item may name several PRs ("PR o/r#1 merged, PR o/r#2 merged"): every one must have merged.
+    // Any PR not merged into the default branch fails the item; otherwise any unreadable one makes it unknown.
+    const prs = [...item.text.matchAll(PR_ITEM_ALL_RE)];
+    if (prs.length) {
+      const one = async (repo: string, num: string): Promise<'pass' | 'fail' | 'unknown'> => {
+        if (!d.gh || !project.linked.repos.some((r) => r.toLowerCase() === repo.toLowerCase())) return 'unknown';
+        const r = await d.gh(['api', `repos/${repo}/pulls/${num}`, '--jq', '{merged_at: .merged_at, state: .state, base: .base.ref}']);
+        if (r.code !== 0) return 'unknown';
+        let row: { merged_at?: string | null; state?: string; base?: string };
+        // RULE 3: EXEMPT — parses the GitHub pulls API's JSON through gh (structured contract), not provider state text; a parse failure reads as `unknown` (P20).
+        try { row = JSON.parse(r.stdout) as typeof row; } catch { /* @silent-fallback-ok: unparseable PR state is `unknown` (P20) */ return 'unknown'; }
+        const base = (await d.defaultBranch(repo)) ?? 'main';
+        if (row.merged_at) return row.base === base ? 'pass' : 'fail';
+        return row.state === 'open' || row.state === 'closed' ? 'fail' : 'unknown';
+      };
+      const results: Array<'pass' | 'fail' | 'unknown'> = [];
+      for (const m of prs) results.push(await one(m[1]!, m[2]!));
+      if (results.includes('fail')) return 'fail';
+      if (results.includes('unknown')) return 'unknown';
+      return 'pass';
     }
     return 'unknown';
   };
