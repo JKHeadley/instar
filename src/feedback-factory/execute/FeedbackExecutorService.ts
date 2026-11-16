@@ -48,7 +48,7 @@ import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTransc
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
 import type { AttemptGit, GitHubGateway } from './executorPorts.js';
-import { withoutSessionReleaseNotes, writePublishEvidence } from './publishEvidence.js';
+import { withoutPublisherEvidence, withoutSessionReleaseNotes, writePublishEvidence } from './publishEvidence.js';
 import { SHORT_ATTEMPT_TMP_RE, ensurePrivateAttemptTmpDir, removeAttemptTree, shortAttemptTmpDir, shortTmpRealRoot, sweepTrash } from './attemptFs.js';
 
 export const FEEDBACK_EXECUTE_STAGE = {
@@ -1825,16 +1825,21 @@ export class FeedbackExecutorService {
       if (row.reviewReason !== 'codeowners-owned') this.opts.store.patch(epoch, row.attemptId, { reviewSha: null, reviewVerdict: null, reviewReason: 'codeowners-owned', reviewedAt: this.now() });
       return null;
     }
-    const diff = await this.opts.github.prDiff(slug, prNumber);
-    if (diff === null) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'diff' }); return null; }
+    const fullDiff = await this.opts.github.prDiff(slug, prNumber);
+    if (fullDiff === null) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'diff' }); return null; }
+    // The reviewers judge the session's change; the publisher's own decision record and release
+    // note (trusted, fixed-shape, written after the session) are left out and named in the prompt.
+    const reviewed = withoutPublisherEvidence(files, fullDiff, { branch: row.branch, attemptId: row.attemptId, initiativeId: row.initiativeId, kind: row.state === 'spec-pr-open' ? 'spec' : 'fix' });
+    const diff = reviewed.diff;
     let outcome: IndependentReviewVerdict;
     if (Buffer.byteLength(diff, 'utf8') > REVIEW_DIFF_MAX_BYTES) outcome = { pass: false, reason: 'diff-too-large', reviewers: [] };
-    else if (row.needsSpec && !isSpecReviewHead(files, diff, `docs/specs/feedback-${safeSlug(row.initiativeId)}.md`)) outcome = { pass: false, reason: 'spec-head-shape', reviewers: [] };
+    else if (row.needsSpec && !isSpecReviewHead(reviewed.files, diff, `docs/specs/feedback-${safeSlug(row.initiativeId)}.md`)) outcome = { pass: false, reason: 'spec-head-shape', reviewers: [] };
     else {
       const triage = this.opts.triageStore.get(row.initiativeId);
-      const lead = feedbackReviewLead({ severity: triage?.severity ?? null, effort: triage?.effort ?? null, needsSpec: triage?.needsSpec ?? null, changedPaths: files });
+      const lead = feedbackReviewLead({ severity: triage?.severity ?? null, effort: triage?.effort ?? null, needsSpec: triage?.needsSpec ?? null, changedPaths: reviewed.files });
       const prompt = buildExecutorReviewPrompt({
-        kind: row.needsSpec ? 'spec' : 'fix', prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: files, diff,
+        kind: row.needsSpec ? 'spec' : 'fix', prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: reviewed.files, diff,
+        omittedEvidence: reviewed.omitted,
       });
       let reviewers: ReviewerOutcome[];
       try { reviewers = await this.opts.review.run({ prompt, lead }); } catch (error) {
