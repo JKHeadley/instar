@@ -47,11 +47,13 @@ describe('machine maintenance cannot act', () => {
       "/usr/bin/stat '-f', '%Su', '/dev/console'",
       "/usr/bin/zprint '-L', 'data.kalloc.1024'",
       "cmd.exe '/c', 'exit', '0'", "ioreg '-c', 'IOHIDSystem', '-d', '4'", "pmset '-g', 'batt'", "ps '-axo', 'args='", "ps '-axo', 'pid=,lstart=,args='",
+      // F1 on macOS: the process table read that finds a canary left stopped (the canary pile-up).
+      "ps '-axo', 'pid=,uid=,stat=,args='",
       "ps '-axo', 'stat='", "sysctl '-n', 'kern.boottime'", "systemd-run '--user', '--quiet', '--wait', '--collect', '/bin/true'",
       "tasklist.exe '/NH', '/FO', 'CSV'", "tmux 'list-sessions', '-F', '#{session_name}'", "who '-u'",
     ]);
     // Every entry is matched above, so nothing else can hide in the table.
-    expect(table.match(/command:/g)).toHaveLength(14);
+    expect(table.match(/command:/g)).toHaveLength(15);
   });
 
   it('declares no callable yield on any kind', () => {
@@ -73,8 +75,15 @@ describe('machine maintenance cannot act', () => {
     const start = server.indexOf('── Machine self-maintenance, watch-only');
     const block = server.slice(start, server.indexOf('── Overload admission (trustworthy-machine-load Part C)', start));
     expect(block.length).toBeGreaterThan(500);
-    expect(block).not.toMatch(/\.(kill\w*|stop\w*|cancel\w*|enqueue|pause|refresh\w*|restart\w*|sendInput|injectMessage|shutdown)\(/);
-    expect(block).not.toMatch(/setAdmissionGate|canRunJob/);
+    // One exception, pinned to its exact text: the wedge monitor ends Instar's own canary when the
+    // process table shows it left stopped (fb-92ed1f8b-3a2). The monitor passes only pids parsed as
+    // this login's InstarWedgeCanary executable; this line is the only signal in the block.
+    const canaryEnd = "endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } },";
+    expect(block.split(canaryEnd)).toHaveLength(2);
+    const rest = block.replace(canaryEnd, '');
+    expect(rest).not.toMatch(/process\.kill|\.kill\(/);
+    expect(rest).not.toMatch(/\.(kill\w*|stop\w*|cancel\w*|enqueue|pause|refresh\w*|restart\w*|sendInput|injectMessage|shutdown)\(/);
+    expect(rest).not.toMatch(/setAdmissionGate|canRunJob/);
   });
 
   it('is consulted by no admission path', () => {
