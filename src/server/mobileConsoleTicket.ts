@@ -333,7 +333,16 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
  * The public redeem, registered before the bearer gate (and exempted in authMiddleware by exact
  * method + path). Answers only `{ token }`.
  */
-export function mountConsoleTicketRedeemRoute(app: Application, svc: MobilePairingService, apiToken: () => string | undefined): void {
+export function mountConsoleTicketRedeemRoute(
+  app: Application,
+  svc: MobilePairingService,
+  apiToken: () => string | undefined,
+  /** SEC-046: when the dashboard scoped-session feature is on, the owner-phone console redeem must
+   *  hand back a short-lived, revocable `dst_` session token (like /dashboard/unlock does), NOT the
+   *  permanent master token — otherwise the console ticket is a second sign-in path outside the
+   *  scoped model. Returns null when the feature is dark (→ master token, byte-identical to today). */
+  issueScopedToken?: () => { token: string; expiresAt: string; familyExpiresAt: string } | null,
+): void {
   app.post(CONSOLE_REDEEM_PATH, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const st = consoleState(svc);
@@ -370,6 +379,13 @@ export function mountConsoleTicketRedeemRoute(app: Application, svc: MobilePairi
       return;
     }
     st.audit.record({ event: 'redeemed', deviceId: t.deviceId, ticketRef: t.ref });
+    // SEC-046: hand back a scoped dst_ session token when the feature is on, exactly like
+    // /dashboard/unlock; fall back to the master token when it is dark (byte-identical to today).
+    const scoped = issueScopedToken?.() ?? null;
+    if (scoped) {
+      res.json({ token: scoped.token, sessionExpiresAt: scoped.expiresAt, sessionFamilyExpiresAt: scoped.familyExpiresAt });
+      return;
+    }
     res.json({ token });
   });
 }
