@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "main-verify-current-head",
+  "sessionId": "c18cbef6-c9e3-4919-97d5-21ec4c1c2e8f",
+  "timestamp": "2026-11-16T21:30:39.927Z",
+  "artifactPath": "upgrades/side-effects/main-verify-current-head.md",
+  "artifactSha256": "4fdd999d14776db02a108df6657c9ab62bee3b8ae68a7017acfc3187aae0301a",
+  "coveredFiles": [
+    "docs/specs/main-verify-current-head.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "upgrades/next/main-verify-current-head.md",
+    "upgrades/side-effects/main-verify-current-head.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One scheduling block in one source file plus unit tests; no route, config, migration or persistent state; converged existing design (main verify), behaviour change limited to which head a healthy pending main verify runs on.",
+  "eli16Path": "docs/specs/main-verify-current-head.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-verify-current-head.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
