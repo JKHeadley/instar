@@ -274,6 +274,22 @@
           "frontier": false,
           "pricing": null,
           "verifiedAt": "2026-10-25"
+        },
+        {
+          "id": "gemini-4-carbon",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 via the Gemini API (generateContent with the paid key): answered a trivial prompt; listed by the models endpoint (thinking model, 1,048,576 input tokens). The gemini CLI on the Studio is not signed in, so not CLI-probed. RECOGNIZED, not promoted: the capable pin stays gemini-3.1-pro-preview until a benchmark earns the lane. Found by the daily frontier-model-watch job (Google AI Studio changelog: GA 2026-11-10/12)."
+        },
+        {
+          "id": "gemini-4-hydrogen",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 via the Gemini API (generateContent with the paid key): answered a trivial prompt; listed by the models endpoint (thinking model, 1,048,576 input tokens). The gemini CLI on the Studio is not signed in, so not CLI-probed. RECOGNIZED, not promoted: the capable pin stays gemini-3.1-pro-preview until a benchmark earns the lane. Found by the daily frontier-model-watch job (Google AI Studio changelog: GA 2026-11-10/12)."
         }
       ],
       "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. capable tier now pinned to gemini-3.1-pro-preview (verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid Gemini key); gemini-2.5-pro remains a recognized/spawnable model + capacity fallback (NOT frontier). Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door). topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over)."
