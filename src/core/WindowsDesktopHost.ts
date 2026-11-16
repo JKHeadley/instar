@@ -79,8 +79,10 @@ export class WindowsDesktopHost implements DesktopHost {
       || (data.displayCount as number) < 0 || (data.displayCount as number) > 16) {
       throw new Error('windows-desktop-probe-invalid');
     }
+    // An older companion sends no screenLocked; it reads as not locked, as before.
     return { screenPermission: data.screenPermission, inputPermission: data.inputPermission,
-      sessionActive: data.sessionActive, displayCount: data.displayCount } as DesktopProbe;
+      sessionActive: data.sessionActive, displayCount: data.displayCount,
+      windows: { locked: data.screenLocked === true } } as DesktopProbe;
   }
 
   /** An older companion drops the unknown request, so this rejects and the

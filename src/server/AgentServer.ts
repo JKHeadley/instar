@@ -6328,6 +6328,8 @@ export class AgentServer {
             ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
             ...(probe.helperChange ? { helperChange: probe.helperChange,
               permissionStep: desktopProbeUnavailableReason(probe) } : {}),
+            // A Windows companion reports its lock under `windows`; the guide reads screenLocked.
+            ...(probe.windows?.locked === true ? { screenLocked: true } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];

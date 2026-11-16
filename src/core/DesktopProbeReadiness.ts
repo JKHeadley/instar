@@ -29,8 +29,10 @@ export function desktopProbeUnavailableReason(probe: {
   screenLocked?: boolean;
   helperChange?: DesktopHelperPermissionChange;
   linux?: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' };
+  windows?: { locked: boolean };
 }): string {
   if (probe.linux) return linuxUnavailableReason(probe, probe.linux);
+  if (probe.windows) return windowsUnavailableReason(probe, probe.windows);
   const missing = [!probe.screenPermission && 'Screen Recording',
     !probe.inputPermission && 'Accessibility'].filter(Boolean).join(' and ');
   const permissionStep = missing && probe.helperChange
@@ -92,5 +94,20 @@ function linuxUnavailableReason(probe: { sessionActive: boolean; displayCount: n
   if (!linux.capturer) {
     return 'The screen-capture tool is missing on this Linux machine. Install ImageMagick and xdotool (on Ubuntu: sudo apt install imagemagick xdotool), then tap Retry.';
   }
+  return 'Remote desktop is not ready on this machine.';
+}
+
+/** The Windows companion runs inside the signed-in user's session. Windows lets
+ * no program there see or type into the sign-in screen, so a locked PC cannot
+ * be opened or unlocked from Remote Desktop yet. */
+function windowsUnavailableReason(probe: { sessionActive: boolean; displayCount: number },
+  windows: { locked: boolean }): string {
+  if (windows.locked) {
+    return 'This Windows PC is locked. Remote desktop cannot unlock Windows yet: sign in at the PC, then tap Retry. The Instar agent is online.';
+  }
+  if (!probe.sessionActive) {
+    return 'This Windows PC is showing a screen that remote desktop cannot reach, such as the sign-in screen or a permission prompt, or nobody is signed in. Sign in or answer it at the PC, then tap Retry. The Instar agent is online.';
+  }
+  if (probe.displayCount === 0) return 'No active display is available to capture on this machine. Wake its screen or connect a display.';
   return 'Remote desktop is not ready on this machine.';
 }

@@ -58,4 +58,18 @@ describe('desktop probe explanation', () => {
     expect(reason).toContain('Privacy & Security → Screen Recording and Accessibility');
     expect(reason).toContain('/k/instar-desktop-host');
   });
+
+  it('says a locked Windows PC is locked and what to do, never the Mac wording', () => {
+    const locked = desktopProbeUnavailableReason({ screenPermission: false, inputPermission: false,
+      displayCount: 0, sessionActive: false, windows: { locked: true } });
+    expect(locked).toContain('This Windows PC is locked');
+    expect(locked).toContain('sign in at the PC, then tap Retry');
+    expect(locked).not.toMatch(/Mac|System Settings/);
+    const secure = desktopProbeUnavailableReason({ screenPermission: false, inputPermission: false,
+      displayCount: 0, sessionActive: false, windows: { locked: false } });
+    expect(secure).toContain('cannot reach');
+    expect(secure).not.toMatch(/Mac|System Settings/);
+    expect(desktopProbeUnavailableReason({ screenPermission: true, inputPermission: true,
+      displayCount: 0, sessionActive: true, windows: { locked: false } })).toContain('No active display');
+  });
 });
