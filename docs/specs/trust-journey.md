@@ -13,11 +13,16 @@ single-run-completable: true
 frontloaded-decisions: 15
 cheap-to-change-tags: 1
 contested-then-cleared: 5
+approved: true
+approved-by: Justin
+approved-at: "2026-11-16T06:15:11.000Z"
+approval-source: "telegram 142440, 2026-11-15 22:15 PST: \"Approved\" (authorship human), answering the 22:14 PST message presenting Instar Document e00e0e44 version 2 (5dcc089d) with the 22:12 conformance gate line"
+approval-binds: "4a3f55371 (spec text); any later change to the spec text needs a new approval"
 ---
 
 # The trust journey: per-kind settings, a visible record, and evidenced offers (Instar 1.x)
 
-**Status:** converged through /spec-converge, 2026-11-14 (6 rounds plus a post-cap check), and re-converged 2026-11-15 after the repeated-task revision (4 rounds plus a targeted check); report `docs/specs/reports/trust-journey-convergence.md`; awaiting the operator's `approved: true`. Direction approved by Justin: "Yes, I agree with all of this" [source: telegram 142440/143256 2026-11-15T04:54:35Z] and "Please proceed with everything you've stated here" [source: telegram 142440/143258 2026-11-15T04:54:46Z], answering `trust-journey.md` (which recommends option C for the work board). His opening question is telegram 142440/143245 (2026-11-15T04:02:38Z).
+**Status:** converged through /spec-converge, 2026-11-14 (6 rounds plus a post-cap check), and re-converged 2026-11-15 after the repeated-task revision (4 rounds plus a targeted check); report `docs/specs/reports/trust-journey-convergence.md`; approved by Justin, 2026-11-15 22:15 PST (telegram 142440), bound to the text at 4a3f55371. Direction approved by Justin: "Yes, I agree with all of this" [source: telegram 142440/143256 2026-11-15T04:54:35Z] and "Please proceed with everything you've stated here" [source: telegram 142440/143258 2026-11-15T04:54:46Z], answering `trust-journey.md` (which recommends option C for the work board). His opening question is telegram 142440/143245 (2026-11-15T04:02:38Z).
 
 **Review so far:** a pre-converge round, then /spec-converge rounds 1 to 3 (six internal lenses, GPT 6 Astra, Fable 5.2 and the standards gate each round). Round 2 showed that protection against an agent with full disk access needs independent custody, which no software on the agent's own host can supply. Round 3 showed that, under the Purpose as written, the only approval path open on such a host is the account path with its acceptance and disclosure. This version raises trust only through that path, treats phone signatures as labelled evidence, routes every grant-dependent decision through one owner, and closes the remaining bearer trust routes (`PATCH /config` for the gate and evolution, Slack role registration). The convergence report records every finding. **Revision, 2026-11-15:** Justin found that a fixed `service.operation` label cannot recognize a repeated task (topic 142440, 12:29 and 12:35 PST). Decision 14 and section 5a add a meaning layer above the fixed floor for stage 3. Stages 0 to 2 change in three small ways: stage 0 ships a grant reader rule (`minReader`) and makes a one-action yes the displayed `approve <code>` reply (review showed that any reply, even "no", could count); stage 2 keeps each record's payload reference, context line and origin route. Re-converged as recorded in the report.
 
