@@ -30,7 +30,7 @@ import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
 import type { RegistryClient } from './ThreadlineMCPServer.js';
-import { sendMessageViaHttp, getThreadHistoryViaHttp, acknowledgeViaHttp, getThreadReceiptsViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp, createHttpRelayDiscoverer } from './mcp-http-client.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, acknowledgeViaHttp, getThreadReceiptsViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp, createHttpRelayDiscoverer, approvedDeleteViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
 import { resolveMcpAuthToken } from './mcpAuthToken.js';
 
@@ -157,6 +157,10 @@ async function main(): Promise<void> {
       sendMessage: (params) => sendMessageViaHttp(params, serverPort, agentToken, process.env.INSTAR_SESSION_NAME || undefined),
       getThreadHistory: (threadId, limit, before) =>
         getThreadHistoryViaHttp(threadId, limit, serverPort, agentToken, before),
+      // SEC-018 companion: route the GATED delete through the server so the consume + the
+      // irreversible mutation happen at the authority (this helper holds no owner-approval gate).
+      // A transport failure throws → OUTCOME-UNKNOWN in the handler; never a local delete.
+      approvedDelete: (threadId) => approvedDeleteViaHttp(threadId, serverPort, agentToken),
       // a2a-required-acknowledgment D4/D6: this subprocess has no tracker; the server does.
       acknowledge: (params) => acknowledgeViaHttp(params, serverPort, agentToken),
       getThreadReceipts: (threadId) => getThreadReceiptsViaHttp(threadId, serverPort, agentToken),

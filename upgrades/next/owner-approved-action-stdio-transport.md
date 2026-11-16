@@ -1,0 +1,23 @@
+# Owner-approved deletes now cover the default transport too (ships dark)
+
+## What Changed
+
+SEC-018b (the owner-approved-sensitive-action primitive) made permanently deleting a Threadline conversation require a one-tap Face-ID approval on the owner's phone — but only on the **opt-in HTTP** MCP transport. The **default** transport is a per-session stdio helper that runs in its own process, and it was left ungated, so once the feature were switched on it would have protected only opt-in agents.
+
+This closes that gap. The whole gated delete — existence check, enabled check, device-signed-approval consume, and the irreversible deletion — is now one server-side operation (`src/threadline/performApprovedDelete.ts`) that **both** transports invoke: the HTTP handler in-process, and the stdio helper over a new loopback route `POST /threadline/approved-delete` (`src/server/routes.ts`), so the approval and the deletion always happen together in the server process at the authority. The delete handler (`src/threadline/ThreadlineMCPServer.ts`) holds no gate logic and performs no local deletion; a transport failure on the stdio path reports **outcome-unknown** (the delete may already have happened — check the conversation) and never deletes locally.
+
+Ships **dark**: `security.ownerApprovedActions.enabled` defaults false; with it off, deletes are byte-identical to today whenever the agent server is reachable.
+
+## What to Tell Your User
+
+Nothing changes yet — this ships switched off, like the feature it completes. When it is turned on (after the live phone-tap proof), deleting a Threadline conversation will need your one-tap Face-ID approval **no matter which way your session talks to the agent** — the common default path is now covered, not just the opt-in one. There is no new friction on anything else.
+
+## Summary of New Capabilities
+
+- `performApprovedDelete` — one server-side atomic gated-delete op both MCP transports invoke.
+- `POST /threadline/approved-delete` — loopback-only route (agent-token + an extracted loopback guard that refuses tunnel-arriving requests; not public). Exposes only "attempt this approved delete" — no caller-facing consume/register/clear/enabled action.
+- The route does not and cannot authenticate the calling process; its safety rests on redeem-only plus the off-machine device signature (stated plainly, by design).
+
+## Evidence
+
+15 unit tests green (`performApprovedDelete` incl. the hostile-caller no-mutation property; `evaluateLoopbackGuard` tunnel-refusal; `approvedDeleteViaHttp` outcome-unknown); an integration test (a hostile caller holding the agent token + the feature enabled still gets owner-approval-required and the thread survives; a recorded approval deletes it; a tunnel request is refused) and an e2e "alive" test ship with it; 0 type errors. Design converged across 3 cross-model review rounds (GPT-6 + Claude, reading the merged code); spec `docs/specs/owner-approved-action-stdio-transport.md` (converged + approved). The stdio-transport live phone-tap proof and an independent second-pass are pre-flip gates, tracked before the switch is flipped.

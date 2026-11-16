@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-11-16T07:19:43.000Z",
+  "slug": "owner-approved-action-stdio-transport",
+  "riskFloor": 2,
+  "decision": "implement",
+  "tier": 2,
+  "tierReasoning": "Auth gate on an irreversible action (threadline_delete) extended to the DEFAULT MCP transport, plus a new loopback route. Auth + irreversibility = Tier 2 even though it ships dark.",
+  "scope": {
+    "summary": "SEC-018 stdio companion: one server-side performApprovedDelete (existence-check + enabled + revision-validated single-use consume + server-composed card + the irreversible mutation) that BOTH MCP transports invoke — HTTP in-process, stdio over the loopback POST /threadline/approved-delete route (agent-token + extracted evaluateLoopbackGuard; redeem-only; no caller-facing register/clear/consume/enabled). The delete handler holds no gate logic and does no local remove; a stdio transport failure is outcome-unknown, never a local delete. Dark default = byte-identical when the server is reachable.",
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/performApprovedDelete.ts",
+      "src/threadline/ThreadlineMcpHttpService.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/mcp-stdio-entry.ts",
+      "src/server/routes.ts",
+      "src/data/awareness/owner-approved-action-stdio-transport.md"
+    ]
+  },
+  "evidence": {
+    "incident": "SEC-018b (#3218) gated threadline_delete only on the opt-in HTTP MCP transport; the DEFAULT per-session stdio helper (threadline.mcpHttp.enabled default false) ran in a separate process and was ungated — flipping the switch would protect only opt-in agents.",
+    "spec": "docs/specs/owner-approved-action-stdio-transport.md (review-convergence 3 rounds + approved:true, CoS fa844311/92e3952c)",
+    "focusedTests": "tests/unit/perform-approved-delete.test.ts (6, incl. hostile-caller no-mutation), tests/unit/approved-delete-loopback-guard.test.ts (4, tunnel-refusal), tests/unit/approved-delete-via-http.test.ts (5, outcome-unknown), tests/integration/owner-approved-action-stdio-transport.test.ts (hostile caller + positive control + dark + tunnel-refused), tests/e2e/owner-approved-action-stdio-transport-alive.test.ts (route alive + guard)",
+    "signalVsAuthority": "isLocal stays a signal; sole authority is the device-signed owner-presence approval. Gate is synchronous server-side (no async fail-open); the route cannot authenticate the calling process — safety rests on redeem-only + the off-machine device signature (CoS-ratified).",
+    "darkFlag": "security.ownerApprovedActions.enabled (default false)"
+  }
+}

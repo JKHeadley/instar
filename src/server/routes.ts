@@ -273,6 +273,9 @@ import {
 import { evaluateConfigureRequest } from '../core/SubscriptionReloginRemoteConfigure.js';
 import { acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
 import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
+import { evaluateLoopbackGuard } from '../threadline/ThreadlineMcpHttpService.js';
+import { performApprovedDelete } from '../threadline/performApprovedDelete.js';
+import type { OwnerApprovalGate } from '../threadline/ThreadlineMCPServer.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -46393,6 +46396,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       answer.sent = false;
     }
     res.json(answer);
+  });
+
+  // SEC-018 companion (docs/specs/owner-approved-action-stdio-transport.md): the loopback route
+  // the stdio MCP helper calls so the GATED delete (consume + the irreversible mutation) happens
+  // at the authority in this server process, not in the helper. Auth = the ordinary authMiddleware
+  // agent-token (this route is NOT in THREADLINE_PUBLIC_ROUTES) PLUS the extracted loopback/Origin
+  // guard that refuses any tunnel-arriving request. It does NOT and CANNOT authenticate the calling
+  // process; its safety rests on redeem-only (no caller-facing register/clear/consume/enabled
+  // action — only "attempt this delete") plus the off-machine device signature. A hostile LOCAL
+  // caller holding every on-disk secret passes auth and still gets owner-approval-required.
+  router.post('/threadline/approved-delete', (req, res) => {
+    const guard = evaluateLoopbackGuard(req);
+    if (!guard.ok) { res.status(guard.status).json({ error: guard.error }); return; }
+    const threadId = typeof (req.body as { threadId?: unknown })?.threadId === 'string'
+      ? (req.body as { threadId: string }).threadId.trim() : '';
+    if (!threadId) { res.status(400).json({ error: 'threadId (string) is required' }); return; }
+    const map = ctx.threadResumeMap;
+    const store = ctx.ownerApprovedActionStore;
+    const pending = ctx.ownerApprovedActionPending;
+    if (!map || !store || !pending) {
+      res.status(503).json({ error: 'owner-approved-delete-unavailable' });
+      return;
+    }
+    const gate: OwnerApprovalGate = {
+      enabled: () => ctx.config.security?.ownerApprovedActions?.enabled === true,
+      consume: (k) => store.consume(k),
+      registerPending: (r) => { pending.register(r); },
+      clearPending: (p, a) => { pending.remove(p, a); },
+      machineName: () => ctx.config.projectName || 'this agent',
+    };
+    const result = performApprovedDelete(threadId, { threadResumeMap: map, ownerApproval: gate });
+    res.json(result);
   });
 
   router.post('/threadline/ack', async (req, res) => {
