@@ -626,6 +626,37 @@ describe('auto-start handover and phone pairing', () => {
     } finally { restore(); }
   });
 
+  it('for the Mac app: leaves a 0600 ticket, says where the agent is, and keeps no secret in the ledger (mac-app-creates-agent §B)', async () => {
+    let minted = 0;
+    const { env, printed, restore } = setup({ interactive: false, mintPairingLink: async () => { minted++; return { ok: false, reason: 'off' }; } } as Partial<InstallEnv>);
+    try {
+      const progress = newInstallProgress('do-owner');
+      const r = await buildInstallHandlers(env)['owner-slot']!({ ...answers, forApp: true }, progress);
+      expect(r.kind).toBe('done');
+      const agentDir = path.join(process.env.HOME!, '.instar', 'agents', 'cirrus');
+      expect(progress.appEnroll).toEqual({ agentDir, port: 4040 });
+      const ticketFile = path.join(agentDir, '.instar', 'state', 'local-owner-ticket.json');
+      expect(fs.statSync(ticketFile).mode & 0o777).toBe(0o600);
+      const ticket = JSON.parse(fs.readFileSync(ticketFile, 'utf-8')).ticket as string;
+      const ledgerText = JSON.stringify(progress);
+      expect(ledgerText).not.toContain(ticket);
+      expect(ledgerText).not.toContain('tok');
+      expect(minted).toBe(0);
+      expect(printed.join('\n')).not.toMatch(/PIN/);
+    } finally { restore(); }
+  });
+
+  it('without forApp, a run with no terminal still waits for the person exactly as before', async () => {
+    const { env, restore } = setup({ interactive: false } as Partial<InstallEnv>);
+    try {
+      const progress = newInstallProgress('do-owner');
+      const r = await buildInstallHandlers(env)['owner-slot']!(answers, progress);
+      expect(r).toEqual({ kind: 'awaiting-person', instruction: 'Your dashboard is ready. To see how to open it, run instar install --resume in your own terminal.' });
+      expect(progress.appEnroll).toBeUndefined();
+      expect(fs.existsSync(path.join(process.env.HOME!, '.instar', 'agents', 'cirrus', '.instar', 'state', 'local-owner-ticket.json'))).toBe(false);
+    } finally { restore(); }
+  });
+
   it('ends with a phone link and a dashboard the phone can open', async () => {
     const link = 'https://instar.sh/pair#v=1&o=https%3A%2F%2Fcirrus.tail1234.ts.net&c=ABC&n=cirrus';
     const { env, printed, restore } = setup({ mintPairingLink: async () => ({ ok: true, link, origin: 'https://cirrus.tail1234.ts.net', tailscale: true }) });

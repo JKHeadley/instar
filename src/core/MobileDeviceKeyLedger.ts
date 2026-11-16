@@ -238,6 +238,9 @@ export class MobileDeviceKeyLedger {
     return this.appendLocal(this.signRow({ type: 'activation', keyHash, publicKey: key, deviceId: device.id, host: device.host, approvedVia, activatedAt, ...(device.client === 'browser' ? { client: 'browser' } : {}) } as Omit<ActivationRow, 'machineId' | 'signerKeyHash' | 'sig'>));
   }
 
+  /** The machine id this ledger signs its own rows with. */
+  signerMachineId(): string { return this.opts.signer.machineId(); }
+
   /** Whether this device's key has an activation row (any machine). */
   hasActivation(device: Pick<DeviceRecord, 'id' | 'publicKey' | 'browserPublicKey' | 'client'>): boolean {
     const key = deviceKeyOf(device);
