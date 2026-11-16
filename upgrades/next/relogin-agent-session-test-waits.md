@@ -1,0 +1,17 @@
+# Account repair test: waits allow a busy test machine
+
+## What Changed
+
+Test-only. `tests/integration/subscription-relogin-agent-session.test.ts` waited for each episode state with vitest's default 1-second `vi.waitFor` limit. The episode runtime uses real timers and a spawned helper, so on a loaded verify machine the state sometimes landed after the limit. On 2026-11-15 that failed PR 3072's run at line 545, on a change unrelated to this area. All 24 waits now allow 15 seconds and poll every 50 ms. They still pass as soon as the state lands. No product changes.
+
+## What to Tell Your User
+
+Nothing changes for you. One of our own tests was failing on a busy test machine for a timing reason; it no longer does.
+
+## Summary of New Capabilities
+
+None.
+
+## Evidence
+
+Local Verify run of PR 3072 at c9b7616b47 (2026-11-15 23:36Z on the Studio): the only failure was this file, line 545, a state assertion inside a polling wait, after a 40-minute run.
