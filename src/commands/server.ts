@@ -17483,6 +17483,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // repair's helper-seat pick.
     const { CodexLoginStatusChecker } = await import('../core/CliLoginStatus.js');
     const codexLoginStatusChecker = new CodexLoginStatusChecker();
+    const { engineTrustedSignedOut } = await import('../providers/adapters/engineSessionHooks.js');
+    const { expandHome: expandSlotHome } = await import('../core/OAuthRefresher.js');
     const quotaPoller = new QuotaPoller({
       pool: subscriptionPool,
       // Zero-spend live codex quota (app-server account/rateLimits/read). ON by
@@ -17494,6 +17496,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome),
       // codex-device-limit-tripwire §2 A′: the same single run, with its status text kept.
       codexLoginStatusWithText: (codexHome) => codexLoginStatusChecker.checkWithText(codexHome),
+      // never-silent-conversation §3.6: an account with no readable credential asks its own engine.
+      engineLoginSignedOut: (account) => engineTrustedSignedOut(account.framework, expandSlotHome(account.configHome)),
       loginObservationSink: subscriptionLoginLedger
         ? (input) => subscriptionLoginLedger!.recordObservation(input)
         : undefined,

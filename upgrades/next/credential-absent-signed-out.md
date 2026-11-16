@@ -1,0 +1,21 @@
+# An account whose sign-in is completely gone now gets repaired
+
+<!-- bump: patch -->
+
+## What Changed
+
+When an account's stored credential cannot be read at all, the quota poller now asks the engine's own login check (`claude auth status`, canary-proven) and, on macOS, whether the login keychain is unlocked. A trusted "signed out" shows `loginCheck: signed-out` at once; two such answers at least 5 minutes apart move the account to `needs-reauth` (cause `cli-auth-status-signed-out`), so the automatic sign-in repair starts. A locked keychain or an unreadable check changes nothing, so a reboot never triggers repairs. Spec: `docs/specs/never-silent-conversation.md` §3.6.
+
+## What to Tell Your User
+
+If one of your AI accounts loses its sign-in completely on a machine, Instar now notices within about ten minutes and starts fixing it, instead of showing the account as working while nothing runs on it.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| A fully signed-out account is noticed and repaired | Automatic |
+
+## Evidence
+
+2026-11-15: a throwaway agent's Claude account pointed at an empty sign-in folder read "active" for over a day, and no repair ever started. With this change, the same account read "signed-out" on the first poll.

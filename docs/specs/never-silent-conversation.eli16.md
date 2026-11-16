@@ -35,3 +35,5 @@ real screens from past failures and made no wrong calls. The first proof runs on
 agent, never on Justin's own conversations.
 
 No settings need changing to get this: it is on for development agents and off elsewhere until it has proven itself, and the automatic moves have their own switch.
+
+Added later (2026-11-15): when an account's saved sign-in has disappeared completely, Instar now asks Claude itself whether that account is signed in, and checks that the Mac's password store is unlocked. Two "signed out" answers at least five minutes apart mark the account as needing sign-in, so the automatic repair starts instead of the account sitting broken while it looks fine.
