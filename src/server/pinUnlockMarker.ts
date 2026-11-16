@@ -45,7 +45,7 @@ export function verifyPinMarker(agentToken: string | undefined, value: unknown, 
   if (!Number.isFinite(expiry) || expiry <= now) return null;
   const expected = createHmac('sha256', deriveKey(agentToken)).update(`${expiryStr}.${id}`).digest();
   let got: Buffer;
-  try { got = Buffer.from(macHex, 'hex'); } catch { return null; }
+  try { got = Buffer.from(macHex, 'hex'); } catch { return null; } // @silent-fallback-ok — a non-hex MAC is just an invalid marker; treated as no marker
   if (got.length !== expected.length) return null;
   return timingSafeEqual(got, expected) ? id : null;
 }

@@ -20,3 +20,5 @@
 **Not in this change.** A deeper hardening — handing the browser a short-lived, limited token instead of the full master key when you unlock — is the right next step but it touches how the whole dashboard talks to the agent (dozens of places, plus the live-updating streams), so it needs its own careful change with a full dashboard test. It's written down as a tracked follow-up (SEC-002b), not rushed in here.
 
 **What a reader needs to decide.** Whether this ships on for every agent next release. The spec says yes: it removes a live way for a stranger to lock the owner out, it actually stops distributed guessing, and in normal use the owner notices nothing.
+
+<!-- verify-fix 2026-11-15: the spec maturation-plan ladder line format was corrected (feature-ladders-coverage); this plain-language overview is unchanged. -->

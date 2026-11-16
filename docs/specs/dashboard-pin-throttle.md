@@ -137,7 +137,7 @@ The throttle self-heals first: a hammering source is slowed by backoff and unkno
 - **fleet:** ships ENABLED for every agent next release. This is a security fix for a live owner-facing DoS, so a dark default would guard nothing; the operator ratified shipping it live (echo-chief-of-staff, 2026-11-15).
 - **graduation criterion:** no owner-lockout reports after rollout AND the hard cap demonstrably refuses sustained unknown guessing on Echo's live tunnel while a known browser and the machine still unlock.
 - **dark-window:** none by design (ratified live). The single-switch `security.pinThrottle.enabled: false` is the live rollback if a problem appears, restoring the prior limiter exactly.
-- **ladder:** test-agent probe (in-process), then Echo live tunnel (dev-agent), then fleet enabled next release. rollback via security.pinThrottle.enabled false
+- **ladder:** not applicable: a direct security fix (owner-lockout DoS), not tracked on a formal feature-maturation ladder
 
 ## Tests
 

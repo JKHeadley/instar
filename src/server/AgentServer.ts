@@ -2054,7 +2054,7 @@ export class AgentServer {
     const pinThrottle = (pinThrottleCfg?.enabled !== false) ? new PinThrottle(pinThrottleCfg) : null;
     const markerTtlMs = pinThrottleCfg?.markerTtlMs ?? 30 * 24 * 60 * 60 * 1000;
     const tunnelHostForPin = (): string | null => {
-      try { return options.tunnel?.url ? new URL(options.tunnel.url).host : null; } catch { return null; }
+      try { return options.tunnel?.url ? new URL(options.tunnel.url).host : null; } catch { return null; } // @silent-fallback-ok — an unparseable tunnel URL means there is no own-name tunnel host
     };
     const viaOwnNameForPin = (host: string): boolean => {
       if (this.mobilePairing?.ownNames?.accepts(host)) return true;
@@ -2069,7 +2069,7 @@ export class AgentServer {
       // decodeURIComponent throws URIError on a malformed %-escape; a crafted cookie must never 500
       // the unlock route. Treat any unparseable cookie as no marker (unmarked).
       let value: string;
-      try { value = decodeURIComponent(hit.slice(PIN_MARKER_COOKIE.length + 1)); } catch { return null; }
+      try { value = decodeURIComponent(hit.slice(PIN_MARKER_COOKIE.length + 1)); } catch { return null; } // @silent-fallback-ok — a malformed cookie is treated as no marker, never a 500
       return verifyPinMarker(configRef.authToken, value, Date.now());
     };
 
