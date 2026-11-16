@@ -145,8 +145,8 @@ describe('the real Cloudflare client', () => {
 });
 
 describe('the cloudflare-v1 recipe', () => {
-  it('is dark: proving agents only, until its live proof; it keeps one named secret', () => {
-    expect(row.setupRecipe).toBeNull();
+  it('is live since its proof on 2026-11-16; it keeps one named secret', () => {
+    expect(row.setupRecipe).toBe('cloudflare-v1');
     expect(row.wayIn).toBe(true);
     expect(recipe.secretName).toBe(CLOUDFLARE_SECRET);
     expect(recipeFor(catalogWithProving(['cloudflare-v1'], () => true).find((r) => r.id === 'cloudflare-domain')!)?.id).toBe('cloudflare-v1');

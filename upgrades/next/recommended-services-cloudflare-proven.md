@@ -1,0 +1,13 @@
+# Cloudflare fixed address available on every agent
+
+## What Changed
+The "Cloudflare with your own domain" setup recipe passed its live test on a throwaway agent on 2026-11-16 and is now marked proven in the recommended-services catalog. All nine recommended services can now be set up by the agent after the owner's yes.
+
+## What to Tell Your User
+I can now give myself a web address that never changes, on a domain in your own Cloudflare account. I'd explain what it involves and only start after your yes; if a domain needs buying, I tell you the price first. It replaces the temporary address that changes on every restart.
+
+## Summary of New Capabilities
+- Cloudflare fixed address: the agent sets up a named tunnel and a DNS name on the owner's domain after their yes, checks it answers from the public internet, and can switch it off cleanly.
+
+## Evidence
+Live proof 2026-11-16 16:49-16:58 UTC (topic 135786): yes with PIN, token through a Secret Drop, tunnel and DNS record created, server check passed from the public internet, independent HTTPS 200, switch-off removed the record and tunnel and restored the temporary address.

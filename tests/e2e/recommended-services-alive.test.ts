@@ -64,9 +64,9 @@ describe('recommended services: production wiring', () => {
     expect(list.body.offersLive).toBe(false);
     expect(list.body).toMatchObject({ migrationComplete: false, firstResult: null });
     const jev = list.body.services.find((row: { service: string }) => row.service === 'jev');
-    // The six live-proven recipes are available on every agent, with no proving list; the other three are not.
+    // All nine recipes are live-proven, so every service is available on every agent, with no proving list.
     expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: true });
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'telegram', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription', 'email']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'cloudflare-domain', 'telegram', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription', 'email']);
 
     const noPin = await request(app).post('/recommended-services/jev/no').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noPin.status).toBe(403);
@@ -76,10 +76,12 @@ describe('recommended services: production wiring', () => {
     expect(no.body).toMatchObject({ choice: 'no', reason: 'cost' });
     expect(makeLedger().effective('jev').choice).toBe('no');
 
-    // No token is needed to reach the confirm route. A service with no proven setup refuses a yes outright.
-    const unproven = await request(app).get('/recommended-services/cloudflare-domain/confirm');
-    expect(unproven.status).toBe(409);
-    expect(unproven.body.error).toBe('not-available');
+    // No token is needed to reach the confirm route. Cloudflare, the last recipe proven (2026-11-16), is reachable too:
+    // on this bare server it stops at the missing owner, never at "not available". (An unproven row's refusal is covered
+    // in tests/integration/recommended-services-confirm.test.ts.)
+    const cloudflare = await request(app).get('/recommended-services/cloudflare-domain/confirm');
+    expect([200, 409]).toContain(cloudflare.status);
+    if (cloudflare.status === 409) expect(cloudflare.body.error).toBe('no-owner');
     // Jev's page is reachable through the real wiring; with no verified owner on this bare server it stops at that, never at "not available".
     const page = await request(app).get('/recommended-services/jev/confirm');
     expect([200, 409]).toContain(page.status);
@@ -87,12 +89,12 @@ describe('recommended services: production wiring', () => {
     const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN, answer: 'yes' });
     expect(yes.status).toBe(409);
     expect(makeLedger().effective('jev').choice).toBe('no');
-    // Verifying Jev gets past "no recipe" and stops at the missing yes; an unproven service has no recipe to verify.
+    // Verifying Jev gets past "no recipe" and stops at the missing yes; so does Cloudflare now that its recipe is proven.
     const verify = await request(app).post('/recommended-services/jev/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
     expect(verify.body.error).toBe('not-granted-here');
-    const noRecipe = await request(app).post('/recommended-services/cloudflare-domain/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
-    expect(noRecipe.body.error).toBe('no-recipe');
+    const cfVerify = await request(app).post('/recommended-services/cloudflare-domain/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(cfVerify.body.error).toBe('not-granted-here');
     const pageFile = await request(app).get('/dashboard/service-yes');
     expect(pageFile.status).toBe(200);
     expect(pageFile.headers['content-security-policy']).toContain("default-src 'none'");
@@ -104,28 +106,26 @@ describe('recommended services: production wiring', () => {
     expect(res.status).toBe(503);
   });
 
-  it('the key route stores nothing on a fleet agent without a yes, and nothing at all for an unproven service', async () => {
+  it('the key route stores nothing on a fleet agent without a yes', async () => {
     const { server } = boot(true);
     const res = await request(server.getApp()).post('/recommended-services/jev/key')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('not-granted-here');
-    const unproven = await request(server.getApp()).post('/recommended-services/cloudflare-domain/key')
-      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
-    expect(unproven.status).toBe(404);
-    expect(unproven.body.error).toBe('no-recipe');
+    // Every catalog row has a proven recipe now; the unproven refusal is covered in
+    // tests/integration/recommended-services-confirm.test.ts with an injected recipe-less row.
   });
 
-  it('the hold route works for a proven service and refuses an unproven one', async () => {
+  it('the hold route works for proven services, Cloudflare included', async () => {
     const { server } = boot(true);
     const held = await request(server.getApp()).post('/recommended-services/jev/hold')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(held.status).toBe(200);
     expect(held.body.held).toBe(true);
-    const res = await request(server.getApp()).post('/recommended-services/cloudflare-domain/hold')
+    const cf = await request(server.getApp()).post('/recommended-services/cloudflare-domain/hold')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
-    expect(res.status).toBe(404);
-    expect(res.body.error).toBe('no-recipe');
+    expect(cf.status).toBe(200);
+    expect(cf.body.held).toBe(true);
   });
 
   it('the Bitwarden recipe is live on every agent: the copy route stops at the missing yes, a service without a copy has no such route', async () => {
@@ -193,11 +193,8 @@ describe('recommended services: production wiring', () => {
     expect(key.body.error).toBe('not-granted-here');
   });
 
-  it('the Cloudflare recipe is dark on a fleet agent and reachable on a proving agent through the real wiring', async () => {
-    const plain = boot(true);
-    const plainList = await request(plain.server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
-    expect(plainList.body.services.find((row: { service: string }) => row.service === 'cloudflare-domain').available).toBe(false);
-    const { server } = boot(true, { recommendedServices: { provingRecipes: ['cloudflare-v1'] } });
+  it('the Cloudflare recipe, proven live 2026-11-16, is available on a fleet agent through the real wiring', async () => {
+    const { server } = boot(true);
     const app = server.getApp();
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.body.services.find((row: { service: string }) => row.service === 'cloudflare-domain').available).toBe(true);
@@ -213,7 +210,7 @@ describe('recommended services: production wiring', () => {
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.status).toBe(200);
     expect(list.body.offersLive).toBe(false);
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'telegram', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription', 'email']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'cloudflare-domain', 'telegram', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription', 'email']);
     // The recipe is wired: verify gets past "no-recipe" and stops at the missing yes.
     const verify = await request(app).post('/recommended-services/tailscale/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
