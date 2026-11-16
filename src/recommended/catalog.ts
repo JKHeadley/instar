@@ -62,7 +62,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Cloudflare account and a domain.',
     backup: 'Tailscale, your local network, the optional relay, or a temporary relay you agree to.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-16 (topic 135786, main 8bbc4f3db plus this row): a test agent took the person's yes, its setup session took the token through a Secret Drop, the server made the tunnel and DNS name on dawn-tunnel.dev and restarted, the check passed from the public internet, and the switch-off removed both.
+    setupRecipe: 'cloudflare-v1',
   },
   {
     id: 'telegram',
