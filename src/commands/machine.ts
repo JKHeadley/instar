@@ -19,6 +19,7 @@
 import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
 import fs from 'node:fs';
 import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
+import { describeMissingAgentIdentity, joinerAgentNameToAdopt } from '../core/firstPairAgentIdentity.js';
 import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
@@ -716,6 +717,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         machineIdentity?: any;
         endpoints?: unknown;
         agentIdentityEnvelope?: any;
+        agentIdentityAbsent?: unknown;
         identityRecoveryBearerToken?: string;
         status?: string;
       } & InviterPairResponse;
@@ -748,6 +750,18 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         config = loadConfig(projectDir);
       }
 
+      // The agent's name comes from the machine that holds the agent, not from this folder's
+      // name (fb-1e30d109-e50: a folder named otherwise failed the handover below). It is
+      // bound now and written to this machine's config only once the handover verifies.
+      let adoptedAgentName: string | null = null;
+      try {
+        const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+        const adopt = joinerAgentNameToAdopt(joinedConfig, (result as { agentName?: unknown }).agentName);
+        if (adopt && adopt !== config.projectName) adoptedAgentName = adopt;
+      } catch (err) {
+        console.log(pc.yellow(`  Could not read this machine's config for the agent's name: ${err instanceof Error ? err.message : String(err)}.`));
+      }
+
       // ── Install the AGENT identity carried by the pairing response ──────────────────
       // Spec: docs/specs/agent-identity-continuity-on-expansion.md §1.
       //
@@ -762,7 +776,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
           pairingSessionId: String(options.code),
           joinerMachineId: identity.machineId,
           joinerEncryptionPublicKey: identity.encryptionPublicKey,
-          agentName: config.projectName,
+          agentName: adoptedAgentName ?? config.projectName,
           expiresAt: '',
         },
         encryptionPrivateKeyPem: (() => {
@@ -776,12 +790,23 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         })(),
         pinnedFingerprint: options.agentFingerprint ?? null,
       });
+      if (agentIdentityOutcome.ok && adoptedAgentName) {
+        try {
+          const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+          joinedConfig.projectName = adoptedAgentName;
+          fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+          config = loadConfig(projectDir);
+          console.log(pc.dim(`  Agent name: ${adoptedAgentName} (from the machine you paired with).`));
+        } catch (err) {
+          console.log(pc.yellow(`  Could not record the agent's name ${adoptedAgentName}: ${err instanceof Error ? err.message : String(err)}.`));
+        }
+      }
       if (agentIdentityOutcome.ok) {
         console.log(pc.green('  Agent identity received — this machine is the same agent.'));
       } else if (agentIdentityOutcome.reason === 'not-offered') {
         console.log(
           pc.red('  This mesh did not provide an agent identity.') +
-            '\n  The machine you paired with is likely on an older version. Update it and re-pair.' +
+            '\n' + describeMissingAgentIdentity(result.agentIdentityAbsent) +
             '\n  NOT minting an identity here: that would silently split the agent in two.',
         );
       } else {

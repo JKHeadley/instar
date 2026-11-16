@@ -22,6 +22,7 @@ import { Router, type Request, type Response } from 'express';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
+import { ensureAgentIdentityForPairing, type AgentIdentityAbsence } from '../core/firstPairAgentIdentity.js';
 import {
   decideInviterPairActivation, finishInviterPairActivation, requestPairActivationRestart,
 } from '../core/sessionPoolPairActivation.js';
@@ -732,6 +733,25 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         recoveryEpoch: authority.recoveryEpoch + 1,
       };
     }
+    // fb-1e30d109-e50: the agent identity the joiner needs. Created here, while this machine
+    // is still the agent's only one (before the joiner is registered — afterwards the mint
+    // guard counts it and refuses). Never fatal to the MACHINE pairing: a refusal is carried
+    // to the joiner in plain words instead.
+    let agentIdentityAbsent: AgentIdentityAbsence | null = null;
+    if (ctx.stateDir) {
+      try {
+        const ensured = ensureAgentIdentityForPairing(ctx.stateDir);
+        if (!ensured.ok) {
+          agentIdentityAbsent = ensured.absence;
+          console.warn(`[pair] no agent identity to hand over: ${ensured.absence.reason}`);
+        } else if (ensured.minted) {
+          console.log('[pair] created the agent identity for its first pairing');
+        }
+      } catch (err) {
+        // @silent-fallback-ok: named to the joiner as inviter-mint-failed; the machine pairing proceeds
+        agentIdentityAbsent = { reason: 'inviter-mint-failed', detail: `The machine you paired with could not prepare its agent identity: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
     // Decided before the joiner is stored, so it does not count itself.
     const pairActivation = ctx.stateDir ? decideInviterPairActivation({
       stateDir: ctx.stateDir,
@@ -819,18 +839,23 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
           },
         });
         if (sealed.ok) agentIdentityEnvelope = sealed.envelope;
-        else console.warn(`[pair] agent-identity handover refused: ${sealed.refusal}`);
+        else {
+          console.warn(`[pair] agent-identity handover refused: ${sealed.refusal}`);
+          agentIdentityAbsent = { reason: 'inviter-seal-refused', detail: `The machine you paired with could not seal its agent identity for this machine (${sealed.refusal}).` };
+        }
       } else {
         // No agent identity to hand over is a REAL state on a machine that never had
         // one. Logged rather than silent, because the joiner will refuse to mint and
         // the operator deserves to know which end lacked it.
         console.warn('[pair] no agent identity on this machine to hand over');
+        agentIdentityAbsent ??= { reason: 'inviter-mint-failed', detail: 'The machine you paired with has no agent identity to hand over.' };
       }
     } catch (err) {
       // @silent-fallback-ok: pairing the MACHINE must still succeed even if the agent
       // identity cannot be sealed — the joiner then fails loudly with a named reason
       // rather than minting, which is the safe direction.
       console.warn('[pair] agent-identity handover failed (non-fatal):', err);
+      agentIdentityAbsent = { reason: 'inviter-seal-failed', detail: `The machine you paired with failed while sealing its agent identity: ${err instanceof Error ? err.message : String(err)}` };
     }
 
     const activation = ctx.stateDir && pairActivation ? finishInviterPairActivation({
@@ -846,10 +871,13 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     res.json({
       status: 'paired',
       machineIdentity: localIdentity,
+      // The name the identity handover is bound to, so a joiner whose folder is named
+      // otherwise binds to the right one (fb-1e30d109-e50).
+      ...(ctx.agentName ? { agentName: ctx.agentName } : {}),
       endpoints: await selfLastingEndpointsForPairing(ctx),
       ...(activation?.response ?? {}),
       ...(ctx.getIdentityRecoveryBearerToken?.() ? { identityRecoveryBearerToken: ctx.getIdentityRecoveryBearerToken!() } : {}),
-      ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : {}),
+      ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : agentIdentityAbsent ? { agentIdentityAbsent } : {}),
       // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6):
       // public keys only, over this code-authenticated pairing response.
       ...ownerIntroducersForJoin(ctx.stateDir),

@@ -153,7 +153,7 @@ async function boot() {
   const status = async () => (await originalFetch(`${standbyUrl}/telegram/origins/status`, { headers: { Authorization: 'Bearer test', 'X-Instar-Operator-Session': 'operator' } })).json() as Promise<{ held: Array<Record<string, unknown>>; heldForward: { count: number; topics: string[] } }>;
   const health = async () => (await originalFetch(`${standbyUrl}/health`, { headers: { Authorization: 'Bearer test' } })).json() as Promise<{ telegramOrigin?: { heldForward?: { count: number; topics: string[] } } }>;
   return { owner, standby, deps, botNetwork, sleeps, notify, status, health, setOwnerLease: (v: boolean) => { ownerHoldsLease = v; }, setOwnerReachable: (v: boolean) => { ownerReachable = v; },
-    setLeaseHolder: (v: string) => { leaseHolder = v; }, setStandbyLease: (v: boolean) => { standbyHoldsLease = v; }, sendToOwner: sendToHolder('owner') };
+    setLeaseHolder: (v: string) => { leaseHolder = v; }, setStandbyLease: (v: boolean) => { standbyHoldsLease = v; }, sendToOwner: sendToHolder('owner'), standbyUrl };
 }
 
 describe('token-less standby durable forward over the signed mesh (standby-durable-forward-without-token)', () => {
@@ -183,6 +183,13 @@ describe('token-less standby durable forward over the signed mesh (standby-durab
       expect(end.audit?.operation?.state).toBe('accepted');
       expect(JSON.parse(end.audit!.record.envelopeJson).destination.accountId).toBe('123');
     }
+    // fb-b7abf24e-6cb: the "was it sent?" check for the FIRST id (the one the session was
+    // given) follows the re-seal to its `~r1-` successor and answers delivered, not unknown.
+    const read = await (await fetch(`${h.standbyUrl}/telegram/origins/operations/${firstId}/outcome`, { headers: { Authorization: 'Bearer test', 'X-Instar-AgentId': 'echo' } })).json() as Record<string, unknown>;
+    expect(read).toMatchObject({ operationId: firstId, outcome: 'delivered', safeToResend: false });
+    expect(String(read.supersededBy)).toMatch(new RegExp(`^${firstId}~r1-[0-9a-f]{8}$`));
+    expect(read.answeredFor).toBe(read.supersededBy);
+    expect(read.messageIds).toEqual([expect.stringMatching(/^\d+$/)]);
     // No second delivery on later ticks.
     await h.standby.runForwardLadder(Date.now() + 7_200_000);
     expect(h.botNetwork).toHaveBeenCalledOnce();

@@ -10,6 +10,7 @@
 
 import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, markNeed, askPin } from './ui.js';
 import { hashFor } from './chats-model.js';
+import { projectsSection } from './projects.js';
 import {
   LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, tapBody, tapCovers, pinExplain,
   refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
@@ -39,11 +40,13 @@ export async function renderWork(main, ctx) {
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the work board' })));
   const query = queryOf();
   const page = donePageFrom(query);
-  const r = await get(page ? `/work-board?donePage=${page}` : '/work-board');
+  // Projects (work-front-doors stage 2a) are read alongside the board; a failed read is named, never empty.
+  const [r, pr] = await Promise.all([get(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : get('/work/projects')]);
+  const projects = pr ? projectsSection(pr.ok ? pr.data : null) : null;
   if (!r.ok) {
     setKids(main, isOff(r)
-      ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }))
-      : cantTell(`The work board could not be read: ${r.reason || 'no answer'}.`));
+      ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }), projects)
+      : el('div', {}, cantTell(`The work board could not be read: ${r.reason || 'no answer'}.`), projects));
     return;
   }
   const board = readBoard(r.data);
@@ -70,6 +73,8 @@ export async function renderWork(main, ctx) {
     head,
     lead,
     notes,
+    // Projects come right after what is waiting on you (a page leads with the need), before the other lanes.
+    projects,
     laneSection(LANES[1], board.lanes['with-agent'].cards, refresh),
     laneSection(LANES[2], board.lanes['waiting-on-others'].cards, refresh),
     doneSec,

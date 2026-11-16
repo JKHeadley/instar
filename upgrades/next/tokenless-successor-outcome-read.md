@@ -1,0 +1,23 @@
+<!-- bump: patch -->
+## What Changed
+
+A held reply that a token-less standby re-seals and forwards to the lease holder gets a derived successor id (`<root>~r<hop>-<plan8>`, standby-durable-forward-without-token §2). Three operation-id checks still used `^[A-Za-z0-9-]` and refused the `~`:
+
+- `classifyOperationOutcome` (`successorOf`). The superseded original therefore named no successor, so `GET /telegram/origins/operations/:id/outcome` on the standby answered `unknown`, with `owner-no-record` from the holder, for a reply Telegram had already accepted. This is fb-b7abf24e-6cb, case 3b of the 2026-11-15 cross-machine live proof.
+- `parseReceiptAnswer` dropped an author's `supersededBy` for the same ids.
+- `isOperationReference` did not recognise a successor's own `op:` advisory reference.
+
+All three now share `OPERATION_ID_PATTERN` (`^[A-Za-z0-9~-]{1,256}$`). The `/telegram/origins/operations/:id/text` route admits `~` too, as the outcome route already did.
+
+## What to Tell Your User
+
+Nothing to do. When a reply was held because the sending machine was briefly unreachable and was delivered once it came back, the "was it sent?" check now says it arrived instead of "can't confirm".
+
+## Summary of New Capabilities
+
+No new capability. This fixes a check that already exists: the held-reply outcome read now follows a token-less re-seal successor, so a delivered reply reads as `delivered`.
+
+## Evidence
+
+- Integration (real signed mesh, real stores): `tests/integration/telegram-origin-tokenless-forward.test.ts`, holder-unreachable case. Before the fix the outcome read for the first id returned `outcome: unknown, resolution: 11, supersededBy: null`. After it returns `delivered`, with `answeredFor` set to the `~r1-` successor and the Telegram message id.
+- Unit: `held-reply-outcome`, `origin-owner-read` and `forwarded-advisory` cover both sides of the pattern: a `~r1-` id is accepted, while a self-link, a space or a slash is still refused.

@@ -20,6 +20,7 @@ import type { TopicMemory, TopicMessage } from './TopicMemory.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_TOPIC_SUMMARIZE } from '../data/provenanceCoverage.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { TopicSummaryTable } from './TopicSummaryTable.js';
 
 export const TOPIC_SUMMARIZER_PROMPT_ID = 'topic-summarize-v1';
 
@@ -154,15 +155,29 @@ export class TopicSummarizer {
   private intelligence: IntelligenceProvider;
   private topicMemory: TopicMemory;
   private config: TopicSummarizerConfig;
+  private table: TopicSummaryTable;
 
+  /**
+   * `table` is the summary table's single-writer funnel (context budget §6).
+   * Omitted ⇒ the legacy owner (layers off): exactly today's behaviour. With
+   * the context layers on the table belongs to H3 and this writer is disabled:
+   * `summarize` returns null before any model call.
+   */
   constructor(
     intelligence: IntelligenceProvider,
     topicMemory: TopicMemory,
     config?: Partial<TopicSummarizerConfig>,
+    table?: TopicSummaryTable,
   ) {
     this.intelligence = intelligence;
     this.topicMemory = topicMemory;
     this.config = mergeDefaults(DEFAULT_CONFIG, config);
+    this.table = table ?? new TopicSummaryTable(topicMemory, () => false);
+  }
+
+  /** False when the summary table belongs to H3 (context layers on): this writer is disabled. */
+  enabled(): boolean {
+    return this.table.admits('topic-summarizer');
   }
 
   /**
@@ -170,6 +185,8 @@ export class TopicSummarizer {
    * Returns null if the topic doesn't need a summary update.
    */
   async summarize(topicId: number, force?: boolean): Promise<SummarizeResult | null> {
+    // Disabled while H3 owns the table (context layers on): no model call, no write.
+    if (!this.enabled()) return null;
     const needsUpdate = force || this.topicMemory.needsSummaryUpdate(topicId, this.config.messageThreshold);
     if (!needsUpdate) return null;
 
@@ -223,13 +240,16 @@ export class TopicSummarizer {
     const totalMessages = this.topicMemory.getMessageCount(topicId);
 
     // Save the summary
-    this.topicMemory.saveTopicSummary(
+    const saved = this.table.write(
+      'topic-summarizer',
       topicId,
       body,
       totalMessages,
       lastMessage?.messageId ?? existingSummary?.lastMessageId ?? 0,
       purpose,
     );
+    // H3 took the table between the check above and here (a restart flips the owner only at boot, so this is defensive).
+    if (!saved.written) return null;
 
     return {
       topicId,

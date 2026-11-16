@@ -312,9 +312,12 @@ export class MasterKeyManager {
         DegradationReporter.getInstance().report({
           feature: 'SecretStore.writeMacOSKeychain',
           primary: 'Persist master key to macOS keychain',
-          fallback: 'Key only in memory — lost on restart',
+          // Both callers fall back durably (fb-1e30d109-e50: this text claimed a memory-only key
+          // after an SSH join, which never happens): a new key goes to the owner-only key file, an
+          // adopted legacy key stays in its existing slot.
+          fallback: 'Key kept in the owner-only key file (or its existing keychain slot) instead',
           reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
-          impact: 'Master key not persisted, may be lost',
+          impact: 'The master key is not in the OS keychain on this machine; it is still persisted',
         });
         return false;
       }
@@ -335,9 +338,12 @@ export class MasterKeyManager {
         DegradationReporter.getInstance().report({
           feature: 'SecretStore.writeLinuxKeychain',
           primary: 'Persist master key to Linux keychain',
-          fallback: 'Key only in memory — lost on restart',
+          // Both callers fall back durably (fb-1e30d109-e50: this text claimed a memory-only key
+          // after an SSH join, which never happens): a new key goes to the owner-only key file, an
+          // adopted legacy key stays in its existing slot.
+          fallback: 'Key kept in the owner-only key file (or its existing keychain slot) instead',
           reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
-          impact: 'Master key not persisted, may be lost',
+          impact: 'The master key is not in the OS keychain on this machine; it is still persisted',
         });
         return false;
       }
