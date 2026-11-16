@@ -55,7 +55,9 @@ describe('first pairing of a fresh agent (E2E, production order)', () => {
     const projectDir = path.join(joinerHome, 'robust-xm');
     fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
     const configFilePath = path.join(projectDir, '.instar', 'config.json');
-    fs.writeFileSync(configFilePath, JSON.stringify({ port: 4999 }, null, 2));
+    // loadConfig refuses to run without a framework binary; CI runners have no Claude CLI,
+    // so point claude-code at a binary that provably exists (this test never spawns it).
+    fs.writeFileSync(configFilePath, JSON.stringify({ port: 4999, sessions: { frameworkBinaryPaths: { 'claude-code': process.execPath } } }, null, 2));
     expect(loadConfig(projectDir).projectName).toBe('robust-xm');
     const enc = generateEncryptionKeyPair();
     const joinerId = { machineId: generateMachineId(), signingPublicKey: pemToBase64(generateSigningKeyPair().publicKey), encryptionPublicKey: pemToBase64(enc.publicKey), name: 'm5', platform: 'test', createdAt: new Date().toISOString(), capabilities: ['sessions'] };
