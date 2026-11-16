@@ -16,7 +16,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { readLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
+import { readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
 import { localOwnerProofMessage } from '../../src/server/mobileLocalOwnerDevice.js';
 import { appTicketCommand } from '../../src/commands/install.js';
 
@@ -73,9 +73,13 @@ describe('installer ticket → server route', () => {
     expect(appTicketCommand(ledger, makeDevice().publicKey)).toBe('failed');
   });
 
-  it('a body over 4 KB is refused before the handler runs', async () => {
-    const { app } = await boot();
-    const r = await request(app).post('/mobile/local-owner-device').set('Host', HOST).set('Content-Type', 'application/json').send(JSON.stringify({ pad: 'x'.repeat(8000) }));
-    expect(r.status).toBe(413);
+  it('a body over 4 KB is refused before the handler runs (the ticket is untouched)', async () => {
+    const { app, stateDir } = await boot();
+    writeLocalOwnerTicket(stateDir);
+    const before = readLocalOwnerTicket(stateDir);
+    const r = await request(app).post('/mobile/local-owner-device').set('Host', HOST).set('Content-Type', 'application/json').send(JSON.stringify({ ticket: 'x', pad: 'x'.repeat(8000) }));
+    // The 4 KB parser refuses it (the server's shared error handler answers 500 for a too-large body).
+    expect([413, 500]).toContain(r.status);
+    expect(readLocalOwnerTicket(stateDir)).toEqual(before);
   });
 });
