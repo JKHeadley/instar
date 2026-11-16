@@ -237,7 +237,11 @@ export const DOORS = [
 
 /** Where each door opens. `chats` / `board`: whether that page's own probe answered 200 on this agent. */
 export function doorHref(id, { chats = false, board = false } = {}) {
-  if (id === 'conversations') return chats ? '#/work/chats' : '#/work/conversations';
+  // The Conversations door opens the conversations hierarchy (Chief of Staff first, then All), on every agent
+  // (spec §7 stage 1: "conversations-model.js keeps its hierarchy"). The browser-device chat page stays one tap
+  // away inside it; opening the door on it showed "No conversations yet" on a real agent (2026-11-16).
+  void chats;
+  if (id === 'conversations') return '#/work/conversations';
   // Feature off (spec §7 stage 1): with the board off, Work opens the Work section (Promises, Plans, …).
   if (id === 'work') return board ? '#/work/board' : '#/work';
   return '#/agent';
@@ -276,6 +280,8 @@ export function resolveRoute(path, { phone = false, chats = false, board = false
   const p = pagePath(String(path || '').replace(/^#?\/?/, '').split('?')[0], phone);
   if (NATIVE_PATHS.includes(p) || (phone && PHONE_ONLY_PAGES.includes(p))) return { kind: 'page', path: p, door: doorOf(p) };
   if (p === 'agent') return { kind: 'agent', path: p, door: 'agent' };
+  // The Work door is the board when the board is on (spec §3): its bare address opens the board, not the old menu.
+  if (p === 'work' && board) return { kind: 'redirect', path: p, door: 'work', to: '#/work/board' };
   if (GROUPS.some((g) => g.id === p)) return { kind: 'group', path: p, door: doorOf(p) };
   // An unknown page inside a known section (an old or mistyped link) opens that section, as before.
   const head = p.split('/')[0];
