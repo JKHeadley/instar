@@ -49,10 +49,15 @@ describe('Projects on the Work door — production wiring', () => {
     for (const s of r.body.sources) expect(['ok', 'off', 'failed']).toContain(s.state);
     expect(r.body.complete).toBe(r.body.couldNotCheck.length === 0);
     for (const s of r.body.sources.filter((x: { state: string }) => x.state === 'failed')) expect(r.body.couldNotCheck).toContain(s.label);
+    // Every project row carries its state words and, for "Not known yet", the tracker's reason (null otherwise).
+    for (const p of r.body.projects) { expect(typeof p.stateWords).toBe('string'); expect(p).toHaveProperty('why'); }
 
     // The console page that draws it ships with the server.
     const js = await request(app).get('/dashboard/console/projects.js');
     expect(js.status).toBe(200);
     expect(js.text).toContain('projectsSection');
+    const model = await request(app).get('/dashboard/console/projects-model.js');
+    expect(model.status).toBe(200);
+    expect(model.text).toContain('whyLine');
   }, 60_000);
 });

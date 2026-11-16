@@ -26,6 +26,7 @@ function projectRow(p) {
     summary,
     el('div', { class: 'project-body' },
       p.pausedLine ? el('p', { class: 'need-sub', text: p.pausedLine }) : null,
+      p.whyLine ? el('p', { class: 'need-sub', text: p.whyLine }) : null,
       p.goal ? el('p', { class: 'project-goal', text: p.goal }) : null,
       p.doneItems.length ? el('ul', { class: 'project-done', 'aria-label': 'Done when' },
         p.doneItems.map((i) => el('li', { class: `done-${i.state}` }, el('span', { class: 'done-mark', 'aria-hidden': 'true', text: DONE_MARK[i.state] }), el('span', { text: ` ${i.text}` })))) : null,

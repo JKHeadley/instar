@@ -164,3 +164,20 @@ describe('second-pass findings', () => {
     expect((await import('node:fs')).readFileSync('src/server/routes.ts', 'utf8')).toContain('workBoardReadAs(req, { full: true })');
   });
 });
+
+describe('why a project is not known', () => {
+  it('shows the tracker\'s last note, shortened, only for "Not known yet"', async () => {
+    const { shortNote, PROJECT_WHY_MAX } = await import('../../src/server/workProjectsRoutes.js');
+    const note = 'Merge status unreadable: none of the done items can be checked because the binding names no repos or branches, so the judge cannot see whether the fixes landed on main or are still open.';
+    const a = composeProjects([proj({ lastVerdict: 'unknown', lastNote: note }), proj({ conversationKey: 'telegram:2', lastNote: note })], board([]));
+    const unknown = a.projects.find((p) => p.state === 'unknown')!;
+    expect(unknown.why!.length).toBeLessThanOrEqual(PROJECT_WHY_MAX + 1);
+    expect(unknown.why!.endsWith('…')).toBe(true);
+    expect(a.projects.find((p) => p.state === 'moving')!.why).toBeNull();
+    expect(shortNote('Short   note.')).toBe('Short note.');
+    expect(shortNote('judge-unavailable')).toBe("The tracker's last check could not run.");
+    expect(composeProjects([proj({ lastVerdict: null, lastNote: null })], board([])).projects[0].why).toBeNull();
+    const { projectsView } = await import('../../dashboard/console/projects-model.js');
+    expect(projectsView(a).active.find((r: { state: string }) => r.state === 'unknown').whyLine).toMatch(/^Why it's not known: Merge status unreadable/);
+  });
+});

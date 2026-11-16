@@ -39,6 +39,7 @@ export function projectsView(data) {
       // Items nobody has checked yet are not "not done": say so instead of "0 of 3 done".
       doneLine: !done.total ? null : (done.items || []).every((i) => i.state !== 'pass' && i.state !== 'fail') ? `${done.total} to finish, not checked yet` : `${done.met} of ${done.total} done`,
       doneItems: (done.items || []).map((i) => ({ text: String(i.text), state: i.state === 'pass' ? 'pass' : i.state === 'fail' ? 'fail' : 'unknown' })),
+      whyLine: state === 'unknown' && p.why ? `Why it's not known: ${String(p.why)}` : null,
       pausedLine: state === 'paused' && p.paused ? `You paused it on ${shortDate(p.paused.at)}: "${String(p.paused.quote)}"` : null,
       cards: (p.cards || []).map(cardView), moreCards: Number(p.moreCards) || 0,
       cardsLine: (p.cards || []).length ? `${(p.cards || []).length + (Number(p.moreCards) || 0)} card${(p.cards || []).length + (Number(p.moreCards) || 0) === 1 ? '' : 's'}` : null,

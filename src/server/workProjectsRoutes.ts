@@ -38,6 +38,8 @@ export interface CosProjectRow {
   doneDefinition: Array<{ id: string; text: string }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
   /** The owner's pause, from their logged words; it wins over the verdict. */
   pausedBy?: { who: string; at: string; quote: string; messageRef: string } | null;
+  /** The tracker's newest check note (its own words), used to say why a project is "Not known yet". */
+  lastNote?: string | null;
 }
 
 export interface ProjectCard { id: string; title: string; lane: string; needLine: string | null; conversationKey: string | null }
@@ -46,6 +48,8 @@ export interface ProjectRow {
   key: string; title: string; goal: string; state: ProjectState; stateWords: string; lastCheckAt: string | null;
   /** When paused: the owner's own words and when (shown under the state). */
   paused: { at: string; quote: string } | null;
+  /** For "Not known yet" only: the tracker's last check note, shortened, so the gap reads as known, not blank. */
+  why: string | null;
   done: { items: Array<{ id: string; text: string; state: 'pass' | 'fail' | 'unknown' }>; met: number; total: number };
   cards: ProjectCard[]; moreCards: number; conversationKey: string;
 }
@@ -70,6 +74,17 @@ export function projectState(row: Pick<CosProjectRow, 'lastVerdict' | 'parked' |
     case 'drifting': return 'drifting';
     default: return 'unknown';
   }
+}
+
+export const PROJECT_WHY_MAX = 160;
+/** A check note cut to one short line at a word boundary. */
+export function shortNote(note: string): string {
+  const one = note.replace(/\s+/g, ' ').trim();
+  // A bare internal code (e.g. "judge-unavailable") is not words a person can use.
+  if (/^[a-z0-9]+(-[a-z0-9]+)+$/.test(one)) return "The tracker's last check could not run.";
+  if (one.length <= PROJECT_WHY_MAX) return one;
+  const cut = one.slice(0, PROJECT_WHY_MAX);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), PROJECT_WHY_MAX - 30)).replace(/[,;:.\s]+$/, '')}…`;
 }
 
 /** The board answer's cards (owner view), skipping archived ones. Null when the board could not be read. */
@@ -126,6 +141,7 @@ export function composeProjects(cos: CosProjectRow[] | null | 'failed', board: {
     return {
       key: r.conversationKey, title: r.title, goal: r.goal, state, stateWords: PROJECT_STATE_WORDS[state], lastCheckAt: r.lastCheckAt,
       paused: state === 'paused' && r.pausedBy ? { at: r.pausedBy.at, quote: r.pausedBy.quote } : null,
+      why: state === 'unknown' && r.lastNote ? shortNote(r.lastNote) : null,
       done: { items, met: items.filter((i) => i.state === 'pass').length, total: items.length },
       cards: cards.slice(0, PROJECTS_MAX_CARDS_PER_PROJECT), moreCards: Math.max(0, cards.length - PROJECTS_MAX_CARDS_PER_PROJECT),
       conversationKey: r.conversationKey,

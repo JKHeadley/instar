@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-16T10:40:27.930Z",
+  "slug": "work-front-doors-stage2a",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/server/workProjectsRoutes.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

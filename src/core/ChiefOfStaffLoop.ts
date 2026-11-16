@@ -454,14 +454,24 @@ export class ChiefOfStaffLoop {
    * union read (projectDetail reads the union per project). Null when the union is unreadable, so a caller
    * can say "could not check" instead of showing no projects.
    */
-  projectsOverview(): Array<{ conversationKey: string; title: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; parked: boolean; doneDefinition: Array<{ id: string; text: string }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null }> | null {
+  projectsOverview(): Array<{ conversationKey: string; title: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; parked: boolean; doneDefinition: Array<{ id: string; text: string }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null; lastNote: string | null }> | null {
     let union: UnionEntry[] = [];
     try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: null tells the caller the projects could not be read; the loop health shows lastError */ return null; }
     const cfg = this.d.config(); const now = new Date(this.d.now());
+    // The newest check note per project (one pass), so a project with no verdict can say why.
+    const notes = new Map<string, { at: string; note: string }>();
+    for (const e of union) {
+      const d = e.data as { recordType?: unknown; conversationKey?: unknown; at?: unknown; note?: unknown };
+      if (d.recordType !== 'check-event' || typeof d.conversationKey !== 'string' || typeof d.note !== 'string' || !d.note) continue;
+      // A carried-forward check says only "no new evidence"; the newest note that says something explains more.
+      if (/^\s*no new evidence\s*$/i.test(d.note)) continue;
+      const at = String(d.at ?? ''); const prev = notes.get(d.conversationKey);
+      if (!prev || at > prev.at) notes.set(d.conversationKey, { at, note: d.note });
+    }
     return boundProjects(union).map((p) => {
       const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
       const done = (Array.isArray(p.doneDefinition) ? p.doneDefinition : []).map((d: { id?: unknown; text?: unknown }) => ({ id: String(d.id ?? ''), text: String(d.text ?? '') })).filter((d) => d.id && d.text);
-      return { conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems, pausedBy: ownerPause(p.binding as unknown as Record<string, unknown>) ?? ownerPause(p.binding.binding) };
+      return { conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems, pausedBy: ownerPause(p.binding as unknown as Record<string, unknown>) ?? ownerPause(p.binding.binding), lastNote: notes.get(p.conversationKey)?.note ?? null };
     });
   }
 
