@@ -6,6 +6,8 @@
 
 Conversations' "Review suggestions" now offers each project the Chief of Staff tracks as a ready-made suggestion, "Project: <name>", with the project's conversation and the conversations under it. Accepting it creates a project in Conversations with that conversation as its front door, through the same owner steps as any accepted suggestion. With two or more, "Accept all N projects" accepts them one by one; stopping part-way leaves Continue, which also works from another tab or device. Nothing is organized until the owner accepts; a project whose conversation is already inside another project creates nothing; a rejection holds; a project no longer tracked is no longer offered.
 
+Each project's page in Conversations also lists the work cards made for it, under "Cards for this project", each marked "Proposed" until the owner moves it in (a card the owner placed elsewhere is never proposed; a finished card drops off).
+
 ## What to Tell Your User
 
 - **Your projects in Conversations**: "The projects I'm tracking for you now show up in Conversations as suggestions. Accept them, one by one or all at once, and each becomes a project there with its own conversation as the front door. Nothing moves until you accept."

@@ -7893,6 +7893,26 @@ export class AgentServer {
       const t=this.state.get<number>('chief-of-staff-topic');
       return typeof t==='number'&&Number.isSafeInteger(t)&&t>1?t:null;
     };
+    // work-front-doors stage 2b (spec §3.2): each open card's conversation and its project's conversation, so a
+    // project's page shows the card as proposed until the card-record graph authority exists. Read-only.
+    const graphCardPlacements=():Array<{card:import('../core/conversationGraph.js').ConversationRef;project:import('../core/conversationGraph.js').ConversationRef}>=>{
+      const svc=options.workBoard?.()?.svc;if(!svc)return[];
+      const chatId=String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'');
+      const refFor=(key:string):import('../core/conversationGraph.js').ConversationRef|null=>{
+        const t=/^telegram:(\d+)$/.exec(key);if(t&&chatId)return{kind:'conversation',platform:'telegram',chatId,topicId:Number(t[1])};
+        const a=/^app:([A-Za-z0-9_.:-]{1,200})$/.exec(key);if(a)return{kind:'conversation',platform:'app',conversationKey:a[1]};
+        return null;
+      };
+      const out:Array<{card:import('../core/conversationGraph.js').ConversationRef;project:import('../core/conversationGraph.js').ConversationRef}>=[];
+      for(const id of svc.cardIds()){
+        const v=svc.view(id);if(!v||!v.card.created||!v.card.projectKey)continue;
+        // A finished or set-aside card leaves the project's proposed list (spec §3.2: a done card leaves the default list).
+        if(v.status==='done'||v.status==='archived'||v.status==='removed')continue;
+        const project=refFor(v.card.projectKey);if(!project)continue;
+        out.push({card:{kind:'conversation',platform:'app',conversationKey:v.card.conversationKey},project});
+      }
+      return out;
+    };
     const graphSuggestions={intelligence:options.intelligence??null,evidence:(ref:import('../core/conversationGraph.js').ConversationRef)=>{
       if(ref.platform!=='telegram')return{project:null,text:''};
       const id=ref.topicId;
@@ -7929,7 +7949,7 @@ export class AgentServer {
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,cardPlacements:graphCardPlacements,
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -7940,7 +7960,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,cardPlacements:graphCardPlacements,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},

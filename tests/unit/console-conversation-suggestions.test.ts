@@ -204,3 +204,15 @@ describe('a Chief of Staff project suggestion (work-front-doors stage 2b)',()=>{
  });
 });
 
+
+describe('a project page lists its proposed cards (work-front-doors stage 2b)',()=>{
+ it('nodeModel reads the proposed list, drops a malformed row from it only, and defaults to none',async()=>{
+  const m=await boot();
+  const body=(over:any)=>({partial:false,node:{ref:effort,title:'Project: Shop'},path:[],children:{items:[{ref:tg(5),title:'Shop'}],nextCursor:null},...over});
+  const withCards=m.nodeModel(body({proposed:{by:'card-record',items:[{ref:tg(7),title:'Pick the date'},{ref:{kind:'nope'},title:'bad'}]}}));
+  expect(withCards.ok).toBe(true);
+  expect(withCards.proposed.map((i:any)=>i.title)).toEqual(['Pick the date']);
+  expect(withCards.children.map((i:any)=>i.title)).toEqual(['Shop']);
+  expect(m.nodeModel(body({})).proposed).toEqual([]);
+ });
+});

@@ -83,6 +83,9 @@ export function nodeModel(data) {
   return {
     ok: true, node, path: Array.isArray(data.path) ? data.path.filter(validPath) : [],
     children, nextCursor: data.children.nextCursor || null,
+    // Work cards' conversations proposed under this project from the card record (work-front-doors stage 2b).
+    // A malformed row is dropped from this optional list only; the page's own children are unaffected.
+    proposed: Array.isArray(data.proposed?.items) ? data.proposed.items.map(itemModel).filter(Boolean) : [],
     links: Array.isArray(data.links) ? data.links.filter(validPath) : [],
     provenance: Array.isArray(data.provenance) ? data.provenance : [],
     correction: correctionModel(data.correction),
