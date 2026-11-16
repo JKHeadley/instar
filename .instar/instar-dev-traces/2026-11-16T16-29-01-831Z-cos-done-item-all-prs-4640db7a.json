@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "cos-done-item-all-prs",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-16T16:29:01.831Z",
+  "artifactPath": "upgrades/side-effects/cos-done-item-all-prs.md",
+  "artifactSha256": "c3a3c121aa3501d3c6d4a3d72319643076944f2a425857ca66d2da2468b1668a",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffEvidence.ts",
+    "tests/unit/ChiefOfStaffDoneItemEvaluator.test.ts",
+    "upgrades/next/cos-done-item-all-prs.md",
+    "upgrades/side-effects/cos-done-item-all-prs.eli16.md",
+    "upgrades/side-effects/cos-done-item-all-prs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one evaluator branch, signal-only, a revert restores it; only makes passes rarer",
+  "eli16Path": "upgrades/side-effects/cos-done-item-all-prs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-done-item-all-prs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

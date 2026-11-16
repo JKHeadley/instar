@@ -36,6 +36,7 @@ function evaluator(over: Partial<DoneItemEvaluatorDeps> = {}) {
       '102': { merged_at: null, state: 'closed', base: 'main' },
       '103': { merged_at: '2026-11-15T10:00:00Z', state: 'closed', base: 'release' },
       '104': 'error',
+      '105': { merged_at: '2026-11-15T11:00:00Z', state: 'closed', base: 'main' },
     }),
     defaultBranch: async () => 'main',
     fetchPage: async () => 'the release is shipped',
@@ -66,6 +67,24 @@ describe('PR-merged done items', () => {
     const gh = pullsGh({ '100': { merged_at: '2026-11-15T10:00:00Z', state: 'closed', base: 'main' } });
     expect(await evaluator({ gh })(item('PR someone/else#100 merged'), project)).toBe('unknown');
     expect(gh.calls).toHaveLength(0);
+  });
+});
+
+describe('done items naming several PRs', () => {
+  it('passes only when every named PR merged', async () => {
+    expect(await evaluator()(item('Fixes landed (PR JKHeadley/instar#100 merged, PR JKHeadley/instar#105 merged).'), project)).toBe('pass');
+  });
+  it('fails when any one is not merged, even if the first one is', async () => {
+    expect(await evaluator()(item('Fixes landed (PR JKHeadley/instar#100 merged, PR JKHeadley/instar#101 merged).'), project)).toBe('fail');
+  });
+  it('is unknown when one cannot be read and none failed', async () => {
+    expect(await evaluator()(item('Fixes landed (PR JKHeadley/instar#100 merged, PR JKHeadley/instar#104 merged).'), project)).toBe('unknown');
+  });
+  it('fail outranks unknown', async () => {
+    expect(await evaluator()(item('PR JKHeadley/instar#104 merged, PR JKHeadley/instar#102 merged'), project)).toBe('fail');
+  });
+  it('is unknown when one of them is in a repo the owner did not link', async () => {
+    expect(await evaluator()(item('PR JKHeadley/instar#100 merged, PR someone/else#100 merged'), project)).toBe('unknown');
   });
 });
 
