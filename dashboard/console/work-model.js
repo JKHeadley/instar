@@ -10,7 +10,7 @@ export { whenWords };
 
 /** The lanes, first screen first. */
 export const LANES = [
-  { id: 'waiting-on-you', label: 'Waiting on you', empty: 'Nothing is waiting on you.' },
+  { id: 'waiting-on-you', label: 'Waiting on you', empty: 'No cards right now.' },
   { id: 'with-agent', label: 'With the agent', empty: 'The agent is not working on any card right now.' },
   { id: 'waiting-on-others', label: 'Waiting on others', empty: 'No card is waiting on someone else.' },
   { id: 'done', label: 'Done', empty: 'Nothing finished yet.' },
@@ -55,7 +55,9 @@ export function readBoard(body) {
 
 export function headline(board) {
   const n = board.waitingOnYou;
-  if (!n) return 'Nothing on the board is waiting on you.';
+  // With no card waiting, a neutral title: the Needs-you strip above may still list things that need the
+  // person, and "nothing is waiting" under it read as the page contradicting itself (2026-11-16).
+  if (!n) return 'The work board';
   return n === 1 ? '1 card is waiting on you.' : `${n} cards are waiting on you.`;
 }
 

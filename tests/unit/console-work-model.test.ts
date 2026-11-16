@@ -58,7 +58,8 @@ describe('readBoard', () => {
     expect(b.lanes.done.total).toBe(41);
     expect(b.waitingOnYou).toBe(4);
     expect(headline(b)).toBe('4 cards are waiting on you.');
-    expect(headline(readBoard(board([])))).toBe('Nothing on the board is waiting on you.');
+    // Neutral with no card waiting: the Needs-you strip above may still list things (never "nothing is waiting").
+    expect(headline(readBoard(board([])))).toBe('The work board');
   });
   it('a body without lanes, an unknown lane, or a card without an id is unreadable', () => {
     expect(readBoard({}).ok).toBe(false);

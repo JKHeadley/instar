@@ -16,7 +16,7 @@ const list = (words) => (words.length <= 1 ? words.join('') : `${words.slice(0, 
  * res: the console read result ({ ok, data } | { ok: false, reason }), or null while loading.
  * Returns what the strip shows. Pure, no DOM.
  */
-export function stripModel(res) {
+export function stripModel(res, { expanded = false } = {}) {
   if (!res) return { show: true, state: 'loading', badge: '…', incomplete: true, title: 'Checking what needs you…', rows: [], more: 0, line: '' };
   if (!res.ok) {
     // An agent server older than the read (404) is "could not check" too: never a zero.
@@ -29,7 +29,8 @@ export function stripModel(res) {
   const missed = Array.isArray(d.couldNotCheck) ? d.couldNotCheck.filter((x) => typeof x === 'string') : [];
   const complete = d.complete === true && missed.length === 0;
   if (count === 0 && complete) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
-  const rows = items.slice(0, STRIP_ROWS);
+  // "N more" opens the rest in place (every count needs a path to act); the read carries up to 100 items.
+  const rows = expanded ? items : items.slice(0, STRIP_ROWS);
   return {
     show: true,
     // warning-path: row
@@ -46,6 +47,7 @@ export function stripModel(res) {
 // One strip at a time: a new mount (another door) stops the previous refresh.
 let timer = null;
 let last = null; // the last answer, so a door change paints at once
+let expanded = false; // "N more" opened: every item shows until it is closed again
 
 /** Draw the strip into `host` and keep it fresh while it is on screen. `hrefFor(action)` maps a row's action to a link. */
 export function mountNeedsStrip(host, { get, hrefFor }) {
@@ -54,7 +56,7 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
   const paint = (res) => {
     // A refresh never replaces a row being acted on (spec §2.1).
     if (rows && rows.contains(document.activeElement) && document.activeElement !== document.body) return;
-    const m = stripModel(res);
+    const m = stripModel(res, { expanded });
     host.hidden = !m.show;
     host.dataset.state = m.state;
     host.dataset.incomplete = m.incomplete ? '1' : '0';
@@ -70,9 +72,16 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
         el('h2', { class: 'needs-heading', text: m.title }),
         el('span', { class: 'needs-badge', 'aria-label': m.incomplete ? `${m.badge} or more` : m.badge, text: m.badge })),
       ...(m.rows.length ? [rows] : []),
-      ...(m.more > 0 ? [el('p', { class: 'needs-more', text: m.more === 1 ? 'One more thing needs you.' : `${m.more} more things need you.` })] : []),
+      ...(m.more > 0 || (expanded && m.rows.length > STRIP_ROWS) ? [moreButton(m)] : []),
       ...(m.line ? [el('p', { class: 'needs-line', text: m.line })] : []),
     );
+  };
+  // "N more things need you." opens the rest in place; "Show fewer" closes it.
+  const moreButton = (m) => {
+    const b = el('button', { class: 'needs-more link-btn', type: 'button', 'aria-expanded': expanded ? 'true' : 'false',
+      text: expanded ? 'Show fewer' : (m.more === 1 ? 'One more thing needs you. Show it' : `${m.more} more things need you. Show all`) });
+    b.addEventListener('click', () => { expanded = !expanded; paint(last); });
+    return b;
   };
   paint(last);
   const load = async () => {
