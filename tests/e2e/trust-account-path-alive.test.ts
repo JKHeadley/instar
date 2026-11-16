@@ -98,7 +98,10 @@ describe('Trust account path E2E (feature is alive)', () => {
       });
       expect(await runtime.ingest(receipt(stmt, 1))).toBe('acceptance-recorded');
       const card = sent.find((m) => m.text.includes('reply to this message with: approve'))!;
-      expect(await runtime.ingest(receipt(`approve ${open.body.code}`, 2, String(card.messageId)))).toBe('approved');
+      // The code is on the person's card only; the agent's response never carries it.
+      expect(open.body.code).toBeUndefined();
+      const code = /approve ([0-9A-Z]{6})/.exec(card.text)![1];
+      expect(await runtime.ingest(receipt(`approve ${code}`, 2, String(card.messageId)))).toBe('approved');
       expect(trust.getTrustLevel('gmail', 'write').level).toBe('autonomous');
       // Durable in the journal and in the backup set.
       rig.journal.flush();
