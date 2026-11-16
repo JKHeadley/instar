@@ -336,6 +336,28 @@ export class UserManager {
     }
   }
 
+  /**
+   * Find the already-loaded profile a legacy (id-less) config.users entry refers
+   * to — by verified platform id first (slackUserId / telegramUserId), then by
+   * an exact, unambiguous name match.
+   */
+  private findPersistedMatchForLegacyEntry(entry: Partial<UserProfile>): UserProfile | null {
+    if (typeof entry.slackUserId === 'string' && entry.slackUserId) {
+      const m = this.resolveFromSlackUserId(entry.slackUserId);
+      if (m) return m;
+    }
+    if (typeof entry.telegramUserId === 'number' && entry.telegramUserId) {
+      const m = this.resolveFromTelegramUserId(entry.telegramUserId);
+      if (m) return m;
+    }
+    if (typeof entry.name === 'string' && entry.name.trim()) {
+      const name = entry.name.trim();
+      const byName = Array.from(this.users.values()).filter((u) => u.name === name);
+      if (byName.length === 1) return byName[0];
+    }
+    return null;
+  }
+
   private loadUsers(initialUsers?: UserProfile[]): void {
     // Load from file if exists
     if (fs.existsSync(this.usersFile)) {
@@ -380,6 +402,29 @@ export class UserManager {
     // Merge initial users (config takes precedence for initial setup)
     if (initialUsers) {
       for (const user of initialUsers) {
+        if (!user || typeof user !== 'object') {
+          console.error(`[UserManager] Skipped non-object config.users entry: ${JSON.stringify(user)}`);
+          continue;
+        }
+        // Legacy config.users entries (e.g. {name, role, slackUserId} written by
+        // older builds) carry no id/channels/permissions. Such an entry must never
+        // fail boot (a constructor throw crash-loops the server before it binds
+        // its port) nor overwrite a valid persisted profile.
+        const hasValidId = typeof user.id === 'string' && user.id.trim().length > 0;
+        if (!hasValidId) {
+          const match = this.findPersistedMatchForLegacyEntry(user);
+          if (match) {
+            // The persisted users.json record is authoritative — nothing to merge.
+            continue;
+          }
+          console.error(
+            `[UserManager] Skipped config.users entry without an "id" ` +
+            `(${JSON.stringify(user).slice(0, 200)}). ` +
+            `No matching user exists in users.json. To register this user, add "id", "channels" ` +
+            `and "permissions" to the entry in config.json (or run \`instar user add\`).`,
+          );
+          continue;
+        }
         if (!this.users.has(user.id)) {
           // upsertUser → validateProfile refuses a fixture initialUsers entry
           // (typed throw). Guard so a fixture in config.users can't fail boot;
@@ -391,7 +436,15 @@ export class UserManager {
               console.error(`[UserManager] Skipped fixture identity from initialUsers: ${err.message}`);
               continue;
             }
-            throw err;
+            // Any other invalid config.users entry (missing channels/permissions,
+            // channel collision) is skipped with an actionable diagnostic rather
+            // than thrown — a constructor throw here crash-loops server boot.
+            console.error(
+              `[UserManager] Skipped invalid config.users entry "${user.id}": ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              `Fix the entry in config.json (it needs "id", "channels" and "permissions" arrays).`,
+            );
+            continue;
           }
         }
       }
