@@ -1,0 +1,4 @@
+---
+title: Dashboard PIN is protected against lockout and guessing
+---
+The dashboard PIN unlock keys its limit to each real visitor, lets any browser the owner has unlocked before straight in (a signed cookie), and puts a hard cap on unknown guessers so a stranger can neither lock the owner out nor brute-force the PIN. The owner at the machine is always let in. If the owner reports "someone is trying to guess my dashboard PIN" or "I'm locked out of the dashboard", explain in plain words: a browser they've unlocked before gets in instantly, or they can use the machine itself (the local dashboard or the paired phone app) — those never go through the attacker cap. During a sustained attack they get one plain-words alert. It ships on; it can be tuned or turned off under `security.pinThrottle` in the config (turning it off restores the old limiter and re-exposes the lockout). Spec: docs/specs/dashboard-pin-throttle.md.

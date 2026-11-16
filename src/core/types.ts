@@ -5102,6 +5102,25 @@ export interface InstarConfig {
   dashboardPin?: string;
   /** Server-managed revocation generation, atomically coupled to each PIN write. */
   dashboardPinGeneration?: string;
+  /** Security hardening knobs (docs/specs/dashboard-pin-throttle.md). */
+  security?: {
+    /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
+    pinThrottle?: {
+      enabled?: boolean;
+      softFailures?: number;
+      markedSoftFailures?: number;
+      markedAbuseCap?: number;
+      baseMs?: number;
+      maxBackoffMs?: number;
+      windowMs?: number;
+      globalFailureBudget?: number;
+      coarseFailureBudget?: number;
+      alertCooldownMs?: number;
+      maxSources?: number;
+      /** TTL of the prior-unlock cookie (ms). Default 30 days. */
+      markerTtlMs?: number;
+    };
+  };
   /** Relationship tracking config */
   relationships?: RelationshipManagerConfig;
   /** Feedback loop config */

@@ -221,7 +221,9 @@ import { createDocumentPageRoutes } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
-import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink } from './documentLinkRoutes.js';
+import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
+import { PinThrottle, normalizePinSource } from '../core/PinThrottle.js';
+import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
 import { setDocumentScopedSend } from './mobilePairingRoutes.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
@@ -2046,6 +2048,31 @@ export class AgentServer {
     let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
+    // SEC-002: per-client throttle + known-browser (cookie) bypass + hard cap + owner alert.
+    // Ships ON; `security.pinThrottle.enabled: false` restores the legacy limiter exactly.
+    const pinThrottleCfg = configRef.security?.pinThrottle;
+    const pinThrottle = (pinThrottleCfg?.enabled !== false) ? new PinThrottle(pinThrottleCfg) : null;
+    const markerTtlMs = pinThrottleCfg?.markerTtlMs ?? 30 * 24 * 60 * 60 * 1000;
+    const tunnelHostForPin = (): string | null => {
+      try { return options.tunnel?.url ? new URL(options.tunnel.url).host : null; } catch { return null; } // @silent-fallback-ok — an unparseable tunnel URL means there is no own-name tunnel host
+    };
+    const viaOwnNameForPin = (host: string): boolean => {
+      if (this.mobilePairing?.ownNames?.accepts(host)) return true;
+      const th = tunnelHostForPin();
+      return !!th && host === th;
+    };
+    const readPinMarker = (req: Request): string | null => {
+      if (!pinThrottle || !configRef.authToken) return null;
+      const raw = String(req.headers.cookie ?? '');
+      const hit = raw.split(';').map((c) => c.trim()).find((c) => c.startsWith(PIN_MARKER_COOKIE + '='));
+      if (!hit) return null;
+      // decodeURIComponent throws URIError on a malformed %-escape; a crafted cookie must never 500
+      // the unlock route. Treat any unparseable cookie as no marker (unmarked).
+      let value: string;
+      try { value = decodeURIComponent(hit.slice(PIN_MARKER_COOKIE.length + 1)); } catch { return null; } // @silent-fallback-ok — a malformed cookie is treated as no marker, never a 500
+      return verifyPinMarker(configRef.authToken, value, Date.now());
+    };
+
     // One rule for whether this connection may unlock, shared by the unlock route
     // and the check the console makes BEFORE it shows a PIN box (a box the server
     // will refuse is never shown; the console offers the secure address instead).
@@ -2076,24 +2103,46 @@ export class AgentServer {
         return;
       }
 
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-
-      // Rate limit by IP
       const now = Date.now();
-      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
-        || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
-        return;
-      }
-      let entry = pinAttempts.get(ip);
-      if (entry && now > entry.resetAt) {
-        pinAttempts.delete(ip);
-        entry = undefined;
-      }
-      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
-        res.status(429).json({ error: 'Too many attempts. Try again later.' });
-        return;
+      const host = String(req.headers.host ?? '');
+      // Genuinely-local request (owner at the machine): loopback + no cf-connecting-ip + local Host.
+      // Exempt from the throttle so the hard cap never refuses the owner's out-of-band recovery.
+      const isLocalDirect = ownLoopbackHost(req, host, configRef.port);
+      // The REAL client (cf-connecting-ip only through our own cloudflared), collapsed to its /64.
+      const ip = pinThrottle
+        ? normalizePinSource(callerAddress(req, viaOwnNameForPin(host)))
+        : (req.ip || req.socket.remoteAddress || 'unknown');
+      const markerId = readPinMarker(req);
+      let entry: { count: number; resetAt: number } | undefined;
+
+      if (pinThrottle) {
+        if (!isLocalDirect) {
+          const decision = pinThrottle.consult(ip, markerId, now);
+          if (!decision.allow) {
+            res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
+            return;
+          }
+          // Durable cross-restart backstop, keyed by the REAL client (not the shared loopback) and
+          // never applied to a known browser — so it cannot reintroduce the owner lockout.
+          if (!markerId && this.pinAttemptStore?.blocked(ip)) {
+            res.status(429).json({ error: 'Too many attempts. Try again later.' });
+            return;
+          }
+        }
+      } else {
+        // Legacy limiter (rollback path, security.pinThrottle.enabled=false): unchanged.
+        if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+        if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
+          || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+          res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
+          return;
+        }
+        entry = pinAttempts.get(ip);
+        if (entry && now > entry.resetAt) { pinAttempts.delete(ip); entry = undefined; }
+        if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
+          res.status(429).json({ error: 'Too many attempts. Try again later.' });
+          return;
+        }
       }
 
       const { pin } = req.body;
@@ -2105,11 +2154,27 @@ export class AgentServer {
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
-        // Track failed attempt
-        if (!entry) {
-          entry = { count: 0, resetAt: now + WINDOW_MS };
-          pinAttempts.set(ip, entry);
+        if (pinThrottle) {
+          if (!isLocalDirect) {
+            const { alert } = pinThrottle.recordFailure(ip, markerId, now);
+            // Durable backstop records only unmarked (stranger) failures by real client.
+            if (!markerId) this.pinAttemptStore?.recordFailure(ip);
+            if (alert) {
+              // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
+              DegradationReporter.getInstance().report({
+                feature: 'DashboardPin.bruteForce',
+                primary: 'An attack on the dashboard PIN is under way',
+                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the machine still works',
+                reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
+                impact: 'To unlock, use a browser you have unlocked before, or the machine itself (the local dashboard or the paired phone app).',
+              });
+            }
+          }
+          res.status(403).json({ error: 'Incorrect PIN' });
+          return;
         }
+        // Legacy failure tracking (rollback path).
+        if (!entry) { entry = { count: 0, resetAt: now + WINDOW_MS }; pinAttempts.set(ip, entry); }
         entry.count++;
         globalPinAttempts.count++;
         const remaining = this.pinAttemptStore?.recordFailure(ip) ?? (MAX_ATTEMPTS - entry.count);
@@ -2131,10 +2196,21 @@ export class AgentServer {
           configRef.dashboardPin=policy.pin;configRef.dashboardPinGeneration=policy.generation;
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
-      pinAttempts.delete(ip);
-      this.pinAttemptStore?.recordSuccess(ip);
-      globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-      this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
+      if (pinThrottle) {
+        pinThrottle.recordSuccess(ip, markerId);
+        this.pinAttemptStore?.recordSuccess(ip);
+        // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
+        // stranger cap). Signed, httpOnly, Secure, SameSite=Strict, agent-bound, expiring.
+        if (configRef.authToken) {
+          const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
+          res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
+        }
+      } else {
+        pinAttempts.delete(ip);
+        this.pinAttemptStore?.recordSuccess(ip);
+        globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+        this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
+      }
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
       // for explicitly operator-gated actions.
