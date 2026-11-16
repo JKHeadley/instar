@@ -7676,8 +7676,8 @@ export function createRoutes(ctx: RouteContext): Router {
         ctx.config.backup,
         () => ctx.sessionManager.listRunningSessions().length > 0,
       );
-      manager.restoreSnapshot(id);
-      res.json({ restored: id });
+      const report = manager.restoreSnapshot(id);
+      res.json({ restored: id, jobsMissingExecutable: report.jobsMissingExecutable });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Restore failed' });
     }

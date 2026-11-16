@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-16T11:18:15.113Z",
+  "slug": "feedback-c522b934-971f-4-fc89e873-a2",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-c522b934-971f-47c2-a3d0-9f6702b1f10e:a2",
+  "initiativeId": "feedback-c522b934-971f-47c2-a3d0-9f6702b1f10e",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 4,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/commands/backup.ts",
+      "src/core/BackupManager.ts",
+      "src/core/types.ts",
+      "src/server/routes.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

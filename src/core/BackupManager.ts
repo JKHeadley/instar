@@ -16,7 +16,7 @@ import { KEY_MATERIAL_BACKUP_PREFIXES } from './keyMaterialPaths.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { BackupSnapshot, BackupConfig } from './types.js';
+import type { BackupSnapshot, BackupConfig, BackupRestoreReport, UncapturedJobExecutable } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { mergeDefaults } from './mergeDefaults.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
@@ -274,8 +274,57 @@ const DEFAULT_CONFIG: BackupConfig = {
     // database (with the WAL set) joins the backup with the layer store.
     // Same gate.
     'topic-memory.db*',
+    // Managed job executables. jobs.json declares script-class jobs that run
+    // files from here; backing up the declaration without the file restores a
+    // job that loads and then fails at exec. Executables a script job points at
+    // elsewhere inside the state dir (e.g. silos/<name>/scripts/) are added per
+    // job at snapshot time — see scriptJobExecutables().
+    'scripts/',
   ],
 };
+
+/** Interpreters that may lead a script job's command; the file they run is the dependency. */
+const SCRIPT_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'node', 'python', 'python3', 'ruby', 'perl', 'deno', 'bun', 'npx', 'tsx', 'env', 'exec']);
+
+export interface ScriptJobExecutable {
+  slug: string;
+  /** The path as written in the job */
+  path: string;
+  /** Absolute path, resolved the way the scheduler runs it (cwd = the project dir). */
+  absolute: string;
+}
+
+/**
+ * The executable each script-class job in `<stateDir>/jobs.json` runs. The
+ * scheduler executes `execute.value` through a shell with cwd = the project
+ * directory (the state dir's parent), so a relative path resolves there. The
+ * executable is the first token after any leading interpreter or env
+ * assignment; a command that names no file (a bare PATH command) yields none.
+ */
+export function scriptJobExecutables(stateDir: string): ScriptJobExecutable[] {
+  let jobs: unknown;
+  try {
+    jobs = JSON.parse(fs.readFileSync(path.join(stateDir, 'jobs.json'), 'utf-8'));
+  } catch { // @silent-fallback-ok: no readable jobs.json means no script jobs to check
+    return [];
+  }
+  const list = Array.isArray(jobs) ? jobs : (jobs && typeof jobs === 'object' && Array.isArray((jobs as { jobs?: unknown }).jobs) ? (jobs as { jobs: unknown[] }).jobs : []);
+  const projectDir = path.dirname(path.resolve(stateDir));
+  const out: ScriptJobExecutable[] = [];
+  for (const job of list) {
+    if (!job || typeof job !== 'object') continue;
+    const j = job as { slug?: unknown; execute?: { type?: unknown; value?: unknown } };
+    if (j.execute?.type !== 'script' || typeof j.execute.value !== 'string' || typeof j.slug !== 'string') continue;
+    const tokens = j.execute.value.trim().split(/\s+/).map((t) => t.replace(/^['"]|['"]$/g, ''));
+    let i = 0;
+    while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || SCRIPT_INTERPRETERS.has(path.basename(tokens[i])) || (i > 0 && tokens[i].startsWith('-')))) i++;
+    const token = tokens[i];
+    if (!token || (!token.includes('/') && !/\.(sh|bash|zsh|js|mjs|cjs|ts|py|rb|pl)$/.test(token))) continue;
+    const expanded = token.startsWith('~/') ? path.join(process.env.HOME ?? '~', token.slice(2)) : token;
+    out.push({ slug: j.slug, path: token, absolute: path.resolve(projectDir, expanded) });
+  }
+  return out;
+}
 
 /**
  * Expand a single glob-style entry (only one `*`, in the LAST path segment,
@@ -678,6 +727,41 @@ export class BackupManager {
       copyStaged(relative, stagedPath);
     }
 
+    // Script-class jobs: capture each executable that lives inside the state
+    // dir, and record the ones this snapshot cannot hold, so a restore can say
+    // which jobs come back without the file they run.
+    const uncapturedExecutables: UncapturedJobExecutable[] = [];
+    const captured = new Set(files.map((f) => stagedKey(f)));
+    for (const exe of scriptJobExecutables(this.stateDir)) {
+      const relative = path.relative(this.stateDir, exe.absolute);
+      if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+        uncapturedExecutables.push({ slug: exe.slug, path: exe.path, reason: 'outside-state-dir' });
+        continue;
+      }
+      if (captured.has(stagedKey(relative))) continue;
+      if (relative.split(path.sep)[0] === 'backups' || this.isEntryBlocked(relative) || isDeniedForBackup(relative)) {
+        uncapturedExecutables.push({ slug: exe.slug, path: exe.path, reason: 'excluded' });
+        continue;
+      }
+      let stat: fs.Stats | null = null;
+      try { stat = fs.lstatSync(exe.absolute); } catch { /* @silent-fallback-ok: a missing executable is recorded below */ }
+      if (stat === null || (!stat.isFile() && !stat.isSymbolicLink())) {
+        uncapturedExecutables.push({ slug: exe.slug, path: exe.path, reason: 'missing' });
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        // Symlinks are never followed into a snapshot (the directory copy skips them too).
+        uncapturedExecutables.push({ slug: exe.slug, path: exe.path, reason: 'symlink' });
+        continue;
+      }
+      copyOne(relative, exe.absolute, stat.size);
+      if (files.includes(relative)) captured.add(stagedKey(relative));
+      else uncapturedExecutables.push({ slug: exe.slug, path: exe.path, reason: 'missing' });
+    }
+    if (uncapturedExecutables.length > 0) {
+      console.warn(`[BackupManager] Snapshot ${id} does not hold the executable of ${uncapturedExecutables.length} script job(s): ${uncapturedExecutables.map((u) => `${u.slug} (${u.path}: ${u.reason})`).join(', ')}`);
+    }
+
     const integrityHash = this.computeIntegrityHash(files, totalBytes);
 
     const snapshot: BackupSnapshot = {
@@ -687,6 +771,7 @@ export class BackupManager {
       files,
       totalBytes,
       integrityHash,
+      ...(uncapturedExecutables.length > 0 ? { uncapturedExecutables } : {}),
     };
 
     // Write manifest
@@ -882,8 +967,11 @@ export class BackupManager {
    * - Any sessions are active
    * - Snapshot ID is invalid
    * - Manifest integrity check fails
+   *
+   * Returns which files came back and which script-class jobs in the restored
+   * jobs.json still have no executable on disk (they would load, then fail at exec).
    */
-  restoreSnapshot(id: string): void {
+  restoreSnapshot(id: string): BackupRestoreReport {
     // Session guard — enforced at the method level, not just at call sites
     if (this.isSessionActive?.()) {
       throw new Error('Cannot restore while sessions are active. Stop all sessions first.');
@@ -918,6 +1006,7 @@ export class BackupManager {
     this.createSnapshot('manual');
 
     // Restore files
+    const restoredFiles: string[] = [];
     for (const file of manifest.files) {
       // A PRE-fix snapshot (or one crafted on another machine) may carry
       // excluded per-machine state — apply the same three deny layers on the
@@ -940,7 +1029,16 @@ export class BackupManager {
 
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(src, dest);
+      restoredFiles.push(file);
     }
+
+    const jobsMissingExecutable = scriptJobExecutables(this.stateDir)
+      .filter((exe) => !fs.existsSync(exe.absolute))
+      .map((exe) => ({ slug: exe.slug, path: exe.path }));
+    if (jobsMissingExecutable.length > 0) {
+      console.warn(`[BackupManager] Restored ${id}, but ${jobsMissingExecutable.length} script job(s) have no executable: ${jobsMissingExecutable.map((j) => `${j.slug} (${j.path})`).join(', ')}`);
+    }
+    return { id, restoredFiles, jobsMissingExecutable };
   }
 
   /**

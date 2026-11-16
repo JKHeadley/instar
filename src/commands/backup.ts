@@ -75,9 +75,13 @@ export async function restoreBackup(id: string | undefined, opts: BackupOptions)
   }
 
   try {
-    manager.restoreSnapshot(id);
+    const report = manager.restoreSnapshot(id);
     console.log(pc.green(`Restored from backup: ${id}`));
     console.log(pc.dim('A pre-restore backup was automatically created.'));
+    if (report.jobsMissingExecutable.length > 0) {
+      console.log(pc.yellow(`${report.jobsMissingExecutable.length} script job(s) came back without their executable and will fail when they run:`));
+      for (const job of report.jobsMissingExecutable) console.log(pc.yellow(`  ${job.slug}: ${job.path}`));
+    }
   } catch (err) {
     console.log(pc.red(`Restore failed: ${err instanceof Error ? err.message : err}`));
     process.exit(1);

@@ -8788,6 +8788,33 @@ export interface BackupSnapshot {
   totalBytes: number;
   /** SHA-256 integrity hash for manifest validation */
   integrityHash?: string;
+  /**
+   * Script-class jobs in jobs.json whose executable this snapshot does NOT
+   * hold (outside the state directory, missing, a symlink, or excluded), so
+   * a restore can say which jobs come back without the file they run.
+   */
+  uncapturedExecutables?: UncapturedJobExecutable[];
+}
+
+export interface UncapturedJobExecutable {
+  /** The job's slug */
+  slug: string;
+  /** The executable path as written in the job (execute.value token) */
+  path: string;
+  /** Why the snapshot cannot restore it */
+  reason: 'outside-state-dir' | 'missing' | 'symlink' | 'excluded';
+}
+
+export interface BackupRestoreReport {
+  /** The snapshot that was restored */
+  id: string;
+  /** Files written back into the state directory */
+  restoredFiles: string[];
+  /**
+   * Script-class jobs in the restored jobs.json whose executable is not on
+   * disk after the restore. They will load but fail at exec.
+   */
+  jobsMissingExecutable: Array<{ slug: string; path: string }>;
 }
 
 export interface BackupConfig {
