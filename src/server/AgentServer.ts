@@ -83,6 +83,7 @@ import { createConversationBindAuth } from '../core/conversationBindToken.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
 import { DashboardOperatorSessionStore } from './DashboardOperatorSessionStore.js';
+import { DashboardSessionStore } from './DashboardSessionStore.js';
 import { UserManager } from '../users/UserManager.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
@@ -542,6 +543,13 @@ export class AgentServer {
   conversationEmbeddings: { index: ConversationEmbeddingIndex; feeder: ConversationEmbeddingFeeder } | null = null;
   private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
+  /** SEC-002b: the scoped dashboard session (dst_) token store — the browser's primary bearer in
+   *  place of the master token. Ships DARK (opt-in) until the full live dashboard proof passes.
+   *  Initialized in the constructor (needs this.config). */
+  private dashboardSessionStore!: DashboardSessionStore;
+  /** SEC-002b: the short-lived fresh-PIN STEP-UP proof store for credential operations (distinct
+   *  from the unlock-time operator session; minted only by POST /dashboard/session/step-up). */
+  private readonly dashboardStepUpSessions = new DashboardOperatorSessionStore({ ttlMs: 5 * 60_000 });
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   /** Desktop-only sessions the owner's phone mints with Face ID (docs/specs/mobile-owner-presence-pin.md §2.1). */
   private readonly phoneDesktopSessions = new PhoneDesktopSessionStore();
@@ -1911,6 +1919,9 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.dashboardSessionStore = new DashboardSessionStore(
+      (this.config as { security?: { dashboardScopedToken?: Record<string, number> } }).security?.dashboardScopedToken,
+    );
     this.transcriptCheckpointTick = options.transcriptCheckpointTick ?? null;
     this.syncDashboardPinVersion();
     this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
@@ -2216,11 +2227,78 @@ export class AgentServer {
       // for explicitly operator-gated actions.
       if(!this.syncDashboardPinVersion())return void res.status(503).json({error:'PIN authorization is temporarily unavailable.'});
       const operatorSession = this.dashboardOperatorSessions.issue();
+      // SEC-002b: when the scoped-token feature is on, hand the browser a short-lived, revocable
+      // SESSION token (dst_) instead of the permanent master token. Dark by default → returns the
+      // master exactly as before (the single-switch rollback and back-compat).
+      const scopedEnabled = (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } })
+        .security?.dashboardScopedToken?.enabled === true;
+      const scoped = scopedEnabled ? this.dashboardSessionStore.issue() : null;
       res.json({
-        token: configRef.authToken,
+        token: scoped ? scoped.token : configRef.authToken,
+        sessionExpiresAt: scoped?.expiresAt,
+        sessionFamilyExpiresAt: scoped?.familyExpiresAt,
         operatorSessionToken: operatorSession.token,
         operatorSessionExpiresAt: operatorSession.expiresAt,
       });
+    });
+
+    // SEC-002b dashboard session lifecycle (docs/specs/dashboard-scoped-session-token.md §4). All
+    // three are GATED behind the enabled flag so the feature adds NO surface when it ships dark
+    // (a true single-switch no-op). When enabled they self-auth: the caller's own dst_ token for
+    // refresh/revoke, and a live-PIN check (through the SAME brute-force limiter as /dashboard/unlock)
+    // for step-up.
+    const scopedTokenOn = (): boolean =>
+      (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true;
+    this.app.post('/dashboard/session/refresh', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      const header = String(req.headers.authorization ?? '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      const next = token.startsWith('dst_') ? this.dashboardSessionStore.refresh(token) : null;
+      if (!next) { res.status(401).json({ error: 'Session expired. Unlock again with your PIN.' }); return; }
+      res.json({ token: next.token, sessionExpiresAt: next.expiresAt, sessionFamilyExpiresAt: next.familyExpiresAt });
+    });
+    this.app.post('/dashboard/session/revoke', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      const header = String(req.headers.authorization ?? '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      if (token.startsWith('dst_')) this.dashboardSessionStore.revokeFamily(token);
+      res.json({ revoked: true });
+    });
+    // Fresh-PIN step-up for credential operations. It verifies the LIVE PIN, so it MUST share the
+    // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It consumes the
+    // SAME per-client + global budget (pinAttempts / globalPinAttempts / durable PinAttemptStore),
+    // keyed identically to /dashboard/unlock, and is gated behind the enabled flag.
+    this.app.post('/dashboard/session/step-up', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      if (unlockRefusedHere(req)) { res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' }); return; }
+      if (!configRef.dashboardPin) { res.status(503).json({ error: 'PIN authentication not yet available.' }); return; }
+      const now = Date.now();
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return;
+      }
+      let entry = pinAttempts.get(ip);
+      if (entry && now > entry.resetAt) { pinAttempts.delete(ip); entry = undefined; }
+      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
+        res.status(429).json({ error: 'Too many attempts. Try again later.' }); return;
+      }
+      const { pin } = req.body ?? {};
+      if (!pin || typeof pin !== 'string') { res.status(400).json({ error: 'Missing PIN' }); return; }
+      const ha = createHash('sha256').update(pin).digest();
+      const hb = createHash('sha256').update(configRef.dashboardPin).digest();
+      if (!timingSafeEqual(ha, hb)) {
+        if (!entry) { entry = { count: 0, resetAt: now + WINDOW_MS }; pinAttempts.set(ip, entry); }
+        entry.count++; globalPinAttempts.count++;
+        this.pinAttemptStore?.recordFailure(ip);
+        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
+        res.status(403).json({ error: 'Incorrect PIN' });
+        return;
+      }
+      pinAttempts.delete(ip);
+      this.pinAttemptStore?.recordSuccess(ip);
+      const proof = this.dashboardStepUpSessions.issue();
+      res.json({ stepUpToken: proof.token, stepUpExpiresAt: proof.expiresAt });
     });
 
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
@@ -2652,6 +2730,14 @@ export class AgentServer {
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
       options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
       options.memoryPrivacy ? (session) => options.memoryPrivacy!.noteSessionReply(session.sessionId) : undefined,
+      // SEC-002b: a dst_ scoped session token is accepted ONLY when the feature is enabled (dark by
+      // default until the full live dashboard proof); read per-request so LiveConfig takes effect.
+      (token: string) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && this.dashboardSessionStore.verify(token),
+      // SEC-002b: a credential route with a dst_ token needs a fresh live-PIN step-up proof (distinct
+      // token type, minted only by POST /dashboard/session/step-up).
+      (req: Request) => this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined),
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
@@ -6182,6 +6268,11 @@ export class AgentServer {
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
       verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
+      // SEC-002b: scoped dashboard session verify + stream-invalidation registration for SSE/WS.
+      dashboardScopedSessionVerify: (token: string | undefined) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && typeof token === 'string' && token.startsWith('dst_') && this.dashboardSessionStore.verify(token),
+      dashboardScopedSessionOnInvalidated: (token: string, cb: () => void) => this.dashboardSessionStore.onFamilyInvalidated(token, cb),
       conversationGraphDelegationRuntime: options.conversationGraphDelegationRuntime,
       conversationGraphDelegationRemoteRuntime: options.conversationGraphDelegationRemoteRuntime,
       getConversationGraphDelegation: options.getConversationGraphDelegation,
@@ -9244,6 +9335,12 @@ export class AgentServer {
           sessionManager: this.sessionManager,
           state: this.state,
           authToken: this.config.authToken,
+          // SEC-002b: accept a dst_ scoped session token on /ws (dark by default) and close the
+          // stream when its session family is revoked.
+          scopedSessionVerify: (token: string) =>
+            (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+            && token.startsWith('dst_') && this.dashboardSessionStore.verify(token),
+          scopedSessionOnInvalidated: (token: string, cb: () => void) => this.dashboardSessionStore.onFamilyInvalidated(token, cb),
           instarDir: this.config.stateDir,
           hookEventReceiver: this.hookEventReceiver,
           streamTicketStore: this.streamTicketStore,

@@ -5102,7 +5102,7 @@ export interface InstarConfig {
   dashboardPin?: string;
   /** Server-managed revocation generation, atomically coupled to each PIN write. */
   dashboardPinGeneration?: string;
-  /** Security hardening knobs (docs/specs/dashboard-pin-throttle.md). */
+  /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
@@ -5119,6 +5119,14 @@ export interface InstarConfig {
       maxSources?: number;
       /** TTL of the prior-unlock cookie (ms). Default 30 days. */
       markerTtlMs?: number;
+    };
+    /** SEC-002b: unlock returns a scoped, revocable dashboard session token instead of the master.
+     *  Ships DARK (enabled defaults false) until the full live dashboard proof passes. */
+    dashboardScopedToken?: {
+      enabled?: boolean;
+      ttlMs?: number;
+      absoluteMaxMs?: number;
+      maxTokens?: number;
     };
   };
   /** Relationship tracking config */

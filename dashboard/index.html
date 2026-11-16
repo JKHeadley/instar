@@ -4485,6 +4485,63 @@
     // API token is intentionally insufficient for operator-only actions.
     let operatorSessionToken = '';
     let operatorSessionExpiresAt = '';
+    // SEC-002b: when the dashboard runs on a scoped session token (dst_), it expires and must be
+    // refreshed before it lapses; a revoked/expired session falls back to the PIN screen.
+    let sessionExpiresAt = '';
+    let sessionRefreshTimer = null;
+    function isScopedToken() { return typeof token === 'string' && token.startsWith('dst_'); }
+    function scheduleSessionRefresh() {
+      if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null; }
+      if (!isScopedToken() || !sessionExpiresAt) return; // master token / dark mode: nothing to refresh
+      const ms = new Date(sessionExpiresAt).getTime() - Date.now();
+      // refresh at ~75% of the remaining life, clamped so a short window still refreshes soon
+      const delay = Math.max(5000, Math.floor(ms * 0.75));
+      sessionRefreshTimer = setTimeout(refreshDashboardSession, delay);
+    }
+    async function refreshDashboardSession() {
+      if (!isScopedToken()) return;
+      try {
+        const r = await fetch('/dashboard/session/refresh', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) { handleSessionLost(); return; }
+        const d = await r.json();
+        if (!d.token) { handleSessionLost(); return; }
+        token = d.token; sessionExpiresAt = d.sessionExpiresAt || '';
+        try { localStorage.setItem('instar_token', token); } catch (_) {}
+        scheduleSessionRefresh();
+      } catch (_) { scheduleSessionRefresh(); } // transient network error: retry on schedule
+    }
+    // SEC-002b step-up: a credential operation (change PIN, read/rotate the API token) answers 403
+    // step-up-required when the browser holds a scoped token. Re-prove the live PIN, mint a one-time
+    // step-up proof, and retry with the X-Instar-Step-Up header. Credential-op call sites use this in
+    // place of a raw fetch; for the master token the first call already succeeds and no prompt shows.
+    async function fetchWithStepUp(path, opts) {
+      opts = opts || {};
+      const baseHeaders = Object.assign({ 'Authorization': 'Bearer ' + token }, opts.headers || {});
+      let r = await fetch(path, Object.assign({}, opts, { headers: baseHeaders }));
+      if (r.status !== 403) return r;
+      let body = {};
+      try { body = await r.clone().json(); } catch (_) { return r; }
+      if (!body || body.error !== 'step-up-required') return r;
+      const pin = window.prompt('For this security change, re-enter your dashboard PIN:');
+      if (!pin) return r; // cancelled → surface the 403
+      let su;
+      try { su = await fetch('/dashboard/session/step-up', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }); } catch (_) { return r; }
+      if (!su.ok) return su; // wrong PIN etc. → surface the step-up failure
+      const d = await su.json().catch(() => ({}));
+      if (!d.stepUpToken) return r;
+      const h2 = Object.assign({}, baseHeaders, { 'X-Instar-Step-Up': d.stepUpToken });
+      return fetch(path, Object.assign({}, opts, { headers: h2 }));
+    }
+    // A scoped session that the server no longer honors (expired past the absolute cap, or revoked):
+    // clear it and show the PIN screen. The master-token path never calls this.
+    function handleSessionLost() {
+      if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null; }
+      try { localStorage.removeItem('instar_token'); } catch (_) {}
+      token = ''; sessionExpiresAt = '';
+      const overlay = document.getElementById('authOverlay');
+      if (overlay) overlay.style.display = 'flex';
+      const app = document.getElementById('app'); if (app) app.style.display = 'none';
+    }
     let sessions = [];
     // Door + model controls (dashboard-door-model-controls §3.6).
     let topicProfileOptions = null;
@@ -4540,6 +4597,7 @@
             operatorSessionToken = typeof data.operatorSessionToken === 'string'
               ? data.operatorSessionToken : '';
             operatorSessionExpiresAt = typeof data.operatorSessionExpiresAt === 'string' ? data.operatorSessionExpiresAt : '';
+            sessionExpiresAt = typeof data.sessionExpiresAt === 'string' ? data.sessionExpiresAt : '';
           } else {
             // Fall back: treat input as raw Bearer token
             token = pin;
@@ -4550,6 +4608,7 @@
         .then(r => {
           if (r.ok) {
             localStorage.setItem('instar_token', token);
+            scheduleSessionRefresh(); // SEC-002b: keep a scoped session alive; no-op for the master token
             document.getElementById('authOverlay').style.display = 'none';
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
@@ -4587,6 +4646,12 @@
             startPoolSessionsPolling();
             if (typeof startPairingPanel === 'function') startPairingPanel();
             loadTopicProfileOptions();
+            // SEC-002b: a stored scoped token has an unknown expiry — exchange it for a fresh one to
+            // re-establish the refresh schedule (also detects a revoked/expired session → PIN screen).
+            if (isScopedToken()) refreshDashboardSession();
+          } else if (isScopedToken()) {
+            // A stored scoped token the server no longer honors → fall back to the PIN screen.
+            handleSessionLost();
           }
         })
         .catch(() => {});

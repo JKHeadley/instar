@@ -1,0 +1,19 @@
+# Dashboard login can hand your browser a short-lived pass, not the master key (ships off)
+
+## What Changed
+
+Today, unlocking the dashboard with your PIN gives your browser the agent's **master API token** — the all-powerful credential that never expires. A guessed PIN or a stolen browser is therefore a permanent, full-API compromise. SEC-002b (`src/server/DashboardSessionStore.ts`, wired through `authMiddleware`, the unlock handler, and the WS/SSE streams) adds the option to return a **short-lived, revocable session token** instead: it expires (absolute cap, default 7 days), can be revoked (a logout kills the whole session and its live streams), is silently refreshed so a normal session never drops, and the master token is never put in the browser. Sensitive credential operations (reading the API token, changing the PIN, rotating the token) require a fresh-PIN step-up that a thief with only stolen browser storage cannot produce. The master token keeps working for API/CLI callers (back-compat).
+
+It ships **off** (`security.dashboardScopedToken.enabled` defaults false) and must stay off until a full live-dashboard proof passes on every surface; turning it on is the single switch, and turning it back off restores exactly today's behaviour.
+
+## What to Tell Your User
+
+Nothing changes yet — this ships turned off. When it's turned on (after a full dashboard check), your experience stays the same: you unlock with your PIN and everything works as before, but your browser now holds a pass that expires and can be switched off instead of a permanent master key — so a stolen browser or a guessed PIN is no longer a permanent, total compromise. The only new thing you'd ever see is a quick "re-enter your PIN" when you change a security-sensitive setting (reading the API token, changing the PIN), which a thief can't do.
+
+## Summary of New Capabilities
+
+- `security.dashboardScopedToken` (default off): dashboard unlock returns a short-lived, revocable session token instead of the master API token, with silent refresh, family revocation (closing open WS/SSE streams), and a fresh-PIN step-up on credential operations.
+
+## Evidence
+
+Entire server-side built with 0 type errors and proven by an in-process probe against a real AgentServer (11/11: unlock→scoped not master, admitted on ordinary routes, credential route 403 step-up-required, PIN step-up passes the gate, refresh rotates + kills the old token, revoke kills the family + closes streams, master still works, dark default returns master). Unit tests for the store + credential-route detector (12/12). Integration + e2e "feature is alive" tests ship with the change. Design converged across 4 cross-model rounds (GPT-6 + Claude clean-door); spec docs/specs/dashboard-scoped-session-token.md. The deeper per-route confinement of a stolen session is the tracked follow-up SEC-002c.
