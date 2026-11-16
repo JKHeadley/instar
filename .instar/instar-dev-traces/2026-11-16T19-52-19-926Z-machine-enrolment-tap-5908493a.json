@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "machine-enrolment-tap",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-16T19:52:19.926Z",
+  "artifactPath": "upgrades/side-effects/machine-enrolment-tap.md",
+  "artifactSha256": "9644df7839ac54bfe4e2c18007054e2d6f5fc59fc3faab5b4a4bfbd894317483",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/data/awareness/machine-enrolment-readiness.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/monitoring/machineMaintenance/EnrolmentController.ts",
+    "src/server/routes.ts",
+    "tests/integration/machine-maintenance-route.test.ts",
+    "tests/unit/machine-enrolment-controller.test.ts",
+    "upgrades/next/machine-enrolment-tap.md",
+    "upgrades/side-effects/machine-enrolment-tap.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Owner tap that grants the machine-restart privilege (sudoers rule) under the approved machine-self-maintenance spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}

@@ -27523,6 +27523,52 @@ export async function startServer(options: StartOptions): Promise<void> {
           }));
         }
 
+        // Enrolment: the owner's one tap (Part C, CMT-1200). Offered once per machine in the
+        // owner's conversation; the tap is owner-only and re-checked here before anything is written.
+        if (telegram) {
+          const ec = await import('../monitoring/machineMaintenance/EnrolmentController.js');
+          const er2 = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+          const { readHostCensus: census2 } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+          const { execFile: execFileCb } = await import('node:child_process');
+          const runCmd = (command: string, args: string[]) => new Promise<{ code: number | null; stdout: string }>((resolve) => {
+            try {
+              execFileCb(command, args, { timeout: 20_000, killSignal: 'SIGKILL' }, (err, stdout) => {
+                const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : null) : 0;
+                resolve({ code, stdout: String(stdout ?? '') });
+              });
+            } catch { resolve({ code: null, stdout: '' }); } // @silent-fallback-ok — a command that cannot start is a failed step
+          });
+          const reader = er2.getActiveEnrolmentStatusReader();
+          const tg = telegram;
+          const controller = new ec.EnrolmentController({
+            hostDir: path.join(os.homedir(), '.instar', 'host-maintenance'),
+            agent: config.projectName,
+            user: os.userInfo().username,
+            platform: process.platform === 'darwin' ? 'darwin' : isWslHost() ? 'wsl' : process.platform === 'linux' ? 'linux' : 'other',
+            machineId: () => coordinator.identity?.machineId ?? null,
+            machineLabel: () => coordinator.identity?.name || os.hostname(),
+            status: async () => { if (!reader) throw new Error('enrolment status not wired'); return reader.read(); },
+            ingressArmed: ec.enrolmentTapsProvable,
+            sendOffer: async (text, buttons) => {
+              const topic = tg.getLifelineTopicId();
+              return topic === undefined ? null : tg.sendOfferList(topic, text, buttons);
+            },
+            openApps: async () => {
+              if (process.platform !== 'darwin') return null;
+              // lsappinfo reads LaunchServices without Apple Events, so a wedged GUI cannot hang it into a prompt.
+              const r = await runCmd('/usr/bin/lsappinfo', ['visibleProcessList']);
+              if (r.code !== 0) return null;
+              const names = [...r.stdout.matchAll(/"([^"]+)"/g)].map((x) => x[1].replace(/_/g, ' '));
+              return [...new Set(names)].filter((n) => n !== 'Finder');
+            },
+            run: runCmd,
+            coResident: () => census2(path.join(os.homedir(), '.instar', 'registry.json'), Date.now()),
+            log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+          });
+          ec.setActiveEnrolmentController(controller);
+          tg.setMachineCareTapHandler((tap) => controller.onTap(tap));
+        }
+
         // Honest lock reading (Part A): a read of the session, never the flag alone.
         const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
         setActiveMachineLockStateReader(new MachineLockStateReader());

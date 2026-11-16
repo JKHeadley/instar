@@ -19,6 +19,7 @@ import { BrowserCareSweep, normalizeBrowserCare, setActiveBrowserCare } from '..
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
 import { PostRestartProof, setActivePostRestartProof } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
 import { EnrolmentStatusReader, setActiveEnrolmentStatusReader } from '../../src/monitoring/machineMaintenance/enrolmentReadiness.js';
+import { EnrolmentController, setActiveEnrolmentController } from '../../src/monitoring/machineMaintenance/EnrolmentController.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -127,6 +128,26 @@ describe('GET /machine-maintenance (integration)', () => {
       expect(res.body.enrolment).toMatchObject({ enrolled: false, refusal: 'not-owned', offerable: false, readiness: { mode: 'attended', platform: 'wsl' } });
     } finally {
       setActiveEnrolmentStatusReader(null);
+    }
+  });
+
+  it('POST /machine-maintenance/enrol/offer: 401 without a bearer, 503 dark, and the offer outcome when wired', async () => {
+    expect((await request(app()).post('/machine-maintenance/enrol/offer')).status).toBe(401);
+    expect((await request(app()).post('/machine-maintenance/enrol/offer').set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+    let sent = 0;
+    setActiveEnrolmentController(new EnrolmentController({
+      hostDir: path.join(dir, 'host'), agent: 'echo', user: 'me', platform: 'darwin', machineId: () => 'm1', machineLabel: () => 'Mac',
+      status: async () => ({ enrolled: false, record: null, refusal: null, offerable: true, readiness: { platform: 'darwin', mode: 'unattended', checks: [], ownerStep: null, readAt: 0 } }),
+      ingressArmed: () => true, sendOffer: async () => { sent += 1; return 1; }, openApps: async () => null, run: async () => ({ code: 1, stdout: '' }),
+    }));
+    try {
+      const a = await request(app()).post('/machine-maintenance/enrol/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(a.body).toEqual({ outcome: 'offered' });
+      const b = await request(app()).post('/machine-maintenance/enrol/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(b.body).toEqual({ outcome: 'already-offered' });
+      expect(sent).toBe(1);
+    } finally {
+      setActiveEnrolmentController(null);
     }
   });
 

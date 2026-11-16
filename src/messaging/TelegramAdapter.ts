@@ -1119,6 +1119,9 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Offer-list buttons (docs/specs/recommended-services.md, Offers). Wired by the recommended-services routes. */
   private recommendedOfferHandler: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
   setRecommendedOfferHandler(fn: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.recommendedOfferHandler = fn; }
+  /** Machine care enrolment tap (`mc:enrol|dnm:<24 hex>`). P-class, owner-only; the handler owns the nonce. */
+  private machineCareTapHandler: ((tap: { data: string; fromIsOwner: boolean; fromUserId: number }) => Promise<string>) | null = null;
+  setMachineCareTapHandler(fn: ((tap: { data: string; fromIsOwner: boolean; fromUserId: number }) => Promise<string>) | null): void { this.machineCareTapHandler = fn; }
   /** Never-Silent Conversation one-tap ask (`ns:m:<24 hex>`). The handler owns the nonce check and idempotency. */
   private neverSilentAskHandler: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
   setNeverSilentAskHandler(fn: ((tap: { data: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.neverSilentAskHandler = fn; }
@@ -7151,6 +7154,21 @@ export class TelegramAdapter implements MessagingAdapter {
     // limits it to address services. The nonce is single-use on the handler's side.
     // ── Never-Silent one-tap ask (docs/specs/never-silent-conversation.md, Frontloaded Decision 2).
     // P-class (it moves the conversation to another engine): owner-only, judged by the handler.
+    // ── Machine care enrolment (docs/specs/machine-self-maintenance.md Part C): P-class (it lets
+    // this machine be restarted), owner-only; the handler checks the nonce, the ingress guard and
+    // the refusal table again before anything is written.
+    if (query.data.startsWith('mc:')) {
+      const approver = this.getConfiguredApprover();
+      const fromIsOwner = approver !== undefined && query.from.id === approver;
+      let statusText = 'That button is no longer active.';
+      if (this.machineCareTapHandler) {
+        try { statusText = await this.machineCareTapHandler({ data: query.data, fromIsOwner, fromUserId: query.from.id }); }
+        catch { statusText = "Couldn't take that. Nothing changed; I'll ask again later."; } // @silent-fallback-ok — the tap is answered plainly and nothing was written
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: statusText, show_alert: statusText.length > 60 }).catch(() => {});
+      return;
+    }
+
     if (query.data.startsWith('ns:')) {
       const approver = this.getConfiguredApprover();
       const fromIsOwner = approver !== undefined && query.from.id === approver;
