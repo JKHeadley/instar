@@ -43,7 +43,16 @@ export interface GraphReadSource {
   /** Replication state; every true field becomes a partial reason. Nothing is synthesized complete. */
   replication(): { replicaLag: boolean; eventGap: boolean; evidenceMissing: boolean };
   now(): Date;
+  /**
+   * Work-front-doors stage 2b (spec §3.2): each open work card's own conversation and the conversation of the
+   * project it names (its `projectKey`). A card's conversation is PROPOSED under the effort that holds its
+   * project's conversation, shown from the card record until the `card-record` graph authority exists.
+   */
+  cardPlacements?(): Array<{ card: ConversationRef; project: ConversationRef }>;
 }
+
+/** At most this many proposed card conversations on one effort's page. */
+export const MAX_PROPOSED_CARDS = 50;
 
 export interface GraphViewer {
   principalKey: string;
@@ -160,6 +169,27 @@ export class ConversationGraphReadModel {
       ? { eligible: false, reason: 'chief-of-staff-is-root' }
       : moveEligibility(this.source.certifiedEvents(), {verify:event=>this.source.verify(event)}, valid, null, this.source.now().toISOString());
     const header = valid.kind === 'effort' ? this.source.headerMetadata?.(valid) : null;
+    // A card's conversation, unplaced, whose project's conversation sits directly in this effort: proposed here.
+    // Visibility is the projection's (the viewer filter already ran); an owner placement anywhere wins.
+    const proposed: ProjectionItem[] = [];
+    if (valid.kind === 'effort' && this.source.cardPlacements) {
+      const here = nodeKey(valid);
+      const seen = new Set<string>();
+      for (const cp of this.source.cardPlacements()) {
+        if (proposed.length >= MAX_PROPOSED_CARDS) break;
+        const cardKey = nodeKey(cp.card);
+        if (seen.has(cardKey) || graph.parentOf.get(cardKey)) continue;
+        // Both ends of the link are checked (spec §4.4): a project conversation the viewer may not see is never
+        // revealed through a card that points at it.
+        if (!projection.has(cp.project)) continue;
+        const projectParent = graph.parentOf.get(nodeKey(cp.project));
+        if (!projectParent || nodeKey(projectParent) !== here) continue;
+        const item = projection.item(cp.card);
+        if (!item) continue;
+        seen.add(cardKey);
+        proposed.push(item);
+      }
+    }
     return {
       status: 200,
       body: {
@@ -167,6 +197,7 @@ export class ConversationGraphReadModel {
         node,
         path: node.primaryPath,
         children: { items: children, nextCursor: page.nextCursor },
+        ...(proposed.length ? { proposed: { items: proposed, by: 'card-record' } } : {}),
         links: [],
         provenance: src ? [{ authority: src.authority, eventId: src.eventId, at: src.at }] : [],
         digest: null,

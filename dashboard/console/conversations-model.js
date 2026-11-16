@@ -65,8 +65,12 @@ export function suggestionsModel(data) {
       const key = encodeNodeRef(m?.ref);
       return key && m.ref.kind === 'conversation' && typeof m.title === 'string' ? { ref: m.ref, key, title: m.title.trim() || 'Conversation' } : null;
     });
-    if (members.some((m) => m === null) || members.length < 2) return { ok: false };
-    items.push({ id: raw.id, title: raw.title.trim(), reason: typeof raw.reason === 'string' ? raw.reason : '', members, accepting: raw.accepting === true });
+    // A Chief of Staff project (work-front-doors stage 2b) carries its front door and may have one member.
+    const frontDoor = raw.frontDoor && raw.frontDoor.kind === 'conversation' && encodeNodeRef(raw.frontDoor) ? raw.frontDoor : null;
+    if (raw.frontDoor !== undefined && !frontDoor) return { ok: false };
+    if (members.some((m) => m === null) || members.length < (frontDoor ? 1 : 2)) return { ok: false };
+    if (frontDoor && !members.some((m) => m.key === encodeNodeRef(frontDoor))) return { ok: false };
+    items.push({ id: raw.id, title: raw.title.trim(), reason: typeof raw.reason === 'string' ? raw.reason : '', members, accepting: raw.accepting === true, frontDoor });
   }
   return { ok: true, state: data.state, builtAt: typeof data.builtAt === 'string' ? data.builtAt : null, failure: data.failure || null, items };
 }
@@ -79,6 +83,9 @@ export function nodeModel(data) {
   return {
     ok: true, node, path: Array.isArray(data.path) ? data.path.filter(validPath) : [],
     children, nextCursor: data.children.nextCursor || null,
+    // Work cards' conversations proposed under this project from the card record (work-front-doors stage 2b).
+    // A malformed row is dropped from this optional list only; the page's own children are unaffected.
+    proposed: Array.isArray(data.proposed?.items) ? data.proposed.items.map(itemModel).filter(Boolean) : [],
     links: Array.isArray(data.links) ? data.links.filter(validPath) : [],
     provenance: Array.isArray(data.provenance) ? data.provenance : [],
     correction: correctionModel(data.correction),

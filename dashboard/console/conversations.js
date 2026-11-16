@@ -256,6 +256,17 @@ export async function renderConversations(main) {
       }
       body.append(section);
     }
+    // Work cards made for this project, shown from the card until their conversation is placed (spec §3.2).
+    if (model.proposed.length) {
+      body.append(el('section', { class: 'list-section' },
+        el('h2', { class: 'eyebrow section-label', text: 'Cards for this project' }),
+        el('p', { class: 'need-sub', text: 'Proposed from each card. Move one here to make it part of the project for good.' }),
+        el('div', { class: 'rows' }, model.proposed.map((item) => {
+          const row = itemRow(item, state);
+          row.querySelector('.row-main')?.append(el('span', { class: 'row-sub', text: 'Proposed' }));
+          return row;
+        }))));
+    }
     const details = el('details', { class: 'conversation-details' }, el('summary', { text: 'More' }));
     const role = new Map([['effort', 'Effort'], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
     if (role) details.append(el('p', { class: 'need-sub', text: role }));

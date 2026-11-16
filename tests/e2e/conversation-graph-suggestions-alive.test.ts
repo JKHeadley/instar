@@ -33,7 +33,7 @@ describe('Conversations suggestions on the production AgentServer composition',(
    secrets:new SecretStore({stateDir,forceFileKey:true})});
   const config={projectName:'echo',projectDir:stateDir,stateDir,port:0,authToken:'suggestions-fixture-token',dashboardPin:'654321',developmentAgent:true,
    sessions:{claudePath:'/usr/bin/echo',maxSessions:1,defaultMaxDurationMinutes:30,protectedSessions:[],monitorIntervalMs:5000},
-   scheduler:{enabled:false,jobsFile:'',maxParallelJobs:1},messaging:[],updates:{},threadline:{ownerName:'Owner'},
+   scheduler:{enabled:false,jobsFile:'',maxParallelJobs:1},messaging:[{type:'telegram',enabled:true,config:{chatId:'-1001'}}],updates:{},threadline:{ownerName:'Owner'},
    secrets:{forceFileKey:true},mobilePairing:{multiRoute:{enabled:false}},tunnel:{enabled:true,type:'named',token:'x',hostname:HOST},
    multiMachine:{enabled:false,conversationGraph:{readEnabled:true,correctionsEnabled:true}},
   } as unknown as InstarConfig;
@@ -42,6 +42,9 @@ describe('Conversations suggestions on the production AgentServer composition',(
   const server=new AgentServer({config,sessionManager:createMockSessionManager(),state:new StateManager(stateDir),initiativeTracker:new InitiativeTracker(stateDir),
    coordinator:{enabled:false,managers:{identityManager:identity}} as never,coherenceGate:scope,conversationGraphDefault:manager,
    intelligence:{evaluate:async(prompt:string)=>{calls.push(prompt);return '{"groups":[]}';}},
+   // work-front-doors stage 2b: one Chief of Staff project with one sub-conversation, offered as a ready-made suggestion.
+   chiefOfStaffLoop:{projectsSummary:()=>[{conversationKey:'telegram:42',title:'Ship the thing'}],
+    tree:()=>new Map([['telegram:43',{conversationKey:'telegram:43',parentConversationKey:'telegram:42'}]])} as never,
    tunnel:{lifecycleState:{lastState:'active',activeProvider:'cloudflare-named'},url:`https://${HOST}`,on:()=>undefined} as never});
   try{
    const app=server.getApp();
@@ -57,6 +60,13 @@ describe('Conversations suggestions on the production AgentServer composition',(
    expect(anon.status).toBe(403);
    // An empty inventory never spends a model call.
    expect(calls).toEqual([]);
+   // The Chief of Staff project reached the service through the production wiring: stored with its front door
+   // (the project conversation) and its child; not offered while its conversation is not in this inventory.
+   const stored=JSON.parse(fs.readFileSync(path.join(stateDir,'conversation-graph-suggestions.json'),'utf8'));
+   const project=stored.suggestions.find((s:{frontDoorKey?:string})=>s.frontDoorKey);
+   expect(project?.title).toBe('Project: Ship the thing');
+   expect(project.members.map((m:{ref:{topicId:number}})=>m.ref.topicId)).toEqual([42,43]);
+   expect(got.body.items).toEqual([]);
   }finally{
    await server.stop();await manager.close();lock.release();
    SafeFsExecutor.safeRmSync(stateDir,{recursive:true,force:true,operation:'graph-suggestions-alive-cleanup'});

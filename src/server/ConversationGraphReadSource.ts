@@ -1,6 +1,7 @@
 /** Actual runtime read adapter. It never reads an unsigned flat row as durable
  * hierarchy inventory and never promotes a pending event into canonical state. */
 import {canonicalHash} from '../core/GraphWitnessTypes.js';
+import {DegradationReporter} from '../monitoring/DegradationReporter.js';
 import {validateGraphEvent,type GraphEvent,type EffortRef} from '../core/conversationGraph.js';
 import type {GraphReadSource} from '../core/conversationGraphRead.js';
 import type {ConversationGraphReplicationRuntime} from './ConversationGraphReplicationRuntime.js';
@@ -10,7 +11,13 @@ export class ConversationGraphRuntimeReadSource implements GraphReadSource {
  private snapshot:ReturnType<ConversationGraphReplicationRuntime['retainedProjection']>|null=null;
  private inventorySnapshot:ReturnType<ConversationGraphReplicationRuntime['inventory']>|null=null;
  constructor(private readonly runtime:ConversationGraphReplicationRuntime,private readonly headers:ConversationGraphHeaderCustody,
-  private readonly options:{correctionsEnabled?:boolean;erasureEnabled?:boolean;localIntentsEnabled?:boolean}={}){}
+  private readonly options:{correctionsEnabled?:boolean;erasureEnabled?:boolean;localIntentsEnabled?:boolean;
+   cardPlacements?:()=>Array<{card:import('../core/conversationGraph.js').ConversationRef;project:import('../core/conversationGraph.js').ConversationRef}>}={}){}
+ cardPlacements(){try{return this.options.cardPlacements?.()??[];}catch{
+  // A failed card read must not look like "no cards": it is reported, and nothing is proposed this read.
+  DegradationReporter.getInstance().report({feature:'Conversations.proposedCards',primary:'Show work cards under their project in Conversations',
+   fallback:'Show the project without its proposed cards',reason:'card-placements-unreadable',impact:'A project page in Conversations may be missing the cards made for it',internalOnly:true});
+  return[];}}
  localRecordingReady():boolean{return this.options.correctionsEnabled===true&&this.options.localIntentsEnabled===true
   &&this.runtime.installedMembership.custodyProfile?.mode==='owned-machine'&&this.runtime.canRecordLocalOwnerIntents();}
  erasureReady():boolean{return this.options.erasureEnabled===true;}
