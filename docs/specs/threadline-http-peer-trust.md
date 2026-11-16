@@ -357,7 +357,8 @@ The refusal counters are per process, like the relay sibling's.
 - **fleet:** the same release, ungated (Frontloaded Decision 1; operator "Yes, live", telegram 141385, 2026-11-15 14:16 PST). No dark window.
 - **graduation criterion:** over the first week after release, across the fleet, no legitimate peer is refused: the `httpPeerTrust` admitted/refused counters show no refusal of a peer the owner expected to reach the agent directly (expected to be zero events, since no agent uses the direct route), and no report of a broken peer connection traced to this change. A refusal of a real peer is a regression to investigate, not a pass.
 - **dark-window:** none — the fix is live on release. The admission check and the direct-route open switch exist for an owner who deliberately opens the route; they are off by default, which is the shipped state, not a dark feature (the routes they guard are closed).
-- **ladder:** test-agent-live to dev-agent-live to fleet (same release, ungated).
+- **ladder:** not applicable: ships enabled for every agent in one release with off switches (operator decision cited above)
+- Rollout order within that release: test-agent-live to dev-agent-live to fleet (same release, ungated).
 
 The whole ladder ships in one release because no agent uses the direct route; the admission half behind the owner's switch rides the same release.
 
