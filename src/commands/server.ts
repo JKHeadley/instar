@@ -20087,6 +20087,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         config: nsCfg,
         sessionForTelegramTopic: (topicId) => nsTelegram?.getSessionForTopic(topicId) ?? null,
         sessionForSlackChannel: (key) => _slackAdapter?.getSessionForChannel(key) ?? null,
+        // fb-faa9d074-e09: a message waiting in this machine's inbound queue for the machine that
+        // owns the conversation is "waiting for that machine", never "the session stopped running".
+        awaitingMachineFor: (_platform, key) => {
+          try {
+            if (!_inboundQueue || !_ownershipReadForDrain || !_inboundQueue.hasQueued(key)) return null;
+            const rec = _ownershipReadForDrain(key);
+            return rec && rec.ownerMachineId && rec.ownerMachineId !== _meshSelfId ? rec.ownerMachineId : null;
+          } catch { return null; /* @silent-fallback-ok — wording only; the notice falls back to the plain class */ }
+        },
         sessionFacts: (tmux) => {
           const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === tmux);
           const framework = sessionManager.frameworkForSession(tmux) ?? null;
@@ -31968,6 +31977,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               emitPlacement(sk, r, 'failover', placedOn);
               return r.ok;
             },
+            // fb-faa9d074-e09: take a peer's ACTIVE record when that peer cannot take the
+            // waiting message (gone, or alive without durable receive). Guarded: only while
+            // `fromMachine` still holds it active, so a concurrent move is never overwritten.
+            takeOverFromPeer: (sk, fromMachine) => {
+              const r = ownMod.takeOverActiveRecord(ownReg, sk, fromMachine, meshSelfId, `${meshSelfId}:to:${++routerNonce}`);
+              if (!r) return false;
+              emitPlacement(sk, r, 'failover', fromMachine);
+              return r.ok;
+            },
             handleLocally: async () => { /* inbound interception falls through to the existing local spawn */ },
             // Durable Inbound Message Queue §2.2: tri-state custody taking.
             // Null engine (dark / gate failed / invariants violated) → 'refused'
@@ -32095,12 +32113,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                     // At stage 'dark' no forced cross-machine re-place (CMT-1117):
                     // false ⇒ attempts-exhausted + the loss notice, never a
                     // placement the demoted rollout forbids.
-                    if (_sessionPoolStage() === 'dark') return false;
+                    // A routing-only row at dark (the record names a peer, yet the live path
+                    // answers here) is the exception: its forced attempt takes the conversation
+                    // on THIS machine, never a placement elsewhere (fb-faa9d074-e09 — it used to
+                    // run out of tries and expire unanswered).
+                    const routingOnlyAtDark = _sessionPoolStage() === 'dark' && _routesToPeerAtDark(msg.sessionKey);
+                    if (_sessionPoolStage() === 'dark' && !routingOnlyAtDark) return false;
                     if (!_sessionRouter) return false;
                     return _sessionRouter.forceReplace({
                       sessionKey: msg.sessionKey,
                       messageId: msg.messageId,
                       payload: msg.payload,
+                      ...(routingOnlyAtDark ? { routingOnly: true } : {}),
                       senderEnvelope: msg.senderEnvelope,
                       topicMetadata: msg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined,
                     });
