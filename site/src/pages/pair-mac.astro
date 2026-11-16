@@ -1,0 +1,32 @@
+---
+// "Pair a computer" QR codes (docs/specs/mac-qr-pairing.md §2). The format opens only from the
+// Instar app's own scanner, never as a universal link, so a link someone sends cannot start it.
+// A camera that opens this page in a browser lands here. The fragment is never read or sent:
+// this page has no script and makes no network requests.
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; script-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+    <title>Pair a computer with Instar</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; min-height: 100vh; background: #0a0e17; color: #e2e8f0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; align-items: center; justify-content: center; }
+      main { max-width: 420px; padding: 32px 20px; text-align: center; }
+      img.logo { width: 72px; height: 72px; }
+      h1 { font-size: 22px; margin: 16px 0 8px; }
+      p { color: #94a3b8; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="logo" src="/logo.png" alt="Instar" />
+      <h1>Scan this code from inside Instar</h1>
+      <p>Open Instar on your phone, tap +, choose “Scan pairing code”, and scan the code on your computer again.</p>
+      <p>Only scan a code shown on a computer in front of you that you are setting up now.</p>
+    </main>
+  </body>
+</html>

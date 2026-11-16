@@ -233,6 +233,8 @@ export interface DeviceRecord {
    * never set on it, so an older version (which reads only `publicKey`) cannot authenticate it.
    */
   client?: 'browser';
+  /** A computer added by scanning its QR code with an owner phone (docs/specs/mac-qr-pairing.md §4); absent ⇒ a phone. Wording only. */
+  deviceKind?: 'computer';
   browserPublicKey?: string;
   enrollmentId?: string;
   /** `notifying` while the approval message is being sent, then `awaiting` (§4.2 step 9). */
@@ -411,7 +413,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string; deviceKind?: 'computer' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -424,6 +426,7 @@ export class DeviceRegistry {
       status: 'pending', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
       ...(row.userId ? { userId: row.userId } : {}),
+      ...(row.deviceKind ? { deviceKind: row.deviceKind } : {}),
       // Pairing outcome notice (§3.2): joined in this same write, so no crash window separates them.
       ...(row.outcomeWatchId ? { outcomeWatchId: row.outcomeWatchId, pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString() } : {}),
       // Only a non-owner role is written: absent already means owner, so an owner phone's record
