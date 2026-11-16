@@ -200,8 +200,13 @@ export class MasterKeyManager {
   /**
    * Every key this agent could plausibly have encrypted its store with, primary
    * first: [resolved primary, the OTHER source's key if it exists and differs].
-   * Read-only — alternates NEVER generate. Backs the dual-key read fallback
-   * (a v1 store written before the sources diverged stays readable, loudly).
+   * Read-only — this NEVER generates, adopts, rotates or writes key material
+   * (fb cluster "repeated secret reads on a keychain miss mint a new master
+   * key": a read during a keychain miss used to fall through to getMasterKey(),
+   * minting a fresh key that replaced the per-agent keychain entry and orphaned
+   * the vault). An empty result means "no key material is reachable right now";
+   * the caller fails loudly. Backs the dual-key read fallback (a v1 store
+   * written before the sources diverged stays readable, loudly).
    */
   getCandidateKeys(): Array<{ key: Buffer; source: 'keychain' | 'file' }> {
     const out: Array<{ key: Buffer; source: 'keychain' | 'file' }> = [];
@@ -209,7 +214,7 @@ export class MasterKeyManager {
       if (key && !out.some((c) => c.key.equals(key))) out.push({ key, source });
     };
     if (this.forceFile) {
-      push(this.getFileKey(), 'file');
+      push(this.readExistingFileKey(), 'file');
       // Alternate: an existing keychain key (never generated) — covers a store
       // written under keychain resolution before forceFileKey was flipped on.
       push(this.tryRead(perAgentKeychainAccount(this.stateDir)), 'keychain');
@@ -219,14 +224,20 @@ export class MasterKeyManager {
     push(this.tryRead(perAgentKeychainAccount(this.stateDir)), 'keychain');
     push(this.tryRead(KEYCHAIN_ACCOUNT_LEGACY), 'keychain');
     // Existing file key as an alternate (do NOT generate one here — getFileKey
-    // generates; alternates must be read-only).
+    // generates; candidates must be read-only).
+    push(this.readExistingFileKey(), 'file');
+    return out;
+  }
+
+  /** The existing file key, or null. Never generates. */
+  private readExistingFileKey(): Buffer | null {
     try {
       if (fs.existsSync(this.keyFilePath)) {
-        push(Buffer.from(fs.readFileSync(this.keyFilePath, 'utf-8').trim(), 'hex'), 'file');
+        const key = Buffer.from(fs.readFileSync(this.keyFilePath, 'utf-8').trim(), 'hex');
+        return key.length > 0 ? key : null;
       }
-    } catch { /* @silent-fallback-ok — unreadable alternate is simply absent */ }
-    if (out.length === 0) push(this.getMasterKey(), this.forceFile ? 'file' : 'keychain');
-    return out;
+    } catch { /* @silent-fallback-ok — unreadable key file is simply absent; read() then fails loudly */ }
+    return null;
   }
 
   /** Flush an existing fallback key. A successful OS-keychain persistence/read
