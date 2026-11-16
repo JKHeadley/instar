@@ -1581,3 +1581,5 @@ a.needs-row:hover { background: var(--surface-raised); }
 .projects-section .project-chat { margin-left: var(--s-2); }
 .projects-section .projects-finished, .projects-section .projects-loose { margin-top: var(--s-3); }
 .projects-section .projects-finished > summary, .projects-section .projects-loose > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+
+.dot.quiet { background: var(--text-muted); opacity: 0.6; }

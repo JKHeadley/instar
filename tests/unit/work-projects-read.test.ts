@@ -137,6 +137,8 @@ describe('the console Projects model', () => {
     expect(partial.line).toBe('Could not check the projects, so this may not be everything.');
     expect(projectsView(composeProjects([], board([]))).empty).toBe(true);
     expect(projectsView(null).ok).toBe(false);
+    const unchecked = projectsView(composeProjects([proj({ doneItems: null })], board([])));
+    expect(unchecked.active[0].doneLine).toBe('2 to finish, not checked yet');
   });
 });
 

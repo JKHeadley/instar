@@ -6,6 +6,8 @@ import { el } from './ui.js';
 import { projectsView } from './projects-model.js';
 
 const DONE_MARK = { pass: '✓', fail: '✗', unknown: '·' };
+/** The console's own dot classes (console.css .dot.attn / .bad / .unknown; plain .dot is ok; quiet is a muted ok). */
+const DOT = { attn: 'dot attn', bad: 'dot bad', unknown: 'dot unknown', ok: 'dot', quiet: 'dot quiet' };
 
 function cardLine(c) {
   return el('li', { class: 'project-card' },
@@ -16,7 +18,7 @@ function cardLine(c) {
 
 function projectRow(p) {
   const summary = el('summary', { class: 'project-summary' },
-    el('span', { class: `dot dot-${p.tone}`, 'aria-hidden': 'true' }),
+    el('span', { class: DOT[p.tone] || 'dot', 'aria-hidden': 'true' }),
     el('span', { class: 'project-text' },
       el('span', { class: 'project-title', text: p.title }),
       el('span', { class: 'project-state', text: [p.stateWords, p.doneLine, p.cardsLine].filter(Boolean).join(' · ') })));
