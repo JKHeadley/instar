@@ -176,6 +176,29 @@ export function isThreadlinePublicRoute(method: string, reqPath: string): boolea
   return THREADLINE_PUBLIC_ROUTES.some((r) => r.method === m && r.path === reqPath);
 }
 
+/**
+ * Credential-management routes that a dashboard SCOPED session token (dst_) may reach only with a
+ * fresh live-PIN STEP-UP (docs/specs/dashboard-scoped-session-token.md §5). These read or write a
+ * STANDING credential — the raw API token, the PIN, token rotation, credential swaps — so a thief
+ * holding only a stolen session token must not reach them without the owner re-proving the PIN.
+ *
+ * This is the KNOWN-direct-route deny-list; the complete deny-by-default allowlist is the tracked
+ * follow-up SEC-002c (a blocklist cannot be proven complete against indirect reach). The master
+ * token (API/CLI callers) is unaffected — it never takes this branch.
+ */
+const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/sync-status', '/identity-recovery/rotate'];
+const DST_CREDENTIAL_EXACT = new Set<string>([
+  '/identity-recovery/rotate',
+]);
+export function isDashboardCredentialRoute(method: string, reqPath: string): boolean {
+  const p = reqPath.replace(/\/+$/, '').toLowerCase() || '/';
+  if (DST_CREDENTIAL_EXACT.has(p)) return true;
+  if (DST_CREDENTIAL_PREFIXES.some((pre) => p === pre || p.startsWith(pre))) return true;
+  // PIN / owner-policy mutation (change the dashboard PIN).
+  if (/^\/(dashboard\/)?(pin|owner-policy)\b/.test(p) && method.toUpperCase() !== 'GET') return true;
+  return false;
+}
+
 export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
   if (!authToken) return true;
   const header = req.headers.authorization;
@@ -210,6 +233,15 @@ export function authMiddleware(
   memorySessionLookup?: (token: string) => SessionTokenRecord | null,
   /** Told when a scoped session's reply went out. A record only, after the response. */
   memorySessionReplied?: (session: SessionTokenRecord) => void,
+  /**
+   * Dashboard scoped session token (docs/specs/dashboard-scoped-session-token.md, SEC-002b): verifies
+   * a `Bearer dst_...` token against DashboardSessionStore. A valid scoped token authenticates the
+   * dashboard's ordinary reach, but NEVER counts as the master token and must pass a fresh-PIN
+   * step-up on credential routes. Absent → dst_ tokens are refused like any bad token.
+   */
+  dashboardSessionVerify?: (token: string) => boolean,
+  /** True iff THIS request carries a valid fresh-PIN step-up proof (for a credential route). */
+  dashboardStepUpOk?: (req: Request) => boolean,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -435,6 +467,23 @@ export function authMiddleware(
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    // Dashboard scoped session token (SEC-002b): a `dst_` bearer is the dashboard's primary credential
+    // after unlock. It authenticates the dashboard's ordinary reach but is NEVER the master token, and
+    // a credential route additionally requires a fresh live-PIN step-up proof.
+    if (header.startsWith('Bearer dst_')) {
+      if (!dashboardSessionVerify || !dashboardSessionVerify(header.slice(7))) {
+        res.status(401).json({ error: 'Invalid or expired dashboard session' });
+        return;
+      }
+      if (isDashboardCredentialRoute(req.method, req.path) && !(dashboardStepUpOk && dashboardStepUpOk(req))) {
+        res.status(403).json({ error: 'step-up-required', reason: 'Re-enter your PIN to change credentials or security settings.' });
+        return;
+      }
+      res.locals.dashboardScopedSession = true;
+      next();
       return;
     }
 

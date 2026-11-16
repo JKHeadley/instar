@@ -1242,6 +1242,13 @@ export interface RouteContext {
   config: InstarConfig;
   /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
   verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
+  /** SEC-002b: verify a dst_ scoped dashboard session token for SSE/WS auth (returns false when the
+   *  feature is dark). Mirrors the authMiddleware dst_ branch for the streaming surfaces. */
+  dashboardScopedSessionVerify?: (token: string | undefined) => boolean;
+  /** SEC-002b: register a callback fired when a dst_ token's session FAMILY is invalidated (revoke /
+   *  PIN rotation), so an open SSE/WS stream closes instead of outliving revocation. Returns an
+   *  unregister function. */
+  dashboardScopedSessionOnInvalidated?: (token: string, cb: () => void) => (() => void);
   /** The desktop routes' session check ONLY: a dashboard operator session or a phone desktop session (mobile-owner-presence-pin §2.1). */
   verifyDesktopOperatorSession?: (token: string | undefined) => boolean;
   /** Desktop-only sessions the owner's phone mints with Face ID. */
@@ -20742,9 +20749,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       const ha = createHash('sha256').update(tokenValue).digest();
       const hb = createHash('sha256').update(ctx.config.authToken).digest();
-      if (!timingSafeEqual(ha, hb)) {
+      const masterOk = timingSafeEqual(ha, hb);
+      // SEC-002b: a dst_ scoped session token is also accepted for SSE. If scoped, the stream is
+      // CLOSED server-side the moment its session family is revoked (so it cannot outlive revocation).
+      const scopedOk = !masterOk && ctx.dashboardScopedSessionVerify?.(tokenValue) === true;
+      if (!masterOk && !scopedOk) {
         res.status(403).json({ error: 'Invalid token' });
         return;
+      }
+      if (scopedOk && ctx.dashboardScopedSessionOnInvalidated) {
+        const unregister = ctx.dashboardScopedSessionOnInvalidated(tokenValue, () => { try { res.end(); } catch { /* already closed */ } });
+        res.on('close', () => { try { unregister(); } catch { /* noop */ } });
       }
     }
 
