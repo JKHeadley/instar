@@ -9,7 +9,7 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 99 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046, plus Trust Is Earned by Work and Granted Only by the Person from #PR1X) |
+| 1.x articles with a `**Rule.**` line | 99 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046, plus Trust Is Earned by Work and Granted Only by the Person from #3219) |
 | 2.0 rule rows | 123 (numbers 1 to 123, each once, with instar-2 #189, #190, #191 and #192, and #200) |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 14 Values |
 
@@ -56,7 +56,7 @@ Following one book would violate the other. Ranked by how direct the clash is an
 
 Lower-confidence conflicts are marked `CONFLICT?` in the map: #22/R22, #34/R34, #42/R41, #54/R53, #64/R63, #73/R70. One conflict sits outside any rule row: the rule-book preamble says "judge moments live only when the moment is irreversible" and the purpose repeats it as a Value, while 1.x says "OUTBOUND leak-gates fail CLOSED" and relies on live MessagingToneGate rules (B16, B18). Unsure how binding the preamble is.
 
-Rank 5 (ownership vs grant) was closed by #PR1X, which brought *Sovereignty* to R18; the other ranks keep their numbers so references to them stay valid. Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so treat the order there as rough.
+Rank 5 (ownership vs grant) was closed by #3219, which brought *Sovereignty* to R18; the other ranks keep their numbers so references to them stay valid. Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so treat the order there as rough.
 
 **One-sided additions** (not conflicts) are every `1x-extra`, `2.0-extra`, `both-extra` and `minor` row below, the three 1.x-only articles, and the 2.0-only tables.
 
@@ -75,7 +75,7 @@ Rank 5 (ownership vs grant) was closed by #PR1X, which brought *Sovereignty* to 
 | 1.x #2812 and 2.0 #191: Attributed Statements Trace to Their Source | New article #96, a tree node under *Truthful Provenance — Speak Only as Yourself*, and R121 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. R89 and article 92 keep their own difference, unchanged here. |
 | 1.x #2812 and 2.0 #192: No Feature May Require a Purchased Service | New article #97, a tree node under *Framework-Agnostic — and Framework-Optimizing*, and R122 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. Row 30 and R118 keep their own difference, unchanged here. |
 | 1.x #3046 and 2.0 #200: An Instar Agent Always Serves a Team | New article #98, a tree node under *An Instar Agent Is Always a Multi-Machine Entity*, and R123 | **Yes, as a pair.** Same approved wording in both books, except one sentence: 2.0 says it extends #31 and #113, and 1.x names the same thing in its own terms, *An Instar Agent Is Always a Multi-Machine Entity* and its cross-machine posture declaration. Neither is enforced yet. The pull request numbers are added here when the pull requests are opened. |
-| 1.x #PR1X and 2.0 #204: the trust journey (changes 1 to 8, approved by Justin 2026-11-15 22:01 PST, telegram 142440) | New article #99, a tree node under *Agent Proposes, Operator Approves*; *Sovereignty* rewritten to the grant-based test; *Intelligence Infers, Keywords Only Guard* names what an approval covered. In 2.0: the role rule retitled with a narrowing condition, a new Value, the sign-off list's see-first item, the suggestions rule, Rules 10 and 104 | **Yes, as a pair.** Same approved wording in both books. Conflict 5 closes; row 18 is aligned. Neither is enforced yet. |
+| 1.x #3219 and 2.0 #204: the trust journey (changes 1 to 8, approved by Justin 2026-11-15 22:01 PST, telegram 142440) | New article #99, a tree node under *Agent Proposes, Operator Approves*; *Sovereignty* rewritten to the grant-based test; *Intelligence Infers, Keywords Only Guard* names what an approval covered. In 2.0: the role rule retitled with a narrowing condition, a new Value, the sign-off list's see-first item, the suggestions rule, Rules 10 and 104 | **Yes, as a pair.** Same approved wording in both books. Conflict 5 closes; row 18 is aligned. Neither is enforced yet. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
@@ -226,7 +226,7 @@ Closest neighbours are named where they exist. R102 is not listed because #22 pa
 | a design question this document cannot decide is a gap | partial: #22, #50 | Same instinct, different outlet: amendment rather than "derive and proceed". Unsure. |
 | the agent never administers its own safeguards | 2.0-only | #85 display integrity is adjacent. |
 | least revelation | 2.0-only | May constrain #93 visible machine/model fields in groups. Unsure. |
-| a role starts at onboarding and grows only by the person's grant | partial: #99 | #18 follows the grant-based test since #PR1X. |
+| a role starts at onboarding and grows only by the person's grant | partial: #99 | #18 follows the grant-based test since #3219. |
 | an irreversible act follows its durable cause | 2.0-only | — |
 | a single-machine installation must be fully functional | partial: #32 Amendment 1 | 1.x speaks of information, 2.0 of function. |
 | a single-machine installation is a supported deployment shape | 2.0-only | Replication-demand clause is the conflict 8 text. |
