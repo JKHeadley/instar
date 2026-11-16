@@ -258,9 +258,13 @@ describe('Console Home E2E (feature is alive)', () => {
     const netWalk = await walkToEnabled(net, deps);
     expect(netWalk.ok).toBe(true);
     expect(features.getConsentRecordsForFeature('publishing-telegraph', 'default')[0].mechanism).toBe('explicit-written');
-    // A self-governing feature passes its activation challenge.
+    // A self-governing feature passes its activation challenge. Its setting (evolution approving
+    // itself) is a raise, so the choice is recorded but the setting is refused until the person
+    // approves it from their own chat (trust-journey decision 4).
     const sg = await walkToEnabled(byId('autonomous-evolution'), deps);
-    expect(sg.ok).toBe(true);
+    expect(sg.ok).toBe(false);
+    expect(sg.apply?.outcome).toBe('refused');
+    expect(sg.apply?.detail).toBe('operator-approval-required');
     expect((await read('/features/autonomous-evolution')).data.state.discoveryState).toBe('enabled');
     // A disabled feature comes back in one direct step.
     const off = await request(app).post('/features/external-operation-gate/transition').set(auth).send({ to: 'disabled', trigger: 'explicit-ask' });

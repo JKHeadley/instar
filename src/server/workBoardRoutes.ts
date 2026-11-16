@@ -26,6 +26,7 @@ import { validateSettingsPatch, transcriptLineFor, lineIdFor } from '../core/Wor
 import { cardJson, boardJson, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
 import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
 import { isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
+import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
 
 /**
  * How the request authenticated. `bearer` is the server token, which both the agent and the
@@ -334,6 +335,13 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     if (Object.keys(patch).length) {
       const v = validateSettingsPatch(patch);
       if (!v.ok) { res.status(400).json({ error: 'invalid-setting', field: v.field, message: 'Settings are positive whole numbers with known names; the free check cannot run more often than once a minute, and the attempt cap is at least 1.' }); return; }
+    }
+    // After validation (a malformed request is a 400, never a 403). Any board policy other than `every-agent-card` lets cards start without their own approval,
+    // so moving to it is a raise (trust-journey decision 4). The PIN is not the person's proof
+    // (the agent can reach it), so this route accepts only the strict policy or no change.
+    if (policy !== undefined && policy !== svc.policy() && boardPolicyRaises(policy).length > 0) {
+      res.status(403).json(raiseRefusal(boardPolicyRaises(policy)));
+      return;
     }
     let policyResult: unknown = null;
     if (policy !== undefined) {

@@ -207,7 +207,9 @@ describe('Work Board E2E (feature is alive)', () => {
       const noTitle = await request(app).post(`/work-board/cards/${id}/tap`).set(auth()).send({ action: 'approve', materialHash: hash, pin: PIN });
       expect(noTitle.status).toBe(400); expect(noTitle.body.error).toBe('title-hash-required');
       const pol = await request(app).post('/work-board/settings').set(auth()).send({ policy: 'outward-only', pin: PIN });
-      expect(pol.status).toBe(200); expect(pol.body.policy).toBe('outward-only');
+      // A looser policy is a raise: the PIN is not the person's proof (trust-journey decision 4).
+      expect(pol.status).toBe(403); expect(pol.body.error).toBe('operator-approval-required');
+      expect((await request(app).get('/work-board').set(auth())).body.policy).toBe('every-agent-card');
 
       // Graduation: readable, nothing due on day 0, and the agent cannot write a record through /records.
       const grad = await request(app).get('/work-board/graduation').set(auth());

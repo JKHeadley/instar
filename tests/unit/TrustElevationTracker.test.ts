@@ -464,9 +464,11 @@ describe('TrustElevationTracker', () => {
 
       tracker.recordProposalDecision(proposal, 'approved');
 
-      const stats = tracker.getAcceptanceStats();
-      expect(stats.totalDecided).toBe(1);
-      expect(stats.approved).toBe(1);
+      const ev = (tracker as unknown as { state: { approvalEvents: Array<{ latencyMs: number; agentReported?: boolean }> } }).state.approvalEvents.at(-1);
+      expect(ev?.latencyMs).toBeGreaterThanOrEqual(30000);
+      // The status was set through the agent's own token: kept, never counted (trust-journey section 6).
+      expect(ev?.agentReported).toBe(true);
+      expect(tracker.getAcceptanceStats().totalDecided).toBe(0);
     });
   });
 });

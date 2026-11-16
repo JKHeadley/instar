@@ -633,6 +633,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
+import { configPatchRaises, isKnownTrustLevel, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import type { AutonomousEvolution } from '../core/AutonomousEvolution.js';
@@ -16212,7 +16213,12 @@ export function createRoutes(ctx: RouteContext): Router {
         subject: b.subject,
         decisionClass: b.decisionClass,
         surface: b.surface ?? 'chat',
-        approver: typeof b.approver === 'string' && b.approver ? b.approver : 'justin',
+        // The bearer is the agent: whatever approver the body names is the agent's report, not a
+        // person's verified decision (trust-journey section 6). Kept and labelled; never counted
+        // toward an offer.
+        approver: 'agent-reported',
+        ...(typeof b.approver === 'string' && b.approver ? { reportedApprover: b.approver } : {}),
+        provenance: 'agent-reported',
         mode: b.mode,
         divergences: Array.isArray(b.divergences) ? b.divergences : undefined,
         reviewIterations: typeof b.reviewIterations === 'number' ? b.reviewIterations : undefined,
@@ -36745,6 +36751,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const { slackUserId, displayName, role } = req.body || {};
       if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const roleRaises = slackRoleRaises(role);
+      if (roleRaises.length) return res.status(403).json(raiseRefusal(roleRaises));
       const reg = await buildSlackRegistry();
       res.json({ registered: true, profile: reg.register(slackUserId, displayName || slackUserId, role) });
     } catch (e) {
@@ -36756,6 +36764,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const { slackUserId, role } = req.body || {};
       if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const roleRaises = slackRoleRaises(role);
+      if (roleRaises.length) return res.status(403).json(raiseRefusal(roleRaises));
       const reg = await buildSlackRegistry();
       res.json({ approved: true, profile: reg.approve(slackUserId, role) });
     } catch (e) {
@@ -36856,13 +36866,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!service || !operation || !level || !statement) {
       return res.status(400).json({ error: 'service, operation, level, and statement are required' });
     }
-    const event = ctx.adaptiveTrust.grantTrust(
-      service,
-      operation as OperationMutability,
-      level,
-      statement
-    );
-    res.json(event);
+    if (!isKnownTrustLevel(level)) {
+      return res.status(400).json({ error: 'level must be one of: blocked, approve-always, approve-first, log, autonomous' });
+    }
+    // A bearer request carries no OperatorProof: a narrowing applies, a raise is refused (403).
+    try {
+      const event = ctx.adaptiveTrust.grantTrust(
+        service,
+        operation as OperationMutability,
+        level,
+        statement
+      );
+      res.json(event);
+    } catch (err) {
+      if (err instanceof TrustRaiseRefusedError) return res.status(403).json(err.refusal);
+      throw err;
+    }
   });
 
   // GET /trust/elevations — pending elevation suggestions
@@ -36912,7 +36931,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         error: `Invalid profile. Must be one of: ${validProfiles.join(', ')}`,
       });
     }
-    const resolved = ctx.autonomyManager.setProfile(profile, reason || 'User request');
+    let resolved;
+    try {
+      resolved = ctx.autonomyManager.setProfile(profile, reason || 'User request');
+    } catch (err) {
+      if (err instanceof TrustRaiseRefusedError) return res.status(403).json(err.refusal);
+      throw err;
+    }
     res.json({
       profile,
       resolved,
@@ -36975,6 +37000,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const now = new Date();
     const latencyMs = now.getTime() - new Date(proposedAt).getTime();
 
+    // Rows reported through this route come from the agent, not from the person's own message:
+    // kept and labelled, never counted toward an offer (trust-journey section 6).
     ctx.trustElevationTracker.recordApprovalEvent({
       proposalId,
       proposedAt,
@@ -36982,6 +37009,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       decision,
       modified: modified ?? false,
       latencyMs,
+      agentReported: true,
+      source: 'route',
     });
 
     res.json({
@@ -37011,8 +37040,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!ctx.trustElevationTracker) {
       return res.status(404).json({ error: 'Trust elevation tracking not configured' });
     }
-    ctx.trustElevationTracker.dismissRubberStamp(req.body.days ?? 60);
-    res.json({ dismissed: true, rubberStamp: ctx.trustElevationTracker.getRubberStampSignal() });
+    // Hiding the rubber-stamp signal hides evidence about the person's own approvals, so only the
+    // person may do it (trust-journey section 6, "The signal routes"). No request here carries the
+    // person's proof yet, so it is refused and the signal stays visible.
+    return res.status(403).json(raiseRefusal(['hiding the rubber-stamp signal']));
   });
 
   // GET /autonomy/elevation/acceptance — evolution acceptance stats
@@ -37493,6 +37524,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let fileConfig: Record<string, any> = {};
       if (fs.existsSync(configPath)) {
         fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      }
+
+      // Decision 4 (trust-journey): a change that turns off the external-operation gate, loosens a
+      // blocked, read-only, ask-first or permission limit, or widens evolution autonomy is a raise.
+      // A bearer request carries no OperatorProof, so it is refused before anything is written;
+      // changes toward more restriction still apply. Compared against the same file config and the
+      // same one-level merge the write below uses.
+      const configRaises = configPatchRaises(fileConfig, patch as Record<string, unknown>, ctx.autonomyManager?.getProfile());
+      if (configRaises.length > 0) {
+        const refusal = raiseRefusal(configRaises);
+        const ext = (patch as Record<string, unknown>).externalOperations;
+        if (ext && typeof ext === 'object' && ('services' in ext || 'readOnlyServices' in ext)) {
+          // The patch replaces `services` and `readOnlyServices` whole (one-level merge).
+          refusal.message += ' Note: `services` and `readOnlyServices` are replaced as a whole, so a change to one entry must include every existing entry.';
+        }
+        res.status(403).json(refusal);
+        return;
       }
 
       // Deep merge for the validated selfActionGovernor subtree (multi-level

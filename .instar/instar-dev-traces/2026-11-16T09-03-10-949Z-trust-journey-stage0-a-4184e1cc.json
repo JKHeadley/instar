@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "trust-journey-stage0-a",
+  "sessionId": "c302dba7-8069-4a67-a8d4-5df165a30609",
+  "timestamp": "2026-11-16T09:03:10.949Z",
+  "artifactPath": "upgrades/side-effects/trust-journey-stage0-a.md",
+  "artifactSha256": "895a637953f415547aac50325b73b39f8908d2b597e1327b365f0bc4d75c0535",
+  "specPath": "docs/specs/trust-journey.md",
+  "coveredFiles": [
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/e2e/work-board-alive.test.ts",
+    "tests/integration/migration-provenance.test.ts",
+    "tests/integration/trust-recovery.test.ts",
+    "upgrades/side-effects/trust-journey-stage0-a.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "follow-up tests and validation order for the trust self-raise fix",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}
