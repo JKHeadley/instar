@@ -9,7 +9,7 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 98 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046) |
+| 1.x articles with a `**Rule.**` line | 99 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046, plus Security Fixes Keep the Experience Whole from the security program) |
 | 2.0 rule rows | 123 (numbers 1 to 123, each once, with instar-2 #189, #190, #191 and #192, and #200) |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 13 Values |
 
@@ -183,6 +183,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 96 | Attributed Statements Trace to Their Source | 121 | aligned | — | — | — |
 | 97 | No Feature May Require a Purchased Service | 122 | aligned | — | — | — |
 | 98 | An Instar Agent Always Serves a Team | 123 | aligned | — | — | — |
+| 99 | Security Fixes Keep the Experience Whole | — | 1.x-only | — | — | A security-program article (operator approval telegram 141385, 2026-11-15), a child of *The User Experience Is the Product*. No 2.0 rule-book counterpart. |
 
 ## 6. 2.0 rule rows with no 1.x article
 

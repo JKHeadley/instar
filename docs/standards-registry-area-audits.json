@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-12T02:10:40.000Z",
-      "auditRef": "docs/audits/ask-links-clause-interaction-family-2026-11-11.json",
-      "auditSha256": "856925af71b686b024f06788e8a8718f6311272f6b3c345d8cb13e7e9ac4aadb",
-      "areaSha256": "74dcb5ea08699c7786e230b4ef2fd75b02aa54b28c7cbc3a9b263e08a90a0981",
+      "lastAuditedAt": "2026-11-15T23:05:00.000Z",
+      "auditRef": "docs/audits/security-ux-standard-interaction-family-2026-11-15.json",
+      "auditSha256": "37e2c86540f26c215bb8b747b97b102a979c6eda450290c1dac68a9af6314d61",
+      "areaSha256": "8801d52fac6f70db4d8163c5a581283edbc780cf9b02a8d3618d30dcb4933ccb",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
