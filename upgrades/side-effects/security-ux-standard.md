@@ -39,9 +39,6 @@ Revert the commit.
 ## Conclusion
 Documentation of an approved standard; no runtime effect.
 
-## Second-pass review (if required)
-Not required (no gate, sentinel or runtime decision).
-
 ## Evidence pointers
 - Approved text: `.instar/state/security/ux-standard-draft.md` (agent home), diffed byte-identical against the inserted article before commit.
 - Lints: registry insertion placement, code back-reference, tree parentage, single governing obligation, documented-only countdown, bounded judgment input, hierarchy `--check` all clean.
