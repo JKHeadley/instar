@@ -23,6 +23,7 @@ import type {
 } from './types.js';
 import type { AdaptiveTrust, TrustElevationSuggestion } from './AdaptiveTrust.js';
 import type { EvolutionManager } from './EvolutionManager.js';
+import { profileRaises, proofCovers, proposalHashOf, raiseRefusal, TrustRaiseRefusedError, type OperatorProof } from './TrustRaiseGuard.js';
 
 // ── Profile Defaults ─────────────────────────────────────────────────
 
@@ -157,8 +158,14 @@ export class AutonomyProfileManager {
    * Set the autonomy profile. Returns the new resolved state.
    * This is the main entry point for conversational autonomy changes.
    */
-  setProfile(level: AutonomyProfileLevel, reason: string): ResolvedAutonomyState {
+  setProfile(level: AutonomyProfileLevel, reason: string, proof?: OperatorProof | null): ResolvedAutonomyState {
     const oldProfile = this.state.profile;
+    // A profile whose permissions are wider than the current one is a raise (trust-journey
+    // decision 4): it needs the person's proof for this exact switch.
+    const raises = profileRaises(oldProfile, level);
+    if (raises.length > 0 && !proofCovers(proof, proposalHashOf({ kind: 'autonomy-profile', from: oldProfile, to: level }))) {
+      throw new TrustRaiseRefusedError(raiseRefusal(raises));
+    }
 
     this.state.history.push({
       from: oldProfile,
