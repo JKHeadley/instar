@@ -1779,7 +1779,7 @@ export class AgentServer {
      *  shared forward context — boot secret, standby fact, forwarder, counters.
      *  Absent ⇒ relay-send behaves exactly as before. */
     a2aRelayForward?: NonNullable<import('./routes.js').RouteContext['a2aRelayForward']>;
-    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>;
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
