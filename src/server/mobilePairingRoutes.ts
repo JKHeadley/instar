@@ -38,7 +38,7 @@ import { Router, type Request, type Response, type Application } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import {
-  PairingCodeStore, NONCE_PATTERN, buildPairLink, cleanText, codeTtlMs, pingAnswer, stableOrigin,
+  PairingCodeStore, NONCE_PATTERN, buildPairLink, cleanText, codeTtlMs, pingAnswer, stableOrigin, DEVICE_MINT_TTL_MS,
   type MobilePairingConfig,
 } from '../core/MobilePairing.js';
 import type { InstarConfig } from '../core/types.js';
@@ -1297,10 +1297,20 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
+    // mac-qr-pairing §4: a code minted for one computer registers only that computer's key. The
+    // code is already taken, so a copied link is spent; the real computer scans a fresh QR.
+    if (r.boundKey && r.boundKey !== publicKey) {
+      featureEvidence.record('mobilePairing', { kind: 'held', reason: 'redeem refused: wrong-device', context: { routeKind: eligible.kind } });
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
+      res.status(400).json({ error: 'wrong-device', detail: 'This pairing code was made for a different computer. Scan a new code.' });
+      return;
+    }
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
       created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner',
-        ...(r.watchId ? { outcomeWatchId: r.watchId } : {}) });
+        ...(r.watchId ? { outcomeWatchId: r.watchId } : {}),
+        // mac-qr-pairing §4: display-only, untrusted like deviceName; the Mac app says so, a key-bound code implies it.
+        ...(r.boundKey || body.deviceKind === 'computer' ? { deviceKind: 'computer' as const } : {}) });
     } catch (err) {
       svc.outcomes?.markOutcome(r.watchId, 'ended');
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
@@ -1347,19 +1357,22 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const forWhomName = forWhom ? (forWhom.ok ? personLabel(forWhom.name, forWhom.role) : 'someone no longer in your user list') : null;
     // An MSP's phone stays code-only (mobile-pairing-approve §4): handing over the code is the binding.
     const canApprove = isPairingApproveEnabled(svc.deps.config) && svc.approvable(device);
+    // mac-qr-pairing §4: a computer is named as one, never as "a phone" (display only).
+    const noun = device.deviceKind === 'computer' ? 'computer' : 'phone';
+    const Noun = noun === 'computer' ? 'Computer' : 'Phone';
     const codeLine = forWhomName
-      ? `Your code to pair a phone for ${forWhomName} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
-      : `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`;
+      ? `Your code to pair a ${noun} for ${forWhomName} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
+      : `Your code to pair a ${noun} with ${svc.deps.config.projectName} is ${pretty}.`;
     // mobile-pairing-approve §3.2: the decision first, the code kept as the fallback for older apps.
     const text = (canApprove ? [
-      `A phone is asking to pair with ${svc.deps.config.projectName}. Approve only if you are pairing a phone right now and this key matches the one the app shows.`,
-      `Phone key: ${device.fingerprint ?? 'unknown'}\nPhone name: ${device.deviceName ?? '(none given)'} (the phone chose this name, so don't rely on it)`,
+      `A ${noun} is asking to pair with ${svc.deps.config.projectName}${device.deviceKind === 'computer' && device.label ? ` (it calls itself ${device.label})` : ''}. Approve only if you are pairing a ${noun} right now and this key matches the one the app shows.`,
+      `${Noun} key: ${device.fingerprint ?? 'unknown'}\n${Noun} name: ${device.deviceName ?? '(none given)'} (the ${noun} chose this name, so don't rely on it)`,
       `If you did not start this, tap Decline.`,
       `If the app asks for a code instead: ${codeLine} Don't send or show this message to anyone, including me.`,
     ] : [
       codeLine,
-      `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
-      `Phone name: ${device.deviceName ?? '(none given)'}`,
+      `Type it into the Instar app only if you are pairing a ${noun} right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
+      `${Noun} name: ${device.deviceName ?? '(none given)'}`,
     ]).join('\n\n');
     const dm = await deliverOwnerDM(svc, text, nonce, canApprove);
     const delivered = typeof dm === 'number' ? dm : null;
@@ -1425,8 +1438,21 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.enabled()) { json503(res); return; }
     const mintBody = (req.body ?? {}) as Record<string, unknown>;
+    // mac-qr-pairing §4: an owner phone (the device rule is ownerOnly) mints a code for a computer it
+    // scanned. The code is always the owner's and may register only that computer's key; it grants
+    // nothing by itself, since the new device still waits for an existing approval path.
+    const minter = principalOf(req);
+    let forDevice: { publicKey: string; label: string | null } | null = null;
+    if (minter.kind === 'device') {
+      const fd = (mintBody.forDevice ?? {}) as Record<string, unknown>;
+      const key = typeof fd.publicKey === 'string' ? fd.publicKey : '';
+      if (!parseDevicePublicKey(key)) { res.status(400).json({ error: 'bad-device-key', detail: 'forDevice.publicKey must be the new device\'s public key.' }); return; }
+      const phone = svc.devices.get((minter as { deviceId: string }).deviceId);
+      const computer = cleanText(fd.name, 24) ?? 'A computer';
+      forDevice = { publicKey: key, label: cleanText(`${computer} (added from ${cleanText(phone?.deviceName ?? null, 20) ?? 'your phone'})`) };
+    }
     // People and roles §3.2: whose phone this link is for (neither field ⇒ the owner, as before).
-    const chosenPerson = svc.choosePerson(mintBody.userId, mintBody.role);
+    const chosenPerson = forDevice ? svc.choosePerson(undefined, undefined) : svc.choosePerson(mintBody.userId, mintBody.role);
     if (!chosenPerson.ok) { res.status(400).json({ error: chosenPerson.error, detail: chosenPerson.detail }); return; }
     const chosen = svc.pairingOrigin();
     if (!chosen) {
@@ -1461,12 +1487,13 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (svc.ownNames) {
       try { await svc.ownNames.proveNow(new URL(origin).host); } catch (err) { deps.reportDegradation?.('MobileRoutes.probe', err); }
     }
-    const label = cleanText(mintBody.label);
-    const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
-      { userId: chosenPerson.userId, role: chosenPerson.role });
+    const label = forDevice ? forDevice.label : cleanText(mintBody.label);
+    const m = svc.codes.mint(forDevice ? DEVICE_MINT_TTL_MS : codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
+      { userId: chosenPerson.userId, role: chosenPerson.role }, forDevice?.publicKey ?? null);
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
     // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.1): never refuses the link.
-    const notice = svc.watchOutcome(m.code, mintBody.topicId, label, m.expiresAt);
+    const notice = forDevice ? null : svc.watchOutcome(m.code, mintBody.topicId, label, m.expiresAt);
+    if (forDevice) featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'code minted by owner phone for a computer', context: { phoneId: (minter as { deviceId: string }).deviceId } });
     // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
     res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind,
       ...(notice ?? {}),
@@ -2567,6 +2594,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // re-checks owner, local TLS and the feature switch itself.
     // Approve a waiting phone with Face ID (docs/specs/mobile-pairing-approve.md §3.4): owner phones only.
     { method: 'GET', re: /^\/mobile\/pairing-requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'pairing-requests-read' },
+    // Pair a computer from an owner phone (docs/specs/mac-qr-pairing.md §4): mint a code bound to its key.
+    { method: 'POST', re: /^\/mobile\/pairing-codes$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'pairing-mint' },
     { method: 'POST', re: new RegExp(`^/mobile/pairing-requests/${UUID}/(challenge|approve|decline)$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
     { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
     // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The

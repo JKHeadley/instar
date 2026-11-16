@@ -86,7 +86,7 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
     res.json({
       presenceKey: !!svc.devices.get(approver)?.presenceKey,
       waiting: svc.waitingPhones().map((d) => ({
-        deviceId: d.id, client: isBrowserDevice(d) ? 'browser' : 'phone', deviceName: d.deviceName, label: d.label, fingerprint: d.fingerprint ?? null, requestedAt: d.pairedAt, expiresAt: d.expiresAt ?? null, canApprove: svc.approvable(d), ...personFields(d, svc),
+        deviceId: d.id, client: isBrowserDevice(d) ? 'browser' : d.deviceKind === 'computer' ? 'computer' : 'phone', deviceName: d.deviceName, label: d.label, fingerprint: d.fingerprint ?? null, requestedAt: d.pairedAt, expiresAt: d.expiresAt ?? null, canApprove: svc.approvable(d), ...personFields(d, svc),
       })),
     });
   });
