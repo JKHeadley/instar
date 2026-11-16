@@ -110,7 +110,7 @@ import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
-import { inboundTopicId, normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
+import { inboundTopicId, isConfiguredChat, normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
@@ -1329,8 +1329,49 @@ export class TelegramLifeline {
     this.pollTimeout = setTimeout(() => this.poll(loopId), this.pollBackoffMs);
   }
 
+  private lastChatConfigReloadAt = 0;
+  private droppedChatsWarned = new Set<string>();
+  /**
+   * Group traffic is admitted only from the configured main chat or issues chat.
+   * A group the lifeline does not know is never taken as the main group: its thread
+   * ids would file it under an unrelated main-group topic and replies would go there
+   * (feedback 17ab2960). Before dropping, re-read the issues chat from the config
+   * file, so an issuesChatId set while this process was running takes effect without
+   * a lifeline restart. Private chats (owner DMs) are not group topics and pass as before.
+   */
+  private admitChat(chat: { id?: number | string; type?: string } | undefined): boolean {
+    if (!chat || chat.id === undefined || chat.id === null) return true;
+    if (chat.type === 'private') return true;
+    const space = () => ({ mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
+    if (isConfiguredChat(chat.id, space())) return true;
+    const now = Date.now();
+    if (now - this.lastChatConfigReloadAt >= 5_000) {
+      this.lastChatConfigReloadAt = now;
+      try {
+        const fresh = loadConfig(this.projectConfig.projectDir).messaging?.find(m => m.type === 'telegram' && m.enabled)?.config as { issuesChatId?: unknown } | undefined;
+        const issues = fresh?.issuesChatId;
+        if (issues !== undefined && issues !== null && String(issues).trim() !== '' && String(issues) !== String(this.config.issuesChatId ?? '')) {
+          this.config.issuesChatId = String(issues).trim();
+          console.log(`[Lifeline] Picked up issuesChatId ${this.config.issuesChatId} from config without a restart`);
+        }
+      } catch (err) {
+        console.warn(`[Lifeline] Could not re-read config for an unknown chat: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (isConfiguredChat(chat.id, space())) return true;
+    }
+    const key = String(chat.id);
+    if (!this.droppedChatsWarned.has(key)) {
+      this.droppedChatsWarned.add(key);
+      if (this.droppedChatsWarned.size > 100) this.droppedChatsWarned.delete(this.droppedChatsWarned.values().next().value!);
+      console.warn(`[Lifeline] Dropping update from chat ${key}: it is neither chatId nor issuesChatId. If you just configured it, restart the lifeline.`);
+    }
+    return false;
+  }
+
   private notificationInbound = new Map<number, Map<string, number>>();
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    if (update.message && !this.admitChat(update.message.chat)) return;
+    if (update.callback_query?.message && !this.admitChat(update.callback_query.message.chat)) return;
     const msg = update.message;
     normalizeInboundThread(msg, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
     const configured = this.projectConfig.messaging?.find(item => item.type === 'telegram')?.config;

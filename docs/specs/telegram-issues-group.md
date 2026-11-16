@@ -128,6 +128,13 @@ transport (typed destinations) is unchanged and does not address issue topics.
 Polling needs no change: `getUpdates` is bot-wide, so the lifeline already receives
 the issues group's messages once the bot is a member/admin there.
 
+The lifeline admits group traffic only from `chatId` or `issuesChatId`. A message or
+button press from any other group is dropped (logged once per chat), never taken as
+main-group traffic: its thread id would otherwise land in an unrelated main topic. Before
+dropping, the lifeline re-reads `issuesChatId` from the config file (at most every 5 s),
+so setting it while only the server restarts still routes the issues group correctly.
+Private chats (owner DMs) pass as before.
+
 Why not a composite `(chatId, threadId)` key everywhere: it would touch every layer that
 stores a topic number (sessions, commitments, relay script, history, profiles); the
 offset keeps the change to the Telegram edges.

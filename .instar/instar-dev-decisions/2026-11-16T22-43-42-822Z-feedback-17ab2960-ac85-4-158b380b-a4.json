@@ -1,0 +1,21 @@
+{
+  "ts": "2026-11-16T22:43:42.822Z",
+  "slug": "feedback-17ab2960-ac85-4-158b380b-a4",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-17ab2960-ac85-45eb-ac81-83d6f198dbc2:a4",
+  "initiativeId": "feedback-17ab2960-ac85-45eb-ac81-83d6f198dbc2",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 2,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/telegramTopicSpace.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

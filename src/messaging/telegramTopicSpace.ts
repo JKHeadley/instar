@@ -42,6 +42,17 @@ export function issuesChatConfigured(cfg: TopicSpaceConfig): boolean {
   return norm(cfg.issuesChatId) !== null;
 }
 
+/**
+ * True when `chatId` is the configured main chat or the configured issues chat.
+ * Group traffic from any other chat must never be taken as main-group traffic:
+ * its thread ids would land in unrelated main-group topics.
+ */
+export function isConfiguredChat(chatId: string | number | null | undefined, cfg: TopicSpaceConfig): boolean {
+  const chat = norm(chatId);
+  if (chat === null) return false;
+  return chat === norm(cfg.mainChatId) || chat === norm(cfg.issuesChatId);
+}
+
 /** Internal topic id for a message in `chatId` with Telegram thread `threadId`. */
 export function inboundTopicId(
   chatId: string | number | null | undefined,
