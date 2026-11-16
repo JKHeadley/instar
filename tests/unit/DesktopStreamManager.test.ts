@@ -43,7 +43,7 @@ describe('DesktopStreamManager', () => {
       return real(fn, ms, ...rest);
     }) as typeof setTimeout);
     try {
-      const { ws } = await connect(async () => ({
+      const { ws, manager } = await connect(async () => ({
         grantId: `pace-${Math.random()}`, assertActive: async () => {},
         captureEncrypted: async () => Buffer.alloc(32, 1),
         ...(frameIntervalMs ? { frameIntervalMs } : {}),
@@ -53,6 +53,11 @@ describe('DesktopStreamManager', () => {
       await once(ws, 'open');
       await new Promise(resolve => real(resolve, 400));
       ws.close();
+      // End this stream and let a tick already in flight run out before the
+      // next measurement, so its 67 ms timers cannot land in the next spy
+      // (it failed this way on loaded CI runners).
+      manager.closeAll();
+      await new Promise(resolve => real(resolve, 150));
     } finally { spy.mockRestore(); }
     return delays;
   }
