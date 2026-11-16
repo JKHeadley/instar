@@ -313,6 +313,17 @@ proven the check can say no. Rule: on each poll, and on any judged `engine-login
 usage read remains the positive signal). Unreadable ⇒ `unknown`, status unchanged. A usage reading
 older than its staleness bound renders `stale` on the dashboard, never `active`.
 
+**Built 2026-11-15 (CMT-1781 item 3), for the case the existing reads cannot see.** The read runs
+on each poll for an account whose stored credential cannot be read at all
+(`credential-absent-or-unreadable`); every other case already has a positive or negative signal
+from the usage read and the refresh exchange. A NO counts only while the engine's credential store
+is open (macOS: `security show-keychain-info` exits 0 for the login keychain), because a locked
+keychain after a reboot makes a working login read as absent; a locked or unreadable store is
+`unknown`. Two trusted NOs at least 5 minutes apart move the account to `needs-reauth` (cause
+`cli-auth-status-signed-out`, admitted by the repair like the other signed-out causes); one NO
+shows `signed-out` next to the status at once. Engine-specific parts live in
+`ENGINE_LOGIN_READERS` / `ENGINE_CREDENTIAL_STORE_OPEN` (adapter tree).
+
 ### 3.7 Switches, spend, rollout
 
 - Kill switch `monitoring.neverSilent.enabled` (live config). Per-action switches
@@ -434,7 +445,7 @@ same rule, not a dropped rule.
   silent Claude conversation is judged (with the empty-home canary), and a judged `engine-login` at
   or above the floor goes through `QuotaPoller.observeCliLoginExpired` — the existing funnel that
   moves the account to `needs-reauth` and holds it there, so the pool stops saying "active". The
-  every-poll read is not added. <!-- tracked: CMT-1781 -->
+  every-poll read for an account with no readable credential was added 2026-11-15 (§3.6).
 - **Recovery lease (§3.3).** Recovery is serialized per conversation inside the watcher; moving the
   other recovery producers onto one shared lease is Phase 2 and not in this build. <!-- tracked: CMT-1781 -->
 
