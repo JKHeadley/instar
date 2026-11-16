@@ -94,7 +94,7 @@ No agent-authored-artifact defect — not applicable. No new self-triggered cont
 
 **Verdict:** Concur with the review
 
-Checked independently: `tsc --noEmit` clean; `tests/unit/cos-owner-pause.test.ts` 19/19 pass.
+Checked independently: `tsc --noEmit` clean; `tests/unit/cos-owner-pause.test.ts` 19/19 and `tests/integration/chief-of-staff-owner-pause.test.ts` 4/4 pass.
 
 No non-owner path to a record found. The dashboard PIN route (`routes.ts` `/tap`) only accepts `unpark|confirm-done`, and a pause tap with no chat/message ref returns `ignored`. The bearer `pause-ask` route only sends an ask. The adapter's `from.id === getVerifiedOwner()` check runs before `ownerTap`. The validator refuses `by !== 'owner-tap'` for pause events. The bot token cannot forge `from.id`. Fail-closed is correct: an unreadable union in `actionGate` gives Infinity and a `lagging-fold` refusal, and a throw inside the lock is refused. `isOwnerPaused` throws, so the reconciler stands down. Re-check-then-write is race-safe: the store is re-read after the only await, nothing awaits before emit, and the fold dedupes by askId. Unpark/confirm-done taps and their answers are unchanged. Unknown lifecycle events reach no fold: the only consumers are `foldBindingState`, `unknownLifecycleEvents` and `ownerPauseEventForAsk`, all of which match by name, and a malformed known pause event is still rejected.
 
