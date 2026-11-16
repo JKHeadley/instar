@@ -2,6 +2,10 @@
  * machine or the Instar agent is online or whether a screen is actually locked. */
 import type { DesktopHelperPermissionChange } from './DesktopHelperRetention.js';
 
+/** The longest readiness reason a peer's answer may carry. Each reason here is
+ * at most a few plain sentences plus a helper path; 160 cut real ones mid-word ("… The Ins"). */
+export const DESKTOP_PEER_REASON_MAX = 800;
+
 const PERMISSION_STEP = 'System Settings → Privacy & Security';
 
 /** macOS ties these permissions to the exact program, so a changed helper loses

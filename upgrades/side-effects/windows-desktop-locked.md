@@ -9,6 +9,8 @@
 
 Tier 1, 12 files, about 225 added lines (most of it tests). Justin tried Windows Remote Desktop on Mama PC (13:10 PST 11-15): clicks blanked the screen and the session then closed. Reproduced on Mama at 16:35 through the real companion: on a locked PC the lock picture sits on the "Default" input desktop, so the companion reported ready and a session started; the first click lifted the picture, Windows moved to the secure sign-in desktop, frames went empty (6.1 s), and the companion watchdog ended the lease (7.4 s). Fix: the companion (`InstarDesktopCompanion.cs`) reads the lock with `ScreenLocked()` = Windows' WTS session flag says locked AND a LogonUI process runs in its session, cached 500 ms; `InteractiveDesktop()` also requires not locked; the probe reply adds `screenLocked`. `WindowsDesktopHost.probe` carries it as `windows: { locked }`. `desktopProbeUnavailableReason` gains a Windows branch with plain wording (it used the Mac text for Windows before). `AgentServer` local diagnostics pass `screenLocked: true` to the setup guide, which gets Windows lock wording. `dashboard/desktop.js`: after a session ends and cannot resume, it reloads the machine list and shows that machine's own reason. Effort: one build, one review round, first commit attempt.
 
+**Added after first push (found during the iPhone check):** a peer machine's readiness reason was cut to 160 characters when the front read it (`AgentServer` desktop-availability peer call), so the Mac Mini's reason showed "… The Ins" on every client, and this change's own Windows "cannot reach" sentence (about 220 characters) would have been cut too. The cut is now `DESKTOP_PEER_REASON_MAX` = 800 characters (the longest real reason, the Mac helper-permission one with its path, is about 560), and the peer reply bound rises from 2,048 to 4,096 bytes. A test asserts every reason the function produces fits.
+
 ## Decision-point inventory
 
 - Companion `InteractiveDesktop()` (gates probe readiness, start, capture, input, and the 1 s watchdog stop) — modify — also false while the PC is locked.
@@ -39,6 +41,8 @@ No competing-signals decision point added; a factual OS reading (two corroborati
 
 ## 5. Interactions
 
+The peer reply bound (4,096 bytes) and reason clip (800 characters) stay bounded; the peer is an authenticated mesh machine and its text is still treated as display text only.
+
 `ScreenLocked` takes its own `LockGate` and is called while `Gate` is held; it never takes `Gate`, so no lock-order inversion. The process scan runs at most twice a second. The watchdog now ends a session within about 1 s of Win+L, before any frame of the lock screen is sent, instead of after the first click. The viewer's resume path is unchanged; `leaveExplained` only reads `/desktop/targets` after `leave()` and skips if a new socket opened meanwhile.
 
 ## 6. External surfaces
@@ -60,7 +64,7 @@ Machine-local by design: each machine reads its own lock and reports it through 
 
 ## 8. Rollback cost
 
-Revert the commit; the next release reinstalls the previous companion. No state or config.
+Revert the commit (the reason clip returns to 160 and the bound to 2,048); the next release reinstalls the previous companion. No state or config.
 
 ## Conclusion
 

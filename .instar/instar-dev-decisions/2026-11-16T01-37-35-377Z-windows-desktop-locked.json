@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-16T01:37:35.377Z",
+  "slug": "windows-desktop-locked",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DesktopProbeReadiness.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -9,3 +9,5 @@ What changes: the helper now asks Windows directly whether the PC is locked. It 
 What does not change: who may connect, the PIN, Stop, the red banner, video, clicks and typing on an unlocked PC. Locked machines were already meant to show as unavailable; Windows just was not detecting it.
 
 What this does not do: it does not unlock Windows remotely. Doing that safely needs a different kind of helper that runs as a system service, and that is a separate decision.
+
+One more fix found while checking the iPhone app: when one machine showed another machine's "not ready" sentence, it cut it after 160 letters, so the Mac Mini's sentence ended mid-word ("… The Ins"). Each sentence now arrives whole, up to 800 letters, which covers the longest one Instar writes.
