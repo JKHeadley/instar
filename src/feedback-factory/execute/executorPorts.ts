@@ -221,6 +221,17 @@ function compareVersionTags(a: string, b: string): number {
   return 0;
 }
 
+/**
+ * True when a failed `gh api -X DELETE …/labels/<label>` means only that the label was not on the
+ * issue: GitHub's 404 with the message "Label does not exist". Any other 404 (a missing PR or repo,
+ * no access) stays a failure.
+ */
+export function labelAlreadyAbsent(error: unknown): boolean {
+  const e = error as { stdout?: unknown; stderr?: unknown } | null;
+  const text = `${String(e?.stdout ?? '')}\n${String(e?.stderr ?? '')}`;
+  return /Label does not exist/.test(text) && /\b404\b/.test(text);
+}
+
 export class GhGateway implements GitHubGateway {
   private readonly resolveRuntime: () => AuthenticatedGitHubCliRuntime;
 
@@ -295,7 +306,13 @@ export class GhGateway implements GitHubGateway {
   }
 
   async removeLabel(slug: string, pr: number, label: string): Promise<boolean> {
-    try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; } catch { return false; } // @silent-fallback-ok: caller records the failure
+    try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; }
+    catch (error) {
+      // Idempotent: the label already gone is the wanted state. GitHub answers 404 "Label does not
+      // exist" for that, and reading it as a failure stalled every admitted PR before its merge.
+      if (labelAlreadyAbsent(error)) return true;
+      return false; // @silent-fallback-ok: caller records the failure
+    }
   }
 
   /**

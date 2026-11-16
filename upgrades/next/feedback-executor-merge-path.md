@@ -1,0 +1,16 @@
+<!-- bump: patch -->
+## What Changed
+
+The feedback executor can now merge a fix that passed its review. Three blockers are gone. First, removing the "hold" label from a pull request that no longer had it returned GitHub's 404 "Label does not exist", which the executor read as a failure, so it never reached the merge again. That answer now counts as done. Second, the executor's commits had no decision-audit record (hooks are off in its publish clone on purpose), so the required decision-audit check failed. The publisher now writes the record itself, naming the feedback-executor gate. Third, its pull requests had no release-note fragment. The publisher now adds one in fixed wording when the change needs one. Fork-only publication, the independent review at the exact head and the full required-check floor are unchanged.
+
+## What to Tell Your User
+
+Fixes for problems reported through feedback can now finish landing on their own. Before, they passed review and then stalled.
+
+## Summary of New Capabilities
+
+None. This is a fix to the existing feedback executor.
+
+## Evidence
+
+Live trace on 2026-11-15: logs/feedback-triage.jsonl showed execute:gh-unknown remove-label for PRs 3159, 3168 and 3195 every 30 minutes, with their merge deadlines a day past. A diagnostic safe-merge run on PR 3195 refused with red checks release-fragment, decision-audit and instar/local-verify. New unit tests run the real decision-audit, release-fragment and upgrade-guide checkers on the generated files, both without and with them, and run the real GitHub gateway against a gh that answers 404 "Label does not exist". The e2e lifecycle now models that answer on the merge retry.
