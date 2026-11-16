@@ -286,7 +286,7 @@ import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOver
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
-import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { desktopProbeUnavailableReason, DESKTOP_PEER_REASON_MAX } from '../core/DesktopProbeReadiness.js';
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
@@ -6495,6 +6495,8 @@ export class AgentServer {
             ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
             ...(probe.helperChange ? { helperChange: probe.helperChange,
               permissionStep: desktopProbeUnavailableReason(probe) } : {}),
+            // A Windows companion reports its lock under `windows`; the guide reads screenLocked.
+            ...(probe.windows?.locked === true ? { screenLocked: true } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];
@@ -6574,7 +6576,8 @@ export class AgentServer {
           const { value, done } = await reader.read();
           if (done) break;
           bytes += value.byteLength;
-          if (bytes > 2_048) {
+          // Room for a full readiness reason (DESKTOP_PEER_REASON_MAX characters, some multi-byte).
+          if (bytes > 4_096) {
             await reader.cancel();
             throw new Error('desktop-peer-response-bound');
           }
@@ -6586,7 +6589,7 @@ export class AgentServer {
           throw new Error('desktop-peer-identity-mismatch');
         }
         return { machineId, label: result.label.slice(0, 80), ready: result.ready,
-          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, 160) } : {}) };
+          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, DESKTOP_PEER_REASON_MAX) } : {}) };
       },
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,

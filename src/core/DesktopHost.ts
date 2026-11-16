@@ -91,6 +91,9 @@ export interface DesktopProbe {
    * and whether its screen tools are installed. `compositor: 'hyprland'` means
    * Hyprland is the desktop here, even if nobody has signed in to it yet. */
   linux?: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' };
+  /** Windows only: `locked` is the companion's lock reading (Windows' session
+   * flag and the sign-in screen both say locked). A locked PC is not usable. */
+  windows?: { locked: boolean };
   /** macOS only, while the locked-screen feature is on. */
   lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
 }

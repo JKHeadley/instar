@@ -695,8 +695,28 @@ async function resumeDesktop(generation) {
       return;
     }
     resumeAttempt = null;
-    leave(error.message || 'Desktop access cannot resume.');
+    void leaveExplained(error.message || 'Desktop access cannot resume.');
   }
+}
+/** A session the machine itself ended (a Windows PC that locked, a Mac whose
+ * screen went away) says why, not only that it ended: the machine list is read
+ * again and that machine's own reason replaces the generic line. */
+async function leaveExplained(message) {
+  const endedMachineId = machineId;
+  const endedRequestId = requestId;
+  leave(message);
+  if (!token || !endedMachineId) return;
+  // A new request (even one still connecting) keeps its own status line.
+  const superseded = () => !!socket || requestId !== endedRequestId;
+  try {
+    const targets = await api('/desktop/targets');
+    if (superseded()) return;
+    const ended = (targets.machines || []).find(target => target.machineId === endedMachineId);
+    if (!ended || ended.ready || !ended.unavailableReason) return;
+    await loadTargetsAndMaybeOpen({ open: false });
+    if (superseded()) return;
+    status(ended.unavailableReason);
+  } catch { /* @silent-fallback-ok — the generic line above already says the session ended. */ }
 }
 async function api(path, method = 'GET', body, signal) {
   let response;
