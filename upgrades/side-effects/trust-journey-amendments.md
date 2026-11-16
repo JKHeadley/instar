@@ -55,7 +55,10 @@ A revert of the text, map rows, baseline line, lint and test, the audits and the
 
 ## Second-pass review
 
-See `docs/specs/reports/trust-journey-amendments-constitution-review-2026-11-15.md`.
+**Reviewer:** independent reviewers in fresh context, not the author: the constitution review of the amendments (`docs/specs/reports/trust-journey-amendments-constitution-review-2026-11-15.md`) and, after main was merged in, a fresh reader of the merged Interaction family (`docs/specs/reports/interaction-family-merge-review-2026-11-16.md`)
+**Independent read of the artifact: concur**
+
+The first review covers the three amended articles and their audits. The second covers the family as merged with *Security Fixes Keep the Experience Whole* (PR 3200): no contradiction and no duplicated obligation, no approved wording changed by the merge, and the family audit `docs/audits/interaction-family-merge-2026-11-16.json` recorded after that read.
 
 ## Counterpart
 
