@@ -1,4 +1,6 @@
-## Owner-approved sensitive actions (thread delete; trust elevation later)
+---
+title: Owner-approved sensitive actions (thread delete; trust elevation later)
+---
 
 A few irreversible or privilege-granting handlers must be the owner's decision, but `isLocal`
 is not owner authorization — a remote peer's message spawns a *local* session, so "it came from

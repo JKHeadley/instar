@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-16T13:27:17.295Z",
+  "slug": "owner-approved-sensitive-action",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/owner-approved-sensitive-action.md"
+    ],
+    "addedLines": 3,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

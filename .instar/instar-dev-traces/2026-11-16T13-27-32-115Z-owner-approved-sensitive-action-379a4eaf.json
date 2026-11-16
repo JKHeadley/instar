@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "owner-approved-sensitive-action",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T13:27:32.115Z",
+  "artifactPath": "upgrades/side-effects/owner-approved-sensitive-action.md",
+  "artifactSha256": "5be63f0e79b347885c26b30f139590f3fa96d490bd2288937a7008b2d2da9d27",
+  "coveredFiles": [
+    "src/data/awareness/owner-approved-sensitive-action.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line awareness-entry format fix (add required front-matter title block); corrects the file that failed all PostUpdateMigrator unit tests. Part of the already-reviewed #3218 primitive; no runtime change.",
+  "eli16Path": "docs/specs/owner-approved-sensitive-action.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-approved-sensitive-action.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

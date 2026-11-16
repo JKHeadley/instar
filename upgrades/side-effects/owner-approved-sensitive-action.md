@@ -16,3 +16,7 @@ Spec: `docs/specs/owner-approved-sensitive-action.md` (converged + approved, CoS
 ## Second-pass review (independent)
 
 **Reviewer:** this is an auth gate on an irreversible action (`threadline_delete`), so Phase 5 requires an independent second-pass before the gate flips. The server implementation is complete + unit-tested (16 tests) + tsc-clean + dark; the independent second-pass audit of the wiring (that the store/registry are genuinely shared between the MCP gate and the phone routes, that the dark path is byte-identical, that the signed message binds the exact action, and that the stdio-path gap is closed) is scheduled as part of the pre-flip gate alongside the dark-byte-identical proof and the live phone-tap proof. **Verdict pending the pre-flip second-pass + the two proofs; the DARK merge carries the risk only of un-exercised dark code, which the e2e alive test covers.**
+
+## Follow-up correction
+
+- The awareness entry `src/data/awareness/owner-approved-sensitive-action.md` originally lacked a front-matter block (it began with a `##` heading), which made the awareness-entry-registry log one error on every migration run and failed all ~67 PostUpdateMigrator unit tests. Fixed by adding the required `title` front-matter block and dropping the duplicate heading. No runtime change.
