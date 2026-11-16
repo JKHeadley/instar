@@ -8,9 +8,12 @@
 
 ## Status
 
-**Not yet converged.** Six review rounds so far. Round 6's reviewers (Claude and GPT,
-plus the standards-conformance gate) returned two design findings and several precision
-items, listed below by class. The next round resolves them.
+**Converged at round 10.** Rounds 6–8 kept finding design issues, all in extra machinery
+for unproven requests; round 9 cut the design to the smallest fix that closes the hole,
+and design findings then fell to one per round, each small and fixed. Round 9: GPT
+converged; Claude confirmed the hole is closed and raised one real design point (fixed).
+Round 10: Claude converged; GPT raised one small design point (fixed). The fix is ready
+for approval and build.
 
 ## Overview
 
@@ -33,16 +36,13 @@ never reaches the agent.
 | 5 | Claude + GPT | some browser requests still passed admission; stored keyless drops were never released; owner-only reading not established in the no-key state; keyless accounting had no defined lifecycle | Browser-proof admission; authority classes; bounded keyless drops; step-up for scoped reads; no-key state named as a residual |
 | 6 | conformance gate, then Claude + GPT on the revised text | standards possible-violations (data cut, machine-local storage, breadth of refusals) | No automatic deletion; unified storage with per-machine counting; minimal validator. Claude + GPT findings on that text are listed below |
 
-## Open after round 6 (class level)
+| 7 | Claude + GPT | a freed slot was not released across machines; some caller-chosen identifiers still reached the agent | Cross-machine release; server-chosen identifiers |
+| 8 | Claude + GPT | the round-7 additions had their own design gaps (release bookkeeping, identifier collisions, an unclassified creation path) | Count not falling: cut decided |
+| 9 | Claude + GPT (cut design) | GPT: none. Claude: the hole is closed; one identifier-safety point where text could reach a command line | Identifier safety for every non-master request |
+| 10 | Claude + GPT (confirmation) | Claude: none. GPT: the same safety point for identifiers stored before the update | Unsafe stored identifiers are referred to by position |
 
-- **DESIGN:** a keyless slot is freed only when the value is read on the machine that
-  created it; reading it on another machine does not free it. Needs a cross-machine
-  release.
-- **DESIGN:** a keyless caller still chooses some identifiers that the agent sees. They
-  should be replaced by server-generated references.
-- **Conformance gate (possible-violation, to answer or fix):** the reasoning behind the
-  chosen limits; whether every refused input really has to be refused; whether pending
-  pages need to survive the loss of a machine.
+The keyless-request bound, cross-machine listing and server-chosen identifiers from rounds
+5–8 are deliberately deferred as follow-up work.
 
 ## Cross-model review
 
@@ -54,9 +54,11 @@ original finding. Grok was unreachable.
 ## Proportion
 
 Tier 2 (security-sensitive: authentication gate, untrusted-text handling, session-start
-gating), cap 6 rounds. Round 6 still found design issues; the private ledger tracks this
-against the "two rounds without a drop, cut to the smallest fix" rule.
+gating). The 6-round cap was passed because rounds 6–8 kept finding design issues; the
+"two rounds without a drop, cut to the smallest fix" rule triggered the round-9 cut, after
+which it converged in two rounds.
 
 ## Convergence verdict
 
-Pending the next round.
+Converged at round 10. Detail per finding is in the private ledger until the fix is
+installed.

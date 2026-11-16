@@ -25,16 +25,12 @@ guarded only by "you're on this machine."
 3. **A request without the key still gets a normal, working paste page**, including phone
    links and agent-to-agent transfers. This is safe because what gets pasted can only be
    read back with the agent's key.
-4. **Keyless requests are clearly marked "unverified".** The agent never reads their
-   wording and won't feed their secrets into commands. The page warns the person filling
-   it in. Nothing is deleted automatically.
-5. **Keyless requests are capped at a small number per machine**, so they can't crowd out
-   the owner's own requests or fill the storage.
-6. **Pasted-but-unread secrets are listed**, across your machines, so nothing silently
-   disappears.
-7. **Supplied text is treated as untrusted everywhere the agent reads it**, and the paste
+4. **Keyless requests are clearly marked "unverified".** Their wording is shown to the
+   agent only as quoted, untrusted text, and only if it goes looking. The page warns the
+   person filling it in. Nothing is deleted automatically.
+5. **Supplied text is treated as untrusted everywhere the agent reads it**, and the paste
    page is properly encoded.
-8. **A leftover notice file moves into a private folder.**
+6. **A leftover notice file moves into a private folder.**
 
 ## What you would notice
 
