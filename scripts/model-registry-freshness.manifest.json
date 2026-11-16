@@ -230,6 +230,22 @@
             "currency": "USD"
           },
           "verifiedAt": "2026-07-09"
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 on codex CLI 0.169.0 against the ChatGPT account: answered a trivial prompt. RECOGNIZED, not promoted: the capable pin stays gpt-6-astra until a benchmark earns the lane. Found by the daily frontier-model-watch job (OpenAI lists GPT-6.1 Sol 2026-09-29, Terra 2026-10-26)."
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 on codex CLI 0.169.0 against the ChatGPT account: answered a trivial prompt. RECOGNIZED, not promoted: the capable pin stays gpt-6-astra until a benchmark earns the lane. Found by the daily frontier-model-watch job (OpenAI lists GPT-6.1 Sol 2026-09-29, Terra 2026-10-26)."
         }
       ],
       "note": "codex CLI is NOT installed on this machine (which codex -> not found), yet componentFrameworks routes job/Usher/TopicIntentExtractor to it -> those fall back at runtime. Door-liveness gap flagged to operator. topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over). The GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified 2026-07-09 (codex CLI >= 0.144.0 required); it is now RECOGNIZED/spawnable (added to the acceptance allowlist KNOWN_CODEX_MODEL_IDS — since 2026-09-05 the single codex list; the spawn route's former CODEX_MODELS_SUBSCRIPTION duplicate is deleted) but is deliberately NOT promoted to frontier=true / the capable pin here — the capable pin stays gpt-5.5 pending a benchmark-based promotion (a model earns the routing lane via benchmarks, not GA date). The -pro variants are excluded (plan-gated + pricier). Frontier/pin promotion of gpt-5.6-sol is a tracked follow-up."
