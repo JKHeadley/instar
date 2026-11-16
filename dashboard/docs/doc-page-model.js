@@ -197,6 +197,34 @@ export function safeHref(href) {
   return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:' ? u.href : null;
 }
 
+// ── opening in the Instar app (phone) ───────────────────────────────────────────────────────────
+
+/**
+ * The universal link that opens this document in the Instar phone app:
+ * `https://instar.sh/doc#v=1&o=<urlencoded https origin>&d=<doc id>[&c=<comment key>]`.
+ * instar.sh's apple-app-site-association names only the Instar app for `/doc`, so iOS hands the
+ * tap to the app; everything is in the fragment, so instar.sh never sees it. null when the page's
+ * origin is not https (the app only talks to https agents) or the id is not a document id.
+ */
+export function appDocLink(origin, docId, commentKey) {
+  let o;
+  try { o = new URL(String(origin || '')); } catch { return null; }
+  if (o.protocol !== 'https:' || !o.hostname) return null;
+  if (!/^[0-9a-f-]{36}$/.test(String(docId || ''))) return null;
+  const parts = [`v=1`, `o=${encodeURIComponent(o.origin)}`, `d=${docId}`];
+  if (typeof commentKey === 'string' && commentKey && commentKey.length <= 200) parts.push(`c=${encodeURIComponent(commentKey)}`);
+  return `https://instar.sh/doc#${parts.join('&')}`;
+}
+
+/**
+ * A phone or tablet browser with no linked key: offer the app first, since the QR code that links
+ * a computer would have to be scanned by this same phone. Touch-first means a coarse pointer and
+ * no hover; a laptop with a touch screen still has a fine pointer and keeps the computer path.
+ */
+export function prefersAppOpen({ inApp, coarsePointer, canHover }) {
+  return !inApp && Boolean(coarsePointer) && !canHover;
+}
+
 // ── location ────────────────────────────────────────────────────────────────────────────────────
 
 /** `#code=…&comment=…` → `{code, comment}` (either null). */

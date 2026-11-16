@@ -244,3 +244,24 @@ describe('drafts, layout, compare, bridge', () => {
     expect(m.parseAppEvent(null)).toBeNull();
   });
 });
+
+describe('opening on a phone (fb-54b4d850-0de: the QR screen on the phone that would scan it)', () => {
+  const id = '8f2c1d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
+  it('builds the instar.sh/doc universal link with the agent origin, document and comment in the fragment', () => {
+    expect(m.appDocLink('https://echo-studio.dawn-tunnel.dev', id, null))
+      .toBe(`https://instar.sh/doc#v=1&o=https%3A%2F%2Fecho-studio.dawn-tunnel.dev&d=${id}`);
+    expect(m.appDocLink('https://a.example:8443', id, 'owner:x'))
+      .toBe(`https://instar.sh/doc#v=1&o=https%3A%2F%2Fa.example%3A8443&d=${id}&c=owner%3Ax`);
+  });
+  it('gives no link for a non-https agent or a non-document id', () => {
+    expect(m.appDocLink('http://localhost:4042', id, null)).toBeNull();
+    expect(m.appDocLink('not a url', id, null)).toBeNull();
+    expect(m.appDocLink('https://a.example', 'view-123', null)).toBeNull();
+  });
+  it('offers the app on a touch-first browser, the computer link everywhere else', () => {
+    expect(m.prefersAppOpen({ inApp: false, coarsePointer: true, canHover: false })).toBe(true);
+    expect(m.prefersAppOpen({ inApp: false, coarsePointer: false, canHover: true })).toBe(false);
+    expect(m.prefersAppOpen({ inApp: false, coarsePointer: true, canHover: true })).toBe(false); // touch laptop
+    expect(m.prefersAppOpen({ inApp: true, coarsePointer: true, canHover: false })).toBe(false);
+  });
+});
