@@ -175,6 +175,9 @@ export type MeshCommand =
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  // org-pack-and-join §Multi-machine: a validated organization pack change for the same agent's other machines.
+  | { type: 'org-state-pull' }
+  | { type: 'org-apply'; membership: import('./OrgPackStore.js').Membership; bundle: import('./OrgPack.js').OrgBundle | null; op?: 'hold' }
   // a2a-single-agent-identity §1.2 — the two AGENT-identity verbs. Structurally separate from
   // `secret-share` (credential-class payload, signed responses, own serving refusals).
   | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
@@ -655,6 +658,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
+    case 'org-apply':
+    case 'org-state-pull':
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
     case 'recovery-enrollment-advert':

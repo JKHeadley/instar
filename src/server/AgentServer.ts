@@ -237,7 +237,8 @@ import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { ConversationListPinStore } from '../core/ConversationListPins.js';
@@ -2436,6 +2437,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
+    mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
     mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken,
       // SEC-046: when the dashboard scoped-session feature is on, the console redeem mints a scoped
@@ -7844,6 +7847,26 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      // Organization pack (docs/specs/org-pack-and-join.md): bearer preparation, owner-device acts.
+      {
+        const pairing = this.mobilePairing;
+        const autonomy = options.autonomyManager ?? null;
+        this.app.use(createOrgPackRouter({
+          stateDir: options.config.stateDir,
+          machineId: this.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'single-machine',
+          updateOrigin: () => pairing.origin(),
+          ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
+          principalKind: (req) => principalOf(req).kind,
+          effects: () => ({
+            currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
+            currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,
+            lowerProfile: autonomy ? (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName) : undefined,
+            restoreProfile: autonomy ? (prev, cap) => { autonomy.restoreAfterOrgPolicy(prev, cap); } : undefined,
+            clampSettings: autonomy ? (cap) => autonomy.clampForOrgPolicy(cap) : undefined,
+            restoreSettings: autonomy ? (prev, cap) => autonomy.restoreClampedSettings(prev, cap) : undefined,
+          }),
+        }));
+      }
       const pairingSvc = this.mobilePairing;
       const appStore = this.appConversations?.store ?? null;
       const topicNumber = (key: string) => options.state.get<number>(key) ?? null;

@@ -2501,6 +2501,10 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
 export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   const rules: DeviceRule[] = [
+    // Organization pack acts (docs/specs/org-pack-and-join.md §B2): only the person's tap in the app.
+    // Not in BROWSER_ROUTES, so a browser device (key not hardware-held) is refused.
+    { method: 'POST', re: /^\/mobile\/org\/(publish|join|leave|update-accept)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 5, bucket: 'org-acts' },
+    { method: 'GET', re: /^\/mobile\/org\/status$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
     // Conversations v3 owner hierarchy. Admission still requires a live device
     // signature; the mounted graph source separately enforces increment A.
     { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
