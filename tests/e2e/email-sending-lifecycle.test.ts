@@ -115,7 +115,7 @@ async function runJob(b: ReturnType<typeof boot>) {
 }
 
 describe('email: production wiring', () => {
-  it('is alive: the routes answer 200 from the real wiring, and the recipe is available only through the proving list', async () => {
+  it('is alive: the routes answer 200 from the real wiring, and the recipe, proven live 2026-11-09, is available on a fleet agent too', async () => {
     const b = boot();
     await ready(b.server);
     const app = b.server.getApp();
@@ -127,7 +127,7 @@ describe('email: production wiring', () => {
     expect(list.body.services.find((r: { service: string }) => r.service === 'email')).toMatchObject({ available: true, backupStatus: 'exercised' });
     const fleet = boot({ developmentAgent: false, recommendedServices: {} });
     const fleetList = await request(fleet.server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
-    expect(fleetList.body.services.find((r: { service: string }) => r.service === 'email').available).toBe(false);
+    expect(fleetList.body.services.find((r: { service: string }) => r.service === 'email').available).toBe(true);
   });
 
   it('answers 503 when no sender is built', async () => {
