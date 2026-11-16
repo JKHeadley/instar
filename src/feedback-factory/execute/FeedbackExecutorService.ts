@@ -856,9 +856,14 @@ export class FeedbackExecutorService {
    * previous attempt was closed after failing the independent review, its findings (the executor's
    * own scrubbed reviewer output, never text read back from GitHub) are written by trusted code as a
    * read-only data file beside the evidence file. Returns its path, or null (no findings to pass on).
+   * "Previous attempt" means the item's latest attempt that PUBLISHED a PR: attempts that stopped
+   * before publishing (reroute capacity, a lost lease, a restart) produced no new code to review, so
+   * they are skipped rather than letting them silently drop the findings the rework was owed.
    */
   private writePreviousReview(workspace: string, row: ExecutionRow): string | null {
-    const prior = this.opts.store.attemptsFor(row.initiativeId).filter((a) => a.attempt < row.attempt).sort((a, b) => b.attempt - a.attempt)[0];
+    const prior = this.opts.store.attemptsFor(row.initiativeId)
+      .filter((a) => a.attempt < row.attempt && a.prNumber !== null)
+      .sort((a, b) => b.attempt - a.attempt)[0];
     if (!prior || prior.state !== 'stopped' || prior.reason !== 'review-failed-closed' || !prior.reviewFindings) return null;
     const file = path.join(workspace, PREVIOUS_REVIEW_FILE);
     const data = {
