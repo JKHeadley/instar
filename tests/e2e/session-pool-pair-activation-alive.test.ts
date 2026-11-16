@@ -79,7 +79,9 @@ describe('wiring', () => {
     expect(server).toMatch(/probeLiveCopy: async[\s\S]{0,900}probeLiveCopyOnPeer\(\{/);
   });
   it('every path that skips the router at dark asks about a peer first', () => {
-    expect(server.match(/_routesToPeerAtDark\(/g)?.length).toBe(3);
+    // Inbound Telegram, the queue drain, inbound Slack, and the forced last attempt of a
+    // waiting message (fb-faa9d074-e09: it takes the conversation here instead of expiring).
+    expect(server.match(/_routesToPeerAtDark\(/g)?.length).toBe(4);
     expect(server).not.toMatch(/if \(_sessionRouter && _sessionPoolStage\(\) !== 'dark'\)/);
   });
 });
