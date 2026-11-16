@@ -65,6 +65,8 @@ export interface ExecutorReviewPromptInput {
   brief: { component: string; symptom: string; expected: string; reproduction: string };
   changedPaths: string[];
   diff: string;
+  /** Publisher-written evidence (decision record, release note) left out of the diff; trusted paths. */
+  omittedEvidence?: string[];
 }
 
 /** Only an unchanged, newly added draft may receive the design-stage review rules. */
@@ -121,6 +123,8 @@ export function buildExecutorReviewPrompt(input: ExecutorReviewPromptInput): str
     'Produce a SHORT report (under 300 words):',
     '- **Verdict: CLEAN, MINOR ISSUES, or SERIOUS ISSUES** (this exact line, first)',
     '- Findings with file references and the rule number each one breaks.',
+    '',
+    ...((input.omittedEvidence ?? []).length > 0 ? ['', `Not shown: ${(input.omittedEvidence ?? []).length} file(s) the executor itself added after the session, its audit record and release note (${(input.omittedEvidence ?? []).join(', ')}). They are not part of the change under review and are not a rule 2 finding.`] : []),
     '',
     '--- DATA ---',
     `PR #${input.prNumber} at head ${input.headSha}`,

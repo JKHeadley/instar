@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-16T11:51:40.152Z",
+  "slug": "executor-review-omits-publisher-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/feedback-factory/execute/publishEvidence.ts"
+    ],
+    "addedLines": 89,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
