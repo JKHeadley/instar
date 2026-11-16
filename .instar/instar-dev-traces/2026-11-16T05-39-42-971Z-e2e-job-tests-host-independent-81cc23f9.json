@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "e2e-job-tests-host-independent",
+  "sessionId": "ac148f3f-0693-49e0-8f74-e31de9bbc953",
+  "timestamp": "2026-11-16T05:39:42.971Z",
+  "artifactPath": "upgrades/side-effects/e2e-job-tests-host-independent.md",
+  "artifactSha256": "4a75a51b5e7ab2971c3286bd34a168084b363c503f025af53bd14dbf26ef5fc4",
+  "coveredFiles": [
+    "docs/specs/e2e-job-tests-host-independent.eli16.md",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/e2e/job-launch-lifecycle.test.ts",
+    "upgrades/next/e2e-job-tests-host-independent.md",
+    "upgrades/side-effects/e2e-job-tests-host-independent.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tests only: two e2e files made independent of host memory and wall-clock cron; no product code; a revert undoes it.",
+  "eli16Path": "docs/specs/e2e-job-tests-host-independent.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/e2e-job-tests-host-independent.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
