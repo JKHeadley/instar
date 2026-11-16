@@ -11,7 +11,17 @@
 // random slots could otherwise share an entry. The deployed health check proves the shared cache is
 // in use (the library's last fallback is a per-instance memory cache).
 import type { APIRoute } from 'astro';
-import { getCache, getContext } from '@vercel/functions';
+import * as vercelFunctions from '@vercel/functions';
+
+// The package is CommonJS: Node cannot see its named exports from an ES module import, so take them
+// from the module object (default when the runtime wraps it, the namespace when a bundler does not).
+const vf = ((vercelFunctions as unknown as { default?: typeof vercelFunctions }).default ?? vercelFunctions);
+const { getCache } = vf;
+/** The request context exactly as the pinned library reads it (@vercel/functions 3.10.4, get-context.js; not exported). */
+function getContext(): { cache?: unknown } {
+  const holder = (globalThis as Record<symbol, { get?: () => { cache?: unknown } } | undefined>)[Symbol.for('@vercel/request-context')];
+  return holder?.get?.() ?? {};
+}
 
 export const prerender = false;
 

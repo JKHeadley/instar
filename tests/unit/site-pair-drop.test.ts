@@ -22,12 +22,12 @@ async function load(): Promise<Mod> {
   // The stub applies the options the route passes the way the library does (namespace + key function).
   fs.writeFileSync(path.join(tmp, 'functions-stub.mjs'), [
     'const djb = (k) => { let h = 5381; for (let i = 0; i < k.length; i++) h = ((h << 5) + h + k.charCodeAt(i)) >>> 0; return h.toString(16); };',
-    'export const getContext = () => globalThis.__ctx ?? {};',
+    'export default { getCache: (...a) => getCache(...a) };',
     'export const getCache = (o = {}) => { globalThis.__cacheOpts = o; const s = globalThis.__cacheStore; const key = (k) => `${o.namespace ?? ""}$${(o.keyHashFunction ?? djb)(k)}`;',
     '  return { get: (k) => s.get(key(k)), set: (k, v, opt) => s.set(key(k), v, opt) }; };',
   ].join('\n'));
   const src = fs.readFileSync(ROUTE, 'utf8');
-  expect(src).toContain("import { getCache, getContext } from '@vercel/functions';");
+  expect(src).toContain("import * as vercelFunctions from '@vercel/functions';");
   fs.writeFileSync(path.join(tmp, 'pair-drop.ts'), src.replace("from '@vercel/functions'", "from './functions-stub.mjs'"));
   return await import(pathToFileURL(path.join(tmp, 'pair-drop.ts')).href) as Mod;
 }
@@ -39,6 +39,8 @@ function memStore(now: () => number) {
     async set(k: string, v: string, ttl: number) { kv.set(k, { v, until: now() + ttl * 1000 }); },
   };
 }
+// The platform hands a function its request context through this global (as the library reads it).
+const setCtx = (ctx: unknown) => { (globalThis as Record<symbol, unknown>)[Symbol.for('@vercel/request-context')] = { get: () => ctx }; };
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const ID2 = 'ZyXwVuTsRqPoNmLkJiHgFe';
 const BLOB = 'c2VhbGVkLWJsb2ItYnl0ZXM';
@@ -103,7 +105,7 @@ describe('pair-drop', () => {
     expect(m.sharedCachePath({ RUNTIME_CACHE_ENDPOINT: 'e', RUNTIME_CACHE_HEADERS: '{}' }, () => ({}))).toBe('env');
     expect(m.sharedCachePath({ RUNTIME_CACHE_ENDPOINT: 'e', RUNTIME_CACHE_HEADERS: '{}', RUNTIME_CACHE_DISABLE_BUILD_CACHE: 'true' }, () => ({}))).toBe('none');
     expect(m.sharedCachePath({}, () => ({}))).toBe('none');
-    (globalThis as { __ctx?: unknown }).__ctx = {};
+    setCtx({});
     const saved = { e: process.env.RUNTIME_CACHE_ENDPOINT, h: process.env.RUNTIME_CACHE_HEADERS };
     delete process.env.RUNTIME_CACHE_ENDPOINT; delete process.env.RUNTIME_CACHE_HEADERS;
     try {
@@ -119,7 +121,7 @@ describe('pair-drop', () => {
   it('asks the platform cache for verbatim keys, so the 32-bit default hash cannot merge two slots', async () => {
     const { PUT, GET } = await load();
     const kv = new Map<string, string>();
-    (globalThis as { __ctx?: unknown }).__ctx = { cache: {} };
+    setCtx({ cache: {} });
     (globalThis as { __cacheStore?: unknown }).__cacheStore = { get: async (k: string) => kv.get(k) ?? null, set: async (k: string, v: string) => { kv.set(k, v); } };
     // Two valid slots that the library's default key hash maps to the same entry (found in round-2 review).
     const A = 'Xvb98yUTqnzRH3K-zPEyuQ', B = 'C6uC5X19QzP9Qn5Uv4NDYg';
