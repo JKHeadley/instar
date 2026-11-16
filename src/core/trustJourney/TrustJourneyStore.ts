@@ -25,7 +25,7 @@ export const TRUST_JOURNEY_STORE_KEY = 'trustJourney';
 /** The highest `minReader` this build understands. */
 export const TRUST_READER_VERSION = 1;
 
-export const TRUST_RECORD_TYPES = ['request', 'request-status', 'receipt', 'acceptance-sent', 'acceptance', 'acceptance-withdrawn', 'consumption', 'change'] as const;
+export const TRUST_RECORD_TYPES = ['request', 'request-status', 'receipt', 'acceptance-sent', 'acceptance', 'acceptance-withdrawn', 'consumption', 'change', 'legacy-grant', 'action-approval', 'dispatch'] as const;
 export type TrustRecordType = typeof TRUST_RECORD_TYPES[number];
 
 /** A change the person can approve, as structured data the server renders and hashes. */
@@ -35,7 +35,9 @@ export type TrustChange =
   | { kind: 'config-patch'; patch: Record<string, unknown>; /** Hash of the settings it was written against (the expected revision). */ basedOn?: string }
   | { kind: 'slack-role'; slackUserId: string; displayName: string; role: string; mode: 'register' | 'approve' }
   | { kind: 'board-policy'; policy: string }
-  | { kind: 'trust-recovery'; incidentId: string };
+  | { kind: 'trust-recovery'; incidentId: string }
+  /** One exact action, once (spec section 2, the ask): bound to its action identity. */
+  | { kind: 'one-action'; actionIdentity: string; toolName: string; effectKind: string; input: string };
 
 export interface ChangeLogRecord {
   changeId: string;
@@ -73,6 +75,8 @@ const KNOWN = new Set([
   'acceptanceId', 'accountId', 'acceptedAt', 'withdrawnAt', 'statementMessageId',
   // consumption / change
   'consumptionId', 'changeId', 'key', 'from', 'to', 'direction', 'source',
+  // legacy grants, one-action approvals, dispatches
+  'machine', 'behaviour', 'actionIdentity', 'approvalId', 'afterChange',
 ]);
 
 const str = (v: unknown, max = 4000): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -144,6 +148,12 @@ export class TrustJourneyStore {
   private acceptanceSent = new Map<string, { statementMessageId: string; at: string }>();
   private consumptions = new Map<string, ConsumptionRecord>();
   private changes: ChangeLogRecord[] = [];
+  /** Legacy grants by kind key: the machines whose gate config defines today's behaviour. */
+  private legacy = new Map<string, Array<{ machine: string; behaviour: string; at: string; afterChange: string | null }>>();
+  private actionApprovals = new Map<string, Array<{ approvalId: string; consumptionId: string; expiresAt?: string }>>();
+  private dispatchedApprovals = new Set<string>();
+  /** Keys being written right now (reserved before the durable wait). */
+  private pendingKeys = new Set<string>();
   /** Records kept as evidence but not used for permission (reader rule). */
   unreadable = 0;
   /** Keys whose change history holds a record this build cannot read: treated as "Ask me first". */
@@ -181,6 +191,7 @@ export class TrustJourneyStore {
         if (typeof r.requestId === 'string') this.consumedRequestIds.add(r.requestId);
       }
       if (r.recordType === 'request-status' && typeof r.requestId === 'string') this.closedRequests.set(r.requestId, 'superseded');
+      if (r.recordType === 'dispatch' && typeof r.approvalId === 'string') this.dispatchedApprovals.add(r.approvalId);
       if (r.recordType === 'request' && typeof r.requestId === 'string') this.closedRequests.set(r.requestId, 'superseded');
       return;
     }
@@ -208,15 +219,32 @@ export class TrustJourneyStore {
         break;
       }
       case 'change': this.changes.push(r as unknown as ChangeLogRecord); break;
+      case 'legacy-grant': {
+        const list = this.legacy.get(r.key as string) ?? [];
+        list.push({ machine: String(r.machine), behaviour: String(r.behaviour), at: r.at, afterChange: typeof r.afterChange === 'string' ? r.afterChange : null });
+        this.legacy.set(r.key as string, list);
+        break;
+      }
+      case 'action-approval': {
+        const list = this.actionApprovals.get(r.actionIdentity as string) ?? [];
+        list.push({ approvalId: String(r.approvalId), consumptionId: String(r.consumptionId), ...(typeof r.expiresAt === 'string' ? { expiresAt: r.expiresAt } : {}) });
+        this.actionApprovals.set(r.actionIdentity as string, list);
+        break;
+      }
+      case 'dispatch': this.dispatchedApprovals.add(r.approvalId as string); break;
     }
   }
 
   async write(recordType: TrustRecordType, fields: Record<string, unknown>, recordKey?: string): Promise<{ ok: boolean; recordKey: string }> {
     const key = recordKey ?? `tj:${recordType}:${crypto.randomBytes(8).toString('hex')}`;
     // Records are immutable: a second write to an existing key is a failed write, never a success.
-    if (this.records.has(key)) return { ok: false, recordKey: key };
+    // The key is reserved before the durable wait, so two concurrent writers of one key (two
+    // identical calls racing for one approval) cannot both succeed.
+    if (this.records.has(key) || this.pendingKeys.has(key)) return { ok: false, recordKey: key };
+    this.pendingKeys.add(key);
     const rec = { minReader: 1, ...fields, recordType, at: (fields.at as string) ?? this.now().toISOString() } as TrustRecord;
-    const ok = await this.sink.append(key, rec);
+    let ok = false;
+    try { ok = await this.sink.append(key, rec); } finally { this.pendingKeys.delete(key); }
     if (ok) this.fold(key, rec);
     return { ok, recordKey: key };
   }
@@ -245,6 +273,32 @@ export class TrustJourneyStore {
   acceptanceStatementSent(principal: string, adapter: AdapterKind) { return this.acceptanceSent.get(`${principal}|${adapter}`) ?? null; }
   consumption(id: string) { return this.consumptions.get(id) ?? null; }
   changeLog(): ChangeLogRecord[] { return [...this.changes].sort((a, b) => a.at.localeCompare(b.at)); }
+  /** Legacy grants for a kind key (empty when the kind has none). */
+  legacyGrants(key: string) { return this.legacy.get(key) ?? []; }
+  /** Every kind key holding a legacy grant from any machine. */
+  legacyKeys(): string[] { return [...this.legacy.keys()]; }
+  /** An approval for this exact action not yet used for a dispatch, if any. */
+  unusedActionApproval(actionIdentity: string, now: Date = this.now()) {
+    return (this.actionApprovals.get(actionIdentity) ?? []).find((a) => !this.dispatchedApprovals.has(a.approvalId)
+      && !this.pendingKeys.has(`tj:dispatch:${a.approvalId}`)
+      && (!a.expiresAt || new Date(a.expiresAt) > now)) ?? null;
+  }
+
+  /**
+   * True when the kind's legacy grant on `machine` is unchanged: no change was committed after the one
+   * the import observed (compared by change id, never by clocks across machines).
+   */
+  legacyUnchanged(key: string, machine: string): boolean {
+    const mine = this.legacyGrants(key).filter((g) => g.machine === machine);
+    if (!mine.length) return false;
+    const last = this.lastChange(key);
+    return (last?.changeId ?? null) === mine[mine.length - 1].afterChange;
+  }
+  /** Kinds whose legacy grant is still unchanged on at least one machine (what a joining machine may import). */
+  unchangedLegacyKeys(): string[] {
+    return this.legacyKeys().filter((k) => [...new Set(this.legacyGrants(k).map((g) => g.machine))].some((m) => this.legacyUnchanged(k, m)));
+  }
+
   /** A key whose history this build cannot fully read: admission and rebuild treat it as "Ask me first". */
   hasUnreadableHistory(key: string): boolean { return this.unreadableKeys.has(key); }
 

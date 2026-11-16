@@ -6026,6 +6026,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // store `trustJourney`. Forced on wherever the journal runs (below), regardless of any flag.
     const { TRUST_GRANT_KIND_REGISTRATION } = await import('../core/trustJourney/TrustJourneyStore.js');
     replicatedKindRegistry.register(TRUST_GRANT_KIND_REGISTRATION);
+    const { TRUST_OUTCOME_KIND_REGISTRATION } = await import('../core/trustJourney/TrustOutcomeLog.js');
+    replicatedKindRegistry.register(TRUST_OUTCOME_KIND_REGISTRATION);
     // Context Budget layers (docs/specs/context-budget-layered-summaries.md §14): register
     // `context-layer-record`. Registration is INERT — nothing emits until the layer store
     // (Phase 1) writes through it and `multiMachine.stateSync.contextLayers` is on. Its presence
@@ -6311,7 +6313,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Trust journey: authority replication is part of stage 0 and forced on wherever the journal
       // runs, never behind a flag (trust-journey spec 6a "Backup, config, rollback").
       const _trustJourneyStoreOn = !!coherenceJournal;
-      if (_trustJourneyStoreOn) s = { ...s, trustJourney: { enabled: true } };
+      if (_trustJourneyStoreOn) s = { ...s, trustJourney: { enabled: true }, trustJourneyOutcomes: { enabled: true } };
       return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _trustJourneyStoreOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
@@ -35509,7 +35511,25 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           })
         : undefined;
+      const tjOutcomes = await import('../core/trustJourney/TrustOutcomeLog.js');
+      const tjOutcomeSink = coherenceJournal && replicatedRecordEmitter && replicatedPeerStreamReader
+        ? journalSink({
+            emit: (recordKey, build) => {
+              const r = replicatedRecordEmitter!.emit(tjOutcomes.TRUST_OUTCOMES_STORE_KEY, recordKey, build as never);
+              return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) };
+            },
+            awaitDurable: (seq) => coherenceJournal!.awaitDurableSeq(tjOutcomes.TRUST_OUTCOME_RECORD_KIND as import('../core/CoherenceJournal.js').JournalKind, seq, 5_000),
+            loadUnion: () => {
+              const out: Array<{ recordKey: string; data: Record<string, unknown> }> = [];
+              for (const byOrigin of replicatedPeerStreamReader!.loadAllOriginRecords(tjOutcomes.TRUST_OUTCOMES_STORE_KEY).values()) {
+                for (const r of byOrigin) out.push({ recordKey: r.envelope.recordKey, data: { ...r.data } });
+              }
+              return out;
+            },
+          })
+        : undefined;
       _trustJourneyRuntime = createTrustJourneyRuntime({
+        outcomeSink: tjOutcomeSink,
         stateDir: config.stateDir,
         configPath: path.join(config.stateDir, 'config.json'),
         runtimeConfig: config as unknown as Record<string, unknown>,
@@ -35546,12 +35566,40 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (mode === 'register') reg.register(slackUserId, displayName, role as never); else reg.approve(slackUserId, role as never);
         },
         holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+        machineId: _meshSelfId ?? cjOwnMachineId ?? 'self',
+        legacyImport: await (async () => {
+          const { configuredMcpServers, operationLogServices } = await import('../core/trustJourney/legacyImport.js');
+          const ext = (config as { externalOperations?: { enabled?: boolean; services?: Record<string, unknown>; readOnlyServices?: string[] } }).externalOperations;
+          const cfgPath = path.join(config.stateDir, 'config.json');
+          return {
+            gateEnabled: ext?.enabled !== false,
+            gateServices: Object.keys(ext?.services ?? {}),
+            readOnlyServices: ext?.readOnlyServices ?? [],
+            logServices: () => operationLogServices(config.stateDir),
+            mcpServers: () => configuredMcpServers(config.projectDir),
+            alreadyImported: () => {
+              try { return !!JSON.parse(fs.readFileSync(cfgPath, 'utf8'))?.trustJourney?.legacyImportedAt; } catch { return false; } // @silent-fallback-ok: unreadable config re-runs the idempotent import
+            },
+            markImported: () => {
+              try {
+                const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+                raw.trustJourney = { ...(raw.trustJourney ?? {}), legacyImportedAt: new Date().toISOString() };
+                fs.writeFileSync(`${cfgPath}.tmp`, JSON.stringify(raw, null, 2));
+                fs.renameSync(`${cfgPath}.tmp`, cfgPath);
+                (config as unknown as Record<string, unknown>).trustJourney = { ...((config as unknown as { trustJourney?: object }).trustJourney ?? {}), legacyImportedAt: raw.trustJourney.legacyImportedAt };
+                return true;
+              } catch { return false; } // @silent-fallback-ok: the import reports it and runs again at the next start
+            },
+          };
+        })(),
         notifyOwner: telegram ? async (text: string) => { await telegram!.sendOwnerDirect(text); } : undefined,
         log: (event, detail) => console.log(`  [trust-journey] ${event} ${JSON.stringify(detail)}`),
       });
       if (telegram) { const tjr = _trustJourneyRuntime; telegram.onTrustAccountPathReceipt = (r) => tjr.ingest(r); }
       if (slackAdapter) { const tjr = _trustJourneyRuntime; slackAdapter.onTrustAccountPathReceipt = (r) => tjr.ingest(r); }
       const narrowed = await _trustJourneyRuntime.checkAtLoad();
+      const legacy = await _trustJourneyRuntime.importLegacyAndWriteFallback();
+      console.log(pc.dim(`  [trust-journey] legacy import: ${legacy.imported} kind(s) recorded; hook fallback file ${legacy.fileWritten ? 'written' : `NOT written${legacy.skipped ? ` (${legacy.skipped})` : ''}`}`));
       console.log(pc.dim(`  [trust-journey] account path ready (${_trustJourneyRuntime.store.sinkDescription}); proof check at load restored ${narrowed.length} setting(s)`));
     } catch (err) {
       // The account path is unavailable: every raise stays refused (no proof can be issued) and every

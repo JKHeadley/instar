@@ -254,6 +254,7 @@ const STATE_SYNC_FEATURE_BY_KIND: Readonly<Record<string, string>> = {
   'chief-of-staff-record': 'multiMachine.stateSync.chiefOfStaff',
   'work-card-record': 'multiMachine.stateSync.workBoard',
   'trust-grant-record': 'multiMachine.stateSync.trustJourney',
+  'trust-outcome-record': 'multiMachine.stateSync.trustJourneyOutcomes',
   'context-layer-record': 'multiMachine.stateSync.contextLayers',
   'session-transcript-checkpoint': 'multiMachine.stateSync.sessionTranscripts',
 };

@@ -303,10 +303,10 @@ export function trustJourneyBackupFiles(stateDir: string): string[] {
   const dir = 'state/coherence-journal';
   try {
     for (const n of fs.readdirSync(path.join(stateDir, dir)).sort()) {
-      if (/^[\w.-]+\.trust-grant-record(\.\d+)?\.jsonl$/.test(n)) out.push(`${dir}/${n}`);
+      if (/^[\w.-]+\.trust-(grant|outcome)-record(\.\d+)?\.jsonl$/.test(n)) out.push(`${dir}/${n}`);
     }
   } catch { /* @silent-fallback-ok: no journal directory: only the local file can exist */ }
-  if (fs.existsSync(path.join(stateDir, 'state', 'trust-journey.jsonl'))) out.push('state/trust-journey.jsonl');
+  for (const f of ['trust-journey.jsonl', 'trust-journey-outcomes.jsonl']) if (fs.existsSync(path.join(stateDir, 'state', f))) out.push(`state/${f}`);
   return out;
 }
 

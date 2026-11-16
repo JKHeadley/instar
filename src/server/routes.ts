@@ -643,6 +643,7 @@ import type { OperationMutability, OperationReversibility } from '../core/Extern
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
 import { configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
+import { askSentence } from '../core/trustJourney/admission.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import type { AutonomousEvolution } from '../core/AutonomousEvolution.js';
@@ -1214,6 +1215,11 @@ export interface MobileInboundTrust {
    */
   sender?: { role: 'owner' | 'msp' | 'team'; person?: { machineId: string; userId: string } };
 }
+
+/** Set on an admission call forwarded to the serving-lease holder, so it is answered there and never bounced. */
+export const TRUST_ADMISSION_FORWARDED_HEADER = 'x-instar-trust-admission-forwarded';
+/** Below the hook's 8000 ms abort, so a forwarded admission answers before the hook gives up. */
+export const TRUST_ADMISSION_FORWARD_TIMEOUT_MS = 6000;
 
 /** Parses an exact trust change from a request body (trust-journey decision 5); null when malformed. */
 export function parseTrustChange(raw: unknown): import('../core/trustJourney/TrustJourneyStore.js').TrustChange | null {
@@ -36715,6 +36721,53 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             }
           }
         }
+      }
+      // ── Trust journey (decision 13, section 6a): governed effects ──
+      // The server, not the hook, derives the kind from the real tool name and input. A kind with an
+      // unchanged legacy grant (and a system service) keeps today's gate decision below. A governed
+      // kind is admitted by the person's proven grant, or once by their approval of that exact call,
+      // and otherwise asks: the card goes to their direct chat and the hook refuses the call.
+      // The account path failed to start after this machine's legacy import: no governed kind can be
+      // judged, so a tool call is refused rather than sent to the old gate (spec 6a, fail closed).
+      if (!ctx.trustAccountPath && typeof req.body.tool_name === 'string'
+        && ((ctx.config as { trustJourney?: { legacyImportedAt?: string } }).trustJourney?.legacyImportedAt
+          || fs.existsSync(path.join(ctx.config.stateDir, 'state', 'trust-legacy-kinds.json')))) {
+        return res.json({ action: 'block', reason: 'Trust settings are unavailable on this machine right now, so this action is refused. It can run once the agent server has restarted cleanly.', llmEvaluated: false, evaluatedAt: new Date().toISOString() });
+      }
+      if (ctx.trustAccountPath && typeof req.body.tool_name === 'string') {
+        const { decision: adm, ask } = await ctx.trustAccountPath.admit(req.body.tool_name, req.body.tool_input ?? {});
+        const now = new Date().toISOString();
+        if (adm.verdict === 'not-gated' || adm.verdict === 'proceed' || adm.verdict === 'proceed-once') {
+          return res.json({ action: 'proceed', reason: adm.verdict === 'not-gated' ? `not gated (${adm.why})` : adm.verdict === 'proceed-once' ? 'approved once by the person' : `the person set this kind to ${adm.level}`, trust: adm, llmEvaluated: false, evaluatedAt: now });
+        }
+        // Decision 13: only the serving-lease holder admits a governed effect; another machine forwards
+        // the call to it once (never bouncing), with a time limit inside the hook's own abort.
+        if (adm.verdict === 'ask' && adm.why === 'holder-unreachable' && !req.get(TRUST_ADMISSION_FORWARDED_HEADER)) {
+          const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+          let selfUrl = false;
+          try { const u = holderUrl ? new URL(holderUrl) : null; selfUrl = !!u && ['localhost', '127.0.0.1', '::1'].includes(u.hostname) && u.port === String(ctx.config.port ?? ''); } catch { selfUrl = true; } // @silent-fallback-ok: an unparseable holder URL is not forwarded to
+          if (holderUrl && !selfUrl) {
+            try {
+              const ac = new AbortController();
+              const t = setTimeout(() => ac.abort(), TRUST_ADMISSION_FORWARD_TIMEOUT_MS);
+              const fr = await fetch(`${holderUrl.replace(/\/$/, '')}/operations/evaluate`, {
+                method: 'POST', signal: ac.signal,
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.config.authToken ?? ''}`, [TRUST_ADMISSION_FORWARDED_HEADER]: '1' },
+                body: JSON.stringify(req.body),
+              }).finally(() => clearTimeout(t));
+              const body = await fr.json() as Record<string, unknown>;
+              if (fr.ok && typeof body.action === 'string') return res.json({ ...body, handledBy: 'holder-proxy' });
+            } catch { /* @silent-fallback-ok: the holder did not answer in time; this call waits (fails closed) below */ }
+          }
+        }
+        if (adm.verdict === 'ask') {
+          const st = ask && (ask.status === 'sent' || ask.status === 'awaiting-acceptance' || ask.status === 'undelivered') ? ask.status : 'other';
+          return res.json({ action: 'ask', reason: askSentence(adm.why, st), trust: adm, ...(ask && 'requestId' in ask ? { requestId: ask.requestId } : {}), llmEvaluated: false, evaluatedAt: now });
+        }
+        if (adm.verdict === 'refused') {
+          return res.json({ action: 'block', reason: 'The person set this kind of action to "Don\'t do this", so it is refused. Only the person can change that setting.', trust: adm, llmEvaluated: false, evaluatedAt: now });
+        }
+        // legacy: today's gate decision, unchanged.
       }
       const decision = await ctx.operationGate.evaluate({
         service,

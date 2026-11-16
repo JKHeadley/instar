@@ -19,6 +19,10 @@ import {
 import { AccountPathService, proofSubject, type DirectChatPort, type ProposeResult, type ReceiptOutcome } from './AccountPathService.js';
 import { LocalFileTrustSink, TrustJourneyStore, TRUST_JOURNEY_STORE_KEY, TRUST_GRANT_RECORD_KIND, type TrustChange, type TrustRecord, type TrustRecordSink } from './TrustJourneyStore.js';
 import { checkTrustProfileAgainstLog, TrustChangeLogWriter, type Narrowed } from './proofCheck.js';
+import { decideAdmission, type AdmissionDecision } from './admission.js';
+import { TrustOutcomeLog } from './TrustOutcomeLog.js';
+import { planLegacyImport, writeLegacyKindsFile } from './legacyImport.js';
+import { deriveEffect, type DerivedEffect } from '../../data/effect-kinds.js';
 import type { AdapterKind, Receipt } from './accountPath.js';
 
 /** The journal-backed sink: every record goes through the replicated emitter and is awaited durable. */
@@ -46,6 +50,8 @@ export interface TrustJourneyRuntimeDeps {
   runtimeConfig: Record<string, unknown>;
   installationId: string;
   sink?: TrustRecordSink;
+  /** Where outcome rows go (the `trustJourneyOutcomes` store); absent uses a local file. */
+  outcomeSink?: TrustRecordSink;
   adaptiveTrust: AdaptiveTrust | null;
   autonomyManager: AutonomyProfileManager | null;
   trustRecovery: TrustRecovery | null;
@@ -56,6 +62,10 @@ export interface TrustJourneyRuntimeDeps {
   boardPolicy?: { current(): string; set(policy: string, proof: OperatorProof): Promise<boolean> };
   /** Is this machine the serving-lease holder (single machine: always true). */
   holdsLease: () => boolean;
+  /** This machine's id (legacy grants apply on the machine whose gate config they reproduce). */
+  machineId?: string;
+  /** Inputs to the one-time legacy import (decision 9); absent skips the import. */
+  legacyImport?: { gateEnabled: boolean; gateServices: string[]; readOnlyServices: string[]; logServices: () => string[]; mcpServers: () => string[]; alreadyImported: () => boolean; markImported: () => boolean };
   notifyOwner?: (text: string) => Promise<void>;
   log?: (event: string, detail: Record<string, unknown>) => void;
 }
@@ -69,6 +79,10 @@ export interface TrustAccountPathRuntime {
   /** Peer-committed records (the holder consumes receipts written elsewhere). */
   onPeerRecords(records: Array<{ recordKey: string; data: Record<string, unknown> }>): Promise<void>;
   checkAtLoad(): Promise<Narrowed[]>;
+  /** Admission for one MCP tool call (decision 13): runs the ask when one is needed. */
+  admit(toolName: string, toolInput: unknown): Promise<{ decision: AdmissionDecision; effect: DerivedEffect | null; ask?: ProposeResult }>;
+  /** The one-time legacy import plus the hook's fallback file. */
+  importLegacyAndWriteFallback(): Promise<{ imported: number; fileWritten: boolean; skipped?: string }>;
 }
 
 /** An agent-supplied name, shown quoted so it can never read as the card's own words. */
@@ -91,7 +105,20 @@ export function summarizeChange(change: TrustChange, raises: string[] = []): str
     case 'slack-role': return [...widen, `Change: make Slack account ${q(change.displayName)} (${q(change.slackUserId)}) ${change.role}`];
     case 'board-policy': return [...widen, `Change: work board policy ${q(change.policy)}`];
     case 'config-patch': return [...widen, `Change: replace these settings exactly (whole sections are replaced): ${JSON.stringify(change.patch)}`];
+    case 'one-action': return [`Do this once: ${q(change.toolName)} (${change.effectKind}) with exactly: ${change.input}`, 'It approves this one action only; the next one asks again.'];
   }
+}
+
+/** Largest one-action input shown on a card (the card must fit whole in one message). */
+export const MAX_ONE_ACTION_INPUT_CHARS = 2500;
+
+/**
+ * Card text for a tool input: JSON already escapes control characters; this also escapes the
+ * characters that can reorder or hide text on screen (direction overrides, zero-width marks, line and
+ * paragraph separators), so the card shows the call exactly as sent.
+ */
+export function escapeForCard(json: string): string {
+  return json.replace(/[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** Telegram allows 4096 characters; the card must fit whole. */
@@ -100,8 +127,12 @@ export const MAX_CARD_SUMMARY_CHARS = 3000;
 export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAccountPathRuntime {
   const sink = d.sink ?? new LocalFileTrustSink(path.join(d.stateDir, 'state', 'trust-journey.jsonl'));
   const store = new TrustJourneyStore(sink);
+  const outcomes = new TrustOutcomeLog(d.outcomeSink ?? TrustOutcomeLog.localSink(d.stateDir));
   const writer = new TrustChangeLogWriter(store, (key) => d.log?.('trust-change-log-write-failed', { key }));
-  d.adaptiveTrust?.setChangeObserver(writer.observe);
+  // Every change goes to the durable log, and the hook's fallback file is rebuilt from the records
+  // (spec 6a: "rebuilt from the grant records at boot and on every grant change").
+  let refreshFallback: () => void = () => {};
+  d.adaptiveTrust?.setChangeObserver((event, proof) => { writer.observe(event, proof); void writer.drain().then(() => refreshFallback()); });
   // The autonomy profile's switches join the same durable log (narrowings in the background; a
   // raise's record is written by its applier and awaited).
   d.autonomyManager?.setChangeObserver((from, to, proof) => {
@@ -134,6 +165,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       case 'slack-role': return slackRoleRaises(c.role);
       case 'board-policy': return d.boardPolicy && c.policy === d.boardPolicy.current() ? [] : boardPolicyRaises(c.policy);
       case 'trust-recovery': return [`recovering trust after incident ${c.incidentId}`];
+      case 'one-action': return [`doing ${c.toolName} once`];
     }
   };
 
@@ -202,6 +234,8 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         // settings changed would otherwise apply over a later narrowing.
         if (c.basedOn !== configRevision(c.patch)) return { ok: false, detail: 'the settings changed after this request was sent, so it was not applied; the agent can send a fresh one' };
         const original = fs.existsSync(d.configPath) ? fs.readFileSync(d.configPath, 'utf8') : null;
+        // Never rewrite a config file this build cannot read: that would replace every other setting.
+        if (original !== null) { try { JSON.parse(original); } catch { return { ok: false, detail: 'the settings file could not be read, so nothing was changed' }; } }
         const runtimeBefore: Record<string, unknown> = {};
         const file = readFileConfig();
         for (const [k, v] of Object.entries(c.patch)) {
@@ -227,6 +261,13 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         if (!d.boardPolicy) return { ok: false, detail: 'the work board is not running' };
         return (await d.boardPolicy.set(c.policy, proof)) ? { ok: true } : { ok: false, detail: 'the policy could not be saved' };
       }
+      case 'one-action': {
+        // Recorded, not executed: the agent's retry of the identical call is admitted once (spec section 2, One use).
+        // Expires like the card it answered (spec section 2, Expiry and resume): an unused approval does not live forever.
+        const ttl = (() => { const v = (d.runtimeConfig.trustJourney as { cardTtlDays?: unknown } | undefined)?.cardTtlDays; return typeof v === 'number' && v > 0 && v <= 90 ? v : 7; })();
+        const w = await store.write('action-approval', { approvalId: proof.receiptRef, actionIdentity: c.actionIdentity, consumptionId: proof.receiptRef, expiresAt: new Date(Date.now() + ttl * 86_400_000).toISOString() }, `tj:action-approval:${proof.receiptRef}`);
+        return w.ok ? { ok: true, detail: 'the agent can now run that exact call once' } : { ok: false, detail: 'the approval could not be recorded durably' };
+      }
     }
   };
 
@@ -245,7 +286,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
     log: d.log,
   });
 
-  return {
+  const runtime: TrustAccountPathRuntime = {
     store,
     service,
     propose: (c) => service.propose(c.kind === 'config-patch' ? { ...c, basedOn: configRevision(c.patch) } : c),
@@ -267,9 +308,106 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         await service.onReceiptFromStore(r);
       }
     },
+    async admit(toolName, toolInput) {
+      const effect = deriveEffect(toolName, toolInput);
+      const rawInput = JSON.stringify(toolInput ?? {});
+      const sentinel = !!toolInput && typeof toolInput === 'object' && ('_truncated' in (toolInput as object) || '_unserializable' in (toolInput as object));
+      const uncardable = sentinel || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)
+        || rawInput.length > MAX_ONE_ACTION_INPUT_CHARS || toolName.length > 120;
+      const self = d.machineId ?? 'self';
+      const decision = decideAdmission({
+        effect,
+        unchangedLegacy: (kind) => store.legacyUnchanged(kind, self),
+        provenLevel: (kind) => {
+          const [service, op] = [kind.slice(0, kind.lastIndexOf('.')), kind.slice(kind.lastIndexOf('.') + 1)];
+          if (!d.adaptiveTrust || !['write', 'modify', 'delete'].includes(op)) return null;
+          if (!store.lastChange(kind)) return null; // decision 10: no recorded grant means "Ask me first"
+          return d.adaptiveTrust.getTrustLevel(service, op as OperationMutability).level;
+        },
+        unreadableHistory: (kind) => store.hasUnreadableHistory(kind),
+        // An input the card cannot show exactly (too large, not an object, or a stand-in the hook sent)
+        // can never be approved once: every such call would share one identity.
+        unusedApproval: (id) => (uncardable ? null : store.unusedActionApproval(id)),
+        currentLevel: (kind) => {
+          const i = kind.lastIndexOf('.');
+          const op = kind.slice(i + 1);
+          if (!d.adaptiveTrust || !['read', 'write', 'modify', 'delete'].includes(op)) return null;
+          return d.adaptiveTrust.getTrustLevel(kind.slice(0, i), op as OperationMutability).level;
+        },
+      });
+      // Decision 13: only the serving-lease holder admits a governed effect; elsewhere it waits.
+      if (decision.verdict !== 'not-gated' && decision.verdict !== 'legacy' && !d.holdsLease()) {
+        return { decision: { verdict: 'ask', why: 'holder-unreachable' }, effect };
+      }
+      if (decision.verdict === 'proceed-once' && effect) {
+        // One use: the dispatch is recorded before the call is admitted; a second identical call asks again.
+        const w = await store.write('dispatch', { approvalId: decision.approvalId, actionIdentity: effect.actionIdentity }, `tj:dispatch:${decision.approvalId}`);
+        if (!w.ok) return { decision: { verdict: 'ask', why: 'no-grant' }, effect };
+      }
+      if ((decision.verdict === 'proceed' || decision.verdict === 'proceed-once') && effect) {
+        // Section 4: every governed effect the holder admits gets an outcome row, "not yet checked".
+        const ok = await outcomes.admitted({ kind: effect.kind, actionIdentity: effect.actionIdentity, person: 'owner', machine: d.machineId ?? 'self', via: decision.verdict === 'proceed' ? 'grant' : 'approved-once' });
+        if (!ok) d.log?.('trust-outcome-write-failed', { kind: effect.kind });
+      }
+      if (decision.verdict === 'ask' && effect) {
+        if (uncardable) return { decision, effect, ask: { status: 'too-large', message: 'This call cannot be shown exactly on a card (too large, or not a plain set of fields), so it cannot be approved once; the person can set the kind instead.' } as ProposeResult };
+        const ask = await service.propose({ kind: 'one-action', actionIdentity: effect.actionIdentity, toolName, effectKind: effect.kind, input: escapeForCard(rawInput) });
+        return { decision, effect, ask };
+      }
+      return { decision, effect };
+    },
+    async importLegacyAndWriteFallback() {
+      const li = d.legacyImport;
+      let imported = 0;
+      if (li && !li.alreadyImported()) {
+        const plan = planLegacyImport({
+          gateEnabled: li.gateEnabled, gateServices: li.gateServices, readOnlyServices: li.readOnlyServices,
+          // A joining machine imports only kinds still unchanged-legacy somewhere (decision 9).
+          logServices: li.logServices(), mcpServers: li.mcpServers(), existingKeys: store.unchangedLegacyKeys(),
+          // A record from another machine means this is not the first import, even if none is unchanged now.
+          othersImported: store.legacyKeys().some((k) => store.legacyGrants(k).some((g) => g.machine !== (d.machineId ?? 'self'))),
+        });
+        const self0 = d.machineId ?? 'self';
+        for (const g of plan.grants) {
+          // A record this machine already wrote (an import that stopped part-way) counts as done.
+          if (store.legacyGrants(g.key).some((x) => x.machine === self0)) continue;
+          const w = await store.write('legacy-grant', { key: g.key, machine: self0, behaviour: g.behaviour, afterChange: store.lastChange(g.key)?.changeId ?? null }, `tj:legacy:${self0}:${g.key}`);
+          if (!w.ok) return { imported, fileWritten: false, skipped: 'a legacy grant could not be recorded; the import will run again at the next start' };
+          imported++;
+        }
+        if (!li.markImported()) return { imported, fileWritten: false, skipped: 'the import marker could not be saved' };
+      }
+      const self = d.machineId ?? 'self';
+      const legacyKinds = store.legacyKeys().filter((k) => store.legacyUnchanged(k, self));
+      const fileWritten = writeLegacyKindsFile(d.stateDir, {
+        generatedAt: new Date().toISOString(),
+        legacyKinds: legacyKinds.sort(),
+        readToolNames: [],
+      });
+      return { imported, fileWritten };
+    },
     async checkAtLoad() {
       if (!d.adaptiveTrust && !d.autonomyManager) return [];
-      const narrowed = d.adaptiveTrust ? checkTrustProfileAgainstLog(d.adaptiveTrust, store) : [];
+      // Corrupt state (spec 6a): the stored profile could not be read, so every setting and
+      // restriction is rebuilt from the committed change log before anything is admitted. A raise
+      // with no recorded approval falls back to where it came from; a key whose history this build
+      // cannot read is unavailable (blocked), never merely "Ask me first".
+      const rebuilt: Narrowed[] = [];
+      if (d.adaptiveTrust?.corruptAtLoad) {
+        const keys = new Set(store.changeLog().map((c) => c.key));
+        for (const key of keys) {
+          const i = key.lastIndexOf('.');
+          const service = key.slice(0, i), op = key.slice(i + 1);
+          if (!['read', 'write', 'modify', 'delete'].includes(op)) continue;
+          const last = store.lastChange(key)!;
+          const unproven = last.direction === 'raise' && !(last.consumptionId && store.consumption(last.consumptionId));
+          const level = (store.hasUnreadableHistory(key) ? 'blocked' : unproven ? (last.from ?? 'approve-always') : last.to) as TrustLevel;
+          d.adaptiveTrust.applyCommittedLevel(service, op as OperationMutability, level, 'rebuilt from the committed change log after the stored settings could not be read');
+          rebuilt.push({ key, from: 'unreadable', to: level, why: 'the stored settings could not be read' });
+        }
+        d.log?.('trust-profile-rebuilt', { keys: rebuilt.length });
+      }
+      const narrowed = d.adaptiveTrust ? [...rebuilt, ...checkTrustProfileAgainstLog(d.adaptiveTrust, store)] : [];
       // The autonomy profile: wider than its last committed switch, or a raise with no recorded approval.
       const lp = store.lastChange('autonomy.profile');
       const cur = d.autonomyManager?.getProfile();
@@ -287,4 +425,6 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       return narrowed;
     },
   };
+  refreshFallback = () => { void runtime.importLegacyAndWriteFallback().catch(() => {}); };
+  return runtime;
 }
