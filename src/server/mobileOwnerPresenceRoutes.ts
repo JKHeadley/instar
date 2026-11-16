@@ -24,6 +24,7 @@ import { BoundSecretStore, ConsoleTicketAudit, activeOwnerPhone, signedHost, ver
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import type { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
 import { OwnerApprovedActionStore } from './OwnerApprovedActionStore.js';
+import { PendingApprovalRegistry } from './PendingApprovalRegistry.js';
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -40,6 +41,8 @@ export const PIN_NOTICE_WINDOW_MS = 10 * 60_000;
 // ── Owner-approved sensitive action (SEC-018; docs/specs/owner-approved-sensitive-action.md) ──
 export const ACTION_APPROVAL_CHALLENGE_PATH = '/mobile/action-approval/challenge';
 export const ACTION_APPROVAL_PATH = '/mobile/action-approval';
+export const ACTION_APPROVAL_PENDING_PATH = '/mobile/action-approval/pending';
+export const ACTION_APPROVAL_DECLINE_PATH = '/mobile/action-approval/decline';
 export const ACTION_APPROVAL_VERSION = 'instar-owner-action-v1';
 /** The purposes an owner-presence approval may authorize (one per sensitive handler). */
 export const OWNER_ACTION_PURPOSES = ['thread-delete', 'trust-grant'] as const;
@@ -112,6 +115,10 @@ export interface OwnerPresenceDeps {
   phoneSessions: PhoneDesktopSessionStore;
   /** SEC-018: where a verified sensitive-action approval is recorded for the handler to consume. */
   approvalStore?: OwnerApprovedActionStore;
+  /** SEC-018: pending requests the handler registered (what the phone discovers + gates the challenge). */
+  pendingRegistry?: PendingApprovalRegistry;
+  /** Emit the existing item push so a tap opens the card (fast-follow; optional). */
+  pushItem?: (itemId: string) => void;
   /** Applies a pending PIN change to the session stores before a new session is issued. */
   syncPinVersion?: () => void;
   /** The verified name of the machine answering, for "the PIN for Mac Studio". */
@@ -281,6 +288,10 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
     if (!g) return;
     const a = validAction((req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);
     if (!a) { res.status(400).json({ error: 'action-invalid' }); return; }
+    // Only approve what the agent actually asked: a challenge is issued ONLY for a registered
+    // pending request. (So the phone — or anyone with the gate — can never pre-approve an action
+    // the agent never requested.)
+    if (!deps.pendingRegistry?.has(a.purpose, a.actionKey)) { res.status(409).json({ error: 'no-pending-request' }); return; }
     const c = actionChallenges.issue(g.deviceId, g.host, a.purpose, a.actionKey);
     res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString(), purpose: a.purpose, actionKey: a.actionKey });
   });
@@ -303,9 +314,30 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
       return;
     }
     const ref = deps.approvalStore.record({ purpose: a.purpose, actionKey: a.actionKey });
+    deps.pendingRegistry?.remove(a.purpose, a.actionKey); // the request is answered
     record(g.svc, { event: 'minted', deviceId: g.deviceId, reason: `action-approved:${a.purpose}`, ticketRef: ref });
     featureEvidence.record(OWNER_PRESENCE_FEATURE, { kind: 'fired', reason: `action-approved:${a.purpose}` });
     res.json({ ok: true, ref });
+  });
+
+  // Discovery: the owner's phone lists what is waiting (server-written title/why only).
+  router.get(ACTION_APPROVAL_PENDING_PATH, (req: Request, res: Response) => {
+    if (!actionApprovalsOn() || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    const g = gate(req, res, 'action');
+    if (!g) return;
+    res.json({ pending: deps.pendingRegistry.list() });
+  });
+
+  // Decline needs NO presence signature — it only CANCELS a pending request, it grants nothing.
+  router.post(ACTION_APPROVAL_DECLINE_PATH, (req: Request, res: Response) => {
+    if (!actionApprovalsOn() || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    const g = gate(req, res, 'action');
+    if (!g) return;
+    const a = validAction((req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);
+    if (!a) { res.status(400).json({ error: 'action-invalid' }); return; }
+    deps.pendingRegistry.remove(a.purpose, a.actionKey);
+    record(g.svc, { event: 'refused', deviceId: g.deviceId, reason: `action-declined:${a.purpose}` });
+    res.json({ ok: true, declined: true });
   });
 }
 
