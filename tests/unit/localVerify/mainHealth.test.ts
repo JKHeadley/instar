@@ -466,7 +466,7 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
   });
 
-  it('2026-11-15: every main verify starts on a head that was already replaced; the clock follows the verified heads and main stays healthy', async () => {
+  it('2026-11-15: a merge replaces every queued head before it can start; each main verify starts on the head current at its start and main stays healthy', async () => {
     const s = svcSetup();
     const t0 = Date.parse('2026-10-21T12:00:00.000Z'); // the harness clock
     let now = t0;
@@ -483,9 +483,9 @@ describe('LocalVerifyService — the main verify', () => {
       await s.finish(run, ok({ ...mainRecord(h(runHead), 'success'), startedAt: iso(runStart), finishedAt: iso(now) }));
       await s.svc.tick();
       run = s.spawned.length - 1;
-      // The queued verify starts now, on a head main has already moved past.
-      expect(s.inputOf(run), `round ${round}`).toMatchObject({ kind: 'main', headSha: h(next) });
-      runHead = next; runStart = now; next += 1;
+      // The queued verify starts now, on main's head as observed now (not the queued head main already left).
+      expect(s.inputOf(run), `round ${round}`).toMatchObject({ kind: 'main', headSha: h(next + 1), baseSha: h(next + 1) });
+      runHead = next + 1; runStart = now; next += 2;
       expect(s.svc.mainHealth().state, `round ${round} at +${Math.round((now - t0) / MIN)} min`).toBe('healthy');
     }
     expect(now - t0).toBeGreaterThan(4 * 60 * MIN);     // over four hours, never suspect (the old clock alarmed at three)
@@ -554,6 +554,126 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.spawned).toHaveLength(2);
     await s.finish(1, ok(mainRecord(sha('1'), 'success')));
     expect(s.svc.mainHealth().state).toBe('healthy');
+  });
+});
+
+describe('a pending main verify starts on the head current at its start (2026-11-16)', () => {
+  const A = sha('a'); const B = sha('b');
+  const staleAtStart = (s: ReturnType<typeof svcSetup>) => s.auditLines().filter((l) => l.event === 'main-replaced' && l.why === 'stale-at-start');
+  const mainQueue = (s: ReturnType<typeof svcSetup>) => s.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => e.headSha);
+  /** Run 0 (head 1) is in flight and a `main` entry for head A is pending behind it. */
+  const pendingA = async (opts: Parameters<typeof svcSetup>[0] = {}) => {
+    const s = svcSetup(opts);
+    s.svc.noteMainHead(sha('1')); await s.svc.settle();
+    s.svc.noteMainHead(A); s.advance(10 * MIN); s.svc.noteMainHead(A); await s.svc.settle();
+    return s;
+  };
+
+  it('healthy, main moved to B while A waited: the run starts on B, audited, and its green leaves no second main verify due', async () => {
+    const s = await pendingA();
+    await s.svc.settle();
+    expect(mainQueue(s)).toEqual([A]);
+    s.advance(MIN); s.svc.noteMainHead(B); // too fresh to be queued on its own: the pending entry still says A
+    expect(mainQueue(s)).toEqual([A]);
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.spawned).toHaveLength(2);
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', pr: 0, headSha: B, baseSha: B });
+    expect(staleAtStart(s)).toEqual([expect.objectContaining({ oldHead: A, newHead: B })]);
+    // B is being verified: its own debounce does not queue it again, during the run or after the green.
+    s.advance(10 * MIN); s.svc.noteMainHead(B);
+    expect(mainQueue(s)).toEqual([]);
+    await s.finish(1, ok(mainRecord(B, 'success')));
+    s.advance(30 * MIN); s.svc.noteMainHead(B); await s.svc.tick();
+    expect(s.spawned).toHaveLength(2);
+    expect(mainQueue(s)).toEqual([]);
+    // Nothing is left unverified: main is still healthy long past the 3 h alarm.
+    s.advance(4 * 60 * MIN); s.svc.noteMainHead(B); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('healthy, main still at A: starts on A, no main-replaced event', async () => {
+    const s = await pendingA();
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  it('main head unreadable at start: starts on A as queued', async () => {
+    const s = await pendingA();
+    s.svc.noteMainHead(B);
+    s.svc.noteMainHead(null);
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  it('main suspect: the re-run of the failed head is not retargeted to the newer head', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    s.advance(5 * MIN); s.svc.noteMainHead(B);
+    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.svc.mainHealth().state).toBe('main-suspect');
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1'), baseSha: sha('1') });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  it('main red: a pending entry for A is not retargeted to the newer head B', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, ok(mainRecord(sha('1'), 'failure'))); // suspect; the re-run of head 1 is in flight
+    s.svc.noteMainHead(A); s.advance(10 * MIN); s.svc.noteMainHead(A);
+    expect(mainQueue(s)).toEqual([A]);
+    s.svc.noteMainHead(B);
+    expect(mainQueue(s)).toEqual([A]);
+    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.svc.mainHealth().state).toBe('main-red');
+    expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  describe('release commits', () => {
+    const R = sha('e');
+    const rel = (parent: string): CommitInfo => ({ subject: 'chore: release v1.3.1800 [skip ci]', parents: [parent], files: [{ filename: 'package.json', patch: '@@ -1 +1 @@\n-  "version": "1.3.1799",\n+  "version": "1.3.1800",' }] });
+    const feat: CommitInfo = { subject: 'feat: x', parents: [sha('0')], files: [{ filename: 'src/x.ts' }] };
+
+    it('the current head is the release commit of the queued head A: the alias target is A, nothing changes', async () => {
+      const s = await pendingA({ commitInfo: async (x) => (x === R ? rel(A) : feat) });
+      await s.svc.settle();
+      expect(mainQueue(s)).toEqual([A]);
+      s.svc.noteMainHead(R); s.advance(10 * MIN); s.svc.noteMainHead(R); await s.svc.settle();
+      expect(s.auditLines().some((l) => l.event === 'main-release-collapsed' && l.headSha === R && l.into === A)).toBe(true);
+      await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+      expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+      expect(staleAtStart(s)).toEqual([]);
+      // The green run of A covers its release commit: nothing further is queued or started.
+      await s.finish(1, ok(mainRecord(A, 'success')));
+      s.advance(30 * MIN); s.svc.noteMainHead(R); await s.svc.tick();
+      expect(s.spawned).toHaveLength(2);
+      expect(mainQueue(s)).toEqual([]);
+    });
+
+    it('the current head is a release commit of a head already verified: the queued head runs, no main run is spent on a green head', async () => {
+      // R collapses into head 1 (in flight, then green) while the pending entry still says A.
+      const s = await pendingA({ commitInfo: async (x) => (x === R ? rel(sha('1')) : feat) });
+      await s.svc.settle();
+      expect(mainQueue(s)).toEqual([A]);
+      s.svc.noteMainHead(R); s.advance(10 * MIN); s.svc.noteMainHead(R); await s.svc.settle();
+      expect(s.auditLines().some((l) => l.event === 'main-release-collapsed' && l.headSha === R && l.into === sha('1'))).toBe(true);
+      await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+      expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+      expect(staleAtStart(s)).toEqual([]);
+    });
+
+    it('one stale read of the last green head just before the start does not move the run backward', async () => {
+      const s = await pendingA();
+      await s.svc.settle();
+      expect(mainQueue(s)).toEqual([A]);
+      s.advance(MIN); s.svc.noteMainHead(sha('1')); // a stale read: main is really at A
+      await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+      expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+      expect(staleAtStart(s)).toEqual([]);
+    });
   });
 });
 

@@ -2773,6 +2773,26 @@ export class LocalVerifyService {
       void this.refreshBaseThenPump(next);
       return;
     }
+    // A pending `main` entry starts on main's head as observed NOW, never the head it was queued
+    // for. It can wait up to MAIN_FAIR_SHARE_MS behind PRs, so the queued head is usually stale by
+    // the time it starts, and a green run of a stale head leaves the newer merges uncovered: a
+    // second main run was due at once (2026-11-16: 80 minutes of back-to-back main runs). Healthy
+    // only: while suspect or red the queued head (the re-run of a failed head) runs as queued.
+    // Head unreadable (null) ⇒ as queued. One read is not trusted to move the run BACKWARD: a
+    // head this machine already verified, the last green head, or a head already seen replaced
+    // (a stale read, or main reset to an older head) never becomes the target.
+    if (next.kind === 'main' && this.health.isHealthy()) {
+      const cur = this.mainObs.head;
+      const target = cur === null ? null : (this.releaseAlias.get(cur) ?? cur);
+      const alreadyCovered = target !== null && cur !== null
+        && (target === this.health.snapshot().lastGreenHead || this.verifiedMainHeads.includes(target) || this.mainSupersededAt.has(cur));
+      if (target !== null && target !== next.headSha && !alreadyCovered) {
+        this.audit({ event: 'main-replaced', oldHead: next.headSha, newHead: target, why: 'stale-at-start' });
+        next.headSha = target; next.baseSha = target;
+        // The observed head is now the one being verified: its own debounced enqueue is not needed.
+        this.mainObs.handled = cur; this.mainObs.firstUnverifiedAt = null;
+      }
+    }
     const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
