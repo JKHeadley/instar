@@ -88,6 +88,7 @@ import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainR
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
 import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
+import { getActiveEnrolmentStatusReader } from '../monitoring/machineMaintenance/enrolmentReadiness.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import {
   fetchMaintenancePool,
@@ -15862,12 +15863,19 @@ export function createRoutes(ctx: RouteContext): Router {
     return view;
   }
 
+  // Enrolment readiness (Part C, CMT-1200): a reading for the card; null where not wired.
+  async function readEnrolmentStatus(): Promise<unknown> {
+    const reader = getActiveEnrolmentStatusReader();
+    if (!reader) return null;
+    try { return await reader.read(); } catch { return { error: 'enrolment-read-failed' }; } // @silent-fallback-ok — named, never a guessed status
+  }
+
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
       res.json(await maintenancePoolView('status', async () => {
         const local = getActiveDrainRehearsal();
         return local
-          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null } as Record<string, unknown> }
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() } as Record<string, unknown> }
           : { reason: 'not-enabled' };
       }));
       return;
@@ -15879,7 +15887,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
     // Wedge detection (Part E) rides it too, dry-run: null where the sampler is not wired, never a guessed value.
-    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null });
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() });
   });
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside

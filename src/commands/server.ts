@@ -27495,6 +27495,34 @@ export async function startServer(options: StartOptions): Promise<void> {
           proof.start();
         }
 
+        // Enrolment readiness (Part C, CMT-1200 first slice): read-only. Whether the owner's
+        // tap may be offered here and whether the machine could come back by itself.
+        {
+          const er = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+          const setActiveEnrolmentStatusReaderRef = er.setActiveEnrolmentStatusReader;
+          const { readHostCensus } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+          const read = er.makeReadCommand();
+          const user = os.userInfo().username;
+          const machineId = coordinator.identity?.machineId ?? null;
+          setActiveEnrolmentStatusReaderRef(new er.EnrolmentStatusReader({
+            platform: process.platform === 'darwin' ? 'darwin' : isWslHost() ? 'wsl' : process.platform === 'linux' ? 'linux' : 'other',
+            user,
+            agents: () => [...new Set([config.projectName, ...readHostCensus(path.join(os.homedir(), '.instar', 'registry.json'), Date.now())])],
+            read,
+            refusalInputs: async () => {
+              const ownership = machineId ? liveConfig.get<string | undefined>(`machineMaintenance.ownershipByMachine.${machineId}`, undefined) : undefined;
+              return {
+                throwaway,
+                testProcess: !!(process.env.VITEST || process.env.CI),
+                doNotMaintainMarker: fs.existsSync(er.defaultDoNotMaintainPath()),
+                ownership: ownership === 'shared' ? 'shared' : ownership === 'owned' ? 'owned' : undefined,
+                inContainer: fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv'),
+                otherUsers: er.otherUsersFromWho(await read('/usr/bin/who', []), user),
+              };
+            },
+          }));
+        }
+
         // Honest lock reading (Part A): a read of the session, never the flag alone.
         const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
         setActiveMachineLockStateReader(new MachineLockStateReader());

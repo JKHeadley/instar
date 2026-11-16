@@ -18,6 +18,7 @@ import { DEFAULT_MACHINE_MAINTENANCE } from '../../src/monitoring/machineMainten
 import { BrowserCareSweep, normalizeBrowserCare, setActiveBrowserCare } from '../../src/monitoring/machineMaintenance/BrowserCare.js';
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
 import { PostRestartProof, setActivePostRestartProof } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
+import { EnrolmentStatusReader, setActiveEnrolmentStatusReader } from '../../src/monitoring/machineMaintenance/enrolmentReadiness.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -104,6 +105,28 @@ describe('GET /machine-maintenance (integration)', () => {
       expect(res.body.restartProof).toMatchObject({ bootAt: 1_000_000_000, lastProof: { verdict: 'no-baseline', attribution: 'first-seen' }, unattributedLast7Days: 0 });
     } finally {
       setActivePostRestartProof(null);
+    }
+  });
+
+  it('carries enrolment: null when not wired, then readiness, refusal and offerable from the reader', async () => {
+    setActiveDrainRehearsal(new DrainRehearsal({
+      agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
+      store: new HostMaintenanceStore({ dir: path.join(dir, 'host') }), enabled: () => true, settings: () => DEFAULT_MACHINE_MAINTENANCE,
+      readSignals: async () => { throw new Error('no read'); }, census: async () => { throw new Error('no read'); },
+      resumeQueue: () => null, coResidentAgents: () => [], holdsLease: () => null, ownUser: 'me',
+    }));
+    try {
+      let res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.body.enrolment).toBeNull();
+      setActiveEnrolmentStatusReader(new EnrolmentStatusReader({
+        platform: 'wsl', user: 'me', agents: () => ['echo'], read: async () => null, readRecord: () => null,
+        refusalInputs: async () => ({ throwaway: false, testProcess: false, doNotMaintainMarker: true, ownership: undefined, inContainer: false, otherUsers: [] }),
+      }));
+      res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.enrolment).toMatchObject({ enrolled: false, refusal: 'not-owned', offerable: false, readiness: { mode: 'attended', platform: 'wsl' } });
+    } finally {
+      setActiveEnrolmentStatusReader(null);
     }
   });
 
