@@ -14,11 +14,11 @@ Before a pull request can merge, its full test suite has to pass. The coordinati
 
 ## What this adds
 
-The same hold also looks at the test runs the coordinator has handed to helper machines. If a helper has accepted a run, the planned restart waits until that run finishes and its result is collected, but never more than 21 minutes after the run was handed out (in the last week, 412 of 414 helper runs finished inside that), and never past the existing three-hour ceiling.
+The same hold also looks at the test runs the coordinator has handed to helper machines. If a helper has accepted a run, the planned restart waits until that run finishes and its result is collected, but never more than 61 minutes after the run was handed out (the longest a helper run is allowed to take, plus a minute to collect the result), and never past the existing three-hour ceiling. This limit was 21 minutes at first; helper runs grew to 22 to 25 minutes and the restart then cut them off a minute or two before they finished, so on 2026-11-15 the limit was tied to the run's own time limit instead.
 
 ## The safeguards
 
-**It cannot hold a restart forever.** Each helper run gives at most 21 minutes, no new runs are handed out while a restart waits, and the three-hour ceiling and forced-restart override still apply.
+**It cannot hold a restart forever.** Each helper run gives at most 61 minutes (and normally only the 22 to 25 minutes it takes to finish), no new runs are handed out while a restart waits, and the three-hour ceiling and forced-restart override still apply.
 
 **Only a live, current run causes a wait.** The test service, which is the only part that knows whether a helper run is still alive and belongs to the current coordinator, keeps a short note up to date about every half minute while a helper run is in progress. The restart only waits on a fresh note. If the service is down, the helper stopped answering, or the run belongs to an older coordinator, nothing waits.
 
