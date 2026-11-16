@@ -275,6 +275,12 @@ sleep 120
     expect(events.map((e) => e.summary).filter((line) => line.includes(GUARD_SLUG)))
       .toEqual([expect.stringMatching(/skipped — memory-pressure \(Memory pressure elevated \(\d+(\.\d+)?%\) — session spawn blocked\)$/)]);
     expect((await api(`/jobs/${GUARD_SLUG}/history`)).data.runs, 'a refused job must leave no run row').toEqual([]);
-    expect(fs.readFileSync(argvLog, 'utf-8').split('\n').filter((line) => line === '--launch--'), 'a refused job must not launch a process').toHaveLength(1);
+    // The refused job must have no session. Asked of tmux by the guard job's own slug, not by
+    // counting every call the mock binary received: the mock logs all of them, and on a loaded
+    // machine another call lands in that log (2026-11-16, PR 3227: two launch lines, neither the
+    // guard job's), which failed this test on a correct product.
+    let sessions = '';
+    try { sessions = execFileSync(tmuxPath!, ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8' }); } catch { /* no tmux server: no session either */ }
+    expect(sessions.split('\n').filter((name) => name.includes(GUARD_SLUG)), 'a refused job must not start a session').toEqual([]);
   }, 30_000);
 });
