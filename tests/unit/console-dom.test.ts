@@ -26,7 +26,8 @@ let dom: JSDOM;
 const flush = () => new Promise((r) => setTimeout(r, 30));
 
 async function boot(token: string | null) {
-  dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/home' });
+  // Home is a page of the phone app's frame now; on the web its address lands on Conversations (work-front-doors §2.1).
+  dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/home?phone=1' });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage });
   g.requestAnimationFrame = (cb: FrameRequestCallback) => setTimeout(cb, 0);

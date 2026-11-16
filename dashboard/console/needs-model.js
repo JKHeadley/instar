@@ -1,6 +1,6 @@
 // The one list of states that need the operator (docs/specs/operator-needs-first-screen.md).
-// Home's count and headline come from it, and every state's own page leads with it, so
-// neither can miss one. Pure: it reads nothing itself and touches no DOM. Rows are built with
+// The Needs-you list (GET /needs, work-front-doors.md decision 2) and Home's headline come from it,
+// and every state's own page leads with it, so neither can miss one. Pure: it reads nothing itself and touches no DOM. Rows are built with
 // each page's own model, so Home and the page cannot disagree.
 
 import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
@@ -70,7 +70,7 @@ export function chiefOfStaffNeedRows(cos, now) {
 }
 
 export const NEED_SOURCES = [
-  // First, so a real problem leads Home. Only what affects the person. Internal notes stay on the Health page and never raise this count.
+  // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
     rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
@@ -101,6 +101,8 @@ export const NEED_SOURCES = [
     rows: ({ approvals }) => { const a = buildApprovals(approvals); return a.ok ? a.rows.map((r) => row(r.key, r.headline, r.reason, '#/people/mandates?s=waiting')) : UNREADABLE; } },
   { id: 'plans', page: 'work/plans', reads: { initiatives: '/initiatives', blockers: '/blockers' },
     rows: ({ initiatives, blockers }, now) => {
+      // Plan tracking switched off here (503) means no plan is waiting, even when /blockers answers.
+      if (sourceState(initiatives) === 'off') return [];
       const page = buildPlansPage({ initiatives, blockers }, now);
       if (!page.ok) return UNREADABLE;
       return page.sections.needsYou.map((r) => row(`plan:${r.key}`, r.main, r.needs, '#/work/plans?s=needsYou'));
@@ -153,10 +155,11 @@ export const NEED_SOURCES = [
  * fails the floor. `file` + `phrase` must both match the line.
  */
 export const NEED_EXEMPT = [
-  { file: 'home-model.js', phrase: '', why: 'Home itself: this is the card the sources feed.' },
+  { file: 'home-model.js', phrase: '', why: 'Home itself: the card the sources feed, which the Needs-you list draws.' },
   { file: 'console.js', phrase: 'What needs you', why: 'Home itself: the card title.' },
+  { file: 'needs-strip.js', phrase: '', why: 'The Needs-you strip itself: it draws GET /needs, which these sources feed.' },
   { file: 'nav-model.js', phrase: 'waiting', why: 'A navigation description of the page, not a state.' },
-  { file: 'promises-model.js', phrase: '', why: 'Already on Home; the operator decided 2026-11-02 that only promises due within 24 hours count.' },
+  { file: 'promises-model.js', phrase: '', why: 'Already in the Needs-you list; the operator decided 2026-11-02 that only promises due within 24 hours count.' },
   { file: 'promises.js', phrase: '', why: 'As promises-model.js.' },
   { file: 'allowed-model.js', phrase: 'will wait for your approval', why: 'Describes what a safety profile means, not something waiting now.' },
   { file: 'pace-model.js', phrase: 'waiting on you', why: 'A verdict on queue pace; the items themselves appear in their own sources.' },

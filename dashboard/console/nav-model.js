@@ -223,3 +223,68 @@ export function pagePath(path, phone) {
   if (!phone) return path;
   return Object.prototype.hasOwnProperty.call(PHONE_PAGE_ALIASES, path) ? PHONE_PAGE_ALIASES[path] : path;
 }
+
+// ── The three doors (docs/specs/work-front-doors.md §2.1, §2.3 web console) ─────────────────
+// Conversations, Work and Agent are the whole sidebar. The four groups above (Work, Capacity, People,
+// Settings) fold under Agent as sections, so every page keeps a home; every existing #/group/page
+// hash keeps resolving unchanged (resolveRoute below, tested over every route).
+
+export const DOORS = [
+  { id: 'conversations', label: 'Conversations', icon: 'chat' },
+  { id: 'work', label: 'Work', icon: 'work' },
+  { id: 'agent', label: 'Agent', icon: 'cpu' },
+];
+
+/** Where each door opens. `chats` / `board`: whether that page's own probe answered 200 on this agent. */
+export function doorHref(id, { chats = false, board = false } = {}) {
+  if (id === 'conversations') return chats ? '#/work/chats' : '#/work/conversations';
+  // Feature off (spec §7 stage 1): with the board off, Work opens the Work section (Promises, Plans, …).
+  if (id === 'work') return board ? '#/work/board' : '#/work';
+  return '#/agent';
+}
+
+/** Which door a page belongs to. Conversations and the board are front doors; everything else is under Agent. */
+export function doorOf(path) {
+  const p = String(path || '').replace(/^#?\/?/, '').split('?')[0];
+  if (p === 'work/chats' || p === 'work/conversations' || p === 'home' || p === '') return 'conversations';
+  if (p === 'work/board' || p === 'work') return 'work';
+  return 'agent';
+}
+
+/** The pages the console renders natively, by hash path (console.js NATIVE; a unit test keeps them equal). */
+export const NATIVE_PATHS = [
+  'work/conversations', 'work/promises', 'work/plans', 'work/plans/in-the-way', 'work/schedule', 'work/development',
+  'work/maturation', 'work/ideas', 'work/board', 'work/sessions', 'work/chats', 'work/documents',
+  'capacity/machines', 'capacity/health', 'capacity/accounts', 'capacity/costs',
+  'people/messages', 'people/notifications', 'people/agents', 'people/reach', 'people/mandates', 'people/secrets',
+  'settings/allowed', 'settings/learned', 'settings/inside', 'settings/files', 'settings/context',
+];
+
+/** The Agent page's Fleet section: how this agent runs, across its machines and the agents it works with. */
+export const FLEET_TILES = [
+  { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
+  { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, and a live terminal you can watch and type into.' },
+  { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'The agents I work with, whether each is actually there, and pairing new ones.' },
+];
+
+/**
+ * What a hash path shows. `page`: a native page; `group`: a section directory (still reachable,
+ * old links keep working); `agent`: the Agent door; `redirect`: an old address that now lands on a
+ * door (Home lands on Conversations with the Needs-you strip open, spec §2.1).
+ */
+export function resolveRoute(path, { phone = false, chats = false, board = false } = {}) {
+  const p = pagePath(String(path || '').replace(/^#?\/?/, '').split('?')[0], phone);
+  if (NATIVE_PATHS.includes(p) || (phone && PHONE_ONLY_PAGES.includes(p))) return { kind: 'page', path: p, door: doorOf(p) };
+  if (p === 'agent') return { kind: 'agent', path: p, door: 'agent' };
+  if (GROUPS.some((g) => g.id === p)) return { kind: 'group', path: p, door: doorOf(p) };
+  // An unknown page inside a known section (an old or mistyped link) opens that section, as before.
+  const head = p.split('/')[0];
+  if (p.includes('/') && GROUPS.some((g) => g.id === head)) return { kind: 'group', path: head, door: doorOf(head) };
+  // Home and an empty hash: the Conversations door. Anything unknown also lands there, never a blank page.
+  return { kind: 'redirect', path: p, door: 'conversations', to: doorHref('conversations', { chats, board }) };
+}
+
+/** The door the console opens on: the one used last, when it was one of the two front doors. */
+export function startDoor(remembered) {
+  return remembered === 'work' ? 'work' : 'conversations';
+}

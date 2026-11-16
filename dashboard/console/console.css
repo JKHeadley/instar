@@ -143,7 +143,7 @@ button { font: inherit; color: inherit; }
 /* Bottom nav (phone) → sidebar (desktop) */
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; /* 5 sections, plus Conversations when it is on */
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; /* the three doors: Conversations, Work, Agent */
   height: var(--nav-total);
   padding-bottom: var(--safe-b);
   background: color-mix(in srgb, var(--surface-solid) 86%, transparent);
@@ -1506,6 +1506,37 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .work-policy { display: flex; gap: var(--s-2); align-items: flex-start; }
 .work-settings-grid { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-bottom: var(--s-3); }
 .work-setting { display: grid; gap: var(--s-1); }
+
+/* The Needs-you strip above both front doors (work-front-doors.md decision 2) */
+.main-column { min-width: 0; }
+.needs-strip { max-width: 1120px; width: 100%; margin: var(--s-4) auto 0; padding: 0 var(--s-4); box-sizing: border-box; }
+.needs-strip[hidden] { display: none; }
+.needs-strip > * { max-width: 100%; }
+.needs-strip { --strip-line: var(--attn-line); }
+.needs-strip[data-state="bad"] { --strip-line: var(--bad-line); }
+.needs-strip[data-state="unknown"], .needs-strip[data-state="loading"] { --strip-line: var(--unknown-line); }
+.needs-head { display: flex; align-items: center; gap: var(--s-3); padding: 12px 14px 6px; border: 1px solid var(--strip-line); border-bottom: 0; border-radius: var(--r-md, 12px) var(--r-md, 12px) 0 0; background: var(--surface); }
+.needs-heading { margin: 0; font-size: 15px; font-weight: 650; color: var(--text-strong); flex: 1; }
+.needs-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--attn-wash); color: var(--attn); }
+.needs-strip[data-incomplete="1"] .needs-badge { background: var(--surface-raised); color: var(--text-muted); }
+.needs-rows, .needs-more, .needs-line { border: 1px solid var(--strip-line); border-top: 0; border-bottom: 0; background: var(--surface); margin: 0; }
+.needs-rows { list-style: none; padding: 0 6px; }
+.needs-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px; border-radius: var(--r-sm); color: var(--text); }
+a.needs-row:hover { background: var(--surface-raised); }
+.needs-row .dot { margin-top: 6px; }
+.needs-text { display: flex; flex-direction: column; min-width: 0; }
+.needs-title { font-weight: 600; overflow-wrap: anywhere; }
+.needs-why { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.needs-more, .needs-line { padding: 4px 14px; font-size: 13px; color: var(--text-muted); }
+.needs-strip > :last-child { border-bottom: 1px solid var(--strip-line); border-radius: 0 0 var(--r-md, 12px) var(--r-md, 12px); padding-bottom: 10px; }
+.needs-strip > .needs-head:last-child { border-radius: var(--r-md, 12px); border-bottom: 1px solid var(--strip-line); }
+.main-column .main { padding-top: var(--s-4); }
+.agent-section-title { margin: var(--s-6) 0 var(--s-3); font-size: 18px; }
+.agent-section-title a { color: var(--text-strong); }
+/* The Agent page: names and icons only (work-front-doors §2.1) */
+.agent-page .t-desc { display: none; }
+.agent-page .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.agent-page .tile { padding-top: 12px; padding-bottom: 12px; align-items: center; }
 
 /* ── Paste to a session (work.md: Send content, inside Sessions) ─── */
 .sess-paste { position: static; margin: var(--s-4) 0 var(--s-2); }

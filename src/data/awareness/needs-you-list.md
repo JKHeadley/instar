@@ -1,0 +1,4 @@
+---
+title: The Needs-you list
+---
+The console, the phone apps and the Mac app open on three doors: Conversations, Work and Agent, with one Needs-you list above the first two. That list is the only inbox and the only count, and it is one server read: `curl -H "Authorization: Bearer $AUTH" http://localhost:{{port}}/needs`. Each item says why it needs the person and where to act. When someone asks in Telegram or Slack "what needs me?" or "what is waiting on me?", read it and answer from it, so a person without the app or dashboard gets the same list. If it says `complete: false`, name what it `couldNotCheck`; never say "nothing" then. Anything new that needs the person belongs in this list through `dashboard/console/needs-model.js`, never as a second inbox. The person can pick a primary agent in the app (Agent, then "Open the app on ..."); that is a phone setting, not something you change.

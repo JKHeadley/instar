@@ -2444,6 +2444,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['POST', /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, 'guest'],
   // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
   ['GET', /^\/mobile\/work-board$/, 'guest'],
+  // The Needs-you list (work-front-doors decision 2): the route filters per viewer; a team phone gets only what it may already read.
+  ['GET', /^\/mobile\/needs$/, 'guest'],
   // Searching is reading (conversation-search): only conversations and messages this person may read.
   ['GET', /^\/mobile\/conversations\/search$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
@@ -2670,6 +2672,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // checks each card's conversation with the shared `mayUse`); only the owner's phone taps. Taps have their
     // own bucket, so a run of card taps never uses up the allowance for approvals and switches.
     { method: 'GET', re: /^\/mobile\/work-board$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'work-board-reads' },
+    // The Needs-you list (work-front-doors.md decision 2): one read for the phone and the Mac app. Any
+    // person's phone may ask; the route itself filters per viewer (a team person gets only what their own
+    // phone may already read, e.g. the work board when its rule admits them). Read-only, its own bucket;
+    // its team tier is named in TEAM_ROUTE_TIERS (guest).
+    { method: 'GET', re: /^\/mobile\/needs$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'needs-reads' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
