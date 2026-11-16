@@ -375,7 +375,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret } from '../core/LifelineIngressSecret.js';
+import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -1215,6 +1215,37 @@ export interface MobileInboundTrust {
   sender?: { role: 'owner' | 'msp' | 'team'; person?: { machineId: string; userId: string } };
 }
 
+/** Parses an exact trust change from a request body (trust-journey decision 5); null when malformed. */
+export function parseTrustChange(raw: unknown): import('../core/trustJourney/TrustJourneyStore.js').TrustChange | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const c = raw as Record<string, unknown>;
+  // Agent-supplied names reach the person's card: one line of printable text, no control characters
+  // or markup brackets, so a name can never pose as another line or a hidden link.
+  const s = (v: unknown, max = 200) => typeof v === 'string' && v.length > 0 && v.length <= max && !/[\u0000-\u001f\u007f<>\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(v);
+  switch (c.kind) {
+    case 'trust-grant':
+      return s(c.service, 100) && ['read', 'write', 'modify', 'delete'].includes(c.operation as string) && isKnownTrustLevel(c.level)
+        ? { kind: 'trust-grant', service: c.service as string, operation: c.operation as 'read', level: c.level as string } : null;
+    case 'autonomy-profile': {
+      const p = ['cautious', 'supervised', 'collaborative', 'autonomous'];
+      return p.includes(c.from as string) && p.includes(c.to as string) ? { kind: 'autonomy-profile', from: c.from as string, to: c.to as string } : null;
+    }
+    case 'config-patch': {
+      const patch = c.patch as Record<string, unknown> | undefined;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
+      const keys = Object.keys(patch);
+      return keys.length > 0 && keys.every((k) => k === 'externalOperations' || k === 'evolution') && JSON.stringify(patch).length <= 2_000
+        ? { kind: 'config-patch', patch } : null;
+    }
+    case 'slack-role':
+      return s(c.slackUserId, 40) && s(c.displayName, 120) && s(c.role, 40) && (c.mode === 'register' || c.mode === 'approve')
+        ? { kind: 'slack-role', slackUserId: c.slackUserId as string, displayName: c.displayName as string, role: c.role as string, mode: c.mode } : null;
+    case 'board-policy': return s(c.policy, 40) ? { kind: 'board-policy', policy: c.policy as string } : null;
+    case 'trust-recovery': return s(c.incidentId, 100) ? { kind: 'trust-recovery', incidentId: c.incidentId as string } : null;
+    default: return null;
+  }
+}
+
 export interface RouteContext {
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
   conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
@@ -1355,6 +1386,8 @@ export interface RouteContext {
   operationGate: ExternalOperationGate | null;
   sentinel: MessageSentinel | null;
   adaptiveTrust: AdaptiveTrust | null;
+  /** Trust-journey account path (stage 0 part B): request cards, receipts, proof issuance. */
+  trustAccountPath?: import('../core/trustJourney/TrustJourneyRuntime.js').TrustAccountPathRuntime | null;
   memoryMonitor: MemoryPressureMonitor | null;
   orphanReaper: OrphanProcessReaper | null;
   coherenceMonitor: CoherenceMonitor | null;
@@ -30900,6 +30933,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // Trust-journey decision 5 (the account path): a message in the person's own private chat with
+    // the bot is offered to the approval service as a platform receipt, but only when the lifeline
+    // itself proved it (its secret, not the server's own re-forward, not a bypass or an unarmed
+    // guard) and the chat is the sender's own private chat. Anything the service does not claim
+    // continues to normal routing.
+    if (ctx.trustAccountPath && typeof text === 'string' && ingressDecision.verified === true
+      && req.headers[LIFELINE_INGRESS_CALLER_HEADER] !== LIFELINE_INGRESS_CALLER_SERVER_SELF
+      && req.body.sourceChatType === 'private' && fromUserId !== undefined && fromUserId !== null
+      && String(req.body.sourceChatId) === String(fromUserId)) {
+      const updateId = typeof req.body.updateId === 'number' ? req.body.updateId : null;
+      // The single-use key is Telegram's update_id (spec decision 5); a lifeline too old to forward it
+      // cannot approve, and its message continues to normal routing.
+      const outcome = updateId === null ? 'not-for-us' : await ctx.trustAccountPath.ingest({
+        receiptId: `tg-${updateId}`,
+        adapter: 'telegram', senderId: String(fromUserId), chatId: String(req.body.sourceChatId), chatType: 'private',
+        messageId: String(messageId),
+        ...(typeof req.body.replyToMessageId === 'number' ? { replyToMessageId: String(req.body.replyToMessageId) } : {}),
+        text, senderIsBot: senderIsBot === true, forwarded: req.body.forwarded === true,
+        uniqueKey: `tg-update:${updateId}`,
+        receivedAt: new Date().toISOString(), receivedBy: 'self',
+      });
+      if (outcome !== 'not-for-us') { res.json({ ok: true, trustAccountPath: outcome }); return; }
+    }
+
     // Desktop approval codes are credentials. Consume them before the sentinel,
     // inbound log, topic memory, and session injection. A malformed code is
     // consumed too, so a typo cannot leak into durable conversation history.
@@ -36963,6 +37020,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (err instanceof TrustRaiseRefusedError) return res.status(403).json(err.refusal);
       throw err;
     }
+  });
+
+  // ── Trust journey: the account path (docs/specs/trust-journey.md decision 5) ──
+  // The agent proposes an exact change; the server writes the card and sends it to the person's own
+  // direct chat. Nothing here approves: only the person's `approve <code>` reply to that card does.
+  router.post('/trust/requests', async (req, res) => {
+    if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    const change = parseTrustChange((req.body ?? {}).change);
+    if (!change) return res.status(400).json({ error: 'invalid-change', message: 'change must be one of: {kind:"trust-grant",service,operation,level} | {kind:"autonomy-profile",from,to} | {kind:"config-patch",patch} | {kind:"slack-role",slackUserId,displayName,role,mode} | {kind:"board-policy",policy} | {kind:"trust-recovery",incidentId}' });
+    const r = await ctx.trustAccountPath.propose(change);
+    const status = r.status === 'sent' || r.status === 'awaiting-acceptance' ? 202
+      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'too-large' ? 409
+      : r.status === 'too-many-open' ? 429 : 503;
+    // The approval code is for the person's card only; the agent never needs it.
+    const { code: _code, ...body } = r as typeof r & { code?: string };
+    res.status(status).json(r.status === 'not-a-raise'
+      ? { ...body, message: 'This change does not widen anything, so it needs no approval: apply it directly.' }
+      : body);
+  });
+
+  router.get('/trust/requests', (_req, res) => {
+    if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    const rows = ctx.trustAccountPath.store.allRequests().map((r) => ({
+      requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
+      delivered: !!r.cardMessageId,
+    }));
+    res.json({ requests: rows, store: ctx.trustAccountPath.store.sinkDescription });
+  });
+
+  // Withdrawing an acceptance is a narrowing: it stops new approvals and keeps committed grants.
+  router.post('/trust/acceptance/withdraw', async (req, res) => {
+    if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    const adapter = (req.body ?? {}).adapter === 'slack' ? 'slack' : 'telegram';
+    const ok = await ctx.trustAccountPath.service.withdrawAcceptance('owner', adapter);
+    res.json({ withdrawn: ok });
   });
 
   // GET /trust/elevations — pending elevation suggestions
@@ -47339,6 +47431,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           authToken: ctx.config.authToken ?? '',
         });
     reg.recordApply(featureId, userId, result);
+    // Trust-journey decision 4: a toggle whose setting is a raise opens the person's request instead
+    // (the card goes to their direct chat; the setting follows only after their approval).
+    const action = direction === 'enable' ? def?.enableAction : def?.disableAction;
+    if (result && (result as { detail?: string }).detail === 'operator-approval-required' && ctx.trustAccountPath
+      && action?.method === 'PATCH' && action.path === '/config' && action.body && typeof action.body === 'object') {
+      const change = parseTrustChange({ kind: 'config-patch', patch: action.body });
+      if (change) {
+        const opened = await ctx.trustAccountPath.propose(change).catch(() => null);
+        if (opened) (result as unknown as Record<string, unknown>).approvalRequest = opened;
+      }
+    }
     return result;
   };
 

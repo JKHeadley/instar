@@ -895,6 +895,8 @@ export class TelegramAdapter implements MessagingAdapter {
    * message routing. Carries reply_to_message_id so a confirmation can be
    * reply-anchored to the recorded server-authored enumeration (R38).
    */
+  /** Trust-journey account path: a private-chat receipt; resolves 'not-for-us' when it is not an approval message. */
+  public onTrustAccountPathReceipt: ((r: import('../core/trustJourney/accountPath.js').Receipt) => Promise<string>) | null = null;
   public onScopeAccretionInbound: ((evt: {
     topicId: number;
     text: string;
@@ -2650,7 +2652,16 @@ export class TelegramAdapter implements MessagingAdapter {
     await this.apiCall(pinned ? 'pinChatMessage' : 'unpinChatMessage', params);
   }
 
-  async sendToOwnerDM(text: string): Promise<SendResult | null> {
+  /**
+   * Trust-journey account path: a plain-text message into the owner's private chat, optionally as a
+   * threaded reply to one message there. Returns null on any failure, including a reply target the
+   * platform refuses, so a caller that needs the thread never falls back to an unthreaded send.
+   */
+  async sendOwnerDirect(text: string, replyToMessageId?: number): Promise<SendResult | null> {
+    return this.sendToOwnerDM(text, replyToMessageId);
+  }
+
+  async sendToOwnerDM(text: string, replyToMessageId?: number): Promise<SendResult | null> {
     const owner = this.getOwnerUserId();
     if (!owner) {
       console.warn('[telegram] sendToOwnerDM called but no ownerUserId is configured');
@@ -2661,6 +2672,8 @@ export class TelegramAdapter implements MessagingAdapter {
         chat_id: owner,
         text,
       };
+      // A threaded reply only: never falls back to an unthreaded send when the target is refused.
+      if (replyToMessageId !== undefined) params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: false };
       const result = await this.apiCall('sendMessage', params) as { message_id: number };
       return { messageId: result.message_id };
     } catch (err) {
@@ -6362,6 +6375,23 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+
+    // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
+    // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
+    // it does not claim continues below.
+    if (this.onTrustAccountPathReceipt && typeof msg.text === 'string' && msg.chat?.type === 'private' && msg.from
+      && String(msg.chat.id) === String(msg.from.id)) {
+      const raw = msg as unknown as Record<string, unknown>;
+      const outcome = await this.onTrustAccountPathReceipt({
+        receiptId: `tg-${update.update_id}`, adapter: 'telegram', senderId: String(msg.from.id), chatId: String(msg.chat.id),
+        chatType: 'private', messageId: String(msg.message_id),
+        ...(typeof msg.reply_to_message?.message_id === 'number' ? { replyToMessageId: String(msg.reply_to_message.message_id) } : {}),
+        text: msg.text, senderIsBot: (msg.from as { is_bot?: boolean }).is_bot === true,
+        forwarded: !!(raw.forward_origin || raw.forward_from || raw.forward_date),
+        uniqueKey: `tg-update:${update.update_id}`, receivedAt: new Date().toISOString(), receivedBy: 'self',
+      }).catch(() => 'not-for-us' as const);
+      if (outcome !== 'not-for-us') return;
+    }
 
     // A pairing invite carries a one-time secret: it never reaches a session, the message log
     // or any classifier (docs/specs/a2a-pairing-invite-link.md §6.1). With a pairing handler

@@ -67,6 +67,7 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   readMarkers: 'written only by the server read routes and the list\'s own-reply inference (ConversationReadMarkerStore); no CLI path',
   emailOutbox: 'written only by the lease holder\'s email sender (EmailOutbox, backup-email-sending); no CLI path, and its own hourly checkpoint re-emits every live row',
   chiefOfStaff: 'written only by the server Chief of Staff loop and owner-tap routes (ChiefOfStaffStore, docs/specs/chief-of-staff-topic.md); no CLI path; immutable event records',
+  trustJourney: 'written only by the server trust-journey account path (TrustJourneyStore, docs/specs/trust-journey.md); receipts by the receiving machine, everything else by the lease holder; no CLI path; immutable records',
   workBoard: 'written only by the server Work Board routes and its pickup controller (WorkCardStore, docs/specs/work-board-asks.md); no CLI path; immutable event records',
   contextLayers: 'written only by the server context-layer store and fold coordinator (contextLayerKind, docs/specs/context-budget-layered-summaries.md §14); no CLI path; per-entry records, HLC-latest per key',
   sessionTranscripts: 'written only by the server transcript checkpoint tick and peer ingest (transcriptCheckpoints.ts, docs/specs/native-conversation-any-machine-access.md §3f); no CLI path; dark by default',
