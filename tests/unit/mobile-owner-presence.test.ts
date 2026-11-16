@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { PhoneDesktopSessionStore } from '../../src/server/PhoneDesktopSessionStore.js';
-import { ownerPresenceMessage, revealablePin, isOwnerPresenceEnabled, DESKTOP_UNLOCK_VERSION, PIN_REVEAL_VERSION } from '../../src/server/mobileOwnerPresenceRoutes.js';
+import { ownerPresenceMessage, revealablePin, isOwnerPresenceEnabled, DESKTOP_UNLOCK_VERSION, PIN_REVEAL_VERSION, actionApprovalMessage, ACTION_APPROVAL_VERSION } from '../../src/server/mobileOwnerPresenceRoutes.js';
 import { presenceMessage, PRESENCE_MESSAGE_VERSION } from '../../src/server/mobileConsoleTicket.js';
 import { DASHBOARD_PIN_PLACEHOLDER } from '../../src/core/dashboardPin.js';
 
@@ -78,6 +78,29 @@ describe('purpose-bound messages', () => {
     expect(p).toBe('instar-pin-reveal-v1\ndev\necho.example.dev\nc');
     expect(new Set([d, p, presenceMessage('dev', 'echo.example.dev', 'c')]).size).toBe(3);
     expect([DESKTOP_UNLOCK_VERSION, PIN_REVEAL_VERSION]).not.toContain(PRESENCE_MESSAGE_VERSION);
+  });
+});
+
+describe('owner-action approval message (SEC-018)', () => {
+  // SECURITY-CRITICAL: the phone apps (echo-instar-app, echo-android-app) sign EXACTLY these bytes.
+  // A drift here silently breaks every signature. The message commits directly to purpose + actionKey.
+  it('is the exact newline-joined bytes committing to purpose + actionKey', () => {
+    expect(actionApprovalMessage('dev', 'Echo.Example.dev', 'thread-delete', 'thr_1', 'chal')).toBe(
+      'instar-owner-action-v1\ndev\necho.example.dev\nthread-delete\nthr_1\nchal',
+    );
+  });
+  it('a different purpose or actionKey signs different bytes (one tap can never authorize another action)', () => {
+    const del = actionApprovalMessage('dev', 'h', 'thread-delete', 'thr_1', 'c');
+    const grant = actionApprovalMessage('dev', 'h', 'trust-grant', 'thr_1', 'c');
+    const other = actionApprovalMessage('dev', 'h', 'thread-delete', 'thr_2', 'c');
+    expect(new Set([del, grant, other]).size).toBe(3);
+    expect(ACTION_APPROVAL_VERSION).toBe('instar-owner-action-v1');
+  });
+  it('is distinct from the desktop/PIN presence messages (purposes never collide)', () => {
+    const a = actionApprovalMessage('dev', 'h', 'thread-delete', 'thr_1', 'c');
+    const d = ownerPresenceMessage(DESKTOP_UNLOCK_VERSION, 'dev', 'h', 'c');
+    const p = ownerPresenceMessage(PIN_REVEAL_VERSION, 'dev', 'h', 'c');
+    expect(new Set([a, d, p]).size).toBe(3);
   });
 });
 
