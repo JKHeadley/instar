@@ -137,6 +137,19 @@ describe('the Needs-you strip', () => {
     expect(stripModel(answer()).show).toBe(false);
   });
 
+  it('"N more" has a path: opened, every item shows (2026-11-16: it was plain text)', () => {
+    const items = Array.from({ length: 11 }, (_, i) => item(`need ${i}`));
+    const closed = stripModel(answer({ count: 11, items }));
+    expect(closed.rows).toHaveLength(3);
+    expect(closed.more).toBe(8);
+    const open = stripModel(answer({ count: 11, items }), { expanded: true });
+    expect(open.rows).toHaveLength(11);
+    expect(open.more).toBe(0);
+    const src = fs.readFileSync('dashboard/console/needs-strip.js', 'utf8');
+    expect(src).toContain("'Show fewer'");
+    expect(src).toContain('more things need you. Show all');
+  });
+
   it('stays while loading, and when the read failed or answered in an unreadable shape', () => {
     expect(stripModel(null)).toMatchObject({ show: true, state: 'loading', incomplete: true });
     expect(stripModel({ ok: false, reason: 'the server answered 404' })).toMatchObject({ show: true, incomplete: true, badge: '?' });
