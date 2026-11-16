@@ -1,0 +1,20 @@
+{
+  "ts": "2026-11-16T20:54:05.337Z",
+  "slug": "feedback-1ddb71cc-9930-4-2785aa37-a3",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-1ddb71cc-9930-4e8e-b165-6df63f57e4da:a3",
+  "initiativeId": "feedback-1ddb71cc-9930-4e8e-b165-6df63f57e4da",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 1,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/core/SecretStore.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
