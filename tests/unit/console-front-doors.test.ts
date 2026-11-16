@@ -33,7 +33,9 @@ describe('the three doors', () => {
   it('Work opens straight on the board when it is on, else the Work section (Promises, Plans)', () => {
     expect(doorHref('work', { board: true })).toBe('#/work/board');
     expect(doorHref('work', { board: false })).toBe('#/work');
-    expect(doorHref('conversations', { chats: true })).toBe('#/work/chats');
+    // The Conversations door is the hierarchy on every agent, browser devices or not (found live 2026-11-16:
+    // the browser-device chat page read "No conversations yet" on a real agent with hundreds).
+    expect(doorHref('conversations', { chats: true })).toBe('#/work/conversations');
     expect(doorHref('conversations', { chats: false })).toBe('#/work/conversations');
     expect(doorHref('agent')).toBe('#/agent');
   });
@@ -108,8 +110,15 @@ describe('every existing address keeps resolving', () => {
     for (const h of ['#/home', '#/home?retry=1', '', '#/', '#/nope/nothing']) {
       const r = resolveRoute(h, { chats: true });
       expect(r.kind, h).toBe('redirect');
-      expect(r.to).toBe('#/work/chats');
+      expect(r.to).toBe('#/work/conversations');
     }
+  });
+
+  it('the bare Work address opens the board when it is on, and the Work section when it is off', () => {
+    expect(resolveRoute('#/work', { board: true })).toMatchObject({ kind: 'redirect', door: 'work', to: '#/work/board' });
+    expect(resolveRoute('#/work', { board: false }).kind).toBe('group');
+    // Pages inside the Work section still open as themselves.
+    expect(resolveRoute('#/work/promises', { board: true }).kind).toBe('page');
   });
 });
 

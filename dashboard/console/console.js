@@ -234,6 +234,8 @@ function probeDoors() {
     const changed = chats !== doorProbes.chats || board !== doorProbes.board || !doorProbes.checked;
     Object.assign(doorProbes, { chats, board, checked: true });
     if (changed) for (const a of document.querySelectorAll('nav.nav a[data-door]')) a.setAttribute('href', doorHref(a.dataset.door, doorProbes));
+    // The board answered after the first paint: a page already showing the bare Work address moves onto the board.
+    if (changed && board && /^#\/work\/?$/.test(location.hash)) location.replace('#/work/board');
   });
 }
 function navItems(active) {
