@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import {
   summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE, accountNotices,
-  summarizeAccounts, accountCellState, usageWindows, accountEmail, kindWord,
+  summarizeAccounts, accountCellState, repairCellView, REPAIR_RETRY_GRACE, usageWindows, accountEmail, kindWord,
   summarizeSpend, summarizeRecorded, summarizeLimits, summarizeConversations, windowOf, basisWord, modelWord, doorWord, routeStatusWord,
   summarizeResources, ownerOrBearer, singleFlight, rowKey,
   READING_STALE_MS, SAMPLE_STALE_MS, MAX_ACCOUNTS, type SpendMachine,
@@ -126,6 +126,45 @@ describe('accounts', () => {
     expect(done.accounts[0].machines[0].state).toBe('attn');
     const only = summarizeAccounts(pool([row({ status: 'needs-reauth' })]), { now: NOW, localRepairs: [{ accountId: 'acct-a', state: 'awaiting-code' }] });
     expect(only.accounts[0].signIn).toBe('signing-in');
+  });
+
+  it('every machine\'s repairs decide each cell: a peer repair shows on the peer, not as a bare sign-in', () => {
+    const two = () => pool([
+      row({ status: 'needs-reauth' }),
+      row({ machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true, status: 'needs-reauth' }),
+    ]);
+    const running = summarizeAccounts(two(), { now: NOW, repairs: [{ accountId: 'acct-a', machineId: 'm_peer', state: 'browser-driving', updatedAt: at(-1) }] });
+    expect(running.accounts[0].machines).toEqual([
+      { name: 'Studio', isSelf: true, state: 'attn', label: 'needs sign-in' },
+      { name: 'Mac Mini', isSelf: false, state: 'working', label: 'signing in now' },
+    ]);
+    // The newest repair on that machine wins: an old failure, then a run now in flight.
+    const newest = summarizeAccounts(two(), { now: NOW, repairs: [
+      { accountId: 'acct-a', machineId: 'm_peer', state: 'failed', failureClass: 'agent-sign-in-unfinished', updatedAt: at(-60) },
+      { accountId: 'acct-a', machineId: 'm_peer', state: 'cli-starting', updatedAt: at(-1) },
+    ] });
+    expect(newest.accounts[0].machines[1].state).toBe('working');
+    // Supplying pooled repairs replaces the local-only list (it is already in the pool read).
+    const both = summarizeAccounts(two(), { now: NOW, repairs: [], localRepairs: [{ accountId: 'acct-a', state: 'running' }] });
+    expect(both.accounts[0].machines[0].state).toBe('attn');
+  });
+
+  it('repair wording: unattended start, approval needed, retry pending, failed with its reason', () => {
+    const r = (over: Record<string, unknown>) => repairCellView({ accountId: 'a', machineId: 'm', state: 'failed', ...over } as never, NOW);
+    expect(r({ state: 'suggested', mode: 'unattended' })).toEqual({ state: 'working', label: 'automatic repair starting' });
+    expect(r({ state: 'suggested', mode: 'approval' })).toEqual({ state: 'attn', label: 'needs your OK to repair' });
+    expect(r({ state: 'waiting-operator-only' }).state).toBe('attn');
+    const retry = r({ failureClass: 'agent-sign-in-unfinished', nextAttemptAt: at(30), slowRetryCount: 0 })!;
+    expect(retry.state).toBe('unknown');
+    expect(retry.label).toMatch(/^automatic repair will try again at /);
+    // Retries that keep failing stop counting as handled; a held retry never does.
+    expect(r({ failureClass: 'agent-sign-in-unfinished', nextAttemptAt: at(30), slowRetryCount: REPAIR_RETRY_GRACE })).toEqual({ state: 'attn', label: "automatic repair failed: the sign-in helper couldn't finish" });
+    expect(r({ nextAttemptAt: at(30), slowRetryHeld: true })).toEqual({ state: 'attn', label: 'automatic repair failed' });
+    expect(r({ nextAttemptAt: at(-5) }).state).toBe('attn');
+    expect(r({ state: 'succeeded' })).toBeNull();
+    expect(repairCellView(null, 0)).toBeNull();
+    // Only an account that needs signing in is changed by repair evidence.
+    expect(accountCellState({ status: 'active', loginCheck: 'ok' }, false, null, NOW, { accountId: 'a', machineId: 'm', state: 'failed' })).toEqual({ state: 'ok', label: 'signed in' });
   });
 
   it('headline (older app builds): never names one account as nearly out; counts are right', () => {

@@ -38,6 +38,21 @@ export interface JevDecisionResult {
   fallback?: FallbackAnswer;
   recordId?: string;
 }
+/** Fixed, content-free classes for a failed Jev call (never the error text). */
+export type JevFailureKind = 'timeout' | 'http' | 'invalid-body' | 'transport';
+
+/** Classify a thrown askJev error into a fixed code; the message text is never kept. */
+export function classifyJevFailure(err: unknown): { kind: JevFailureKind; httpStatus: number | null } {
+  const e = err as { name?: unknown; message?: unknown } | null;
+  const name = e && typeof e === 'object' && typeof e.name === 'string' ? e.name : '';
+  const message = e && typeof e === 'object' && typeof e.message === 'string' ? e.message : '';
+  if (name === 'AbortError' || name === 'TimeoutError') return { kind: 'timeout', httpStatus: null };
+  const http = /^Jev HTTP (\d+)$/.exec(message);
+  if (http) return { kind: 'http', httpStatus: Number(http[1]) };
+  if (err instanceof SyntaxError) return { kind: 'invalid-body', httpStatus: null };
+  return { kind: 'transport', httpStatus: null };
+}
+
 export interface JevFirstDeps {
   readKey: () => string | null;
   askJev: (input: { key: string; state: string; question: string; model: string; timeoutMs: number }) => Promise<JevAnswer>;
@@ -71,7 +86,18 @@ export function settleJevProbability(probability: unknown, band: JevBand): boole
 export class JevFirstDecision {
   constructor(private readonly deps: JevFirstDeps) {}
 
-  async decide(input: { point: JevPoint; state: string; fallback: () => Promise<FallbackAnswer> }): Promise<JevDecisionResult> {
+  async decide(input: {
+    point: JevPoint;
+    state: string;
+    fallback: () => Promise<FallbackAnswer>;
+    /**
+     * Optional join identity read when the row is written (after the
+     * incumbent has run): the producer's router-minted correlation id and the
+     * session it judged (CMT-1677 — inherit the seam identity, never mint a
+     * parallel one). Absent → the row is byte-identical to before.
+     */
+    link?: () => { producerCorrelationId: string | null; sessionName: string | null };
+  }): Promise<JevDecisionResult> {
     const { point, state, fallback } = input;
     if (!validPoint(point)) throw new Error(`invalid Jev decision point: ${point.id}`);
     const now = this.deps.now ?? Date.now;
@@ -82,6 +108,8 @@ export class JevFirstDecision {
     let jev: JevAnswer | undefined;
     let selected: boolean | null = null;
     let key: string | null = null;
+    let jevElapsedMs: number | null = null;
+    let failure: ReturnType<typeof classifyJevFailure> | null = null;
     if (point.stage !== 'off') {
       if (bytes > point.maxStateBytes) reason = 'oversize';
       else if (!scrub || scrub.error || scrub.truncated) reason = 'scrub-error';
@@ -93,8 +121,10 @@ export class JevFirstDecision {
         }
         if (!key) reason = 'no-key';
         else {
+          const askStart = now();
           try {
             jev = await this.deps.askJev({ key, state: scrub.text, question: point.question, model: point.model, timeoutMs: point.timeoutMs });
+            jevElapsedMs = Math.max(0, now() - askStart);
             try { this.deps.onJevCall?.(point.id, jev); } catch {
               /* @silent-fallback-ok — a metrics write cannot change the decision */
             }
@@ -109,7 +139,14 @@ export class JevFirstDecision {
                 reason = 'requires-detail';
               }
             }
-          } catch {
+          } catch (err) {
+            if (jevElapsedMs === null) {
+              jevElapsedMs = Math.max(0, now() - askStart);
+              failure = classifyJevFailure(err);
+            } else {
+              // askJev returned, but its answer object could not be read.
+              failure = { kind: 'invalid-body', httpStatus: null };
+            }
             reason = 'jev-error';
             try { this.deps.onJevCall?.(point.id, null); } catch {
               /* @silent-fallback-ok — the Jev failure already routes to the incumbent */
@@ -128,6 +165,19 @@ export class JevFirstDecision {
     if (answer === null) throw new Error('Jev decision has neither Jev nor incumbent answer');
     const source: JevDecisionResult['source'] = incumbent ? 'incumbent' : 'jev';
     const auditDisagree = incumbent && selected !== null ? incumbent.answer !== selected : null;
+    let linkFields: { producerCorrelationId: string | null; sessionName: string | null } | null = null;
+    if (input.link) {
+      try {
+        const l = input.link();
+        linkFields = {
+          producerCorrelationId: typeof l?.producerCorrelationId === 'string' && l.producerCorrelationId ? l.producerCorrelationId.slice(0, 128) : null,
+          sessionName: typeof l?.sessionName === 'string' && l.sessionName ? l.sessionName.slice(0, 128) : null,
+        };
+      } catch {
+        // @silent-fallback-ok — a missing join key is recorded as null (unjoinable), never invented.
+        linkFields = { producerCorrelationId: null, sessionName: null };
+      }
+    }
     const row: DecisionRowInput = {
       component: 'JevFirstDecision', decisionPoint: point.id, promptId: point.promptId,
       context: {
@@ -136,7 +186,9 @@ export class JevFirstDecision {
         jevModel: point.model, jevProbability: jev?.probability ?? null, jevMs: jev?.ms ?? null,
         jevTokensIn: jev?.tokensIn ?? null, fallbackModel: incumbent?.model ?? null,
         fallbackSelection: point.fallbackSelection, benchmarkTaskId: point.benchmarkTaskId ?? null,
-        handoffReason: reason, auditDisagree,
+        handoffReason: reason, jevFailureKind: failure?.kind ?? null,
+        jevHttpStatus: failure?.httpStatus ?? null, jevElapsedMs, auditDisagree,
+        ...(linkFields ? { sessionName: linkFields.sessionName } : {}),
         _contentFull: {
           question: point.question,
           state: scrub && !scrub.error && !scrub.truncated ? scrub.text : '[withheld: context unavailable]',
@@ -147,6 +199,8 @@ export class JevFirstDecision {
       fallbackRung: source, arbiter: true, model: incumbent?.model ?? jev?.model,
       tokensIn: incumbent?.tokensIn ?? jev?.tokensIn,
       tokensOut: incumbent?.tokensOut, latencyMs: incumbent?.ms ?? jev?.ms,
+      // Top-level so the served row stays joinable (the context scrub masks ids).
+      ...(linkFields?.producerCorrelationId ? { producerCorrelationId: linkFields.producerCorrelationId } : {}),
     };
     let recordId: string | null = null;
     try { recordId = await this.deps.recordDecision(row); } catch {

@@ -36,6 +36,7 @@ export function isComponentCategory(v: unknown): v is ComponentCategory {
 export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // ── Sentinels (background watchers that make small judgment calls) ──
   InputDetector: 'sentinel',
+  ConversationSilenceJudge: 'sentinel', // never-silent conversations: why a conversation went quiet (docs/specs/never-silent-conversation.md §3.2)
   ChiefOfStaffLoop: 'sentinel', // Chief of Staff check-in judge (docs/specs/chief-of-staff-topic.md §2.5)
   InputGuard: 'sentinel',
   SessionActivitySentinel: 'sentinel',
@@ -68,6 +69,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   UnjustifiedStopGate: 'gate',
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
+  WorkBoardSpecApprovalJudge: 'gate', // B25: does an agent-written Work Board card ask approval of a spec/design without its constitution check result?
   AttributionJudge: 'gate', // attribution-paper-trail: is this credited to a person, and do the logged words support it?
   CoherenceReviewer: 'gate',
   // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the

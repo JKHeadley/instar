@@ -48,6 +48,7 @@ import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTransc
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
 import type { AttemptGit, GitHubGateway } from './executorPorts.js';
+import { withoutSessionReleaseNotes, writePublishEvidence } from './publishEvidence.js';
 import { SHORT_ATTEMPT_TMP_RE, ensurePrivateAttemptTmpDir, removeAttemptTree, shortAttemptTmpDir, shortTmpRealRoot, sweepTrash } from './attemptFs.js';
 
 export const FEEDBACK_EXECUTE_STAGE = {
@@ -1574,7 +1575,7 @@ export class FeedbackExecutorService {
     return { ok: true, prNumber: this.opts.store.get(row.attemptId)!.prNumber! };
   }
 
-  private async publish(row: ExecutionRow, epoch: number, entries: ChangeEntry[], text: { title: string; body: string; message: string }, kind: 'fix' | 'spec',
+  private async publish(row: ExecutionRow, epoch: number, entriesIn: ChangeEntry[], text: { title: string; body: string; message: string }, kind: 'fix' | 'spec',
     slug: string, approver: string, operatorDecisionRef: string | null): Promise<boolean> {
     const p = this.attemptPaths(row);
     const identity = this.opts.commitIdentity();
@@ -1587,9 +1588,16 @@ export class FeedbackExecutorService {
       this.endAttempt(row, epoch, 'stopped', 'publish-fork-unset');
       return false;
     }
+    // Release notes are the publisher's to write (publishEvidence.ts): drop any the session wrote.
+    const notes = withoutSessionReleaseNotes(entriesIn);
+    const entries = notes.entries;
+    if (notes.dropped.length > 0) this.opts.audit.append('execute:session-release-notes-dropped', { attemptId: row.attemptId, paths: notes.dropped.slice(0, 10) });
     let externalStarted = false;
     try {
       applyChangeSet(p.publishClone, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute publish clone delete') });
+      // Hooks are off in the publish clone, so the publisher adds the decision record and release
+      // note the PR boundary requires (decision-audit, release-fragment). Built from trusted facts only.
+      const evidence = writePublishEvidence(p.publishClone, { entries, branch: row.branch, attemptId: row.attemptId, initiativeId: row.initiativeId, kind, at: new Date(this.now()) });
       let codeowners: string | null = null;
       try { codeowners = fs.readFileSync(path.join(p.publishClone, '.github', 'CODEOWNERS'), 'utf8'); } catch { codeowners = null; } // @silent-fallback-ok: no CODEOWNERS file → no owner note
       const outside = codeownersOutsideApprover(codeowners, entries.map((e) => e.path), approver);
@@ -1603,7 +1611,7 @@ export class FeedbackExecutorService {
         state: kind === 'fix' ? 'pr-open' : 'spec-pr-open', reason: operatorDecisionRef ? `published:${operatorDecisionRef}` : 'published', prNumber: pr.number,
         headSha, approver, codeownersOutside: outside, leaseExpiresAt: null,
       });
-      this.opts.audit.append('execute:pr-opened', { attemptId: row.attemptId, pr: pr.number, kind, codeownersOutside: outside.length, pinApproved: operatorDecisionRef !== null });
+      this.opts.audit.append('execute:pr-opened', { attemptId: row.attemptId, pr: pr.number, kind, codeownersOutside: outside.length, pinApproved: operatorDecisionRef !== null, evidence });
       try { await this.opts.initiatives.update(row.initiativeId, { prNumber: pr.number }); } catch { /* @silent-fallback-ok: the PR link is recorded in the execution row */ }
       this.cleanup(row);
       return true;

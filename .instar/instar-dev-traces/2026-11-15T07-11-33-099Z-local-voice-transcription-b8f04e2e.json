@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "local-voice-transcription",
+  "sessionId": "0c9797ec-518f-48ad-a1e6-4c02cbc25f9b",
+  "timestamp": "2026-11-15T07:11:33.099Z",
+  "artifactPath": "upgrades/side-effects/local-voice-transcription.md",
+  "artifactSha256": "b6f754ff447687b25a606b12b553d560ee8bec2037276421c1606bee5f52953e",
+  "specPath": "docs/specs/backup-on-machine-voice.md",
+  "coveredFiles": [
+    "docs/specs/backup-on-machine-voice.md",
+    "src/core/LocalVoiceTranscriber.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/voice-transcription.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/voice-transcription-awareness.test.ts",
+    "upgrades/next/local-voice-transcription.md",
+    "upgrades/side-effects/local-voice-transcription.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Local Verify fixes: mark deliberate fallbacks; move awareness text to the awareness entry registry that merged meanwhile (#3171)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot per inbound voice note: ffmpeg + whisper-cli run once per received note (plus at most one local fallback after a failed paid call), never re-triggered by their own outcome; bounded by the caller's budget, one run per machine, queue depth 8"
+  }
+}

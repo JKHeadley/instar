@@ -208,7 +208,8 @@ fi
 # guaranteed by skills/spec-converge/scripts/publish-spec-review.mjs. Narrow by
 # design (this blocks the send): fires only on an unambiguous spec handoff —
 # a docs/specs/*.md reference, OR a GitHub PR mentioned with the word "spec" —
-# in an explicit review/approval handoff, with no /view/ link present. An
+# in an explicit review/approval handoff, with no /view/ or /docs/ link present (a document
+# replaces the page where documents serve, instar-document-viewer §3.9b). An
 # ordinary code-PR mention does not fire.
 SPEC_HANDOFF=""
 if echo "$CONTENT" | grep -qiE "docs/specs/[^ )]+\.md"; then
@@ -218,7 +219,7 @@ elif echo "$CONTENT" | grep -qiE "github\.com/[^ )]+/pull/[0-9]+" && echo "$CONT
 fi
 if [ -n "$SPEC_HANDOFF" ] \
   && echo "$CONTENT" | grep -qiE "\b(review|approv|sign[- ]?off|take a look|for your|ready for)\b" \
-  && ! echo "$CONTENT" | grep -qiE "/view/[0-9a-f-]{8,}"; then
+  && ! echo "$CONTENT" | grep -qiE "/(view|docs)/[0-9a-f-]{8,}"; then
   ISSUES+=("SPEC_REVIEW_LINK: You're handing a spec over for review with no rendered ELI16 tunnel link the operator can open. Deliver spec reviews via skills/spec-converge/scripts/publish-spec-review.mjs — it renders the ELI16, verifies the link (HTTP 200), and includes it. Don't send a spec for review without the rendered link.")
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
 fi

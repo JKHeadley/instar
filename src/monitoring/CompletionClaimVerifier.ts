@@ -47,6 +47,8 @@ export interface CompletionClaimVerifierOptions {
    */
   resolveFramework?: () => string | undefined;
   arbiter?: ClaimClauseArbiter;
+  /** CMT-1679 replay-input capture; resolved by the construction site via resolveDevAgentGate. */
+  recordReplayInput?: boolean;
   generalObservation?: boolean;
   recorder?: ClaimObservationRecorder;
   bootId?: string;
@@ -133,6 +135,7 @@ export class CompletionClaimVerifier {
       // Explicit resolver wins; the duck-typed fallback covers callers that pass a real
       // router straight through. Both may be absent, which keeps the old behavior.
       resolveFramework: opts.resolveFramework ?? buildCompletionClaimFrameworkResolver(opts.intelligence),
+      ...(opts.recordReplayInput === true ? { recordReplayInput: true } : {}),
     });
     this.admissionQueue = opts.admissionQueue ?? new ClaimObservationAdmissionQueue({ maxQueued: opts.maxQueued,
       maxQueuedPerTopic: opts.maxQueuedPerTopic, maxConcurrent: opts.maxConcurrent, queueTtlMs: opts.queueTtlMs });

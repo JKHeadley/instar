@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { MainHealth, decideMainRearmAfterGreen, oldestUnverifiedAfterGreen, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
+import { MainHealth, SUPERSEDED_HEADS_KEPT, decideMainHeadEnqueue, decideMainRearmAfterGreen, noteHeadSuperseded, oldestUnverifiedAfterGreen, supersededAtFor, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
 import { LocalVerifyService, MAIN_FAIR_SHARE_MS, MAIN_VERIFY_LIMITS, decideFlakyEscalation, decideStart, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import { validateRecord, type LocalVerifyRecord } from '../../../src/localVerify/record.js';
@@ -410,7 +410,7 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.signals).not.toContain('local-verify:main-unverified');
   });
 
-  it('the alarm still fires: the clock moves to the start of the last covering run, and 3 h after that main is suspect', async () => {
+  it('the alarm still fires: the clock moves to when the last verified head was replaced, and 3 h after that main is suspect', async () => {
     const s = svcSetup();
     const t0 = Date.parse('2026-10-21T12:00:00.000Z');
     let now = t0;
@@ -430,8 +430,12 @@ describe('LocalVerifyService — the main verify', () => {
     adv(t0 + 3 * 60 * MIN + 10 * MIN - now); await s.svc.tick();
     expect(s.svc.mainHealth().state).toBe('healthy');
     expect(s.signals).not.toContain('local-verify:main-unverified');
-    // 3 h after run 1 started, the merge of head 3 has gone uncovered too long.
+    // Head 3 was first seen 5 minutes into run 1. Run 1 covers head 2, so the clock is at the moment head 2
+    // was replaced (run1Start+5), which is later and more exact than run 1's start: still healthy 3 h after
+    // run 1 started, suspect 3 h after head 3 was seen.
     adv(run1Start + 3 * 60 * MIN + MIN - now); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    adv(5 * MIN); await s.svc.tick();
     expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
     expect(s.signals).toContain('local-verify:main-unverified');
   });
@@ -453,10 +457,76 @@ describe('LocalVerifyService — the main verify', () => {
     adv(35 * MIN);
     await s.finish(1, ok({ ...mainRecord(sha('1'), 'success'), startedAt: iso(rerunStart), finishedAt: iso(now) }));
     expect(s.svc.mainHealth().state).toBe('healthy');
-    // Head 2 (merged at t0+5) is in no green verify. The clock stayed at t0, so the alarm fires 3 h after t0,
-    // not 3 h after the re-run started.
-    adv(t0 + 3 * 60 * MIN + MIN - now); await s.svc.tick();
+    // Head 2 (observed at t0+5) is in no green verify. The green re-run covers head 1 only, so the clock
+    // moves to the moment head 1 was replaced (t0+5), NOT to the re-run's start (t0+35): the alarm fires
+    // 3 h after t0+5.
+    adv(t0 + 5 * MIN + 3 * 60 * MIN - MIN - now); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    adv(2 * MIN); await s.svc.tick();
     expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
+  });
+
+  it('2026-11-15: every main verify starts on a head that was already replaced; the clock follows the verified heads and main stays healthy', async () => {
+    const s = svcSetup();
+    const t0 = Date.parse('2026-10-21T12:00:00.000Z'); // the harness clock
+    let now = t0;
+    const adv = (ms: number) => { s.advance(ms); now += ms; };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const h = (n: number) => n.toString(16).padStart(2, '0').repeat(20);
+    s.svc.noteMainHead(h(1));                           // boot: run 0 on head 1, the current head
+    let run = 0; let runHead = 1; let runStart = now; let next = 2;
+    for (let round = 1; round <= 7; round++) {
+      adv(5 * MIN); s.svc.noteMainHead(h(next));        // a merge 5 minutes into the run
+      adv(10 * MIN); s.svc.noteMainHead(h(next));       // unchanged 10 minutes: queued behind the running verify
+      adv(5 * MIN); s.svc.noteMainHead(h(next + 1));    // the next merge replaces it before it can start
+      adv(15 * MIN);
+      await s.finish(run, ok({ ...mainRecord(h(runHead), 'success'), startedAt: iso(runStart), finishedAt: iso(now) }));
+      await s.svc.tick();
+      run = s.spawned.length - 1;
+      // The queued verify starts now, on a head main has already moved past.
+      expect(s.inputOf(run), `round ${round}`).toMatchObject({ kind: 'main', headSha: h(next) });
+      runHead = next; runStart = now; next += 1;
+      expect(s.svc.mainHealth().state, `round ${round} at +${Math.round((now - t0) / MIN)} min`).toBe('healthy');
+    }
+    expect(now - t0).toBeGreaterThan(4 * 60 * MIN);     // over four hours, never suspect (the old clock alarmed at three)
+    expect(s.signals).not.toContain('local-verify:main-unverified');
+  });
+
+  it('a verified head that was replaced only by its own release commit covers up to the release commit being replaced', async () => {
+    const info: Record<string, CommitInfo> = {
+      [sha('b')]: { subject: 'chore: release v1.3.1800 [skip ci]', parents: [sha('a')], files: [{ filename: 'package.json', patch: '@@ -1 +1 @@\n-  "version": "1.3.1799",\n+  "version": "1.3.1800",' }] },
+    };
+    const s = svcSetup({ commitInfo: async (x) => info[x] ?? { subject: 'feat: x', parents: [sha('0')], files: [{ filename: 'src/x.ts' }] } });
+    const t0 = Date.parse('2026-10-21T12:00:00.000Z'); // the harness clock
+    let now = t0;
+    const adv = (ms: number) => { s.advance(ms); now += ms; };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    s.svc.noteMainHead(sha('a')); await s.svc.settle(); // run 0 starts on the merge, the current head, at t0
+    expect(s.inputOf(0)).toMatchObject({ kind: 'main', headSha: sha('a') });
+    adv(2 * MIN); s.svc.noteMainHead(sha('b'));         // its release commit appears at t0+2
+    adv(10 * MIN); s.svc.noteMainHead(sha('b')); await s.svc.settle(); // unchanged 10 minutes: collapses into the running verify
+    expect(s.spawned).toHaveLength(1);
+    adv(10 * MIN); s.svc.noteMainHead(sha('c'));        // the next merge replaces the release commit at t0+22
+    adv(13 * MIN);
+    await s.finish(0, ok({ ...mainRecord(sha('a'), 'success'), startedAt: iso(t0), finishedAt: iso(now) }));
+    // Covered: the merge and its release commit. Oldest uncovered: head c, first observed at t0+22.
+    adv(t0 + 22 * MIN + 3 * 60 * MIN - MIN - now); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    adv(2 * MIN); await s.svc.tick();
+    expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
+  });
+
+  it('a record whose start time is in the future cannot park the clock there', async () => {
+    const s = svcSetup();
+    const t0 = Date.parse('2026-10-21T12:00:00.000Z');
+    s.svc.noteMainHead(sha('1'));
+    s.advance(5 * MIN); s.svc.noteMainHead(sha('2'));
+    s.advance(30 * MIN);
+    await s.finish(0, ok({ ...mainRecord(sha('1'), 'success'), startedAt: '2026-11-15T09:51:00.000Z', finishedAt: '2026-11-15T10:24:00.000Z' }));
+    // Head 2 (seen at t0+5) is uncovered; the clock is at most "now" (t0+35), so the alarm comes by t0+35+3h.
+    s.advance(3 * 60 * MIN + MIN); await s.svc.tick();
+    expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
+    expect(t0).toBeLessThan(Date.parse('2026-11-15T09:51:00.000Z'));
   });
 
   it('a main record never enters the PR index or journal', async () => {
@@ -665,6 +735,76 @@ describe('green main record feeds PR isolation; repeat flakes escalate', () => {
   });
 });
 
+describe('a main that is not healthy is re-verified after a short wait (2026-11-15: 111 minutes closed after the repair merged)', () => {
+  const obs = (over: Partial<Parameters<typeof decideMainHeadEnqueue>[0]> = {}) => ({ head: sha('1'), since: 0, firstUnverifiedAt: null, handled: sha('1'), immediate: false, ...over });
+  const UNHEALTHY = { healthy: false };
+
+  it('pure: a new head is ready after 2 unchanged minutes when unhealthy; 10 when healthy or unstated', () => {
+    const seen = decideMainHeadEnqueue(obs(), sha('2'), 5 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY);
+    expect(seen.enqueue).toBe(false); // first sight: not at once
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 6 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY).enqueue).toBe(false);
+    const d = decideMainHeadEnqueue(seen.next, sha('2'), 7 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY);
+    expect(d.enqueue).toBe(true);
+    expect(d.next).toMatchObject({ head: sha('2'), handled: sha('2'), firstUnverifiedAt: null, immediate: false });
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 7 * MIN).enqueue).toBe(false);
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 7 * MIN, MAIN_VERIFY_LIMITS, { healthy: true }).enqueue).toBe(false);
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 15 * MIN).enqueue).toBe(true);
+  });
+
+  it('pure: one stale read of the failed head between two reads of the repair starts no verify of it', () => {
+    // reads a minute apart: repair, failed head (stale), repair, repair, repair
+    let o = obs({ handled: null }); // even with the failed head not remembered as handled
+    const reads: Array<[string, number]> = [[sha('2'), 1], [sha('1'), 2], [sha('2'), 3], [sha('2'), 4], [sha('2'), 5]];
+    const enqueued: string[] = [];
+    for (const [h, m] of reads) { const d = decideMainHeadEnqueue(o, h, m * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY); o = d.next; if (d.enqueue) enqueued.push(h); }
+    expect(enqueued).toEqual([sha('2')]); // only the repair, once it read the same for 2 minutes
+  });
+
+  it('pure: a head that never settles is capped at one verify per 10 minutes when unhealthy', () => {
+    let o = obs();
+    const at: number[] = [];
+    for (let m = 1; m <= 25; m++) { const d = decideMainHeadEnqueue(o, m.toString(16).padStart(40, '0'), m * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY); o = d.next; if (d.enqueue) at.push(m); }
+    expect(at).toEqual([11, 22]); // 10 minutes after each first unverified head (minutes 1 and 12)
+  });
+
+  it('pure: the short wait never lengthens limits a caller already made shorter', () => {
+    const quick = { debounceMs: 30_000, debounceCapMs: 60_000 };
+    const seen = decideMainHeadEnqueue(obs(), sha('2'), 0, quick, UNHEALTHY);
+    expect(decideMainHeadEnqueue(seen.next, sha('2'), 30_000, quick, UNHEALTHY).enqueue).toBe(true);
+  });
+
+  it('pure: still once per head: a head already handled is not enqueued again, healthy or not', () => {
+    expect(decideMainHeadEnqueue(obs(), sha('1'), 99 * MIN, MAIN_VERIFY_LIMITS, UNHEALTHY).enqueue).toBe(false);
+  });
+
+  it('service: after main goes red, the repair head is verified once it has read the same for 2 minutes (a stale read of the red head in between restarts the count), not 10', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1')); // boot: immediate
+    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1') }); // the one re-run
+    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.svc.mainHealth().state).toBe('main-red');
+    s.svc.noteMainHead(sha('2')); // the repair landed
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('1')); // one stale read of the red head
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(2);
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(2);
+    s.advance(1 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(3);
+    expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: sha('2') });
+  });
+
+  it('service: a healthy main keeps the 10-minute debounce for a new head', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    s.svc.noteMainHead(sha('2'));
+    s.advance(2 * MIN); s.svc.noteMainHead(sha('2'));
+    expect(s.spawned).toHaveLength(1);
+  });
+});
+
 describe('decideMainRearmAfterGreen', () => {
   const base = { priorRetries: MAIN_VERIFY_LIMITS.errorRetries + 1, mainPending: false, mainInFlight: false, healthState: 'main-suspect' as const };
   it('re-arms only once the error retries are spent, with nothing main queued or running', () => {
@@ -687,6 +827,38 @@ describe('oldestUnverifiedAfterGreen', () => {
   it('a green verify of an older head moves the clock to the run start, never backwards', () => {
     expect(oldestUnverifiedAfterGreen(1_000, false, 5_000)).toBe(5_000);
     expect(oldestUnverifiedAfterGreen(9_000, false, 5_000)).toBe(9_000);
+  });
+  it('the time the verified head was replaced moves the clock too, whatever the run start says; the later of the two wins', () => {
+    expect(oldestUnverifiedAfterGreen(1_000, false, null, 7_000)).toBe(7_000);
+    expect(oldestUnverifiedAfterGreen(1_000, false, 5_000, 7_000)).toBe(7_000);
+    expect(oldestUnverifiedAfterGreen(1_000, false, 8_000, 7_000)).toBe(8_000);
+    expect(oldestUnverifiedAfterGreen(9_000, false, null, 7_000)).toBe(9_000); // never backwards
+    expect(oldestUnverifiedAfterGreen(1_000, false, null, Number.NaN)).toBe(1_000);
+    expect(oldestUnverifiedAfterGreen(1_000, true, null, 7_000)).toBeNull();
+    expect(oldestUnverifiedAfterGreen(null, false, null, 7_000)).toBeNull();
+  });
+  it('noteHeadSuperseded keeps the FIRST replacement time of a head, ignores no-change and null, and stays bounded', () => {
+    const m = new Map<string, number>();
+    noteHeadSuperseded(m, null, 'a', 10);
+    noteHeadSuperseded(m, 'a', 'a', 20);
+    expect(m.size).toBe(0);
+    noteHeadSuperseded(m, 'a', 'b', 30);
+    noteHeadSuperseded(m, 'b', 'a', 40);                // a stale read shows a again: b was not replaced by anything newer
+    noteHeadSuperseded(m, 'a', 'b', 50);                // …and moves on: a keeps 30 (earlier is the strict direction)
+    expect([...m]).toEqual([['a', 30]]);
+    noteHeadSuperseded(m, 'b', 'c', 60);
+    expect([...m]).toEqual([['a', 30], ['b', 60]]);
+    for (let i = 0; i < SUPERSEDED_HEADS_KEPT + 20; i++) noteHeadSuperseded(m, `h${i}`, `h${i + 1}`, 100 + i);
+    expect(m.size).toBe(SUPERSEDED_HEADS_KEPT);
+    expect(m.has('a')).toBe(false);
+  });
+  it('supersededAtFor: the head itself, or the latest of its release commits; null when never replaced', () => {
+    const m = new Map([['a', 30], ['rel-a', 90], ['x', 5]]);
+    const alias = new Map([['rel-a', 'a'], ['rel-x', 'x']]);
+    expect(supersededAtFor('a', m, alias)).toBe(90);    // a → its release commit → replaced at 90
+    expect(supersededAtFor('x', m, alias)).toBe(5);     // rel-x is still the head (no entry): x's own time
+    expect(supersededAtFor('a', m, new Map())).toBe(30);
+    expect(supersededAtFor('zzz', m, alias)).toBeNull();
   });
   it('with nothing unverified there is nothing to move; an unreadable start time leaves the clock alone', () => {
     expect(oldestUnverifiedAfterGreen(null, false, 5_000)).toBeNull();

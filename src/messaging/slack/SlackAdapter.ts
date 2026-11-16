@@ -26,6 +26,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { escapeTypedPathTags } from '../../core/inboundMedia.js';
+import { transcriptionFailureReason } from '../../core/VoiceTranscription.js';
 // CONTRACT-EVIDENCE: EXEMPT — native-conversation-base §3c only escapes typed path tags in person text
 // (message text, a shared file's title and contents, voice transcripts) before the session content is
 // built; no Slack API request, response field or event shape changed.
@@ -1919,7 +1920,8 @@ export class SlackAdapter implements MessagingAdapter {
               keepForApp('voice');
             } catch (transcribeErr) {
               console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
-              cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+              const unavailable = ` (transcription unavailable: ${escapeTypedPathTags(transcriptionFailureReason(transcribeErr))})`;
+              cleanText = cleanText ? `${cleanText} [document:${savedPath}]${unavailable}` : `[document:${savedPath}]${unavailable}`;
               keepForApp('file');
             }
           } else {
@@ -2149,7 +2151,7 @@ export class SlackAdapter implements MessagingAdapter {
           keptAs = 'voice';
         } catch (transcribeErr) {
           console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
-          cleanText = `[document:${savedPath}]`;
+          cleanText = `[document:${savedPath}] (transcription unavailable: ${escapeTypedPathTags(transcriptionFailureReason(transcribeErr))})`;
         }
       } else {
         cleanText = `[document:${savedPath}]`;

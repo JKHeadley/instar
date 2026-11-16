@@ -1,0 +1,127 @@
+/**
+ * Integration — dashboard PIN throttle (docs/specs/dashboard-pin-throttle.md), design (b),
+ * over the full HTTP pipeline through a real AgentServer.
+ *
+ * Proves the operator-ratified requirements:
+ *  - a cookie-marked owner unlocks instantly with the correct PIN while a flood has drained the cap;
+ *  - a brand-new unmarked tunnel browser is refused at the hard cap during that flood;
+ *  - a successful unlock sets the signed instar_pin_ok cookie;
+ *  - cf-connecting-ip is the client key only over the own-name tunnel path (a forged header to a
+ *    non-own Host is keyed on the socket);
+ *  - a genuinely-local request (loopback Host) unlocks while the tunnel cap is drained (recovery);
+ *  - the paired phone-app route is unaffected by the throttle.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import request from 'supertest';
+import { AgentServer } from '../../src/server/AgentServer.js';
+import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
+import type { TempProject, MockSessionManager } from '../helpers/setup.js';
+import type { InstarConfig } from '../../src/core/types.js';
+
+const AUTH = 'itest-auth-token-pinthrottle';
+const PIN = '246810';
+const PORT = 4042;
+const TUNNEL_HOST = 'pinthrottle.trycloudflare.test';
+
+function makeConfig(stateDir: string): InstarConfig {
+  return {
+    projectName: 'pin-throttle-itest', projectDir: '/tmp/pt', stateDir, port: PORT,
+    authToken: AUTH, dashboardPin: PIN,
+    security: { pinThrottle: { enabled: true, globalFailureBudget: 5, coarseFailureBudget: 100, windowMs: 600000, softFailures: 3 } },
+    sessions: { tmuxPath: '/usr/bin/tmux', claudePath: '/usr/bin/claude', projectDir: '/tmp/pt', maxSessions: 3, protectedSessions: [], completionPatterns: [] },
+    scheduler: { jobsFile: '', enabled: false, maxParallelJobs: 2, quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } },
+    users: [], messaging: [], monitoring: { quotaTracking: false, memoryMonitoring: false, healthCheckIntervalMs: 30000 },
+  } as InstarConfig;
+}
+
+let project: TempProject;
+let mockSM: MockSessionManager;
+let app: ReturnType<AgentServer['getApp']>;
+
+// A tunnel request: Host is the tunnel own-name, cf-connecting-ip is the real client (socket is loopback).
+const tunnel = (clientIp: string) => request(app).post('/dashboard/unlock')
+  .set('Host', TUNNEL_HOST).set('cf-connecting-ip', clientIp).set('x-forwarded-proto', 'https');
+// A genuinely-local request: loopback Host, no cf-connecting-ip, no forwarding header.
+const local = () => request(app).post('/dashboard/unlock').set('Host', `127.0.0.1:${PORT}`);
+
+beforeEach(() => {
+  project = createTempProject();
+  mockSM = createMockSessionManager();
+  const server = new AgentServer({
+    config: makeConfig(project.stateDir),
+    sessionManager: mockSM as any,
+    state: project.state,
+    tunnel: { url: `https://${TUNNEL_HOST}` },
+  } as any);
+  app = server.getApp();
+});
+afterEach(() => { project.cleanup(); });
+
+async function drainCap() {
+  // 5+ wrong PINs from distinct tunnel clients drain the global unmarked budget (5).
+  for (let i = 0; i < 6; i++) await tunnel(`203.0.113.${i}`).send({ pin: '000000' });
+}
+
+describe('dashboard PIN throttle (b) — integration', () => {
+  it('a correct PIN unlocks and sets the signed instar_pin_ok cookie', async () => {
+    const res = await tunnel('198.51.100.7').send({ pin: PIN });
+    expect(res.status).toBe(200);
+    expect(res.body.token).toBeDefined();
+    const setCookie = String(res.headers['set-cookie'] ?? '');
+    expect(setCookie).toContain('instar_pin_ok=');
+    expect(setCookie.toLowerCase()).toContain('httponly');
+    expect(setCookie.toLowerCase()).toContain('samesite=strict');
+  });
+
+  it('once the cap is drained, a brand-new unmarked tunnel browser is refused (429), but a cookie-marked owner unlocks instantly', async () => {
+    // owner unlocks once to get a cookie
+    const first = await tunnel('198.51.100.7').send({ pin: PIN });
+    const cookie = String(first.headers['set-cookie']?.[0] ?? '').split(';')[0];
+    expect(cookie).toContain('instar_pin_ok=');
+
+    await drainCap();
+
+    // a fresh unmarked browser is refused at the hard cap
+    const stranger = await tunnel('203.0.113.250').send({ pin: PIN });
+    expect(stranger.status).toBe(429);
+
+    // the cookie-marked owner, from any address, unlocks instantly with the correct PIN
+    const owner = await tunnel('203.0.113.251').set('Cookie', cookie).send({ pin: PIN });
+    expect(owner.status).toBe(200);
+    expect(owner.body.token).toBeDefined();
+  });
+
+  it('a genuinely-local request (loopback Host) unlocks even while the tunnel cap is drained (out-of-band recovery)', async () => {
+    await drainCap();
+    const res = await local().send({ pin: PIN });
+    expect(res.status).toBe(200);
+    expect(res.body.token).toBeDefined();
+  });
+
+  it('a forged cf-connecting-ip to a NON-own Host is not trusted (keyed on the socket, so forging another client fails to impersonate)', async () => {
+    // Host is not the tunnel own-name → cf-connecting-ip is ignored; all such requests key on the
+    // loopback socket, so one forged client cannot drain another distinct client's budget.
+    for (let i = 0; i < 6; i++) {
+      await request(app).post('/dashboard/unlock').set('Host', 'evil.example').set('cf-connecting-ip', `9.9.9.${i}`).send({ pin: '000000' });
+    }
+    // The socket key (loopback) is now capped; a DIFFERENT forged cf-connecting-ip on the same
+    // non-own Host is the SAME socket key → also refused (proves the header was not trusted as the key).
+    const res = await request(app).post('/dashboard/unlock').set('Host', 'evil.example').set('cf-connecting-ip', '9.9.9.200').send({ pin: PIN });
+    expect(res.status).toBe(429);
+  });
+
+  it('a malformed instar_pin_ok cookie does not 500 the unlock route (treated as no marker)', async () => {
+    // decodeURIComponent throws on a bad %-escape; the handler must swallow it, not 500.
+    const res = await tunnel('198.51.100.33').set('Cookie', 'instar_pin_ok=%').send({ pin: PIN });
+    expect(res.status).toBe(200); // unmarked but correct PIN still unlocks; no 500
+  });
+
+  it('the paired phone-app route is unaffected by the throttle (not consulted against PinThrottle)', async () => {
+    await drainCap();
+    // The unlock-check (a non-PIN route) is not gated by the throttle; it answers normally while the
+    // PIN cap is drained — representative that the throttle does not bleed into non-unlock routes.
+    const res = await request(app).get('/dashboard/unlock-check').set('Host', TUNNEL_HOST).set('x-forwarded-proto', 'https');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('accepted');
+  });
+});

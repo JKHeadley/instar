@@ -1,4 +1,5 @@
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
+import { PairingOutcomeWatches, type SendResult as OutcomeSendResult, type OperationResult as OutcomeOperationResult } from '../core/PairingOutcomeWatches.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamSwitchLine } from '../core/TeamSwitches.js';
@@ -152,6 +153,20 @@ export interface MobilePairingDeps {
    * Resolves true once raised.
    */
   raiseBrowserNotice?: BrowserNoticeRaiser;
+  /**
+   * Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): whether a line can be
+   * posted (Telegram adapter AND origin service running), the classified sender, and the per-topic
+   * attention item for a line that could not be posted. Absent ⇒ no watches; mints answer
+   * `outcomeNotice: null`.
+   */
+  outcomeNotice?: {
+    available: () => boolean;
+    send: (topicId: number, text: string, logicalSendId: string, anchorInboundId: string | null) => Promise<OutcomeSendResult>;
+    checkOperation: (operationId: string) => Promise<OutcomeOperationResult>;
+    /** The operator's latest message in the topic within `withinMs` (the request a link answers). */
+    recentOperatorInbound: (topicId: number, withinMs: number) => string | null;
+    escalate: (topicId: number, lines: string[]) => Promise<boolean>;
+  };
 }
 
 /** The default people lookup: the registry on disk (read-only, no writes) plus `config.users`. */
@@ -255,6 +270,11 @@ export function isMobileUnreadEnabled(config: InstarConfig): boolean {
   return isMobileNativeEnabled(config) && config.mobilePairing?.native?.unread?.enabled !== false;
 }
 
+/** Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): omitted = on, read live. */
+export function isOutcomeNoticeEnabled(config: InstarConfig): boolean {
+  return (config.mobilePairing as { outcomeNotice?: { enabled?: boolean } } | undefined)?.outcomeNotice?.enabled !== false;
+}
+
 /** `mobilePairing.approve.enabled` (docs/specs/mobile-pairing-approve.md §3.6): omitted ⇒ on wherever pairing is on. Read live. */
 export function isPairingApproveEnabled(config: InstarConfig): boolean {
   return isMobilePairingEnabled(config) && config.mobilePairing?.approve?.enabled !== false;
@@ -316,6 +336,10 @@ export class MobilePairingService {
   pushPoolCtx: PoolCtx | null = null;
   /** Browser devices (dashboard-conversations-browser-device): activation, effects, recovery. */
   readonly browser: BrowserDeviceController;
+  /** Pairing outcome watches (docs/specs/mobile-pairing-outcome-notice.md); null when not wired. */
+  readonly outcomes: PairingOutcomeWatches | null;
+  /** Codes live in this process only, so a new process voids every link (§3.2 codeEpoch). */
+  readonly bootId = crypto.randomUUID();
 
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
@@ -353,6 +377,42 @@ export class MobilePairingService {
     // before a lease move can never confirm after the lease comes back.
     this.leaseTimer = setInterval(() => this.leaseTick(), 5_000);
     this.leaseTimer.unref?.();
+    const on = deps.outcomeNotice;
+    this.outcomes = on ? new PairingOutcomeWatches({
+      stateDir: deps.stateDir,
+      agentName: () => deps.config.projectName,
+      listDevices: () => this.devices.listStrict(),
+      codeEpoch: () => this.bootId,
+      send: on.send,
+      checkOperation: on.checkOperation,
+      escalate: on.escalate,
+      enabled: () => isOutcomeNoticeEnabled(deps.config),
+      reportDegradation: deps.reportDegradation,
+      now,
+    }) : null;
+    this.outcomes?.start();
+  }
+
+  /**
+   * Record a pairing-outcome watch for a just-minted code (§3.1). The link is minted either way;
+   * the result is the response's `outcomeNotice` / `outcomeNoticeReason`.
+   */
+  watchOutcome(code: string, rawTopicId: unknown, label: string | null, codeExpiresAt: number):
+    { outcomeNotice: { topicId: number; watchId: string } | null; outcomeNoticeReason?: string } | null {
+    if (rawTopicId === undefined || rawTopicId === null || rawTopicId === '') return null;
+    const topicId = typeof rawTopicId === 'number' ? rawTopicId : (typeof rawTopicId === 'string' && /^-?\d{1,16}$/.test(rawTopicId.trim()) ? Number(rawTopicId.trim()) : NaN);
+    if (!Number.isSafeInteger(topicId) || topicId === 0) return { outcomeNotice: null, outcomeNoticeReason: 'topicId was not a conversation number, so no line will be posted.' };
+    if (topicId < 0) return { outcomeNotice: null, outcomeNoticeReason: 'Pairing results are posted only in Telegram conversations for now, so no line will be posted here.' };
+    if (!isOutcomeNoticeEnabled(this.deps.config)) return { outcomeNotice: null, outcomeNoticeReason: 'Pairing result lines are switched off on this agent.' };
+    if (!this.outcomes || !this.deps.outcomeNotice?.available()) return { outcomeNotice: null, outcomeNoticeReason: 'This agent cannot post in Telegram right now, so no line will be posted.' };
+    let anchor: string | null = null;
+    try { anchor = this.deps.outcomeNotice.recentOperatorInbound(topicId, 15 * 60_000); } catch { anchor = null; } // @silent-fallback-ok — no anchor means the line goes to the quiet feed, and the response says so
+    const r = this.outcomes.record({ topicId, label, codeExpiresAt, anchorInboundId: anchor });
+    if (!r.ok) return { outcomeNotice: null, outcomeNoticeReason: r.reason };
+    this.codes.attachWatch(code, r.id);
+    return anchor
+      ? { outcomeNotice: { topicId, watchId: r.id } }
+      : { outcomeNotice: { topicId, watchId: r.id }, outcomeNoticeReason: 'No recent message from you in this conversation, so the result will go to the quiet feed.' };
   }
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -443,7 +503,7 @@ export class MobilePairingService {
     }
   }
 
-  stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); }
+  stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); this.outcomes?.stop(); }
 
   // ── People and roles (docs/specs/mobile-app-people-and-roles.md) ──
 
@@ -565,9 +625,17 @@ export class MobilePairingService {
     const log = this.teamLog();
     if (!log || log.healthState() !== 'ok') return;
     for (const d of this.devices.list()) {
-      if (d.role !== 'team' || d.status !== 'active' || !d.publicKey || !d.userId) continue;
-      const keyHash = deviceKeyHashOf(d.publicKey);
-      if (log.state().bindings.get(keyHash) !== d.userId) log.appendMachineEvents([{ type: 'phone-bind', keyHash, deviceId: d.id, boundTo: d.userId }]);
+      if (d.status !== 'active') continue;
+      const key = deviceKeyOf(d);
+      if (!key) continue;
+      const keyHash = deviceKeyHashOf(key);
+      // Team devices are bound to their person. The owner's devices are bound too, so every machine
+      // can tell whose signature a document row carries (instar-document-viewer §3.6): phones as
+      // 'owner' (as a team request already binds them), browsers as 'owner-browser', which never
+      // counts as the owner in this log.
+      const boundTo = d.role === 'team' ? d.userId : (d.role ?? 'owner') === 'owner' ? (isBrowserDevice(d) ? 'owner-browser' : 'owner') : null;
+      if (!boundTo || (d.role === 'team' && isBrowserDevice(d))) continue;
+      if (log.state().bindings.get(keyHash) !== boundTo) log.appendMachineEvents([{ type: 'phone-bind', keyHash, deviceId: d.id, boundTo }]);
     }
   }
 
@@ -581,7 +649,13 @@ export class MobilePairingService {
       // Only a verified removal revokes: a phone can pair before its person's row arrives, and a revoked key is gone for good.
       if (log.wasRemoved(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
     }
+    // Linked computers (instar-document-viewer §3.6a): expired links, links whose phone was revoked
+    // or left, and people removed. Set by the server when documents are wired.
+    try { this.linkedBrowserSweep?.(); } catch (err) { this.deps.reportDegradation?.('Documents.linkSweep', err); } // @silent-fallback-ok — reported; the minute timer sweeps again
   }
+
+  /** The linked-computer expiry sweep (documentLinkRoutes sweepLinkedBrowsers), wired by AgentServer. */
+  linkedBrowserSweep: (() => void) | null = null;
 
   reportTeamFault(feature: string, err: unknown): void { this.deps.reportDegradation?.(feature, err); }
 
@@ -930,6 +1004,8 @@ export class MobilePairingService {
 
   /** After any activation of a browser record: its code, nonces and dashboard code are gone; others stay code-only. */
   afterActivation(deviceId: string): void {
+    // Bind the newly active device so every machine knows whose it is (documents §3.6).
+    try { this.bindTeamPhones(); } catch { /* @silent-fallback-ok — bound again at the next boot or confirm */ }
     this.confirm.drop(deviceId);
     this.dropDashboardCode(deviceId);
     for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
@@ -1126,6 +1202,14 @@ export class MobilePairingService {
 }
 
 /** Send a push trigger to every other online machine (mobile-push §2.3): 5 s, no retry. */
+/**
+ * The check for a documents-scoped computer's one send (instar-document-viewer §3.6a): the body is
+ * exactly the Send template for a document whose primary conversation is this route's. Set by the
+ * server when documents are wired; unset means no scoped computer may send.
+ */
+let documentScopedSend: ((device: DeviceRecord, path: string, rawBody: Buffer | undefined) => boolean) | null = null;
+export function setDocumentScopedSend(fn: typeof documentScopedSend): void { documentScopedSend = fn; }
+
 export function fanOutPushTrigger(ctx: PoolCtx | null, t: PushTrigger, onResult?: (machineId: string, ok: boolean) => void): void {
   if (!ctx) return;
   const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -1203,17 +1287,22 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
+    // Pairing outcome notice §3.2: a phone used the link (same synchronous block as the take).
+    svc.outcomes?.markTaken(r.watchId);
     // §3.2 step 3: an honest phone sends to the link's own origin. A code with no bound origin
     // (minted before this change, in this process) keeps the old rule: the eligible host.
     if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
-      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner' });
+      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner',
+        ...(r.watchId ? { outcomeWatchId: r.watchId } : {}) });
     } catch (err) {
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: registry write', context: { routeKind: eligible.kind } });
       res.status(500).json(storageErrorResponse({ error: 'Could not record the device. Ask for a new link.' }, svc.deps.stateDir));
@@ -1222,6 +1311,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     if (!created.ok) {
       const status = created.reason === 'duplicate-key' ? 409 : 429;
       featureEvidence.record('mobilePairing', { kind: 'held', reason: `redeem refused: ${created.reason}`, context: { routeKind: eligible.kind, status } });
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
       res.status(status).json({ error: created.reason });
       return;
     }
@@ -1293,6 +1383,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       svc.declineNonces.delete(nonce);
       svc.confirm.drop(device.id);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the pending device expires on its own
+      svc.outcomes?.markOutcome(r.watchId, 'not-delivered');
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: confirmation code not delivered', context: { deviceId: device.id, routeKind: eligible.kind } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
       return;
@@ -1374,8 +1465,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
       { userId: chosenPerson.userId, role: chosenPerson.role });
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
+    // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.1): never refuses the link.
+    const notice = svc.watchOutcome(m.code, mintBody.topicId, label, m.expiresAt);
     // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
     res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind,
+      ...(notice ?? {}),
       person: { name: chosenPerson.name, role: chosenPerson.role, userId: chosenPerson.userId },
       // Where the operator will read the code when it is shown on the dashboard (no Telegram owner).
       ...(approval === 'dashboard' ? { codePageUrl: codePageUrlForOrigin(origin) } : {}) });
@@ -1391,10 +1485,12 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return;
     }
     const local = svc.devices.list().map((d) => publicDeviceView(d, machine, svc));
-    if (req.query.scope !== 'pool' || !poolCtx) { res.json({ devices: local }); return; }
+    // Pairing outcome notice §3.6: this machine's recent link outcomes, owner callers only.
+    const outcomes = svc.outcomes ? { pairingOutcomes: svc.outcomes.outcomes() } : {};
+    if (req.query.scope !== 'pool' || !poolCtx) { res.json({ devices: local, ...outcomes }); return; }
     const pool = await fetchPoolDevices(poolCtx);
     const devices = [...local, ...pool.rows].sort((a, b) => String(b.pairedAt).localeCompare(String(a.pairedAt)));
-    res.json({ devices, pool: { failed: pool.failed } });
+    res.json({ devices, pool: { failed: pool.failed }, ...outcomes });
   });
 
   // ── Dashboard pairing approval (mobile-native-conversations §4.4) ──
@@ -1643,7 +1739,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       svc.dropDashboardCode(d.id);
       svc.noteActivated(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
-      try { if (d.role === 'team') svc.bindTeamPhones(); } catch (err) { deps.reportDegradation?.('TeamAccess.bind', err); } // @silent-fallback-ok — reported; bound at the next boot
+      // Every confirmed phone is bound (team phones to their person, the owner's to 'owner') so other machines know whose it is.
+      try { svc.bindTeamPhones(); } catch (err) { deps.reportDegradation?.('TeamAccess.bind', err); } // @silent-fallback-ok — reported; bound at the next boot
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'confirmed', context: { deviceId: d.id, approvedVia, role: d.role ?? 'owner' } });
       res.json({ status: 'active' });
       return;
@@ -1808,16 +1905,20 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (notifyTimes.length >= 120) { svc.push.noteRefused(); res.status(429).json({ error: 'too-many-requests' }); return; }
     notifyTimes.push(t);
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : b.kind === 'reply' ? 'reply' : null;
+    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : b.kind === 'reply' ? 'reply' : b.kind === 'document' ? 'document' : null;
     const dedupeKey = typeof b.dedupeKey === 'string' ? b.dedupeKey.slice(0, 200) : '';
     const sourceMachine = typeof b.sourceMachine === 'string' ? b.sourceMachine.slice(0, 80) : '';
     if (!kind || !dedupeKey || !sourceMachine) { res.status(400).json({ error: 'bad-trigger' }); return; }
     // A reply trigger (mobile-native-conversations §4.7) names its app conversation by strict UUID only.
     const conversationKey = kind === 'reply' && typeof b.conversationKey === 'string' && new RegExp(`^${APP_CONVERSATION_KEY_PATTERN}$`).test(b.conversationKey) ? b.conversationKey : null;
     if (kind === 'reply' && !conversationKey) { res.status(400).json({ error: 'bad-trigger' }); return; }
+    // A document trigger names the document by strict UUID and the answered comment (instar-document-viewer, app contract 6).
+    const docOk = kind !== 'document' || (typeof b.itemId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(b.itemId) && typeof b.commentKey === 'string' && b.commentKey.length <= 200);
+    if (!docOk) { res.status(400).json({ error: 'bad-trigger' }); return; }
     const trig: PushTrigger = {
       kind, dedupeKey, sourceMachine,
       ...(kind === 'item' && typeof b.itemId === 'string' ? { itemId: b.itemId.slice(0, 120) } : {}),
+      ...(kind === 'document' ? { itemId: b.itemId as string, commentKey: b.commentKey as string } : {}),
       ...(conversationKey ? { conversationKey } : {}),
       ...(conversationKey && typeof b.messageId === 'string' && /^[a-z0-9._:-]{1,128}$/.test(b.messageId) ? { messageId: b.messageId } : {}),
       ...(typeof b.priority === 'string' ? { priority: b.priority.slice(0, 20) } : {}),
@@ -2253,6 +2354,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  // Keyword search over conversations (conversation-search): the same visibility as the list.
+  ['GET', /^\/mobile\/conversations\/search$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
   ['POST', /^\/mobile\/conversations\/read$/.source],
   // Pinning a conversation to the top of the list (conversation-list-pins): the same per-person pins as the phone.
@@ -2302,10 +2405,22 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Instar Documents (instar-document-viewer §4.2): the document list and summary are guest reads; the
+  // documents router applies its own per-document access (mayDoDocument) on top.
+  ['GET', /^\/mobile\/docs$/, 'guest'],
+  ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, 'guest'],
+  ['POST', /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, 'guest'],
+  ['GET', /^\/docs\/[0-9a-f-]{36}\/data$/, 'guest'],
+  ['POST', /^\/mobile\/browsers\/link$/, 'guest'],
+  ['POST', /^\/mobile\/browsers\/link\/lookup$/, 'guest'],
+  ['GET', /^\/mobile\/browsers$/, 'guest'],
+  ['POST', /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, 'guest'],
   // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
   ['GET', /^\/mobile\/work-board$/, 'guest'],
   // The Needs-you list (work-front-doors decision 2): the route filters per viewer; a team phone gets only what it may already read.
   ['GET', /^\/mobile\/needs$/, 'guest'],
+  // Searching is reading (conversation-search): only conversations and messages this person may read.
+  ['GET', /^\/mobile\/conversations\/search$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   // Pinning a conversation orders the person's own list; the route checks they may see it.
@@ -2382,6 +2497,24 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
+    // Instar Documents phone reads (instar-document-viewer §4.2). Read-only; per-document access is the documents router's.
+    { method: 'GET', re: /^\/mobile\/docs$/, statuses: active, body: 'none' },
+    { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, statuses: active, body: 'none' },
+    // A single-use 60-second code that opens one document's page in the app (§3.6). Mints no write.
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, statuses: active, body: 'json', ownBucket: 30, bucket: 'doc-open' },
+    // The app cuts a comment's quote from the text it fetched itself, never from the page (§3.6).
+    { method: 'GET', re: /^\/docs\/[0-9a-f-]{36}\/data$/, statuses: active, body: 'none' },
+    // Linking a member's computer from their own phone (instar-document-viewer §3.6a); phones only.
+    { method: 'POST', re: /^\/mobile\/browsers\/link$/, statuses: active, body: 'json', ownBucket: 12, bucket: 'browser-link' },
+    // Who asked for a link code (browser, address, age), shown before Face ID (§3.6a item 6).
+    { method: 'POST', re: /^\/mobile\/browsers\/link\/lookup$/, statuses: active, body: 'json', ownBucket: 30, bucket: 'browser-link-lookup' },
+    { method: 'GET', re: /^\/mobile\/browsers$/, statuses: active, body: 'none' },
+    { method: 'POST', re: /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, statuses: active, body: 'json', ownBucket: 12, bucket: 'browser-link' },
+    // Moving a document to another conversation (§4.2): owner phone, Face ID-signed challenge.
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
+    { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
@@ -2586,6 +2719,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
 const NOTIFY_TOKEN_PATHS: ReadonlyArray<RegExp> = [
   /^\/mobile\/attention\/[^/]+$/,
   new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/preview/[a-z0-9._:-]{1,128}$`),
+  // A document push's title (instar-document-viewer, app contract 6): the summary, answered with
+  // the title only for this token; the documents router checks the person may read it.
+  /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/,
 ];
 
 export function deviceAuthenticator(svc: MobilePairingService) {
@@ -2619,8 +2755,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         // The token opens a push's text, so it answers to the same limits as a signed request.
         const stop = svc.teamRefusal();
         if (stop) return refuse(403, stop);
-        const target = teamConversationTarget('GET', pathNorm);
-        if (!target || !svc.mayUse(np, target.ref, target.op)) return refuse(404, 'unknown-conversation');
+        if (/^\/mobile\/docs\//.test(pathNorm)) {
+          // A document is checked against its own conversation's audience by the documents router.
+          if (!np.tier) return refuse(403, 'tier-required');
+        } else {
+          const target = teamConversationTarget('GET', pathNorm);
+          if (!target || !svc.mayUse(np, target.ref, target.op)) return refuse(404, 'unknown-conversation');
+        }
       }
       (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device-notify', deviceId: d.id };
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = np;
@@ -2688,6 +2829,15 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
     // A browser may call only the routes named for it (§4.4); checked after the signature, before the person check.
     if (browserDevice && !rule.browser) return refuse(403, 'browser-device-not-allowed');
+    // A member's linked computer (instar-document-viewer §3.6a) is scoped to documents: its page reads
+    // and writes never come through here, and the one route it may use is the Send template for the
+    // opened document into that document's own conversation (a guest's computer: nothing).
+    if (browserDevice && peek!.scope) {
+      if (!peek!.linkExpiresAt || Date.parse(peek!.linkExpiresAt) <= Date.now()) return refuse(401, 'device-unauthorized');
+      let sendOk = false;
+      try { sendOk = peek!.scope === 'documents' && rule.sendRoute === true && !!documentScopedSend && documentScopedSend(peek!, pathNorm, raw); } catch { sendOk = false; } // @silent-fallback-ok — fail closed
+      if (!sendOk) return refuse(403, 'browser-scope');
+    }
     if (rule.ownBucket !== undefined) {
       if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket, rule.bucket)) { if (browserDevice) svc.browser.noteRefusal(v.deviceId, 'rate-limited'); return refuse(429, 'too-many-requests'); }
     } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) { if (browserDevice) svc.browser.noteRefusal(v.deviceId, 'rate-limited'); return refuse(429, 'too-many-requests'); }

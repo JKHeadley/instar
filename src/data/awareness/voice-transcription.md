@@ -1,0 +1,9 @@
+---
+title: Voice messages and transcription
+---
+Voice notes from Telegram, the app, Slack and WhatsApp reach me as `[voice] <transcript>`. A paid provider (a Groq or OpenAI key) is used first when it is set up; otherwise, and as the fallback when it fails, the free whisper.cpp on this machine reads them, and nothing leaves the machine (`voiceProvider: "local"` makes it the only one). When a note can't be read I get `(transcription unavailable: <reason>)` with the plain reason, never a bare "unavailable".
+
+- Which transcriber this machine uses, never guess: `curl -H "Authorization: Bearer $AUTH" http://localhost:{{port}}/voice-transcription` returns `active`, `local.state` (missing, installed-unproven, proven or failed), what is missing, and a plain `summary`. It answers for THIS machine only.
+- Installing it is mine (free, no account; the person only says yes), on every machine I run on. Mac: `brew install whisper-cpp ffmpeg`. Linux: the same with Homebrew, else the distro's ffmpeg plus a whisper.cpp source build at tag v1.9.5 (`cmake -B build && cmake --build build -j 2 --config Release`, then copy `build/bin/whisper-cli` to `~/.local/bin`). Model: download `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin` to `~/.local/share/instar/models/ggml-base.bin.part`, check its SHA-256 is `60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`, then rename it to `ggml-base.bin`. A larger model alongside base needs `INSTAR_WHISPER_MODEL`. Then read the route again.
+- Off switch: `voiceTranscription.local: false` in .instar/config.json.
+- When to use (proactive): a voice note arrives as `(transcription unavailable: ...)`, or the person asks whether I can hear voice notes. Read the route; if local is missing, offer to install it in one plain sentence, and after their yes do it and ask them to resend.

@@ -141,6 +141,24 @@ describe('owner phone: served, trimmed', () => {
     expect(down.body.needsSignIn).toBe(1);
   });
 
+  it('GET /mobile/accounts reads every machine\'s repairs: a peer repair in flight is not a sign-in for the person', async () => {
+    const busy = await signedGet(setup({ poolRepairs: async () => [{ accountId: 'adriana-pro', machineId: 'm_peer', state: 'browser-driving', updatedAt: '2026-11-04T01:59:00.000Z' }] }), '/mobile/accounts');
+    expect(busy.status).toBe(200);
+    expect(busy.body.needsSignIn).toBe(0);
+    expect(busy.body.notices).toEqual([]);
+    const adriana = busy.body.accounts.find((a: { name: string }) => a.name === 'Adriana Pro');
+    expect(adriana).toMatchObject({ signIn: 'signing-in', machines: [{ name: 'Mac Mini', state: 'working', label: 'signing in now' }] });
+    // A repair that failed for good says why, and is counted.
+    const failed = await signedGet(setup({ poolRepairs: async () => [{ accountId: 'adriana-pro', machineId: 'm_peer', state: 'failed', failureClass: 'agent-sign-in-unfinished', slowRetryHeld: true }] }), '/mobile/accounts');
+    expect(failed.body.needsSignIn).toBe(1);
+    expect(failed.body.accounts[0].machines[0].label).toBe("automatic repair failed: the sign-in helper couldn't finish");
+    // An unreadable pooled read falls back to this machine's own list.
+    const down = await signedGet(setup({ poolRepairs: async () => { throw new Error('unreachable'); } }), '/mobile/accounts');
+    expect(down.status).toBe(200);
+    expect(down.body.needsSignIn).toBe(1);
+    expect(JSON.stringify(busy.body)).not.toContain('browser-driving');
+  });
+
   it('GET /mobile/spend gives recorded cost with its basis, limits without the credential reference, token totals', async () => {
     const c = setup();
     const r = await signedGet(c, '/mobile/spend?window=today');

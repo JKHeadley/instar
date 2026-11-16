@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-15T23:41:00.602Z",
+  "slug": "held-access",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 150,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MessagingToneGate.ts",
+      "src/core/PlaywrightProfileRegistry.ts",
+      "src/core/agent-reach.ts",
+      "src/data/awareness/access-you-already-hold.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 135,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

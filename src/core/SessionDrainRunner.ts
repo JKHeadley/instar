@@ -113,10 +113,13 @@ export interface SessionDrainRunnerDeps {
   ) => Promise<{ terminated: boolean; skipped?: string }>;
   /** Stamp the topic's suspended run file `interrupted_mid_task: true` (no-op without a run). */
   markInterrupted: (topic: string) => void;
-  /** ONE plain notice for a forced close (userNotices.movedMachinesMidStepNotice).
+  /** The forced-close hand-off, called AFTER the target's claim: ask the target to pick the
+   *  cut-off step back up (src/core/InterruptedMoveResume.ts) and send ONE plain notice
+   *  (userNotices). Must not block: implementations run the hand-off in the background.
    *  No reason text crosses this seam: the bound and timings stay in the audit row
-   *  (Rule 8 — internal detail lives in logs, never in the user's message). */
-  notifyInterrupted: (topic: string, target: string) => void;
+   *  (Rule 8 — internal detail lives in logs, never in the user's message). `claimEpoch`
+   *  is the epoch the move's claim lands at (the target acts only at or past it). */
+  notifyInterrupted: (topic: string, target: string, handoff: { claimEpoch: number }) => void;
   /** Stage-B custody handoff. Absent means the feature is dark and legacy drain proceeds. */
   transferDeliveryLedger?: (input: {
     sessionKey: string; target: string; sourceEpoch: number; transferEpoch: number; activeEpoch: number;
@@ -385,10 +388,14 @@ export class SessionDrainRunner {
     }
     if (interrupted) {
       try { d.markInterrupted(req.sessionKey); } catch { /* @silent-fallback-ok — marker is best-effort; the notice below is the user-facing record */ }
-      try {
-        d.notifyInterrupted(req.sessionKey, req.target);
-      } catch { /* @silent-fallback-ok — notice failure must not strand the transfer; the audit row below is the durable record */ }
     }
+    // The claim lands one epoch past the transferring record (or the reconciler's backstop
+    // claim lands there later): the target's resume waits for exactly that. If a backstop
+    // claim already landed while this drain was held up, that claim's epoch is the one.
+    const beforeClaim = d.readOwnership(req.sessionKey);
+    const handoffClaimEpoch = beforeClaim?.status === 'active' && beforeClaim.ownerMachineId === req.target
+      ? beforeClaim.ownershipEpoch
+      : typeof beforeClaim?.ownershipEpoch === 'number' ? beforeClaim.ownershipEpoch + 1 : req.senderObservedEpoch + 2;
 
     // Land the target's claim — the owner completing the handoff it was
     // ordered to perform (router-confirmClaim precedent: the FSM checks the
@@ -400,6 +407,13 @@ export class SessionDrainRunner {
       { type: 'claim', machineId: req.target },
       { sessionKey: req.sessionKey, sender: d.selfMachineId, nonce: d.nonce() },
     );
+    // After the claim: the target can only resume a conversation it owns. A lost claim still
+    // hands off — the target waits (bounded) for the reconciler's backstop claim.
+    if (interrupted) {
+      try {
+        d.notifyInterrupted(req.sessionKey, req.target, { claimEpoch: handoffClaimEpoch });
+      } catch { /* @silent-fallback-ok — hand-off failure must not strand the transfer; the audit row below is the durable record */ }
+    }
     audit(interrupted ? 'drain-completed-interrupted' : 'drain-completed', {
       drainedInMs, claimLanded: claim.ok, ...(interrupted ? { drainBoundMs: this.cfg.drainBoundMs } : {}), ...(closeSkipped ? { closeSkipped } : {}),
     });

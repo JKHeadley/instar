@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-11T01:54:09.983Z",
+  "slug": "instar-documents-browser-link",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 670,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TeamAccessEvents.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/server/AgentServer.ts",
+      "src/server/documentLinkRoutes.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/documentRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 648,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

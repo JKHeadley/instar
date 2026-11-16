@@ -73,6 +73,17 @@ export const MAIN_VERIFY_LIMITS = Object.freeze({
   debounceMs: 10 * MIN,
   /** …but no later than this after the first unverified head. */
   debounceCapMs: 30 * MIN,
+  /**
+   * While `main` is suspect or red the wait is short: merging is closed until a green
+   * `main` verify, so waiting only keeps it closed. Two minutes = the head read the same
+   * on its first sight and two further reconcile passes (reads spanning 2 minutes), which absorbs one stale read of the previous
+   * (failed) head. So while unhealthy the floor between head-changed verifies is 2 minutes
+   * (a head that settles, then moves), not the healthy 10; a head that changes on every
+   * read is paced by the 10-minute cap. Each verify still needs the one slot, one entry is
+   * pending at most, and merging is closed for the whole time.
+   */
+  unhealthyDebounceMs: 2 * MIN,
+  unhealthyDebounceCapMs: 10 * MIN,
   /** An `error` (not a failure) re-queues with backoff at most this many times per head. */
   errorRetries: 3,
   errorBackoffMs: 5 * MIN,
@@ -109,10 +120,57 @@ export function oldestUnverifiedAfterGreen(
   prev: number | null,
   verifiedHeadIsCurrent: boolean,
   runStartedAtMs: number | null,
+  /**
+   * When a head newer than the verified one was first observed (null = not known). A green
+   * verify of head A covers every merge up to A, so the oldest merge it does not cover is the
+   * one that replaced A, and that was observed at this time. This holds wherever the run
+   * started and whatever `main` did meanwhile. Without it (2026-11-15) a merge or release
+   * commit every 20 to 30 minutes meant no verified head was ever still current when its
+   * run finished, the clock stayed at the first merge after boot, and `main` went
+   * `unverified-too-long` three hours later with three green verifies on record.
+   */
+  supersededAtMs: number | null = null,
 ): number | null {
   if (verifiedHeadIsCurrent || prev === null) return null;
-  if (runStartedAtMs === null || !Number.isFinite(runStartedAtMs)) return prev;
-  return Math.max(prev, runStartedAtMs);
+  let next = prev;
+  if (runStartedAtMs !== null && Number.isFinite(runStartedAtMs)) next = Math.max(next, runStartedAtMs);
+  if (supersededAtMs !== null && Number.isFinite(supersededAtMs)) next = Math.max(next, supersededAtMs);
+  return next;
+}
+
+/** How many replaced heads the service remembers a replacement time for (bounded; oldest dropped). */
+export const SUPERSEDED_HEADS_KEPT = 50;
+
+/**
+ * Record that `prevHead` stopped being `main`'s head at `now` (a different head was observed).
+ * The FIRST such time is kept: a stale read that shows an old head again and then moves on
+ * must not move its replacement time later (later would be the lenient direction), and the
+ * head such a read leaves is not recorded at all. Pure apart from the map it is given.
+ */
+export function noteHeadSuperseded(map: Map<string, number>, prevHead: string | null, newHead: string, now: number): void {
+  if (prevHead === null || prevHead === newHead || map.has(prevHead)) return;
+  // A flip back to a head already known to have been replaced is a stale read (or a reset to old
+  // history): the head being left was not replaced by something newer, so nothing is recorded.
+  if (map.has(newHead)) return;
+  map.set(prevHead, now);
+  while (map.size > SUPERSEDED_HEADS_KEPT) map.delete(map.keys().next().value as string);
+}
+
+/**
+ * The replacement time that a green verify of `head` covers up to: `head`'s own, or, when a
+ * release commit of `head` took its place (a release commit changes no code, `releaseAlias`
+ * maps it to its parent), the time that release commit was replaced in turn. The latest of
+ * them, since each is covered. Null when `head` was never seen replaced. Pure.
+ */
+export function supersededAtFor(head: string, map: ReadonlyMap<string, number>, releaseAlias: ReadonlyMap<string, string>): number | null {
+  let best: number | null = map.get(head) ?? null;
+  for (const [release, parent] of releaseAlias) {
+    if (parent !== head) continue;
+    const t = map.get(release);
+    // The release commit is still the head (never replaced): the caller's `verifiedHeadIsCurrent` covers that case.
+    if (t !== undefined && (best === null || t > best)) best = t;
+  }
+  return best;
 }
 
 /**
@@ -120,20 +178,31 @@ export function oldestUnverifiedAfterGreen(
  * `main` verify is enqueued for it now. Enqueued once per head (`handled`), after 10
  * minutes of an unchanged head, or 30 minutes after the first unverified head, or at
  * once after boot / lease acquisition (`immediate`).
+ *
+ * `opts.healthy === false` (main is suspect or red) shortens the wait to
+ * `unhealthyDebounceMs` unchanged, capped at `unhealthyDebounceCapMs` (never longer than
+ * the limits passed in): merging is closed until a green `main` verify, so the long wait
+ * only keeps it closed. On 2026-11-15 a repair merged at 01:13Z and `main` was not
+ * re-verified until a restart at 02:24Z; two green PRs sat at `main-red · repair-only`
+ * meanwhile. Not zero: the head is read from GitHub once a minute and one stale read of
+ * the previous (failed) head must not start a verify of it. Still once per head (`handled`).
  */
 export function decideMainHeadEnqueue(
   prev: MainHeadObservation,
   sha: string,
   now: number,
   limits: { debounceMs: number; debounceCapMs: number } = MAIN_VERIFY_LIMITS,
+  opts: { healthy?: boolean } = {},
 ): { next: MainHeadObservation; enqueue: boolean } {
   const next: MainHeadObservation = { ...prev };
   if (sha !== next.head) { next.head = sha; next.since = now; }
   if (sha === next.handled) return { next, enqueue: false };
   if (next.firstUnverifiedAt === null) next.firstUnverifiedAt = now;
+  const debounceMs = opts.healthy === false ? Math.min(limits.debounceMs, MAIN_VERIFY_LIMITS.unhealthyDebounceMs) : limits.debounceMs;
+  const debounceCapMs = opts.healthy === false ? Math.min(limits.debounceCapMs, MAIN_VERIFY_LIMITS.unhealthyDebounceCapMs) : limits.debounceCapMs;
   const ready = next.immediate
-    || now - next.since >= limits.debounceMs
-    || now - next.firstUnverifiedAt >= limits.debounceCapMs;
+    || now - next.since >= debounceMs
+    || now - next.firstUnverifiedAt >= debounceCapMs;
   if (!ready) return { next, enqueue: false };
   next.immediate = false;
   next.handled = sha;

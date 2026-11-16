@@ -152,6 +152,9 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).
       ['POST', '/mobile/accounts/add'],
+      // Move a document to another conversation with Face ID (instar-document-viewer §4.2).
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary/challenge'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary'],
       // A tap on a work card with Face ID (work-board-asks §4): only the team owner taps in phase 1.
       ['POST', '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
     ];

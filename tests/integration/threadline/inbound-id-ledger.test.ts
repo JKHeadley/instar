@@ -84,6 +84,8 @@ describe('A. signed HTTP receive + health', () => {
     x.use(express.json());
     x.use(createThreadlineRoutes(b, router as never, {
       localAgent: 'agent-b', version: '1.0', stateDir: dirB,
+      directPeerProtocol: () => true, // the opened direct protocol (threadline-http-peer-trust §0)
+      httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // sender is a granted peer (threadline-http-peer-trust)
       inboundIdLedger: () => (ledger.isOpen ? ledger : null),
       inboundIdLedgerDaemonDeferred: () => daemon,
     }));

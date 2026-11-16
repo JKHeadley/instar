@@ -249,6 +249,8 @@ export const KNOWN_CODEX_MODEL_IDS = [
   // Live subscription probe on Codex CLI 0.166.0 (2026-11-04); 0.156.1
   // refuses this id. Launchers check local CLI capability before using it.
   'gpt-6.1-sol',
+  // Live subscription probe on Codex CLI 0.169.0 (2026-11-15): answered a trivial prompt.
+  'gpt-6.1-terra',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {

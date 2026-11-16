@@ -41,10 +41,12 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
+  WorkBoardSpecApprovalJudge: { pending: 'wave-3' }, // B25 card judge (spec-approval-constitution-check); graded by its route tests until a bench battery lands
   // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
   // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
   // progress observed after a restart) until a bench battery lands.
   ChiefOfStaffLoop: { pending: 'wave-3' },
+  ConversationSilenceJudge: { pending: 'wave-3' }, // never-silent: actions stay off until the held-out pane measurement (spec §3.7)
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
   ExternalOperationGate: { task: 'external-op-gate' },
@@ -204,6 +206,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   CommitmentSentinel: true,
   PresenceProxy: true,
   ChiefOfStaffLoop: true, // judges a project's session tail + owner/agent messages + linked-work evidence
+  ConversationSilenceJudge: true, // judges a session's screen text since a person's message (may echo the message and tool output)
   MessageSentinel: true,
   ProjectDriftChecker: true,
   TemporalCoherenceChecker: true,
@@ -231,6 +234,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   WarrantsReplyGate: true,
   UnjustifiedStopGate: true,
   AttributionJudge: true, // reads notes, messages and logged rows, all of which may quote untrusted text
+  WorkBoardSpecApprovalJudge: true, // reads agent-written card text, which may quote untrusted conversation content
   MessagingToneGate: true, // reviews a draft that routinely quotes untrusted user/tool content
   CoherenceReviewer: true,
   LLMSanitizer: true, // definitionally judges untrusted inbound content
@@ -381,6 +385,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   // chief-of-staff-topic.md §2.5: the verdict judge refuses or credits a project's "done" claim against its
   // deterministic checklist (claims-done never closes on the claim alone) → judges a completion claim.
   ChiefOfStaffLoop: { claimKind: 'completionClaim' },
+  ConversationSilenceJudge: false, // names why a conversation is silent (closed class set); it does not credit a completion, authorship or receipt claim
   UnjustifiedStopGate: { claimKind: 'completionClaim' }, // judges whether a stop is justified = is the claimed work actually done/blocked
   JobReflector: { claimKind: 'completionClaim' }, // reflects on job success/completion (spec §2 pending-wave judge; classified now so the asymmetry can't silently reopen)
 
@@ -422,6 +427,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
   AttributionJudge: false, // rules on what a person said, not an agent's claim of completion or health
+  WorkBoardSpecApprovalJudge: false, // judges whether a card asks approval without its constitution check result, not a completion/health claim
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
   LLMSanitizer: false, // sanitizes untrusted inbound content
@@ -543,6 +549,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   CommitmentSentinel: { pending: 'contract-wave-2' }, // closed commitment-detected verdict + structured envelope
   PresenceProxy: { pending: 'contract-wave-2' }, // closed tier-3 stall verdict
   ChiefOfStaffLoop: { pending: 'contract-wave-2' }, // closed project verdict (moving/stalled/drifting/claims-done/waiting-on-user/unknown) + cited evidence ids
+  ConversationSilenceJudge: { contractTest: 'tests/unit/neverSilent-judge.test.ts' }, // strict closed-class JSON parse (parseRefereeVerdict); anything else is undetermined
   ProjectDriftChecker: { pending: 'contract-wave-2' }, // closed on-project verdict
   TemporalCoherenceChecker: { pending: 'contract-wave-2' }, // closed temporal-coherence verdict
   SessionWatchdog: { pending: 'contract-wave-2' }, // closed stuck verdict
@@ -563,6 +570,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
   AttributionJudge: { pending: 'contract-wave-2' }, // closed own|relayed|unclear + faithful verdicts
+  WorkBoardSpecApprovalJudge: { contractTest: 'tests/unit/spec-approval-constitution-check.test.ts' }, // closed {fire, issue, suggestion} verdict; the test feeds back the exact reply shape the prompt teaches
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
@@ -878,6 +886,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   CommitmentSentinel: exposed(EXPOSED_USER_MODEL), // both sides of a conversation
   PresenceProxy: exposed(EXPOSED_MODEL), // session-stall over session output
   ChiefOfStaffLoop: exposed(EXPOSED_ALL), // owner + agent messages, session tail, gh/page evidence
+  ConversationSilenceJudge: exposed(EXPOSED_ALL), // the screen can show the person's message, the model's output and tool output
   MessageSentinel: exposed(EXPOSED_USER), // inbound user message (R8 input-classifier — must stay exposed)
   ProjectDriftChecker: exposed(EXPOSED_MODEL_TOOL), // session work + files
   TemporalCoherenceChecker: exposed(EXPOSED_USER_MODEL),
@@ -896,6 +905,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   WarrantsReplyGate: exposed(EXPOSED_USER),
   UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
   AttributionJudge: exposed(EXPOSED_ALL), // notes, messages and logged rows
+  WorkBoardSpecApprovalJudge: exposed(EXPOSED_ALL), // card text plus constitution-check records merged from peers
   MessagingToneGate: exposed(EXPOSED_ALL), // reviews an outbound draft quoting user/tool content
   HubIntentClassifier: exposed(EXPOSED_USER), // inbound hub message
   CoherenceReviewer: exposed(EXPOSED_ALL), // reviews outbound coherence (draft + context)

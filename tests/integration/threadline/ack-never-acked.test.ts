@@ -415,6 +415,8 @@ describe('C. POST /threadline/messages/receive — an inbound ack records no-rep
     x.use(express.json());
     x.use(createThreadlineRoutes(b, router as never, {
       localAgent: 'agent-b', version: '1.0', stateDir: dirB,
+      directPeerProtocol: () => true, // the opened direct protocol (threadline-http-peer-trust §0)
+      httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // sender is a granted peer (threadline-http-peer-trust)
       inboundIdLedger: () => ledger,
     }, { a2aDeliveryTracker: tracker }));
     return x;
@@ -438,7 +440,7 @@ describe('C. POST /threadline/messages/receive — an inbound ack records no-rep
   it('a typed ack and a text-only ack: accepted, ledger no-reply, delivery recorded, router never called', async () => {
     const router = { handleInboundMessage: vi.fn(async () => ({ handled: true, path: 'cold' })) };
     const x = app(router);
-    tracker.recordSent({ messageId: 'ours-c', peerFp: 'agent-a', threadId: 'thread-c' });
+    tracker.recordSent({ messageId: 'ours-c', peerFp: aFp, threadId: 'thread-c' }); // the path records the signature-derived fingerprint (threadline-http-peer-trust §3)
 
     const r1 = await post(x, msg('ack-c1', { content: 'On it.', type: 'ack' }));
     expect(r1.status).toBe(200);

@@ -58,8 +58,11 @@ describe('recommended services wiring', () => {
     // Voice transcription: the vault reader every transcription caller falls back to, registered once by the server.
     expect(routes).toContain('registerStoredTranscriptionKey(() => {');
     expect(routes).toContain('.get(VOICE_TRANSCRIPTION_SECRET)');
-    expect(read('src/commands/server.ts')).toContain("(await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} })");
-    expect(read('src/messaging/backends/BaileysBackend.ts')).toContain('resolveSharedTranscriptionProvider({ env: {} })');
+    // Slack voice notes go through the shared transcriber (paid key incl. the stored one, else on-machine):
+    // docs/specs/backup-on-machine-voice.md.
+    expect(read('src/commands/server.ts')).toContain("const { transcribeAudioFile } = await import('../core/VoiceTranscription.js');");
+    // WhatsApp voice notes go through the shared transcriber too (which reads the stored key).
+    expect(read('src/messaging/backends/BaileysBackend.ts')).toContain('await transcribeAudioFile(filepath, { ...this.transcriptionOptions()');
     // A second AI subscription: the real door proofs, and one writer that changes this agent's config and live copy only.
     expect(routes).toContain('signedIn: (door) => proveDoorSignedIn(door),');
     expect(routes).toContain('installed: (door) => detectDoorPath(door) !== null,');

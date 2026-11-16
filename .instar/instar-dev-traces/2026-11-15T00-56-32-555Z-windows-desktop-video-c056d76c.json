@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-video",
+  "sessionId": "78230c6e-4975-46d5-b94e-971d7dc5dbfe",
+  "timestamp": "2026-11-15T00:56:32.555Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-video.md",
+  "artifactSha256": "e0a050052d9ea058438a269eedbde4697d98c5b407fd057958eb27d94dbc7e33",
+  "coveredFiles": [
+    "docs/specs/windows-desktop-video.eli16.md",
+    "docs/specs/windows-desktop-video.md",
+    "scripts/windows-desktop-local-transport.ps1",
+    "src/core/WindowsDesktopHost.ts",
+    "src/core/WindowsDesktopLocalTransport.ts",
+    "src/core/types.ts",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/windows-desktop-video-lifecycle.test.ts",
+    "tests/integration/windows-desktop-video.test.ts",
+    "tests/unit/windows-desktop-local-transport.test.ts",
+    "tests/unit/windows-desktop-video.test.ts",
+    "upgrades/next/windows-desktop-video.md",
+    "upgrades/side-effects/windows-desktop-video.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "dark-by-default flag-gated codec path; companion op only runs when requested; revert or the switch restores JPEG",
+  "eli16Path": "docs/specs/windows-desktop-video.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-video.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

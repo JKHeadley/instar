@@ -192,6 +192,11 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
   });
 
+  it('interrupted-move-resume is registered-peer class (the handler acts only on its own ownership record)', () => {
+    const cmd: MeshCommand = { type: 'interrupted-move-resume', sessionKey: '142440', claimEpoch: 8 };
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
+  });
+
   it('ownership-nudge is registered-peer class; an unknown sender never reaches RBAC, verifyEnvelope refuses it', () => {
     const cmd: MeshCommand = { type: 'ownership-nudge', sessionKey: '1', epoch: 2, landedAt: 3 };
     expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);

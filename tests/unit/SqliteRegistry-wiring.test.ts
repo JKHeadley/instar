@@ -53,6 +53,9 @@ const LONG_LIVED_STORES = [
   'src/memory/TopicMemory.ts',
   'src/memory/topicRowWatermark.ts',  // row-carrier watermark store (context-budget S3)
   'src/memory/SemanticMemory.ts',
+  // Conversation meaning-search index (conversation-search-meaning): registers its handle in
+  // the constructor (registerSqliteHandle) and unregisters in close(); process-lifetime.
+  'src/memory/ConversationEmbeddingIndex.ts',
   'src/messaging/MessageProcessingLedger.ts',
   'src/messaging/OutboundDedupStore.ts',
   'src/messaging/pending-relay-store.ts',

@@ -73,7 +73,8 @@ export function buildPromptJevFirst(input: {
       // 6,000-char tail; box-drawing glyphs are 3 bytes each, so allow 3x + framing.
       model: 'jev-1.13.0', timeoutMs: 1_500, maxStateBytes: 20_000,
       auditRate: 0.05, fallbackSelection: 'incumbent-no-benchmark',
-      gradingGap: 'no-linked-outcome-for-prompt-detect',
+      // CMT-1677: the row carries producerCorrelationId; the pane outcome joins on it.
+      gradingGap: 'outcome-joins-on-producerCorrelationId',
     };
   };
   return { gateway, getPoint };

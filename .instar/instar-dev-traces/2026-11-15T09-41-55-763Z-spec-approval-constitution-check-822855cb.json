@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "spec-approval-constitution-check",
+  "sessionId": "7b47e4d1-6232-48f9-a299-003f25529327",
+  "timestamp": "2026-11-15T09:41:55.763Z",
+  "artifactPath": "upgrades/side-effects/spec-approval-constitution-check.md",
+  "artifactSha256": "36d24209ab568b66f0c39340075916f9ba00090aede1a5fd75feb56550325e30",
+  "coveredFiles": [
+    "docs/specs/spec-approval-constitution-check.eli16.md",
+    "docs/specs/spec-approval-constitution-check.md",
+    "src/core/MessagingToneGate.ts",
+    "src/core/specConstitutionCheckLedger.ts",
+    "src/data/awareness/spec-approval-constitution-check.md",
+    "src/server/routes.ts",
+    "src/server/specReviewRoutes.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/integration/standards-conformance-gate.test.ts",
+    "tests/integration/telegram-reply-spec-approval-check.test.ts",
+    "tests/integration/work-board-routes.test.ts",
+    "tests/unit/spec-approval-constitution-check.test.ts",
+    "upgrades/next/spec-approval-constitution-check.md",
+    "upgrades/side-effects/spec-approval-constitution-check.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One new reason in the existing outbound gate (which already holds block authority) plus a same-rule judge on agent Work Board writes and a small evidence ledger; every hold is cleared by the agent alone (run the check, carry the result); a revert fully undoes it, no migration, no config, the ledger is inert without the code.",
+  "eli16Path": "docs/specs/spec-approval-constitution-check.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/spec-approval-constitution-check.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the peer-record refresh runs only when an outbound review or card write asks for records, at most once per 60s (SpecCheckPeerCache.refreshMs), with in-flight dedupe and no retry; a failed refresh waits for the next interval"
+  }
+}

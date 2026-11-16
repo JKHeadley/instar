@@ -142,6 +142,7 @@ const APPROVED_HOW: Record<string, string> = {
   'telegram-dm': 'in your private Telegram chat',
   'owner-phone': 'with Face ID on your phone',
   'dashboard-pin': 'with the dashboard PIN',
+  'person-phone': 'by its owner\'s own phone',
 };
 
 /**

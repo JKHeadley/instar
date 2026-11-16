@@ -262,6 +262,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: "Signal-only — only changes the standby MESSAGE TEXT; never gates, blocks, initiates recovery, spends, or egresses. Reuses the existing tail-gated classifyStuckSignature and defers to the same one-voice recovery-ownership checks Tier 3 already honors. Flag-OFF = Tier1/2 byte-identical to today.",
   },
   {
+    name: 'neverSilent',
+    configPath: 'monitoring.neverSilent.enabled',
+    description: 'Never-Silent Conversation (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice: a durable per-message obligation, an overdue sweep, a judge on a DIFFERENT engine (Jev, then a Codex/Claude referee) that names why it is silent, and fixed-template notices that never depend on the judge or the stuck engine.',
+    justification: 'Telling is additive (one deterministic notice per overdue message, deduped and batched per conversation; a standby line already counts). The two actions that change anything — an account swap and an engine move — are separately switched (monitoring.neverSilent.actions / .frameworkFallback, both default false) until the judge is measured against real panes (§3.7); a conversation whose engine the operator chose is asked with one tap, never moved. Judge spend runs only on an overdue message, never on the stuck engine. Flag OFF = byte-identical (nothing recorded, nothing sent).',
+  },
+  {
     name: 'durableOutputScrub',
     configPath: 'monitoring.durableOutputScrub.enabled',
     description: 'Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be Clean") — the DurableOutputScrubber: a deterministic credential-SPAN scrub over LLM output at durable-output persistence chokepoints (session summaries wired first), config-gated + dark-first.',
@@ -380,6 +386,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'conversationIdentity.followThrough.enabled',
     description: 'Durable conversation identity — the §5 deliverToConversation funnel\'s minted-id (id<0) DELIVERY arm (durable-conversation-identity §9). The registry/journal/eager-mint FOUNDATION is always-on and NOT gated here; only delivery rides this gate.',
     justification: 'Delivery is externally visible, so the block ships dryRun:true even live-on-dev: the id<0 arm returns typed §5.1 non-deliveries + would-deliver audit lines (never success-shaped) until a deliberate dryRun:false flip for the live proof. Zero consumers ride the funnel in increment 1, so enabling is inert until the §6.1 proof-consumer increment; no spend, no destructive action, no egress while dry.',
+  },
+  {
+    name: 'telegramTokenlessDurableForward',
+    configPath: 'telegramOrigin.tokenlessDurableForward.enabled',
+    description: 'A standby without the Telegram bot token durably holds a reply when the lease holder is unreachable, instead of dropping it (spec: standby-durable-forward-without-token §5). Gates only the CREATION of token-less holds; recovery and expiry stay wired so held rows always drain.',
+    justification: 'Not dryRun-shaped: it changes durable delivery, so it ships dark on the fleet and live on development agents, and graduates through its feature-ladders entry. It adds no blocking authority: the holder still validates every submission against its own credential, and a held reply is delivered exactly once or expires loudly.',
   },
   {
     name: 'actionClaimSlack',
@@ -859,6 +871,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Observe-only v1: never blocks, rewrites, delays, sends, corrects, or authorizes. Every bounded Claude-authored response is eligible; unsupported capacity/PR facts stay unverifiable, uncertainty floors only round upward, provider-bound data is scrubbed under a same-origin door policy, and all corpus rows are automation-ineligible.',
   },
   {
+    name: 'completionClaimReplayInput',
+    configPath: 'monitoring.completionClaimVerification.recordReplayInput',
+    description: 'CMT-1679: record the completion-claim arbiter\'s exact replay input (already-scrubbed message + bounded structural evidence) under the provenance row\'s machine-local _contentFull, with a content-free prompt sha so a later replay can prove byte parity.',
+    justification: 'Observability only: no prompt text, model, timeout, verdict or routeActionClaim input changes. The captured message is the claim-scrub-v1 output already sent to the model; it lives only in the machine-local contextFull (stripped from contextRedacted, never served by GET /judgment-provenance, excluded from the cross-machine allowlist) under the existing 14-day retention. Rows the 64 KB clamp truncates, or whose rebuilt sha differs, are marked not replay-eligible. Off on the fleet, where rows stay byte-identical.',
+  },
+  {
     name: 'classReviewStateSync',
     configPath: 'multiMachine.stateSync.classReview.enabled',
     description: 'Unified correction ClassReview lifecycle reach across the agent machine pool.',
@@ -924,6 +942,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Measures and raises only: it reads logs off the event loop, adds in-memory subjects to the existing scorer, and records commitments with no beacon. It never moves a feature by itself; POST /maturation/moves applies only a decision the review model made, behind floors that can only refuse. No LLM spend, no outbound messages. Raising needs maturation.ladder.reviewTopic, unset by default.',
   },
   {
+    name: 'documents',
+    configPath: 'documents.enabled',
+    description: 'Instar Documents (docs/specs/instar-document-viewer.md): commentable, team-private documents that live in a conversation (POST /docs, GET /docs/:id/data, comments, versions, compare, links, phone reads); omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every read and write goes through the deterministic access rule (a document is visible to exactly its conversation\'s audience; the agent can never share, move or speak as a person), rows are machine-signed and replicated by version-vector pull, every person write is signed by that person\'s own device and re-checked on every machine, and the only outbound effect is a fixed-wording push to the commenter\'s own phones. Off answers 503 and changes nothing else; stored documents stay on disk untouched.',
+  },
+  {
     name: 'maturationBoard',
     configPath: 'maturationBoard.enabled',
     description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',
@@ -944,7 +968,7 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'mobilePairing',
     configPath: 'mobilePairing.enabled',
-    description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',
+    description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes with an optional topicId for a pairing outcome line, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',
     justification: 'Phones never receive the API token or an operator session and may only make a fixed allowlist of signed requests (the one non-idempotent entry, chat, is made idempotent by requestId and never binds the topic operator); a phone becomes active only with a code sent privately to the owner. Dark on the fleet until the development-agent live proof passes.',
   },
   {

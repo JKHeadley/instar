@@ -54,7 +54,7 @@ import {
   DP_OPEN_CONVERSATION_BRIEF,
   DP_TOPIC_SUMMARIZE,
   DP_DASHBOARD_INSIGHT,
-  DP_PROMPT_INJECTION_DETECT,
+  DP_TERMINAL_PROMPT_DETECT,
   DP_WARRANTS_REPLY_GATE,
   DP_WATCHDOG_STUCK_JUDGE,
   DP_COMMITMENT_DETECT,
@@ -74,6 +74,7 @@ import {
   getRule,
   findWiredWithoutGraders,
   findGradingContradictions,
+  canonicalDecisionPoint,
 } from '../../src/data/provenanceCoverage.js';
 // eslint-disable-next-line import/no-relative-packages
 import { stripComments, isOutOfScope } from '../../scripts/lint-llm-attribution.js';
@@ -109,6 +110,10 @@ const PENDING_BASELINE = [
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
   // conversation-graph-suggestions (2026-11-13): advice-only groupings, graded by owner Accept/Reject until enrolled.
   'conversation-graph-suggestions::ConversationGraphSuggestions::backlog:decision-quality-enrolment',
+  // never-silent-conversation: verdicts are logged per incident today; enrolment rides the same backlog (CMT-1781)
+  'never-silent-conversation-judge::ConversationSilenceJudge::backlog:decision-quality-enrolment',
+  // spec-approval-constitution-check (Echo Bugs topic 10000002750): the B24 Work Board card judge.
+  'work-board-spec-approval-judge::WorkBoardSpecApprovalJudge::backlog:decision-quality-enrolment',
   // context-budget-layered-summaries Phase 1 S8 (2026-11-10): chunk/C2 summaries; enrolment queued with the Phase 2 fold probes.
   'context-layer-chunk::ContextLayerChunk::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',
@@ -532,15 +537,25 @@ describe('dashboard-insight — bounded awareness-authoring enrollment', () => {
   });
 });
 
-describe('prompt-injection-detect — bounded terminal-prompt enrollment', () => {
-  it('is wired with a bounded valve and explicit measurement-only posture', () => {
-    const entry = getCensusEntry(DP_PROMPT_INJECTION_DETECT);
+describe('terminal-prompt-detect — bounded terminal-prompt enrollment (CMT-1677)', () => {
+  it('is wired with a bounded valve and graded by the PromptGate pane-outcome rules', () => {
+    const entry = getCensusEntry(DP_TERMINAL_PROMPT_DETECT);
+    expect(DP_TERMINAL_PROMPT_DETECT).toBe('terminal-prompt-detect');
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('PromptGate');
     expect(entry?.volumeClass).toBe('budget:500');
     expect(entry?.contentClass).toBe('content-bearing');
-    expect(entry?.gradingPosture).toBe('measurement-only');
-    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+    expect(entry?.gradingPosture).toBeUndefined();
+    for (const id of ['terminal-prompt-progressed-v1', 'terminal-prompt-unresolved-v1']) {
+      expect(getRule(id)).toMatchObject({ decisionPoint: DP_TERMINAL_PROMPT_DETECT, owningComponent: 'PromptGate', windowMs: 15 * 60 * 1000 });
+    }
+  });
+
+  it('keeps the retired id readable as an alias, never as its own census entry', () => {
+    expect(canonicalDecisionPoint('prompt-injection-detect')).toBe(DP_TERMINAL_PROMPT_DETECT);
+    expect(canonicalDecisionPoint('messaging-tone-gate')).toBe('messaging-tone-gate');
+    expect(getCensusEntry('prompt-injection-detect')?.decisionPoint).toBe(DP_TERMINAL_PROMPT_DETECT);
+    expect(PROVENANCE_COVERAGE.some((e) => e.decisionPoint === 'prompt-injection-detect')).toBe(false);
   });
 });
 

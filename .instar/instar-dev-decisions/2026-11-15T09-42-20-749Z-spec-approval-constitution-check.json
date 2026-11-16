@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-15T09:42:20.749Z",
+  "slug": "spec-approval-constitution-check",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 481,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MessagingToneGate.ts",
+      "src/core/specConstitutionCheckLedger.ts",
+      "src/data/awareness/spec-approval-constitution-check.md",
+      "src/server/routes.ts",
+      "src/server/specReviewRoutes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 480,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the peer-record refresh runs only when an outbound review or card write asks for records, at most once per 60s (SpecCheckPeerCache.refreshMs), with in-flight dedupe and no retry; a failed refresh waits for the next interval"
+  },
+  "verdict": "pass"
+}

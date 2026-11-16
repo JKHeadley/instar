@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "threadline-http-peer-trust",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-15T22:44:08.725Z",
+  "artifactPath": "upgrades/side-effects/threadline-http-peer-trust.md",
+  "artifactSha256": "739bed2b502726a91ce71549df57b5828b0dc9f7664d2cbac5b39e91f1d75eac",
+  "specPath": "docs/specs/threadline-http-peer-trust.md",
+  "coveredFiles": [
+    "docs/THREADLINE.md",
+    "docs/specs/reports/threadline-http-peer-trust-convergence.md",
+    "docs/specs/threadline-http-peer-trust.eli16.md",
+    "docs/specs/threadline-http-peer-trust.md",
+    "src/data/awareness/threadline-http-peer-trust.md",
+    "src/server/routes.ts",
+    "src/threadline/HandshakeManager.ts",
+    "src/threadline/ThreadlineEndpoints.ts",
+    "src/threadline/httpPeerTrust.ts",
+    "tests/e2e/threadline-http-peer-trust-alive.test.ts",
+    "tests/integration/threadline/ack-never-acked.test.ts",
+    "tests/integration/threadline/http-peer-trust-wiring.test.ts",
+    "tests/integration/threadline/inbound-id-ledger.test.ts",
+    "tests/unit/threadline/ThreadlineEndpoints.test.ts",
+    "tests/unit/threadline/threadline-http-peer-trust.test.ts",
+    "upgrades/next/threadline-http-peer-trust.md",
+    "upgrades/side-effects/threadline-http-peer-trust.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security fix on a published peer protocol + inbound-message trust; ships fleet-wide. Not Tier 1.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

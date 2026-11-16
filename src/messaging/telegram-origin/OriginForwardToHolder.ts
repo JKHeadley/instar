@@ -17,23 +17,50 @@ import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
 import { topicRef } from '../shared/topicRef.js';
+import { createHash } from 'node:crypto';
 import type { OriginAuditRecord } from './StoreTypes.js';
 import { classifyOperationOutcome, failureCause, suppressionReason } from './OriginOperationOutcome.js';
 import type { FailureCause, SuppressionReason } from './OriginOperationOutcome.js';
 import type { OriginSendPolicyInput } from './OriginSendPolicy.js';
 import type { TelegramOriginRecord } from './types.js';
 import { LATE_REPLY_THRESHOLD_MS, lateRecoveredReplyNotice } from './SessionDeliveryNotice.js';
+import { readPolicyVerdict } from './OriginPolicyVerdict.js';
+import type { PolicyVerdict } from './OriginPolicyVerdict.js';
+import { AdvisoryAnswerClosedError } from './types.js';
+export { AdvisoryAnswerClosedError };
 
 /** Only a durable Telegram receipt may turn a recovered hold into a topic
  * history row. Follow a lease-transfer supersession to the delivered copy. */
+/** Follow `supersededBy` links from `operationId` to the row with no successor
+ * (standby-durable-forward-without-token §2). Recovery only: chain-following
+ * for the outcome route belongs to native-conversation-base slice 3b. A visited set stops a cycle; a
+ * successor whose row is missing (pruned) is `missing`, never the last row seen.
+ * A chain only grows by a supersede, which the ladder and deadline bound, so the
+ * walk needs no numeric cap. */
+export async function followSupersedeChain(operationId: string, getOperation: (id: string) => Promise<OriginAuditRecord | null>):
+  Promise<{ kind: 'terminal'; operationId: string; audit: OriginAuditRecord | null } | { kind: 'missing'; operationId: string } | { kind: 'cycle'; operationId: string }> {
+  const seen = new Set<string>();
+  let id = operationId;
+  let audit = await getOperation(id);
+  for (;;) {
+    seen.add(id);
+    const next = (audit?.operation?.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
+    if (typeof next !== 'string' || next === id) return { kind: 'terminal', operationId: id, audit };
+    if (seen.has(next)) return { kind: 'cycle', operationId: next };
+    const successor = await getOperation(next);
+    if (!successor) return { kind: 'missing', operationId: next };
+    id = next; audit = successor;
+  }
+}
+
 export async function confirmedRecoveredForward(row: HeldOperationRow, getOperation: (id: string) => Promise<OriginAuditRecord | null>): Promise<{ topicId: number; text: string; messageId: number } | null> {
   const detail = row.holdDetail as { text?: unknown } | null;
   const topicId = Number(row.destination.topicId);
   if (typeof detail?.text !== 'string' || !Number.isSafeInteger(topicId) || topicId < 1) return null;
-  const original = await getOperation(row.operationId);
-  const supersededBy = (original?.operation?.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
-  const deliveredId = typeof supersededBy === 'string' && supersededBy !== row.operationId ? supersededBy : row.operationId;
-  const audit = deliveredId === row.operationId ? original : await getOperation(deliveredId);
+  const end = await followSupersedeChain(row.operationId, getOperation);
+  if (end.kind !== 'terminal') return null;
+  const deliveredId = end.operationId;
+  const audit = end.audit;
   const verdict = classifyOperationOutcome(deliveredId, audit, []);
   if (verdict.outcome !== 'delivered' || verdict.messageIds.length !== 1) return null;
   return { topicId, text: detail.text, messageId: Number(verdict.messageIds[0]) };
@@ -43,6 +70,52 @@ export const HOLD_REASON_LEASE_NOT_HELD = 'lease-not-held';
 /** Execution owner recorded on a hold taken while NO holder could be named.
  * Never a real machine, so recovery always re-prepares for the holder it finds. */
 export const UNRESOLVED_LEASE_HOLDER = 'lease-holder-unresolved';
+/** The bot account a token-less standby seals a hold with when the holder
+ * could not be asked (standby-durable-forward-without-token §1). The same string a
+ * token-less boot already uses for its runtime (TelegramOriginBoot). Never a real
+ * account: the holder refuses it, and recovery re-seals it to the live account. */
+export const UNRESOLVED_TOKENLESS_ACCOUNT = 'unresolved-tokenless-source';
+
+/** Notice-class sends (§8): never turned into durable holds on a token-less
+ * machine. A delay notice delivered after its reply is worse than none, and an
+ * expiry report that is itself held could expire and raise another. */
+export const NOTICE_CLASS_PRODUCERS: ReadonlySet<string> = new Set(['reply-delivery-notice', 'held-forward-notice', 'attention-hub-post', 'held-expiry-report']);
+export function isNoticeClass(kindMetadata: Record<string, unknown> | undefined): boolean {
+  const cls = kindMetadata?.noticeClass;
+  return typeof cls === 'string' && NOTICE_CLASS_PRODUCERS.has(cls);
+}
+
+/** A validated holder `capabilities` answer: the live bot account and owner. */
+export interface HolderCapabilities { accountId: string; executionOwnerMachineId: string }
+export type HolderProbe = { ok: true; capabilities: HolderCapabilities } | { ok: false; reason: string };
+
+/** Validate a raw `capabilities` reply. Anything but a credential owner with a
+ * numeric account id and a bounded owner id is treated as unreachable (§1). */
+export function validHolderCapabilities(reply: { ok: boolean; result?: unknown; reason?: string }): HolderProbe {
+  const cap = reply.result as { ok?: boolean; protocol?: string; credentialOwner?: boolean; accountId?: unknown; executionOwnerMachineId?: unknown } | undefined;
+  if (!reply.ok && reply.reason === 'origin-runtime-unavailable') return { ok: false, reason: 'origin-runtime-unavailable' };
+  if (!reply.ok || !cap?.ok || cap.protocol !== ORIGIN_MESH_PROTOCOL || !cap.credentialOwner || typeof cap.accountId !== 'string' || !/^\d+$/.test(cap.accountId) ||
+    typeof cap.executionOwnerMachineId !== 'string' || !cap.executionOwnerMachineId || cap.executionOwnerMachineId.length > 128) {
+    return { ok: false, reason: 'origin-peer-protocol-unavailable' };
+  }
+  return { ok: true, capabilities: { accountId: cap.accountId, executionOwnerMachineId: cap.executionOwnerMachineId } };
+}
+
+/** Deterministic successor id for a supersede (§2): `<root>~r<hop>-<plan8>`. The
+ * plan part digests only fields stable across prepares (content, sealed account,
+ * owner, destination, child count): child and materialization ids are fresh
+ * random values on every prepare, so they can never be part of it. */
+export function supersedingOperationId(previousOperationId: string, plan: { contentDigest: string; accountId: string; owner: string; destination: unknown; children: number; variant?: string }): string {
+  const m = /^(.*)~r(\d+)-[0-9a-f]{8}$/.exec(previousOperationId);
+  const root = m ? m[1] : previousOperationId;
+  const hop = m ? Number(m[2]) + 1 : 1;
+  // `variant` (native-conversation-base §3a item 2: the late-marked successor) is part of the
+  // digest only when set, so an unmarked successor keeps the r7 id unchanged.
+  const fields: unknown[] = [plan.contentDigest, plan.accountId, plan.owner, plan.destination, plan.children];
+  if (plan.variant !== undefined) fields.push(plan.variant);
+  const plan8 = createHash('sha256').update(JSON.stringify(fields)).digest('hex').slice(0, 8);
+  return `${root}~r${hop}-${plan8}`;
+}
 export const FORWARD_SETTLE_TIMEOUT_MS = 15_000;
 /** §4.2 — the reply request runs settle + ONE forward attempt inside this
  * budget (≥ the holder's 10 s execute + 5 s margin, both RPCs sharing it),
@@ -158,7 +231,10 @@ export type HolderSubmitResult =
   | { ok: true; messageId: number; deliveryMachineId: string; receiptJson: string }
   | { ok: false; reason: string; outcome: 'held' | 'known-failed' | 'outcome-unknown'; retryable: boolean; policyRefusal?: OriginSendPolicyRefusalDecision;
       /** The holder took CUSTODY (admitted, memory-held or dispatched) before refusing: resolved at its `receipt`, never re-sent. */
-      admittedAtHolder?: boolean };
+      admittedAtHolder?: boolean;
+      /** native-conversation-forwarded-advisory item 2 — the holder ended its own copy in the same step that
+       * recorded the verdict (present only with `policyRefusal`), and the verdict it recorded. */
+      copyEnded?: true; policyVerdict?: PolicyVerdict | null };
 
 /** Refusals after which re-resolving the holder and trying again is sound:
  * the holder is not (or no longer) the lease holder, is booting, or could not
@@ -174,16 +250,23 @@ export async function submitOriginToHolder(input: {
   send: (command: OriginMeshCommand) => Promise<{ ok: boolean; result?: unknown; reason?: string }>;
   /** When set, a holder answering a different execution owner is refused before submit. */
   expectedOwner?: string;
+  /** A validated answer already read in this attempt: skips the second read (§1). */
+  capabilities?: HolderCapabilities;
 }): Promise<HolderSubmitResult> {
   const base = { type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL } as const;
-  let capabilities: { ok: boolean; result?: unknown; reason?: string };
-  try { capabilities = await input.send({ ...base, action: 'capabilities' }); }
-  catch { return { ok: false, reason: 'origin-peer-unreachable', outcome: 'held', retryable: true }; }
-  const cap = capabilities.result as { ok?: boolean; protocol?: string; credentialOwner?: boolean; accountId?: string; executionOwnerMachineId?: string } | undefined;
-  if (!capabilities.ok && capabilities.reason === 'origin-runtime-unavailable') return { ok: false, reason: 'origin-runtime-unavailable', outcome: 'held', retryable: true };
-  if (!capabilities.ok || !cap?.ok || cap.protocol !== ORIGIN_MESH_PROTOCOL || !cap.credentialOwner || typeof cap.accountId !== 'string' ||
-    typeof cap.executionOwnerMachineId !== 'string' || !cap.executionOwnerMachineId || cap.executionOwnerMachineId.length > 128) {
-    return { ok: false, reason: 'origin-peer-protocol-unavailable', outcome: 'held', retryable: true };
+  let cap: HolderCapabilities;
+  if (input.capabilities) cap = input.capabilities;
+  else {
+    let capabilities: { ok: boolean; result?: unknown; reason?: string };
+    try { capabilities = await input.send({ ...base, action: 'capabilities' }); }
+    catch { return { ok: false, reason: 'origin-peer-unreachable', outcome: 'held', retryable: true }; }
+    const raw = capabilities.result as { ok?: boolean; protocol?: string; credentialOwner?: boolean; accountId?: string; executionOwnerMachineId?: string } | undefined;
+    if (!capabilities.ok && capabilities.reason === 'origin-runtime-unavailable') return { ok: false, reason: 'origin-runtime-unavailable', outcome: 'held', retryable: true };
+    if (!capabilities.ok || !raw?.ok || raw.protocol !== ORIGIN_MESH_PROTOCOL || !raw.credentialOwner || typeof raw.accountId !== 'string' ||
+      typeof raw.executionOwnerMachineId !== 'string' || !raw.executionOwnerMachineId || raw.executionOwnerMachineId.length > 128) {
+      return { ok: false, reason: 'origin-peer-protocol-unavailable', outcome: 'held', retryable: true };
+    }
+    cap = { accountId: raw.accountId, executionOwnerMachineId: raw.executionOwnerMachineId };
   }
   if (input.expectedOwner !== undefined && cap.executionOwnerMachineId !== input.expectedOwner) {
     return { ok: false, reason: 'execution-owner-mismatch', outcome: 'held', retryable: true };
@@ -192,14 +275,22 @@ export async function submitOriginToHolder(input: {
   try { result = await input.send({ ...base, action: 'submit', operation: input.operation }); }
   catch { return { ok: false, reason: 'origin-relay-acceptance-unknown', outcome: 'outcome-unknown', retryable: false }; }
   const response = result.result as { ok?: boolean; messageId?: number; originId?: string; originReceiptConfirmed?: boolean; reason?: string;
-    outcome?: string; retryable?: boolean; deliveryMachineId?: string; operationId?: string; policyRefusal?: OriginSendPolicyDecision } | undefined;
+    outcome?: string; retryable?: boolean; deliveryMachineId?: string; operationId?: string; policyRefusal?: OriginSendPolicyDecision;
+    copyEnded?: unknown; policyVerdict?: unknown } | undefined;
   if (result.ok && response?.ok && response.originId === input.operation.record.originId &&
     (response as unknown as { recorded?: boolean }).recorded === true && typeof (response as unknown as { quietId?: string }).quietId === 'string') {
     throw new QuietRecordedError({ delivered: false, recorded: true, quietId: (response as unknown as { quietId: string }).quietId });
   }
   const policyRefusal = response?.policyRefusal;
+  // native-conversation-forwarded-advisory item 3 — a refusal is "not sent" only when the holder says it
+  // ended its own copy. An older holder keeps its row `admitted` (and may still deliver it), so its
+  // refusal is CUSTODY: resolved at its receipt, never answered "not sent" to a session.
+  if (policyRefusal && policyRefusal.ok === false && response?.copyEnded === true) {
+    return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'held', retryable: false, policyRefusal,
+      copyEnded: true, policyVerdict: readPolicyVerdict(response.policyVerdict) };
+  }
   if (policyRefusal && policyRefusal.ok === false) {
-    return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'held', retryable: false, policyRefusal };
+    return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'outcome-unknown', retryable: false, admittedAtHolder: true };
   }
   if (result.ok && response?.ok && response.originId === input.operation.record.originId &&
     Number.isSafeInteger(response.messageId) && Number(response.messageId) > 0 && response.originReceiptConfirmed === true) {
@@ -256,7 +347,9 @@ export interface HeldForwardDetail {
   supersedes?: string;
   /** native-conversation-base §3a item 7 — the execution owner's classified verdict of
    * non-delivery. The row stays `held` only to keep its text; it is ended, never retried. */
-  ownerVerdict?: { outcome: 'not-delivered'; failure: FailureCause; at: number; machineId: string };
+  ownerVerdict?: { outcome: 'not-delivered'; failure: FailureCause; at: number; machineId: string;
+    /** native-conversation-forwarded-advisory item 6 — the outbound check refused it (never Telegram). */
+    refusedBy?: 'policy'; rule?: string };
   /** §3a item 7 — the owner suppressed it with no reason (an older owner, or a row from
    * before reasons). `settled`: a second reasonless ending; unresolved, not ended. */
   ownerUnstated?: { at: number; attempts: number; settled?: boolean; machineId: string };
@@ -270,7 +363,10 @@ export interface HeldForwardDetail {
 /** native-conversation-base §3a item 8 — which session line a forward that expired
  * while still held gets. Never taken from the row's state alone. Agrees with
  * §3b row 5 for the same row (an `ownerUnstated` row is uncertain, settled or not). */
-export function forwardExpiryArm(row: Pick<HeldOperationRow, 'holdDetail'>): { arm: 'uncertain' } | { arm: 'definite'; cause: FailureCause } {
+export function forwardExpiryArm(row: Pick<HeldOperationRow, 'holdDetail'> & { policyVerdict?: HeldOperationRow['policyVerdict'] }): { arm: 'uncertain' } | { arm: 'definite'; cause: FailureCause } {
+  // native-conversation-forwarded-advisory item 3 — an advisory row was handed back, not sent: its holder ended
+  // its copy before any dispatch, so its `outcome-unknown` marker is not an uncertainty.
+  if (readPolicyVerdict(row.policyVerdict ?? null)?.class === 'advisory') return { arm: 'definite', cause: 'deadline' };
   const detail = row.holdDetail as Partial<HeldForwardDetail> | null;
   if (detail?.lastAttempt === 'outcome-unknown' || detail?.lastAttempt === 'local-sent' || (detail?.ownerUnstated && typeof detail.ownerUnstated === 'object')) return { arm: 'uncertain' };
   const verdictCause = detail?.ownerVerdict && typeof detail.ownerVerdict === 'object' ? failureCause(detail.ownerVerdict.failure) : null;
@@ -289,8 +385,10 @@ export type HolderReceiptAnswer =
   | { state: 'owned-by-holder' } | { state: 'outcome-unknown' } | { state: 'unreachable' }
   /** The owner ended it and stated why (the closed reason set). */
   | { state: 'owner-ended'; reason: SuppressionReason }
-  /** The owner's classified verdict: not delivered, with its cause. */
-  | { state: 'owner-verdict'; failure: FailureCause }
+  /** The owner's classified verdict: not delivered, with its cause (`policyRule`: the outbound check refused it). */
+  | { state: 'owner-verdict'; failure: FailureCause; policyRule?: string | null }
+  /** native-conversation-forwarded-advisory item 3 — the owner handed it back with an advisory and ended its copy. */
+  | { state: 'owner-advisory'; verdict: PolicyVerdict }
   /** The owner ended it with no reason; `olderOwner` when its answer has no `outcome` field. */
   | { state: 'owner-reasonless'; olderOwner: boolean };
 
@@ -309,6 +407,12 @@ export function classifyHolderReceipt(reply: { ok: boolean; result?: unknown }, 
   const outcome = hasOutcome && typeof result.outcome === 'string' && ['delivered', 'partially-delivered', 'not-delivered', 'pending', 'unknown'].includes(result.outcome) ? result.outcome : null;
   const reason = suppressionReason(result.reason);
   const failure = failureCause(result.failure);
+  // native-conversation-forwarded-advisory item 3 — the outbound check ended the owner's copy.
+  if (state === 'suppressed' && (reason === 'tone-advisory' || reason === 'policy-refused')) {
+    const verdict = readPolicyVerdict((result as { policyVerdict?: unknown }).policyVerdict);
+    if (reason === 'tone-advisory' && verdict?.class === 'advisory') return { state: 'owner-advisory', verdict };
+    return { state: 'owner-verdict', failure: 'refused', policyRule: verdict?.rule ?? null };
+  }
   if (state === 'suppressed') {
     if (outcome !== null && reason) return { state: 'owner-ended', reason };
     return { state: 'owner-reasonless', olderOwner: outcome === null };
@@ -333,12 +437,23 @@ export interface ForwardInput { topicId: number; chatId: string; text: string; s
   /** native-conversation-base §3a item 2 — a replacement: prepared under the original's
    * stored producer record, keeping its sealed send-policy input (the content-check key)
    * and deadline, with the original draft time sealed as `firstPreparedAt`. */
-  replacement?: { record: TelegramOriginRecord; policyInput: OriginSendPolicyInput | null; firstPreparedAt: number; deadlineAt: number; maxParts: number } }
+  replacement?: { record: TelegramOriginRecord; policyInput: OriginSendPolicyInput | null; firstPreparedAt: number; deadlineAt: number; maxParts: number };
+  /** native-conversation-forwarded-advisory item 5 — this reply answers the handed-back reply `<id>`:
+   * it is made durable by superseding that row before it is forwarded. */
+  advisoryReplacementOf?: string }
 export interface ForwardDeps {
   lease: ForwardLeaseView;
   /** Prepare (and record intent for) an operation whose execution owner is `holder`. */
-  prepare: (holder: string, input: ForwardInput, operationId?: string) => Promise<OriginPreparedBotOperation>;
-  submit: (holder: string, operation: OriginPreparedBotOperation) => Promise<HolderSubmitResult>;
+  prepare: (holder: string, input: ForwardInput, operationId?: string, accountId?: string) => Promise<OriginPreparedBotOperation>;
+  submit: (holder: string, operation: OriginPreparedBotOperation, capabilities?: HolderCapabilities) => Promise<HolderSubmitResult>;
+  /** Set on a machine with no bot token (§1, §4): every attempt reads the holder's
+   * `capabilities` first, seals with that live account (or the placeholder when
+   * the holder cannot be asked), and a `self` settle never becomes a local send. */
+  tokenless?: boolean;
+  /** One `capabilities` read to `holder` (required when `tokenless`). */
+  probe?: (holder: string) => Promise<HolderProbe>;
+  /** Fired (never awaited) after a successful probe: re-post hub notices that found the holder unreachable (§8). */
+  onHolderReachable?: () => unknown;
   /** Make the hold DURABLE: admit locally + `recordOperationState('held', lease-not-held)`.
    * Resolves false when the state writer refused (the row stays `admitted` and the
    * ordinary local replay carries it) — audited, never silently assumed. */
@@ -352,6 +467,20 @@ export interface ForwardDeps {
   now: () => number;
   settleTimeoutMs?: number;
   ladder?: { delaysMs: readonly number[] };
+  /** native-conversation-forwarded-advisory item 5 — the answer's local supersede and its settlement. */
+  advisory?: AdvisoryAnswerDeps;
+}
+export interface AdvisoryAnswerDeps {
+  /** ONE transaction: retire the held original and admit + hold the replacement (false = no longer held). */
+  supersede: (originalId: string, next: OriginPreparedBotOperation, detail: HeldForwardDetail) => Promise<boolean>;
+  resolve: (operationId: string, deliveryMachineId: string, receiptJson: string) => Promise<boolean>;
+  rehold: (operationId: string, detail: HeldForwardDetail) => Promise<boolean>;
+  /** The holder handed the replacement back too: record it on the replacement's row. */
+  markAdvisory: (operationId: string, verdict: PolicyVerdict) => Promise<boolean>;
+  /** The holder refused the replacement: its owner verdict, `refused` by policy. */
+  markRefused: (operationId: string, verdict: NonNullable<HeldForwardDetail['ownerVerdict']>) => Promise<boolean>;
+  /** The session reads this verdict synchronously (the script prints it): no line for it later. */
+  noteAnsweredInline: (operationId: string) => Promise<void>;
 }
 export type ForwardOutcome =
   | { kind: 'sent'; messageId: number; holder: string; operationId: string }
@@ -364,13 +493,41 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   const delays = deps.ladder?.delaysMs ?? FORWARD_LADDER.delaysMs;
   const audit = (row: Record<string, unknown>) => { try { deps.audit?.({ ts: deps.now(), topicId: input.topicId, ...row }); } catch { /* audit is observability only */ } };
   const settled = await settleLeaseRoute(deps.lease, { sleep: deps.sleep, now: deps.now, timeoutMs: deps.settleTimeoutMs });
-  if (settled.kind === 'self') return { kind: 'local' };
+  const tokenless = deps.tokenless === true;
+  // A token-less machine has no transport of its own: a `self` settle is a hold,
+  // never a local send (standby-durable-forward-without-token §4). An advisory answer on a
+  // token-less `self` settle is held too: forwardAdvisoryAnswer has no holder for it.
+  if (settled.kind === 'self' && !tokenless) return { kind: 'local' };
+  if (input.advisoryReplacementOf) return forwardAdvisoryAnswer(deps, input, input.advisoryReplacementOf, settled, delays, audit);
   let operation: OriginPreparedBotOperation | null = null;
   let lastHolder: string | null = null;
   let lastAttempt: ForwardLastAttempt = 'unsettled';
-  let lastReason = settled.kind === 'unsettled' ? `lease-settling-${settled.reason}` : 'not-attempted';
+  let lastReason = settled.kind === 'unsettled' ? `lease-settling-${settled.reason}` : settled.kind === 'self' ? 'self-no-transport' : 'not-attempted';
   if (settled.kind === 'unsettled') audit({ phase: 'settle-timeout', reason: settled.reason });
-  else {
+  else if (settled.kind === 'self') audit({ phase: 'self-no-transport' });
+  else if (tokenless) {
+    // §1: read the holder first, then seal with its live account. One read per attempt.
+    const holder = settled.holder;
+    lastHolder = holder;
+    const probe = deps.probe ? await deps.probe(holder).catch((): HolderProbe => ({ ok: false, reason: 'origin-peer-unreachable' })) : { ok: false as const, reason: 'probe-unavailable' };
+    if (!probe.ok) {
+      lastReason = probe.reason; lastAttempt = 'unreachable';
+      operation = await deps.prepare(holder, input, undefined, UNRESOLVED_TOKENLESS_ACCOUNT);
+      audit({ phase: 'refused', attempt: 0, holder, operationId: operation.record.operationId, reason: probe.reason, tokenless: true });
+    } else {
+      try { void Promise.resolve(deps.onHolderReachable?.()).catch(() => undefined); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
+      operation = await deps.prepare(holder, input, undefined, probe.capabilities.accountId);
+      const result = await deps.submit(holder, operation, probe.capabilities);
+      if (result.ok) {
+        audit({ phase: 'sent', attempt: 0, holder, operationId: operation.record.operationId, messageId: result.messageId, tokenless: true });
+        return { kind: 'sent', messageId: result.messageId, holder, operationId: operation.record.operationId };
+      }
+      if (result.policyRefusal) throw new OriginSendPolicyRefusal(result.policyRefusal, operation.record.operationId);
+      lastReason = result.reason;
+      audit({ phase: 'refused', attempt: 0, holder, operationId: operation.record.operationId, reason: result.reason, outcome: result.outcome, retryable: result.retryable, tokenless: true });
+      lastAttempt = result.outcome === 'outcome-unknown' ? 'outcome-unknown' : result.reason === 'origin-peer-unreachable' ? 'unreachable' : 'refused';
+    }
+  } else {
     const holder = settled.holder;
     operation = await deps.prepare(holder, input);
     lastHolder = holder;
@@ -385,7 +542,8 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
     lastAttempt = result.outcome === 'outcome-unknown' ? 'outcome-unknown' : result.reason === 'origin-peer-unreachable' ? 'unreachable' : 'refused';
   }
   // forward-to-holder-failed → the durable hold.
-  if (!operation) operation = await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
+  if (!operation) operation = tokenless ? await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input, undefined, UNRESOLVED_TOKENLESS_ACCOUNT)
+    : await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
   const now = deps.now();
   const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt, machineId: lastHolder, topicId: input.topicId, chatId: input.chatId,
     text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.admission.preparedAt,
@@ -409,10 +567,62 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
     ...(noticeSuppressed ? { noticeSuppressed } : {}) };
 }
 
+/** native-conversation-forwarded-advisory item 5 — the author's answer to a handed-back forward. The
+ * original is withdrawn BEFORE anything is sent: the replacement is made durable by a local supersede
+ * (`forwardSuccessor`'s order: supersede, mark `outcome-unknown`, submit), so at every instant one row
+ * carries the reply. A refused supersede (expired, already replaced) sends nothing. The holder needs
+ * nothing new: it receives an ordinary new operation and reviews it in full. */
+async function forwardAdvisoryAnswer(deps: ForwardDeps, input: ForwardInput, originalId: string, settled: SettledRoute,
+  delays: readonly number[], audit: (row: Record<string, unknown>) => void): Promise<ForwardOutcome> {
+  if (!deps.advisory) throw new AdvisoryAnswerClosedError(originalId);
+  const holder = settled.kind === 'peer' ? settled.holder : null;
+  const operation = await deps.prepare(holder ?? UNRESOLVED_LEASE_HOLDER, input);
+  const now = deps.now();
+  const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt: holder ? 'outcome-unknown' : 'unsettled', machineId: holder, topicId: input.topicId, chatId: input.chatId,
+    text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.record.firstPreparedAt ?? operation.admission.preparedAt,
+    ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
+    ...(input.kindMetadata === undefined ? {} : { kindMetadata: input.kindMetadata }),
+    reason: settled.kind === 'unsettled' ? `lease-settling-${settled.reason}` : 'not-attempted', at: now, noticeDelivered: false,
+    ladder: nextLadderState(undefined, now, delays), supersedes: originalId };
+  if (!await deps.advisory.supersede(originalId, operation, detail)) {
+    audit({ phase: 'advisory-answer-closed', operationId: originalId });
+    throw new AdvisoryAnswerClosedError(originalId);
+  }
+  const operationId = operation.record.operationId;
+  audit({ phase: 'advisory-answer-superseded', operationId: originalId, supersededBy: operationId, holder });
+  if (!holder) return { kind: 'held', operationId, holder: null, lastAttempt: 'unsettled', reason: detail.reason, noticeDelivered: false };
+  const result = await deps.submit(holder, operation);
+  if (result.ok) {
+    if (!await deps.advisory.resolve(operationId, result.deliveryMachineId, result.receiptJson)) audit({ phase: 'advisory-answer-resolve-refused', operationId, holder });
+    audit({ phase: 'sent', attempt: 0, holder, operationId, messageId: result.messageId });
+    return { kind: 'sent', messageId: result.messageId, holder, operationId };
+  }
+  if (result.policyRefusal && result.copyEnded) {
+    // The replacement got its own verdict, under the original's deadline (items 2 and 3).
+    const verdict = result.policyVerdict;
+    if (verdict?.class === 'advisory') await deps.advisory.markAdvisory(operationId, verdict);
+    else await deps.advisory.markRefused(operationId, { outcome: 'not-delivered', failure: 'refused', at: deps.now(), machineId: holder, refusedBy: 'policy', ...(verdict ? { rule: verdict.rule } : {}) });
+    await deps.advisory.noteAnsweredInline(operationId);
+    throw new OriginSendPolicyRefusal(result.policyRefusal, operationId);
+  }
+  const lastAttempt = attemptKind(result);
+  await deps.advisory.rehold(operationId, { ...detail, lastAttempt, reason: result.reason, at: deps.now() });
+  audit({ phase: 'refused', attempt: 0, holder, operationId, reason: result.reason, outcome: result.outcome });
+  return { kind: 'held', operationId, holder, lastAttempt, reason: result.reason, noticeDelivered: false };
+}
+
 export interface ForwardRecoveryDeps {
   lease: ForwardLeaseView;
   prepare: ForwardDeps['prepare'];
   submit: ForwardDeps['submit'];
+  /** See `ForwardDeps.tokenless` / `probe`. */
+  tokenless?: boolean;
+  probe?: ForwardDeps['probe'];
+  onHolderReachable?: ForwardDeps['onHolderReachable'];
+  /** A concrete seal no longer matches the holder's bot (§2): never re-sealed automatically. */
+  onAccountChanged?: (input: { operationId: string; topicId: string | null; sealedAccountId: string; liveAccountId: string }) => Promise<void> | void;
+  /** A placeholder seal was replaced by the live account (evidence only, §10). */
+  onResealed?: (operationId: string) => void;
   /** The old holder's `receipt` for the operation id, read by `classifyHolderReceipt`:
    * `accepted` resolves the hold; `owned-by-holder` and `unreachable` keep it;
    * `not-accepted` (never admitted there, or an older owner's terminal row)
@@ -445,6 +655,11 @@ export interface ForwardRecoveryDeps {
   onOwnerUnstatedSettled?: (row: HeldOperationRow) => Promise<void> | void;
   /** §3a item 2 — a late reply that could not be marked (counted `lateUnmarked`). */
   onLateUnmarked?: (operationId: string) => Promise<void> | void;
+  /** native-conversation-forwarded-advisory item 3 — record the holder's advisory on this machine's row
+   * (keeps the text, takes it out of both delivery selections). */
+  markAdvisory?: (operationId: string, verdict: PolicyVerdict) => Promise<boolean>;
+  /** Item 4 — the advisory line, in the same pass when the session is live. */
+  onAdvisory?: (row: HeldOperationRow) => Promise<void> | void;
   audit?: (row: Record<string, unknown>) => void;
   now: () => number;
   ladder?: { delaysMs: readonly number[] };
@@ -492,6 +707,9 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   // §3a item 7 — the owner's verdict ended this reply and its session was told
   // "will not be retried". Nothing here may deliver it, on any route.
   if (raw?.ownerVerdict && typeof raw.ownerVerdict === 'object') return 'skipped';
+  // native-conversation-forwarded-advisory item 3 — handed back to its author: only the author's answer
+  // (a replacement) sends it. No submit, no local send, no holder-change or late-mark replacement.
+  if (readPolicyVerdict(row.policyVerdict ?? null)?.class === 'advisory') return 'skipped';
   const detail: HeldForwardDetail | null = raw && raw.kind === 'forward-to-holder' && typeof raw.text === 'string' && typeof raw.chatId === 'string' && Number.isSafeInteger(raw.topicId)
     ? { ...raw as HeldForwardDetail, ladder: raw.ladder && Number.isSafeInteger(raw.ladder.attempts) ? raw.ladder : { attempts: delays.length, nextAt: null } } : null;
   const retain = async (next: Partial<HeldForwardDetail>) => {
@@ -499,13 +717,34 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     await deps.rehold(operationId, { ...detail, ...next, at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) });
   };
   /** The owner's verdict, merged without erasing the text; the definite line goes in this same pass. */
-  const recordVerdict = async (machineId: string, failure: FailureCause): Promise<ForwardRecoveryOutcome> => {
-    const verdict = { outcome: 'not-delivered' as const, failure, at: deps.now(), machineId };
-    if (!deps.mergeDetail || !await deps.mergeDetail(operationId, { ownerVerdict: verdict })) { await retain({}); audit({ outcome: 'retained-verdict-store-refused', machineId }); return 'retained'; }
-    audit({ outcome: 'owner-verdict', machineId, failure });
-    try { await deps.onOwnerVerdict?.({ ...row, holdDetail: { ...(detail ?? {}), ownerVerdict: verdict } }, verdict); } catch { /* the forward-expiry pass carries the line if this one could not */ }
+  const recordVerdict = async (machineId: string, failure: FailureCause, policyRule?: string | null, target: { row: HeldOperationRow; detail: HeldForwardDetail | null } = { row, detail }): Promise<ForwardRecoveryOutcome> => {
+    const verdict: NonNullable<HeldForwardDetail['ownerVerdict']> = { outcome: 'not-delivered' as const, failure, at: deps.now(), machineId,
+      ...(policyRule !== undefined ? { refusedBy: 'policy' as const, ...(policyRule ? { rule: policyRule } : {}) } : {}) };
+    if (!deps.mergeDetail || !await deps.mergeDetail(target.row.operationId, { ownerVerdict: verdict })) {
+      if (target.row === row) await retain({});
+      audit({ outcome: 'retained-verdict-store-refused', machineId }); return 'retained';
+    }
+    audit({ outcome: 'owner-verdict', machineId, failure, ...(policyRule !== undefined ? { refusedBy: 'policy' } : {}) });
+    try { await deps.onOwnerVerdict?.({ ...target.row, holdDetail: { ...(target.detail ?? {}), ownerVerdict: verdict } }, verdict); } catch { /* the forward-expiry pass carries the line if this one could not */ }
     return 'settled';
   };
+  /** 3g item 3 — the holder handed it back with an advisory and ended its copy. */
+  const recordAdvisory = async (machineId: string, verdict: PolicyVerdict, target: { row: HeldOperationRow; detail: HeldForwardDetail | null } = { row, detail }): Promise<ForwardRecoveryOutcome> => {
+    if (!deps.markAdvisory || !await deps.markAdvisory(target.row.operationId, verdict)) {
+      if (target.row === row) await retain({});
+      audit({ outcome: 'retained-advisory-store-refused', machineId }); return 'retained';
+    }
+    audit({ outcome: 'owner-advisory', machineId, rule: verdict.rule });
+    try {
+      await deps.onAdvisory?.({ ...target.row, holdDetail: { ...(target.detail ?? {}), lastAttempt: 'outcome-unknown', machineId, ladder: { ...(target.detail?.ladder ?? { attempts: 0 }), nextAt: null } },
+        policyVerdict: verdict as unknown as Record<string, unknown> });
+    } catch { /* the advisory scan carries the line */ }
+    return 'settled';
+  };
+  /** A submit answered `policyRefusal` with `copyEnded`: read it as the receipt would, without waiting for a poll. */
+  const recordEndedSubmit = (machineId: string, result: Extract<HolderSubmitResult, { ok: false }>, target: { row: HeldOperationRow; detail: HeldForwardDetail | null } = { row, detail }): Promise<ForwardRecoveryOutcome> =>
+    result.policyVerdict?.class === 'advisory' ? recordAdvisory(machineId, result.policyVerdict, target)
+      : recordVerdict(machineId, 'refused', result.policyVerdict?.rule ?? null, target);
   const recordEnded = async (machineId: string, reason: SuppressionReason): Promise<ForwardRecoveryOutcome> => {
     if (!detail || !deps.endAtHolder || !await deps.endAtHolder(operationId, reason, machineId, detail)) { await retain({}); audit({ outcome: 'retained-ended-store-refused', machineId }); return 'retained'; }
     audit({ outcome: 'suppressed-at-holder', machineId, holderReason: reason });
@@ -517,6 +756,24 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     audit({ outcome: 'owner-unstated-settled', machineId, attempts });
     try { await deps.onOwnerUnstatedSettled?.({ ...row, holdDetail: { ...(detail ?? {}), ownerUnstated } }); } catch { /* the scan and the forward-expiry pass carry it */ }
     return 'retained';
+  };
+  // standby-durable-forward-without-token §1–2: on a token-less machine `live` is the
+  // holder's capabilities answer read once in this pass (set below, before any
+  // successor on the ordinary route is prepared).
+  const tokenless = deps.tokenless === true;
+  let live: HolderCapabilities | undefined;
+  const resealNeeded = (): boolean => live !== undefined && operation.record.destination.accountId === UNRESOLVED_TOKENLESS_ACCOUNT;
+  /** §2 — a token-less successor replaces the placeholder with the live account, KEEPS a
+   * concrete seal across a holder change, and gets a deterministic id. `late` names the
+   * late-marked plan, so a marked and an unmarked successor never share an id. */
+  const prepareFor = (holder: string, input: ForwardInput, late: boolean): Promise<OriginPreparedBotOperation> => {
+    if (!tokenless) return deps.prepare(holder, input);
+    const sealed = operation.record.destination.accountId;
+    const account = sealed === UNRESOLVED_TOKENLESS_ACCOUNT ? live?.accountId : sealed;
+    const nextId = supersedingOperationId(operationId, { contentDigest: operation.record.contentDigest, accountId: account ?? UNRESOLVED_TOKENLESS_ACCOUNT, owner: holder,
+      destination: { chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId }, children: operation.admission.children.length,
+      ...(late ? { variant: 'late' } : {}) });
+    return deps.prepare(holder, input, nextId, account);
   };
   // §3a item 2 — a successor for this row (holder change, late mark, or the one
   // replacement after a reasonless ending): prepared under the original's
@@ -536,7 +793,7 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     const line = markAt !== null && replacement ? lateRecoveredReplyNotice(first, markAt) : null;
     if (line) {
       try {
-        const next = await deps.prepare(holder, { ...base, text: `${line}\n\n${detail.text}`, replacement });
+        const next = await prepareFor(holder, { ...base, text: `${line}\n\n${detail.text}`, replacement }, true);
         return { next, carrier: { firstPreparedAt: first, lateMarkedAt: markAt } };
       } catch (error) {
         audit({ outcome: 'late-mark-unavailable', holder, reason: error instanceof Error ? error.message : 'unknown' });
@@ -546,12 +803,12 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (markAt !== null) { try { await deps.onLateUnmarked?.(operationId); } catch { /* counter only */ } }
     if (markedOnly) return null;
     try {
-      const next = await deps.prepare(holder, { ...base, ...(replacement ? { replacement } : {}) });
+      const next = await prepareFor(holder, { ...base, ...(replacement ? { replacement } : {}) }, false);
       return { next, carrier: { firstPreparedAt: first, lateMarkedAt: null } };
     } catch (error) {
       // The recorded producer could not be re-entered: the pre-3a replacement path.
       if (!replacement) throw error;
-      const next = await deps.prepare(holder, base);
+      const next = await prepareFor(holder, base, false);
       return { next, carrier: { firstPreparedAt: first, lateMarkedAt: null } };
     }
   };
@@ -562,6 +819,9 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (!detail) return 'retained';
     const now = deps.now();
     const { next } = successor;
+    // §2: the superseding seal is never the placeholder; nothing is made durable for it.
+    if (tokenless && next.record.destination.accountId === UNRESOLVED_TOKENLESS_ACCOUNT) { audit({ outcome: 'retained-reseal-placeholder-refused', holder }); return 'retained'; }
+    const resealed = resealNeeded();
     const { ownerUnstated: _u, ...carried } = detail;
     const unmarkedLate = (lateMarkDue(row, operation, now) !== null || !!row.lateMarkedAt) && successor.carrier.lateMarkedAt === null;
     const nextDetail: HeldForwardDetail = { ...carried, ...extra, ...(unmarkedLate ? { lateMarkUnavailable: true } : {}), machineId: holder, lastAttempt: 'refused', reason: 'not-attempted', at: now, supersedes: operationId,
@@ -573,16 +833,26 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     audit({ outcome: superseded ? 'superseded' : 'supersede-refused', holder, previousOwner: operation.record.executionOwnerMachineId, supersededBy: next.record.operationId,
       lateMarked: successor.carrier.lateMarkedAt !== null && successor.carrier.lateMarkedAt !== row.lateMarkedAt });
     if (!superseded) return 'retained';
+    if (resealed) {
+      audit({ outcome: 'account-reseal', holder, supersededBy: next.record.operationId });
+      try { deps.onResealed?.(next.record.operationId); } catch { /* @silent-fallback-ok — evidence only; never changes delivery */ }
+    }
     if (!await deps.rehold(next.record.operationId, { ...nextDetail, lastAttempt: 'outcome-unknown', at: deps.now() })) {
       audit({ outcome: 'retained-superseding-marker-store-refused', holder, operationId: next.record.operationId }); return 'retained';
     }
-    const result = await deps.submit(holder, next);
+    const result = live ? await deps.submit(holder, next, live) : await deps.submit(holder, next);
     if (result.ok) {
       if (!await deps.resolve(next.record.operationId, result.deliveryMachineId, result.receiptJson)) {
         audit({ outcome: 'retained-superseding-store-refused', holder, operationId: next.record.operationId }); return 'retained';
       }
       audit({ outcome: 'sent-superseding', holder, operationId: next.record.operationId, messageId: result.messageId });
       return 'sent';
+    }
+    if (result.policyRefusal && result.copyEnded) {
+      const nextRow: HeldOperationRow = { ...row, operationId: next.record.operationId, originId: next.record.originId, holdDetail: nextDetail as unknown as Record<string, unknown>,
+        preparedAt: next.admission.preparedAt, deadlineAt: next.admission.deadlineAt, executionOwnerMachineId: holder, firstPreparedAt: successor.carrier.firstPreparedAt,
+        lateMarkedAt: successor.carrier.lateMarkedAt };
+      return recordEndedSubmit(holder, result, { row: nextRow, detail: { ...nextDetail, lastAttempt: 'outcome-unknown' } });
     }
     await deps.rehold(next.record.operationId, { ...nextDetail, reason: result.reason, lastAttempt: attemptKind(result), at: deps.now() });
     audit({ outcome: 'retained-superseding', holder, operationId: next.record.operationId, reason: result.reason, resultOutcome: result.outcome });
@@ -600,7 +870,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       if (!await deps.resolve(operationId, previous, answer.receiptJson)) { audit({ outcome: 'retained-receipt-store-refused', machineId: previous }); return 'retained'; }
       audit({ outcome: 'resolved-by-receipt', machineId: previous }); return 'resolved';
     }
-    if (answer.state === 'owner-verdict') return recordVerdict(previous, answer.failure);
+    if (answer.state === 'owner-advisory') return recordAdvisory(previous, answer.verdict);
+    if (answer.state === 'owner-verdict') return recordVerdict(previous, answer.failure, answer.policyRule);
     if (answer.state === 'owner-ended') return recordEnded(previous, answer.reason);
     if (answer.state === 'outcome-unknown') {
       if (await deps.settleUnknown(operationId, previous)) { audit({ outcome: 'settled-holder-outcome-unknown', machineId: previous }); return 'settled'; }
@@ -639,7 +910,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     }
     // §3a item 7 — the owner stated a cause: the forwarder records it and stops.
     if (answer.state === 'owner-ended') return recordEnded(detail.machineId, answer.reason);
-    if (answer.state === 'owner-verdict') return recordVerdict(detail.machineId, answer.failure);
+    if (answer.state === 'owner-advisory') return recordAdvisory(detail.machineId, answer.verdict);
+    if (answer.state === 'owner-verdict') return recordVerdict(detail.machineId, answer.failure, answer.policyRule);
     if (answer.state === 'owner-reasonless') {
       const holder = detail.machineId;
       // A second reasonless ending (this row is already the one replacement), or a
@@ -664,6 +936,30 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   }
   const route = classifyLeaseRoute(deps.lease);
   if (route.kind === 'settling') { await retain({ reason: `lease-settling-${route.reason}` }); audit({ outcome: 'retained-settling', reason: route.reason }); return 'retained'; }
+  if (route.kind === 'self' && tokenless) {
+    // §4: no local transport. Retain WITHOUT the `local-sent` marker, exactly like settling,
+    // so the row re-forwards once a credentialed machine holds the lease again.
+    await retain({ reason: 'self-no-transport' }); audit({ outcome: 'retained-self-no-transport' }); return 'retained';
+  }
+  // §1–2: a token-less machine reads the holder once per pass, before anything is prepared.
+  if (tokenless && route.kind !== 'self') {
+    const probe = deps.probe ? await deps.probe(route.holder).catch((): HolderProbe => ({ ok: false, reason: 'origin-peer-unreachable' })) : { ok: false as const, reason: 'probe-unavailable' };
+    if (!probe.ok) {
+      // No attempt reached the holder: keep the ladder where it is (§2), so an outage never burns the row's tries.
+      if (detail) await deps.rehold(operationId, { ...detail, machineId: route.holder, reason: probe.reason, lastAttempt: 'unreachable', at: deps.now() });
+      audit({ outcome: 'retained-holder-unreachable', holder: route.holder, reason: probe.reason }); return 'retained';
+    }
+    live = probe.capabilities;
+    try { void Promise.resolve(deps.onHolderReachable?.()).catch(() => undefined); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
+    const sealed = operation.record.destination.accountId;
+    if (sealed !== UNRESOLVED_TOKENLESS_ACCOUNT && sealed !== live.accountId) {
+      // A concrete seal is never re-sealed automatically: a swapped holder must not
+      // be able to re-send held content under another bot.
+      await retain({ machineId: route.holder, reason: 'account-changed', lastAttempt: 'refused' });
+      try { await deps.onAccountChanged?.({ operationId, topicId: row.destination.topicId, sealedAccountId: sealed, liveAccountId: live.accountId }); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
+      audit({ outcome: 'account-changed', holder: route.holder, sealedAccountId: sealed, liveAccountId: live.accountId }); return 'retained';
+    }
+  }
   if (detail?.lastAttempt === 'local-sent') {
     // A local send was STARTED and its resolve did not land (crash, store
     // refusal). The user may already have it: never send again; the row rides to
@@ -695,7 +991,7 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     await deps.rehold(operationId, { ...detail!, lateMarkUnavailable: true });
     detail!.lateMarkUnavailable = true;
   }
-  if (operation.record.executionOwnerMachineId === holder) {
+  if (operation.record.executionOwnerMachineId === holder && !resealNeeded()) {
     if (!detail) return 'retained';
     // Mark custody uncertainty BEFORE the RPC. If the standby store refuses
     // the receipt afterward, the next tick asks this holder; it never submits
@@ -703,7 +999,7 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (!await deps.rehold(operationId, { ...detail, machineId: holder, lastAttempt: 'outcome-unknown', at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) })) {
       audit({ outcome: 'retained-marker-store-refused', holder }); return 'retained';
     }
-    const result = await deps.submit(holder, operation);
+    const result = live ? await deps.submit(holder, operation, live) : await deps.submit(holder, operation);
     if (result.ok) {
       if (!await deps.resolve(operationId, result.deliveryMachineId, result.receiptJson)) {
         audit({ outcome: 'retained-store-refused', holder, messageId: result.messageId }); return 'retained';
@@ -711,6 +1007,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       audit({ outcome: 'sent', holder, messageId: result.messageId });
       return 'sent';
     }
+    // 3g item 3 — the holder ended its copy with a verdict: never re-forwarded.
+    if (result.policyRefusal && result.copyEnded) return recordEndedSubmit(holder, result);
     await retain({ machineId: holder, reason: result.reason, lastAttempt: attemptKind(result) });
     audit({ outcome: 'retained', holder, reason: result.reason, resultOutcome: result.outcome });
     return 'retained';
@@ -793,7 +1091,7 @@ export function handBackItem(row: HeldOperationRow): ReturnType<typeof heldExpir
   const verdict = (row.holdDetail as Partial<HeldForwardDetail> | null)?.ownerVerdict;
   if (arm.arm === 'definite' && verdict && typeof verdict === 'object') {
     const topic = row.destination.topicId ?? 'the topic';
-    const cause = arm.cause === 'refused' ? 'Telegram refused it' : arm.cause === 'never-left' ? 'it could not be sent before its attempts ran out' : 'it passed its delivery deadline';
+    const cause = arm.cause === 'refused' ? (verdict.refusedBy === 'policy' ? 'the outbound check refused it' : 'Telegram refused it') : arm.cause === 'never-left' ? 'it could not be sent before its attempts ran out' : 'it passed its delivery deadline';
     return { ...item, title: `Held reply to ${topicRef(topic)} not delivered`, summary: `My reply to ${topicRef(topic)} was not delivered (${cause}). The session that wrote it was told.` };
   }
   return item;

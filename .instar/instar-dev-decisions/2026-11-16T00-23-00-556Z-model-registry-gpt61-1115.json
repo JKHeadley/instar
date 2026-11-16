@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-16T00:23:00.556Z",
+  "slug": "model-registry-gpt61-1115",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/ModelTierEscalation.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

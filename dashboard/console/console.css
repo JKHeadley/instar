@@ -314,7 +314,8 @@ a.row:hover { background: var(--surface-raised); border-radius: var(--r-sm); }
 .group-head h1 { margin: var(--s-2) 0 var(--s-2); font-size: clamp(26px, 6vw, 36px); font-weight: 800; letter-spacing: -.03em; color: var(--text-strong); }
 .group-head p { margin: 0; color: var(--text-muted); max-width: 60ch; }
 .tiles { display: grid; gap: var(--s-3); grid-template-columns: 1fr; }
-@media (min-width: 640px) { .tiles { grid-template-columns: 1fr 1fr; } }
+/* Side by side, every row of tiles is the same height (2026-11-14: rows were 164px and 143px). */
+@media (min-width: 640px) { .tiles { grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; } }
 @media (min-width: 1100px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
 /* A conditional tile's wrapper inside the grid: its tile takes a grid cell; hidden stays hidden. */
 .tiles .tiles-inline { display: contents; }
@@ -934,6 +935,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-raised); color: inherit; font: inherit; }
 .pref-card:hover { border-color: var(--accent); }
 .pref-quote { font-size: 15.5px; font-weight: 600; line-height: 1.4; color: var(--text-strong); text-wrap: pretty; overflow-wrap: anywhere; }
+.pref-new { align-self: flex-start; height: 22px; color: var(--accent); border-color: var(--accent); }
 .learned-change { margin-top: var(--s-2); }
 
 /* ── Files (people-settings.md: Files) ────────────────────────────────────── */
@@ -961,6 +963,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .files-status:empty { display: none; }
 .files-status { margin: var(--s-2) 0 0; }
 .files-body { padding-top: var(--s-3); padding-bottom: 88px; }
+.files-image img { display: block; max-width: 100%; max-height: 70vh; height: auto; margin: 0 auto; border-radius: var(--r-md); background: var(--surface-raised); }
 .files-lock { margin: 0 0 var(--s-3); font-size: 14px; color: var(--text-muted); }
 .files-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-2); }
 .files-toggle .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
@@ -1534,3 +1537,28 @@ a.needs-row:hover { background: var(--surface-raised); }
 .agent-page .t-desc { display: none; }
 .agent-page .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .agent-page .tile { padding-top: 12px; padding-bottom: 12px; align-items: center; }
+
+/* ── Paste to a session (work.md: Send content, inside Sessions) ─── */
+.sess-paste { position: static; margin: var(--s-4) 0 var(--s-2); }
+.paste-text { width: 100%; min-height: 180px; font-family: var(--font-mono); font-size: 14px; resize: vertical; box-sizing: border-box; }
+.sheet input.reason-input, .sheet .paste-text { width: 100%; box-sizing: border-box; margin-top: var(--s-2); }
+.paste-count { margin: var(--s-1) 0 0; font-size: 13.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.paste-kept { margin: var(--s-1) 0 var(--s-3); font-size: 13px; color: var(--text-muted); }
+.paste-where { margin: var(--s-2) 0 0; font-size: 14px; color: var(--text); }
+.paste-go { width: 100%; }
+.paste-result { margin-top: var(--s-2); font-size: 14px; }
+.paste-result[data-tone="ok"] { color: var(--text-strong); }
+.paste-result[data-tone="attn"] { color: var(--attn); }
+.paste-result[data-tone="bad"] { color: var(--bad); }
+.paste-recent { margin-top: var(--s-4); }
+.paste-recent > .list-head { width: 100%; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-align: left; min-height: 44px; }
+.paste-item { border-bottom: 1px solid var(--hairline); padding-bottom: var(--s-2); }
+.paste-row { cursor: default; }
+.paste-row .row-sub { overflow-wrap: anywhere; }
+.paste-row-actions { display: flex; flex-direction: column; gap: var(--s-2); padding: 0 var(--s-3); }
+.paste-row-actions > .btn-quiet { align-self: flex-end; min-height: 44px; }
+
+/* Machines: a remote desktop that lost its Mac permission, with its one fix. */
+.desktop-fix { margin-bottom: var(--s-4); }
+.desktop-fix .confirm-row { margin: var(--s-2) 0 0; }
+.desktop-fix p { margin: 0; }

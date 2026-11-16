@@ -25,7 +25,19 @@ export type MachineEvent =
   /** The owner accepted the log as it stood after a restore, gaps included, through this row. */
   | { type: 'restored'; throughSeq: number }
   /** A conversation is locked to its audience, on every machine. A restore's sweep is never one of these. */
-  | { type: 'confine'; ref: string; placeKey?: string; personKey?: string };
+  | { type: 'confine'; ref: string; placeKey?: string; personKey?: string }
+  /**
+   * A member's computer, linked by their own phone (instar-document-viewer §3.6a). `signed` is the
+   * phone's whole device-signed `POST /mobile/browsers/link` request, so every machine checks the
+   * chain phone → browser itself and the browser binding is never weaker than the phone's.
+   * `linkedByKeyHash` names the phone key that signed it, so a later key rotation on that phone
+   * neither breaks the link nor lets a different key stand in for the signer.
+   */
+  | { type: 'browser-bind'; keyHash: string; deviceId: string; boundTo: string; linkedByDeviceId: string; linkedByKeyHash: string; linkedAt: string; expiresAt: string; scope: 'documents' | 'documents-read'; signed: LinkSignedRequest }
+  | { type: 'browser-unbind'; keyHash: string; deviceId: string };
+
+/** The phone's signed link request, as the device signature covers it (instar-device-v1). */
+export interface LinkSignedRequest { host: string; timeMs: string; sig: string; bodyB64: string }
 
 const MAX_EVENTS = 50;
 const str = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -111,6 +123,16 @@ export function validateMachineEvent(raw: unknown): MachineEvent | null {
       if (e.role !== undefined && !isGrantableRole(e.role)) return null;
       if (e.remove !== undefined && typeof e.remove !== 'boolean') return null;
       return { type: 'lower', personKey: e.personKey, ...(e.ref ? { ref: e.ref as string } : {}), ...(e.role ? { role: e.role as OrgRole } : {}), ...(e.remove ? { remove: true } : {}) };
+    case 'browser-bind': {
+      const g = e.signed as Record<string, unknown> | undefined;
+      const iso = (v: unknown): v is string => str(v, 40) && Number.isFinite(Date.parse(v as string));
+      if (!str(e.keyHash) || !str(e.deviceId) || !str(e.boundTo) || e.boundTo === 'owner' || e.boundTo === 'owner-browser' || !str(e.linkedByDeviceId) || !str(e.linkedByKeyHash)) return null;
+      if (!iso(e.linkedAt) || !iso(e.expiresAt) || (e.scope !== 'documents' && e.scope !== 'documents-read')) return null;
+      if (!g || !str(g.host) || !str(g.timeMs, 20) || !str(g.sig, 200) || !str(g.bodyB64, 2048)) return null;
+      return { type: 'browser-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo, linkedByDeviceId: e.linkedByDeviceId, linkedByKeyHash: e.linkedByKeyHash, linkedAt: e.linkedAt, expiresAt: e.expiresAt, scope: e.scope, signed: { host: g.host, timeMs: g.timeMs, sig: g.sig, bodyB64: g.bodyB64 } };
+    }
+    case 'browser-unbind':
+      return str(e.keyHash) && str(e.deviceId) ? { type: 'browser-unbind', keyHash: e.keyHash, deviceId: e.deviceId } : null;
     default: return null;
   }
 }

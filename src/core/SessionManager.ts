@@ -50,6 +50,7 @@ import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStart
 const squash = (text: string): string => text.replace(/\s+/g, '');
 import { extractGeminiFinalAssistantBlock, meaningfulTail, meaningfulNonBlankTail } from './paneText.js';
 import { ensureClaudeFirstRunAnswered } from './ensureInteractiveReady.js';
+import { PROJECT_TRUST_SEEDERS } from '../providers/adapters/engineSessionHooks.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
 
@@ -7396,6 +7397,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * D3). Killing it stays allowed. Refusals are logged once per session.
    */
   private confinedWriteRefused(tmuxSession: string, what: string): boolean {
+    const refused = this.confinedWriteRefusedVerdict(tmuxSession, what);
+    // Every tmux write into a session passes this guard first, so an allowed
+    // verdict is the one place that knows input is about to reach the pane.
+    // Signal only (CMT-1677): the prompt-detect outcome observer must not read
+    // a pane changed by our own keys as "progressed without input".
+    if (!refused) {
+      try { this.promptDetector?.noteSessionInput(tmuxSession); } catch { /* @silent-fallback-ok — observation only; never blocks a write */ }
+    }
+    return refused;
+  }
+
+  private confinedWriteRefusedVerdict(tmuxSession: string, what: string): boolean {
     // The D2 startup driver is the ONLY writer allowed into a confined session, and only while it
     // holds the session (from its first capture to `delivered` or `failed`).
     //
@@ -8414,6 +8427,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
+    // Never-Silent Conversation §1.5: a session in a folder its engine home never trusted can stop
+    // at a "trust this folder?" dialog and never answer. Record the agent's own launch folder first,
+    // through the engine's own seeder (adapter table). Under vitest the default home is skipped: it is
+    // the operator's real home.
+    const trustSeeder = PROJECT_TRUST_SEEDERS[framework];
+    if (trustSeeder) {
+      const seeded = trustSeeder(launchSpec.envOverrides, options?.cwd ?? this.config.projectDir, { allowDefaultHome: !process.env.VITEST });
+      if (seeded.result.patched) console.log(`[SessionManager] ${framework}: trusted the launch folder in ${seeded.home}`);
+      else if (seeded.result.reason !== 'already-recorded' && seeded.result.reason !== 'no-home') {
+        console.warn(`[SessionManager] ${framework}: could not record folder trust in ${seeded.home} — ${seeded.result.reason}`);
+      }
+    }
     const memoryScoped = Boolean(memoryPlan?.scopeDir && memoryPlan.settingsPath);
     if (memoryScoped) {
       applyMemorySessionLaunch(launchSpec.argv, memoryPlan!.settingsPath!, memoryPlan!.scopeDir!);

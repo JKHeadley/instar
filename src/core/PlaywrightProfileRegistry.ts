@@ -964,6 +964,15 @@ export class PlaywrightProfileRegistry {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────────
 
+  /**
+   * The live vault secret NAMES (never values), best-effort: null when the vault is
+   * unreadable. Read by the agent-reach builder so the outbound gate can see what the
+   * agent already holds (Echo Bugs topic 10000002770).
+   */
+  vaultNames(): string[] | null {
+    return this.safeVaultNames();
+  }
+
   /** Best-effort vault names for READ paths — swallows the unreadable case to null. */
   private safeVaultNames(): string[] | null {
     try {

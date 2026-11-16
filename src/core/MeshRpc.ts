@@ -365,6 +365,18 @@ export type MeshCommand =
       landedAt: number;
     }
   | {
+      // interrupted-move-resume (src/core/InterruptedMoveResume.ts). Registered-peer class: a
+      // move closed the conversation's session mid-step; "pick it back up". Carries no
+      // ownership: the receiver acts only when its OWN record says it owns the conversation
+      // at or past claimEpoch, once per (conversation, epoch).
+      type: 'interrupted-move-resume';
+      sessionKey: string;
+      claimEpoch: number;
+      fromName?: string | null;
+      /** The person's message the cut-off step served (the notice's conversation anchor). */
+      inboundMessageId?: string | null;
+    }
+  | {
       // Duplicate check (session-pool-activation-at-pairing, Change 8). Read/observe class:
       // says only whether this machine holds a live session for one conversation.
       type: 'session-live-probe';
@@ -636,6 +648,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'topic-row-pull':
     case 'session-live-probe':
     case 'ownership-nudge':
+    case 'interrupted-move-resume':
     case 'commitments-sync':
     case 'notification-preference':
     case 'preferences-sync':

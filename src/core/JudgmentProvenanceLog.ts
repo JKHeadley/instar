@@ -146,6 +146,19 @@ export interface DecisionRowInput {
   mintedBy?: string;
   /** Stable identity for an automated message template; body never stored here. */
   templateFingerprint?: string;
+  /**
+   * A shadow row's link to the router-minted correlation id of the producer
+   * call it shadows (CMT-1677). Top-level, not inside context, because the
+   * served-context credential scrub masks id-shaped values. Only a well-formed
+   * seam id (`d-`/`b-` prefix) is stored; anything else is dropped. Does NOT
+   * make the row a seam row.
+   */
+  producerCorrelationId?: string;
+}
+
+/** A well-formed router/breaker correlation id, or undefined. */
+export function validProducerCorrelationId(v: unknown): string | undefined {
+  return typeof v === 'string' && /^[db]-[A-Za-z0-9-]{1,100}$/.test(v) ? v : undefined;
 }
 
 export interface ProvenanceRow {
@@ -180,6 +193,8 @@ export interface ProvenanceRow {
   contentClass?: string;
   mintedBy?: string;
   templateFingerprint?: string;
+  /** Decision rows only: the producer call a shadow row joins (CMT-1677). */
+  producerCorrelationId?: string;
   /** Outcome rows only (§5.4): FD3 grade, validated at write (invalid → omitted + counted). */
   grade?: string;
   /** Outcome rows only: the grading component (the ruleId's registered owner). */
@@ -357,6 +372,7 @@ export class JudgmentProvenanceLog {
       tokensOut: input.tokensOut,
       latencyMs: input.latencyMs,
       templateFingerprint: input.templateFingerprint,
+      ...(validProducerCorrelationId(input.producerCorrelationId) ? { producerCorrelationId: input.producerCorrelationId } : {}),
       ...(seamRow
         ? {
             correlationId: input.correlationId,

@@ -30,6 +30,7 @@ import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRI
 import { decisionRow, packetsFrom } from '../fixtures/feedbackTriageHarness.js';
 import { defaultCanaryTranscript } from '../fixtures/feedbackExecuteHarness.js';
 import { SESSION_CANARY_STEPS } from '../../src/feedback-factory/execute/confinementCanary.js';
+import { labelAlreadyAbsent } from '../../src/feedback-factory/execute/executorPorts.js';
 
 const AUTH = 'feedback-execute-e2e-auth';
 const PIN = '161803';
@@ -63,7 +64,7 @@ function executorEdge(root: string, clock: { now: number }) {
   const state = {
     pr: null as null | { number: number; headRefOid: string; mergedAt: string | null; mergeCommit: string | null; labels: string[] },
     reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
-    merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
+    merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], pushedFiles: [] as string[], labelRemovals: [] as boolean[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
     confinedGuardChecks: 0,
     mergeChecksPending: false,
     release: 'none' as { tag: string; taggedAt: number } | 'none',
@@ -76,7 +77,12 @@ function executorEdge(root: string, clock: { now: number }) {
     git: {
       fetchBase: async () => BASE_SHA,
       createClone: async (src: string, dest: string) => { fs.cpSync(src, dest, { recursive: true }); },
-      commitAndPush: async (_clone: string, input: { remoteUrl: string }) => { state.pushes++; state.pushedTo.push(input.remoteUrl); return HEAD_SHA; },
+      commitAndPush: async (clone: string, input: { remoteUrl: string }) => {
+        state.pushes++; state.pushedTo.push(input.remoteUrl);
+        const walk = (dir: string, rel = ''): void => { for (const n of fs.readdirSync(dir)) { const f = path.join(dir, n); const r = rel ? `${rel}/${n}` : n; if (fs.lstatSync(f).isDirectory()) { if (r !== '.git') walk(f, r); } else state.pushedFiles.push(r); } };
+        walk(clone);
+        return HEAD_SHA;
+      },
       githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
       firstReleaseContaining: async () => state.release,
     },
@@ -87,7 +93,15 @@ function executorEdge(root: string, clock: { now: number }) {
       createPr: async (input: { label: string; head: string }) => { state.prHeads.push(input.head); state.pr = { number: 7, headRefOid: HEAD_SHA, mergedAt: null, mergeCommit: null, labels: [input.label] }; return { number: 7 }; },
       prState: async () => (state.pr ? { state: state.pr.mergedAt ? 'MERGED' : 'OPEN', mergedAt: state.pr.mergedAt, headRefOid: state.pr.headRefOid, mergeCommit: state.pr.mergeCommit, author: 'echo-bot', headRefName: 'feedback/x' } : null),
       reviews: async () => state.reviews,
-      removeLabel: async () => { state.pr!.labels = []; return true; },
+      // As GitHub answers: removing a label that is already gone is a 404 "Label does not exist",
+      // which the real gateway reads as done (labelAlreadyAbsent). It used to stall every merge retry.
+      removeLabel: async (_slug: string, _pr: number, label: string) => {
+        const had = state.pr!.labels.includes(label);
+        state.pr!.labels = state.pr!.labels.filter((l) => l !== label);
+        const ok = had || labelAlreadyAbsent({ stdout: '{"message":"Label does not exist","status":"404"}', stderr: 'gh: Label does not exist (HTTP 404)' });
+        state.labelRemovals.push(had);
+        return ok;
+      },
       disableAuto: async () => true,
       safeMerge: async (_slug: string, pr: number, sha: string) => {
         state.merges.push({ pr, sha });
@@ -295,6 +309,11 @@ describe('feedback executor — production lifecycle (live on a development agen
     clock.now += 5 * 60_000 + 1;
     status = await executeTick(app, clock);
     expect(edge.state.merges).toEqual([{ pr: 7, sha: HEAD_SHA }, { pr: 7, sha: HEAD_SHA }]);
+    // The retry found the hold label already removed and still reached the merge.
+    expect(edge.state.labelRemovals).toEqual([true, false]);
+    // The pushed tree carries the publisher's decision record and release note.
+    expect(edge.state.pushedFiles.some((f) => /^\.instar\/instar-dev-decisions\/.+\.json$/.test(f))).toBe(true);
+    expect(edge.state.pushedFiles.some((f) => /^upgrades\/next\/feedback-.+\.md$/.test(f))).toBe(true);
     expect(status.counts).toMatchObject({ merged: 1 });
     expect(tracker.get(initiative.id)!.phases.find((p) => p.id === 'build')!.status).toBe('done');
     expect(tracker.get(initiative.id)!.status).not.toBe('completed');
