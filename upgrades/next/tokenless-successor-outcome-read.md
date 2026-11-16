@@ -13,6 +13,10 @@ All three now share `OPERATION_ID_PATTERN` (`^[A-Za-z0-9~-]{1,256}$`). The `/tel
 
 Nothing to do. When a reply was held because the sending machine was briefly unreachable and was delivered once it came back, the "was it sent?" check now says it arrived instead of "can't confirm".
 
+## Summary of New Capabilities
+
+No new capability. This fixes a check that already exists: the held-reply outcome read now follows a token-less re-seal successor, so a delivered reply reads as `delivered`.
+
 ## Evidence
 
 - Integration (real signed mesh, real stores): `tests/integration/telegram-origin-tokenless-forward.test.ts`, holder-unreachable case. Before the fix the outcome read for the first id returned `outcome: unknown, resolution: 11, supersededBy: null`. After it returns `delivered`, with `answeredFor` set to the `~r1-` successor and the Telegram message id.
