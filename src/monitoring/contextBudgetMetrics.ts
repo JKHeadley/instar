@@ -12,7 +12,8 @@
  *  - TopicMemory (the operator corpus, U).
  *
  * Honesty rules: a number this build cannot measure is reported as
- * `unavailable: <reason>`, never as zero (Anchors do not exist until S6); a
+ * `unavailable: <reason>`, never as zero (a topic whose Anchor was never
+ * evaluated on this machine reads `not-yet-evaluated`, never `no-anchor`); a
  * rework rate the poller has not caught up on reads `pending`; a share with no
  * denominator is `null`.
  *
@@ -27,6 +28,32 @@ import type { TokenLedger, SessionRequestTotalsRow, ReworkRow } from './TokenLed
 import type { ContextLayers } from './contextLayers/contextLayersBoot.js';
 import type { LayerSpendDay } from './contextLayers/layerSpendLog.js';
 import { contextLayersRoot } from './contextLayers/LayerStore.js';
+import { anchorView, backfillView, ledgerCounts, measureAnchorLedger, LEDGER_STATUSES } from './contextLayers/anchorLedger.js';
+import { H3_KEY } from './contextLayers/h3Builder.js';
+import { layerFreshness } from './contextLayers/layerProjection.js';
+import type { LayerStore } from './contextLayers/LayerStore.js';
+
+/** H3 on this topic (§6 row H3, §6.5): its freshness and how much of the history it read through C2. Never zero for "not built". */
+export function measureH3(store: LayerStore, topicKey: string, countAfter: (lastMessageId: number) => { total: number; fromUser: number } | null) {
+  const rec = store.read(topicKey, 'h3', H3_KEY);
+  if (!rec) return { status: 'not-built-yet' as const };
+  const d = rec.data as Record<string, unknown>;
+  const len = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+  const f = layerFreshness(rec, countAfter);
+  return {
+    status: (rec.status ?? 'live') as string,
+    writtenAt: rec.writtenAt,
+    freshness: f.line,
+    messagesBehind: f.messagesBehind,
+    inputTokens: typeof d.inputTokens === 'number' ? d.inputTokens : null,
+    floorOverBudget: d.floorOverBudget === true,
+    chunksRead: len(d.chunkKeys),
+    rangesDirect: len(d.rangesDirect),
+    rangesThroughC2: len(d.rangesThroughC2),
+    rangesOmitted: len(d.rangesOmitted),
+    summaryChars: typeof d.summary === 'string' ? d.summary.length : 0,
+  };
+}
 
 export const COST_WEIGHTS = { uncached: 1, cacheRead: 0.1, cacheWrite1h: 2.0, cacheWrite5m: 1.25, output: 5.0 } as const;
 export type CostWeights = { [K in keyof typeof COST_WEIGHTS]: number };
@@ -40,7 +67,6 @@ export const DEFAULT_SINCE_HOURS = 24;
 export const MAX_SESSIONS = 50;
 export const MAX_TOPICS = 50;
 export const SERIES_POINTS = 48;
-export const ANCHORS_UNAVAILABLE = 'anchor-ledger-not-built';
 
 export interface CostBreakdown {
   requests: number;
@@ -104,6 +130,8 @@ export interface MetricsTopicIntentSource {
 }
 export interface MetricsTopicMemorySource {
   operatorCorpusSize(topicId: number): { messages: number; chars: number; forwarded: number } | null;
+  /** For H3's freshness (optional: absent ⇒ `stale: unknown`). */
+  countMessagesAfter?(topicId: number, messageId: number): { total: number; fromUser: number } | null;
 }
 
 export interface ContextBudgetMetricsDeps {
@@ -281,8 +309,38 @@ export function computeContextBudgetMetrics(deps: ContextBudgetMetricsDeps, q: C
       archiveBytes: deps.layers.archive.topicBytes(key),
       layerBytes: deps.layers.store.topicBytes(key),
       liveSetBudgetInputs: { g: growth(g), c: growth(c) },
+      anchorLedger: measureAnchorLedger(deps.layers.store, key),
+      h3: measureH3(deps.layers.store, key, (id) => deps.topicMemory?.countMessagesAfter?.(topicId, id) ?? null),
     };
   });
+
+  // ── Anchors and the ledger (§6.1, §6.2): every topic with layer records on this machine ──
+  const allKeys = layerTopicKeys(root);
+  const anchorStates = { anchored: 0, 'no-anchor': 0, 'not-yet-evaluated': 0 };
+  // S7: backfill state over every topic here; `pendingConfirmations` is what the dashboard card and Home's count read.
+  // `pendingConfirmations` = waiting to be asked + asked and still unanswered (the operator's word is awaited).
+  // Read from this machine's store: replicated Anchor records mean each machine counts the same topic, so a
+  // pool-wide count must take one machine's figure (the owner's), never the sum.
+  const backfill = { topicsBackfilled: 0, backfilledUnconfirmed: 0, pendingConfirmations: 0, awaitingAsk: 0, asked: 0, expiredConfirmations: 0, pendingTopics: [] as string[] };
+  for (const k of allKeys) {
+    anchorStates[anchorView(deps.layers.store, k).status]++;
+    const b = backfillView(deps.layers.store, k);
+    if (b.state === 'backfilled') backfill.topicsBackfilled++;
+    backfill.backfilledUnconfirmed += b.backfilledUnconfirmed;
+    if (b.confirmation === 'pending' || b.confirmation === 'asked') {
+      backfill.pendingConfirmations++;
+      if (b.confirmation === 'pending') backfill.awaitingAsk++; else backfill.asked++;
+      if (backfill.pendingTopics.length < 50) backfill.pendingTopics.push(k);
+    }
+    if (b.confirmation === 'expired') backfill.expiredConfirmations++;
+  }
+  const ledgerTotals = ledgerCounts([]);
+  for (const t of topics) {
+    ledgerTotals.total += t.anchorLedger.ledger.total;
+    for (const ty of ['evolution', 'decision'] as const) ledgerTotals.byType[ty] += t.anchorLedger.ledger.byType[ty];
+    for (const st of LEDGER_STATUSES) ledgerTotals.byStatus[st] += t.anchorLedger.ledger.byStatus[st] ?? 0;
+  }
+  const al = deps.layers.anchorLedger?.() ?? null;
 
   const spendDays: LayerSpendDay[] = deps.layers.spend.byDay(Math.max(1, Math.ceil(sinceHours / 24)));
   return {
@@ -307,7 +365,18 @@ export function computeContextBudgetMetrics(deps: ContextBudgetMetricsDeps, q: C
       processStartedAt: Math.round(Date.now() - process.uptime() * 1000),
       basis: 'estimated input tokens reserved by the layer brakes (§6.4), held in memory: a rolling 24 h since this process started; provider-reported tokens, persisted, are in extractorByDay',
     },
-    anchors: { unavailable: ANCHORS_UNAVAILABLE },
+    anchors: {
+      source: 'layer store on this machine',
+      topics: allKeys.length,
+      ...anchorStates,
+      ledger: { ...ledgerTotals, scope: 'listed-topics' as const, topicsCounted: topics.length },
+      builder: al ? { wired: true as const, ...al.status().counters } : { wired: false as const },
+      backfill: {
+        ...backfill,
+        scope: 'all-topics-with-layer-records' as const,
+        lane: deps.layers.backfillLane?.()?.status() ?? { wired: false as const },
+      },
+    },
   };
 }
 

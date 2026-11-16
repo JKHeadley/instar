@@ -66,13 +66,38 @@ describe('Context Budget sentinel Registry-First row', () => {
     const r2 = result();
     migrator().migrateClaudeMd(r2);
     const out = fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf8');
-    expect(out.match(/`counted` = an engine/g)?.length).toBe(1);
+    expect(out.match(/`counted` = /g)?.length).toBe(1);
     expect(r.upgraded).toContain("CLAUDE.md: the Context Budget sentinel row names the canary's counted state");
     expect(r2.upgraded).not.toContain("CLAUDE.md: the Context Budget sentinel row names the canary's counted state");
   });
 
+  it('existing agents holding S16\'s wording: refreshed once to the S17 wording (Codex now verifiable, stops at accruing)', () => {
+    const s16 = '| Does compaction recovery work on this machine? / is a context fold stuck? | `curl http://localhost:4242/context-budget/sentinel` — (`n/a` = recovery switched off; `counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds. |';
+    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), TABLE.replace('| Who do I work with?', `${s16}\n| Who do I work with?`));
+    const r = result(); migrator().migrateClaudeMd(r);
+    const r2 = result(); migrator().migrateClaudeMd(r2);
+    const out = fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf8');
+    expect(out).not.toContain('such as Codex');
+    expect(out.match(/Codex stops at `accruing`/g)?.length).toBe(1);
+    expect(r.upgraded).toContain('CLAUDE.md: the Context Budget sentinel row says a Codex row stops at accruing');
+    expect(r2.upgraded).not.toContain('CLAUDE.md: the Context Budget sentinel row says a Codex row stops at accruing');
+  });
+
+  it('the Codex next-prompt seed row (S17): inserted once after the standing-packet row; new agents carry it', () => {
+    const sp = "| What will topic N's session see after a compaction? / is its standing packet healthy? | `curl http://localhost:4242/topic/N/standing-packet` — x |";
+    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), TABLE.replace('| Who do I work with?', `${sp}\n| Who do I work with?`));
+    const r = result(); migrator().migrateClaudeMd(r); migrator().migrateClaudeMd(result());
+    const out = fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf8');
+    expect(out.match(/\/context-budget\/codex-seed/g)?.length).toBe(1);
+    const lines = out.split('\n');
+    expect(lines[lines.findIndex((l) => l.startsWith("| What will topic N's session see")) + 1]).toContain('http://localhost:4242/context-budget/codex-seed');
+    expect(r.upgraded).toContain('CLAUDE.md: added the Context Budget Codex next-prompt seed Registry-First row');
+    expect(generateClaudeMd('test', 'Echo', 4242, false)).toContain('http://localhost:4242/context-budget/codex-seed');
+  });
+
   it('new agents: generateClaudeMd carries the same row (with the counted state)', () => {
-    expect(generateClaudeMd('test', 'Echo', 4242, false)).toContain('`counted` = an engine such as Codex');
+    expect(generateClaudeMd('test', 'Echo', 4242, false)).toContain('`counted` = recovery unverifiable');
+    expect(generateClaudeMd('test', 'Echo', 4242, false)).toContain('Codex stops at `accruing`');
 
     const md = generateClaudeMd('test', 'Echo', 4242, false);
     expect(md).toContain('http://localhost:4242/context-budget/sentinel');

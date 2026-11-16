@@ -157,6 +157,6 @@ describe('ContextBudgetSentinel across a real crash', () => {
     expect(src).toContain('sentinelHeartbeatFresh: () => _contextBudgetSentinel?.heartbeatFresh() ?? false');
     expect(src.slice(ctor, ctor + 6000)).toMatch(/setInterval\(\(\) => \{ void sentinelRef\.tick\(\); \}, 5 \* 60_000\)/);
     expect(src).toContain("sentinelGovernor.for('context-budget-quarantine-reconcile')");
-    expect(src.slice(ctor - 2000, ctor)).toContain('productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath })');
+    expect(src.slice(gate, ctor)).toContain('productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath })');
   });
 });

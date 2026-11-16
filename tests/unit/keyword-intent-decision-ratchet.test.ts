@@ -197,6 +197,12 @@ const ALLOWLIST: Record<string, string> = {
   // A2A reply-warrant heuristic (membership + openers) — decides whether to reply to a PEER agent.
   'threadline/WarrantsReplyGate.ts': 'CONTROL_PHRASES.has(norm) + opener regexes — A2A reply-warrant heuristic (whole-value membership, survivor #1); never swallows operator input.',
   // Task-NATURE scorer (coordination-vs-judgment), NOT message-intent — advisory readiness endpoint.
+  // Context budget (context-budget-layered-summaries): structural checks over Instar's OWN rendered text and enums.
+  'monitoring/contextLayers/chunkBuilder.ts': 'CHUNK_TRIGGERS/RETRIES_PER_TRIGGER — a closed enum of chunk-build triggers and a retry count; no text is classified.',
+  'monitoring/contextLayers/standingPacket.ts': 'verifyStandingPacket — checks the packet Instar itself rendered for its own `absent:` lines and `as of <ISO>` stamps; never reads a user message for intent.',
+  // Context-budget structure checks over Instar's OWN rendered text and enums (never a user message).
+  'monitoring/contextLayers/standingPacket.ts': 'verifyStandingPacket — checks the server\'s own rendered packet for its `as of <ISO>` freshness stamp and `absent:` placeholders (a format invariant the verifier enforces on its own output); never reads or gates user text.',
+  'monitoring/contextLayers/chunkBuilder.ts': 'CHUNK_TRIGGERS / RETRIES_PER_TRIGGER — a closed enum of internal chunk-build trigger names and a retry count, not a keyword list over any message; decides nothing about user intent.',
   'core/AgentReadinessScorer.ts': 'scoreText — scores a TASK\'s coordination-vs-judgment nature (COORDINATION_SIGNALS/JUDGMENT_SIGNALS density) for the advisory /agent-readiness endpoint; it grades work-nature for automation-readiness, never gates/reroutes/swallows a user message. Survivor, cleared class (CMT-1907).',
 };
 

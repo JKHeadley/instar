@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-11T00:08:13.728Z",
+  "slug": "cb-user-corpus",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 823,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicIntentCapture.ts",
+      "src/core/TopicIntentExtractor.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/memory/TopicMemory.ts",
+      "src/monitoring/contextLayers/LayerStore.ts",
+      "src/monitoring/contextLayers/contextLayersBoot.ts",
+      "src/monitoring/contextLayers/layerCaptureWiring.ts",
+      "src/monitoring/contextLayers/userCorpus.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/users/MemoryPrivacy.ts"
+    ],
+    "addedLines": 803,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-driven actions, not a self-triggered loop: the user-corpus refresh and the stub writer run once per captured message they are handed, bounded to 200 rows per turn; nothing retries, re-drives or re-fires on its own"
+  },
+  "verdict": "pass"
+}

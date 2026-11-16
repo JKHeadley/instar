@@ -79,7 +79,14 @@ export function renderTopicIntentBriefing(
   const awareness = file.awareness;
   const awarenessLagTurns = awareness ? Math.max(0, (file.turn ?? 0) - awareness.turnAtUpdate) : 0;
 
-  if (!awareness && authoritative.length === 0 && tentative.length === 0 && frame.length === 0 && !file.pending.outstanding) {
+  // context-budget §6.1 (S7): a backfill confirmation is asked only inside a reply in a topic the user has
+  // written in since it went outstanding; before that it is not rendered at all (never a message of its own).
+  // It is asked once: a surfaced one is never rendered again (the ledger also removes it from the queue then).
+  const outstanding = file.pending.outstanding && (file.pending.outstanding.kind !== 'backfill' || ((file.turn ?? 0) > file.pending.outstanding.sentAtTurn && !file.pending.outstanding.surfacedAtTime))
+    ? file.pending.outstanding
+    : null;
+
+  if (!awareness && authoritative.length === 0 && tentative.length === 0 && frame.length === 0 && !outstanding) {
     return {
       text: '',
       hasContent: false,
@@ -165,10 +172,19 @@ export function renderTopicIntentBriefing(
     }
   }
 
-  if (file.pending.outstanding) {
-    const pc = file.pending.outstanding;
+  if (outstanding) {
+    const pc = outstanding;
     lines.push('');
-    lines.push('PENDING CONFIRMATION (the agent asked the user about this; awaiting answer):');
+    if (pc.kind === 'backfill') {
+      // Rebuilt from history: usable and labelled as unconfirmed; one line inside the reply, never standalone.
+      lines.push('REBUILT FROM EARLIER HISTORY, UNCONFIRMED (fold one line into this reply asking the user to correct anything wrong; never a separate message; silence never confirms it):');
+    } else if (pc.kind === 'evolution') {
+      // context-budget §6.1: a purpose change is surfaced in one line in the next
+      // natural reply; silence never confirms it, and acting on it is not a yes.
+      lines.push('PURPOSE CHANGE TO CONFIRM (mention it in one line in your next reply; silence never confirms it):');
+    } else {
+      lines.push('PENDING CONFIRMATION (the agent asked the user about this; awaiting answer):');
+    }
     lines.push(`  • "${pc.propositionText}"`);
     lines.push(`    asked at turn ${pc.sentAtTurn} (retries: ${pc.retries}/${pc.maxRetries})`);
     lines.push(`    if the user just answered, the next response should record the verdict.`);
@@ -184,7 +200,7 @@ export function renderTopicIntentBriefing(
       authoritative: authoritative.length,
       tentative: tentative.length,
       frame: frame.length,
-      pendingOutstanding: file.pending.outstanding !== null,
+      pendingOutstanding: outstanding !== null,
       awareness: Boolean(awareness),
       awarenessLagTurns,
     },

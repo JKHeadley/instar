@@ -90,11 +90,11 @@ describe('Codex compaction channel — alive on the production path', () => {
   beforeEach(() => _resetCompactionState());
   afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP }); });
 
-  it('gate ON: the rollout compaction is detected, counted (marked synthesized), and the adapter emits both notices', async () => {
+  it('gate ON: the rollout compaction is detected (marked synthesized, pending its next-prompt seed), and the adapter emits both notices', async () => {
     const { r, pre, post } = await run(true, dirs);
     expect(r.status).toBe(200);
     const g = r.body.canary.groups.find((x: { engine: string }) => x.engine === 'codex-cli');
-    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, state: 'counted', marking: 'synthesized', synthesizedSignals: 1 });
+    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, pending: 1, state: 'uninitialized', marking: 'synthesized', synthesizedSignals: 1 });
     expect(g.profile.healByInjection).toBe(false);
     expect(pre).toHaveLength(1);
     expect(pre[0].source).toBe('synthesized');
@@ -113,7 +113,7 @@ describe('Codex compaction channel — alive on the production path', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
     expect(src).toContain("const codexCanaryOn = () => contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined));");
     expect(src).toContain('enabled: codexCanaryOn,');
-    expect(src).toContain("engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn()");
+    expect(src).toContain("engineInScope: (e) => e !== CODEX_CLI_FRAMEWORK || codexCanaryOn()");
     expect(src).toContain('homeForSession: (t) => codexHomeForTmuxSession(t, undefined, config.sessions.tmuxPath),');
     // The canary's default engine hooks are the adapter's real functions (not no-ops).
     const canary = fs.readFileSync(path.join(ROOT, 'src/monitoring/compactionCanary.ts'), 'utf-8');

@@ -159,6 +159,38 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // The compaction canary's heal ladder by cause (context-budget-layered-summaries §9.1):
+    // SelfHealGate consumer, pool-shared (only the session's owner acts). One episode per
+    // machine.session.epoch, <=3 attempts (10 min, 1 h) inside 30 min; <=3 runs per session
+    // per day; a same-cause breaker (3 heals / 24 h). Relief: it restores a session's lost
+    // context, so a governor failure must not block it.
+    controllerId: 'context-budget-canary-heal',
+    actionVerb: 'retry-compaction-reseed',
+    direction: 'relief',
+    resource: 'pool-shared',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 24,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 24, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // The canary's synthetic press on a throwaway session (context-budget-layered-summaries
+    // §9.1, the positive control): <=3 presses per machine per day, >=1 h apart, only while the
+    // epoch lacks a synthetic positive. Amplifying (it causes a compaction): fail closed.
+    controllerId: 'context-budget-synthetic-press',
+    actionVerb: 'retry-synthetic-compaction',
+    direction: 'amplifying',
+    resource: 'hardware-bound',
+    failDirection: 'closed-queue',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 3,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 3, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Swap-thrash bound (~72/day incident). 8 / 45 min dwell; staleTtl 60s.
     controllerId: 'proactive-swap-monitor',
     actionVerb: 'account-swap',
