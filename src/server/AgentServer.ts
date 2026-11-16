@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -9507,6 +9508,8 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
+        bootReadiness().markReady();
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {
