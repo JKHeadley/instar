@@ -1,0 +1,24 @@
+# Dashboard scoped-session revocation now actually works (ships dark)
+
+## What Changed
+
+The dashboard scoped-session feature (shipped dark in SEC-002b — your browser holds a short-lived, revocable pass instead of the permanent master key) had two gaps on the *revocation* side: rotating your PIN didn't end active passes, and once a stolen pass was refreshed your own logout silently did nothing. This closes both — before the feature is ever switched on.
+
+Now, when the feature is enabled: a new PIN ends every live dashboard session; re-using an already-spent pass is treated as theft and ends that session (the standard "refresh-token rotation" model banks and identity providers use); your logout ends the session even with an old pass; a session's live streams close at its deadline; and there's a one-tap "sign out all dashboard sessions on this agent" control (behind a fresh-PIN check, so a stolen pass can't trigger it).
+
+Ships **dark** (`security.dashboardScopedToken.enabled` defaults false). With it off, nothing changes — the dashboard and the master-token path are byte-identical to today.
+
+## Summary of New Capabilities
+
+- A PIN rotation now ends every live scoped dashboard session (`revokeAll` wired into the PIN-version change).
+- Strict refresh-token-rotation reuse detection: re-using a spent session token invalidates its whole family.
+- Revocation survives token rotation/expiry/eviction (tombstone-on-every-live-removal), so the owner's logout always works.
+- Bounded, fail-safe memory: a per-family tombstone cap that contains the offending family + a live-family count bound.
+- A scheduled 60s prune plus a family-liveness per-delivery SSE re-check close a past-deadline family's streams.
+- `POST /dashboard/session/revoke-all` — step-up-gated "sign out all dashboard sessions on this agent" (dark-404 when disabled).
+
+All gated behind `security.dashboardScopedToken.enabled` (default false); byte-identical when off.
+
+## What to Tell Your User
+
+Nothing changes yet — this ships switched off, like the feature it completes. When that feature is turned on (after its full live dashboard test), two things will be true that make a stolen dashboard session far less dangerous: **rotating your PIN signs out every active dashboard browser**, and a thief who grabs your session pass can't keep it alive by refreshing it — the moment the spent pass is re-used, the session ends and asks for your PIN again. The only everyday effect: once in a while, if your browser's refresh reply gets lost on the network, you'll be asked to re-enter your PIN. That's the deliberate, safe tradeoff for closing the theft hole. The "sign out everywhere" action works per machine; rotating your PIN is the way to sign out across all your machines at once.
