@@ -104,6 +104,10 @@ The review kept the design. Building made three changes: the guard compares agai
 - Notes acted on: a list field given as a string (the gate substring-matches strings) and giving a permission list to an entry that had none (the gate refused every call to it) now count as raises; the 403 for a `services`/`readOnlyServices` patch says those are replaced whole.
 - Notes left, with reasons: proof replay and the exact `from` level belong to the receipt consumption in PR B (CMT-1837); demoting a Slack owner to guest or promoting guest to operator are not raises under decision 4 (approvals read owner ids only from config, never the Slack registry); other bearer-reachable safeguard switches are out of scope per the spec's G1.
 
+## Follow-up commit (2026-11-16)
+
+The full e2e and integration runs found five older tests that relied on raising without proof (console Home's evolution toggle, the work board's PIN policy switch, trust recovery and a migration-provenance profile switch). Each now asserts the refusal, or raises with a test proof where the raise is only setup. The board's policy check moved after its settings validation, so a malformed request is a 400 (nothing written) before any 403.
+
 ## Evidence pointers
 
 - Unit: `tests/unit/TrustRaiseGuard.test.ts` (both sides of every classifier; owners refuse an unproven raise).

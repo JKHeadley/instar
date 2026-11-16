@@ -3,6 +3,7 @@ import { createTempProject } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import { TrustRecovery } from '../../src/core/TrustRecovery.js';
 import { AdaptiveTrust } from '../../src/core/AdaptiveTrust.js';
+import { proved, provedRecovery } from '../helpers/operatorProof.js';
 
 describe('TrustRecovery + AdaptiveTrust integration', () => {
   let project: TempProject;
@@ -59,7 +60,7 @@ describe('TrustRecovery + AdaptiveTrust integration', () => {
     const recovery = new TrustRecovery({ stateDir: project.stateDir, recoveryThreshold: 5 });
 
     // Grant initial trust
-    trust.grantTrust('github', 'write', 'log', 'Earned trust through operation');
+    proved(trust).grantTrust('github', 'write', 'log', 'Earned trust through operation');
 
     // Incident drops trust
     const event = trust.recordIncident('github', 'write', 'Accidentally pushed to wrong branch');
@@ -82,11 +83,11 @@ describe('TrustRecovery + AdaptiveTrust integration', () => {
     expect(suggestion).not.toBeNull();
 
     // Accept recovery
-    const recovered = recovery.acceptRecovery(incident.id);
+    const recovered = provedRecovery(recovery).acceptRecovery(incident.id);
     expect(recovered!.recovered).toBe(true);
 
     // Restore trust via AdaptiveTrust
-    trust.grantTrust('github', 'write', incident.previousLevel, 'Trust recovered after incident');
+    proved(trust).grantTrust('github', 'write', incident.previousLevel, 'Trust recovered after incident');
 
     const currentLevel = trust.getTrustLevel('github', 'write');
     expect(currentLevel.level).toBe(incident.previousLevel);
@@ -115,7 +116,7 @@ describe('TrustRecovery + AdaptiveTrust integration', () => {
     const i1 = recovery.recordIncident('gmail', 'write', 'log', 'approve-always', 'Error 1');
     // Resolve first incident
     for (let i = 0; i < 3; i++) recovery.recordSuccess('gmail', 'write');
-    recovery.acceptRecovery(i1.id);
+    provedRecovery(recovery).acceptRecovery(i1.id);
 
     // Second incident
     const i2 = recovery.recordIncident('gmail', 'write', 'approve-first', 'approve-always', 'Error 2');
