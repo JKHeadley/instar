@@ -14,8 +14,16 @@ export const VERIFY_RESTART_HOLD_MS = 3 * 60 * 60_000;
 export const PLANNED_RESTART_DELIVERY_MS = VERIFY_RESTART_HOLD_MS + 60 * 60_000;
 const PRE_SPAWN_HOLD_MS = 30_000;
 const FUTURE_CLOCK_SKEW_MS = 5_000;
-/** An accepted peer attempt holds until sentAt + this: 20 min plus one poll to import (414-attempt audit, spec). */
-export const PEER_RESTART_HOLD_MS = 21 * 60_000;
+/**
+ * An accepted peer attempt holds until sentAt + this: the peer run ceiling (PEER_LIMITS.maxRunMs,
+ * 60 min) plus one poll to import. It was 21 min, from an audit in which runs took 13 min; runs
+ * grew to 22-25 min and the hold then expired one to four minutes before the result was imported
+ * (2026-11-15, PR 3198: 22 peer-minutes lost). This bound is only the backstop for a peer that
+ * answers polls but never finishes; a run that ends, a quiet peer (two polls) and a stale
+ * heartbeat (90 s) each release the hold long before it. A unit test keeps it at or above the
+ * run ceiling so the two cannot drift apart again.
+ */
+export const PEER_RESTART_HOLD_MS = 61 * 60_000;
 /** The verifier ticks every 30 s; three missed ticks means it is not speaking for its attempts. */
 export const PEER_HOLD_HEARTBEAT_MAX_AGE_MS = 90_000;
 

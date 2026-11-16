@@ -17,6 +17,7 @@ import {
   MERGE_SETTLE_RESTART_HOLD_MS,
 } from '../../src/core/PlannedRestartVerifyGuard.js';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
+import { PEER_LIMITS } from '../../src/localVerify/peer.js';
 import { ServerSupervisor } from '../../src/lifeline/ServerSupervisor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -186,11 +187,30 @@ describe('planned restart / accepted peer attempts', () => {
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'planned-restart-peer-')); fs.mkdirSync(path.join(dir, 'state'), { recursive: true }); });
   afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'planned-restart-verify-guard.test.ts' }); });
 
-  it('holds until sentAt + 21 minutes and not past it', () => {
+  it('holds until sentAt + the peer hold bound and not past it', () => {
     const sentAt = NOW - 5 * 60_000;
     beat({ sentAt });
     expect(plannedRestartVerifyState(dir, flag(), NOW)).toMatchObject({ hold: true, holdUntilMs: sentAt + PEER_RESTART_HOLD_MS });
     beat({ sentAt: NOW - PEER_RESTART_HOLD_MS });
+    expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+  });
+
+  // 2026-11-15, PR 3198: the bound was 21 minutes while green peer runs took 22 to 25, so a waiting
+  // restart fired just before the result was imported and the run was abandoned.
+  it('still holds for a run that is longer than a typical run but inside the peer run ceiling', () => {
+    for (const minutes of [22, 25, 40, 59]) {
+      const sentAt = NOW - minutes * 60_000;
+      beat({ sentAt });
+      expect(plannedRestartVerifyState(dir, flag(), NOW), `${minutes} min`).toMatchObject({ hold: true, holdUntilMs: sentAt + PEER_RESTART_HOLD_MS });
+    }
+  });
+
+  it('covers the whole peer run ceiling plus one poll, so the bound cannot drift below real run length', () => {
+    expect(PEER_RESTART_HOLD_MS).toBeGreaterThanOrEqual(PEER_LIMITS.maxRunMs + PEER_LIMITS.pollMs);
+  });
+
+  it('a long-running attempt with a stale heartbeat does not hold', () => {
+    beat({ sentAt: NOW - 22 * 60_000, writtenAt: NOW - 91_000 });
     expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
   });
 
@@ -298,7 +318,7 @@ describe('planned restart / a green run whose merge is in progress', () => {
 
   it('takes the later of a peer attempt and a merge in progress, and marks the request deferred', () => {
     hold({ since: NOW - 1_000 });
-    fs.writeFileSync(peerHoldPath(dir), JSON.stringify({ v: 1, writtenAt: NOW, leaseEpoch: 7, attempts: [{ attemptId: 'a', pr: 1, sentAt: NOW - 20 * 60_000 }] }));
+    fs.writeFileSync(peerHoldPath(dir), JSON.stringify({ v: 1, writtenAt: NOW, leaseEpoch: 7, attempts: [{ attemptId: 'a', pr: 1, sentAt: NOW - PEER_RESTART_HOLD_MS + 60_000 }] })); // peer bound in 1 min, earlier than the merge bound
     expect(plannedRestartVerifyState(dir, flag(), NOW).holdUntilMs).toBe(NOW - 1_000 + MERGE_HANDOFF_RESTART_HOLD_MS);
     fs.writeFileSync(peerHoldPath(dir), JSON.stringify({ v: 1, writtenAt: NOW, leaseEpoch: 7, attempts: [{ attemptId: 'a', pr: 1, sentAt: NOW - 60_000 }] }));
     expect(plannedRestartVerifyState(dir, flag(), NOW).holdUntilMs).toBe(NOW - 60_000 + PEER_RESTART_HOLD_MS);

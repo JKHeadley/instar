@@ -84,7 +84,7 @@ export const PEER_LIMITS = Object.freeze({
   maxPeers: 2,
   /** Remote attempts per queue entry before it is only ever run locally. */
   maxAttemptsPerEntry: 2,
-  /** A remote attempt not done within this is abandoned (above the 45-min lane deadline plus setup). */
+  /** A remote attempt not done within this is abandoned on both sides; this, not a lane deadline, is what ends a stuck peer run. */
   maxRunMs: 60 * 60_000,
   /** `unknown` for an attempt older than this means the peer has no such attempt. */
   unknownGraceMs: 2 * 60_000,

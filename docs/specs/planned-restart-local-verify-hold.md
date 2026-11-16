@@ -141,19 +141,31 @@ supervisor and foreground watcher (which defer), `markPlannedRestartDeferred()`
 The peer hold counts only when the heartbeat's `writtenAt` is within 90 seconds
 (three verifier ticks) of now and not in the future. That tolerates a late
 tick while staying under the two-minute poll rule. Each qualifying attempt holds until
-`sentAt + 21 minutes` (20 minutes plus one `pollMs` for the result to be
-imported), and never past the request's three-hour ceiling. With a local child
+`sentAt + 61 minutes` (the peer run ceiling `PEER_LIMITS.maxRunMs`, 60 minutes,
+plus one `pollMs` for the result to be imported), and never past the request's
+three-hour ceiling. With a local child
 also running, the later bound wins, still capped at three hours. A missing,
 unreadable, stale or malformed heartbeat does not defer. `bypassHolds: true`
 still bypasses, and the updater's four-hour ceiling still sets it.
 
-The bound comes from the local-verify audit, 2026-10-28 to 2026-11-04: 414
-imported peer attempts, dispatch to import median 13.0 minutes, 95th
-percentile 14.5, maximum 22.1; 2 of 414 exceeded 21 minutes. Dispatch to
+The bound was first 21 minutes, from the local-verify audit, 2026-10-28 to
+2026-11-04: 414 imported peer attempts, dispatch to import median 13.0 minutes,
+95th percentile 14.5, maximum 22.1; 2 of 414 exceeded 21 minutes. Dispatch to
 accept was median 0.7 s, maximum 29 s, so `sentAt` is a fair anchor.
 
+Amended 2026-11-15: the suite grew and green peer runs now take 22 to 25
+minutes (37 of 38 on 2026-11-15 exceeded 21). A waiting restart then fired
+5 to 10 seconds after the bound and one to four minutes before the result
+would have been imported; the lease epoch moved on boot and the run was
+abandoned (PR 3198, 22 peer-minutes lost). A bound taken from measured run
+length goes stale whenever run length changes, so the bound is now the run
+ceiling itself plus one poll, and a unit test keeps it at or above
+`PEER_LIMITS.maxRunMs + PEER_LIMITS.pollMs`. In the normal case nothing waits
+longer than before: the hold ends when the run is imported. The bound only
+decides the worst case below.
+
 **No chaining.** Peer dispatch already re-checks `notePause()` immediately
-before a reservation is made (`LocalVerifyService.ts` ~1790), and each peer has
+before a reservation is made (`LocalVerifyService.ts`, the dispatch path), and each peer has
 at most one outstanding reservation. A planned restart therefore waits only for
 reservations accepted before it was requested.
 
@@ -185,7 +197,9 @@ applied.
 - Unmeasurable: no heartbeat, or an unreadable or stale one, means no peer
   hold. The restart proceeds exactly as before the amendment. The residual
   cost is a peer that answers polls but never finishes: it can hold a restart
-  for at most 21 minutes.
+  for at most 61 minutes: the 60-minute run ceiling (`PEER_LIMITS.maxRunMs`)
+  abandons such an attempt, which removes it from the heartbeat. `forceRestart`
+  bypasses the hold.
 
 ### Rollout
 
@@ -208,7 +222,8 @@ Compare seven days on each side. Report attempts abandoned after
 
 ### Safety and verification
 
-- Unit (guard): fresh heartbeat inside and past the 21-minute bound;
+- Unit (guard): fresh heartbeat inside and past the bound, and at 22, 25, 40
+  and 59 minutes (held); the bound is at least the peer run ceiling plus one poll;
   heartbeat 31 s and 89 s old (held) and 91 s old (not held); future,
   missing, malformed heartbeat; bypass flag; combined local and peer
   holds (later bound wins, capped at three hours); request reaching its
@@ -245,16 +260,17 @@ machine-local-justification: operator-ratified-exception — inherits the lease-
 |---|---|---|
 | Defer a planned restart while a local verify child is live (base decision, shipped in #2547) | invariant | Typed marker plus PID liveness, bounded at three hours; unreadable input never defers; `bypassHolds` overrides. |
 | Verifier lists an attempt in the heartbeat | invariant | Four typed conditions combined with AND (lease held, epoch equal, `accepted`, poll within two minutes). Each is a measured fact, not a weighed signal; any failure omits the attempt, which falls back to the pre-amendment behavior. |
-| Guard defers a planned restart for a listed attempt | invariant | Arithmetic on a fresh heartbeat: bounded at `sentAt` + 21 minutes and the three-hour request ceiling. Unreadable or stale input never defers. `bypassHolds` is an explicit override, not a judgment. |
+| Guard defers a planned restart for a listed attempt | invariant | Arithmetic on a fresh heartbeat: bounded at `sentAt` + 61 minutes (peer run ceiling plus one poll) and the three-hour request ceiling. Unreadable or stale input never defers. `bypassHolds` is an explicit override, not a judgment. |
 | Combine the local and peer holds | invariant | The later of the two bounds, capped at three hours. |
 
 ## Frontloaded Decisions
 
-1. Peer-hold bound: `sentAt` + 21 minutes, a code constant changed only by PR,
-   from the 414-attempt audit above. Not cheap to change after: it alters
+1. Peer-hold bound: `sentAt` + 61 minutes (the peer run ceiling plus one poll),
+   a code constant changed only by PR. It was 21 minutes from the 414-attempt
+   audit above until runs outgrew it (amended 2026-11-15). Not cheap to change after: it alters
    restart behavior.
 2. No configuration switch. The hold ships on, like the base decision; rollback
-   is a code revert. The worst case is a 21-minute delay to routine
+   is a code revert. The worst case is a 61-minute delay to routine
    maintenance, and `forceRestart` still bypasses it.
 3. A `sending` marker does not count. It flips to `accepted` within a second in
    the audit (maximum 29 s), so excluding it costs little.
@@ -268,8 +284,8 @@ machine-local-justification: operator-ratified-exception — inherits the lease-
 - **test-agent-live:** a throwaway agent with an isolated server and a fake peer: a planned restart requested while the peer attempt is accepted stays pending until the import, then is consumed; the same request with the heartbeat removed is consumed at once.
 - **dev-agent-live:** Echo's coordinator after the package update. The first planned restart that finds an accepted peer attempt is checked in the audit (`restart-held-for-peer`, then `restart-peer-hold-ended` with `imported`).
 - **fleet:** the behavior has no switch and reaches every agent with the package update, like the base decision. Agents with no peer verifiers never write the heartbeat, so for them nothing changes.
-- **graduation criterion:** on Echo, over seven days after deployment, at least three planned restarts that found an accepted attempt, each followed by `imported` (or `bound-reached` for a run past 21 minutes), and zero `lease-changed` abandons within 120 s of an own lease re-acquire for those restarts.
-- **dark-window:** none. It ships live; the residual risk is a routine restart delayed by up to 21 minutes, and rollback is a code revert.
+- **graduation criterion:** on Echo, over seven days after deployment, at least three planned restarts that found an accepted attempt, each followed by `imported` (or `bound-reached` for a run past the bound; since the 2026-11-15 amendment the 60-minute `run-bound` abandon fires first, so `bound-reached` is close to unreachable), and zero `lease-changed` abandons within 120 s of an own lease re-acquire for those restarts.
+- **dark-window:** none. It ships live; the residual risk is a routine restart delayed by up to 61 minutes, and rollback is a code revert.
 - **ladder:** not applicable: no flag; the hold ships live with the package update and graduates by the 7-day comparison above.
 
 ## Open questions
