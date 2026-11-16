@@ -362,6 +362,8 @@ import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionSto
 import { activeOwnerPhone, signedHost } from './mobileConsoleTicket.js';
 import { isOwnerPresenceEnabled } from './mobileOwnerPresenceRoutes.js';
 import { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
+import { OwnerApprovedActionStore } from './OwnerApprovedActionStore.js';
+import { PendingApprovalRegistry } from './PendingApprovalRegistry.js';
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { signRequest } from './machineAuth.js';
@@ -553,6 +555,12 @@ export class AgentServer {
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   /** Desktop-only sessions the owner's phone mints with Face ID (docs/specs/mobile-owner-presence-pin.md §2.1). */
   private readonly phoneDesktopSessions = new PhoneDesktopSessionStore();
+  /** SEC-018: owner-approved sensitive actions (docs/specs/owner-approved-sensitive-action.md).
+   *  One shared instance each — the phone's approval routes write, the MCP handler reads. Provided
+   *  by server.ts (the same instances it hands the MCP http service) so both sides share state;
+   *  falls back to fresh instances for callers/tests that don't supply them. */
+  private readonly ownerApprovedActionStore: OwnerApprovedActionStore;
+  private readonly ownerApprovedActionPending: PendingApprovalRegistry;
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
   private dashboardPinVersion: string | null = null;
 
@@ -1766,6 +1774,9 @@ export class AgentServer {
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
+    /** SEC-018: the shared owner-approval store/registry (same instances the MCP http service gets). */
+    ownerApprovedActionStore?: OwnerApprovedActionStore;
+    ownerApprovedActionPending?: PendingApprovalRegistry;
     /** Memory privacy: resolves session tokens at the auth layer. */
     memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
@@ -2718,6 +2729,10 @@ export class AgentServer {
     // immediately invalidates old bearer tokens AND old HMAC-signed view
     // URLs without a restart.
     this.threadlineMcpHttp = options.threadlineMcpHttp ?? null;
+    // SEC-018: share the owner-approval store/registry with the MCP http service (server.ts
+    // supplies the same instances it hands the MCP server), else fresh (callers/tests).
+    this.ownerApprovedActionStore = options.ownerApprovedActionStore ?? new OwnerApprovedActionStore();
+    this.ownerApprovedActionPending = options.ownerApprovedActionPending ?? new PendingApprovalRegistry();
     this.app.use(authMiddleware(
       () => this.config.authToken,
       options.config.projectName,
@@ -6278,6 +6293,8 @@ export class AgentServer {
       getConversationGraphDelegation: options.getConversationGraphDelegation,
       verifyDesktopOperatorSession: (token: string | undefined) => this.verifyDesktopOperatorSession(token),
       phoneDesktopSessions: this.phoneDesktopSessions,
+      ownerApprovedActionStore: this.ownerApprovedActionStore,
+      ownerApprovedActionPending: this.ownerApprovedActionPending,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,
