@@ -94,6 +94,8 @@ Pure code change, no migration, no new persisted state. Rows written with `prove
 
 The review kept the design. Building made three changes: the guard compares against the effective level (so narrowing an unset operation to `blocked` is not misread as a raise), `grantServiceTrust` is all or nothing, and evolution proposal decisions are labelled agent-reported because their status is set through the same token. The second-pass review then found one must-fix and one should-fix, both closed (see below). Clear to ship.
 
+**Note (2026-11-16, test correction):** `tests/e2e/phase4-dispatch-scope-provenance.test.ts` raised the autonomy profile, restored trust after an incident and granted trust with no proof, so the full test run refused it under decision 4 (4 failures, 17:27Z). It now uses the same test proof helpers as the other trust tests (`tests/helpers/operatorProof.ts`). Test-only; no source file changed, and the independent review's subject is unchanged.
+
 ## Second-pass review (if required)
 
 **Reviewer:** independent security review subagent (general-purpose, Claude Opus 5.5), given the spec and the code, not this artifact's conclusions; two rounds.
