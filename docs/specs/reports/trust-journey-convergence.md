@@ -88,6 +88,23 @@ Accepted risks and points the gate kept raising, each with its reason:
 
 Artifacts: `m1-*`, `m2-*`, `m3-*`, `m4-*`, `c8-*`, `c8b-*`, `c8c-*`, `verify2-*` and `gate-m1.json` … `gate-verify2.json` in `.instar/lanes/work-front-doors-1114/tj-converge/`; the round themes in the worktree's `.review/`.
 
+## Revision 2026-11-15 (evening): sign-in, held access, and the approved amendments
+
+**Why.** The dashboard session's handoff, from the 2026-11-15 14:20 PST note in topic 142440 on the Apple password bug, asked for three edits, and a later handoff reported Justin's approval of constitution changes 1 to 8 [telegram 142440, 2026-11-15 22:01 PST].
+
+**What changed.**
+- Decision 15: signing in to the person's own account with a stored password, passkey or recovery code is a governed kind with its own key, `<service>.sign-in`. It starts at "Ask me first", inherits no write or legacy grant, and is used only after an existing signed-in session fails. Reading a stored credential stays a read. A credential change is judged against the five sign-off conditions, and one that increases access is floor item 4.
+- The record line adds "Asked for something it already held". This counts delivered redundant asks, checked by the server against effective authority and a working session or credential, never against the agent's word. An unchecked ask shows "not checked", never zero. Graduation requires zero with the whole window checked.
+- Decision 10 no longer quotes "access is not permission" as Purpose words, because the Purpose has no such line. It cites the 1.x registry's *Self-Unblock Before Escalating* ("keeps capability from masquerading as authority").
+- The constitution-wording section records changes 1 to 8 as approved and landing; item 9 (Face ID) stays a separate decision. R13 and R23 moved from the not-relevant list into alignment rows.
+
+| Check | Result |
+|---|---|
+| Astra targeted check (`pw-astra.md`) | 3 must-fix, all in the new wording: the sign-in key contradicted decision 2 and 6a's legacy import; the count trusted advisory registry fields; a password-change label decided authority breadth. VERDICT NO |
+| Fixes | Astra's replacement text adopted for all three |
+| Astra verify (`pwv-astra.md`) | D1 to D3 resolved, no new defect, 0 must-fix. VERDICT YES |
+| Standards-Conformance Gate, final spec | ran 2026-11-15 22:12:19 PST (2026-11-16T06:12:19Z): 98 standards checked, not degraded, registry canary ok, fit verdict "fit", 2 flags (card expiry, the acceptance path), both repeats of points answered in the first convergence (`gate-pw.json` 22:04, `gate-pw2.json` 22:12) |
+
 ## Full Findings Catalog
 
 Every reviewer output is kept verbatim in the Echo agent home at `.instar/lanes/work-front-doors-1114/tj-converge/`:
