@@ -146,6 +146,8 @@ describe('GET /machine-maintenance wedge block (integration)', () => {
       lockState: async () => 'unlocked',
       canaryAvailable: () => true,
       ownUser: 'me',
+      // The process table answers with no canary left behind (the default probe output above).
+      ownUid: 501, endCanary: () => true, settle: async () => {},
       loadReading: () => null, spawnSystemFailures30m: () => null, sessionsCount: () => 0,
       nextWindowRestartAt: (now) => now + 14 * 60 * MIN, judge: null, raiseNotice: null, now: () => clock,
     });
