@@ -5128,6 +5128,14 @@ export interface InstarConfig {
       absoluteMaxMs?: number;
       maxTokens?: number;
     };
+    /** SEC-018: sensitive MCP handlers (thread delete; trust elevation later) require a
+     *  Face-ID owner-presence approval (docs/specs/owner-approved-sensitive-action.md).
+     *  Ships DARK — absent/false = today's isLocal behaviour. */
+    ownerApprovedActions?: {
+      enabled?: boolean;
+      /** Approval TTL (ms) from the owner's tap to the handler's use. Default 5 min. */
+      approvalTtlMs?: number;
+    };
   };
   /** Relationship tracking config */
   relationships?: RelationshipManagerConfig;
