@@ -380,6 +380,29 @@ export class UserManager {
     // Merge initial users (config takes precedence for initial setup)
     if (initialUsers) {
       for (const user of initialUsers) {
+        // A legacy config.users entry (e.g. {name, role, slackUserId} with no
+        // id/channels/permissions) must never fail boot: this runs inside the
+        // constructor, and a throw here crash-loops the server before it binds
+        // its port. Skip it loudly — never invent an id or permissions for it
+        // (that could weaken or widen access). A complete record already in
+        // users.json keeps working untouched.
+        if (
+          !user || typeof user !== 'object' ||
+          typeof user.id !== 'string' || !user.id.trim() ||
+          !Array.isArray(user.channels) || !Array.isArray(user.permissions)
+        ) {
+          const label = user && typeof user === 'object'
+            ? (user.id || user.name || user.slackUserId || '(unnamed)')
+            : String(user);
+          const covered = user && typeof user === 'object' && user.slackUserId
+            ? this.resolveFromSlackUserId(user.slackUserId)
+            : null;
+          console.warn(
+            `[UserManager] Skipping incomplete config.users entry "${label}" (needs id, channels and permissions)` +
+            (covered ? ` — already registered as user "${covered.id}" in users.json.` : ' — add id, channels and permissions to the config entry to register it.'),
+          );
+          continue;
+        }
         if (!this.users.has(user.id)) {
           // upsertUser → validateProfile refuses a fixture initialUsers entry
           // (typed throw). Guard so a fixture in config.users can't fail boot;

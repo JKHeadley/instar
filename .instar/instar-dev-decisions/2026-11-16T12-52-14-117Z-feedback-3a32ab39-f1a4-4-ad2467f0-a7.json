@@ -1,0 +1,20 @@
+{
+  "ts": "2026-11-16T12:52:14.117Z",
+  "slug": "feedback-3a32ab39-f1a4-4-ad2467f0-a7",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-3a32ab39-f1a4-4f9e-a0fa-777eb1ce60a3:a7",
+  "initiativeId": "feedback-3a32ab39-f1a4-4f9e-a0fa-777eb1ce60a3",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 1,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/users/UserManager.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
