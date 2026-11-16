@@ -51,6 +51,17 @@ export interface GraphSuggestion {
   /** One plain line saying why these belong together. */
   reason: string;
   memberKeys: string[];
+  /**
+   * Set only on a Chief of Staff project suggestion (work-front-doors stage 2b): the project's own
+   * conversation, which becomes the effort's front door on Accept. Such a suggestion may have a single
+   * member (the project conversation), and it stays offered while that conversation is unassigned.
+   */
+  frontDoorKey?: string;
+}
+
+/** A project suggestion's id: stable per project (not per member set), so a rejection holds as its children change. */
+export function projectSuggestionId(frontDoorKey: string): string {
+  return 'sg-' + crypto.createHash('sha256').update(`project:${frontDoorKey}`).digest('hex').slice(0, 20);
 }
 
 export function suggestionId(memberKeys: readonly string[]): string {
@@ -170,5 +181,8 @@ export function offerableSuggestions(
   state: { unassigned: ReadonlySet<string>; rejected: ReadonlySet<string>; accepted: ReadonlySet<string> },
 ): GraphSuggestion[] {
   return stored.filter((s) => !state.rejected.has(s.id) && !state.accepted.has(s.id)
-    && s.memberKeys.length >= SUGGESTION_LIMITS.minMembers && s.memberKeys.every((k) => state.unassigned.has(k)));
+    && (s.frontDoorKey
+      // A project suggestion: offered while its own conversation is unassigned; members placed elsewhere are skipped on Accept.
+      ? state.unassigned.has(s.frontDoorKey)
+      : s.memberKeys.length >= SUGGESTION_LIMITS.minMembers && s.memberKeys.every((k) => state.unassigned.has(k))));
 }

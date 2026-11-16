@@ -65,8 +65,12 @@ export function suggestionsModel(data) {
       const key = encodeNodeRef(m?.ref);
       return key && m.ref.kind === 'conversation' && typeof m.title === 'string' ? { ref: m.ref, key, title: m.title.trim() || 'Conversation' } : null;
     });
-    if (members.some((m) => m === null) || members.length < 2) return { ok: false };
-    items.push({ id: raw.id, title: raw.title.trim(), reason: typeof raw.reason === 'string' ? raw.reason : '', members, accepting: raw.accepting === true });
+    // A Chief of Staff project (work-front-doors stage 2b) carries its front door and may have one member.
+    const frontDoor = raw.frontDoor && raw.frontDoor.kind === 'conversation' && encodeNodeRef(raw.frontDoor) ? raw.frontDoor : null;
+    if (raw.frontDoor !== undefined && !frontDoor) return { ok: false };
+    if (members.some((m) => m === null) || members.length < (frontDoor ? 1 : 2)) return { ok: false };
+    if (frontDoor && !members.some((m) => m.key === encodeNodeRef(frontDoor))) return { ok: false };
+    items.push({ id: raw.id, title: raw.title.trim(), reason: typeof raw.reason === 'string' ? raw.reason : '', members, accepting: raw.accepting === true, frontDoor });
   }
   return { ok: true, state: data.state, builtAt: typeof data.builtAt === 'string' ? data.builtAt : null, failure: data.failure || null, items };
 }

@@ -69,6 +69,15 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     : r.waiting ? { done: false, text: `${waitingWords(r.data)} Tap Continue later; nothing is lost.` }
       : { done: false, text: `This step was refused (${r.code}). Nothing after it was changed.` };
 
+  // 0. A project whose own conversation is already inside something (another project's Accept moved it, or the
+  //    owner did): create nothing, so "Accept all" never leaves an empty project behind.
+  //    Not when an Accept is already in progress on the server (another tab, browser or the phone started it):
+  //    then the conversation may sit in THIS suggestion's effort, and step 1 resumes the same request.
+  if (s.frontDoor && !p.effort && !s.accepting) {
+    const front = await node(send, s.frontDoor);
+    if (front?.locked) return { done: false, text: 'Unlock again to continue.' };
+    if (front && front.path.length) return { done: true, placedElsewhere: true, moved: 0, skipped: s.members.length, effort: null };
+  }
   // 1. The effort.
   if (!p.effort) {
     onStep('Creating the effort…');
@@ -123,7 +132,28 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     if (!r.ok) return stop(r);
     p.moved.push(m.key); save();
   }
-  // 4. Done: the server stops offering it.
+  // 4. A project's own conversation becomes the effort's front door (work-front-doors stage 2b), once it
+  //    sits in the effort. If the owner had already placed it elsewhere it was skipped above, and so is this.
+  if (s.frontDoor && !p.frontDoorSet) {
+    const frontKey = encodeNodeRef(s.frontDoor);
+    if (p.moved.includes(frontKey)) {
+      onStep('Making its conversation the front door…');
+      const effort = await node(send, p.effort);
+      const conv = await node(send, s.frontDoor);
+      if (effort?.locked || conv?.locked) return { done: false, text: 'Unlock again to continue.' };
+      if (!effort || !conv?.correction) return { done: false, text: 'The new effort is not readable yet. Tap Continue in a moment.' };
+      const already = effort.node.frontDoor && encodeNodeRef(effort.node.frontDoor) === frontKey;
+      if (!already) {
+        p.frontDoorId = p.frontDoorId || requestId(); save();
+        const change = { kind: 'set-front-door', effort: p.effort, conversation: s.frontDoor,
+          replacesFrontDoorEventIds: effort.correction?.replacesFrontDoorEventIds || [], observedPlacementEventIds: conv.correction.replacesPlacementEventIds };
+        const r = await runChange({ send, id: p.frontDoorId, change, wait, sleep });
+        if (!r.ok) return stop(r);
+      }
+    }
+    p.frontDoorSet = true; save();
+  }
+  // 5. Done: the server stops offering it.
   const finished = await send(`${SUGGESTIONS}/${encodeURIComponent(s.id)}/accepted`, {});
   if (finished.needsUnlock) return { done: false, text: 'Unlock again to continue.' };
   if (!finished.ok) return { done: false, text: 'Everything moved, but finishing the suggestion could not be recorded. Tap Continue.' };
@@ -145,7 +175,25 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
     if (r.needsUnlock) { unlock(); return; }
     const model = r.ok ? suggestionsModel(r.data) : { ok: false };
     if (!model.ok) { status.textContent = r.status === 503 ? 'Suggestions are not available until your machines finish joining.' : 'Suggestions could not be loaded. Try again.'; return; }
-    list.replaceChildren(...model.items.map((s) => card(s)));
+    const cards = model.items.map((s) => ({ s, ...card(s) }));
+    list.replaceChildren(...cards.map((c) => c.box));
+    // "Accept all projects": the same owner path, one project at a time; a stop leaves Continue on the rest.
+    const projects = cards.filter((c) => c.s.frontDoor);
+    if (projects.length > 1) {
+      const all = el('button', { type: 'button', class: 'btn-primary btn-inline', text: `Accept all ${projects.length} projects` });
+      all.addEventListener('click', async () => {
+        if (!current() || !operatorSession()) { unlock(); return; }
+        all.disabled = true;
+        for (const c of projects) {
+          if (c.finished()) continue;
+          const ok = await c.run();
+          if (!current()) return;
+          if (!ok) { all.disabled = false; all.textContent = 'Continue accepting projects'; return; }
+        }
+        all.textContent = 'All projects accepted';
+      });
+      list.prepend(el('div', { class: 'conversation-suggestion-actions' }, all));
+    }
     status.textContent = model.state === 'building' ? 'Looking through your conversations. This takes a minute or two.'
       : model.failure === 'model-unavailable' ? 'Suggestions need a model this agent can use, and none is set up here.'
         : model.failure === 'build-failed' ? 'The last look-through did not finish. Tap Refresh to try again.'
@@ -167,22 +215,34 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
     const words = el('p', { class: 'need-sub', role: 'status', 'aria-live': 'polite' });
     const accept = el('button', { type: 'button', class: 'btn-primary btn-inline', text: s.accepting || readProgress(s.id).effort ? 'Continue' : 'Accept' });
     const reject = el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Reject' });
+    let finished = false;
     const box = el('div', { class: 'need-card conversation-suggestion' },
       el('p', { class: 'row-title', text: s.title }),
       s.reason ? el('p', { class: 'need-sub', text: s.reason }) : null,
       el('ul', { class: 'conversation-suggestion-members' }, s.members.map((m) => el('li', { text: m.title }))),
       el('div', { class: 'conversation-suggestion-actions' }, accept, reject), words);
-    accept.addEventListener('click', async () => {
-      if (!current() || !operatorSession()) { unlock(); return; }
+    // One Accept (or Continue); true when this suggestion is finished. "Accept all projects" calls it too.
+    const run = async () => {
       accept.disabled = true; reject.disabled = true;
       const out = await acceptSuggestion(s, { send, onStep: (t) => { words.textContent = t; } });
-      if (!current()) return;
+      if (!current()) return false;
+      if (out.done && out.placedElsewhere) {
+        finished = true;
+        words.textContent = 'Its conversation is already inside another project, so nothing was created.';
+        return true;
+      }
       if (out.done) {
+        finished = true;
         words.textContent = out.skipped ? `Done. ${out.moved} moved; ${out.skipped} could not be moved and stayed where they were.` : `Done. ${out.moved} conversations are in this effort.`;
-        box.append(el('a', { class: 'btn-quiet btn-inline', href: openEffort(out.effort), text: 'Open effort' }));
-        return;
+        box.append(el('a', { class: 'btn-quiet btn-inline', href: openEffort(out.effort), text: s.frontDoor ? 'Open project' : 'Open effort' }));
+        return true;
       }
       words.textContent = out.text; accept.textContent = 'Continue'; accept.disabled = false; reject.disabled = Boolean(readProgress(s.id).effort);
+      return false;
+    };
+    accept.addEventListener('click', async () => {
+      if (!current() || !operatorSession()) { unlock(); return; }
+      await run();
     });
     reject.addEventListener('click', async () => {
       if (!current() || !operatorSession()) { unlock(); return; }
@@ -190,10 +250,10 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
       const r = await send(`${SUGGESTIONS}/${encodeURIComponent(s.id)}/reject`, {});
       if (!current()) return;
       if (r.needsUnlock) { unlock(); return; }
-      if (r.ok) { box.replaceChildren(note('Rejected. This suggestion will not come back.')); return; }
+      if (r.ok) { finished = true; box.replaceChildren(note('Rejected. This suggestion will not come back.')); return; }
       words.textContent = 'Could not record that. Try again.'; reject.disabled = false; accept.disabled = false;
     });
-    return box;
+    return { box, run, finished: () => finished };
   };
   await load();
 }

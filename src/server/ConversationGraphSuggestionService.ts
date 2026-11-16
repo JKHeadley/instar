@@ -19,7 +19,7 @@ import type { IntelligenceProvider } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { nodeKey, type ConversationRef, type ProjectionItem } from '../core/conversationGraph.js';
 import {
-  buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, SUGGESTION_LIMITS,
+  buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, SUGGESTION_LIMITS, projectSuggestionId,
   type GraphSuggestion, type SuggestionInput,
 } from '../core/ConversationGraphSuggestions.js';
 
@@ -50,6 +50,16 @@ export interface SuggestionViewItem {
   members: Array<{ ref: ConversationRef; title: string }>;
   /** An Accept was started; Continue resumes it with the same requests. */
   accepting: boolean;
+  /** A Chief of Staff project (work-front-doors stage 2b): its conversation becomes the effort's front door. */
+  frontDoor?: ConversationRef;
+}
+
+/** A project the Chief of Staff tracks, as a ready-made suggestion: its conversation and its sub-conversations. */
+export interface ProjectSuggestionSource {
+  key: string;
+  ref: ConversationRef;
+  title: string;
+  children: Array<{ key: string; ref: ConversationRef; title: string }>;
 }
 
 export interface SuggestionView {
@@ -65,6 +75,12 @@ export interface SuggestionServiceDeps {
   intelligence: IntelligenceProvider | null;
   /** What a conversation has been about, and its bound project. Bounded by the caller. */
   evidence(ref: ConversationRef): { project: string | null; text: string };
+  /**
+   * The Chief of Staff's bound projects (work-front-doors stage 2b). Each is offered as a deterministic
+   * suggestion (no model call); the owner's Accept makes it an effort with the project conversation as
+   * its front door. Absent ⇒ no project suggestions.
+   */
+  projects?: () => ProjectSuggestionSource[];
   now?: () => Date;
   /** Minimum gap between two builds the owner asks for. */
   minRebuildMs?: number;
@@ -122,6 +138,7 @@ export class ConversationGraphSuggestionService {
    * Opening the list starts a build when there has never been one, or the last is stale.
    */
   view(unassigned: readonly ProjectionItem[]): SuggestionView {
+    this.syncProjects();
     const state = this.load();
     const stale = !state.lastAttemptAt || this.now().getTime() - Date.parse(state.lastAttemptAt) >= this.autoRebuildMs;
     if (stale && this.deps.intelligence) this.start(unassigned);
@@ -132,12 +149,21 @@ export class ConversationGraphSuggestionService {
     // A started Accept stays offered while its members move in, so Continue can finish it.
     const offered = state.suggestions.filter((s) => fresh.has(s.id) || (state.accepting[s.id] && !rejected.has(s.id) && !accepted.has(s.id)));
     const byId = new Map(state.suggestions.map((s) => [s.id, s]));
-    const items = offered.map((s) => ({
-      id: s.id, title: s.title, reason: s.reason,
-      // Titles come from the current authorized projection, not the stored copy.
-      members: (byId.get(s.id)?.members ?? []).map((m) => ({ ref: m.ref, title: visible.get(m.key)?.title ?? m.title })),
-      accepting: Boolean(state.accepting[s.id]),
-    }));
+    const items = offered.map((s) => {
+      const stored = byId.get(s.id);
+      // A project offers only its members still unassigned, until an Accept starts; from then on it keeps every
+      // member and its front door, so Continue (even after a reload) finishes the same steps.
+      const inProgress = Boolean(state.accepting[s.id]);
+      const members = (stored?.members ?? []).filter((m) => !s.frontDoorKey || inProgress || visible.has(m.key));
+      const front = s.frontDoorKey ? members.find((m) => m.key === s.frontDoorKey) : undefined;
+      return {
+        id: s.id, title: s.title, reason: s.reason,
+        // Titles come from the current authorized projection, not the stored copy.
+        members: members.map((m) => ({ ref: m.ref, title: visible.get(m.key)?.title ?? m.title })),
+        accepting: Boolean(state.accepting[s.id]),
+        ...(front ? { frontDoor: front.ref } : {}),
+      };
+    });
     const view: SuggestionView = {
       state: this.building ? 'building' : this.deps.intelligence ? 'ready' : 'unavailable',
       builtAt: state.builtAt, items,
@@ -151,6 +177,7 @@ export class ConversationGraphSuggestionService {
   refresh(unassigned: readonly ProjectionItem[]): { started: boolean; reason?: 'model-unavailable' | 'already-building' | 'too-soon' } {
     if (!this.deps.intelligence) return { started: false, reason: 'model-unavailable' };
     if (this.building) return { started: false, reason: 'already-building' };
+    this.syncProjects(); // so the model never groups a project's own conversations
     const last = this.load().lastAttemptAt;
     if (last && this.now().getTime() - Date.parse(last) < this.minRebuildMs) return { started: false, reason: 'too-soon' };
     this.start(unassigned);
@@ -196,7 +223,7 @@ export class ConversationGraphSuggestionService {
   private start(unassigned: readonly ProjectionItem[]): void {
     if (this.building || !this.deps.intelligence) return;
     const current = this.load();
-    const busy = new Set(current.suggestions.filter((s) => current.accepting[s.id]).flatMap((s) => s.memberKeys));
+    const busy = new Set(current.suggestions.filter((s) => current.accepting[s.id] || s.frontDoorKey).flatMap((s) => s.memberKeys));
     const inputs = this.inputs(unassigned).filter((i) => !busy.has(i.key));
     const startedAt = this.now().toISOString();
     const before = this.load();
@@ -221,6 +248,40 @@ export class ConversationGraphSuggestionService {
     });
   }
 
+  /**
+   * Keeps one stored suggestion per Chief of Staff project, its members refreshed from the project's
+   * current sub-conversations. The id is per project, so a rejection or an accept holds as children change;
+   * a project mid-Accept keeps its members until that Accept finishes.
+   */
+  private syncProjects(): void {
+    if (!this.deps.projects) return;
+    let projects: ProjectSuggestionSource[];
+    try { projects = this.deps.projects(); } catch {
+      DegradationReporter.getInstance().report({ feature: 'Conversations.suggestions', primary: 'Chief of Staff projects offered as suggestions',
+        fallback: 'Offer only the model-built suggestions', reason: 'project-suggestions-unreadable', impact: 'The Chief of Staff projects are not offered to organize this time', internalOnly: true });
+      return;
+    }
+    const state = this.load();
+    let changed = false;
+    // A project the Chief of Staff no longer tracks is no longer offered (unless its Accept is in progress).
+    const current = new Set(projects.slice(0, 100).map((p) => projectSuggestionId(p.key)));
+    const before = state.suggestions.length;
+    state.suggestions = state.suggestions.filter((s) => !s.frontDoorKey || current.has(s.id) || state.accepting[s.id]);
+    if (state.suggestions.length !== before) changed = true;
+    for (const p of projects.slice(0, 100)) {
+      const id = projectSuggestionId(p.key);
+      const seen = new Set<string>([p.key]);
+      const members = [{ key: p.key, ref: p.ref, title: p.title }, ...p.children.filter((c) => !seen.has(c.key) && (seen.add(c.key), true)).slice(0, SUGGESTION_LIMITS.maxMembers - 1)];
+      const memberKeys = members.map((m) => m.key);
+      const next = { id, title: `Project: ${p.title}`.slice(0, SUGGESTION_LIMITS.maxEffortNameChars), reason: 'A project the Chief of Staff tracks. Its conversation becomes the project\'s front door.', memberKeys, frontDoorKey: p.key, members };
+      const i = state.suggestions.findIndex((s) => s.id === id);
+      if (i < 0) { state.suggestions.push(next); changed = true; continue; }
+      if (state.accepting[id]) continue;
+      if (JSON.stringify(state.suggestions[i]) !== JSON.stringify(next)) { state.suggestions[i] = next; changed = true; }
+    }
+    if (changed) this.save(state);
+  }
+
   private async build(inputs: SuggestionInput[], startedAt: string): Promise<void> {
     let groups: GraphSuggestion[] = [];
     let failure: string | null = null;
@@ -242,7 +303,8 @@ export class ConversationGraphSuggestionService {
     if (!failure) {
       const byKey = new Map(inputs.map((i) => [i.key, i]));
       state.builtAt = this.now().toISOString();
-      const kept = state.suggestions.filter((s) => state.accepting[s.id] && !state.accepted[s.id] && !state.rejected[s.id]);
+      // Project suggestions are not the model's: a rebuild keeps them as they are.
+      const kept = state.suggestions.filter((s) => s.frontDoorKey || (state.accepting[s.id] && !state.accepted[s.id] && !state.rejected[s.id]));
       const keptIds = new Set(kept.map((s) => s.id));
       state.suggestions = [...kept, ...groups.filter((g) => !keptIds.has(g.id)).map((g) => ({ ...g, members: g.memberKeys.map((k) => ({ key: k, ref: byKey.get(k)!.ref, title: byKey.get(k)!.title })) }))];
     }

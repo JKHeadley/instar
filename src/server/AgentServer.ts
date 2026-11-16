@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { nodeKey } from '../core/conversationGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
@@ -7901,6 +7902,27 @@ export class AgentServer {
         .filter(r=>r.status==='live'&&r.kind==='goal').slice(-2).map(r=>r.text.slice(0,200));
       const text=[summary?.purpose??'',goals.join(' / '),summary?.summary??''].filter(part=>part.trim()).join(' — ').slice(0,600);
       return{project:binding?.projectName??null,text};
+    },
+    // work-front-doors stage 2b: each Chief of Staff bound project is offered as a ready-made suggestion; the
+    // owner's Accept makes it an effort with its conversation as the front door (projects become efforts only
+    // by the owner's accept). Members: the project conversation and its Chief of Staff tree children.
+    projects:()=>{
+      const loop=options.chiefOfStaffLoop;if(!loop)return[];
+      const chatId=String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'');
+      const refFor=(key:string):import('../core/conversationGraph.js').ConversationRef|null=>{
+        const t=/^telegram:(\d+)$/.exec(key);if(t&&chatId)return{kind:'conversation',platform:'telegram',chatId,topicId:Number(t[1])};
+        const a=/^app:([A-Za-z0-9_.:-]{1,200})$/.exec(key);if(a)return{kind:'conversation',platform:'app',conversationKey:a[1]};
+        return null; // other kinds are not offered (the owner can still organize them by hand)
+      };
+      const tree=loop.tree();
+      const out:import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[]=[];
+      for(const p of loop.projectsSummary()){
+        const ref=refFor(p.conversationKey);if(!ref)continue;
+        const children:Array<{key:string;ref:import('../core/conversationGraph.js').ConversationRef;title:string}>=[];
+        for(const n of tree.values()){if(n.parentConversationKey!==p.conversationKey)continue;const c=refFor(n.conversationKey);if(c)children.push({key:nodeKey(c),ref:c,title:'Conversation'});}
+        out.push({key:nodeKey(ref),ref,title:p.title,children});
+      }
+      return out;
     }};
     if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
       graphSurfaceMounted=true;

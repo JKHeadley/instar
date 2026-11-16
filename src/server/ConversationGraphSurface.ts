@@ -80,7 +80,7 @@ export function createConversationGraphSurface(options:{
  /** The Chief of Staff Telegram topic: the root of the owner's Overview (conversation-graph-suggestions §2). */
  chiefOfStaffTopicId?:()=>number|null;
  /** The suggestion step (§3). Mounted only with owner corrections, since Accept needs them. */
- suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string}};
+ suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[]};
 }):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();
  const router=Router();
@@ -124,7 +124,7 @@ export function createConversationGraphSurface(options:{
    ...(ownerAdmission?{captureOwnerIntent:ownerAdmission.capture,resolveQueuedOwner:ownerAdmission.resolve}:{})});
   router.use(createConversationGraphChangeRouter({changes,resolveViewer}));
   if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,
-   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence})}));
+   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{})})}));
  }
  return router;
 }

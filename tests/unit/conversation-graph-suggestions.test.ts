@@ -270,3 +270,83 @@ describe('Accept in progress (server side)', () => {
     expect(service.view([item(13)]).items).toEqual([]);
   });
 });
+
+describe('Chief of Staff projects as suggestions (work-front-doors stage 2b)', () => {
+  const projectSetup = (projects: () => Array<{ key: string; ref: ConversationRef; title: string; children: Array<{ key: string; ref: ConversationRef; title: string }> }>) => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'graph-suggestions-proj-'));
+    const calls: string[] = [];
+    const service = new ConversationGraphSuggestionService({
+      stateDir, now: () => new Date('2026-11-16T15:00:00Z'),
+      intelligence: { evaluate: async (prompt) => { calls.push(prompt); return reply([]); } },
+      evidence: () => ({ project: null, text: '' }), projects,
+    });
+    return { service, calls };
+  };
+  const proj = (topicId: number, children: number[] = []) => ({ key: nodeKey(tg(topicId)), ref: tg(topicId), title: `Project ${topicId}`,
+    children: children.map((c) => ({ key: nodeKey(tg(c)), ref: tg(c), title: 'Conversation' })) });
+
+  it('offers each project with its front door, one member allowed, and never sends project conversations to the model', async () => {
+    const { service, calls } = projectSetup(() => [proj(21, [22]), proj(31)]);
+    const inv = [item(21), item(22), item(31), item(41), item(42)];
+    service.view(inv); await service.settled();
+    const view = service.view(inv);
+    const p21 = view.items.find((i) => i.title === 'Project: Project 21')!;
+    expect(p21.frontDoor).toEqual(tg(21));
+    expect(p21.members.map((m) => (m.ref as { topicId: number }).topicId)).toEqual([21, 22]);
+    expect(view.items.find((i) => i.title === 'Project: Project 31')!.members).toHaveLength(1);
+    expect(calls.join('\n')).not.toContain('Topic 21');
+    expect(calls.join('\n')).not.toContain('Topic 22');
+    expect(calls.join('\n')).toContain('Topic 41');
+  });
+
+  it('a project stays offered while its own conversation is unassigned; a child placed elsewhere is just left out', async () => {
+    const { service } = projectSetup(() => [proj(21, [22])]);
+    service.view([item(21), item(22)]); await service.settled();
+    const view = service.view([item(21)]); // 22 was placed by the owner
+    expect(view.items).toHaveLength(1);
+    expect(view.items[0].members.map((m) => (m.ref as { topicId: number }).topicId)).toEqual([21]);
+    expect(service.view([item(22)]).items).toEqual([]); // the project conversation itself was placed: withdrawn
+  });
+
+  it('a rejection holds as the project gains children; an accepted project is not offered again', async () => {
+    let children = [22];
+    const { service } = projectSetup(() => [proj(21, children), proj(31)]);
+    service.view([item(21), item(22), item(23), item(31)]); await service.settled();
+    const first = service.view([item(21), item(22), item(23), item(31)]);
+    const id21 = first.items.find((i) => i.title === 'Project: Project 21')!.id;
+    expect(service.reject(id21)).toBe(true);
+    children = [22, 23];
+    expect(service.view([item(21), item(22), item(23), item(31)]).items.map((i) => i.title)).toEqual(['Project: Project 31']);
+    const id31 = first.items.find((i) => i.title === 'Project: Project 31')!.id;
+    expect(service.beginAccept(id31)).not.toBeNull();
+    expect(service.accepted(id31)).toBe(true);
+    expect(service.view([item(21), item(22), item(23), item(31)]).items).toEqual([]);
+  });
+
+  it('a project source that throws offers no projects and keeps the rest working', async () => {
+    const { service } = projectSetup(() => { throw new Error('journal unreadable'); });
+    service.view([item(41), item(42)]); await service.settled();
+    expect(service.view([item(41), item(42)]).state).toBe('ready');
+  });
+
+  it('second pass: an Accept in progress keeps every member and its front door after the project conversation moved', async () => {
+    const { service } = projectSetup(() => [proj(21, [22])]);
+    service.view([item(21), item(22)]); await service.settled();
+    const id = service.view([item(21), item(22)]).items[0].id;
+    expect(service.beginAccept(id)).not.toBeNull();
+    const resumed = service.view([item(22)]); // 21 was moved into the new effort; the page reloaded
+    expect(resumed.items).toHaveLength(1);
+    expect(resumed.items[0].frontDoor).toEqual(tg(21));
+    expect(resumed.items[0].members.map((m) => (m.ref as { topicId: number }).topicId)).toEqual([21, 22]);
+  });
+
+  it('second pass: a project the Chief of Staff no longer tracks is no longer offered', async () => {
+    let list = [proj(21), proj(31)];
+    const { service } = projectSetup(() => list);
+    service.view([item(21), item(31)]); await service.settled();
+    expect(service.view([item(21), item(31)]).items).toHaveLength(2);
+    list = [proj(31)];
+    expect(service.view([item(21), item(31)]).items.map((i) => i.title)).toEqual(['Project: Project 31']);
+  });
+});
+

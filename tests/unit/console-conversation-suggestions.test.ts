@@ -126,3 +126,81 @@ describe('acceptSuggestion respects what the owner already did',()=>{
   expect(changes.filter(c=>c.change.kind==='set-primary-placement').map(c=>c.change.subject.topicId)).toEqual([5]);
  });
 });
+
+describe('a Chief of Staff project suggestion (work-front-doors stage 2b)',()=>{
+ it('accepts with one member and makes the project conversation the front door, through the owner path',async()=>{
+  const m=await boot();
+  const s={id:'sg-0123456789abcdef0999',title:'Project: Android app',reason:'',frontDoor:tg(7),members:[{ref:tg(7),key:m.encodeNodeRef(tg(7)),title:'Android app'}]};
+  const calls:Array<{path:string;body?:any}>=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0002'});
+   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
+   if(path==='/conversation-graph/preview')return ok({eligible:true});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref));}
+   if(path.endsWith('/accepted'))return ok({ok:true});
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,moved:1,skipped:0,effort});
+  const changes=calls.filter(c=>c.path==='/conversation-graph/changes').map(c=>c.body.change.kind);
+  expect(changes).toEqual(['create-effort','set-effort-title','set-primary-placement','set-front-door']);
+  const fd=calls.find(c=>c.body?.change?.kind==='set-front-door')!.body.change;
+  expect(fd).toMatchObject({effort,conversation:tg(7),replacesFrontDoorEventIds:[],observedPlacementEventIds:['place-head-7']});
+ });
+
+ it('sets no front door when the owner had already placed the project conversation elsewhere',async()=>{
+  const m=await boot();
+  const elsewhere={kind:'effort',id:'99999999-70de-4324-9ef3-22b616fc83ce'};
+  const s={id:'sg-0123456789abcdef0998',title:'Project: X',reason:'',frontDoor:tg(8),members:[{ref:tg(8),key:m.encodeNodeRef(tg(8)),title:'X'}]};
+  const calls:any[]=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0003'});
+   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
+    return ok(nodeBody(ref,ref.kind==='conversation'?{path:[{ref:elsewhere,title:'Theirs'}]}:{}));}
+   if(path.endsWith('/accepted'))return ok({ok:true});
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,moved:0,skipped:1});
+  expect(calls.some(c=>c.body?.change?.kind==='set-front-door')).toBe(false);
+ });
+
+ it('the model admits a one-member project with its front door, and refuses a front door that is not a member',async()=>{
+  const m=await boot();
+  const item=(over:any)=>({id:'sg-0123456789abcdef0997',title:'Project: Y',reason:'r',members:[{ref:tg(9),title:'Y'}],accepting:false,...over});
+  const okModel=m.suggestionsModel({state:'ready',items:[item({frontDoor:tg(9)})]});
+  expect(okModel.ok).toBe(true);
+  expect(okModel.items[0].frontDoor).toEqual(tg(9));
+  expect(m.suggestionsModel({state:'ready',items:[item({frontDoor:tg(10)})]}).ok).toBe(false);
+  expect(m.suggestionsModel({state:'ready',items:[item({})]}).ok).toBe(false); // an ordinary suggestion still needs two
+ });
+ it('second pass: a project whose conversation is already inside another project creates nothing',async()=>{
+  const m=await boot();
+  const other={kind:'effort',id:'77777777-70de-4324-9ef3-22b616fc83ce'};
+  const s={id:'sg-0123456789abcdef0996',title:'Project: B',reason:'',frontDoor:tg(11),members:[{ref:tg(11),key:m.encodeNodeRef(tg(11)),title:'B'}]};
+  const calls:any[]=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref,{path:[{ref:other,title:'Project A'}]}));}
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,placedElsewhere:true,effort:null});
+  expect(calls.some(c=>c.path==='/conversation-graph/changes'||c.path.endsWith('/start'))).toBe(false);
+ });
+ it('second pass: Continue in another tab (accepting on the server, no local progress) resumes the same effort and sets the front door',async()=>{
+  const m=await boot();
+  const s={id:'sg-0123456789abcdef0995',title:'Project: C',reason:'',accepting:true,frontDoor:tg(12),members:[{ref:tg(12),key:m.encodeNodeRef(tg(12)),title:'C'}]};
+  const calls:any[]=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0004'});
+   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
+    return ok(nodeBody(ref,ref.kind==='conversation'?{path:[{ref:effort,title:'Project: C'}]}:{}));}
+   if(path.endsWith('/accepted'))return ok({ok:true});
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,effort});
+  expect(out.placedElsewhere).toBeUndefined();
+  expect(calls.some(c=>c.body?.change?.kind==='set-front-door')).toBe(true);
+  expect(calls.some(c=>c.path.endsWith('/accepted'))).toBe(true);
+ });
+});
+
