@@ -846,41 +846,67 @@ function buildX25519Spki(publicKeyRaw: Buffer): Buffer {
   return Buffer.concat([header, publicKeyRaw]);
 }
 
-/** Get nested value from object using dot notation. */
+/**
+ * Key-path segments that name JavaScript's object machinery rather than a stored key. A dotted
+ * path is caller-supplied (secret sync batches, setup flows), so a segment like `__proto__` must
+ * never be walked: it would reach the shared object prototype instead of the vault's own data.
+ * No real secret uses these names; a path containing one is refused on write and reads as absent.
+ */
+const RESERVED_KEY_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+export function hasReservedKeySegment(keyPath: string): boolean {
+  return keyPath.split('.').some((part) => RESERVED_KEY_SEGMENTS.has(part));
+}
+
+/** A plain, non-null object stored as the vault's OWN property (never an inherited one). */
+function ownObjectChild(current: Record<string, unknown>, part: string): Record<string, unknown> | undefined {
+  if (!Object.prototype.hasOwnProperty.call(current, part)) return undefined;
+  const child = current[part];
+  return child !== null && typeof child === 'object' ? (child as Record<string, unknown>) : undefined;
+}
+
+/** Get nested value from object using dot notation. Only own properties are followed. */
 function getNestedValue(obj: Record<string, unknown>, keyPath: string): unknown {
+  if (hasReservedKeySegment(keyPath)) return undefined;
   const parts = keyPath.split('.');
   let current: unknown = obj;
   for (const part of parts) {
     if (current === null || current === undefined || typeof current !== 'object') {
       return undefined;
     }
+    if (!Object.prototype.hasOwnProperty.call(current, part)) return undefined;
     current = (current as Record<string, unknown>)[part];
   }
   return current;
 }
 
-/** Set nested value in object using dot notation. */
+/** Set nested value in object using dot notation. Throws on a reserved segment. */
 function setNestedValue(obj: Record<string, unknown>, keyPath: string, value: unknown): void {
+  if (hasReservedKeySegment(keyPath)) {
+    throw new Error('secret-key-path-reserved-segment: a secret key path may not contain __proto__, prototype or constructor');
+  }
   const parts = keyPath.split('.');
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== 'object') {
-      current[parts[i]] = {};
+    let child = ownObjectChild(current, parts[i]);
+    if (!child) {
+      child = {};
+      current[parts[i]] = child;
     }
-    current = current[parts[i]] as Record<string, unknown>;
+    current = child;
   }
   current[parts[parts.length - 1]] = value;
 }
 
-/** Delete nested value from object using dot notation. */
+/** Delete nested value from object using dot notation. A reserved segment is a no-op. */
 function deleteNestedValue(obj: Record<string, unknown>, keyPath: string): void {
+  if (hasReservedKeySegment(keyPath)) return;
   const parts = keyPath.split('.');
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== 'object') {
-      return; // Path doesn't exist
-    }
-    current = current[parts[i]] as Record<string, unknown>;
+    const child = ownObjectChild(current, parts[i]);
+    if (!child) return; // Path doesn't exist
+    current = child;
   }
   delete current[parts[parts.length - 1]];
 }
