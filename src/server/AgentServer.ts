@@ -2382,7 +2382,11 @@ export class AgentServer {
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
-    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken);
+    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken,
+      // SEC-046: when the dashboard scoped-session feature is on, the console redeem mints a scoped
+      // dst_ token (not the master), so this owner-phone sign-in path stays inside the scoped model.
+      () => ((this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        ? this.dashboardSessionStore.issue() : null));
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
     {
