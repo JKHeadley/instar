@@ -30391,6 +30391,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               let gh: import('../core/ChiefOfStaffEvidence.js').GhExec | null = null;
               try { gh = ghMod.createAuthenticatedGhExec({ stateDir: config.stateDir }) as unknown as import('../core/ChiefOfStaffEvidence.js').GhExec; } catch { /* @silent-fallback-ok: no GitHub runtime ⇒ PR/diff evidence reads as unknown, never as absence */ gh = null; }
               const ownerId = () => telegram?.getOwnerUserId() ?? null;
+              const cosDefaultBranch = async (repo: string): Promise<string | null> => { if (!gh) return null; const k = `default-branch:${repo}`; if (!prCache.has(k)) prCache.set(k, gh(['api', `repos/${repo}`, '--jq', '.default_branch']).then((r) => (r.code === 0 ? r.stdout.trim() || null : null)).catch(() => /* @silent-fallback-ok: unknown default branch ⇒ the compare falls back to main and a failure there reads as unknown */ null)); return (await prCache.get(k)) as string | null; };
               const gather = evMod.buildGather({
                 now: () => Date.now(), gh, prCache,
                 runState: (t) => { const rec = cosRunStore.getRecord(String(t)); const st = cosRunStore.blockingStateForTopic(String(t)); return rec ? { state: st, remainingSeconds: Math.max(0, Math.floor((Date.parse(rec.endAt) - Date.now()) / 1000)) } : { state: 'none' }; },
@@ -30398,17 +30399,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                 liveSession: (t) => { const name = telegram?.getSessionForTopic(t) ?? null; return name ? sessionManager.isSessionAlive(name) : false; },
                 overdueCommitments: (t) => { try { return commitmentTracker.getActiveByTopicId(t).filter((c) => String((c as { status?: string }).status ?? '') === 'at-risk').length; } catch { /* @silent-fallback-ok: unreadable commitments are an unknown evidence item */ return null; } },
                 topicHistory: (t, limit) => { const rows = telegram?.getTopicHistory(t, limit) ?? null; if (!rows) return null; const o = ownerId(); return rows.slice().reverse().map((r: { timestamp: string; fromUser: boolean; telegramUserId?: number; text?: string }) => ({ at: r.timestamp, fromUser: r.fromUser, fromOwner: r.fromUser && !!o && r.telegramUserId === o, text: String(r.text ?? '').slice(0, 2000) })); },
-                evaluateDoneItem: async (item, project) => {
-                  // v1 deterministic evaluators: `page <url> contains "<text>"` within a linked domain; everything else is unknown here.
-                  const m = /page\s+(https?:\/\/\S+)\s+contains\s+"([^"]+)"/i.exec(item.text);
-                  if (!m) return 'unknown';
-                  const url = new URL(m[1]);
-                  if (!project.linked.domains.some((dmn) => url.hostname === dmn || url.hostname.endsWith(`.${dmn}`))) return 'unknown';
-                  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 10_000);
-                  try { const r = await fetch(url, { signal: ctl.signal }); const body = (await r.text()).slice(0, 256 * 1024); return body.includes(m[2]) ? 'pass' : 'fail'; } finally { clearTimeout(timer); }
-                },
+                // §1.3 deterministic evaluators: `page <url> contains "<text>"` (linked domain) and `PR owner/repo#N merged` (linked repo).
+                evaluateDoneItem: evMod.buildDoneItemEvaluator({
+                  gh,
+                  defaultBranch: (repo) => cosDefaultBranch(repo),
+                  fetchPage: async (url) => {
+                    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 10_000);
+                    try { const r = await fetch(url, { signal: ctl.signal }); return (await r.text()).slice(0, 256 * 1024); }
+                    catch { /* @silent-fallback-ok: an unreadable page is an `unknown` done item (P20), never a fail */ return null; }
+                    finally { clearTimeout(timer); }
+                  },
+                }),
                 probeTimeoutMs: 10_000, tailBoundBytes: loopMod.JUDGE_BUNDLE_BYTES,
-                defaultBranch: async (repo) => { if (!gh) return null; const k = `default-branch:${repo}`; if (!prCache.has(k)) prCache.set(k, gh(['api', `repos/${repo}`, '--jq', '.default_branch']).then((r) => (r.code === 0 ? r.stdout.trim() || null : null)).catch(() => /* @silent-fallback-ok: unknown default branch ⇒ the compare falls back to main and a failure there reads as unknown */ null)); return (await prCache.get(k)) as string | null; },
+                defaultBranch: cosDefaultBranch,
               });
               const judge = sharedLlmQueue && sharedIntelligence
                 ? evMod.buildJudge({ enqueueMetered: (req) => sharedLlmQueue!.enqueueMetered(req), evaluate: (prompt, options) => sharedIntelligence!.evaluate(prompt, { ...(options as Record<string, unknown>), attribution: { component: 'ChiefOfStaffLoop' } } as never), judgeDailyCents: Number(liveConfig.get<number | undefined>('chiefOfStaff.judgeDailyCents', undefined) ?? 15), log: (m) => console.log(pc.dim(`  ${m}`)) })
