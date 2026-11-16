@@ -27402,6 +27402,91 @@ export async function startServer(options: StartOptions): Promise<void> {
         wedgeMonitor.start();
         rehearsal.start();
 
+        // Restart record and post-restart proof (Part D, CMT-1199 first slice): every OS boot is
+        // written once to the host ledger, attributed or `unattributed`, and each agent proves its
+        // own parts came back against a baseline taken before the restart. Restarts nothing.
+        {
+          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
+          const self = `http://127.0.0.1:${config.port}`;
+          const authed = { Authorization: `Bearer ${config.authToken ?? ''}` };
+          const getJson = async (p: string, auth = true): Promise<{ status: number; body: any } | null> => {
+            try {
+              const r = await fetch(`${self}${p}`, { headers: auth ? authed : {}, signal: AbortSignal.timeout(8_000) });
+              return { status: r.status, body: await r.json().catch(() => null) };
+            } catch { return null; } // @silent-fallback-ok — an unreachable read is unknown in the proof, never a pass
+          };
+          const proofDir = path.join(config.stateDir, 'state', 'machine-maintenance');
+          const proof = new PostRestartProof({
+            agentName: config.projectName,
+            store: new HostMaintenanceStore(),
+            readBootAt: async () => {
+              if (process.platform !== 'darwin') return Math.round(Date.now() - os.uptime() * 1000);
+              const out = await wedgeRead('bootTime');
+              return out === null ? null : parseBootTime(out);
+            },
+            isMaintainer: () => (wedgeMonitor.status() as { role?: string }).role === 'maintainer',
+            enabled: mmEnabled,
+            baselinePath: path.join(proofDir, 'restart-baseline.json'),
+            proofPath: path.join(proofDir, 'restart-proof.json'),
+            logPath: path.join(config.stateDir, '..', 'logs', 'machine-maintenance.jsonl'),
+            log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+            readers: {
+              serverHealth: async () => {
+                const r = await getJson('/health', false);
+                return r && r.status === 200 ? { state: 'pass', reason: 'health-200' } : { state: 'fail', reason: r ? `health-${r.status}` : 'health-unreachable' };
+              },
+              lifelineProofAt,
+              relay: async () => {
+                const r = await getJson('/threadline/health');
+                const st = r?.body?.relay?.state;
+                if (!r || r.status !== 200 || typeof st !== 'string') return { state: 'unknown', reason: 'relay-unread', connected: null };
+                if (st === 'connected') return { state: 'pass', reason: 'relay-connected', connected: true };
+                // A standby, a disabled relay or one displaced by this agent's other machine is not this restart's failure.
+                if (['disabled', 'standby', 'not-applicable', 'displaced'].includes(st)) return { state: 'not-applicable', reason: `relay-${st}`, connected: null };
+                return { state: 'fail', reason: `relay-${st}`, connected: false };
+              },
+              tunnel: async () => {
+                const t = await getJson('/tunnel');
+                if (!t || t.status !== 200) return { state: 'unknown', reason: 'tunnel-unread', configured: null };
+                if (!t.body?.enabled) return { state: 'not-applicable', reason: 'tunnel-not-configured', configured: false };
+                const url = typeof t.body.url === 'string' ? t.body.url : null;
+                if (!url) return { state: 'fail', reason: 'tunnel-no-url', configured: true };
+                try {
+                  // Through the tunnel itself: the public /health answers without a token.
+                  const r = await fetch(`${url.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(10_000), redirect: 'error' });
+                  return r.status === 200 ? { state: 'pass', reason: 'tunnel-200', configured: true } : { state: 'fail', reason: `tunnel-${r.status}`, configured: true };
+                } catch { return { state: 'fail', reason: 'tunnel-unreachable', configured: true }; } // @silent-fallback-ok — recorded as the failing reason
+              },
+              desktop: async () => {
+                const r = await getJson('/desktop/diagnostics');
+                if (!r || r.status !== 200 || !r.body) return null;
+                return { ready: r.body.status === 'ready', screenPermission: typeof r.body.screenPermission === 'boolean' ? r.body.screenPermission : null };
+              },
+              signedOutLogins: async () => {
+                try {
+                  return subscriptionPool.list().filter((a) => quotaPoller.loginCheck?.(a.id) === 'signed-out').length;
+                } catch { return null; } // @silent-fallback-ok — unread logins are unknown in the proof
+              },
+              coResidentAgents: async () => {
+                let rows: Array<{ name?: string; port?: number; status?: string }>;
+                try {
+                  const raw = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.instar', 'registry.json'), 'utf-8')) as unknown;
+                  rows = (Array.isArray(raw) ? raw : (raw as { entries?: unknown[] }).entries ?? []) as typeof rows;
+                } catch { return null; } // @silent-fallback-ok — no registry: the row reads unknown
+                const others = rows.filter((r) => typeof r.name === 'string' && !r.name.endsWith('-lifeline') && r.name !== config.projectName && r.status === 'running' && Number.isInteger(r.port));
+                return Promise.all(others.map(async (r) => {
+                  try {
+                    const h = await fetch(`http://127.0.0.1:${r.port}/health`, { signal: AbortSignal.timeout(5_000) });
+                    return { name: r.name as string, healthy: h.status === 200 };
+                  } catch { return { name: r.name as string, healthy: false }; } // @silent-fallback-ok — not answering is the reading
+                }));
+              },
+            },
+          });
+          setActivePostRestartProof(proof);
+          proof.start();
+        }
+
         // Honest lock reading (Part A): a read of the session, never the flag alone.
         const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
         setActiveMachineLockStateReader(new MachineLockStateReader());
