@@ -1,0 +1,17 @@
+# Phone file test: a size-limit refusal can come before or after the file starts
+
+## What Changed
+
+Test-only. In `tests/integration/mobile-remote-media.test.ts`, the case "holds to the byte ceiling with and without a declared length" sends a file of unknown length that grows past the 100,000-byte limit. It expected the phone to always see a half-sent file. But the proxy sends one chunk behind the holder, so the outcome depends on how the holder's bytes arrive. If the first reads already pass the limit, nothing has reached the phone yet and the proxy correctly answers a clean 502 `holder-too-large`. That is a complete response, so the old assertion failed. The test now accepts either correct outcome: a 502 refusal naming `holder-too-large`, or a stream cut short. It still checks that the phone never receives more than the limit. No product changes.
+
+## What to Tell Your User
+
+Nothing changes for you. One of our own tests sometimes failed depending on how fast data arrived; it no longer does.
+
+## Summary of New Capabilities
+
+None.
+
+## Evidence
+
+The M5 run log for PR 3072 at c9b7616b4 (2026-11-16 08:05Z) shows this case failing at line 723: "AssertionError: expected true to be false", on a change unrelated to media. The same file failed PRs 2967 (11-08), 2977 (11-09) and 3023 (11-10). `failed()` in `src/server/mobileMediaHolderProxy.ts` sends JSON when headers are not yet sent and destroys the socket otherwise, so both outcomes come from the same correct ceiling check.
