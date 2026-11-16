@@ -32604,6 +32604,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           unkeyed: importStats.unkeyed,
           collision: importStats.collision,
           keyMismatch: importStats.keyMismatch,
+          notLanded: importStats.notLanded,
         }
         : null,
       stats: ctx.topicMemory.stats(),

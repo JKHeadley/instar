@@ -20,7 +20,9 @@
  * The channel's own id is kept verbatim in `channel_message_id` (Telegram the
  * native id, Slack the `ts`, an app conversation the event id). An integer key
  * already held by a DIFFERENT channel message is a COUNTED refusal (a counter
- * plus a DegradationReporter row), never a silent drop.
+ * plus a DegradationReporter row), never a silent drop. So is a write the
+ * store absorbed without landing a row (`not-landed`): the writer reports what
+ * the database did, never what it was asked to do.
  *
  * App conversations: a stored app event carries no HLC of its own (the stamp
  * is applied by the replication emitter and is not part of the event, and a
@@ -151,7 +153,7 @@ export function rowChannelForTopicId(topicId: number): RowChannel | null {
   return null;
 }
 
-export type RowRefusal = 'collision' | 'key-mismatch' | 'bad-key' | 'not-ready';
+export type RowRefusal = 'collision' | 'key-mismatch' | 'bad-key' | 'not-ready' | 'not-landed';
 
 export type WriteRowResult =
   | { written: true; outcome: 'inserted' | 'adopted' | 'duplicate'; key: RowKey }
@@ -241,6 +243,13 @@ export class TopicRowWriter {
         return this.refuse(channel, 'key-mismatch',
           `channel message ${key.channelMessageId} is stored under key ${r.existingMessageId}, not ${key.messageId}`,
           body.topicId, key);
+      case 'not-landed':
+        // The store absorbed the insert and no row landed. `written: true`
+        // here would be a receipt for a row that is not in the database, which
+        // is what this refusal exists to stop reaching the counters.
+        return this.refuse(channel, 'not-landed',
+          `the store accepted no row for channel message ${key.channelMessageId} under key ${key.messageId} (a constraint the key rule cannot see)`,
+          body.topicId, key);
       case 'not-ready':
         return this.refuse(channel, 'not-ready', 'TopicMemory is not open', body.topicId, key);
     }
@@ -262,7 +271,7 @@ export class TopicRowWriter {
   private bucket(channel: RowChannel): RowWriterCounts {
     let b = this.counts.get(channel);
     if (!b) {
-      b = { inserted: 0, adopted: 0, duplicate: 0, refused: { collision: 0, 'key-mismatch': 0, 'bad-key': 0, 'not-ready': 0 } };
+      b = { inserted: 0, adopted: 0, duplicate: 0, refused: { collision: 0, 'key-mismatch': 0, 'bad-key': 0, 'not-ready': 0, 'not-landed': 0 } };
       this.counts.set(channel, b);
     }
     return b;

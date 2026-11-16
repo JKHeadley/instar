@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "keyed-insert-outcome-contract",
+  "sessionId": "01ac27e3-f706-400f-b12b-89abbf6e7a5e",
+  "timestamp": "2026-11-16T22:26:34.934Z",
+  "artifactPath": "upgrades/side-effects/keyed-insert-outcome-contract.md",
+  "artifactSha256": "2e3d46058e43a5c564617222ad61d806e85d05e6274e7eaef02e3a46a1c320a3",
+  "coveredFiles": [
+    "src/memory/TopicMemory.ts",
+    "src/memory/topicRowWriter.ts",
+    "src/server/routes.ts",
+    "tests/integration/topic-memory-routes.test.ts",
+    "tests/unit/topic-memory-keyed-insert-outcome.test.ts",
+    "upgrades/eli16/keyed-insert-outcome-contract.md",
+    "upgrades/next/keyed-insert-outcome-contract.md",
+    "upgrades/side-effects/keyed-insert-outcome-contract.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Replaces an ASSUMED receipt with the database's own answer in a method whose docstring already promised the measured one, and routes the new state into the refusal vocabulary the same file already has (collision, key-mismatch). classify-tier gives riskFloor 1: no safety-invariant, irreversibility, fleet-rollout or new-capability signal fires on src/memory/TopicMemory.ts, src/memory/topicRowWriter.ts or src/server/routes.ts. The size tier is 2 only because total LOC passes 40 — 25 of the 64 added source lines are code and 37 are comments, across 3 in-scope files. No new route (one additive field on an existing response), no config key, no schema or migration, no auth/token/secret surface, no self-triggered controller; the success path is unchanged and a revert fully undoes it. The one judgment made (leaving the topic_meta upsert alone) is recorded in the side-effects artifact section 9 and pinned by a test.",
+  "eli16Path": "upgrades/eli16/keyed-insert-outcome-contract.md",
+  "sideEffectsPath": "upgrades/side-effects/keyed-insert-outcome-contract.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
