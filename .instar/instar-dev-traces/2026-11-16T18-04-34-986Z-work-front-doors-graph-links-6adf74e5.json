@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-graph-links",
+  "sessionId": "9ff214e1-274c-4f8e-a770-7b331015831c",
+  "timestamp": "2026-11-16T18:04:34.986Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-graph-links.md",
+  "artifactSha256": "63019c0a57a36979476470a27e091503776894589f7d7878f9a14706f8607dab",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "upgrades/next/work-front-doors-graph-links.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
