@@ -1264,6 +1264,9 @@ export interface RouteContext {
   verifyDesktopOperatorSession?: (token: string | undefined) => boolean;
   /** Desktop-only sessions the owner's phone mints with Face ID. */
   phoneDesktopSessions?: import('./PhoneDesktopSessionStore.js').PhoneDesktopSessionStore;
+  /** SEC-018: owner-approved sensitive-action stores, shared with the MCP delete handler. */
+  ownerApprovedActionStore?: import('./OwnerApprovedActionStore.js').OwnerApprovedActionStore;
+  ownerApprovedActionPending?: import('./PendingApprovalRegistry.js').PendingApprovalRegistry;
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
   /** Test seam: the gh runner for the PR-link reviewer check (default: the authenticated gh for this agent). */
   prLinkReviewGh?: import('../core/githubRuntime.js').AuthenticatedGhExec;
@@ -41340,6 +41343,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         syncPinVersion: () => { ctx.verifyDashboardOperatorSession?.(undefined); },
         machineName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null)
           ?? verifiedEntityName('self', os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim()),
+        // SEC-018: the phone's approval routes write these; the MCP delete handler reads them.
+        approvalStore: ctx.ownerApprovedActionStore,
+        pendingRegistry: ctx.ownerApprovedActionPending,
       });
     }
     mountMobilePermissionsRoutes(router, {

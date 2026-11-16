@@ -85,11 +85,28 @@ export interface RelayDiscoverer {
   }>>;
 }
 
+/**
+ * SEC-018 owner-approval gate (docs/specs/owner-approved-sensitive-action.md). A thin structural
+ * interface so threadline stays decoupled from the server's concrete store/registry. When
+ * `enabled()`, an irreversible/sensitive handler (thread delete) requires a device-signed owner
+ * approval the local session cannot forge; `consume` returns a ref when a live approval for the
+ * exact action exists. When absent or `!enabled()`, handlers behave byte-identically to today.
+ */
+export interface OwnerApprovalGate {
+  enabled: () => boolean;
+  consume: (key: { purpose: string; actionKey: string; revision?: string | null }) => string | null;
+  registerPending: (req: { purpose: string; actionKey: string; title: string; why: string; machine: string }) => void;
+  clearPending: (purpose: string, actionKey: string) => void;
+  machineName: () => string;
+}
+
 export interface ThreadlineMCPDeps {
   /** Agent discovery service */
   discovery: AgentDiscovery;
   /** Thread resume map for thread state */
   threadResumeMap: ThreadResumeMap;
+  /** SEC-018: owner-approval gate for sensitive handlers (thread delete). Absent = today's behaviour. */
+  ownerApproval?: OwnerApprovalGate;
   /** Agent trust manager for trust levels */
   trustManager: AgentTrustManager;
   /** MCP auth for network transports (null for stdio) */
@@ -1089,6 +1106,26 @@ export class ThreadlineMCPServer {
         const threadEntry = this.deps.threadResumeMap.get(args.threadId);
         if (!threadEntry) {
           return errorResult(`Thread "${args.threadId}" not found or already deleted`);
+        }
+
+        // SEC-018: thread deletion is IRREVERSIBLE, and `isLocal` is NOT owner authorization — a
+        // peer-driven local session is local. When owner-approval is enabled, require a
+        // device-signed owner approval (recorded by the owner's phone via /mobile/action-approval)
+        // for THIS exact thread. Absent/disabled → the handler is byte-identical to today.
+        const ownerApproval = this.deps.ownerApproval;
+        if (ownerApproval && ownerApproval.enabled()) {
+          if (!ownerApproval.consume({ purpose: 'thread-delete', actionKey: args.threadId })) {
+            const subject = threadEntry.subject || threadEntry.remoteAgent || 'this conversation';
+            ownerApproval.registerPending({
+              purpose: 'thread-delete',
+              actionKey: args.threadId,
+              title: `Delete the conversation "${subject}"?`,
+              why: 'A session asked to permanently delete this thread. Approve on your phone with Face ID; expires in 5 minutes.',
+              machine: ownerApproval.machineName(),
+            });
+            return errorResult('owner-approval-required: permanently deleting a thread needs the owner to approve it on their phone with Face ID. I have put the request on your phone — approve it there, then retry.');
+          }
+          ownerApproval.clearPending('thread-delete', args.threadId);
         }
 
         try {

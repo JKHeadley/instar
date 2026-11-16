@@ -145,3 +145,4 @@ state/codex-device-limit-provenance/
 # Jev harness sample sets contain real message text — regenerable, never committed.
 docs/research/jev/harness/**/sample-*.json
 docs/research/jev/harness/**/corpus-*.json
+/dist

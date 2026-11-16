@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process';
 import type { Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ThreadlineMCPServer } from './ThreadlineMCPServer.js';
-import type { SendMessageParams, SendMessageResult } from './ThreadlineMCPServer.js';
+import type { SendMessageParams, SendMessageResult, OwnerApprovalGate } from './ThreadlineMCPServer.js';
 import type { AgentDiscovery } from './AgentDiscovery.js';
 import type { AgentTrustManager } from './AgentTrustManager.js';
 import type { ThreadResumeMap } from './ThreadResumeMap.js';
@@ -200,6 +200,8 @@ export interface ThreadlineMcpHttpServiceOptions {
   discovery: AgentDiscovery;
   trustManager: AgentTrustManager;
   threadResumeMap: ThreadResumeMap;
+  /** SEC-018: owner-approval gate for sensitive handlers (thread delete). Absent = today's behaviour. */
+  ownerApproval?: OwnerApprovalGate;
   /** The persisted session records (transport counts survive a restart). */
   listSessions?: () => ThreadlineMcpSessionRecord[];
   /** Test seams. */
@@ -433,6 +435,7 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
         discovery: this.opts.discovery,
         threadResumeMap: this.opts.threadResumeMap,
         trustManager: this.opts.trustManager,
+        ownerApproval: this.opts.ownerApproval,
         auth: null,
         // The send keeps running past the route's own answer (a message may
         // already be on its way); its slot is held until it settles.
