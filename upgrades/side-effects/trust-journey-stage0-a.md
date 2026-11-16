@@ -118,3 +118,9 @@ The full e2e and integration runs found five older tests that relied on raising 
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. The defect is in server code (routes and owners that accepted unproven widenings); the agent-facing capability text that told agents to grant trust themselves is corrected in the same change.
+
+---
+
+## Maintainer note (2026-11-16)
+
+The spec's maturation line read `**ladder:** trust.journey`, an id with no entry in `src/data/feature-ladders.json`, which failed `tests/unit/feature-ladders-coverage.test.ts` in Local Verify. Stage 0 is not laddered (spec: "Stage 0 is not laddered. It is a security fix and ships on for every agent"), and no trust-journey switch exists in the code yet, so there is nothing an entry could track. The line now says so and names where the entry will be added (the stage 1 change that introduces the switch). No code, test or approved behaviour changes in that commit.

@@ -337,7 +337,7 @@ Checked against `WorkCardStore.ts`, `WorkBoardService.ts`, `workBoardViews.ts` a
 - **fleet:** delivered dark by the migration; fleet default-on only after the graduation criterion holds on the development agent.
 - **graduation criterion:** decided by the existing maturation review from the stores, over real asks that exercised proceed, floor, offer, decline, narrowing, a restart and a lease handover: no raise without a consumed receipt; the record line present on 100% of delivered asks, measured from delivered message payloads; "asked for something it already held" at zero over the window with every ask in the window checked (an unchecked ask records `incomplete`), each counted row traced to its cause; no setting lost across the restart or the handover; every narrowing traceable to a recorded condition or a person's message; zero operator-found defects on the first screen; for stage 3, also the shadow review in section 5a and the too-narrow and too-broad measures over real category grants. There is no minimum duration; missing evidence records `incomplete`, never a pass.
 - **dark-window:** the fleet stays dark until the dev-agent graduation criterion holds; the existing weekly maturation review then records the fleet outcome. No fixed duration.
-- **ladder:** trust.journey
+- **ladder:** not applicable: stage 0 ships on as a security fix; the trust.journey entry is added by the stage 1 change that adds its switch
 - **Owner:** Echo.
 
 ## Build stages with live proof
