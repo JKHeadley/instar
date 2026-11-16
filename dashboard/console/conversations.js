@@ -162,14 +162,14 @@ function restoreScroll(key) {
   if (typeof position === 'number') arrivalScrollPosition(position, { key: `conversations:${key}` });
 }
 
-export async function renderConversations(main) {
+export async function renderConversations(main, ctx) {
   runs.get(main)?.abort();
   const controller = new AbortController();
   runs.set(main, controller);
   const key = location.hash;
   const state = routeState();
   const current = () => !controller.signal.aborted && main.isConnected && location.hash === key;
-  const retry = () => renderConversations(main);
+  const retry = () => renderConversations(main, ctx);
   if (!operatorSession()) { unlock(main, retry); return; }
   // A local PIN-proof expiry must clear private DOM even while a sheet holds
   // the ordinary page refresh. Tie this observer to the current render only.
@@ -188,6 +188,9 @@ export async function renderConversations(main) {
   setKids(main, el('div', { class: 'conversations-page', 'aria-busy': 'true' },
     pageHead({ eyebrow: 'Conversations', headline: 'Loading conversations…' })));
   if (state.view === 'suggestions' && !state.ref) {
+    // The list has its own Refresh button, and an Accept runs for minutes: the console's 30 s page
+    // re-run would reload the list under the owner and cancel an Accept mid-way. This view refreshes itself.
+    ctx?.selfRefreshing?.();
     await renderSuggestions({ main, send: (path, body) => read(path, controller.signal, body), current,
       unlock: () => unlock(main, retry),
       header: pageHead({ eyebrow: 'Conversations', headline: 'Suggested efforts' }),
