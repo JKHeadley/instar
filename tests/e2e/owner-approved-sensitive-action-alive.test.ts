@@ -13,6 +13,7 @@ import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
@@ -33,7 +34,7 @@ function boot(enabled: boolean): AgentServer {
   return new AgentServer({ config, sessionManager, state: new StateManager(path.join(dir, '.instar')) } as any);
 }
 
-afterAll(() => { for (const d of dirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ } } });
+afterAll(() => { for (const d of dirs) { try { SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/owner-approved-sensitive-action-alive.test.ts' }); } catch { /* best-effort */ } } });
 
 describe('owner-approved sensitive action — feature is alive (SEC-018)', () => {
   it('DARK (default): the pending route is MOUNTED and answers 503 owner-approved-actions-off, not 404', async () => {
