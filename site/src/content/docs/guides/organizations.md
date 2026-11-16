@@ -20,10 +20,10 @@ An Instar agent is an AI assistant that lives on a computer your colleague contr
 |---|---|---|
 | The policy | Each agent keeps your policy in its organization rules and reads them at the start of every conversation. | A published, versioned policy that agents check for updates. |
 | Giving it to colleagues | Each colleague's agent is given the same policy text. | An invitation link or code that sets it up in one step. |
-| How strict it is | The rules guide the agent. Strict blocking of “never” rules is not on by default yet. | Rules marked “never” that block reliably, judged by meaning rather than keywords. |
+| How strict it is | Messages the agent sends outside are checked against the “never” rules and held if they break them. Other actions, like deleting a shared file, aren’t checked automatically yet. | Rules marked “never” that block actions too, judged by meaning rather than keywords. |
 | Seeing your agents | Ask each colleague. | A Work agents page: each agent, its person, its policy version and when it last checked in. |
 
-We'll update this page as each piece arrives. Until strict blocking is on, treat the policy as clear instructions the agent follows, not as a guarantee.
+We'll update this page as each piece arrives. Until actions are checked too, treat the policy as clear instructions the agent follows, not as a guarantee.
 
 ## The decision sheet: twelve questions to settle first
 
