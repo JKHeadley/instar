@@ -17,6 +17,17 @@
  *      mock answers `--version` only outside the project dir, after 0.2 s); the async probe, run from
  *      a neutral temp cwd, then lands 2.1.322, and the row before and after differs ONLY in
  *      launch.cliVersion.
+ *   6. The scheduler's memory gate is still live on this boot: with the limit moved below the
+ *      host's reading, a trigger is refused with reason memory-pressure and starts nothing.
+ *
+ * Host memory: startServer always wraps `scheduler.canRunJob` with the MemoryPressureMonitor gate
+ * (src/commands/server.ts, "Wire memory gate into scheduler"); `monitoring.memoryMonitoring: false`
+ * is not read there. The monitor reads the REAL host, so on a machine at 75%+ memory use every
+ * trigger here was refused ("Job admission refused by live scheduler") and steps 3-5 failed on a
+ * correct product. The limits are therefore set in the agent's own
+ * `.instar/state/memory-thresholds.json`, the file the monitor loads at boot and the
+ * `PATCH /monitoring/memory/thresholds` route writes: out of reach for steps 1-5, then below any
+ * reading for step 6. No host reading decides either side.
  *
  * Prerequisite: dist/ is built from the tree under test (`npm run build`); the test fails, not
  * skips, when dist/cli.js is missing. It skips only when no tmux is installed.
@@ -39,6 +50,10 @@ const CLI = path.join(ROOT, 'dist', 'cli.js');
 const tmuxPath = detectTmuxPath();
 const describeMaybe = tmuxPath ? describe : describe.skip;
 const SLUG = 'launch-e2e-low';
+// Contains SLUG, so the tmux cleanup below also covers a session it should never start.
+const GUARD_SLUG = `${SLUG}-guard`;
+// A memory reading is a percentage, so a limit of 101 can never be reached.
+const UNREACHABLE_MEMORY_LIMIT = 101;
 
 type Launch = { cliVersion: string; requested: { thinkingMode?: string }; applied: Array<Record<string, unknown>>; dropped: unknown[] };
 type Row = Record<string, unknown> & { runId: string; launch?: Launch };
@@ -71,9 +86,9 @@ describeMaybe('E2E: job launch record lifecycle (real CLI boot)', () => {
   const token = crypto.randomUUID();
   const projectName = `e2e-job-launch-${crypto.randomUUID().slice(0, 8)}`;
 
-  const api = async (route: string, body?: unknown) => {
+  const api = async (route: string, body?: unknown, method?: 'PATCH') => {
     const res = await fetch(base + route, {
-      method: body === undefined ? 'GET' : 'POST',
+      method: method ?? (body === undefined ? 'GET' : 'POST'),
       headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(10_000),
@@ -119,7 +134,17 @@ sleep 120
       slug: SLUG, name: 'Launch E2E', description: 'Job declaring thinkingMode low', schedule: '0 0 1 1 *',
       priority: 'high', expectedDurationMinutes: 5, model: 'haiku', enabled: true,
       execute: { type: 'prompt', value: 'Quick test' }, thinkingMode: 'low',
+    }, {
+      slug: GUARD_SLUG, name: 'Launch E2E memory gate', description: 'Triggered only while the memory gate is closed', schedule: '0 0 1 1 *',
+      priority: 'high', expectedDurationMinutes: 5, model: 'haiku', enabled: true,
+      execute: { type: 'prompt', value: 'Quick test' },
     }], null, 2));
+    // Pin the scheduler's memory gate open (see "Host memory" in the header): the real host's
+    // reading must not decide whether this file's triggers are admitted.
+    fs.mkdirSync(path.join(stateDir, 'state'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'state', 'memory-thresholds.json'), JSON.stringify({
+      warning: UNREACHABLE_MEMORY_LIMIT, elevated: UNREACHABLE_MEMORY_LIMIT, critical: UNREACHABLE_MEMORY_LIMIT,
+    }));
     const port = await freePort();
     base = `http://127.0.0.1:${port}`;
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({
@@ -184,6 +209,15 @@ sleep 120
     expect(loaded!.thinkingMode, 'the production loader dropped thinkingMode').toBe('low');
   });
 
+  it('the memory gate runs on the pinned limits, not on the host reading', async () => {
+    const memory = await api('/monitoring/memory');
+    expect(memory.status).toBe(200);
+    expect(memory.data.thresholds, 'the server did not load the pinned memory limits').toEqual({
+      warning: UNREACHABLE_MEMORY_LIMIT, elevated: UNREACHABLE_MEMORY_LIMIT, critical: UNREACHABLE_MEMORY_LIMIT,
+    });
+    expect(memory.data.state, `host reading ${String(memory.data.pressurePercent)}%`).toBe('normal');
+  });
+
   let firstRow: Row | undefined;
   it('trigger → the run row carries launch.applied low', async () => {
     const trig = await api(`/jobs/${SLUG}/trigger`, { reason: 'e2e-job-launch' });
@@ -223,4 +257,24 @@ sleep 120
     const strip = (r: Row) => { const { result, completedAt, durationSeconds, outputSummary, error, ...rest } = r as Record<string, unknown>; void result; void completedAt; void durationSeconds; void outputSummary; void error; return rest; };
     expect(strip(patched as Row)).toEqual(strip({ ...firstRow!, launch: { ...firstRow!.launch!, cliVersion: '2.1.322' } } as Row));
   }, 20_000);
+
+  // The other side of the boundary, on the same production boot: the pin above must not have
+  // removed the gate. Last in the file, and the gate stays closed to the end: the scheduler books
+  // a retry for a refused job, which must not start a session during teardown.
+  it('memory gate closed → the trigger is refused as memory-pressure and starts nothing', async () => {
+    // A limit of 0 is at or below every reading, so this is "elevated" on any host.
+    const closed = await api('/monitoring/memory/thresholds', { warning: 0, elevated: 0 }, 'PATCH');
+    expect(closed.status, JSON.stringify(closed.data)).toBe(200);
+    expect((closed.data.currentState as { state?: string }).state).toBe('elevated');
+    const trig = await api(`/jobs/${GUARD_SLUG}/trigger`, { reason: 'e2e-memory-gate' });
+    expect(trig.status, `the gate admitted a job under elevated memory pressure: ${JSON.stringify(trig.data)}`).toBe(409);
+    expect(trig.data).toMatchObject({ slug: GUARD_SLUG, result: 'skipped', error: 'Job admission refused by live scheduler' });
+    const skips = await api(`/skip-ledger?slug=${GUARD_SLUG}`);
+    expect((skips.data.events as Array<{ reason: string }>).map((e) => e.reason)).toEqual(['memory-pressure']);
+    const events = (await api('/events?type=job_skipped')).data as unknown as Array<{ summary: string }>;
+    expect(events.map((e) => e.summary).filter((line) => line.includes(GUARD_SLUG)))
+      .toEqual([expect.stringMatching(/skipped — memory-pressure \(Memory pressure elevated \(\d+(\.\d+)?%\) — session spawn blocked\)$/)]);
+    expect((await api(`/jobs/${GUARD_SLUG}/history`)).data.runs, 'a refused job must leave no run row').toEqual([]);
+    expect(fs.readFileSync(argvLog, 'utf-8').split('\n').filter((line) => line === '--launch--'), 'a refused job must not launch a process').toHaveLength(1);
+  }, 30_000);
 });

@@ -139,6 +139,14 @@ export interface QuotaPollerConfig {
    * to the device-limit tripwire as a trigger.
    */
   codexLoginStatusWithText?: ((codexHome: string) => Promise<{ verdict: CliLoginVerdict; text: string }>) | null;
+  /**
+   * The engine's OWN signed-out answer for an account whose stored credential cannot be read at
+   * all (never-silent-conversation §3.6, the every-poll read). `true` = a trusted NO: the engine's
+   * check said signed out, that check has been proven able to say no on this machine, AND the
+   * engine's credential store is open (a locked macOS keychain makes a fine login read as absent).
+   * `false`/`null` = no signal. Absent ⇒ a missing credential stays `unavailable`, as before.
+   */
+  engineLoginSignedOut?: ((account: SubscriptionAccount) => Promise<boolean | null>) | null;
   /** Clock injection for Codex reset-boundary normalization. */
   now?: () => number;
   /** Logger (defaults to console). */
@@ -490,6 +498,9 @@ export class QuotaPoller {
   private readonly hookedReads = new WeakSet<CodexLiveRead>();
   private readonly loginChecks = new Map<string, PoolLoginCheck>();
   private readonly cliSignedOutStreak = new Map<string, { count: number; lastAt: number }>();
+  private readonly engineLoginSignedOut: ((account: SubscriptionAccount) => Promise<boolean | null>) | null;
+  /** Consecutive trusted signed-out answers for an account with no readable credential (§3.6). */
+  private readonly credentialAbsentStreak = new Map<string, { count: number; lastAt: number }>();
   /** Pane sightings of Claude Code's "Login expired" frame, keyed by resolved config home. */
   private readonly cliLoginExpiredSightings = new Map<string, Array<{ session: string; at: number }>>();
   /**
@@ -530,6 +541,7 @@ export class QuotaPoller {
     this.codexLiveUsageReaderDetailed = config.codexLiveUsageReaderDetailed ?? null;
     this.codexLoginStatus = config.codexLoginStatus ?? null;
     this.codexLoginStatusWithText = config.codexLoginStatusWithText ?? null;
+    this.engineLoginSignedOut = config.engineLoginSignedOut ?? null;
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
@@ -833,6 +845,13 @@ export class QuotaPoller {
             });
           }
           return null;
+        }
+        // No credential at all: ask the engine itself (§3.6). A trusted NO on two polls in a row
+        // starts the repair; anything else keeps today's `unavailable`.
+        if (tokenResolution.reason === 'credential-absent-or-unreadable' && this.engineLoginSignedOut) {
+          if (await this.onCredentialAbsent(slotAccount)) return null;
+        } else {
+          this.credentialAbsentStreak.delete(slotAccount.id);
         }
         this.loginChecks.set(slotAccount.id, 'unavailable');
         this.observe(slotAccount.id, { kind: 'observation-absence', causeClass: tokenResolution.reason });
@@ -1189,6 +1208,38 @@ export class QuotaPoller {
       causeClass: 'cli-signed-out-auth-refused',
       corroboration: 'exchange-corroborated',
     });
+  }
+
+  /**
+   * The every-poll engine login read for an account whose credential cannot be read
+   * (never-silent-conversation §3.6). Returns true when it recorded a trusted signed-out answer
+   * (the caller stops there); false ⇒ no signal this poll, and the streak resets. Two trusted
+   * answers at least {@link CLI_SIGNED_OUT_MIN_GAP_MS} apart move the account to needs-reauth with
+   * cause `cli-auth-status-signed-out`, which the repair admits like any other signed-out cause.
+   */
+  private async onCredentialAbsent(account: SubscriptionAccount): Promise<boolean> {
+    let verdict: boolean | null = null;
+    try { verdict = await this.engineLoginSignedOut!(account); }
+    catch { verdict = null; } // @silent-fallback-ok — no signal; the caller records unavailable
+    if (verdict !== true) {
+      this.credentialAbsentStreak.delete(account.id);
+      return false;
+    }
+    this.loginChecks.set(account.id, 'signed-out');
+    const nowMs = this.now();
+    const prior = this.credentialAbsentStreak.get(account.id);
+    if (prior && nowMs - prior.lastAt < CLI_SIGNED_OUT_MIN_GAP_MS) return true; // too soon to count again
+    const streak = (prior?.count ?? 0) + 1;
+    this.credentialAbsentStreak.set(account.id, { count: streak, lastAt: nowMs });
+    if (streak < CLI_SIGNED_OUT_POLLS_REQUIRED || account.status === 'needs-reauth') return true;
+    this.logger.warn(`[QuotaPoller] account ${account.id}: no stored credential and the engine says signed out on ${streak} polls — needs sign-in`);
+    this.markNeedsReauth(account, 'cli-auth-status-signed-out');
+    this.observe(account.id, {
+      kind: 'transition-to-needs-reauth',
+      causeClass: 'cli-auth-status-signed-out',
+      corroboration: 'exchange-corroborated',
+    });
+    return true;
   }
 
   /**

@@ -212,7 +212,7 @@ async function docpageHeaders(op, payload) {
 /** Signs an `open` for this document and trades it for the read cookie. */
 async function browserOpen() {
   let dev = await loadDevice();
-  if (!dev) { showLinkComputer(); return false; }
+  if (!dev) { showNoKey(); return false; }
   let r;
   for (;;) {
     let headers;
@@ -227,7 +227,7 @@ async function browserOpen() {
     break;
   }
   if (r.ok) return true;
-  if (r.status === 401) { state.device = null; showLinkComputer(); return false; }
+  if (r.status === 401) { state.device = null; showNoKey(); return false; }
   showMessage(M.errorWords(r.status, r.data, errCtx()), { tone: 'bad' });
   return false;
 }
@@ -252,6 +252,35 @@ const LINK_SCOPE_WORDS = 'This computer can only read and comment on documents y
 
 function linkView(children) {
   main.replaceChildren(el('div', { cls: 'page-message link-computer' }, children));
+}
+
+/** No key here to open the document: a phone gets the app first, a computer the link code. */
+function showNoKey() {
+  const phone = M.prefersAppOpen({
+    inApp: IN_APP,
+    coarsePointer: window.matchMedia('(pointer: coarse)').matches,
+    canHover: window.matchMedia('(hover: hover)').matches,
+  });
+  const link = phone ? M.appDocLink(location.origin, DOC_ID, state.focusKey) : null;
+  if (link) showOpenInApp(link); else showLinkComputer();
+}
+
+/**
+ * On a phone: open the document in the Instar app. Never a scan-this-code screen here, since the
+ * phone that would scan it is the one showing it (fb-54b4d850-0de).
+ */
+function showOpenInApp(link) {
+  linkRun++; // stops any link-code poll from an earlier screen
+  linkView([
+    el('h1', { cls: 'link-title', text: 'Open this document in the Instar app' }),
+    el('p', { text: 'On your phone, documents open in the Instar app, where you can read them and comment.' }),
+    el('p', {}, [el('a', { cls: 'btn primary open-app', text: 'Open in the Instar app', attrs: { href: link, rel: 'noopener' } })]),
+    el('p', { cls: 'scope', text: 'If the app doesn\'t open: open Instar yourself, go to the conversation this document belongs to, and tap it under Documents.' }),
+    el('p', { cls: 'scope' }, [
+      'On a computer instead? ',
+      button('Link a computer', () => showLinkComputer(), 'link-btn'),
+    ]),
+  ]);
 }
 
 /** This computer has no linked browser key for this address: offer to link it. */

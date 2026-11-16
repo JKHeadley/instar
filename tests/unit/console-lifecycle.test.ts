@@ -144,11 +144,22 @@ describe('console routing lifecycle (jsdom)', () => {
     expect(refresh.length).toBeLessThanOrEqual(1);
   });
 
-  it('Home\'s own timer is cleared when the operator leaves Home', async () => {
-    await boot('#/home');
+  it('Home\'s own timer is cleared when the operator leaves Home (phone mode: the app frame still shows Home)', async () => {
+    await boot('#/home?phone=1');
     expect([...live.values()].filter((ms) => ms === 30_000)).toHaveLength(1);
-    await go('#/work');
+    await go('#/work?phone=1');
     expect([...live.values()].filter((ms) => ms === 30_000)).toHaveLength(0);
+  });
+
+  it('the Needs-you strip keeps one refresh timer across many door changes (work-front-doors decision 2)', async () => {
+    await boot('#/work/chats');
+    for (let i = 0; i < 6; i++) { await go('#/work/board'); await go('#/agent'); await go('#/work/chats'); }
+    expect([...live.values()].filter((ms) => ms === 45_000).length).toBeLessThanOrEqual(1);
+  });
+
+  it('Home lands on the Conversations door on the web console', async () => {
+    const doc = await boot('#/home');
+    expect(doc.defaultView!.location.hash).toMatch(/^#\/work\/(chats|conversations)$/);
   });
 
   it('a query-only change on a page without onQuery rebuilds it', async () => {

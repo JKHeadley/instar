@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-16T06:30:00.000Z",
-      "auditRef": "docs/audits/trust-journey-amendments-interaction-family-2026-11-15.json",
-      "auditSha256": "617898e1f546d92ed2d8b9e82bb3b58468f52c9761fb24f84b6f5efdaef8969c",
-      "areaSha256": "a049094d65d032b39826ba7e49318366283fdb045fe870296ccd274c566d90be",
+      "lastAuditedAt": "2026-11-16T11:10:00.000Z",
+      "auditRef": "docs/audits/interaction-family-merge-2026-11-16.json",
+      "auditSha256": "fcd3484c9f53925425776f531f6119d3d9afc1321b5c47d58bed317880aa947c",
+      "areaSha256": "86dc5d748e6ac492a27e70d1628380eb9ca532dc70b29db507ec9795098df55b",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13

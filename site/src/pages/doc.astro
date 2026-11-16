@@ -1,0 +1,70 @@
+---
+// Fallback for "Open in the Instar app" document links (fb-54b4d850-0de).
+// Link format v1: https://instar.sh/doc#v=1&o=<urlencoded https origin>&d=<document id>[&c=<comment key>]
+// With the app installed, iOS hands the tap to the app (apple-app-site-association names /doc) and
+// this page is never shown. It shows when the app is missing or the browser kept the link. The link
+// holds no secret (the app signs in with its own device key); this page still reads the fragment
+// client-side only, never inserts it as HTML, and makes no network requests.
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+    <title>Open in Instar</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; min-height: 100vh; background: #0a0e17; color: #e2e8f0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; align-items: center; justify-content: center; }
+      main { max-width: 420px; padding: 32px 20px; text-align: center; }
+      img.logo { width: 72px; height: 72px; }
+      h1 { font-size: 22px; margin: 16px 0 8px; }
+      p { margin: 0 0 14px; }
+      p.small { color: #94a3b8; font-size: 14px; }
+      a.btn { display: inline-block; margin-top: 6px; background: #2dd4bf; color: #0a0e17; border-radius: 10px; font-weight: 600; padding: 12px 20px; text-decoration: none; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="logo" src="/logo.png" alt="Instar" />
+      <div id="ok" hidden>
+        <h1>This document opens in the Instar app</h1>
+        <p>Open Instar, go to the conversation this document belongs to, and tap it under Documents.</p>
+        <p class="small">Don't have the app yet? Ask whoever runs your agent for an invite.</p>
+        <p class="small">On a computer, open the document page and link this computer with your phone:</p>
+        <a class="btn" id="computer" rel="noopener">Open on a computer</a>
+      </div>
+      <div id="bad" hidden>
+        <h1>This link is not valid</h1>
+        <p class="small">Ask your agent to send the document again.</p>
+      </div>
+    </main>
+    <script>
+      function parse(hash: string): { origin: string; doc: string } | null {
+        const q = new Map<string, string>();
+        for (const kv of hash.replace(/^#/, '').split('&')) {
+          const i = kv.indexOf('=');
+          if (i > 0 && !q.has(kv.slice(0, i))) {
+            try { q.set(kv.slice(0, i), decodeURIComponent(kv.slice(i + 1))); } catch { return null; }
+          }
+        }
+        if (q.get('v') !== '1') return null;
+        const doc = q.get('d') ?? '';
+        if (!/^[0-9a-f-]{36}$/.test(doc)) return null;
+        let origin: URL;
+        try { origin = new URL(q.get('o') ?? ''); } catch { return null; }
+        if (origin.protocol !== 'https:' || !origin.hostname) return null;
+        return { origin: origin.origin, doc };
+      }
+      const parsed = parse(location.hash);
+      const show = (id: string) => { const el = document.getElementById(id); if (el) el.hidden = false; };
+      if (!parsed) show('bad');
+      else {
+        (document.getElementById('computer') as HTMLAnchorElement).href = `${parsed.origin}/docs/${parsed.doc}`;
+        show('ok');
+      }
+    </script>
+  </body>
+</html>

@@ -132,6 +132,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/introducer'],
       ['POST', '/mobile/introductions/challenge'],
       ['POST', '/mobile/introductions'],
+      // Mint a pairing code for a computer from the owner's phone (mac-qr-pairing).
+      ['POST', '/mobile/pairing-codes'],
       // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4).
       ['POST', '/mobile/desktop-unlock/challenge'],
       ['POST', '/mobile/desktop-unlock'],

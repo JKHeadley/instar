@@ -1102,7 +1102,10 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
  */
 export const ASK_LINKS_CLAUDEMD_MARKER = '**Every ask carries its links.**';
 export const ASK_LINKS_CLAUDEMD_SECTION = `**Every ask carries its links.** When a message needs the operator to review, approve or decide, end it with a short *What I need from you* section: one line per ask in plain words, a working link to each item (check it opens first; a private view for private content), and the exact reply that settles it. An authority grant links to its Approve/Decline page instead of a reply.`;
-export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
+export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in the Needs-you list, through \`dashboard/console/needs-model.js\`.`;
+/** The sentence the section used before the Needs-you list replaced Home (work-front-doors.md §7 stage 1); migrated in place. */
+export const SURFACE_REFERRAL_OLD_NEEDS_WORDING = 'belongs on the first screen of its page and in Home\'s count, through';
+export const SURFACE_REFERRAL_NEW_NEEDS_WORDING = 'belongs on the first screen of its page and in the Needs-you list, through';
 
 /**
  * Pure helper for migrateClaudeMd: converge a CLAUDE.md on the canonical
@@ -10542,6 +10545,12 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
+    }
+    // The Needs-you list replaces Home as the one count (work-front-doors.md §7 stage 1): reword in place. Idempotent.
+    if (content.includes(SURFACE_REFERRAL_OLD_NEEDS_WORDING)) {
+      content = content.split(SURFACE_REFERRAL_OLD_NEEDS_WORDING).join(SURFACE_REFERRAL_NEW_NEEDS_WORDING);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: needs belong in the Needs-you list (was: Home\'s count)');
     }
 
     // "Every ask carries its links." (Agent Proposes, Operator Approves named clause,

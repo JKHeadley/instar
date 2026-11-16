@@ -21,6 +21,7 @@ import { TeamAccessLog } from '../../src/core/TeamAccessLog.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { mountNeedsRoutes } from '../../src/server/needsRoutes.js';
 
 const HOST = 'echo.example.dev';
 const dirs: string[] = [];
@@ -94,8 +95,17 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     pairing: () => svc, config: () => config as never, stateDir: dir, bearerOk: () => false,
     teamAction: async (kind, req, deviceId, target) => svc.teamActionRunner!(kind, req, deviceId, target) as never,
   } as unknown as MobilePermissionsDeps);
+  // The Needs-you list (work-front-doors decision 2): the board stands in as read for whoever asks.
+  const boardAsked: string[] = [];
+  mountNeedsRoutes(router, {
+    read: async () => ({ status: 503, body: { error: 'off' } }),
+    bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
+    boardFor: (req) => { boardAsked.push(String(req.headers['x-instar-device'] ?? 'bearer')); return { status: 200, body: { lanes: [{ lane: 'waiting-on-you', cards: [{ id: 'wc_00000000000000aa', title: 'A shared card', needLine: 'Waiting on you' }] }, { lane: 'with-agent', cards: [] }, { lane: 'waiting-on-others', cards: [] }, { lane: 'done', cards: [] }, { lane: 'archived', cards: [] }], waitingOnYou: 1, policy: 'every-agent-card', behind: null, settings: { softOpenCards: 30 } } }; },
+    consoleDir: path.resolve(__dirname, '../../dashboard/console'),
+    agentName: () => 'echo', machineId: () => 'm1',
+  });
   app.use(router);
-  return { app, svc, gate, spy, dir };
+  return { app, svc, gate, spy, dir, boardAsked };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; presence: ReturnType<typeof makeDevice>; id: string };
@@ -1151,5 +1161,35 @@ describe('team settings for the whole agent (team-switches-agent-wide)', () => {
     expect(r.body.detail).toContain('whole agent');
     expect(r.body.detail).not.toContain('gone');
     expect(r.body.teamSwitches).toHaveLength(2);
+  });
+});
+
+describe('the Needs-you list through the real middleware (work-front-doors decision 2)', () => {
+  it('a member\'s phone gets only the board, read as that phone; owner-only sources are not-for-viewer', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1'))).status).toBe(200);
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    const r = await send(e, member, 'GET', '/mobile/needs');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.viewer.role).toBe('member');
+    expect(r.body.items.map((i: { title: string }) => i.title)).toEqual(['A shared card']);
+    expect(r.body.sources.find((x: { id: string }) => x.id === 'accounts').state).toBe('not-for-viewer');
+    expect(e.boardAsked).toEqual([member.id]);
+  });
+
+  it('a shared-machine (msp) phone is not the owner either', async () => {
+    const e = await setup();
+    const msp = phone(e, { userId: 'mo', role: 'msp' });
+    const r = await send(e, msp, 'GET', '/mobile/needs');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.viewer.role).toBe('msp');
+    expect(r.body.sources.find((x: { id: string }) => x.id === 'attention').state).toBe('not-for-viewer');
+  });
+
+  it('the canary\'s state is not a phone route', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'GET', '/needs/canary')).status).toBe(403);
   });
 });
