@@ -15,7 +15,7 @@ import type { UnrecordedReceiptEntry } from './OriginUnrecordedReceipts.js';
 import type { TelegramOriginRecord } from './types.js';
 import { wireDigest } from './CanonicalOrigin.js';
 import {
-  classifyOperationOutcome, failureCause, suppressionReason, resolveOutcome, OPERATION_OUTCOMES,
+  classifyOperationOutcome, failureCause, suppressionReason, resolveOutcome, OPERATION_OUTCOMES, OPERATION_ID_PATTERN,
   type AuthorEvidence, type LocalEvidence, type OperationOutcome, type OperationOutcomeVerdict, type OwnerEvidence,
   type OwnerReadWhy, type ResolvedOutcome,
 } from './OriginOperationOutcome.js';
@@ -28,7 +28,8 @@ export const OWNER_READ_DEFAULT_CACHE_ENTRIES = 1024;
 /** A machine that just timed out is answered `timeout` at once for this long. */
 export const OWNER_READ_TIMEOUT_MEMO_MS = 2000;
 const MAX_FOLLOW = 8;
-const ID = /^[A-Za-z0-9-]{1,256}$/;
+// Successor ids carry `~` (fb-b7abf24e-6cb); one pattern for every operation-id check.
+const ID = OPERATION_ID_PATTERN;
 const MACHINE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 export type ReceiptAnswer =

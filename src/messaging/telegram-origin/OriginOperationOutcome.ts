@@ -54,7 +54,12 @@ export function suppressionReason(value: unknown): SuppressionReason | null {
 export function failureCause(value: unknown): FailureCause | null {
   return typeof value === 'string' && (FAILURE_CAUSES as readonly string[]).includes(value) ? value as FailureCause : null;
 }
-const OPERATION_ID = /^[A-Za-z0-9-]{1,256}$/;
+/** An operation id, including a derived successor id (`<root>~r<hop>-<plan8>`,
+ * standby-durable-forward-without-token §2). A pattern without `~` drops the link
+ * from a token-less re-seal to its successor, and the outcome read then answers
+ * `unknown` for a reply that was delivered (fb-b7abf24e-6cb). */
+export const OPERATION_ID_PATTERN = /^[A-Za-z0-9~-]{1,256}$/;
+const OPERATION_ID = OPERATION_ID_PATTERN;
 function successorOf(detail: Record<string, unknown> | null | undefined, self: string): string | null {
   const next = detail?.supersededBy;
   return typeof next === 'string' && OPERATION_ID.test(next) && next !== self ? next : null;

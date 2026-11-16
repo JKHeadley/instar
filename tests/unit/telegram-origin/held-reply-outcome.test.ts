@@ -214,6 +214,13 @@ describe('classifier reads suppression reasons (§3b item 2)', () => {
     expect(classifyOperationOutcome('op-11111111', row('superseded', { holdDetail: { supersededBy: 'op-22222222' } }), [])).toMatchObject({ outcome: 'pending', supersededBy: 'op-22222222' });
     expect(classifyOperationOutcome('op-11111111', row('held', { holdReason: 'lease-not-held', holdDetail: { ownerUnstated: { at: 1, attempts: 1 } } }), [])).toMatchObject({ outcome: 'unknown', safeToResend: false });
   });
+  it('fb-b7abf24e-6cb: a token-less re-seal successor id (`<root>~r<hop>-<plan8>`) is named, so the read follows it', () => {
+    expect(classifyOperationOutcome('op-11111111', row('superseded', { holdDetail: { supersededBy: 'op-11111111~r1-0a1b2c3d' } }), []))
+      .toMatchObject({ outcome: 'pending', supersededBy: 'op-11111111~r1-0a1b2c3d' });
+    // The other side of the boundary: a value that is not an operation id is still refused.
+    expect(classifyOperationOutcome('op-11111111', row('superseded', { holdDetail: { supersededBy: 'op 1/../x' } }), [])).toMatchObject({ outcome: 'unknown', supersededBy: null });
+    expect(classifyOperationOutcome('op-11111111', row('superseded', { holdDetail: { supersededBy: 'op-11111111' } }), [])).toMatchObject({ supersededBy: null });
+  });
 });
 
 const V = (outcome: OperationOutcomeVerdict['outcome'], extra: Partial<OperationOutcomeVerdict> = {}): OperationOutcomeVerdict =>
