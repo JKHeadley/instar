@@ -114,7 +114,7 @@ export interface LaneListing { lane: Lane; cards: Record<string, unknown>[]; mor
  * The board for one viewer: "Waiting on you" (oldest first, aggregated past the soft budget),
  * "With the agent", "Waiting on others", "Done" (20 newest; `donePage` pages 50), "Archived".
  */
-export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conversationKey: string) => boolean, name: (k: string) => string, opts: { softOpenCards: number; donePage?: number; extraFor?: (v: CardView) => Parameters<typeof cardJson>[4] }): Record<string, unknown> {
+export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conversationKey: string) => boolean, name: (k: string) => string, opts: { softOpenCards: number; donePage?: number; extraFor?: (v: CardView) => Parameters<typeof cardJson>[4]; /** Every card in every lane, no cut (the Projects read joins cards to projects and must not drop any). */ full?: boolean }): Record<string, unknown> {
   const lanes: Record<Lane, Array<{ v: CardView; json: Record<string, unknown> }>> = { 'waiting-on-you': [], 'with-agent': [], 'waiting-on-others': [], done: [], archived: [] };
   for (const id of svc.cardIds()) {
     const v = svc.view(id); if (!v || !v.card.created) continue;
@@ -126,9 +126,9 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
   for (const l of ['with-agent', 'waiting-on-others', 'archived'] as const) lanes[l].sort((a, b) => b.v.card.newestRecordAt - a.v.card.newestRecordAt);
   lanes.done.sort((a, b) => b.v.card.newestRecordAt - a.v.card.newestRecordAt);
   const waiting = lanes['waiting-on-you'];
-  const shownWaiting = waiting.slice(0, opts.softOpenCards);
+  const shownWaiting = opts.full ? waiting : waiting.slice(0, opts.softOpenCards);
   const page = Math.max(0, opts.donePage ?? 0);
-  const doneShown = page === 0 ? lanes.done.slice(0, 20) : lanes.done.slice(20 + (page - 1) * 50, 20 + page * 50);
+  const doneShown = opts.full ? lanes.done : page === 0 ? lanes.done.slice(0, 20) : lanes.done.slice(20 + (page - 1) * 50, 20 + page * 50);
   return {
     lanes: [
       { lane: 'waiting-on-you', cards: shownWaiting.map((x) => x.json), ...(waiting.length > shownWaiting.length ? { more: waiting.length - shownWaiting.length } : {}) },

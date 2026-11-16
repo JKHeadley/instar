@@ -62,6 +62,7 @@ import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } fr
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
@@ -3183,7 +3184,7 @@ export function createRoutes(ctx: RouteContext): Router {
     exposeBoardRead: (read) => { workBoardReadAs = read; },
     specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
   };
-  let workBoardReadAs: ((req: import('express').Request) => { status: number; body: unknown }) | null = null;
+  let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
   // The Needs-you list (docs/specs/work-front-doors.md decision 2): one read for the console, the phones and
   // the Mac app, built from Home's own sources over this server's loopback, filtered per viewer.
@@ -3212,6 +3213,16 @@ export function createRoutes(ctx: RouteContext): Router {
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),
     agentName: () => ctx.config.projectName ?? null,
     machineId: () => ctx.meshSelfId ?? null,
+  });
+  // Projects on the Work door (work-front-doors stage 2a): the Chief of Staff's projects with their cards.
+  mountProjectsRoutes(router, {
+    projects: () => {
+      if (!ctx.chiefOfStaffLoop) return null;
+      return ctx.chiefOfStaffLoop.projectsOverview() ?? 'failed';
+    },
+    // Every card, no lane cut: a card past the board page's cut must still appear under its project.
+    boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req, { full: true }) : { status: 503, body: { error: 'work-board-starting' } }),
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
