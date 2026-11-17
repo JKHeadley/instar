@@ -25,6 +25,7 @@ import { IntelligenceRouter } from '../../src/core/IntelligenceRouter.js';
 import type { IntelligenceFramework } from '../../src/core/intelligenceProviderFactory.js';
 import type { InstarConfig, IntelligenceProvider } from '../../src/core/types.js';
 import { annotateDecisionOutcome } from '../../src/core/DecisionQualityRecorderImpl.js';
+import { _resetDecisionQualityForTest, setDecisionQualityMachineId } from '../../src/core/decisionQualityTypes.js';
 import { buildPromptJevFirst, promptDetectState } from '../../src/core/JevFirstPrompt.js';
 import { InputDetector } from '../../src/monitoring/PromptGate.js';
 import { PromptDetectOutcomeObserver } from '../../src/monitoring/PromptDetectOutcomeObserver.js';
@@ -81,6 +82,8 @@ describe('terminal prompt-detect outcome on the production boot path (CMT-1677)'
   });
 
   it('a prompt-detect decision then a pane change records progressed-without-input, graded on /decision-quality', async () => {
+    setDecisionQualityMachineId('m_03b30f5b32c6ef3eb0afd3ca7054e252');
+    try {
     const defaultProvider: IntelligenceProvider = { evaluate: vi.fn(async () => 'NO_PROMPT') };
     const router = new IntelligenceRouter({ defaultProvider, defaultFramework: 'claude-code' as IntelligenceFramework,
       resolveConfig: () => undefined, buildProvider: () => null });
@@ -99,7 +102,11 @@ describe('terminal prompt-detect outcome on the production boot path (CMT-1677)'
     await vi.waitFor(() => expect(rows).toHaveLength(1));
     await detector.lastJevShadow;
     const correlationId = rows[0].producerCorrelationId;
-    expect(correlationId).toMatch(/^d-/);
+    expect(correlationId).toMatch(/^d-m_03b30f-/);
+    // The persisted row keeps the router-minted id (the validator must accept '_').
+    await provenance.flush();
+    const persisted = (await provenance.readRedacted({ limit: 50 })).find((r: any) => r.component === 'JevFirstDecision');
+    expect(persisted?.producerCorrelationId).toBe(correlationId);
     expect(rows[0].context.sessionName).toBe('e2e-session');
 
     detector.onCapture('e2e-session', 'E2E_PANE_MARKER started the next step\n❯ \n');
@@ -114,5 +121,8 @@ describe('terminal prompt-detect outcome on the production boot path (CMT-1677)'
     expect(point.byRule['terminal-prompt-progressed-v1']).toMatchObject({ right: 1, wrong: 0 });
     expect(res.body.rejections).toEqual({ enumInvalid: 0, rungMismatch: 0, ownerMismatch: 0, unknownDecisionPoint: 0 });
     await provenance.close();
+    } finally {
+      _resetDecisionQualityForTest();
+    }
   });
 });
