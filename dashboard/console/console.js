@@ -1,4 +1,5 @@
 import { renderNotifications } from './notifications.js';
+import { installNetState } from './net-state.js';
 // Instar console — shell, auth, routing, Home rendering.
 // Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
 // can close or resume a promise through its existing bearer-protected routes.
@@ -55,6 +56,7 @@ const REFRESH_MS = 30000;
 
 let token = '';
 let refreshTimer = null;
+let refreshCurrent = null; // the current page's in-place refresh, for net-state's onBack
 let lastGood = {};                      // card id → last model that was not unknown
 const expanded = new Set();             // cards the operator expanded; kept across refreshes
 const openRows = new Set();             // rows the operator opened; kept across refreshes
@@ -155,16 +157,18 @@ async function post(path, body) {
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
-async function validToken(t) {
+/** `unreachableOk`: only the boot check of an already-stored sign-in keeps it while the agent can't be reached. */
+async function validToken(t, unreachableOk = false) {
   if (!t) return false;
   try {
     const r = await fetch('/sessions', { headers: { Authorization: `Bearer ${t}` }, cache: 'no-store' });
     return r.ok;
-  } catch { return false; }
+  } catch { return unreachableOk; } // @silent-fallback-ok: no connection is not a wrong sign-in at boot (keep it, show what was saved); a typed value is never kept unchecked (app-weak-network §2)
 }
 
 function signOut() {
   forgetOperatorSession();
+  net.clear(); // saved copies belong to this sign-in
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
   token = '';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
@@ -257,7 +261,7 @@ function renderShell(active) {
   if (phone) {
     // Only the page: the app's own frame holds the title bar and navigation.
     const main = el('main', { class: 'main', id: 'main' });
-    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), main));
+    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), net.lineElement(), main));
     applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
     return main;
   }
@@ -272,7 +276,7 @@ function renderShell(active) {
   // The Needs-you list sits above both front doors (spec decision 2); the Agent door has none.
   const strip = active === 'conversations' || active === 'work' ? el('section', { class: 'needs-strip', id: 'needsStrip', 'aria-label': 'What needs you' }) : null;
   const column = strip ? el('div', { class: 'main-column' }, strip, main) : main;
-  const app = el('div', { class: 'app' }, previewBanner(), top, navItems(active), column);
+  const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), top, navItems(active), column);
   document.body.replaceChildren(app);
   if (strip) mountNeedsStrip(strip, { get, hrefFor: stripActionHref });
   applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
@@ -805,6 +809,7 @@ function route() {
   if (active === 'conversations' || active === 'work') { try { localStorage.setItem(LAST_DOOR_KEY, active); } catch { /* @silent-fallback-ok: storage blocked; the console opens on Conversations */ } }
   const main = renderShell(active);
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  refreshCurrent = null;
   const ctx = lifecycle.begin(path, query);
   const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
   if (pages[path]) {
@@ -814,13 +819,15 @@ function route() {
     // A self-refreshing page (it registered ctx.selfRefreshing()) is never re-run by this cycle.
     if (!lifecycle.isSelfRefreshing()) {
       let refreshing = false;
-      const timer = setInterval(() => {
+      const refreshNow = () => {
         if (refreshing || lifecycle.isSelfRefreshing() || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || splitHash(location.hash).path !== hashPath) return;
         refreshing = true;
         // Each re-run is a new visit: the previous run's disposers are called first.
         const next = lifecycle.begin(path, splitHash(location.hash).query);
         Promise.resolve().then(() => pages[path](main, pageCtx(next))).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
-      }, REFRESH_MS);
+      };
+      const timer = setInterval(refreshNow, REFRESH_MS);
+      refreshCurrent = refreshNow;
       // Cleared by the next route() (and signOut), never by a re-run's own visit change.
       refreshTimer = timer;
     }
@@ -869,6 +876,9 @@ function previewBanner() {
     el('a', { href: '/dashboard/console/', text: 'Live dashboard' }));
 }
 
+// A weak or missing connection: saved status reads, a short first try, one plain line (net-state.js).
+const net = installNetState({ getToken: () => token, onBack: () => { if (refreshCurrent) refreshCurrent(); else if (homeRun) loadHome(); } });
+
 (async function boot() {
   applyTheme(readTheme());
   await loadPreviewInfo();
@@ -876,7 +886,7 @@ function previewBanner() {
   // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
   let ticket = '';
   try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
-  const signIn = await signInAtBoot({ storedToken: token, validToken, ticket, fetchFn: (p, o) => fetch(p, o) });
+  const signIn = await signInAtBoot({ storedToken: token, validToken: (t) => validToken(t, true), ticket, fetchFn: (p, o) => fetch(p, o) });
   if (signIn.via === 'ticket') {
     // Stored exactly as the PIN unlock stores it.
     try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }

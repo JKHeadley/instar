@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "app-weak-network",
+  "sessionId": "e83e4048-e275-4858-b5d2-9f4c421eee96",
+  "timestamp": "2026-11-16T23:36:22.300Z",
+  "artifactPath": "upgrades/side-effects/app-weak-network.md",
+  "artifactSha256": "032009b17d8aa6ad2130e21a91ad3169cbdf7ef5890d5aec46f68a66029a8df1",
+  "coveredFiles": [
+    "dashboard/console/browser-device.js",
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/net-state.js",
+    "docs/specs/app-weak-network.eli16.md",
+    "docs/specs/app-weak-network.md",
+    "tests/unit/console-browser-device.test.ts",
+    "tests/unit/console-net-state.test.ts",
+    "upgrades/next/app-weak-network.md",
+    "upgrades/side-effects/app-weak-network.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard-only client behaviour on a bad connection; no server, API or migration change; a revert fully removes it",
+  "eli16Path": "docs/specs/app-weak-network.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-weak-network.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
