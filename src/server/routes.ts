@@ -4,6 +4,8 @@
 
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
+import { bootReadiness } from './BootReadiness.js';
+import { readLastRestartRequest } from '../core/restartRequestAttribution.js';
 import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
@@ -47,6 +49,7 @@ import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserPr
 import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
+import { type MintAuth, classifyGatedMint, keylessMintAdmission, mintReachesSession, mintIsUnverified, validateFieldNames, cleanFreeText, untrustedForAgent, fieldRef, KEYLESS_RECEIPT_NOTICE, KEYLESS_BROWSER_REFUSAL } from './secretDropMintPolicy.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -63,10 +66,15 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
-import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
+import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
+import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
+import { mountProjectAppCustomRoutes } from './projectAppCustomRoutes.js';
+import { isPhoneOnlyCard } from './ProjectAppCustomSource.js';
+import { customProjectAppsEnabled } from './ProjectAppSandbox.js';
 import { projectAppsEnabled } from '../core/ProjectAppStore.js';
 import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
@@ -2100,6 +2108,12 @@ export interface RouteContext {
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
   /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
   projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+  /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound sandbox. */
+  projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+  /** The known-address inputs for the frame's origin check. */
+  projectAppOrigin?: import('./ProjectAppSandbox.js').OriginDeps;
+  /** Project apps part 2 storage + approvals (the real CustomAppSource): late-bound, null where custom apps are off. */
+  projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
   chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
@@ -3267,6 +3281,9 @@ export function createRoutes(ctx: RouteContext): Router {
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
     exposeBoardRead: (read) => { workBoardReadAs = read; },
     specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
+    // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
+    // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
+    phoneOnlyCard: (cardId) => { let src: ReturnType<NonNullable<typeof ctx.projectAppCustom>> | null = null; try { src = ctx.projectAppCustom?.() ?? null; } catch { return true; } return isPhoneOnlyCard(src, cardId); }, // @silent-fallback-ok — fail closed: an unreadable source keeps the card phone-only
   };
   let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
@@ -3322,6 +3339,20 @@ export function createRoutes(ctx: RouteContext): Router {
     invalidateWork: () => _projectsRoute.invalidate(),
     log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
     opens: () => projectAppsOpens(ctx.config.stateDir),
+  });
+  // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.6-3.7): ticket, key, sealed frame, app api.
+  mountProjectAppSandboxRoutes(router, {
+    sandbox: () => ctx.projectAppSandbox?.() ?? null,
+    enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
+    origin: ctx.projectAppOrigin ?? { knownHttpsHosts: () => [] },
+    log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+  });
+  // Project apps part 2 (project-apps-sandbox §3.1, §3.4): the agent creates an app and writes its source.
+  mountProjectAppCustomRoutes(router, {
+    source: () => ctx.projectAppCustom?.() ?? null,
+    enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
@@ -6468,6 +6499,11 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
     }
+    // Listen early: the real server answering IS the ready state (idempotent; the listen
+    // callback normally marks it first). The boot beacon answers "starting" before this.
+    // previousRestart names who asked for the restart that ended the last process.
+    bootReadiness().markReady();
+    base.bootReadiness = bootReadiness().snapshot({ includePreviousRestart: isAuthed });
     // Media (mobile-native-chat-media §4.7): `?scope=pool` adds every machine's appMedia,
     // proxied on read (peers are asked for their plain /health); an unreachable machine is `failed`.
     if (req.query?.scope === 'pool' && isAuthed && ctx.appConversations) {
@@ -6514,6 +6550,65 @@ export function createRoutes(ctx: RouteContext): Router {
       configVersion: ctx.config.version,
     })
   );
+
+  // POST /server/restart — the attributed way for a session (or script) to ask for a
+  // supervised restart of this server, e.g. after a config change that is read only at
+  // boot. Both fields are required: a restart must name who asked and why. A hand-written
+  // state/restart-requested.json still works but is logged as "unattributed"
+  // (2026-11-16: an unattributed restart took the M5 offline for 2m43s and nobody could
+  // tell from the machine who asked). Planned-restart holds (Local Verify) still apply.
+  // @write-domain:none — machine-local: writes this machine's own restart request flag, no replicated agent state.
+  const SERVER_RESTART_MIN_INTERVAL_MS = 2 * 60_000;
+  router.post('/server/restart', async (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : {};
+    const clean = (v: unknown, max: number): string | null =>
+      // eslint-disable-next-line no-control-regex
+      typeof v === 'string' && v.trim() && !/[\u0000-\u001f\u007f]/.test(v) && v.trim().length <= max ? v.trim() : null;
+    const requestedBy = clean(body.requestedBy, 100);
+    const reason = clean(body.reason, 300);
+    if (!requestedBy || !reason) {
+      res.status(400).json({
+        error: 'requestedBy and reason are required',
+        detail: 'requestedBy: who is asking (e.g. your session name), one line, up to 100 characters; reason: why, one line, up to 300 characters.',
+      });
+      return;
+    }
+    if (!ctx.requestSupervisedRestart) {
+      res.status(503).json({ error: 'restart-unavailable', detail: 'this server has no supervised restart wired' });
+      return;
+    }
+    // Rate limit: a looping caller must not restart the server over and over. A non-update
+    // restart has no loop guard of its own, so one consumed less than 2 minutes ago refuses.
+    const lastConsumed = readLastRestartRequest(ctx.config.stateDir);
+    const sinceLastMs = lastConsumed ? Date.now() - Date.parse(lastConsumed.at) : Infinity;
+    if (Number.isFinite(sinceLastMs) && sinceLastMs >= 0 && sinceLastMs < SERVER_RESTART_MIN_INTERVAL_MS) {
+      const retryAfterS = Math.ceil((SERVER_RESTART_MIN_INTERVAL_MS - sinceLastMs) / 1000);
+      res.setHeader('Retry-After', String(retryAfterS));
+      res.status(429).json({ error: 'restarted-recently', detail: `This server restarted ${Math.round(sinceLastMs / 1000)}s ago (asked by ${lastConsumed!.requestedBy ?? 'an unattributed writer'}). Wait ${retryAfterS}s and ask again if it is still needed.`, retryAfterSeconds: retryAfterS });
+      return;
+    }
+    // A pending UPDATE restart (one naming a targetVersion) already restarts the server, and
+    // overwriting it would drop the version and its restart-loop detection. Leave it in place.
+    try {
+      const pending = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'restart-requested.json'), 'utf8')) as { targetVersion?: unknown; expiresAt?: unknown };
+      const live = typeof pending.expiresAt !== 'string' || Date.parse(pending.expiresAt) > Date.now();
+      if (live && typeof pending.targetVersion === 'string' && pending.targetVersion) {
+        res.status(202).json({ requested: true, requestedBy, reason, alreadyPending: { kind: 'update', targetVersion: pending.targetVersion }, next: 'An update restart is already pending; it restarts the server and applies your change too.' });
+        return;
+      }
+    } catch { /* @silent-fallback-ok — no pending request (or unreadable): write ours */ }
+    const ok = await ctx.requestSupervisedRestart(reason, requestedBy);
+    if (ok !== true) {
+      res.status(503).json({ error: 'restart-request-not-written', detail: 'the restart request could not be written; nothing will restart' });
+      return;
+    }
+    res.status(202).json({
+      requested: true,
+      requestedBy,
+      reason,
+      next: 'The supervisor restarts the server within about 10 seconds (later if a Local Verify run holds it). While it boots, GET /health answers bootReadiness.state "starting"; "ready" when it serves again.',
+    });
+  });
 
   // POST /events/delivery-failed — fan-out for the script-side detector.
   //
@@ -16008,6 +16103,19 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/machine-maintenance/skip', machineControl((r) => r.skip('dashboard')));
   router.post('/machine-maintenance/unskip', machineControl((r) => r.unskip('dashboard')));
   router.post('/machine-maintenance/window', machineControl((r, body) => r.setWindow('dashboard', body.reset === true ? null : body.window)));
+
+  // Off (Part F, the card's Remove): this machine is no longer signed up. Safe direction only:
+  // without the enrolment record every restart path refuses, a countdown included.
+  router.post('/machine-maintenance/remove', async (req, res) => {
+    if (!ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))) {
+      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+      return;
+    }
+    const c = getActiveEnrolmentController();
+    if (!c) { res.status(503).json({ error: 'machine maintenance enrolment not enabled on this agent' }); return; }
+    try { res.json(await c.remove('dashboard')); }
+    catch (err) { res.status(500).json({ error: 'remove-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
 
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
@@ -30077,9 +30185,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // instead of silently waiting on a value that never arrives. Added
   // 2026-05-20 in response to the topic-10873 lost-SMS-code incident.
   secretDrop.onStuckConsumer((event) => {
-    if (!event.topicId || !ctx.sessionManager) return;
+    // Only a request that may reach a session ever notifies one (secret-drop-self-mint-hardening).
+    if (!mintReachesSession(event.mintAuth) || !event.topicId || !ctx.sessionManager) return;
     const topicId = event.topicId;
-    const systemMsg = `[secret-drop-stuck] Secret "${event.label}" was submitted but has not been consumed by an agent process. ` +
+    const systemMsg = `[secret-drop-stuck] Secret ${untrustedForAgent(event.label, event.token, false)} was submitted but has not been consumed by an agent process. ` +
       `If you weren't expecting this, the consumer may have hit a bug. ` +
       `The submission will auto-clean in ~${event.minutesUntilCleanup} minute(s). ` +
       (event.browserHost
@@ -30121,24 +30230,37 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // { opts } ready for secretDrop.create().
   function validateSecretRequestBody(
     body: any,
+    mintAuth: MintAuth,
   ): { error: string } | { opts: CreateSecretRequestOptions } {
-    const { label, description, fields, topicId, ttlMs, senderVerification, browserHost } = body ?? {};
+    const { label: rawLabel, description: rawDescription, fields: rawFields, topicId, ttlMs, senderVerification, browserHost } = body ?? {};
 
-    if (!label || typeof label !== 'string' || label.length > 256) {
+    if (!rawLabel || typeof rawLabel !== 'string' || rawLabel.length > 256) {
       return { error: '"label" must be a non-empty string under 256 characters' };
     }
-    if (description !== undefined && (typeof description !== 'string' || description.length > 1024)) {
+    // Free text: controls, line separators, bidi and zero-width characters are removed.
+    const label = cleanFreeText(rawLabel);
+    if (!label.trim()) return { error: '"label" must contain visible text' };
+    if (rawDescription !== undefined && (typeof rawDescription !== 'string' || rawDescription.length > 1024)) {
       return { error: '"description" must be a string under 1024 characters' };
     }
-    if (fields !== undefined) {
-      if (!Array.isArray(fields) || fields.length === 0 || fields.length > 10) {
+    const description = typeof rawDescription === 'string' ? cleanFreeText(rawDescription) : undefined;
+    let fields: CreateSecretRequestOptions['fields'];
+    if (rawFields !== undefined) {
+      if (!Array.isArray(rawFields) || rawFields.length === 0 || rawFields.length > 10) {
         return { error: '"fields" must be an array of 1-10 items' };
       }
-      for (const f of fields) {
-        if (!f.name || typeof f.name !== 'string' || !f.label || typeof f.label !== 'string') {
+      for (const f of rawFields) {
+        if (!f || !f.name || typeof f.name !== 'string' || !f.label || typeof f.label !== 'string') {
           return { error: 'Each field must have a "name" and "label"' };
         }
+        if (f.label.length > 256) return { error: 'Each field "label" must be at most 256 characters' };
+        if (!cleanFreeText(f.label).trim()) return { error: 'Each field "label" must contain visible text' };
       }
+      // A request not made with the agent's key gets the stricter, shell-safe naming rule:
+      // its names are offered to the agent inside a retrieve command.
+      const nameError = validateFieldNames(rawFields.map((f: { name: string }) => f.name), mintAuth !== 'master' && mintAuth !== 'owner-phone');
+      if (nameError) return { error: nameError };
+      fields = rawFields.map((f: Record<string, unknown>) => ({ ...f, label: cleanFreeText(String(f.label)) })) as CreateSecretRequestOptions['fields'];
     }
     if (topicId !== undefined && (typeof topicId !== 'number' || !Number.isInteger(topicId))) {
       return { error: '"topicId" must be an integer' };
@@ -30169,7 +30291,40 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    return { opts: { label, description, fields, topicId, ttlMs, senderVerification, browserHost } };
+    if (browserHost !== undefined && mintAuth === 'none') {
+      return { error: KEYLESS_BROWSER_REFUSAL };
+    }
+
+    return { opts: { label, description, fields, topicId, ttlMs, senderVerification, browserHost, mintAuth } };
+  }
+
+  // A session started before the update sends keyless requests (its helper is old code that
+  // drops new answer fields). So it is never left to fail silently, the server tells the LIVE
+  // session already bound to the named conversation, once per hour per conversation, with a
+  // fixed server-written line (no caller text, never a spawn).
+  const keylessTopicNoticeAt = new Map<number, number>();
+  function noticeKeylessTopic(topicId: number): void {
+    const now = Date.now();
+    if ((keylessTopicNoticeAt.get(topicId) ?? 0) > now - 60 * 60 * 1000) return;
+    try {
+      const regPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+      if (!fs.existsSync(regPath) || !ctx.sessionManager) return;
+      const target = JSON.parse(fs.readFileSync(regPath, 'utf-8')).topicToSession?.[String(topicId)] ?? null;
+      if (target && ctx.sessionManager.isSessionAlive(target)) {
+        // The hourly slot is spent only when the line is actually delivered.
+        keylessTopicNoticeAt.set(topicId, now);
+        ctx.sessionManager.injectPasteNotification(target, `<system-reminder>[secret-drop-notice] ${KEYLESS_RECEIPT_NOTICE}</system-reminder>`);
+      }
+    } catch (err) {
+      // @silent-fallback-ok — the answer itself also carries the notice for current helpers
+      console.error('[secret-drop] keyless-request notice failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** The plain line a mint answer carries when its request cannot notify a conversation. */
+  function mintAnswerExtras(mintAuth: MintAuth, askedForTopic: boolean): Record<string, unknown> {
+    if (mintReachesSession(mintAuth) || !askedForTopic) return {};
+    return { receiptNotice: 'disabled', notice: KEYLESS_RECEIPT_NOTICE };
   }
 
   // An operator's yes to the browser install on an existing Linux agent: sets the flag for this
@@ -30199,7 +30354,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // Create a new secret request (agent-facing, requires auth)
   router.post('/secrets/request', (req, res) => {
-    const validated = validateSecretRequestBody(req.body);
+    // Who is asking decides what the request may reach (secret-drop-self-mint-hardening).
+    const mintAuth = classifyGatedMint(req.headers as Record<string, unknown>, ctx.config.authToken, res.locals?.dashboardScopedSession === true);
+    const validated = validateSecretRequestBody(req.body, mintAuth);
     if ('error' in validated) {
       res.status(400).json({ error: validated.error });
       return;
@@ -30211,6 +30368,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         token,
         ...urls,
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
+        ...mintAnswerExtras(mintAuth, validated.opts.topicId !== undefined),
       });
     } catch (err) {
       res.status(429).json({ error: operatorError(err, res.app?.locals?.stateDir) });
@@ -30234,16 +30392,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // SEALED-HANDOFF §keystone ("a localhost-only loopback that does not require
   // the externalized bearer — NOT by scraping the vault").
   router.post('/threadline/secrets/request', (req, res) => {
-    const remote = req.socket?.remoteAddress;
-    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
-      res.status(403).json({ error: 'Self-mint is localhost-only' });
+    // Only this machine's own loopback, at the port the request arrived on, and nothing a
+    // browser or proxy sends. A request here carries no key, so it is keyless ('none'):
+    // it gets a working paste page but can never name a conversation or reach a session.
+    const admitted = keylessMintAdmission(req as unknown as Parameters<typeof keylessMintAdmission>[0]);
+    if (!admitted.ok) {
+      res.status(403).json({ error: admitted.error });
       return;
     }
-    if (req.headers['x-forwarded-for']) {
-      res.status(403).json({ error: 'Self-mint rejects forwarded (X-Forwarded-For) requests' });
-      return;
-    }
-    const validated = validateSecretRequestBody(req.body);
+    const validated = validateSecretRequestBody(req.body, 'none');
     if ('error' in validated) {
       res.status(400).json({ error: validated.error });
       return;
@@ -30255,7 +30412,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         token,
         ...urls,
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
+        ...mintAnswerExtras('none', validated.opts.topicId !== undefined),
       });
+      if (validated.opts.topicId !== undefined) noticeKeylessTopic(validated.opts.topicId);
     } catch (err) {
       res.status(429).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
@@ -30370,6 +30529,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         store.set(`secretDrops.${req.params.token}`, {
+          mintAuth: submission.mintAuth ?? 'none',
           label: submission.label,
           topicId: submission.topicId ?? null,
           receivedAt: submission.receivedAt,
@@ -30382,8 +30542,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // Only a request from the agent's key or the owner's phone reaches a conversation or a
+    // session. Each sink checks the stored class itself, so a request created before this
+    // change (no class = unverified) never reaches one even if it still carries a topic.
+    const reachesSession = mintReachesSession(submission.mintAuth);
+
     // Send Telegram confirmation if topic is configured
-    if (submission.topicId && ctx.telegram) {
+    if (reachesSession && submission.topicId && ctx.telegram) {
       const fieldCount = Object.keys(submission.values).length;
       const confirmMsg = `\u2705 Secret received for "${submission.label}" (${fieldCount} field${fieldCount !== 1 ? 's' : ''}).`;
       withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(submission.topicId!, confirmMsg)).catch(() => {
@@ -30393,16 +30558,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Route a system message to the agent session so it can respond conversationally.
     // Uses the same inject-or-spawn pattern as Telegram forwarding.
-    if (submission.topicId && ctx.sessionManager) {
+    if (reachesSession && submission.topicId && ctx.sessionManager) {
       const topicId = submission.topicId;
       const fieldCount = Object.keys(submission.values).length;
-      const fieldNames = Object.keys(submission.values).join(', ');
+      // Field names come from the request's declared fields (submit keeps only those).
+      const fieldNames = Object.keys(submission.values).map((n, i) => {
+        const ref = fieldRef(n, i);
+        return ref.startsWith('#') ? `'${ref}'` : ref;
+      }).join(', ');
+      const quotedLabel = untrustedForAgent(submission.label, req.params.token, false);
       const systemMsg = submission.browserHost
-        ? `[secret-drop-received] The password "${submission.label}" for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
+        ? `[secret-drop-received] The password ${quotedLabel} for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
           `Focus that page's password box, then run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name> --browser. ` +
           `That is the only way it can leave; it goes straight into the box and you never see it. ` +
           `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`
-        : `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
+        : `[secret-drop-received] Secret ${quotedLabel} was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
         `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name>. ` +
         `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
         `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +
@@ -30538,6 +30708,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({
       pending: pending.map(p => ({
         ...p,
+        // A request not made with the agent's key (or the owner's phone/dashboard) is marked.
+        origin: mintIsUnverified(p.mintAuth) ? 'unverified' : 'verified',
+        fieldRefs: p.fields.map((n, i) => fieldRef(n, i)),
         ...secretDropUrl(p.token),
       })),
     });
@@ -30606,11 +30779,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         const durable = store.get(`secretDrops.${token}`) as
-          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string> }
+          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string>; mintAuth?: MintAuth }
           | undefined;
         if (durable && durable.values) {
           if (consume && !durableDeleted()) { refuseUnconsumed(); return; }
           submission = {
+            mintAuth: durable.mintAuth, // absent on records stored before this change = unverified
             values: durable.values,
             receivedAt: durable.receivedAt ?? new Date().toISOString(),
             label: durable.label ?? 'Secret',
@@ -30627,7 +30801,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(404).json({ error: 'No submission found for this token' });
       return;
     }
-    res.json({ ...submission, consumed: consume });
+    // An explicit shape: nothing internal leaks through a spread. Values are returned exactly.
+    const names = Object.keys(submission.values);
+    res.json({
+      values: submission.values,
+      receivedAt: submission.receivedAt,
+      label: submission.label,
+      ...(submission.topicId !== undefined ? { topicId: submission.topicId } : {}),
+      ...(submission.browserHost ? { browserHost: submission.browserHost } : {}),
+      origin: mintIsUnverified(submission.mintAuth) ? 'unverified' : 'verified',
+      fieldRefs: names.map((n, i) => fieldRef(n, i)),
+      consumed: consume,
+    });
   });
 
   // ── Tunnel Status ──────────────────────────────────────────────
@@ -37167,16 +37352,31 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/trust/requests', (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
-    const rows = ctx.trustAccountPath.store.allRequests().map((r) => ({
-      requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
-      delivered: !!r.cardMessageId,
-    }));
+    // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
+    const results = new Map(ctx.trustAccountPath.service.deviceListing().map((d) => [d.requestId, d]));
+    const rows = ctx.trustAccountPath.store.allRequests().map((r) => {
+      const d = results.get(r.requestId);
+      return {
+        requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
+        delivered: r.adapter === 'device' ? true : !!r.cardMessageId,
+        ...(d && d.status !== 'open' ? { result: d.status } : {}),
+        ...(d?.disclosure ? { disclosure: d.disclosure } : {}),
+        ...(d?.message ? { message: d.message } : {}),
+      };
+    });
     res.json({ requests: rows, store: ctx.trustAccountPath.store.sinkDescription });
   });
 
   // Withdrawing an acceptance is a narrowing: it stops new approvals and keeps committed grants.
   router.post('/trust/acceptance/withdraw', async (req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    // `adapter: "device"` withdraws a paired device's acceptance (one `deviceId`, or every device's): app-trust-approval §A.
+    if ((req.body ?? {}).adapter === 'device') {
+      const deviceId = (req.body ?? {}).deviceId;
+      if (deviceId !== undefined && (typeof deviceId !== 'string' || !/^[a-z0-9._:-]{1,128}$/.test(deviceId))) return res.status(400).json({ error: 'bad-device-id' });
+      const n = await ctx.trustAccountPath.service.withdrawDeviceAcceptance(deviceId ?? null, 'withdrawn by the agent at the person\'s request');
+      return res.json({ withdrawn: n > 0, count: n });
+    }
     const adapter = (req.body ?? {}).adapter === 'slack' ? 'slack' : 'telegram';
     const ok = await ctx.trustAccountPath.service.withdrawAcceptance('owner', adapter);
     res.json({ withdrawn: ok });
@@ -41740,7 +41940,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pendingRegistry: ctx.ownerApprovedActionPending,
       });
     }
+    // Approving trust raises from the app (docs/specs/app-trust-approval.md): the account path reads the
+    // paired devices from this server's registry, and the phone routes reach the service through one port.
+    const trustDevicePort = ctx.trustAccountPath ? createMobileTrustPort(ctx.trustAccountPath, () => ctx.mobilePairingService ?? null, () => ctx.meshSelfId ?? null, () => isTrustApprovalEnabled(ctx.config)) : null;
+    if (trustDevicePort) {
+      ctx.trustAccountPath!.bindDevices(trustDevicePort.devices);
+      // Every new pairing is shown on the devices that approve changes (app-trust-approval §C).
+      const registry = ctx.mobilePairingService?.devices;
+      if (registry) registry.onActivated = (d) => {
+        void ctx.trustAccountPath!.service.noteDevicePaired(d.id).catch((err: unknown) => {
+          // @silent-fallback-ok: a notice is a courtesy; the pairing is recorded and the device list shows it
+          console.warn('[trust] paired-device notice failed:', err instanceof Error ? err.message : String(err));
+        });
+      };
+    }
     mountMobilePermissionsRoutes(router, {
+      trust: () => trustDevicePort,
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
       // Add a Claude or Codex account and start its sign-in here (account-add-face-id).

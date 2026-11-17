@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -286,6 +287,7 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
+import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -528,6 +530,8 @@ export interface LiveTestRunnerWiring {
 export class AgentServer {
   private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
+  /** Project apps part 2: the known-address inputs for the frame/wrapper origin (project-apps-sandbox §3.6). */
+  private projectAppOriginDeps: ProjectAppOriginDeps = { knownHttpsHosts: () => [] };
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
@@ -950,6 +954,10 @@ export class AgentServer {
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
     projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     windowLifecycleTick?: (() => void) | null;
     passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1927,6 +1935,10 @@ export class AgentServer {
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
     projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -2032,6 +2044,14 @@ export class AgentServer {
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
+    // Project app wrapper + frame (project-apps-sandbox §3.6): the request's own origin, only when it is
+    // one of this agent's known addresses (its own port locally, the tunnel, the named tunnel host,
+    // own Tailscale/Cloudflare names). dashboardSecurityHeaders reads it from app.locals.
+    this.projectAppOriginDeps = {
+      knownHttpsHosts: () => [projectAppHostOf(options.tunnel?.url ?? null), options.config.tunnel?.hostname ?? null],
+      acceptsOwnName: (host: string) => this.mobilePairing?.ownNames?.accepts(host) === true,
+    };
+    this.app.locals.projectAppOrigin = (req: Request) => resolveProjectAppOrigin(req, this.projectAppOriginDeps);
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
     this.app.use(dashboardSecurityHeaders);
 
@@ -6772,6 +6792,9 @@ export class AgentServer {
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
       projectAppsRuntime: options.projectAppsRuntime,
+      projectAppSandbox: options.projectAppSandbox,
+      projectAppCustom: options.projectAppCustom,
+      projectAppOrigin: this.projectAppOriginDeps,
       chiefOfStaffProtocol: options.chiefOfStaffProtocol ?? null,
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
@@ -9515,6 +9538,8 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
+        bootReadiness().markReady();
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {

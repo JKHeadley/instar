@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-17T09:37:56.354Z",
+  "slug": "app-trust-approval",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/trustJourney/accountPath.ts",
+      "src/data/awareness/app-trust-approval.md"
+    ],
+    "addedLines": 5,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "wording only"
+  },
+  "verdict": "pass"
+}

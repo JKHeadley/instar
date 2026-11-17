@@ -12,6 +12,7 @@ import {
   signRecord, validateBundle, type OrgBundle, type OrgRecord,
 } from '../../src/core/OrgPack.js';
 import { OrgPackStore } from '../../src/core/OrgPackStore.js';
+import { standardizePolicy } from '../../src/core/OrgPolicyGrammar.js';
 import { OrgIntentManager, formatOrgIntentForSessionStart } from '../../src/core/OrgIntentManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -46,7 +47,11 @@ const STARTER = `**Purpose.** Our agents help staff do their work well. Each age
 5. Prefer a useful draft over a question.
 `;
 
-function makeBundle(policy = STARTER, over: Partial<OrgRecord> = {}, keys = newOrgKeyPair()): { bundle: OrgBundle; keys: ReturnType<typeof newOrgKeyPair> } {
+function makeBundle(loose = STARTER, over: Partial<OrgRecord> = {}, keys = newOrgKeyPair()): { bundle: OrgBundle; keys: ReturnType<typeof newOrgKeyPair> } {
+  // A published policy is always the standard text the draft produced (SEC-077/078).
+  const std = standardizePolicy(loose);
+  if (!std.ok) throw new Error(`fixture policy not standardizable: ${std.detail}`);
+  const policy = std.text;
   const unsigned = {
     v: 1 as const, orgId: 'org_AAAAAAAAAAAAAAAAAAAA', orgName: 'Monroe Institute', version: 1, policySha256: sha256Hex(policy),
     maxIndependence: 'balanced' as const, publishedAt: '2026-11-16T22:00:00Z', publishedBy: 'Justin', keepers: ['Justin'],
@@ -119,7 +124,7 @@ describe('the bundle and validateBundle', () => {
     expect(validateBundle(other, { ...fresh, pinnedKey: keys.publicKey })).toEqual({ ok: false, reason: 'org-key-changed' });
     expect(validateBundle(bundle, { ...fresh, pinnedKey: keys.publicKey, versionFloor: 2 })).toEqual({ ok: false, reason: 'older-version' });
     expect(validateBundle(bundle, { ...fresh, joinedOrgId: 'org_other_other_other' })).toEqual({ ok: false, reason: 'already-member' });
-    const v1b = makeBundle(STARTER + '\n', {}, keys).bundle;
+    const v1b = makeBundle(STARTER.replace('Spend organization money.', 'Spend organization money, ever.'), {}, keys).bundle;
     expect(validateBundle(v1b, { ...fresh, pinnedKey: keys.publicKey, versionFloor: 1, joined: true, joinedOrgId: bundle.record.orgId, joinedVersion: 1, joinedHash: bundle.record.policySha256 }))
       .toEqual({ ok: false, reason: 'version-conflict' });
   });

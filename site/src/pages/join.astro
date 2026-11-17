@@ -33,7 +33,7 @@
     <main>
       <div id="bad" hidden>
         <h1>This invitation can't be read</h1>
-        <p class="muted">The link may have been cut short when it was copied. Ask the person who sent it for the link again.</p>
+        <p class="muted">The link may have been cut short or changed after it was sent. Ask the person who sent it for the link again.</p>
       </div>
       <div id="ok" hidden>
         <h1 id="title"></h1>
@@ -41,7 +41,6 @@
         <div class="card"><h2 style="margin-top:0">Your agent will never</h2><ul id="never"></ul></div>
         <div class="card"><h2 style="margin-top:0">It will ask you first before</h2><ul id="ask"></ul></div>
         <div class="card"><h2 style="margin-top:0">By default it will</h2><p id="purpose"></p><ul id="normally"></ul></div>
-        <div class="card" id="otherCard" hidden><h2 style="margin-top:0">Also in this policy</h2><pre id="other"></pre></div>
         <div class="card"><h2 style="margin-top:0">Most independence allowed</h2><p id="indep"></p></div>
         <div class="card">
           <h2 style="margin-top:0">What the organization can see</h2>
@@ -72,20 +71,44 @@
         function text(id, t) { document.getElementById(id).textContent = t; }
         function list(id, items) { var ul = document.getElementById(id); items.forEach(function (i) { var li = document.createElement('li'); li.textContent = i; ul.appendChild(li); }); }
         function b64urlBytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var bin = atob(s); var out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
-        function parse(policy) {
-          var heads = { purpose: 'purpose', never: 'never', 'ask first': 'ask', normally: 'normally' };
-          var out = { purpose: [], never: [], ask: [], normally: [], other: [] }; var cur = null;
-          policy.replace(/\r\n/g, '\n').split('\n').forEach(function (raw) {
-            var line = raw.trim(); if (!line) return;
-            // The same rule as the agent: a #-line, or a bold lead of at most 4 words.
-            var m = /^#{1,6}\s+(.+?)\s*:?\s*$/.exec(line) || /^\*\*(.+?)\*\*/.exec(line);
-            if (m && line.charAt(0) === '*' && m[1].replace(/[.:]\s*$/, '').split(/\s+/).length > 4) m = null;
-            if (m) { var name = m[1].replace(/\s*\(.*\)\s*$/, '').replace(/[.:]\s*$/, '').trim().toLowerCase(); if (heads[name]) { cur = heads[name]; var rest = line.replace(/^\*\*.+?\*\*\s*/, '').replace(/^\(.*\):?$/, '').replace(/^[.:]\s*/, ''); if (cur === 'purpose' && rest && !/^#/.test(line)) out.purpose.push(rest); return; } cur = 'other'; out.other.push(line); return; }
-            var isItem = /^(?:[-*+]|\d+[.)])\s+/.test(line); var item = line.replace(/^(?:[-*+]|\d+[.)])\s+/, '');
-            if (cur === 'purpose') out.purpose.push(item); else if (cur && cur !== 'other' && isItem) out[cur].push(item); else out.other.push(line);
-          });
-          return out;
+        // ORG-POLICY-READER:BEGIN (the standard form, src/core/OrgPolicyGrammar.ts; tests/fixtures/org-policy-vectors.json)
+        function readStandardPolicy(text) {
+          var HIDDEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\u{1D159}]/u;
+          var SECTIONS = [['Purpose', 'purpose'], ['Never', 'never'], ['Ask first', 'askFirst'], ['Normally', 'normally']];
+          if (typeof text !== 'string') return null;
+          var prev = null;
+          for (var ch of text) {
+            if (ch === '\n') { prev = null; continue; }
+            if (HIDDEN.test(ch) || (/\p{M}/u.test(ch) && (prev === null || /\s/u.test(prev)))) return null;
+            prev = ch;
+          }
+          if (text.normalize('NFC') !== text) return null;
+          var out = { purpose: [], never: [], askFirst: [], normally: [] }; var seen = {}; var cur = null;
+          var lines = text.split('\n');
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line === '') continue;
+            if (line !== line.trim()) return null;
+            if (/<!--|-->|```|~~~/.test(line)) return null;
+            if (line.indexOf('## ') === 0) {
+              var hit = null; for (var j = 0; j < SECTIONS.length; j++) if (SECTIONS[j][0] === line.slice(3)) hit = SECTIONS[j][1];
+              if (!hit || seen[hit]) return null;
+              seen[hit] = true; cur = hit; continue;
+            }
+            if (cur === null) return null;
+            if (cur === 'purpose') { if (/^(?:#|[-*+>]|\d+[.)]|\*\*)/.test(line)) return null; out.purpose.push(line); continue; }
+            if (line.indexOf('- ') !== 0) return null;
+            var item = line.slice(2); if (!item || item !== item.trim()) return null;
+            out[cur].push(item);
+          }
+          var blocks = [];
+          for (var k = 0; k < SECTIONS.length; k++) {
+            var items = out[SECTIONS[k][1]]; if (!items.length) continue;
+            blocks.push(['## ' + SECTIONS[k][0]].concat(items.map(function (x) { return SECTIONS[k][1] === 'purpose' ? x : '- ' + x; })).join('\n'));
+          }
+          return blocks.join('\n\n') === text ? out : null;
         }
+        // ORG-POLICY-READER:END
         async function main() {
           var p = new URLSearchParams(location.hash.slice(1)).get('p');
           if (!p) { show('bad'); return; }
@@ -99,12 +122,15 @@
           var digest = new Uint8Array(await crypto.subtle.digest('SHA-256', keyBytes));
           var hex = Array.prototype.map.call(digest.slice(0, 10), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').toUpperCase();
           var code = hex.match(/.{4}/g).join('-');
-          var pol = parse(json.policy);
+          // Show only a policy the agent would accept: the signed fingerprint matches, and it is in the standard form.
+          var polHash = Array.prototype.map.call(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json.policy))), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+          var pol = readStandardPolicy(json.policy);
+          var HIDDEN_NAME = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\u{1D159}]/u;
+          if (!pol || polHash !== r.policySha256 || HIDDEN_NAME.test(String(r.orgName)) || HIDDEN_NAME.test(String(r.publishedBy))) { show('bad'); return; }
           text('title', 'Join ' + r.orgName + '?');
           text('meta', 'Policy version ' + r.version + ', published by ' + r.publishedBy + ' on ' + String(r.publishedAt).slice(0, 10) + '.');
-          list('never', pol.never); list('ask', pol.ask); list('normally', pol.normally);
+          list('never', pol.never); list('ask', pol.askFirst); list('normally', pol.normally);
           text('purpose', pol.purpose.join(' '));
-          if (pol.other.length) { text('other', pol.other.join('\n')); show('otherCard'); }
           text('indep', WORDS[r.maxIndependence] || r.maxIndependence);
           text('see', r.updateOrigin ? 'Once a day your agent asks ' + r.orgName + "'s agent for a newer version and checks in. " + r.orgName + " sees your agent's name, your name, the policy version it runs, when it last checked in, and your network address." : 'Your agent sends it nothing, and has no contact with it after joining.');
           text('code', code); text('orgName2', r.orgName);

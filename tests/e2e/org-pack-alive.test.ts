@@ -54,6 +54,13 @@ describe('org-pack-and-join is alive on the production boot path', () => {
 
     const draft = await bearer(request(app).post('/org/draft')).send({ orgName: 'Monroe Institute', policyMarkdown: '## Never\n- Spend organization money\n' });
     expect(draft.status).toBe(200);
+    // SEC-077/078: the draft comes back in the one standard form, and hidden characters or comment markers are refused.
+    expect(draft.body.policyMarkdown).toBe('## Never\n- Spend organization money');
+    const hidden = await bearer(request(app).post('/org/draft')).send({ orgName: 'Monroe Institute', policyMarkdown: '## Never\n- Spend organization money\u200B' });
+    expect(hidden.status).toBe(400);
+    expect(hidden.body.error).toBe('policy-not-standard');
+    const comment = await bearer(request(app).post('/org/draft')).send({ orgName: 'Monroe Institute', policyMarkdown: '## Never\n- Spend money <!--\n- Share data -->' });
+    expect(comment.body.error).toBe('policy-not-standard');
     expect((await bearer(request(app).post('/mobile/org/publish')).send({ draftId: draft.body.draftId })).status).toBe(403);
     const body = Buffer.from(JSON.stringify({ draftId: draft.body.draftId, readBackConfirmed: true, shareUpdates: true }));
     const time = String(Date.now());

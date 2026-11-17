@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-17T06:55:22.273Z",
+  "slug": "project-apps-sandbox",
+  "carriers": {
+    "CMT-1882": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Echo builds stage 2 of docs/specs/project-apps-sandbox.md (branch echo/project-apps-b): (1) server-side mesh forward of a custom-app write to the lease holder; (2) the project-app-key-fetch mesh verb so a non-holder can fetch app keys from the holder; (3) the lease-epoch timeline that fences late writes from an old holder; (4) the catch-up barrier after restart/reconnect plus the revocation push t"
+    }
+  }
+}

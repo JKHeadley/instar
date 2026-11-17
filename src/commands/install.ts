@@ -239,6 +239,9 @@ export const INSTALLED_AGENT_MOBILE_PAIRING = {
   enabled: true,
   multiRoute: { enabled: true },
   native: { enabled: true, media: { enabled: true } },
+  // The app is the primary way to approve trust raises (app-trust-approval; Justin, topic 143810,
+  // 2026-11-16 20:35 PST: "support Instar app only as the primary route").
+  trustApproval: { enabled: true },
 };
 
 export type PairingLinkResult =

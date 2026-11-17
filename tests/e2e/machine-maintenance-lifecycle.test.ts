@@ -72,7 +72,7 @@ describe('machine maintenance lifecycle', () => {
     const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
     const wired = new DrainRehearsal({ ...(rehearsal as unknown as { deps: ConstructorParameters<typeof DrainRehearsal>[0] }).deps, store, controls: () => store.readControls() });
     setActiveDrainRehearsal(wired);
-    for (const route of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
+    for (const route of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window', '/machine-maintenance/remove']) {
       const res = await request(server.getApp()).post(route).set(auth);
       expect(res.status, route).toBe(401);
       expect(res.body.error).toMatch(/PIN unlock/);
@@ -84,6 +84,8 @@ describe('machine maintenance lifecycle', () => {
     const src = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
     expect(src).toContain('controls: () => mmControlStore.readControls(),');
     expect(src).toContain('store: mmControlStore,');
+    // Off (CMT-1203): a countdown already running is refused inside the lock once the record is gone.
+    expect(src).toContain("if (!fs.existsSync(path.join(os.homedir(), '.instar', 'host-maintenance', 'enrolment.json'))) return 'machine not signed up';");
   });
 
   it('the Machine care page reads the real status through its model: one honest sentence, Skip and window for this machine, and a skip shows as Undo', async () => {

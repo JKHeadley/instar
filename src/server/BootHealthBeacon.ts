@@ -1,16 +1,24 @@
-// E2E-PAIRING: EXEMPT — ships dark (monitoring.bootHealthBeacon.enabled, default
-// off) and adds NO persistent AgentServer route; it is a transient boot-time
-// listener that is closed before the real server binds. The module + the critical
-// port-handoff are covered by tests/unit/BootHealthBeacon.test.ts; a full-boot e2e
-// can't cleanly reproduce the heavy-boot timing window, so live wiring is verified
-// at the canary rollout step (flag on, observe /health during a real boot on Echo),
-// which is the documented next step in the post-mortem plan.
+// E2E-PAIRING: EXEMPT — adds NO persistent AgentServer route; it is a transient
+// boot-time listener that is closed before the real server binds. On for every
+// agent since 2026-11-16 (monitoring.bootHealthBeacon.enabled: false turns it off).
+// The module + the port handoff are covered by tests/unit/BootHealthBeacon.test.ts,
+// and the beacon → real-server handoff on one port by
+// tests/e2e/listen-early-boot-lifecycle.test.ts.
 import http from 'node:http';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { bootReadiness, BOOT_STATE_HEADER } from './BootReadiness.js';
 
 /**
- * BootHealthBeacon — a minimal HTTP listener that answers `/health` with 200
- * *during* the server's heavy boot, before the real AgentServer binds its port.
+ * BootHealthBeacon — a minimal HTTP listener that answers *during* the server's
+ * heavy boot, before the real AgentServer binds its port.
+ *
+ * Since 2026-11-16 it binds the SAME host the real server will (0.0.0.0 on a
+ * multi-machine agent, so mesh peers reach it, not just localhost) and answers
+ * with the typed boot state from BootReadiness: every route, `/health`
+ * included, gets a 503 with `Retry-After`, `x-instar-boot-state: starting` and
+ * `{ error: "starting", status: "starting", bootReadiness }`. It no longer
+ * answers 200 on `/health`: a 200 means "serving" to every other caller, and the
+ * supervisor reads the header as "alive, still booting".
  *
  * Earned 2026-06-07 (topic 21816 post-mortem, root cause #1 — "Liveness Before
  * Load"). The server's boot loads large TopicMemory/SemanticMemory and reconciles
@@ -47,16 +55,22 @@ export class BootHealthBeacon {
     if (this.server) return;
     const server = http.createServer((req, res) => {
       const url = (req.url || '').split('?')[0];
-      if (req.method === 'GET' && (url === '/health' || url === '/health/')) {
-        this.healthAnswers += 1;
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', phase: 'booting' }));
-        return;
-      }
-      // Everything else is not ready yet — the real server isn't up.
-      this.notReadyAnswers += 1;
-      res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '5' });
-      res.end(JSON.stringify({ status: 'warming', phase: 'booting' }));
+      const snap = bootReadiness().snapshot();
+      // Every route, /health included, answers a typed 503 "starting, retry after N s".
+      // A 200 means "serving" to every other caller (install, test-as-self, hooks,
+      // PostRestartProof), so the beacon never says 200. The supervisor reads the
+      // x-instar-boot-state header as "alive, still booting" (ServerSupervisor.probeHealth).
+      if (req.method === 'GET' && (url === '/health' || url === '/health/')) this.healthAnswers += 1;
+      else this.notReadyAnswers += 1;
+      const retryAfter = snap.retryAfterSeconds ?? 5;
+      res.writeHead(503, { 'content-type': 'application/json', 'retry-after': String(retryAfter), 'cache-control': 'no-store', [BOOT_STATE_HEADER]: 'starting' });
+      res.end(JSON.stringify({
+        error: 'starting',
+        status: 'starting',
+        message: `The server is starting. Retry after ${retryAfter} s.`,
+        retryAfterSeconds: retryAfter,
+        bootReadiness: snap,
+      }));
     });
     // Don't let an idle keep-alive socket hold the port at handoff time.
     server.keepAliveTimeout = 1;
@@ -70,6 +84,7 @@ export class BootHealthBeacon {
     });
     this.server = server;
     this.startedAt = Date.now();
+    bootReadiness().markListeningEarly(this.host);
   }
 
   /**

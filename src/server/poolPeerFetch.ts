@@ -31,6 +31,7 @@
 /** The three transports rope health is keyed on. Narrower than PeerEndpointKind
  *  on purpose: `last-known-url` is not a rope. */
 import { isPeerUrlAllowedForCredentials, type PeerEndpointSelection } from './peerUrlGuard.js';
+import { isPeerBooting } from './BootReadiness.js';
 
 export type RopeKind = 'tailscale' | 'lan' | 'cloudflare';
 
@@ -74,6 +75,17 @@ export class PoolPeerAdmissionError extends Error {
 }
 
 /**
+ * The peer answered with the boot beacon's typed "starting" 503: it is up but still
+ * booting, so no route ran. Thrown (like a refused connection was before listen
+ * early) so every caller reads it as "unreached, retry" — never as the plain 503
+ * most fan-outs read as "feature off there". The rope worked, so it records ok.
+ */
+export class PoolPeerBootingError extends Error {
+  override readonly name = 'PoolPeerBootingError';
+  constructor(readonly machineId: string) { super('peer-starting'); }
+}
+
+/**
  * Drop-in for `fetch(`${peer.url}${path}`, init)` that reports the rope outcome.
  *
  * Deliberately transparent: it returns the raw `Response` and rethrows the
@@ -114,11 +126,16 @@ export async function poolPeerFetch(
       const res = await fetchImpl(`${rope.url}${path}`, init);
       const edge = isCloudflareEdgeFailure(rope.kind, res.status);
       if (kind && record) record(peer.machineId, kind, !edge, Date.now() - started, rope.url);
+      if (!edge && isPeerBooting(res)) {
+        void lastEdge?.body?.cancel().catch(() => {});
+        void res.body?.cancel().catch(() => {});
+        throw new PoolPeerBootingError(peer.machineId);
+      }
       if (!edge) { void lastEdge?.body?.cancel().catch(() => {}); return res; }
       void lastEdge?.body?.cancel().catch(() => {});
       lastEdge = res;
     } catch (err) {
-      if (err instanceof PoolPeerAdmissionError) {
+      if (err instanceof PoolPeerAdmissionError || err instanceof PoolPeerBootingError) {
         void lastEdge?.body?.cancel().catch(() => {});
         throw err;
       }
