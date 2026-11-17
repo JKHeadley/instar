@@ -7778,8 +7778,10 @@ export function createRoutes(ctx: RouteContext): Router {
         ctx.config.backup,
         () => ctx.sessionManager.listRunningSessions().length > 0,
       );
-      manager.restoreSnapshot(id);
-      res.json({ restored: id });
+      const report = manager.restoreSnapshot(id);
+      // Script jobs whose executable the snapshot did not hold come back
+      // registered but may not run — say so instead of letting the next firing find out.
+      res.json({ restored: id, uncapturedExecutables: report.uncapturedExecutables });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Restore failed' });
     }

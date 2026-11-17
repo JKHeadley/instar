@@ -20,6 +20,29 @@ import type { BackupSnapshot, BackupConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { mergeDefaults } from './mergeDefaults.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
+import {
+  scriptJobExecutables,
+  scriptJobsFromJobsJson,
+  resolveScriptCommand,
+  uncopyableReason,
+  executableLabel,
+  notCapturableReason,
+  type ScriptExecutableRecord,
+} from './scriptJobExecutables.js';
+
+export type { ScriptExecutableRecord } from './scriptJobExecutables.js';
+
+/** What restoreSnapshot() did, and which script jobs came back without their executable. */
+export interface RestoreReport {
+  id: string;
+  restoredFiles: string[];
+  /**
+   * Every script job in the restored jobs.json whose executable the snapshot
+   * did not hold — whether or not a file happens to exist at that path on this
+   * machine. Such a job is registered but may not run.
+   */
+  uncapturedExecutables: ScriptExecutableRecord[];
+}
 
 const SNAPSHOT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$/;
 const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
@@ -234,6 +257,11 @@ const DEFAULT_CONFIG: BackupConfig = {
     'USER.md',
     'MEMORY.md',
     'jobs.json',
+    // Managed job scripts: script-class jobs in jobs.json run these, and they
+    // usually have no other copy (.instar is gitignored). Script files that
+    // jobs reference elsewhere in the state directory are added per job at
+    // snapshot time (see fillSnapshot()).
+    'scripts/',
     'users.json',
     'relationships/',
     // A person's choices, so a no survives restoring a lone machine.
@@ -678,6 +706,40 @@ export class BackupManager {
       }
     }
 
+    // Script-class jobs: capture each job's executable when it is a regular
+    // file inside the state directory that the directories above did not
+    // already copy (e.g. a silo's scripts/), and record per job whether the
+    // snapshot holds it. Every deny layer applies; symlinks are never followed.
+    const scriptExecutables: ScriptExecutableRecord[] = [];
+    for (const exe of scriptJobExecutables(this.stateDir)) {
+      const record: ScriptExecutableRecord = { slug: exe.slug, command: exe.command, executable: executableLabel(exe), captured: false };
+      const notCapturable = notCapturableReason(exe);
+      const rel = exe.stateRelativePath;
+      if (notCapturable !== null || rel === undefined) {
+        record.reason = notCapturable ?? 'the executable lives outside the state directory; a snapshot does not hold it';
+      } else if (files.includes(rel)) {
+        record.captured = true;
+      } else if (isDeniedForBackup(rel) || this.isEntryBlocked(rel)) {
+        record.reason = 'the executable sits on a path backups never include';
+      } else {
+        const why = uncopyableReason(this.stateDir, rel);
+        if (why !== null) {
+          record.reason = why;
+        } else {
+          const absolute = path.join(this.stateDir, rel);
+          const stat = lstatIfPresent(absolute);
+          if (stat?.isFile()) copyOne(rel, absolute, stat.size);
+          record.captured = files.includes(rel);
+          if (!record.captured) record.reason = 'the executable went away during the copy';
+        }
+      }
+      scriptExecutables.push(record);
+    }
+    const uncaptured = scriptExecutables.filter((r) => !r.captured);
+    if (uncaptured.length > 0) {
+      console.warn(`[BackupManager] Snapshot ${id} does not hold the executable of ${uncaptured.length} script job(s): ${uncaptured.map((r) => r.slug).join(', ')}`);
+    }
+
     // A staged file whose live original went away in the meantime (a write-ahead
     // log removed when its last connection closed) still belongs to the moment
     // that was staged. Staging applied every deny layer; they are applied again here.
@@ -695,6 +757,7 @@ export class BackupManager {
       files,
       totalBytes,
       integrityHash,
+      ...(scriptExecutables.length > 0 ? { scriptExecutables } : {}),
     };
 
     // Write manifest
@@ -890,8 +953,12 @@ export class BackupManager {
    * - Any sessions are active
    * - Snapshot ID is invalid
    * - Manifest integrity check fails
+   *
+   * Returns which files came back and every script job whose executable the
+   * snapshot did not hold (computed from the snapshot's own jobs.json and file
+   * list, so a pre-fix snapshot is reported on too).
    */
-  restoreSnapshot(id: string): void {
+  restoreSnapshot(id: string): RestoreReport {
     // Session guard — enforced at the method level, not just at call sites
     if (this.isSessionActive?.()) {
       throw new Error('Cannot restore while sessions are active. Stop all sessions first.');
@@ -926,6 +993,7 @@ export class BackupManager {
     this.createSnapshot('manual');
 
     // Restore files
+    const restoredFiles: string[] = [];
     for (const file of manifest.files) {
       // A PRE-fix snapshot (or one crafted on another machine) may carry
       // excluded per-machine state — apply the same three deny layers on the
@@ -948,7 +1016,50 @@ export class BackupManager {
 
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(src, dest);
+      restoredFiles.push(file);
     }
+
+    const uncapturedExecutables = this.uncapturedScriptExecutables(snapshotDir, manifest);
+    if (uncapturedExecutables.length > 0) {
+      console.warn(`[BackupManager] Restored ${id}, but the snapshot did not hold the executable of ${uncapturedExecutables.length} script job(s): ${uncapturedExecutables.map((r) => `${r.slug} (${r.executable ?? r.command})`).join(', ')}`);
+    }
+    return { id, restoredFiles, uncapturedExecutables };
+  }
+
+  /**
+   * The script jobs in a snapshot's jobs.json whose executable is not among the
+   * snapshot's files. The file list is the truth, not the presence of a file on
+   * this machine: an executable the snapshot never held is reported even when
+   * a copy happens to exist here. Reasons recorded at snapshot time are reused.
+   */
+  private uncapturedScriptExecutables(snapshotDir: string, manifest: BackupSnapshot): ScriptExecutableRecord[] {
+    if (!manifest.files.includes('jobs.json')) return [];
+    let raw: string;
+    try {
+      raw = fs.readFileSync(path.join(snapshotDir, 'jobs.json'), 'utf-8');
+    } catch {
+      return []; // @silent-fallback-ok — the snapshot holds no readable jobs.json, so it restored no script jobs
+    }
+    const held = new Set(manifest.files.map((f) => f.split(path.sep).join('/')));
+    const recorded = new Map<string, ScriptExecutableRecord>();
+    for (const r of manifest.scriptExecutables ?? []) {
+      if (r && typeof r.slug === 'string') recorded.set(`${r.slug}\u0000${r.command}`, r);
+    }
+    const out: ScriptExecutableRecord[] = [];
+    for (const job of scriptJobsFromJobsJson(raw)) {
+      const exe = resolveScriptCommand(job.slug, job.command, this.stateDir);
+      const rel = exe.stateRelativePath;
+      if (rel !== undefined && held.has(rel) && !isDeniedForBackup(rel)) continue;
+      const prior = recorded.get(`${job.slug}\u0000${job.command}`);
+      out.push({
+        slug: job.slug,
+        command: job.command,
+        executable: executableLabel(exe),
+        captured: false,
+        reason: notCapturableReason(exe) ?? (prior && !prior.captured && prior.reason ? prior.reason : 'the snapshot does not hold this executable'),
+      });
+    }
+    return out;
   }
 
   /**

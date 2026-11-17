@@ -8796,6 +8796,12 @@ export interface BackupSnapshot {
   totalBytes: number;
   /** SHA-256 integrity hash for manifest validation */
   integrityHash?: string;
+  /**
+   * Per script-class job in jobs.json: what it executes and whether this
+   * snapshot holds that executable. Informational — restore recomputes the
+   * report from the snapshot's own jobs.json and file list.
+   */
+  scriptExecutables?: Array<{ slug: string; command: string; executable: string | null; captured: boolean; reason?: string }>;
 }
 
 export interface BackupConfig {
