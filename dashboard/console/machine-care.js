@@ -4,7 +4,7 @@
 // only send the owner a Telegram card, and nothing happens until the owner taps it there.
 
 import { buildMachineCarePage, controlAnswer } from './machine-care-model.js';
-import { el, setKids, pageHead, note, cantTell, firstPaint, askPin, operatorSession, forgetOperatorSession } from './ui.js';
+import { el, setKids, pageHead, note, cantTell, firstPaint, askPin, operatorSession, forgetOperatorSession, actionButton } from './ui.js';
 
 const EYEBROW = 'Capacity · Machine care';
 
@@ -42,7 +42,7 @@ export async function renderMachineCare(main, ctx) {
 
   const again = () => renderMachineCare(main, ctx);
   const cards = page.rows.map((row) => {
-    const status = el('p', { class: 'action-status', role: 'status' });
+    const status = el('p', { class: 'action-status care-status', role: 'status' });
     const show = (r) => { status.textContent = r.message; if (r.ok) setTimeout(again, 2500); };
     const c = row.controls;
     const buttons = [];
@@ -51,6 +51,12 @@ export async function renderMachineCare(main, ctx) {
     if (c && c.skip) buttons.push(button('Skip once', 'quiet', async () => show(await withPin('Skip once', async (s) => controlAnswer('skip', await post('/machine-maintenance/skip', {}, s))))));
     if (c && c.unskip) buttons.push(button('Undo skip', 'quiet', async () => show(await withPin('Undo skip', async (s) => controlAnswer('unskip', await post('/machine-maintenance/unskip', {}, s))))));
 
+    const off = c && c.off ? actionButton({
+      label: 'Turn off', kind: 'quiet',
+      confirm: `Stop restarting ${row.name}? Nothing restarts it after this, including a countdown already running. You can sign it up again later.`,
+      run: () => withPin('Turn off machine care', async (s) => controlAnswer('off', await post('/machine-maintenance/remove', {}, s))),
+      done: () => setTimeout(again, 2500),
+    }) : null;
     let windowBox = null;
     if (c && c.window) {
       const start = el('input', { class: 'reason-input', type: 'time', value: (row.window && row.window.start) || '03:00', 'aria-label': 'Window start' });
@@ -67,6 +73,7 @@ export async function renderMachineCare(main, ctx) {
       el('p', { class: 'need-line', text: row.sentence }),
       buttons.length ? el('div', { class: 'confirm-row' }, ...buttons) : null,
       windowBox,
+      off,
       !row.self ? el('p', { class: 'card-note', text: `To change ${row.name}, open its own dashboard.` }) : null,
       status);
   });

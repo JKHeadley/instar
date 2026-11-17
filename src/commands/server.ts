@@ -27678,6 +27678,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               readBootAt: restartBootAt,
               freshCheck: () => {
                 if (!mmEnabled()) return 'machine care switched off';
+                // Off (CMT-1203) removes the record: a countdown already running is refused here, in the lock.
+                if (!fs.existsSync(path.join(os.homedir(), '.instar', 'host-maintenance', 'enrolment.json'))) return 'machine not signed up';
                 if (holdsBeforeDispatch === null) return 'safety holds unread';
                 const hard = holdsBeforeDispatch.find((h) => (h.id === 'S1' || h.id === 'S2') && h.active);
                 return hard ? `${hard.label.toLowerCase()} (${hard.id})` : null;
