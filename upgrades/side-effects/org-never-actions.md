@@ -119,3 +119,7 @@ Local verify failed 7 unit tests in 6 ratchets because OrgPolicyJudge had no cla
 ## Main merge (2026-11-17, after #3294)
 
 Merged origin/main (3ad059991): conflicts in the device allowlist, orgPackRoutes imports and the pinned owner-only route list, all resolved by keeping both sides (#3294's org members/keepers routes beside this PR's pending-checks and allow-once/actions-mode rows). Typecheck clean; 176 org, terminal and ratchet unit tests pass; independent review concurred.
+
+## Local-verify fix 2 (merge line, 2026-11-17 18:00Z)
+
+llm-routing-nature-ratchet: a routing nature may only be cited for a bench-covered component, and OrgPolicyJudge's bench is pending (wave-3). Its LLM_ROUTING_NATURE entry is removed; it routes by default until the bench lands. All 22 tests/unit/*ratchet*.test.ts files are run before this push.

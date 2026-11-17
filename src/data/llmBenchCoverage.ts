@@ -796,7 +796,6 @@ export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
   MessagingToneGate: { nature: 'B', chain: 'JUDGE' },
   CompletionEvaluator: { nature: 'B', chain: 'JUDGE' },
   ExternalOperationGate: { nature: 'B', chain: 'JUDGE' },
-  OrgPolicyJudge: { nature: 'B', chain: 'JUDGE' },
   LLMSanitizer: { nature: 'B', chain: 'JUDGE' },
   CoherenceReviewer: { nature: 'B', chain: 'JUDGE' },
   InputGuard: { nature: 'B', chain: 'JUDGE' },

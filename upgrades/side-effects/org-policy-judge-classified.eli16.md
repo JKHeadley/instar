@@ -8,7 +8,7 @@ The organization rule checker (OrgPolicyJudge), which reads an action and decide
 
 ## What changed
 
-The checker is now in every list: it reads text a stranger could have written, it judges actions rather than an agent's claims, its yes/no verdict with a rule number is a fixed-shape answer, it is routed like the other safety judges, and its benchmark and decision record are queued with the others still waiting. Adding it to the queued lists is a deliberate, visible edit to the pinned baselines. How the checker behaves did not change.
+The checker is now in every list: it reads text a stranger could have written, it judges actions rather than an agent's claims, its yes/no verdict with a rule number is a fixed-shape answer, its model routing is left at the default until its benchmark lands (a routing choice may only cite a benchmarked component), and its benchmark and decision record are queued with the others still waiting. Adding it to the queued lists is a deliberate, visible edit to the pinned baselines. How the checker behaves did not change.
 
 ## Evidence
 
