@@ -37,6 +37,7 @@ import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTI
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
 import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
+import { checkBrakes, type EpisodeRow, type LedgerRow } from '../monitoring/machineMaintenance/HostMaintenanceStore.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
@@ -4274,6 +4275,57 @@ function recommendedServiceSetupRestartModel(f: PressureFixture, sink: ActionSin
  * (a flapping machine, not this fixture) it is also capped at one ordinary and one
  * breaker notice per 24 hours.
  */
+/**
+ * machine-restart — the machine restart class (machine-self-maintenance Part E brakes;
+ * HostMaintenanceStore.reserveEpisode -> checkBrakes, RestartActuator). The pressure: two
+ * wedge evidence families positive forever, so the wedge path asks for a restart at every
+ * 10-minute sample, and every restart "lands" (a new boot) but the wedge returns at once.
+ * Convergence shape: an Eternal Sentinel bounded by the REAL brake function on a durable
+ * ledger (fixture state survives reconstruction): never within 6 h of a boot, at most 2 per
+ * 24 h and 3 per 7 days. The rate floor is the 6-hour rule.
+ */
+const machineRestart: SelfActionController = {
+  id: 'machine-restart',
+  actionVerb: 'machine-restart',
+  models: 'src/monitoring/machineMaintenance/HostMaintenanceStore.ts (reserveEpisode + checkBrakes) -> RestartActuator.dispatch',
+  modelsPath: 'src/monitoring/machineMaintenance/RestartActuator.ts',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 7 * 24 * 6,
+  tickMs: 10 * 60_000,
+  eternalSentinel: {
+    reason: 'A machine that keeps wedging keeps being offered a restart at a bounded rate: never within 6 h of a boot, at most 2 per 24 h and 3 per 7 days, all enforced by the durable ledger brakes.',
+    rateFloorMs: 6 * 60 * 60_000,
+  },
+  delegatedGiveUp: 'The ledger brakes (6 h since boot, 2 per 24 h, 3 per 7 days) and, past them, the operator attention item',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMachineRestart(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineRestart(f, sink);
+  },
+};
+
+function makeMachineRestart(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const ledger = (f.durableState.get('machine-restart:ledger') as LedgerRow[] | undefined) ?? [];
+      const bootAt = (f.durableState.get('machine-restart:bootAt') as number | undefined) ?? now - 7 * 24 * 60 * 60_000;
+      if (!f.targetAlwaysRejects()) return; // the wedge cleared (never under this fixture)
+      if (checkBrakes(ledger, { kind: 'wedge', now, bootAt }) !== null) return;
+      const n = ((f.durableState.get('machine-restart:seq') as number | undefined) ?? 0) + 1;
+      const row = (state: EpisodeRow['state']): EpisodeRow => ({ type: 'episode', episodeId: `ep${n}`, generation: 1, kind: 'wedge', state, bootAt, expiresAt: now + 30 * 60_000, at: now, by: 'model', ...(state === 'dispatched' ? { rung: 1 as const, dispatch: 'accepted' as const } : {}) });
+      f.durableState.set('machine-restart:seq', n);
+      f.durableState.set('machine-restart:ledger', [...ledger, row('reserved'), row('dispatched'), row('restarted')]);
+      f.durableState.set('machine-restart:bootAt', now); // the restart lands: a new boot now
+      sink.emit({ verb: 'machine-restart', target: 'machine:self' });
+    },
+  };
+}
+
 const machineWedgeNotice: SelfActionController = {
   id: 'machine-wedge-notice',
   actionVerb: 'wedge-notify',
@@ -5989,6 +6041,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   preparingRunWatchdog,
   machineWedgeNotice,
   machineWedgeCanaryReap,
+  machineRestart,
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
   appPoolEnforcer,

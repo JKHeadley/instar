@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "machine-restart-actuator",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-16T19:40:59.557Z",
+  "artifactPath": "upgrades/side-effects/machine-restart-actuator.md",
+  "artifactSha256": "133db7c4faffbca19eba80d729440687d8185ac6cbadecaef5e129d7de53e5a0",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "src/monitoring/machineMaintenance/HostMaintenanceStore.ts",
+    "src/monitoring/machineMaintenance/RestartActuator.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/machine-restart-actuator.test.ts",
+    "upgrades/next/machine-restart-actuator.md",
+    "upgrades/side-effects/machine-restart-actuator.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds the machine-restart privilege funnel (inert, no caller) under the approved machine-self-maintenance spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "machine-restart modelled with the real checkBrakes on a durable ledger: under a wedge that never clears, 3 restarts per 7 days, never closer than 6 hours."
+    }
+  }
+}

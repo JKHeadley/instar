@@ -12,13 +12,21 @@ const dir = path.resolve('src/monitoring/machineMaintenance');
 const files = fs.readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.ts'));
 const code = (f: string) => fs.readFileSync(path.join(dir, f), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-describe('machine maintenance cannot act', () => {
-  it('holds no restart command', () => {
-    for (const f of files) expect(code(f), f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|osascript|launchctl)\b/);
+// The one actor (CMT-1199, second slice): RestartActuator.ts holds the restart command lines and
+// the single execFile that runs them; HostMaintenanceStore.claimRung calls the spawn it is handed,
+// inside the lock. Every other file stays watch-only, so a second way to act fails here.
+const ACTUATOR = 'RestartActuator.ts';
+const watchOnly = files.filter((f) => f !== ACTUATOR);
+const withoutClaimSpawn = (f: string) => (f === 'HostMaintenanceStore.ts' ? code(f).replace('input.spawn();', '') : code(f));
+
+describe('machine maintenance acts only through the restart actuator', () => {
+  it('holds no restart command outside the actuator', () => {
+    for (const f of watchOnly) expect(code(f), f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|osascript|launchctl)\b/);
   });
 
-  it('holds no way to signal or end a process', () => {
-    for (const f of files) expect(code(f), f).not.toMatch(/process\.kill|\.kill\(|killSession|send-keys|sendKeys|sendInput|\bspawn\(|(?<![.\w])exec\(|execSync|spawnSync/);
+  it('holds no way to signal or end a process outside the actuator and the one claimRung spawn', () => {
+    expect(code('HostMaintenanceStore.ts').split('input.spawn();')).toHaveLength(2);
+    for (const f of watchOnly) expect(withoutClaimSpawn(f), f).not.toMatch(/process\.kill|\.kill\(|killSession|send-keys|sendKeys|sendInput|\bspawn\(|(?<![.\w])exec\(|execSync|spawnSync/);
   });
 
   it('imports only from an allowlist, so a new reach into the system fails here', () => {
@@ -29,7 +37,7 @@ describe('machine maintenance cannot act', () => {
       for (const m of source.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) {
         const spec = m[1];
         // readings.ts runs the command table and resolves the shipped canary bundle beside its own module.
-        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && (spec === 'node:child_process' || spec === 'node:url'))) continue;
+        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && (spec === 'node:child_process' || spec === 'node:url')) || (f === ACTUATOR && spec === 'node:child_process')) continue;
         throw new Error(`${f} imports ${spec}`);
       }
       expect(source, f).not.toMatch(/\bfetch\(|\brequire\(/);
@@ -38,8 +46,10 @@ describe('machine maintenance cannot act', () => {
 
   it('runs commands only through the one named table, with exact arguments', () => {
     const users = files.filter((f) => /execFile\b/.test(code(f)));
-    expect(users).toEqual(['readings.ts']);
+    expect(users.sort()).toEqual([ACTUATOR, 'readings.ts']);
     expect(code('readings.ts').match(/execFile\(/g)).toHaveLength(1);
+    // The actuator's command lines are pinned byte for byte in machine-restart-actuator.test.ts.
+    expect(code(ACTUATOR).match(/execFile\(/g)).toHaveLength(1);
     const table = /READ_ONLY_CALLS = \{([\s\S]*?)\n\} as const/.exec(code('readings.ts'))![1];
     expect([...table.matchAll(/command: '([\w./-]+)', args: \[([^\]]*)\]/g)].map((m) => `${m[1]} ${m[2]}`).sort()).toEqual([
       // F1 on macOS: LaunchServices opens Instar's own shipped no-UI canary, which quits at once.
