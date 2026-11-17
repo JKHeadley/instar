@@ -111,7 +111,7 @@ Pure functions over history rows plus `now`. No I/O and no clock reads, so every
 
 - **Switch:** `subscriptionPool.pacing.enabled`, resolved through `resolveDevAgentGate()` (`explicit ?? !!developmentAgent`). The key is left out of config defaults, so a development agent without it is on and a fleet agent is off. No migration is needed: the key has never existed, so there is no shipped default to undo, and an explicit `false` an operator writes is respected. A test proves a development agent without the key resolves to on. Registered in `src/core/devGatedFeatures.ts` (with a justification like queue-pace's) and given a ladder in `src/data/feature-ladders.json` whose fleet-rung metrics read the ledger's coverage, `ledgerWriteFailures` and stale-reason counts. When off: no ledger writes, no sweeps, and the route answers `503 quota-pacing-off`.
 - **Turning it off:** writes and sweeps stop. Existing files stay where they are until the feature is turned on again (which resumes retention) or they are deleted by hand. No other behaviour depends on the switch.
-- **Not synced, not backed up, by design:** `.instar/state/quota-history/` is added to the FileClassifier sync-exclusion list (the file-level arm). The route is registered in `WriteDomainRegistry` with the logical story `pool-scope-read-merge`. It is not in BackupManager's default includes: the history is derived telemetry, and after a restore the forecast reads `unknown` until it rebuilds.
+- **Not synced, not backed up, by design:** `.instar/state/quota-history/` is added to the FileClassifier sync-exclusion list (they are merged live, so syncing them would only create conflicts). The route is registered in `WriteDomainRegistry` with the logical story `pool-scope-read-merge`. It is not in BackupManager's default includes: the history is derived telemetry, and after a restore the forecast reads `unknown` until it rebuilds.
 - **Telemetry, not memory:** this is an operational telemetry store. Compacting and deleting old rows under the retention rule in §1 is allowed; it is never agent memory.
 
 ## Maturation plan
@@ -158,9 +158,7 @@ Pure functions over history rows plus `now`. No I/O and no clock reads, so every
 
 ## Multi-machine posture
 
-- **Reading history files:** machine-local, merged live on read.
-- machine-local-justification: physical-credential-locality
-  Each reading comes from a login whose credential lives in that machine's config home, and it is that machine's read of it. The files are excluded from git-sync and merged by `GET /quota-pacing`.
+- **Reading history files:** unified, proxied on read. Each machine keeps the readings it took itself (they are its own observations, not shared state that could diverge), and every read of the forecast merges all machines through the pool fan-out, so no machine's readings are ever invisible to the agent. The files are excluded from git-sync because they are merged live, not because they belong to one machine.
 - **`GET /quota-pacing`:** unified by default (pool scope, proxied on read over the existing bearer pool fan-out, merged per login by identity from each machine's summaries). A machine that does not answer is named in `sources`.
 - **Config switch:** per machine, like every dev-gated switch.
 - No notices are sent, so no one-voice gating is needed. No URLs are generated.
