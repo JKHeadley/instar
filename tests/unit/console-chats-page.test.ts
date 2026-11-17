@@ -405,7 +405,7 @@ describe('Conversations page', () => {
     primaryPath: [{ ref: effort, title: '<b>App work</b>' }], visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` } });
   const GRAPH = { items: [worker(2), worker(4)], partial: false, nextCursor: null };
 
-  it('grouped: Chief of Staff first, each effort one collapsed row with count and unread, the rest under "Not grouped yet"; All shows the flat list and is remembered', async () => {
+  it('grouped: Chief of Staff first, each effort one collapsed row with count and unread, the rest under "Not in a project yet"; All shows the flat list and is remembered', async () => {
     const { idb, publicKey } = await seeded();
     const { doc } = await boot((c) => {
       if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
@@ -428,7 +428,11 @@ describe('Conversations page', () => {
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(head.textContent).toContain('2 conversations');
     expect(head.querySelector('.chat-unread')?.textContent).toBe('3');
-    expect(doc.querySelector('.chat-ungrouped-label')?.textContent).toContain('Not grouped yet');
+    expect(head.getAttribute('aria-label')).toBe('Project <b>App work</b>, 2 conversations, 3 unread');
+    // Owner-facing words say "project", never "effort".
+    expect(doc.querySelector('.chat-rows')!.textContent!.toLowerCase()).not.toContain('effort');
+    expect([...doc.querySelectorAll('.chat-rows [aria-label]')].map((x) => x.getAttribute('aria-label')!.toLowerCase()).join(' ')).not.toContain('effort');
+    expect(doc.querySelector('.chat-ungrouped-label')?.textContent).toContain('Not in a project yet');
     expect(doc.querySelector('a.chat-review-suggestions')?.getAttribute('href')).toBe('#/work/conversations?view=suggestions');
     expect(doc.querySelector('.chat-rows img')).toBeNull();
     // Expand inline.

@@ -631,7 +631,7 @@ export const HIERARCHY_MAX_PAGES = 20;
 /**
  * GET …/conversation-graph/roots?view=all pages → Map(list row key → { key, title } of the top-level
  * effort holding that conversation), or null when any page is malformed (the list then stays flat).
- * A conversation with no effort above it is absent from the map: it is "Not grouped yet".
+ * A conversation with no effort above it is absent from the map: it is "Not in a project yet" (owner-facing words say "project", never "effort").
  */
 export function hierarchyIndex(pages) {
   if (!Array.isArray(pages) || !pages.length) return null;
@@ -653,7 +653,7 @@ export function hierarchyIndex(pages) {
 /**
  * Splits the (unpinned) rows by the hierarchy: the Chief of Staff row leads on its own; each
  * top-level effort becomes one group (in the order its newest conversation appears in the list);
- * everything else is "Not grouped yet", kept in the list's own tree order. Pure.
+ * everything else is "Not in a project yet", kept in the list's own tree order. Pure.
  */
 export function groupRows(rows, index, leadKey) {
   const list = Array.isArray(rows) ? rows : [];

@@ -503,7 +503,7 @@ class ChatsPage {
         for (const g of groups) {
           // The group holding the open conversation stays open, so the row on screen is never hidden.
           const expanded = this.openGroups.has(g.key) || g.rows.some((r) => r.key === open);
-          const head = el('button', { class: `chat-effort-row${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false' },
+          const head = el('button', { class: `chat-effort-row${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false', 'aria-label': `Project ${g.title}, ${groupCountWords(g.count)}${g.unread > 0 ? `, ${g.unread} unread` : ''}` },
             el('span', { class: 'chat-row-main' },
               el('span', { class: 'chat-row-title', text: g.title }),
               el('span', { class: 'chat-row-preview', text: groupCountWords(g.count) })),
@@ -517,7 +517,7 @@ class ChatsPage {
         }
         if (ungrouped.length) {
           kids.push(el('div', { class: 'chat-group-label chat-ungrouped-label' },
-            el('span', { text: 'Not grouped yet' }),
+            el('span', { text: 'Not in a project yet' }),
             el('a', { class: 'chat-review-suggestions', href: '#/work/conversations?view=suggestions', text: 'Review suggestions' })));
           for (const r of ungrouped) kids.push(rowEl(r, false));
         }

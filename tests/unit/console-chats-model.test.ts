@@ -433,7 +433,7 @@ describe('the list grouped by the conversation hierarchy (console-chats-grouped)
     expect(m.hierarchyIndex([page([{ ref: { kind: 'bogus' }, title: 'x' }])])).toBeNull();
   });
 
-  it('groupRows: Chief of Staff leads alone, one group per effort with count and unread, the rest "Not grouped yet"', () => {
+  it('groupRows: Chief of Staff leads alone, one group per effort with count and unread, the rest "Not in a project yet"', () => {
     const index = m.hierarchyIndex([page([conv(2, [{ ref: effortA, title: 'App work' }]), conv(4, [{ ref: effortA, title: 'App work' }]), conv(5, [{ ref: effortB, title: 'Windows' }])])]);
     const g = m.groupRows(m.listRows(body), index, 'telegram:1');
     expect(g.lead?.key).toBe('telegram:1');
