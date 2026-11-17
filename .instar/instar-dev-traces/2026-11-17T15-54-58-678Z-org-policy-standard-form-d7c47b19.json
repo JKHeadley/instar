@@ -18,5 +18,12 @@
   "eli16Path": "upgrades/side-effects/org-policy-standard-form.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/org-policy-standard-form.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "injection-credulity",
+    "closure": "guard",
+    "citation": "src/core/OrgPolicyGrammar.ts#readStandardPolicy",
+    "enforcement": "test",
+    "howCaught": "one standard policy form read the same strict way by the agent, the join page and the Mac app, checked by shared test vectors; hidden characters and comment markers refused"
+  }
 }
