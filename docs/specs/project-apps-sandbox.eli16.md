@@ -34,3 +34,4 @@ The storage and the locked box, the narrow key and its tests, the phone approval
 **What the first build leaves for stage 2.** Some machine-to-machine pieces come in a second build: sending an app's writes to the coordinating machine, fetching keys from it, and confirming erasures on every machine. That work is tracked as CMT-1882. Until it lands, only the coordinating machine opens custom apps; another machine shows "still copying" and exposes nothing. An app that sends requests too fast is slowed down, with a plain "asking too often" answer.
 
 **Registry entries (2026-11-17).** Custom apps now have their own entry on the maturation ladder, and the two pages that serve app code are listed with the other pages that serve agent-written code. The behavior is unchanged.
+The two places where a key can't be made are now marked in the code as deliberate: both refuse plainly instead of guessing.

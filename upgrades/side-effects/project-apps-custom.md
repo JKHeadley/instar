@@ -147,3 +147,4 @@ Decision-point delta:
 Two fast checks failed on the merge with main. Both are fixed with no behavior change:
 - The `projectApps.custom` ladder is now in `src/data/feature-ladders.json`, mirroring part 1's entry. The fleet advance waits for stage 2 (CMT-1882).
 - The two HTML-sending sites are now classified in the HTML-site ratchet as `agent-served-code`, the same class as the dashboard preview. One is the frame route, which serves the approved app under its own CSP sandbox. The other is its escaped refusal page.
+- The two catch blocks in `ProjectAppCustomSource` are now annotated for the silent-fallback ratchet. `ensureKey` returns an explicit 409 refusal. `hmacSecret` logs and fails closed, so every key route answers 503.

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "project-apps-custom",
+  "sessionId": "9fedf354-db71-4764-adc2-99986abaf297",
+  "timestamp": "2026-11-17T15:44:23.450Z",
+  "artifactPath": "upgrades/side-effects/project-apps-custom.md",
+  "artifactSha256": "0f50116b11c394c50998a22d9f43f603fc79ca9fc2fe3e608a4db58a543150e5",
+  "coveredFiles": [
+    "src/server/ProjectAppCustomSource.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two comment annotations for the silent-fallback ratchet; no behavior change.",
+  "eli16Path": "docs/specs/project-apps-sandbox.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/project-apps-custom.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Comments only; no new self-action."
+  }
+}

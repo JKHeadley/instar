@@ -385,6 +385,8 @@ export class ProjectAppCustomSource implements CustomAppSource {
     if (cur) return cur;
     if (!this.d.holdsLease()) return refuse(503, 'key-unavailable', 'This machine does not hold this app\'s key yet.');
     // Fetch-before-create from peers (the project-app-key-fetch mesh verb) is not built: the holder creates.
+    // @silent-fallback-ok — not a fallback: the caller gets an explicit 409 refusal with the reason.
+    // E2E-PAIRING: EXEMPT — comment-only annotations; project-apps-custom-alive covers these routes.
     try { return this.keys.create(appId, kind); } catch (err) { return refuse(409, 'key-refused', (err as Error)?.message); }
   }
 
@@ -400,6 +402,7 @@ export class ProjectAppCustomSource implements CustomAppSource {
       if (!this.d.holdsLease()) return null;
       return this.keys.create(HMAC_SLOT_APP_ID, 'hmac').key;
     } catch (err) {
+      // @silent-fallback-ok — fail closed: logged, and null makes every key route answer 503 key-secret-unavailable.
       this.d.log?.({ event: 'custom-hmac-unavailable', error: (err as Error)?.message });
       return null;
     }
