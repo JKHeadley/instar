@@ -116,6 +116,9 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/sessions/default'],
       ['POST', '/mobile/attention/tg-1/choice'],
       // Team access: the owner's phone writes, and reads the whole team (team-roles-and-access §4.1).
+      // Organization pack and join (org-pack-and-join): publish, join, leave and accept an update; read status.
+      ['POST', '/mobile/org/publish'],
+      ['GET', '/mobile/org/status'],
       ['GET', '/mobile/team/context'],
       ['GET', '/mobile/team/activity'],
       ['GET', '/mobile/team/requests'],
