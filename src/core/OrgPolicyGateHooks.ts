@@ -69,9 +69,12 @@ process.stdin.on('end', async () => {
     const cleaned = cmd.replace(/[0-9]?>&[0-9]/g, '').replace(/[0-9]?>\\s*\\/dev\\/null/g, '');
     const redirectsToFile = cleaned.includes('>');
     const segments = cleaned.split(/[;&|\\n]+/).map((x) => x.trim()).filter(Boolean);
-    const firstWord = (seg) => { const w = seg.split(/\\s+/).filter((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)); return w[0] || ''; };
+    // No NAME=value prefixes: PATH= or a loader variable could pick a different program.
+    const firstWord = (seg) => seg.split(/\\s+/)[0] || '';
     const canWrite = redirectsToFile || cmd.includes(String.fromCharCode(96)) || cmd.includes('$(') || cmd.includes('<(') || cmd.includes('>(') || segments.some((seg) => !READ_ONLY.has(firstWord(seg)));
-    const bashTouches = input.tool_name === 'Bash' && canWrite && (cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
+    // A command run from inside the organization folder touches its files whatever it names.
+    const insideOrg = cwdReal === instarReal + '/org' || cwdReal.startsWith(instarReal + '/org/');
+    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
       return out({ permissionDecision: 'deny', permissionDecisionReason: "While your organization's rules are enforced, I can't run commands that could change its policy files or this agent's settings. Reading them is fine. Your person can manage the organization in the Instar app." });

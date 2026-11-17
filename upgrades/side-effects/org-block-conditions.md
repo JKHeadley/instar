@@ -139,6 +139,12 @@ The 25 remaining tools were confirmed read-only on macOS and GNU. Two shell-synt
 - process substitution `<(...)` and `>(...)` is refused;
 - a program named by a path (for example `/tmp/x/cat`) no longer counts as the read-only tool it is named after.
 
+## Re-audit round 10
+
+Brace groups, subshells, function definitions, `exec`, backgrounding, line continuation, heredocs, here-strings and quoting were all confirmed to fail closed. Two holes were closed:
+- **Working folder.** A command run from inside the organization folder now counts as touching its files, even when it doesn't name them.
+- **Environment prefix.** A command starting with `NAME=value` (for example `PATH=`) no longer counts as a read-only tool.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)
