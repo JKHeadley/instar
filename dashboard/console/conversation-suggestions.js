@@ -6,7 +6,7 @@
 // comes from the server (one per suggestion), so a reload, another tab or another machine's
 // dashboard reuses the SAME request and the owner pipeline's idempotency yields one effort.
 // sessionStorage keeps only opaque ids and refs, as a shortcut for this tab.
-import { el, setKids, note, operatorSession } from './ui.js';
+import { el, setKids, note, operatorSession, operatorSessionRemainingMs, askPin } from './ui.js';
 import { suggestionsModel, nodeModel, encodeNodeRef } from './conversations-model.js';
 import { requestId } from './conversation-write-continuity.js';
 
@@ -47,7 +47,7 @@ async function runChange({ send, change, id, wait, sleep, onWait }) {
     if (FINAL_FAIL.includes(data.state)) return { ok: false, code: data.reason || data.state };
     if (!result.ok && result.status >= 400 && result.status !== 409 && data.requestState === 'not-recorded') return { ok: false, code: data.code || 'refused' };
     if (result.status === 409 && data.code && data.code !== 'subject-change-pending') return { ok: false, code: data.code };
-    const unreachable = result.status === 0;
+    const unreachable = noAnswer(result);
     if (waited >= wait) return { ok: false, waiting: true, unreachable, data };
     onWait?.(data, waited, unreachable);
     await sleep(2500);
@@ -55,9 +55,13 @@ async function runChange({ send, change, id, wait, sleep, onWait }) {
   }
 }
 
+/** The agent did not answer (timed out, or answered with a server error): nothing was decided. */
+const noAnswer = (r) => r.status === 0 || r.status === 408 || r.status >= 500;
+
 async function node(send, ref) {
   const r = await send(`/conversation-graph/nodes/${encodeURIComponent(encodeNodeRef(ref))}`);
   if (r.needsUnlock) return { locked: true };
+  if (noAnswer(r)) return { unreachable: true };
   const model = r.ok ? nodeModel(r.data) : null;
   return model?.ok ? model : null;
 }
@@ -72,8 +76,10 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
   const save = () => writeProgress(s.id, p);
   const locked = () => ({ done: false, kind: 'locked', text: 'Unlock again to continue.' });
   const retry = (text) => ({ done: false, kind: 'retry', text });
+  // A read or step the agent did not answer is a wait, never "no longer available": nothing was refused.
+  const silent = () => ({ done: false, kind: 'waiting', unreachable: true, text: 'The agent did not answer. Tap Continue to try again; nothing is lost.' });
   const stop = (r) => r.code === 'locked' ? locked()
-    : r.waiting ? { done: false, kind: 'waiting', text: r.unreachable ? 'The agent did not answer. Tap Continue to try again; nothing is lost.'
+    : r.waiting ? { done: false, kind: 'waiting', unreachable: Boolean(r.unreachable), text: r.unreachable ? 'The agent did not answer. Tap Continue to try again; nothing is lost.'
       : `${waitingWords(r.data)} Tap Continue later; nothing is lost.` }
       : { done: false, kind: 'refused', text: `This step was refused (${r.code}). Nothing after it was changed.` };
   // The step now running, and the same words with what it is waiting for once a change takes more than a moment.
@@ -92,6 +98,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     say('Checking where its conversation is…');
     const front = await node(send, s.frontDoor);
     if (front?.locked) return locked();
+    if (front?.unreachable) return silent();
     if (front && front.path.length) return { done: true, placedElsewhere: true, moved: 0, skipped: s.members.length, effort: null };
   }
   // 1. The effort.
@@ -99,6 +106,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     say('Creating the effort…');
     const started = await send(`${SUGGESTIONS}/${encodeURIComponent(s.id)}/start`, {});
     if (started.needsUnlock) return locked();
+    if (noAnswer(started)) return silent();
     const createId = started.data?.createRequestId;
     if (!started.ok || typeof createId !== 'string' || !/^[A-Za-z0-9_.:-]{8,160}$/.test(createId)) return retry('This suggestion is no longer available. Refresh the list.');
     p.createId = createId; save();
@@ -112,6 +120,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     say('Naming it…');
     const effort = await node(send, p.effort);
     if (effort?.locked) return locked();
+    if (effort?.unreachable) return silent();
     if (!effort || !Number.isSafeInteger(effort.correction?.headerVersion)) return retry('The new effort is not readable yet. Tap Continue in a moment.');
     // Named already (by another tab, or before a reload lost this tab's progress): keep that name.
     if (effort.correction.headerVersion === 0) {
@@ -130,6 +139,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     say(`Moving conversation ${i + 1} of ${s.members.length}…`);
     const current = await node(send, m.ref);
     if (current?.locked) return locked();
+    if (current?.unreachable) return silent();
     if (!current) { p.skipped.push(m.key); save(); continue; }
     const parentKey = current.path.length ? encodeNodeRef(current.path[current.path.length - 1].ref) : null;
     if (parentKey === encodeNodeRef(p.effort)) { p.moved.push(m.key); save(); continue; }
@@ -140,6 +150,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     if (!p.moveIds[m.key]) {
       const preview = await send('/conversation-graph/preview', change);
       if (preview.needsUnlock) return locked();
+      if (noAnswer(preview)) return silent();
       if (!preview.ok || preview.data?.eligible !== true) { p.skipped.push(m.key); save(); continue; }
       p.moveIds[m.key] = requestId(); save();
     }
@@ -157,6 +168,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
       const effort = await node(send, p.effort);
       const conv = await node(send, s.frontDoor);
       if (effort?.locked || conv?.locked) return locked();
+      if (effort?.unreachable || conv?.unreachable) return silent();
       if (!effort || !conv?.correction) return retry('The new effort is not readable yet. Tap Continue in a moment.');
       const already = effort.node.frontDoor && encodeNodeRef(effort.node.frontDoor) === frontKey;
       if (!already) {
@@ -173,10 +185,27 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
   say('Finishing…');
   const finished = await send(`${SUGGESTIONS}/${encodeURIComponent(s.id)}/accepted`, {});
   if (finished.needsUnlock) return locked();
+  if (noAnswer(finished)) return silent();
   if (!finished.ok) return retry('Everything moved, but finishing the suggestion could not be recorded. Tap Continue.');
   const result = { done: true, moved: p.moved.length, skipped: p.skipped.length, effort: p.effort };
   clearProgress(s.id);
   return result;
+}
+
+// The PIN unlock lasts 15 minutes and the page is cleared the moment it runs out, which took a long
+// Accept all (and its progress) with it. Before starting, and before each project, Accept asks for the
+// PIN again in a sheet when the unlock would not last: the page and its progress stay.
+const START_NEEDS_MS = 10 * 60000;
+const STEP_NEEDS_MS = 5 * 60000;
+
+/**
+ * True when the unlock has at least `needMs` left, asking for the PIN again (in a sheet, the page stays)
+ * when it has not. False when the owner closed the sheet.
+ */
+export async function keepUnlocked(needMs, { remaining = operatorSessionRemainingMs, ask = askPin } = {}) {
+  if (remaining() >= needMs) return true;
+  const answer = await ask({ title: 'Keep going', explain: 'Your unlock is about to run out. Type your PIN so this can finish; nothing is lost.', adapter: 'session', fresh: true });
+  return Boolean(answer) && remaining() > 0;
 }
 
 /** The "Review suggestions" page. */
@@ -187,17 +216,29 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
   setKids(main, body);
   const load = async () => {
     status.textContent = 'Loading suggestions…';
-    const r = await send(SUGGESTIONS);
+    // A slow answer says so, instead of looking frozen.
+    const slow = setTimeout(() => { if (current() && status.textContent === 'Loading suggestions…') status.textContent = 'Still loading suggestions. Your agent is busy; this can take up to 20 seconds.'; }, 5000);
+    const r = await send(SUGGESTIONS).finally(() => clearTimeout(slow));
     if (!current()) return;
     if (r.needsUnlock) { unlock(); return; }
     const model = r.ok ? suggestionsModel(r.data) : { ok: false };
-    if (!model.ok) { status.textContent = r.status === 503 ? 'Suggestions are not available until your machines finish joining.' : 'Suggestions could not be loaded. Try again.'; return; }
+    if (!model.ok) {
+      status.textContent = r.status === 503 ? 'Suggestions are not available until your machines finish joining.'
+        : r.status === 0 ? 'Your agent did not answer in time. Try again.' : 'Suggestions could not be loaded. Try again.';
+      // Never a dead end: the words always come with a way to act.
+      const again = el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again' });
+      again.addEventListener('click', () => { again.remove(); load(); });
+      list.replaceChildren(again);
+      return;
+    }
     const cards = model.items.map((s) => ({ s, ...card(s) }));
     list.replaceChildren(...cards.map((c) => c.box));
     // "Accept all projects": the same owner path, one project at a time; a stop leaves Continue on the rest.
     const projects = cards.filter((c) => c.s.frontDoor);
     if (projects.length > 1) {
-      const all = el('button', { type: 'button', class: 'btn-primary btn-inline', text: `Accept all ${projects.length} projects` });
+      // One already part-way (another tab, an earlier tap, or a lapsed unlock): the button says it continues.
+      const started = projects.some((c) => c.s.accepting || readProgress(c.s.id).effort);
+      const all = el('button', { type: 'button', class: 'btn-primary btn-inline', text: started ? 'Continue accepting projects' : `Accept all ${projects.length} projects` });
       // What "Accept all" is doing right now, next to the button: the cards it works on are further down the page.
       const progress = el('p', { class: 'need-sub conversation-suggestion-progress', role: 'status', 'aria-live': 'polite' });
       all.addEventListener('click', async () => {
@@ -207,9 +248,13 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
         const accepted = () => projects.filter((c) => c.finished()).length;
         const again = (text) => { progress.textContent = text; all.textContent = 'Continue accepting projects'; all.disabled = false; };
         try {
+          if (!await keepUnlocked(START_NEEDS_MS)) { if (current()) again('Accept all did not start: it needs your PIN.'); return; }
+          if (!current()) return;
           let waits = 0;
           for (const [i, c] of projects.entries()) {
             if (c.finished()) continue;
+            if (!await keepUnlocked(STEP_NEEDS_MS)) { if (current()) again(`Stopped at ${i + 1} of ${total}: it needs your PIN. ${accepted()} of ${total} accepted. Tap Continue; nothing is lost.`); return; }
+            if (!current()) return;
             const label = `Accepting ${i + 1} of ${total}: ${c.s.title}.`;
             progress.textContent = label;
             const out = await c.run((t) => { progress.textContent = `${label} ${t}`; });
@@ -220,7 +265,8 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
             // waiting means the machines are not confirming, so going on would only wait again.
             waits = out.kind === 'waiting' ? waits + 1 : 0;
             if (waits >= 2) {
-              again(`Stopped at ${i + 1} of ${total}: changes are not being confirmed right now. ${accepted()} of ${total} accepted. Tap Continue to try again; nothing is lost.`);
+              const why = out.unreachable ? 'your agent is not answering right now' : 'changes are not being confirmed right now';
+              again(`Stopped at ${i + 1} of ${total}: ${why}. ${accepted()} of ${total} accepted. Tap Continue to try again; nothing is lost.`);
               return;
             }
           }
@@ -284,10 +330,12 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
         return { ok: true };
       }
       words.textContent = out.text; accept.textContent = 'Continue'; accept.disabled = false; reject.disabled = Boolean(readProgress(s.id).effort);
-      return { ok: false, kind: out.kind || 'retry', text: out.text };
+      return { ok: false, kind: out.kind || 'retry', unreachable: Boolean(out.unreachable), text: out.text };
     };
     accept.addEventListener('click', async () => {
       if (!current() || !operatorSession()) { unlock(); return; }
+      if (!await keepUnlocked(STEP_NEEDS_MS)) { if (current()) words.textContent = 'This needs your PIN. Tap Accept again; nothing is lost.'; return; }
+      if (!current()) return;
       await run();
     });
     reject.addEventListener('click', async () => {
