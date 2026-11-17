@@ -20996,6 +20996,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         isLeaseHolder: () => coordinator.holdsLease(),
         effects: orgEffects,
         fanOut: (c) => { void import('../server/orgPackRoutes.js').then((m) => m.orgFanOut(c)); },
+        // Check-ins report the agent's and person's names (org-members-and-keepers §A).
+        identity: () => ({ agentName: String(config.projectName ?? ''), personName: String((config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? '') }),
         notify: (title, body) => {
           // App-only agents see held updates through /org/status (the app's update card).
           void telegram?.createAttentionItem({ id: `org-pack:${title}`, title, summary: body, description: body, category: 'system', priority: 'NORMAL', sourceContext: 'org-pack' } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]).catch(() => { /* @silent-fallback-ok — the held update is still shown by /org/status */ });
@@ -30560,6 +30562,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return { response: decision };
             },
+            'org-forward': async (cmd) => {
+              const { handleOrgForward } = await import('../server/orgPackRoutes.js');
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'org-forward' };
+              return { ok: true, result: await handleOrgForward(config.stateDir, c.forward) };
+            },
             'org-state-pull': async () => {
               const { orgStateForPeer } = await import('../server/orgPackRoutes.js');
               return { ok: true, result: orgStateForPeer(config.stateDir) };
@@ -30738,7 +30745,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           // Organization pack fan-out to this agent's other machines (org-pack-and-join §Multi-machine).
           {
-            const { setOrgFanOut } = await import('../server/orgPackRoutes.js');
+            const { setOrgFanOut, setOrgForward } = await import('../server/orgPackRoutes.js');
+            // The machine holding the organization key answers forwarded organization operations; the first
+            // peer that doesn't answer 409 org-key-elsewhere is it (members-and-keepers §Multi-machine).
+            setOrgForward(async (op) => {
+              for (const m of meshIdMgr.getActiveMachines()) {
+                if (m.machineId === meshSelfId) continue;
+                const r = await _identityMeshSend?.(m.machineId, { type: 'org-forward', forward: op }, 8000).catch(() => null);
+                const a = (r?.ok ? r.result : null) as { status: number; body: unknown } | null;
+                if (a && !(a.status === 409 && (a.body as { error?: string })?.error === 'org-key-elsewhere')) return a;
+              }
+              return null;
+            });
             setOrgFanOut((change) => {
               for (const m of meshIdMgr.getActiveMachines()) {
                 if (m.machineId === meshSelfId) continue;
@@ -30752,9 +30770,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 for (const m of meshIdMgr.getActiveMachines()) {
                   if (m.machineId === meshSelfId) continue;
                   const r = await _identityMeshSend?.(m.machineId, { type: 'org-state-pull' }, 5000).catch(() => null);
-                  const st = (r?.ok ? r.result : null) as { membership: import('../core/OrgPackStore.js').Membership | null; bundle: import('../core/OrgPack.js').OrgBundle | null } | null;
-                  if (!st?.membership) continue;
-                  handleOrgApply(config.stateDir, meshSelfId ?? 'single-machine', { membership: st.membership, bundle: st.bundle }, {
+                  const st = (r?.ok ? r.result : null) as { membership: import('../core/OrgPackStore.js').Membership | null; bundle: import('../core/OrgPack.js').OrgBundle | null; memberSide?: import('../core/OrgMemberSide.js').MemberSideExport | null; publishedOrgId?: string | null } | null;
+                  if (!st?.membership && !st?.publishedOrgId) continue;
+                  handleOrgApply(config.stateDir, meshSelfId ?? 'single-machine', { membership: st.membership, bundle: st.bundle, memberSide: st.memberSide ?? null, publishedOrgId: st.publishedOrgId ?? undefined, publishedOn: m.machineId }, {
                     currentProfile: () => _orgAutonomy?.getProfile() ?? 'supervised',
                     lowerProfile: (cap, orgName) => _orgAutonomy?.lowerForOrgPolicy(cap, orgName) ?? null,
                     restoreProfile: (prev, cap) => { _orgAutonomy?.restoreAfterOrgPolicy(prev, cap); },
