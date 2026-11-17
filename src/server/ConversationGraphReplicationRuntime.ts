@@ -779,7 +779,8 @@ export class ConversationGraphReplicationRuntime {
    await this.intake.applyErasure(proof,this.config.agentId);await this.transfer.applyErasure(proof,this.config.agentId);this.appliedErasureHashes.add(id);
   }
  }
- private lastLoggedReadiness:string|null=null;
+ // undefined until the first pass, so the first "ready" after a restart is logged too (null meant ready, so it never was).
+ private lastLoggedReadiness:string|null|undefined=undefined;
  private lastBackgroundFailure:string|null=null;
  private lastTailClosureFailure:string|null=null;
  private lastRefusedPeerRequest:string|null=null;
