@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "install-honor-chosen-ai",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T20:08:07.785Z",
+  "artifactPath": "upgrades/side-effects/install-honor-chosen-ai.md",
+  "artifactSha256": "716bf857a65769c5acf8fde2d1e03addef9cfda136372c0560bde932d97fa2a2",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/commands/setup-wizard/state-machine.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/install-honor-chosen-ai.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/install-honor-chosen-ai.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
