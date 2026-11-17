@@ -1,0 +1,21 @@
+# The command guard blocks database-schema destruction again after updates
+
+## What Changed
+
+The dangerous-command guard that every update installs had lost the rules that block destroying a database schema, which the guard written at setup carries. Those rules are back in all three places the guard is written:
+- always blocked: `--accept-data-loss` and `prisma migrate reset`;
+- ask first: `prisma db push` and `prisma migrate deploy`.
+
+The always-blocked `--accept-data-loss` rule had also never fired, because the pattern starts with a dash and was read as a command option; it now fires. The guard reads the whole command, so a commit message or search that quotes `--accept-data-loss` or `prisma migrate reset` is blocked too, the same way the existing catastrophic rules already behave. The plain SQL ask-first rules in the setup template (`DROP TABLE`, `DELETE FROM` and similar) are not added to updated agents, because blocking routine database maintenance would be a new interruption; new agents set up from the template keep them. A test runs the shipped guards against these commands so the copies cannot drift apart again.
+
+## What to Tell Your User
+
+Your agent will again stop before running commands that wipe or force-push a database schema, and ask you first.
+
+## Summary of New Capabilities
+
+None. Restores a safety rule that updates had dropped.
+
+## Evidence
+
+Before: the guard installed by updates let `npx prisma db push --accept-data-loss` and `prisma migrate reset` through, and the setup template's `--accept-data-loss` rule failed with an "invalid option" error from grep. After: both runnable guards block them (new test, 16 cases), and ordinary Prisma commands (`generate`, `migrate dev`, `studio`) still pass.

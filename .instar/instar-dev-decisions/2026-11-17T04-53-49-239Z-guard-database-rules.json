@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T04:53:49.239Z",
+  "slug": "guard-database-rules",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/templates/hooks/dangerous-command-guard.sh"
+    ],
+    "addedLines": 16,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
