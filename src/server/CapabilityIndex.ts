@@ -113,7 +113,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   },
   {
     key: 'projectApps',
-    prefixes: ['/work'],
+    // '/work' is workProjects' prefix (every prefix must be unique); the part-1
+    // routes sit under it and are listed here by endpoint. Part 2 adds '/project-apps'.
+    prefixes: [],
     description: 'Project apps (docs/specs/project-apps.md): a project\'s own app one tap from its Work row and from a strip at the top of its conversation, with a pinned link in Telegram/Slack. Apps are Instar\'s own pages for now (builtin:maturation-board first). The agent may offer an app once per project with POST /work/projects/:key/app-offers {appRef, why} (lease holder only; refused already-offered / owner-declined / already-attached / app-unavailable); only the owner\'s tap attaches, declines or removes it (POST /work/projects/:key/apps/:appRef/answer with the dashboard operator session; a plain Bearer may only withdraw its own open offer). Each GET /work/projects row then carries apps (title, Open link, summary with its as-of time, pin state), offers, answers and addable. POST .../pin-retry {action: retry | update-link | post-again} asks for one pin step; GET /work/projects/apps/stats gives the maturation measures. Dev-gated (projectApps.enabled), needs the Chief of Staff; 503 project-apps-off when dark.',
     build: () => ({ enabled: true, endpoints: ['POST /work/projects/:key/app-offers', 'POST /work/projects/:key/apps/:appRef/answer', 'POST /work/projects/:key/apps/:appRef/pin-retry', 'POST /work/projects/:key/apps/:appRef/opened', 'GET /work/projects/apps/stats'] }),
   },

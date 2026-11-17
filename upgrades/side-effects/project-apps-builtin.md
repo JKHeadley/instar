@@ -113,3 +113,10 @@ Also from the companion spec's review (forward compatibility): record types and 
 - **reason:** user/owner-driven acts: every new Telegram/Slack message is caused by one deliberate act (owner Attach/Detach/Try again/Update link/Post again, or the agent's explicit Try again); the automatic follow-up steps (pin a posted message by id, unpin, edit in place) send nothing new, run once per state change, and stop after any failed step until a fresh act (`nextPinAction`); unconsumed acts expire after 10 minutes; no timer drives anything.
 
 - Follow-up commit: the `projectApps.builtin` ladder entry now passes the registry check (driver text within 80 characters; the fleet rung carries the same two measures as the development rung).
+
+## Local Verify follow-up (2026-11-17)
+
+Local Verify at 6c5367274 failed three unit files. Each one is fixed with no behavior change:
+- **CapabilityIndex:** the `projectApps` entry no longer claims `/work`, which belongs to `workProjects`. It now has no prefix of its own (the sub-feature pattern) and still lists its five endpoints.
+- **projects.js:** the "More apps" tap no longer calls `scrollIntoView`. It focuses the apps box (`tabindex=-1`), which follows the keep-place rule.
+- **ReplicatedStoreReconcilerWiring:** `projectApps` is added to the reconciler allow-list, with the reason that only the server runtime on the lease holder and the owner-tap routes write it.
