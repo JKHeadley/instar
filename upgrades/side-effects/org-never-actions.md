@@ -111,3 +111,7 @@ Local verify ran three rule tests against a merge with main and failed them; all
 - **The model-call label:** `OrgPolicyJudge` (the model call that judges an action against the organization's rules) is registered as a `gate` in `src/core/componentCategories.ts`, with its row in `docs/LLM-ROUTING-REGISTRY.md` (fast tier, explicit category, as `IntentLlmJudge`).
 - **New agents:** `instar init` now writes `org-policy-gate.sh` and `org-policy-gate.js` too, so a new agent gets the gate as an existing one does on update. It allows everything until the agent joins an organization.
 - **The conversation key:** with a topic id, an outgoing message's organization check is keyed by the plain topic id, as the other channels key theirs. It was "topic <id>", which the topic-reference rule counts as a bare render, and it would have changed if the format of topic references changed.
+
+## Local-verify fix (merge line, 2026-11-17 13:35Z)
+
+Local verify failed 7 unit tests in 6 ratchets because OrgPolicyJudge had no classification. Added: LLM_BENCH_COVERAGE pending wave-3, LLM_UNTRUSTED_INPUT true, LLM_JUDGES_CLAIMS false, LLM_PARSER_CONTRACT pending contract-wave-2, LLM_ROUTING_NATURE B/JUDGE, LLM_ROUTING_INJECTION_EXPOSURE exposed(all), and a provenance census entry pending decision-quality enrolment; the pinned pending baselines in the bench, parser-contract and provenance ratchets gain the one entry. No runtime behaviour changes. 98/98.
