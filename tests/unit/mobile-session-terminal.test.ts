@@ -119,6 +119,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Organization pack and join (org-pack-and-join): publish, join, leave and accept an update; read status.
       ['POST', '/mobile/org/publish'],
       ['GET', '/mobile/org/status'],
+      ['GET', '/mobile/org/pending-checks'],
+      ['POST', '/mobile/org/allow-once'],
       ['GET', '/mobile/team/context'],
       ['GET', '/mobile/team/activity'],
       ['GET', '/mobile/team/requests'],
