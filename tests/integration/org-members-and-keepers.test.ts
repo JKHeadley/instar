@@ -117,7 +117,7 @@ describe('work agents, departure and keepers', () => {
     const keeper = newMemberKeyPair();
     expect((await admin.signed('POST', '/mobile/org/keepers/add', { code: encodeKeeperCode({ orgId, name: 'Ana', publicKey: keeper.publicKey }) })).status).toBe(200);
     const cur = readPublished(admin.stateDir)!.bundle.record;
-    const proposal = signPayload({ v: 1 as const, orgId, baseVersion: cur.version, basePolicySha256: cur.policySha256, policy: POLICY + '- Spend organization money\n',
+    const proposal = signPayload({ v: 1 as const, orgId, baseVersion: cur.version, basePolicySha256: cur.policySha256, policy: POLICY.trimEnd() + '\n- Spend organization money', // a keeper proposes the standard form (SEC-077/078)
       maxIndependence: cur.maxIndependence, proposedBy: 'Someone Else', keeperKey: keeper.publicKey, at: Date.now() }, keeper.privateKeyPem);
     const prop = await request(admin.app).post('/org/pack/propose').send(proposal);
     expect(prop.status).toBe(200);

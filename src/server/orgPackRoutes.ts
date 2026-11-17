@@ -23,6 +23,13 @@ import {
   decodeBundle, encodeBundle, newOrgKeyPair, orgKeyCode, parsePolicy, policyTooLong, sha256Hex, signRecord, validateBundle,
   type MaxIndependence, type OrgBundle, type OrgRecord, type ParsedPolicy,
 } from '../core/OrgPack.js';
+import { hiddenCharIn, readStandardPolicy, standardizePolicy } from '../core/OrgPolicyGrammar.js';
+
+/** A stored policy for display: the standard reading, or (an older pack from before the standard form) the loose one. */
+function standardOrLoose(policy: string): ParsedPolicy {
+  const s = readStandardPolicy(policy);
+  return s.ok ? s.parsed : parsePolicy(policy);
+}
 import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPackStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { OrgMembers, newMemberKeyPair, plainName, signPayload } from '../core/OrgMembers.js';
@@ -440,7 +447,13 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const policy = typeof b.policyMarkdown === 'string' ? b.policyMarkdown : '';
     if (!orgName || !policy.trim()) { res.status(400).json({ error: 'orgName and policyMarkdown are required' }); return; }
     if (Buffer.byteLength(policy, 'utf8') > 64 * 1024) { res.status(413).json({ error: 'policy-too-long' }); return; }
-    const parsed = parsePolicy(policy);
+    // The draft is rewritten into the one standard form, or refused with the reason (SEC-077/078):
+    // what the admin reads back, signs, members see on the join screen and the agent applies is that text.
+    const std = standardizePolicy(policy);
+    if (!std.ok) { res.status(400).json({ error: 'policy-not-standard', detail: std.detail }); return; }
+    if (/<!--|-->/.test(orgName)) { res.status(400).json({ error: 'policy-not-standard', detail: 'The organization name can\'t contain <!-- or -->.' }); return; }
+    if (hiddenCharIn(orgName)) { res.status(400).json({ error: 'policy-not-standard', detail: 'The organization name has a character nobody can see. Retype it.' }); return; }
+    const parsed = std.parsed;
     const tooLong = policyTooLong(parsed);
     if (tooLong) { res.status(400).json({ error: 'policy-too-long', detail: tooLong }); return; }
     const tries = runTryList(orgName, parsed);
@@ -462,11 +475,11 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       const r = v.bundle.record;
       base = { orgId: r.orgId, version: r.version, policySha256: r.policySha256, maxIndependence: r.maxIndependence };
     }
-    const draft: Draft = { id: crypto.randomUUID(), orgName, policy, createdAt: now(), tries, parsed, base };
+    const draft: Draft = { id: crypto.randomUUID(), orgName, policy: std.text, createdAt: now(), tries, parsed, base };
     writeAtomic(path.join(paths.drafts, `${draft.id}.json`), JSON.stringify(draft));
     const blocked = tries.filter((t) => t.outcome === 'blocked').length;
     res.json({
-      draftId: draft.id, purpose: parsed.purpose, never: parsed.never, askFirst: parsed.askFirst, normally: parsed.normally,
+      draftId: draft.id, policyMarkdown: std.text, purpose: parsed.purpose, never: parsed.never, askFirst: parsed.askFirst, normally: parsed.normally,
       other: parsed.other, unplaced: parsed.unplaced, tryList: tries, estimate: true,
       ...(blocked > tries.length / 3 ? { warning: `This blocks ${blocked} of ${tries.length} everyday requests. Consider moving some never rules to ask first.` } : {}),
     });
@@ -573,7 +586,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       }
     } catch { /* @silent-fallback-ok — no drafts */ }
     const held = m?.state === 'joined' ? heldVersions(deps.stateDir, m.orgId).map((v) => readJson<OrgBundle>(path.join(deps.stateDir, 'org', m.orgId, 'held', `v${v}`, 'bundle.json'))).filter(Boolean) : [];
-    const policyOf = (b: OrgBundle) => ({ ...parsePolicy(b.policy), orgName: b.record.orgName, version: b.record.version, maxIndependence: b.record.maxIndependence, code: orgKeyCode(b.record.signerPublicKey) });
+    const policyOf = (b: OrgBundle) => ({ ...standardOrLoose(b.policy), orgName: b.record.orgName, version: b.record.version, maxIndependence: b.record.maxIndependence, code: orgKeyCode(b.record.signerPublicKey) });
     res.json({
       membership: m,
       applied: rec ? { orgName: rec.orgName, version: rec.version, code: orgKeyCode(rec.signerPublicKey), maxIndependence: rec.maxIndependence } : null,
