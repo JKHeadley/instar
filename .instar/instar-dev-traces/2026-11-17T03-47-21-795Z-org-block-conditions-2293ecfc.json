@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "org-block-conditions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T03:47:21.795Z",
+  "artifactPath": "upgrades/side-effects/org-block-conditions.md",
+  "artifactSha256": "d76d0e92ad95e5ae15b85fc2a5158a7a20f32b3ecf4f8f5d7b0e592cd1c3198f",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "src/server/orgPackRoutes.ts",
+    "upgrades/side-effects/org-block-conditions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Status reports the actions mode so the app can show the switch; read-only addition.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

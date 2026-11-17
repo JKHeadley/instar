@@ -172,6 +172,10 @@ The structural fix is to run the server under a different computer account than 
 
 Condition 9 is therefore closed on these grounds: no route found for a non-adversarial agent, and fail-closed behaviour plus reporting for an adversarial one.
 
+## The app's switch
+
+`/mobile/org/status` now reports `actions: { mode, blockingAvailable }`. The Mac app shows a "Stop actions that break the rules" switch only when blocking is available: the agent has joined and the pilot approval flag is set. This is a read-only addition. Changing the mode still goes through `/mobile/org/actions-mode`, from the owner's device only.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

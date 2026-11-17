@@ -233,6 +233,8 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       published: p ? { ...policyOf(p.bundle), shareUpdates: p.shareUpdates } : null,
       draft: draft && (!p || draft.createdAt > Date.parse(p.bundle.record.publishedAt)) ? { draftId: draft.id, orgName: draft.orgName, ...draft.parsed, tryList: draft.tries } : null,
       held: (held as OrgBundle[]).map(policyOf),
+      // The switch for blocking rule-breaking actions (org-never-actions §D): shown only where it is approved.
+      actions: { mode: effectiveMode(), blockingAvailable: actionsCfg().blockingApproved === true && m?.state === 'joined' },
     });
   });
 
