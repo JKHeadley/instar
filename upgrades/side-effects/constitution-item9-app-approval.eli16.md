@@ -9,7 +9,7 @@ The rules now also accept a yes from a paired Mac or phone, under conditions:
 - The device's key stays locked in its secure chip.
 - The person unlocks the device (face, fingerprint or passcode) for each approval.
 - Each approval covers one exact request, once, before it expires.
-- The first device is the app that created the agent; later devices are added only from one already paired.
+- The first device is the app that created the agent, or one paired by approval from an already accepted approval account; later devices are added only from one already paired.
 - The agent must never add a device itself. The list of devices is kept on the agent's own computer, so every approval says plainly that this isn't independently verified. A check from Apple can close that gap later.
 - The person can withdraw this at any time, and an organization can forbid it.
 

@@ -24,7 +24,9 @@ None until the build lands.
 
 ## Multi-machine posture
 
-The text says the device list and acceptance travel with the installation, and a machine uses a device approval only with the current withdrawal state.
+The instar-2 text (#205) says the device list and acceptance travel with the installation, and a machine uses a device approval only with the current withdrawal state; the 1.x registry paragraph has no multi-machine wording yet (the app-trust-approval spec in PR #3301, not yet merged, describes it for 1.x).
+
+The 1.x paragraph is shorter than #205 in four places, each as approved: it says a device must not be added or changed by the agent (#205: added, changed or removed), it leaves out that the device shows the exact request, it leaves out "before the agent first runs" for the first pairing, and it leaves out the multi-machine clause.
 
 ## Rollback cost
 
