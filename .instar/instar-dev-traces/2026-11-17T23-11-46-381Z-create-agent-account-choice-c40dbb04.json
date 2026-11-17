@@ -21,5 +21,10 @@
   "phase": "complete",
   "tier": 2,
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "new install capability (account choice), no defect closed"
+  }
 }
