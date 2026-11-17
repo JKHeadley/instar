@@ -27,5 +27,12 @@
   "phase": "complete",
   "tier": 2,
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "citation": "src/server/mobileTrustApproval.ts",
+    "enforcement": "test",
+    "howCaught": "a raise in what the agent may do is applied only with a Touch ID approval from an accepted device in the Instar app"
+  }
 }
