@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "trust-journey-stage0-c",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T15:34:15.634Z",
+  "artifactPath": "upgrades/side-effects/trust-journey-stage0-c.md",
+  "artifactSha256": "bd0c391cd58f7cecc7f36cc4563d058c1a548b36715724dfc33a7b85d090b27d",
+  "coveredFiles": [
+    "src/commands/server.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/trust-journey-main-merge.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-journey-stage0-c.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -134,3 +134,7 @@ An independent reviewer read the change on head f0d15898d (2026-11-17, before an
 One note: the feature-toggle path returned the full proposal result, approval code included. That granted nothing, since approving needs the owner's account to reply to the card. It contradicted part B's note that the agent never sees the code, so this commit strips the code there too, the same way `POST /trust/requests` does.
 
 The same reviewer then read commit b0b8b7a89 and the branch head b8f5d77d7 and answered: **Concur with the review.** The code is removed the same way as on POST /trust/requests, the notes are accurate, and the rest of the diff is trace records only.
+
+## Main merge (merge line, 2026-11-17)
+
+GitHub reported CONFLICTING after main gained #3295/#3300/#3299/#3293. Merged origin/main (c50237a8c); conflicts in CoherenceJournal (kind lists), JournalSyncApplier (feature map), CoherenceJournal.test (sorted kinds) and server.ts (wiring) resolved as a union with main's project-apps (`project-app-record`). The merge left `const server = new AgentServer(...)` duplicated; it is now one call with both `trustAccountPath` and `projectAppsRuntime`. Typecheck clean; 257/257 trust and journal unit tests; independent review concurred.
