@@ -98,6 +98,12 @@ One note is recorded, not changed: when the routed framework's binary is missing
 
 **Limit, stated plainly.** The agent runs as the same computer account as its server. A determined agent with shell access could still change state the check relies on, for example between restarts, or by obfuscating a write. The check is built for an agent that is being talked into breaking a rule, not for one trying to disable its own safeguards. Every other instar safeguard has the same limit. Separating the server's account from the agent's is the structural fix, and it is outside this PR.
 
+## Re-audit round 3
+
+- **Block mode implies membership.** The mode route refuses block unless the agent has joined, and leaving through the app sets the mode back to observe. So "block mode, but not joined" is treated as a membership changed outside the app: held, recorded and reported. That holds across restarts, so removing or renaming the organization folder no longer switches the check off.
+- **The hook** asks the server whenever the organization folder exists or the config says block.
+- **Proxy-flagged Telegram sends.** The pre-check is back, but only when the Telegram origin service isn't running; when it is, its send path already reviews every message.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

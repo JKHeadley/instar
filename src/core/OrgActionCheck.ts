@@ -538,11 +538,13 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     const m = s.membership();
     const seen = SEEN_JOINED.get(ctx.stateDir);
     if (m?.state === 'joined') SEEN_JOINED.set(ctx.stateDir, m.orgId);
-    else if (seen && orgCheckMode(ctx.config) === 'block') {
+    // Block mode is only ever set for a joined agent, and leaving through the app sets it back to observe,
+    // so "block mode, but not joined" means the membership was changed outside the app, also after a restart.
+    else if (orgCheckMode(ctx.config) === 'block') {
       // Joined earlier in this process, and no leave went through the server: the file was changed by hand.
-      try { new OrgActionChecker(ctx.stateDir, now).record({ mode: 'block', outcome: 'membership-changed-outside-the-app', orgId: seen }); } catch { /* @silent-fallback-ok — the notice and stderr below report it */ }
+      try { new OrgActionChecker(ctx.stateDir, now).record({ mode: 'block', outcome: 'membership-changed-outside-the-app', orgId: seen ?? m?.orgId ?? null }); } catch { /* @silent-fallback-ok — the notice and stderr below report it */ }
       console.error('[org-policy] membership file changed outside the app; still checking');
-      notify(`org-membership-tamper:${seen}`, 'Organization membership changed unexpectedly', "This agent's organization membership file was changed outside the Instar app, so I'm still checking actions against the organization's rules. Leave the organization from the app if that's what you want.");
+      notify(`org-membership-tamper:${seen ?? m?.orgId ?? 'unknown'}`, 'Organization membership changed unexpectedly', "This agent's organization membership file was changed outside the Instar app, so I'm still checking actions against the organization's rules. Leave the organization from the app if that's what you want.");
       return { decision: 'deny', reason: "Your organization's membership changed outside the Instar app, so I'm holding this until your person looks.", checkId: '' };
     }
     if (!m || m.state !== 'joined' || !evidence) return { decision: 'pass' };

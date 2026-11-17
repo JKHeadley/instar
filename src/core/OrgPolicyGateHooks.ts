@@ -8,7 +8,8 @@ export const OrgPolicyGateHooks = {
     return `#!/bin/bash
 # Organization never rules check (instar spec org-never-actions). Exits at once for an agent with no
 # organization data; otherwise the server decides (it doesn't trust an edited membership file).
-[ -d "\${CLAUDE_PROJECT_DIR:-.}/.instar/org" ] || exit 0
+D="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+[ -d "$D/org" ] || grep -q '"block"' "$D/config.json" 2>/dev/null || exit 0
 exec node "\${CLAUDE_PROJECT_DIR:-.}/.instar/hooks/instar/org-policy-gate.js"
 `;
   },

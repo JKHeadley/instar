@@ -300,7 +300,17 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     if (!deviceOnly(req, res)) return;
     const s = store();
     const r = s.leave({}, deps.effects());
-    if (r.ok) noteOrgLeave(deps.stateDir);
+    if (r.ok) {
+      noteOrgLeave(deps.stateDir);
+      // Block mode belongs to a membership: leaving through the app sets it back to observe (EXO 3.0 re-audit).
+      writeConfigAtomic(path.join(deps.stateDir, 'config.json'), (raw) => {
+        const op = raw.orgPolicy as { actions?: { mode?: string } } | undefined;
+        if (op?.actions?.mode === 'block') op.actions.mode = 'observe';
+        return { value: true };
+      });
+      const live = deps.config?.() as unknown as { orgPolicy?: { actions?: { mode?: string } } } | undefined;
+      if (live?.orgPolicy?.actions?.mode === 'block') live.orgPolicy.actions.mode = 'observe';
+    }
     if (!r.ok) { res.status(409).json({ error: r.reason }); return; }
     const m = s.membership();
     if (m) (deps.fanOut ?? orgFanOut)({ membership: m, bundle: null });
@@ -368,6 +378,10 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     if (!deviceOnly(req, res)) return;
     const mode = (req.body as { mode?: unknown })?.mode;
     if (mode !== 'observe' && mode !== 'block') { res.status(400).json({ error: 'mode must be observe or block' }); return; }
+    if (mode === 'block' && store().membership()?.state !== 'joined') {
+      res.status(409).json({ error: 'not-a-member', detail: 'Blocking applies only to an agent that has joined an organization.' });
+      return;
+    }
     if (mode === 'block' && actionsCfg().blockingApproved !== true) {
       res.status(403).json({ error: 'blocking-not-approved', detail: 'Blocking is not available on this version yet.' });
       return;
