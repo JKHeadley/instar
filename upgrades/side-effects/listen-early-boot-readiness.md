@@ -120,3 +120,12 @@ Machine-local by design. Boot state, the boot-length record and the restart reco
 **Resolution:** 1, 2, 3 and 5 are fixed as described in sections 1 and 5, with tests: supervisor alternating-probe and first-spawn-anchor cases, an integration test for unread catch-up against a booting peer, `isPeerBooting` unit cases, and route cases for a pending update and control characters. 4 is accepted and documented: it makes a dev boot look like a fleet boot did. The display-only readers are documented in section 5.
 
 **Second pass, after the fixes: Concur with the review.** The reviewer read all four fixes in the code (supervisor bound, booting peers, recovery service, restart route) and found no remaining defect. One note: a "starting" probe no longer resets the failure count, so two stalled probes after the grace, even far apart, restart a slow boot. That is still gentler than the fleet's earlier behaviour.
+
+## Follow-up commit (Local Verify, 2026-11-17 03:08Z)
+
+Local Verify on `3220dce69` failed three registry tests from this change: the `/server` prefix was unclassified (`capabilities-discoverability`), the new POST had no write-domain declaration (the write-domain ratchet), and the `/health` additions pushed `ProcessIntegrity` out of the window `stale-version-prevention` scans. The fixes:
+- `server` is added to `INTERNAL_PREFIXES`; agents learn the route from the awareness entry.
+- The route is annotated `@write-domain:none`, because it writes only this machine's own restart flag.
+- The `bootReadiness` lines move to the end of the `/health` handler, before the pool branch. Behaviour is unchanged.
+
+**unbounded-self-action:** closure `n/a`. `POST /server/restart` writes one restart request per authenticated call from a session or operator. That is a one-shot, caller-driven action, not a self-triggered loop. How the request is consumed is unchanged, so the supervisor's restart-loop detection still applies.

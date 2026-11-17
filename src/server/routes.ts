@@ -6104,11 +6104,6 @@ export function createRoutes(ctx: RouteContext): Router {
     // Token-only compare, shared with the pool-scope peer-health read
     // (`bearerMatches`): byte-identical to the inline check it replaced.
     const isAuthed = bearerMatches(req, ctx.config.authToken);
-    // Listen early: the real server answering IS the ready state (idempotent; the listen
-    // callback normally marks it first). The boot beacon answers "starting" before this.
-    // previousRestart names who asked for the restart that ended the last process.
-    bootReadiness().markReady();
-    base.bootReadiness = bootReadiness().snapshot({ includePreviousRestart: isAuthed });
     if (isAuthed) {
       const claudeKey = activeClaudeKeyHealth()?.status();
       if (claudeKey) base.claudeKey = claudeKey;
@@ -6435,6 +6430,11 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
     }
+    // Listen early: the real server answering IS the ready state (idempotent; the listen
+    // callback normally marks it first). The boot beacon answers "starting" before this.
+    // previousRestart names who asked for the restart that ended the last process.
+    bootReadiness().markReady();
+    base.bootReadiness = bootReadiness().snapshot({ includePreviousRestart: isAuthed });
     // Media (mobile-native-chat-media §4.7): `?scope=pool` adds every machine's appMedia,
     // proxied on read (peers are asked for their plain /health); an unreachable machine is `failed`.
     if (req.query?.scope === 'pool' && isAuthed && ctx.appConversations) {
@@ -6488,6 +6488,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // state/restart-requested.json still works but is logged as "unattributed"
   // (2026-11-16: an unattributed restart took the M5 offline for 2m43s and nobody could
   // tell from the machine who asked). Planned-restart holds (Local Verify) still apply.
+  // @write-domain:none — machine-local: writes this machine's own restart request flag, no replicated agent state.
   router.post('/server/restart', async (req, res) => {
     const body = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : {};
     const clean = (v: unknown, max: number): string | null =>

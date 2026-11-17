@@ -24,6 +24,7 @@ This listener existed before, but only on development machines, and only on the 
 - Nothing treats a starting server as ready: the install flow, scripts and the Slack backup channel all wait for the real answer. (The old development-only listener said "fine" too early, so messages could be passed into a server that was not ready yet. That is fixed too.)
 - A restart file without a name still works. It is labelled, not refused, so nothing silently fails to restart.
 - The new restart route keeps the existing holds. It will not cut off a running Local Verify test.
+- The new restart route is recorded as affecting only its own machine, and is left out of the public capability list. Agents learn about it from their instructions.
 
 ## What you need to decide
 
