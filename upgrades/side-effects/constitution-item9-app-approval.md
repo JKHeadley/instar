@@ -37,3 +37,12 @@ Not a defect fix; no class to close.
 ## Conclusion
 
 A wording change, approved by the operator on the exact text, that lets an app-only person approve trust raises once the build lands.
+
+## Family audit refresh (2026-11-17)
+
+Local verify failed `standards-coverage-ratchet`: the Interaction area's recorded digest no longer matched its text, because the approved paragraph changed it. The approved wording is unchanged here. What is added:
+- `docs/specs/reports/interaction-family-paired-device-review-2026-11-17.md`: an independent reviewer read the whole Interaction area with the paragraph and found no contradiction, no duplicated obligation and no change of meaning elsewhere. Verdict: accepted.
+- `docs/audits/interaction-family-paired-device-2026-11-17.json`: the audit record.
+- The refreshed Interaction entry in `docs/standards-registry-area-audits.json`. The coverage audit reads current for 6 of 6 areas.
+
+The reviewer noted one gap: the Applied-through line lists no check for the agent never adding a paired device. Adding that line would change the approved text, so it is left for Justin.

@@ -20,3 +20,5 @@ Justin said he wants the Instar app alone to be the main way, with Telegram and 
 ## What happens next
 
 The approval path in the code is built separately, on top of the trust journey work, and it must meet every condition above.
+
+The rulebook keeps a fingerprint of each section so nobody can change it quietly. Adding this paragraph changed the fingerprint of its section, so an independent reviewer re-read the whole section and agreed nothing conflicts, and the new fingerprint is recorded. The approved words did not change.
