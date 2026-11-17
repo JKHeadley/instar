@@ -356,6 +356,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/pool/bring-back', domain: 'cluster-shared' });
   // Instar Documents (instar-document-viewer §5.1): machine-signed rows replicated by version-vector pull.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/docs', domain: 'cluster-shared' });
+  // The trust journey's account path (docs/specs/trust-journey.md decision 5): requests, acceptances and
+  // withdrawals are TrustJourneyStore records replicated through the coherence journal to every machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/requests', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/acceptance/', domain: 'cluster-shared' });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
@@ -383,6 +387,15 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'writes ~/.instar/host-maintenance/restart-now.<agent>.json for this physical machine; outside the agent home, never git-synced',
   } });
+  // Operator controls (Part F, CMT-1203): Skip once and Change window for THIS machine.
+  for (const control of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix: control, domain: 'machine-local', story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine; outside the agent home, never git-synced',
+    } });
+  }
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,

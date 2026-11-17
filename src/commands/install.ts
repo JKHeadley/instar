@@ -407,6 +407,9 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
             clampSettings: (cap) => autonomy.clampForOrgPolicy(cap),
           });
           if (!r.ok) return { kind: 'failed', message: `Your organization's policy couldn't be applied (${r.reason}).`, nextStep: resume };
+          // The member key and the link's token; accepting the invitation (orgAccepted) is the consent (org-members-and-keepers §A).
+          const { OrgMemberSide } = await import('../core/OrgMemberSide.js');
+          new OrgMemberSide(stateDir, d.bundle.record.orgId).onJoin({ inviteToken: answers.orgInviteToken ?? null, afterLeave: false, consent: true });
         }
       }
       return { kind: 'done' };
@@ -748,6 +751,8 @@ export interface InstallAnswersFile {
   orgAccepted?: boolean;
   /** The Instar Mac app runs this install and enrolls itself (mac-app-creates-agent §B). */
   forApp?: boolean;
+  /** The invitation link's token (org-members-and-keepers §A), sent on the first check-ins. */
+  orgInviteToken?: string;
 }
 
 /** Maps an answers file onto the flow's questions. `--yes` alone supplies consent (spec 4.1). */
@@ -797,6 +802,7 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
   if (file.forApp !== undefined && typeof file.forApp !== 'boolean') {
     return 'In the answers file, forApp must be true or false.';
   }
+  if (file.orgInviteToken !== undefined && (typeof file.orgInviteToken !== 'string' || !/^[A-Za-z0-9_-]{10,64}$/.test(file.orgInviteToken))) return 'In the answers file, orgInviteToken must be the t= part of the invitation link.';
   return null;
 }
 
@@ -910,6 +916,7 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
         return 'needs-answers';
       }
       progress.answers.orgBundle = answersFile.orgBundle;
+      if (answersFile.orgInviteToken) progress.answers.orgInviteToken = answersFile.orgInviteToken;
     }
   }
   // Kept in the ledger's answers, so a --resume (which has no answers file) still takes the app path.

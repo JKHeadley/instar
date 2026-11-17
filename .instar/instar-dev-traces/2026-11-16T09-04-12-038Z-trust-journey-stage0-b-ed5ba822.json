@@ -1,0 +1,59 @@
+{
+  "version": 3,
+  "slug": "trust-journey-stage0-b",
+  "sessionId": "c302dba7-8069-4a67-a8d4-5df165a30609",
+  "timestamp": "2026-11-16T09:04:12.038Z",
+  "artifactPath": "upgrades/side-effects/trust-journey-stage0-b.md",
+  "artifactSha256": "f15d252820b8efdffe2b8370c48adef4f72b8ea06f55bb6813080defe2afc42c",
+  "specPath": "docs/specs/trust-journey.md",
+  "coveredFiles": [
+    "docs/specs/reports/trust-journey-convergence.md",
+    "src/commands/server.ts",
+    "src/core/AdaptiveTrust.ts",
+    "src/core/AutonomyProfileManager.ts",
+    "src/core/BackupManager.ts",
+    "src/core/CoherenceJournal.ts",
+    "src/core/JournalSyncApplier.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/core/TrustRaiseGuard.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/core/trustJourney/TrustJourneyStore.ts",
+    "src/core/trustJourney/accountPath.ts",
+    "src/core/trustJourney/proofCheck.ts",
+    "src/data/awareness/trust-raises-need-the-person.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/ephemeralCredentialCommand.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/trust-account-path-alive.test.ts",
+    "tests/integration/trust-account-path-routes.test.ts",
+    "tests/unit/CoherenceJournal.test.ts",
+    "tests/unit/trust-journey-account-path-service.test.ts",
+    "tests/unit/trust-journey-account-path.test.ts",
+    "tests/unit/trust-journey-proof-check.test.ts",
+    "tests/unit/trust-journey-store.test.ts",
+    "upgrades/next/trust-journey-stage0-b.md",
+    "upgrades/side-effects/trust-journey-stage0-b.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "security-sensitive authority: the only issuer of trust-raise proofs (account path)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/trust-journey-convergence.md",
+      "iterations": 10,
+      "verified": true
+    }
+  }
+}

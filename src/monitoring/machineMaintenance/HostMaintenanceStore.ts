@@ -183,6 +183,16 @@ export type WedgeMaintainerClaim =
   | { self: false; maintainer: string; heartbeatAt: number }
   | null;
 
+export type OperatorControlAction = 'skip' | 'unskip' | 'window' | 'window-reset';
+export interface OperatorControlChange { at: number; by: string; action: OperatorControlAction; skipUntil: number | null; window: { start: string; end: string } | null }
+export interface OperatorControls {
+  skipUntil: number | null;
+  window: { start: string; end: string } | null;
+  /** The last changes, newest last: who, what and when. */
+  history: OperatorControlChange[];
+}
+export const CONTROLS_HISTORY_KEPT = 20;
+
 export class HostMaintenanceStore {
   private readonly dir: string;
   private readonly now: () => number;
@@ -324,6 +334,33 @@ export class HostMaintenanceStore {
       atomicWriteFileSync(this.wedgeStatePath, JSON.stringify(state), { mode: 0o644, operation: 'HostMaintenanceStore.writeWedgeState' });
       return true;
     }) === true;
+  }
+
+  private get controlsPath(): string { return path.join(this.dir, 'controls.json'); }
+
+  /**
+   * The owner's controls for this machine (Part F): Skip once and Change window. One record
+   * per host, so every agent on the machine plans from the same answer. Missing or
+   * malformed reads as no controls.
+   */
+  readControls(): OperatorControls | null {
+    const raw = this.readJsonFile<OperatorControls>(this.controlsPath);
+    if (!raw || typeof raw !== 'object') return null;
+    const skipUntil = typeof raw.skipUntil === 'number' && Number.isFinite(raw.skipUntil) ? raw.skipUntil : null;
+    const w = raw.window && typeof raw.window === 'object' && typeof raw.window.start === 'string' && typeof raw.window.end === 'string' ? { start: raw.window.start, end: raw.window.end } : null;
+    const history = Array.isArray(raw.history) ? raw.history.slice(-CONTROLS_HISTORY_KEPT) : [];
+    return { skipUntil, window: w, history };
+  }
+
+  /** Change the controls under the host lock. Null when the lock cannot be taken. */
+  changeControls(by: string, action: OperatorControlAction, change: (c: OperatorControls) => OperatorControls): OperatorControls | null {
+    return this.withLock(() => {
+      const current = this.readControls() ?? { skipUntil: null, window: null, history: [] };
+      const next = change({ ...current, history: [...current.history] });
+      next.history = [...next.history, { at: this.now(), by, action, skipUntil: next.skipUntil, window: next.window }].slice(-CONTROLS_HISTORY_KEPT);
+      atomicWriteFileSync(this.controlsPath, JSON.stringify(next, null, 2), { mode: 0o644, operation: 'HostMaintenanceStore.changeControls' });
+      return next;
+    });
   }
 
   private get restartsPath(): string { return path.join(this.dir, 'restarts.jsonl'); }

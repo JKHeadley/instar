@@ -71,6 +71,35 @@ export function normalizeSettings(raw: Partial<MachineMaintenanceSettings> | und
   return { cadenceDays, window, maxIntervalDays, maxEpisodeDelayMinutes, nonAgentTmuxSessions };
 }
 
+/** Skip once (Part F): each tap moves the next try this far ahead of the tap. */
+export const SKIP_MS = 72 * 60 * MIN;
+
+/** A window the owner may set (Part F): two valid clock times at least 2 hours apart. */
+export function validWindow(w: unknown): RestartWindow | null {
+  if (!w || typeof w !== 'object') return null;
+  const c = w as { start?: unknown; end?: unknown };
+  const a = parseClock(c.start);
+  const b = parseClock(c.end);
+  if (!a || !b) return null;
+  const candidate = { start: `${String(a.h).padStart(2, '0')}:${String(a.m).padStart(2, '0')}`, end: `${String(b.h).padStart(2, '0')}:${String(b.m).padStart(2, '0')}` };
+  const length = windowLengthMinutes(candidate);
+  return length !== null && length >= 120 ? candidate : null;
+}
+
+/** The owner's controls for this machine, as the planner needs them. */
+export interface PlannerControls { skipUntil: number | null; window: RestartWindow | null }
+
+/** Settings with the owner's window, when one is set and valid, in place of the config's. */
+export function withControls(cfg: MachineMaintenanceSettings, controls: PlannerControls | null): MachineMaintenanceSettings {
+  const w = controls ? validWindow(controls.window) : null;
+  return w ? { ...cfg, window: w } : cfg;
+}
+
+/** Skipped: a Skip tap holds until `skipUntil`. */
+export function isSkipped(now: number, controls: PlannerControls | null): boolean {
+  return !!controls && typeof controls.skipUntil === 'number' && now < controls.skipUntil;
+}
+
 export interface PlannedWindow { start: number; end: number; restartAt: number }
 
 /** The window a moment belongs to: the one in progress, else the next, in machine-local time. */

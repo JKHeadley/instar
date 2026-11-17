@@ -297,6 +297,23 @@ const DEFAULT_CONFIG: BackupConfig = {
  * 'shared-state.jsonl*' → ['shared-state.jsonl', 'shared-state.jsonl.123'] and
  * 'state/skill-learning.db*' → ['state/skill-learning.db', 'state/skill-learning.db-wal'].
  */
+/**
+ * The trust journey's authority records (trust-journey spec 6a "Backup"): every origin's
+ * `trust-grant-record` journal files held on this machine (own and peer replicas, live and archived),
+ * plus the local-file store used where the journal is off.
+ */
+export function trustJourneyBackupFiles(stateDir: string): string[] {
+  const out: string[] = [];
+  const dir = 'state/coherence-journal';
+  try {
+    for (const n of fs.readdirSync(path.join(stateDir, dir)).sort()) {
+      if (/^[\w.-]+\.trust-(grant|outcome)-record(\.\d+)?\.jsonl$/.test(n)) out.push(`${dir}/${n}`);
+    }
+  } catch { /* @silent-fallback-ok: no journal directory: only the local file can exist */ }
+  for (const f of ['trust-journey.jsonl', 'trust-journey-outcomes.jsonl']) if (fs.existsSync(path.join(stateDir, 'state', f))) out.push(`state/${f}`);
+  return out;
+}
+
 /** This machine's own `work-card-record` journal files (live + archives), relative to the state dir. Peers' replicas are not backed up: a restored machine is brought current by its peers' streams. */
 export function workCardJournalFiles(stateDir: string): string[] {
   const dir = 'state/coherence-journal';
@@ -466,6 +483,7 @@ export class BackupManager {
     // the live file and every archive. Journal files are named `<machine>.<kind>[.<stamp>].jsonl`, which
     // a single-wildcard entry cannot select, so they are listed here. No files ⇒ nothing added.
     for (const f of workCardJournalFiles(this.stateDir)) if (!expanded.includes(f)) expanded.push(f);
+    for (const f of trustJourneyBackupFiles(this.stateDir)) if (!expanded.includes(f)) expanded.push(f);
     return expanded;
   }
 

@@ -106,9 +106,10 @@
           text('purpose', pol.purpose.join(' '));
           if (pol.other.length) { text('other', pol.other.join('\n')); show('otherCard'); }
           text('indep', WORDS[r.maxIndependence] || r.maxIndependence);
-          text('see', r.updateOrigin ? 'Your agent sends it nothing. Your agent asks ' + r.orgName + "'s agent for a newer version once a day, so that computer can see your network address and when the check happens." : 'Your agent sends it nothing, and has no contact with it after joining.');
+          text('see', r.updateOrigin ? 'Once a day your agent asks ' + r.orgName + "'s agent for a newer version and checks in. " + r.orgName + " sees your agent's name, your name, the policy version it runs, when it last checked in, and your network address." : 'Your agent sends it nothing, and has no contact with it after joining.');
           text('code', code); text('orgName2', r.orgName);
-          document.getElementById('openApp').href = 'instar://join#p=' + p;
+          var t = new URLSearchParams(location.hash.slice(1)).get('t');
+          document.getElementById('openApp').href = 'instar://join#p=' + p + (t && /^[A-Za-z0-9_-]{10,64}$/.test(t) ? '&t=' + t : '');
           document.getElementById('copy').addEventListener('click', function () {
             navigator.clipboard.writeText('Join this organization: ' + location.href).then(function () { show('copied'); });
           });

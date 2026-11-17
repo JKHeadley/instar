@@ -18,6 +18,8 @@ import { INDEPENDENCE_TO_PROFILE, validateBundle, type OrgBundle } from './OrgPa
 import { OrgPackStore, type ApplyEffects } from './OrgPackStore.js';
 
 const DAY = 24 * 60 * 60_000;
+import { OrgMemberSide } from './OrgMemberSide.js';
+
 export const UPDATE_RESPONSE_MAX_BYTES = 256 * 1024;
 const BACKOFF_DAYS = [1, 2, 4, 7];
 
@@ -30,10 +32,12 @@ export interface OrgPackUpdaterDeps {
   effects: () => ApplyEffects;
   /** Tell the person one plain line (an attention item the app shows). */
   notify: (title: string, body: string) => void;
-  fanOut?: (change: { membership: import('./OrgPackStore.js').Membership; bundle: OrgBundle | null; op?: 'hold' }) => void;
+  fanOut?: (change: { membership: import('./OrgPackStore.js').Membership; bundle: OrgBundle | null; op?: 'hold' | 'member-side'; memberSide?: import('./OrgMemberSide.js').MemberSideExport }) => void;
   fetchFn?: typeof fetch;
   lookup?: (host: string) => Promise<string[]>;
   now?: () => number;
+  /** The names a check-in reports (org-members-and-keepers §A); no check-in without it. */
+  identity?: () => { agentName: string; personName: string };
 }
 
 /** A private, loopback, link-local or unspecified address (v4 or v6). */
@@ -103,6 +107,22 @@ export class OrgPackUpdater {
     }
     const jitter = crypto.randomInt(0, 60 * 60_000);
     this.writeState(m.orgId, { lastSuccessAt: new Date(this.now()).toISOString(), failures: 0, stopped: false, nextAt: this.now() + DAY + jitter });
+    // The daily check-in (org-members-and-keepers §A), only with the person's consent; it never blocks the update.
+    if (this.deps.identity) {
+      const side = new OrgMemberSide(this.deps.stateDir, m.orgId, this.now);
+      const before = side.state()?.pendingRemoval?.id ?? null;
+      try {
+        await side.send(m.updateOrigin, { ...this.deps.identity(), appliedVersion: m.version ?? 0, state: 'joined' }, { fetchFn: this.deps.fetchFn, lookup: this.deps.lookup });
+      } catch { /* @silent-fallback-ok — a failed check-in is retried tomorrow */ }
+      // Copy the check-in state (enrolled, rejoin, notices) to this agent's other machines.
+      const x = side.exportForPeer();
+      if (x) this.deps.fanOut?.({ membership: m, bundle: null, op: 'member-side', memberSide: x });
+      const after = side.state()?.pendingRemoval;
+      if (after && after.id !== before) {
+        const rec = store.currentRecord();
+        this.deps.notify('Removed from an organization', `${rec?.orgName ?? 'Your organization'} marked you as no longer part of it. Open the Instar app to decide whether to remove its policy.`);
+      }
+    }
     const held = store.heldFor(m.orgId);
     const v = validateBundle(fetched.body, held);
     if (!v.ok) return 'refused';
@@ -135,26 +155,44 @@ export class OrgPackUpdater {
     return 'held';
   }
 
-  private async fetchPack(origin: string): Promise<{ ok: true; body: unknown } | { ok: false }> {
+  private fetchPack(origin: string): Promise<{ ok: true; body: unknown } | { ok: false }> {
+    // Only a 200 with a JSON body counts as reaching the organization (a non-JSON page is a failed check, with backoff).
+    return orgRequest(origin, '/org/pack/current', undefined, this.deps).then((r) => r.ok && r.status === 200 && r.body !== null ? { ok: true as const, body: r.body } : { ok: false as const });
+  }
+}
+
+/**
+ * One outgoing call to an organization's agent, with the update check's address rules (spec
+ * org-pack-and-join §F; members-and-keepers §A): https only, every resolved address public, the
+ * connection pinned to the address that was checked, 10 s, 256 KB. GET without a body, POST with one.
+ */
+export async function orgRequest(
+  origin: string, pathname: string, body: unknown | undefined,
+  deps: { fetchFn?: typeof fetch; lookup?: (host: string) => Promise<string[]> },
+): Promise<{ ok: true; status: number; body: unknown } | { ok: false }> {
+  {
     let url: URL;
-    try { url = new URL('/org/pack/current', origin); } catch { return { ok: false }; } // @silent-fallback-ok — a bad origin counts as a failed check
+    try { url = new URL(pathname, origin); } catch { return { ok: false }; } // @silent-fallback-ok — a bad origin counts as a failed call
     if (url.protocol !== 'https:') return { ok: false };
+    const method = body === undefined ? 'GET' : 'POST';
+    const payload = body === undefined ? undefined : JSON.stringify(body);
     try {
-      const addrs = this.deps.lookup ? await this.deps.lookup(url.hostname) : (await dns.lookup(url.hostname, { all: true })).map((a) => a.address);
+      const addrs = deps.lookup ? await deps.lookup(url.hostname) : (await dns.lookup(url.hostname, { all: true })).map((a) => a.address);
       if (!addrs.length || addrs.some(isNonPublicAddress)) return { ok: false };
-      if (this.deps.fetchFn) {
+      if (deps.fetchFn) {
         // Test seam: the injected fetch stands in for the pinned request below.
-        const res = await this.deps.fetchFn(url, { signal: AbortSignal.timeout(10_000), redirect: 'error' });
-        if (!res.ok) return { ok: false };
+        const res = await deps.fetchFn(url, { method, signal: AbortSignal.timeout(10_000), redirect: 'error', ...(payload ? { body: payload, headers: { 'Content-Type': 'application/json' } } : {}) });
         const text = await res.text();
         if (Buffer.byteLength(text, 'utf8') > UPDATE_RESPONSE_MAX_BYTES) return { ok: false };
-        return { ok: true, body: JSON.parse(text) };
+        let parsed: unknown = null; try { parsed = JSON.parse(text); } catch { parsed = null; } // @silent-fallback-ok — a non-JSON answer reads as null
+        return { ok: true, status: res.status, body: parsed };
       }
       // Connect to the address that was checked, so DNS rebinding cannot swap it; stop reading at the cap.
       const pinned = addrs[0]!;
-      const text = await new Promise<string | null>((resolve) => {
+      const got = await new Promise<{ status: number; text: string } | null>((resolve) => {
         const req = https.request(url, {
-          method: 'GET', timeout: 10_000, servername: url.hostname,
+          method, timeout: 10_000, servername: url.hostname,
+          ...(payload ? { headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } } : {}),
           // Answer in the shape asked for: Node asks with {all: true} and expects a list.
           lookup: ((_h: string, o: { all?: boolean } | number | undefined, cb: (...args: unknown[]) => void) => {
             const family = net.isIPv6(pinned) ? 6 : 4;
@@ -162,18 +200,19 @@ export class OrgPackUpdater {
             else cb(null, pinned, family);
           }) as never,
         }, (res) => {
-          if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
           let size = 0; const chunks: Buffer[] = [];
           res.on('data', (c: Buffer) => { size += c.length; if (size > UPDATE_RESPONSE_MAX_BYTES) { req.destroy(); resolve(null); return; } chunks.push(c); });
-          res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
           res.on('error', () => resolve(null));
         });
         req.on('timeout', () => { req.destroy(); resolve(null); });
         req.on('error', () => resolve(null));
-        req.end();
+        req.end(payload);
       });
-      return text === null ? { ok: false } : { ok: true, body: JSON.parse(text) };
-    } catch { return { ok: false }; } // @silent-fallback-ok — any network or parse failure is a failed check with backoff
+      if (!got) return { ok: false };
+      let parsed: unknown = null; try { parsed = JSON.parse(got.text); } catch { parsed = null; } // @silent-fallback-ok — a non-JSON answer reads as null
+      return { ok: true, status: got.status, body: parsed };
+    } catch { return { ok: false }; } // @silent-fallback-ok — any network failure is a failed call
   }
 }
 
