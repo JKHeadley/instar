@@ -25,6 +25,10 @@ import {
 } from '../core/OrgPack.js';
 import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPackStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { OrgMembers, newMemberKeyPair, plainName, signPayload } from '../core/OrgMembers.js';
+import { OrgMemberSide } from '../core/OrgMemberSide.js';
+import { orgRequest } from '../core/OrgPackUpdater.js';
+import { OrgKeepers, encodeKeeperCode, withPublishLock } from '../core/OrgKeepers.js';
 
 export const ORG_DRAFT_TTL_MS = 24 * 60 * 60_000;
 
@@ -84,7 +88,8 @@ const STARTER_TRIES = [
   'Use a new AI tool I found to transcribe the interviews',
 ];
 
-interface Draft { id: string; orgName: string; policy: string; createdAt: number; tries: TryResult[]; parsed: ParsedPolicy }
+interface DraftBase { orgId: string; version: number; policySha256: string; maxIndependence: MaxIndependence }
+interface Draft { id: string; orgName: string; policy: string; createdAt: number; tries: TryResult[]; parsed: ParsedPolicy; base?: DraftBase | null }
 interface TryResult { request: string; outcome: 'allowed' | 'ask' | 'blocked'; matched?: string }
 
 export interface OrgPackRouteDeps {
@@ -94,6 +99,10 @@ export interface OrgPackRouteDeps {
   updateOrigin: () => string | null;
   /** Who publishes (the owner's name). */
   ownerName: () => string;
+  /** This agent's own name, reported in check-ins (org-members-and-keepers §A). */
+  agentName?: () => string;
+  /** Test seam for outgoing calls to an organization's agent. */
+  net?: { fetchFn?: typeof fetch; lookup?: (host: string) => Promise<string[]> };
   effects: () => ApplyEffects;
   /** Send a validated change to the agent's other machines (§Multi-machine). Best effort. */
   fanOut?: FanOutFn;
@@ -140,14 +149,91 @@ export function readPublished(stateDir: string): { bundle: OrgBundle; shareUpdat
   return readJson<{ bundle: OrgBundle; shareUpdates: boolean }>(publishedPaths(stateDir).current);
 }
 
-/** GET /org/pack/current, mounted before auth (§B). */
-export function mountPublicOrgPackRoutes(app: Application, stateDir: string): void {
+/**
+ * Two-lane counts for the public routes (org-members-and-keepers §D): a request naming a key already
+ * on the list counts in that key's lane; anything else counts per source address.
+ */
+class HourBuckets {
+  private readonly hits = new Map<string, number[]>();
+  constructor(private readonly limit: number) {}
+  take(key: string, t: number): boolean {
+    const arr = (this.hits.get(key) ?? []).filter((x) => t - x < 3600_000);
+    if (arr.length >= this.limit) { this.hits.set(key, arr); return false; }
+    arr.push(t); this.hits.set(key, arr);
+    if (this.hits.size > 20_000) this.hits.delete(this.hits.keys().next().value as string);
+    return true;
+  }
+}
+
+/** The source address: CF-Connecting-IP only from the agent's own tunnel connector (loopback), else the socket. */
+export function sourceAddress(req: Request): string {
+  const sock = req.socket.remoteAddress ?? 'unknown';
+  const loop = sock === '127.0.0.1' || sock === '::1' || sock === '::ffff:127.0.0.1';
+  const cf = req.headers['cf-connecting-ip'];
+  return loop && typeof cf === 'string' && cf.length < 64 ? `cf:${cf}` : sock;
+}
+
+/** GET /org/pack/current, POST /org/checkin and POST /org/pack/propose, mounted before auth (§B; members-and-keepers §A, §D). */
+export function mountPublicOrgPackRoutes(app: Application, stateDir: string, now: () => number = Date.now): void {
+  const byKey = new HourBuckets(60);
+  const byAddr = new HourBuckets(120);
+  const checkinPerKey = new HourBuckets(30);
+  const proposePerKey = new HourBuckets(10);
+  const admit = (req: Request, res: Response, key: unknown, known: (k: string) => boolean): boolean => {
+    const t = now();
+    const ok = typeof key === 'string' && key.length < 200 && known(key) ? byKey.take(`k:${key}`, t) : byAddr.take(sourceAddress(req), t);
+    if (!ok) res.status(429).json({ error: 'too-many-requests' });
+    return ok;
+  };
+
   app.get('/org/pack/current', (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const p = readPublished(stateDir);
     if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
     res.json(p.bundle);
   });
+
+  app.post('/org/checkin', (req: Request, res: Response) => {
+    const p = readPublished(stateDir);
+    if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
+    const reg = new OrgMembers(stateDir, p.bundle.record.orgId, now);
+    const body = (req.body ?? {}) as { memberKey?: unknown };
+    if (!admit(req, res, body.memberKey, (k) => !!reg.members()[k])) return;
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {}), 'utf8') > 2048) { res.status(413).json({ error: 'too-large' }); return; }
+    // The per-key allowance is taken before anything is written, so a refused check-in changes nothing.
+    if (typeof body.memberKey === 'string' && reg.members()[body.memberKey] && !checkinPerKey.take(body.memberKey, now())) { res.status(429).json({ error: 'too-many-requests' }); return; }
+    try {
+      const a = reg.checkin(req.body);
+      res.status(a.status).json(a.body);
+    } catch (err) { failed(res, '/org/checkin', err); }
+  });
+
+  app.post('/org/pack/propose', (req: Request, res: Response) => { void (async () => {
+    const p = readPublished(stateDir);
+    if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
+    const orgId = p.bundle.record.orgId;
+    const keepers = new OrgKeepers(stateDir, orgId, now);
+    const body = (req.body ?? {}) as { keeperKey?: unknown };
+    if (!admit(req, res, body.keeperKey, (k) => keepers.list().some((x) => x.publicKey === k))) return;
+    let keyPem: string;
+    try { keyPem = fs.readFileSync(publishedPaths(stateDir).key(orgId), 'utf-8'); } catch {
+      res.status(409).json({ error: 'org-key-elsewhere' }); return;
+    }
+    const answer = await withPublishLock(stateDir, () => {
+      const cur = readPublished(stateDir);
+      if (!cur) return { status: 404 as const, body: { error: 'not-found' } };
+      const r = keepers.accept(req.body, cur.bundle, keyPem);
+      if (r.answer.status === 200 && !proposePerKey.take(String(body.keeperKey), now())) return { status: 429 as const, body: { error: 'too-many-requests' } };
+      if (r.bundle) writeAtomic(publishedPaths(stateDir).current, JSON.stringify({ bundle: r.bundle, shareUpdates: cur.shareUpdates }));
+      return r.answer;
+    });
+    res.status(answer.status).json(answer.body);
+  })().catch((err) => failed(res, '/org/pack/propose', err)); });
+}
+
+function failed(res: Response, where: string, err: unknown): void {
+  console.error(`[org] ${where} failed:`, err instanceof Error ? err.message : String(err));
+  if (!res.headersSent) res.status(500).json({ error: 'internal', detail: 'Something went wrong on the agent. Try again.' });
 }
 
 export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
@@ -161,7 +247,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     return false;
   };
 
-  router.post('/org/draft', (req: Request, res: Response) => {
+  router.post('/org/draft', (req: Request, res: Response) => { void (async () => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const orgName = typeof b.orgName === 'string' ? b.orgName.replace(/[\x00-\x1f\x7f#*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
     const policy = typeof b.policyMarkdown === 'string' ? b.policyMarkdown : '';
@@ -171,7 +257,25 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const tooLong = policyTooLong(parsed);
     if (tooLong) { res.status(400).json({ error: 'policy-too-long', detail: tooLong }); return; }
     const tries = runTryList(orgName, parsed);
-    const draft: Draft = { id: crypto.randomUUID(), orgName, policy, createdAt: now(), tries, parsed };
+    // The version this text came from (org-members-and-keepers §D): the published one on the
+    // organization's agent; for a keeper, the organization's current version read from its address.
+    let base: DraftBase | null = null;
+    const pub = readPublished(deps.stateDir);
+    if (pub) {
+      const r = pub.bundle.record;
+      base = { orgId: r.orgId, version: r.version, policySha256: r.policySha256, maxIndependence: r.maxIndependence };
+    } else if ((req.body as { asKeeper?: unknown })?.asKeeper === true) {
+      const m = store().membership();
+      const keeperMeta = m ? readJson<{ origin: string }>(path.join(deps.stateDir, 'org', 'keys', m.orgId, 'keeper-key.json')) : null;
+      const origin = keeperMeta?.origin ?? m?.updateOrigin ?? null;
+      const got = origin ? await orgRequest(origin, '/org/pack/current', undefined, deps.net ?? {}) : { ok: false as const };
+      const held = m ? store().heldFor(m.orgId) : null;
+      const v = got.ok && got.status === 200 && held ? validateBundle(got.body, held, { skipMembership: true }) : null;
+      if (!v || !v.ok) { res.status(502).json({ error: 'org-unreachable', detail: "I couldn't read your organization's current policy, so I can't start a change." }); return; }
+      const r = v.bundle.record;
+      base = { orgId: r.orgId, version: r.version, policySha256: r.policySha256, maxIndependence: r.maxIndependence };
+    }
+    const draft: Draft = { id: crypto.randomUUID(), orgName, policy, createdAt: now(), tries, parsed, base };
     writeAtomic(path.join(paths.drafts, `${draft.id}.json`), JSON.stringify(draft));
     const blocked = tries.filter((t) => t.outcome === 'blocked').length;
     res.json({
@@ -179,14 +283,15 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       other: parsed.other, unplaced: parsed.unplaced, tryList: tries, estimate: true,
       ...(blocked > tries.length / 3 ? { warning: `This blocks ${blocked} of ${tries.length} everyday requests. Consider moving some never rules to ask first.` } : {}),
     });
-  });
+  })().catch((err) => failed(res, '/org/draft', err)); });
 
   router.post('/org/invitations', (req: Request, res: Response) => {
     const p = readPublished(deps.stateDir);
     if (!p) { res.status(409).json({ error: 'nothing-published', detail: 'Publish the policy first.' }); return; }
     const label = typeof (req.body as { label?: unknown })?.label === 'string' ? String((req.body as { label: string }).label).slice(0, 80) : null;
-    deps.journal?.('org-invitation-made', { orgId: p.bundle.record.orgId, version: p.bundle.record.version, label });
-    res.json({ link: `https://instar.sh/join#p=${encodeBundle(p.bundle)}`, code: orgKeyCode(p.bundle.record.signerPublicKey), version: p.bundle.record.version });
+    const inv = new OrgMembers(deps.stateDir, p.bundle.record.orgId, now).mintInvite();
+    deps.journal?.('org-invitation-made', { orgId: p.bundle.record.orgId, version: p.bundle.record.version, label, invite: inv.id.slice(0, 12) });
+    res.json({ link: `https://instar.sh/join#p=${encodeBundle(p.bundle)}&t=${inv.token}`, code: orgKeyCode(p.bundle.record.signerPublicKey), version: p.bundle.record.version, inviteId: inv.id });
   });
 
   router.get('/org/status', (_req: Request, res: Response) => {
@@ -199,6 +304,64 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       published: p ? { orgName: p.bundle.record.orgName, version: p.bundle.record.version, code: orgKeyCode(p.bundle.record.signerPublicKey), shareUpdates: p.shareUpdates } : null,
       held: m?.state === 'joined' ? heldVersions(deps.stateDir, m.orgId) : [],
     });
+  });
+
+  // ── Work agents page, departure, keepers (org-members-and-keepers §B–D) ──
+  const published = (res: Response): { orgId: string; version: number } | null => {
+    const p = readPublished(deps.stateDir);
+    if (!p) { res.status(409).json({ error: 'nothing-published' }); return null; }
+    return { orgId: p.bundle.record.orgId, version: p.bundle.record.version };
+  };
+  const membersView = (orgId: string, version: number) => ({
+    note: 'Names are what each agent reports.',
+    members: new OrgMembers(deps.stateDir, orgId, now).list(version).map((m) => ({ ...m, namesAreReported: true })),
+  });
+  router.get('/org/members', (_req: Request, res: Response) => {
+    const p = published(res); if (!p) return;
+    res.json(membersView(p.orgId, p.version));
+  });
+  router.get('/mobile/org/members', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const inv = new OrgMembers(deps.stateDir, p.orgId, now).invites();
+    res.json({ ...membersView(p.orgId, p.version),
+      invitations: Object.entries(inv).map(([id, e]) => ({ id, createdAt: e.createdAt, uses: e.usedBy.length, maxUses: e.maxUses, revoked: !!e.revokedAt, active: e.active })),
+      keepers: new OrgKeepers(deps.stateDir, p.orgId, now).list().map((k) => ({ name: k.name, publicKey: k.publicKey, addedAt: k.addedAt, code: orgKeyCode(k.publicKey) })) });
+  });
+  router.post('/mobile/org/members/remove', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const r = new OrgMembers(deps.stateDir, p.orgId, now).remove(String((req.body as { memberKey?: unknown })?.memberKey ?? ''));
+    if (!r.ok) { res.status(r.error === 'not-found' ? 404 : 409).json({ error: r.error }); return; }
+    deps.journal?.('org-member-removed', { orgId: p.orgId, removal: r.removal.id });
+    res.json(r);
+  });
+  router.post('/mobile/org/members/restore', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const r = new OrgMembers(deps.stateDir, p.orgId, now).restore(String((req.body as { memberKey?: unknown })?.memberKey ?? ''));
+    if (!r.ok) { res.status(r.error === 'not-found' ? 404 : 409).json({ error: r.error }); return; }
+    res.json(r);
+  });
+  router.post('/mobile/org/invitations/revoke', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const ok = new OrgMembers(deps.stateDir, p.orgId, now).revokeInvite(String((req.body as { inviteId?: unknown })?.inviteId ?? ''));
+    res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: 'not-found' });
+  });
+  router.post('/mobile/org/keepers/add', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const r = new OrgKeepers(deps.stateDir, p.orgId, now).add(String((req.body as { code?: unknown })?.code ?? ''));
+    if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+    deps.journal?.('org-keeper-added', { orgId: p.orgId, nameAsReported: r.keeper.name, code: r.fingerprint });
+    res.json(r);
+  });
+  router.post('/mobile/org/keepers/remove', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const ok = new OrgKeepers(deps.stateDir, p.orgId, now).remove(String((req.body as { publicKey?: unknown })?.publicKey ?? ''));
+    res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: 'not-found' });
   });
 
   /**
@@ -227,11 +390,88 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       published: p ? { ...policyOf(p.bundle), shareUpdates: p.shareUpdates } : null,
       draft: draft && (!p || draft.createdAt > Date.parse(p.bundle.record.publishedAt)) ? { draftId: draft.id, orgName: draft.orgName, ...draft.parsed, tryList: draft.tries } : null,
       held: (held as OrgBundle[]).map(policyOf),
+      // Check-ins (org-members-and-keepers §A, §C): a removal waiting for the person, and the one-time consent card.
+      ...(() => {
+        if (!m) return {};
+        const side = new OrgMemberSide(deps.stateDir, m.orgId, now).state();
+        return {
+          removedNotice: side?.pendingRemoval ? { at: side.pendingRemoval.at, orgName: rec?.orgName ?? null } : null,
+          checkinConsentNeeded: m.state === 'joined' && !!m.updateOrigin && (!side || side.consent === null),
+          // A rejoin the organization refused (a cancelled link): the person needs a new invitation.
+          needsNewLink: !!side && side.pendingRejoin && !side.enrolled,
+        };
+      })(),
     });
   });
 
+  router.post('/mobile/org/checkin-consent', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const m = store().membership();
+    if (!m || m.state !== 'joined') { res.status(409).json({ error: 'not-a-member' }); return; }
+    const b = (req.body ?? {}) as { allow?: unknown; dismissRemoval?: unknown };
+    const side = new OrgMemberSide(deps.stateDir, m.orgId, now);
+    if (!side.state()) side.onJoin({ afterLeave: false, consent: false });
+    if (b.dismissRemoval === true) side.dismissRemoval();
+    if (typeof b.allow === 'boolean') side.setConsent(b.allow);
+    res.json({ ok: true });
+  });
+
+  // ── The keeper's own agent (org-members-and-keepers §D) ──
+  router.post('/mobile/org/keeper-request', (req: Request, res: Response) => { void (async () => {
+    if (!deviceOnly(req, res)) return;
+    const b = (req.body ?? {}) as { invitationLink?: unknown; name?: unknown };
+    const m = store().membership();
+    let orgId = m?.state === 'joined' ? m.orgId : null;
+    let origin = m?.state === 'joined' ? m.updateOrigin : null;
+    if (typeof b.invitationLink === 'string') {
+      const frag = /#p=([A-Za-z0-9_-]+)/.exec(b.invitationLink);
+      const d = frag ? decodeBundle(frag[1]!) : null;
+      if (!d || !d.ok) { res.status(400).json({ error: 'link-unreadable' }); return; }
+      orgId = d.bundle.record.orgId; origin = d.bundle.record.updateOrigin;
+    }
+    if (!orgId || !origin) { res.status(409).json({ error: 'organization-address-needed', detail: 'Join the organization, or paste one of its invitation links.' }); return; }
+    const name = plainName(typeof b.name === 'string' ? b.name : deps.ownerName());
+    if (!name) { res.status(400).json({ error: 'name-not-plain' }); return; }
+    const keyFile = path.join(deps.stateDir, 'org', 'keys', orgId, 'keeper-key');
+    let publicKey: string;
+    const existing = readJson<{ publicKey: string; origin: string }>(`${keyFile}.json`);
+    if (existing && fs.existsSync(keyFile)) { publicKey = existing.publicKey; }
+    else {
+      const kp = newMemberKeyPair();
+      writeAtomic(keyFile, kp.privateKeyPem);
+      publicKey = kp.publicKey;
+    }
+    writeAtomic(`${keyFile}.json`, JSON.stringify({ publicKey, origin }));
+    res.json({ code: encodeKeeperCode({ orgId, name, publicKey }), fingerprint: orgKeyCode(publicKey),
+      say: 'Send this code to the person who publishes your organization\'s policy. They read the key code back to you to check it.' });
+  })().catch((err) => failed(res, '/mobile/org/keeper-request', err)); });
+
+  router.post('/mobile/org/keeper-propose', (req: Request, res: Response) => { void (async () => {
+    if (!deviceOnly(req, res)) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (b.readBackConfirmed !== true) { res.status(400).json({ error: 'read-back-required' }); return; }
+    const draft = typeof b.draftId === 'string' && /^[0-9a-f-]{36}$/.test(b.draftId) ? readJson<Draft>(path.join(paths.drafts, `${b.draftId}.json`)) : null;
+    if (!draft || !draft.base) { res.status(404).json({ error: 'draft-not-found' }); return; }
+    const keyFile = path.join(deps.stateDir, 'org', 'keys', draft.base.orgId, 'keeper-key');
+    const meta = readJson<{ publicKey: string; origin: string }>(`${keyFile}.json`);
+    let pem: string;
+    try { pem = fs.readFileSync(keyFile, 'utf-8'); } catch { res.status(409).json({ error: 'not-a-keeper-here' }); return; }
+    if (!meta) { res.status(409).json({ error: 'not-a-keeper-here' }); return; }
+    const maxIndependence = (typeof b.maxIndependence === 'string' && INDEPENDENCE.has(b.maxIndependence as MaxIndependence) ? b.maxIndependence : draft.base.maxIndependence) as MaxIndependence;
+    const proposal = signPayload({ v: 1 as const, orgId: draft.base.orgId, baseVersion: draft.base.version, basePolicySha256: draft.base.policySha256,
+      policy: draft.policy, maxIndependence, proposedBy: deps.ownerName(), keeperKey: meta.publicKey, at: now() }, pem);
+    const r = await orgRequest(meta.origin, '/org/pack/propose', proposal, deps.net ?? {});
+    if (!r.ok) { res.status(502).json({ error: 'org-unreachable', detail: "The organization's main agent isn't reachable right now, so this version can't go out." }); return; }
+    res.status(r.status).json(r.body);
+  })().catch((err) => failed(res, '/mobile/org/keeper-propose', err)); });
+
   router.post('/mobile/org/publish', (req: Request, res: Response) => {
     if (!deviceOnly(req, res)) return;
+    // Publish and a keeper's proposal run one at a time (org-members-and-keepers §D).
+    // Any throw inside answers 500 instead of leaving the app waiting (Express 4 does not catch async errors).
+    withPublishLock(deps.stateDir, () => publish(req, res)).catch((err) => failed(res, 'org publish', err));
+  });
+  const publish = (req: Request, res: Response): void => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const draft = typeof b.draftId === 'string' && /^[0-9a-f-]{36}$/.test(b.draftId) ? readJson<Draft>(path.join(paths.drafts, `${b.draftId}.json`)) : null;
     if (!draft || now() - draft.createdAt > ORG_DRAFT_TTL_MS) { res.status(404).json({ error: 'draft-not-found', detail: 'Make the draft again; drafts last 24 hours.' }); return; }
@@ -240,6 +480,12 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const shareUpdates = b.shareUpdates !== false;
     if (b.readBackConfirmed !== true) { res.status(400).json({ error: 'read-back-required', detail: 'Read the policy back to the person before publishing.' }); return; }
     const prev = readPublished(deps.stateDir);
+    // A draft with no base was made before anything was published (or before this check existed): once
+    // something is published it is stale by definition, so it is shown again rather than overwriting.
+    if (prev && (!draft.base || draft.base.version !== prev.bundle.record.version || draft.base.policySha256 !== prev.bundle.record.policySha256)) {
+      res.status(409).json({ error: 'stale-base', detail: 'The policy changed since this draft (a keeper published a version). Review the newer text first.', current: prev.bundle });
+      return;
+    }
     const orgId = prev?.bundle.record.orgId ?? `org_${crypto.randomBytes(16).toString('base64url')}`;
     let keyPem: string;
     let publicKey: string;
@@ -270,12 +516,15 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       return;
     }
     writeAtomic(paths.current, JSON.stringify({ bundle, shareUpdates }));
+    // The publisher's own agent is a member without an invitation (members-and-keepers §A).
+    const side = new OrgMemberSide(deps.stateDir, orgId, now).onJoin({ afterLeave: false, consent: true });
+    new OrgMembers(deps.stateDir, orgId, now).registerSelf(side.publicKey, deps.agentName?.() ?? '', deps.ownerName(), record.version);
     deps.journal?.('org-pack-published', { orgId, version: record.version, draftId: draft.id, readBackConfirmed: true, tries: draft.tries });
     res.json({
       record, code: orgKeyCode(publicKey), applied,
       shared: shareUpdates ? 'Anyone you send an invitation to, and anyone who can reach my address, can read this policy.' : 'Anyone you send an invitation to can read this policy.',
     });
-  });
+  };
 
   router.post('/mobile/org/join', (req: Request, res: Response) => {
     if (!deviceOnly(req, res)) return;
@@ -283,22 +532,37 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const decoded = decodeBundle(typeof b.bundle === 'string' ? b.bundle : '');
     if (!decoded.ok) { res.status(400).json({ error: decoded.reason }); return; }
     const s = store();
+    const before = s.membership();
     const r = s.apply(decoded.bundle, { replaceHandEdit: b.replaceHandEdit === true }, deps.effects());
     if (!r.ok) { res.status(409).json({ error: r.reason }); return; }
+    // The member key, the link's token and a rejoin after a leave (org-members-and-keepers §A). The
+    // join screen showed what check-ins report, so joining is the consent.
+    new OrgMemberSide(deps.stateDir, decoded.bundle.record.orgId, now).onJoin({
+      inviteToken: typeof b.inviteToken === 'string' ? b.inviteToken : null,
+      afterLeave: before?.orgId === decoded.bundle.record.orgId && before.state === 'left', consent: true,
+    });
     const m = s.membership();
     if (m) (deps.fanOut ?? orgFanOut)({ membership: m, bundle: decoded.bundle });
     res.json(r);
   });
 
-  router.post('/mobile/org/leave', (req: Request, res: Response) => {
+  router.post('/mobile/org/leave', (req: Request, res: Response) => { void (async () => {
     if (!deviceOnly(req, res)) return;
     const s = store();
+    // One "left" check-in from the membership as it stands before the leave, best effort (§A).
+    const was = s.membership();
+    if (was?.state === 'joined' && was.updateOrigin) {
+      try {
+        await new OrgMemberSide(deps.stateDir, was.orgId, now).send(was.updateOrigin,
+          { agentName: deps.agentName?.() ?? '', personName: deps.ownerName(), appliedVersion: was.version ?? 0, state: 'left' }, deps.net);
+      } catch { /* @silent-fallback-ok — the organization learns of the leave when it next misses a check-in */ }
+    }
     const r = s.leave({}, deps.effects());
     if (!r.ok) { res.status(409).json({ error: r.reason }); return; }
     const m = s.membership();
     if (m) (deps.fanOut ?? orgFanOut)({ membership: m, bundle: null });
     res.json(r);
-  });
+  })().catch((err) => failed(res, '/mobile/org/leave', err)); });
 
   router.post('/mobile/org/update-accept', (req: Request, res: Response) => {
     if (!deviceOnly(req, res)) return;

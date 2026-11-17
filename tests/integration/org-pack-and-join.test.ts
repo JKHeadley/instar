@@ -40,7 +40,7 @@ async function boot(name: string) {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: `${name} machine` });
   // An owner device (the app), written as an active owner record with the stored host.
   const dev = makeDevice();
-  const deviceId = `dev-${name}`;
+  const deviceId = `device-${name}`;
   fs.writeFileSync(path.join(stateDir, 'state', 'mobile-devices.json'), JSON.stringify({ devices: [{
     id: deviceId, deviceName: 'Mac', label: null, pairedAt: new Date().toISOString(), status: 'active',
     publicKey: dev.publicKey, fingerprint: deviceFingerprint(dev.publicKey), host: HOST, approvedAt: new Date().toISOString(), approvedVia: 'dashboard-pin',
@@ -89,7 +89,7 @@ describe('organization pack across two agents', () => {
 
     const inv = await admin.bearer(request(admin.app).post('/org/invitations')).send({ label: 'Pat' });
     expect(inv.status).toBe(200);
-    const bundle = String(inv.body.link).split('#p=')[1]!;
+    const bundle = String(inv.body.link).split('#p=')[1]!.split('&')[0]!;
 
     expect((await member.bearer(request(member.app).post('/mobile/org/join')).send({ bundle })).status).toBe(403);
     const join = await member.signed('POST', '/mobile/org/join', { bundle });
@@ -122,7 +122,7 @@ describe('organization pack across two agents', () => {
     expect((await member.signed('POST', '/mobile/org/leave', {})).status).toBe(200);
     expect(fs.existsSync(path.join(member.stateDir, 'ORG-INTENT.md'))).toBe(false);
     const inv2 = await admin.bearer(request(admin.app).post('/org/invitations')).send({});
-    const rejoin = await member.signed('POST', '/mobile/org/join', { bundle: String(inv2.body.link).split('#p=')[1] });
+    const rejoin = await member.signed('POST', '/mobile/org/join', { bundle: String(inv2.body.link).split('#p=')[1]!.split('&')[0] });
     expect(rejoin.body.applied).toBe('joined');
     // The first invitation (v1) can no longer roll it back.
     const old = await member.signed('POST', '/mobile/org/join', { bundle });

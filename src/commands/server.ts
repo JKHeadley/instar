@@ -20977,6 +20977,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         isLeaseHolder: () => coordinator.holdsLease(),
         effects: orgEffects,
         fanOut: (c) => { void import('../server/orgPackRoutes.js').then((m) => m.orgFanOut(c)); },
+        // Check-ins report the agent's and person's names (org-members-and-keepers §A).
+        identity: () => ({ agentName: String(config.projectName ?? ''), personName: String((config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? '') }),
         notify: (title, body) => {
           // App-only agents see held updates through /org/status (the app's update card).
           void telegram?.createAttentionItem({ id: `org-pack:${title}`, title, summary: body, description: body, category: 'system', priority: 'NORMAL', sourceContext: 'org-pack' } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]).catch(() => { /* @silent-fallback-ok — the held update is still shown by /org/status */ });

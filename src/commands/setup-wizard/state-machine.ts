@@ -41,6 +41,8 @@ export interface WizardAnswers {
   autostartConsent?: boolean;
   /** Install flow only: an organization invitation the person accepted on the app's join screen (org-pack-and-join §C). */
   orgBundle?: string;
+  /** The invitation link's token (org-members-and-keepers §A). */
+  orgInviteToken?: string;
 }
 
 /** The doors the installer can carry today. Other doors arrive with their proofs (spec section 5). */

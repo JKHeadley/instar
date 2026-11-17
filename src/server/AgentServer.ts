@@ -1994,6 +1994,9 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
+    this.app.use('/org/checkin', express.json({ limit: '4kb' }));
+    this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
@@ -7856,6 +7859,7 @@ export class AgentServer {
           machineId: this.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'single-machine',
           updateOrigin: () => pairing.origin(),
           ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
+          agentName: () => String(options.config.projectName ?? ''),
           principalKind: (req) => principalOf(req).kind,
           effects: () => ({
             currentProfile: autonomy ? () => autonomy.getProfile() : undefined,

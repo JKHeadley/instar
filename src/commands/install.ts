@@ -406,6 +406,9 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
             clampSettings: (cap) => autonomy.clampForOrgPolicy(cap),
           });
           if (!r.ok) return { kind: 'failed', message: `Your organization's policy couldn't be applied (${r.reason}).`, nextStep: resume };
+          // The member key and the link's token; accepting the invitation (orgAccepted) is the consent (org-members-and-keepers §A).
+          const { OrgMemberSide } = await import('../core/OrgMemberSide.js');
+          new OrgMemberSide(stateDir, d.bundle.record.orgId).onJoin({ inviteToken: answers.orgInviteToken ?? null, afterLeave: false, consent: true });
         }
       }
       return { kind: 'done' };
@@ -733,6 +736,8 @@ export interface InstallAnswersFile {
   orgBundle?: string;
   /** Written by the Mac app only after the person tapped Join on its join screen. */
   orgAccepted?: boolean;
+  /** The invitation link's token (org-members-and-keepers §A), sent on the first check-ins. */
+  orgInviteToken?: string;
 }
 
 /** Maps an answers file onto the flow's questions. `--yes` alone supplies consent (spec 4.1). */
@@ -773,6 +778,7 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
   }
   if (file.orgBundle !== undefined && typeof file.orgBundle !== 'string') return 'In the answers file, orgBundle must be text.';
   if (file.orgAccepted !== undefined && typeof file.orgAccepted !== 'boolean') return 'In the answers file, orgAccepted must be true or false.';
+  if (file.orgInviteToken !== undefined && (typeof file.orgInviteToken !== 'string' || !/^[A-Za-z0-9_-]{10,64}$/.test(file.orgInviteToken))) return 'In the answers file, orgInviteToken must be the t= part of the invitation link.';
   return null;
 }
 
@@ -859,6 +865,7 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
         return 'needs-answers';
       }
       progress.answers.orgBundle = answersFile.orgBundle;
+      if (answersFile.orgInviteToken) progress.answers.orgInviteToken = answersFile.orgInviteToken;
     }
   }
 
