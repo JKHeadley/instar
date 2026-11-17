@@ -25,3 +25,6 @@ An organization name containing `<!--` or `-->` is refused (isBundle, /org/draft
 
 ## Not covered
 Look-alike letters from other alphabets (homoglyphs) are visible characters and are not refused. Members who joined before this change keep their applied rules file; no pack has been published for a pilot yet.
+
+## Main merge (after #3294)
+Merged origin/main (282d5d15e). The /org/draft conflict with #3294's draft base (keeper/version) was resolved keeping both: main's `base` logic, with the draft storing the standard text. #3294's new keeper proposals and recovery paths already go through validateBundle, so they get the standard-form check. Two #3294 test fixtures used a trailing newline and are now standard (a keeper proposal comes from a standardized draft). All org unit tests (98) and integration tests (26) pass.
