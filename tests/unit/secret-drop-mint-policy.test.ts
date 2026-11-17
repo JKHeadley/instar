@@ -112,6 +112,15 @@ describe('Secret Drop mint policy (secret-drop-self-mint-hardening)', () => {
       expect(resolveFieldSelector('ok', ['ok'])).toBe('ok');
       expect(resolveFieldSelector('#9', ['ok'])).toBeNull();
     });
+    it('option-like field names stay retrievable without activating helper flags', () => {
+      const names = ['--names', '--browser', '--consume', '--run', '--'];
+      expect(validateFieldNames(names, true)).toBeNull();
+      for (const [i, name] of names.entries()) {
+        expect(isShellSafeFieldName(name)).toBe(false);
+        expect(fieldRef(name, i)).toBe(`#${i + 1}`);
+        expect(resolveFieldSelector(fieldRef(name, i), names)).toBe(name);
+      }
+    });
   });
 
   describe('caller text shown to the agent', () => {

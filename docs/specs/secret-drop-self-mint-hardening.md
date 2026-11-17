@@ -98,11 +98,10 @@ machine-local-justification: hardware-bound-resource
 
 - **Machine-local by design:** the keyless route and its in-memory pending pages; the
   route admits only this host's loopback.
-- **Unified:** every stored drop keeps its existing cross-machine sync (unchanged), so a
-  drop received on one machine is retrievable on another and survives the loss of its
-  machine. The stored authority class travels with it.
-- **Not changed here:** deleting on one machine does not remove synced copies on peers
-  (no revoke verb); tracked separately.
+- **Machine-local durable records:** current main (SEC-057) excludes Secret Drop values
+  from SecretSync. Retrieval stays on the receiving machine; the stored authority class
+  survives its restart. This merge preserves that security boundary. Peer transfers
+  create a new drop on the receiving agent rather than syncing stored values.
 
 ## Frontloaded decisions
 
@@ -165,7 +164,7 @@ machine-local-justification: hardware-bound-resource
   impossible.
 - **A prompt-injected session holding the key** can still name any conversation
   (pre-existing).
-- **Consumed values linger on paired machines** (pre-existing, tracked).
+- Historical copies already synced before SEC-057 need the cleanup tracked by that fix.
 - **SEC-056** (signed-submit encoding): separate fix.
 
 ## Carriers for the follow-up work <!-- tracked: CMT-1870 --> <!-- tracked: CMT-1871 -->

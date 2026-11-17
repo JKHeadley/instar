@@ -14,12 +14,29 @@ import {createConversationGraphSurface,createConversationGraphOffRouter,CONVERSA
 import {createConversationGraphViewerResolver} from './conversationGraphViewer.js';
 import {ConversationGraphMemberLossSurface} from './ConversationGraphMemberLossSurface.js';
 import type {ConversationGraphReplicationRuntime} from './ConversationGraphReplicationRuntime.js';
-export function createConversationGraphDefaultSurface(options:Omit<Parameters<typeof createConversationGraphSurface>[0],'agentId'|'runtime'|'identity'> & {manager:ConversationGraphDefault;onRuntime?(runtime:ConversationGraphReplicationRuntime):void}):Router{
+export function createConversationGraphDefaultSurface(options:Omit<Parameters<typeof createConversationGraphSurface>[0],'agentId'|'runtime'|'identity'> & {manager:ConversationGraphDefault;onRuntime?(runtime:ConversationGraphReplicationRuntime):void;readOwnerWaitMs?:number}):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();const router=Router();
  const resolveViewer=createConversationGraphViewerResolver({...options,agentId:options.manager.agentId});let mounted:Router|null=null,mountedRuntime:ConversationGraphReplicationRuntime|null=null;
  const grants=options.dashboardPolicy?new ConversationGraphOwnerGrantStore({stateDir:options.stateDir,agentId:options.manager.agentId,secrets:new SecretStore({stateDir:options.stateDir,forceFileKey:options.forceFileKey}),dashboardPolicy:options.dashboardPolicy}):null;
  const memberLoss=grants&&options.correctionsEnabled===true?new ConversationGraphMemberLossSurface({manager:options.manager,stateDir:options.stateDir,forceFileKey:options.forceFileKey,grants,pairing:options.pairing??null,verifyDashboardOwner:options.verifyDashboardOwner??(()=>false),initializeDashboardPolicy:options.initializeDashboardPolicy}):null;
  let lastOpenFailure:string|null=null;
+ // The owner step runs one request at a time and also carries the background upkeep (peer checks, a full
+ // readiness pass while not ready). After a restart that queue could hold every Conversations read past the
+ // page's 20 s limit for half an hour (accept-all round 3). A read only needs the graph that is already open,
+ // so after a short wait it is answered from that graph; the owner step still finishes in the background.
+ // Writes keep waiting for it.
+ const readOwnerWaitMs=options.readOwnerWaitMs??1500;let lastBusyRead:string|null=null;
+ const ownerRuntime=async(req:Request,owning:Promise<ConversationGraphReplicationRuntime>):Promise<ConversationGraphReplicationRuntime>=>{
+  const open=mountedRuntime;if(req.method!=='GET'||!mounted||!open||options.manager.runtime!==open)return owning;
+  let timer:ReturnType<typeof setTimeout>|undefined;const waited=new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),readOwnerWaitMs);});
+  try{const first=await Promise.race([owning,waited]);if(first)return first;}finally{clearTimeout(timer);}
+  // The owner queue may have closed and replaced the runtime while this read waited (activation, member loss):
+  // answer from the open graph only if it is still the current, mounted one; otherwise wait as before.
+  if(options.manager.runtime!==open||mountedRuntime!==open)return owning;
+  owning.catch(()=>{/* @silent-fallback-ok: the owner step reports its own failures (open-step and degradation logs); this read was already answered from the open graph. */});
+  const step=options.manager.ownerStep;if(step!==lastBusyRead){lastBusyRead=step;console.warn(`[conversation-graph] answered a read without waiting: the owner step is busy with ${step}`);}
+  return open;
+ };
  const mount=(runtime:ConversationGraphReplicationRuntime)=>{
   if(mounted&&mountedRuntime===runtime)return;
   const identity=options.manager.identity;if(!identity)throw new Error('graph-default-identity-unavailable');
@@ -65,7 +82,7 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
   let recordLocal=false;
   try{
    if(surface==='dashboard')options.initializeDashboardPolicy?.();if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});
-   const runtime=await options.manager.ensureOwner({principalKey:owner.principalKey,authenticationMethod:surface==='mobile'?'owner-device':'owner-dashboard',requestId:crypto.randomUUID(),isCurrent});
+   const runtime=await ownerRuntime(req,options.manager.ensureOwner({principalKey:owner.principalKey,authenticationMethod:surface==='mobile'?'owner-device':'owner-dashboard',requestId:crypto.randomUUID(),isCurrent}));
    if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});const identity=options.manager.identity;if(!identity)throw new Error('graph-default-identity-unavailable');
    mount(runtime);
    if(memberLoss&&ConversationGraphMemberLossSurface.handles(req.path)&&await memberLoss.handle(req,res,surface))return;

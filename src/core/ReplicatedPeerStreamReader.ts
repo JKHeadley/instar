@@ -431,6 +431,17 @@ export class ReplicatedPeerStreamReader {
     return out;
   }
 
+  /**
+   * The same stamp the fold cache uses, for a caller that caches something derived from this store:
+   * it changes whenever any own or peer stream file of the store does. Null = unknown, do not cache.
+   */
+  foldSignature(store: string): string | null {
+    const reg = this.registry.getByStore(store);
+    if (!reg) return null;
+    const kind = reg.kind as JournalKind;
+    return this.streamStamp([...this.ownStreamFiles(this.selfMachineId, kind), ...this.peerStreamFiles(kind)])?.signature ?? null;
+  }
+
   /** What changes when any stream file does: its path, size, mtime and inode. Null = unknown, do not cache. */
   private streamStamp(files: string[]): { signature: string; bytes: number } | null {
     let bytes = 0;

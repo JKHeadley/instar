@@ -184,7 +184,7 @@ const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
 /** `person-phone`: a member's own phone linked this browser to them (instar-document-viewer §3.6a). */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone';
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'local-install';
 
 export interface DeviceRecord {
   id: string;
@@ -235,6 +235,12 @@ export interface DeviceRecord {
   client?: 'browser';
   /** A computer added by scanning its QR code with an owner phone (docs/specs/mac-qr-pairing.md §4); absent ⇒ a phone. Wording only. */
   deviceKind?: 'computer';
+  /**
+   * The Mac app that created this agent on the same Mac (docs/specs/mac-app-creates-agent.md §A):
+   * this record authenticates only over loopback, with no forwarding header, at its exact host, and
+   * (when both are known) on the machine named here. Written only by `createActiveLocalOwner`.
+   */
+  localBinding?: { machineId: string | null };
   browserPublicKey?: string;
   enrollmentId?: string;
   /** `notifying` while the approval message is being sent, then `awaiting` (§4.2 step 9). */
@@ -393,6 +399,54 @@ export class DeviceRegistry {
   }
 
   list(): DeviceRecord[] { return this.normalize(this.read()).devices; }
+
+  /**
+   * The registry read strictly: a missing file is empty, but a file that exists and cannot be read
+   * or parsed THROWS, so a damaged registry is never read as "no devices" and then overwritten
+   * (docs/specs/mac-app-creates-agent.md §A).
+   */
+  private readStrict(): RegistryFile {
+    let text: string;
+    try { text = fs.readFileSync(this.file, 'utf-8'); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { devices: [], wrongCodeTimes: [] };
+      throw err;
+    }
+    const raw = JSON.parse(text) as Partial<RegistryFile>;
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.devices)) throw new Error('mobile-devices.json has no devices list');
+    // The parsed value itself, never a second (lenient) read that could see a changed file.
+    const devices = raw.devices.filter((d): d is DeviceRecord => !!d && typeof d === 'object' && typeof (d as DeviceRecord).id === 'string');
+    for (const d of devices) if (!d.status) d.status = 'legacy-token';
+    return { ...raw, devices, wrongCodeTimes: Array.isArray(raw.wrongCodeTimes) ? raw.wrongCodeTimes.filter((n) => typeof n === 'number') : [] };
+  }
+
+  /** Whether any active record counts as an owner device (absent role means owner). */
+  static hasActiveOwner(devices: DeviceRecord[]): boolean {
+    return devices.some((d) => d.status === 'active' && (d.role === undefined || d.role === 'owner'));
+  }
+
+  /**
+   * The first owner device, created active in ONE registry write (mac-app-creates-agent §A, Enroll
+   * step 3). Refuses inside the same write when the key is held or an active owner exists. Throws
+   * (writing nothing) when the registry file exists but cannot be read.
+   */
+  createActiveLocalOwner(row: { id: string; publicKey: string; host: string; label: string | null; machineId: string | null; approvedAt: string }):
+    { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'owner-exists' } {
+    const f = this.normalize(this.readStrict());
+    if (f.devices.some((d) => keysOf(d).includes(row.publicKey) || d.id === row.id)) return { ok: false, reason: 'duplicate-key' };
+    if (DeviceRegistry.hasActiveOwner(f.devices)) return { ok: false, reason: 'owner-exists' };
+    const device: DeviceRecord = {
+      id: row.id, deviceName: row.label, label: row.label, pairedAt: row.approvedAt,
+      status: 'active', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
+      approvedAt: row.approvedAt, approvedVia: 'local-install', deviceKind: 'computer',
+      localBinding: { machineId: row.machineId },
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    return { ok: true, device };
+  }
+
+  /** `list()` read strictly (see `readStrict`). */
+  listLocalStrict(): DeviceRecord[] { return this.normalize(this.readStrict()).devices; }
 
   /**
    * Like `list()`, but a registry file that exists and cannot be read or parsed THROWS instead of

@@ -95,8 +95,8 @@ The keyless cap is a fixed floor at half the existing cap; no new heuristic.
 ## 7. Multi-machine posture
 
 - Machine-local by design: the keyless route and its admission, and the pending requests.
-- The stored class travels with each durable record through the existing sync.
-- Consumed values lingering on paired machines is pre-existing, tracked separately (SEC-057).
+- Current main (SEC-057) excludes Secret Drop values from SecretSync. Durable records and their stored class stay on the receiving machine and survive restart. Peer transfer still creates a new drop on its receiving agent.
+- The newer durable-delete-first consume flow and its retry/reporting helper are preserved.
 
 ## 8. Rollback cost
 
@@ -147,3 +147,9 @@ No agent-authored-artifact defect — not applicable (a code defect in Secret Dr
 ## Follow-up (Local Verify, 2026-11-17)
 
 `writePrivatePasteFile`'s outer catch now carries the `@silent-fallback-ok` annotation with its reason (it logs, and the caller injects the notification inline instead), satisfying the silent-fallback ratchet. No behaviour change.
+
+## Approved continuation and current-main reconciliation (2026-11-17)
+
+Justin approved building and shipping in topic 143457 at 09:58 PST. The earlier maintainer-approved implementation was already in PR #3269. This continuation merges current main, preserves its machine-local Secret Drop storage and consume ordering, and retains the release fragment in upgrades/next. A fresh independent reviewer found no authentication or session-sink regression. Two helper selector issues were found and fixed: numbered selectors are printed with shell quotes, and option-like stored names are offered by position instead of colliding with helper flags. The real helper is exercised through a shell using synthetic values. The baseline hash is refreshed for the combined helper.
+
+Fresh second-pass verdict after the selector fixes: **Concur.** No remaining authentication or session-sink concerns; shell-level helper test covers option-like names and quoted references. The reviewer also noted the required fixture-cleanup funnel; that cleanup now uses SafeFsExecutor. Targeted units: 84/84 in the four-file pass and 22/22 in the selector/policy pass; tsc --noEmit passes. Full verification is pending on the shared runner.

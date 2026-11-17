@@ -134,6 +134,7 @@ export default defineConfig({
         {
           label: 'Guides',
           items: [
+            { label: 'Instar in Your Organization', slug: 'guides/organizations' },
             { label: 'Agent Communication', slug: 'guides/agent-communication' },
             { label: 'Security Model', slug: 'guides/security' },
             { label: 'Contributor Checks', slug: 'guides/contributor-checks' },

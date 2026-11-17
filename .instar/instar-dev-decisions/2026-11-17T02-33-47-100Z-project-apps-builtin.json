@@ -1,0 +1,46 @@
+{
+  "ts": "2026-11-17T02:33:47.100Z",
+  "slug": "project-apps-builtin",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1185,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ProjectAppStore.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/types.ts",
+      "src/data/awareness/project-apps.md",
+      "src/data/feature-ladders.json",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/ProjectAppsRuntime.ts",
+      "src/server/projectAppSummaries.ts",
+      "src/server/projectAppsLog.ts",
+      "src/server/projectAppsRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workProjectsRoutes.ts"
+    ],
+    "addedLines": 1176,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "user/owner-driven acts: every new Telegram/Slack message is caused by one deliberate act (owner Attach/Detach/Try again/Update link/Post again, or the agent's explicit Try again); the automatic follow-up steps (pin a posted message by id, unpin, edit in place) send nothing new, run once per state change, and stop after any failed step until a fresh act (nextPinAction); unconsumed acts expire after 10 minutes; no timer drives anything"
+  },
+  "verdict": "blocked"
+}

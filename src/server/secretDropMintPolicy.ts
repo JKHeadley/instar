@@ -102,7 +102,7 @@ const RESERVED_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Is this stored field name safe to show as a lookup key in a shell command? */
 export function isShellSafeFieldName(name: string): boolean {
-  return name.length > 0 && !SHELL_UNSAFE.test(name) && !CONTROL.test(name) && !/[&<>]/.test(name);
+  return name.length > 0 && !name.startsWith('-') && !SHELL_UNSAFE.test(name) && !CONTROL.test(name) && !/[&<>]/.test(name);
 }
 
 /** Validate declared field names. `strict` applies the shell-safe rule (every non-master mint). */

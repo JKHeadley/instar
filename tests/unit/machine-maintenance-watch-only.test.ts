@@ -16,12 +16,54 @@ const code = (f: string) => fs.readFileSync(path.join(dir, f), 'utf-8').replace(
 // the single execFile that runs them; HostMaintenanceStore.claimRung calls the spawn it is handed,
 // inside the lock. Every other file stays watch-only, so a second way to act fails here.
 const ACTUATOR = 'RestartActuator.ts';
+// Enrolment (CMT-1200): the owner's tap installs the reboot rule through five pinned sudo calls,
+// and readiness reads six pinned, read-only commands. Each is matched exactly below and removed
+// before the general checks, so anything else in those files is held to the watch-only rules.
+const ENROL = 'EnrolmentController.ts';
+const READINESS = 'enrolmentReadiness.ts';
+const ENROL_RUNS = [
+  "this.deps.run('sudo', ['-n', 'true'])",
+  "this.deps.run('sudo', ['-n', 'sh', '-c', script, '_', rule, SUDOERS_RULE_PATH])",
+  "this.deps.run('sudo', ['-k'])",
+  "this.deps.run('sudo', ['-n', 'cat', SUDOERS_RULE_PATH])",
+  "this.deps.run('sudo', ['-n', '-l'])",
+];
+const READINESS_READS = [
+  "input.read('/usr/bin/fdesetup', ['status'])",
+  "input.read('/usr/bin/defaults', ['read', '/Library/Preferences/com.apple.loginwindow', 'autoLoginUser'])",
+  "input.read('/usr/bin/plutil', ['-extract', 'RunAtLoad', 'raw', '-o', '-', plist])",
+  "input.read('/usr/bin/findmnt', ['-no', 'SOURCE', '/'])",
+  "input.read('/usr/bin/lsblk', ['-s', '-no', 'TYPE', src])",
+  "input.read('/usr/bin/loginctl', ['show-user', input.user, '-p', 'Linger'])",
+  "input.read('/usr/bin/systemctl', ['--user', 'is-enabled', `instar-${agent}.service`])",
+];
+// The one root step: validated by visudo, root-owned 0440, renamed into place. Pinned byte for byte.
+const ENROL_SCRIPT = "const script = 'set -e; d=$(mktemp -d /etc/sudoers.d/.instar-reboot.XXXXXX); printf \"%s\" \"$1\" > \"$d/r\"; visudo -cf \"$d/r\" >/dev/null; chown root:0 \"$d/r\"; chmod 0440 \"$d/r\"; mv \"$d/r\" \"$2\"; rmdir \"$d\"';";
+const strip = (source: string, pinned: string[]) => pinned.reduce((acc, p) => acc.split(p).join(''), source);
 const watchOnly = files.filter((f) => f !== ACTUATOR);
-const withoutClaimSpawn = (f: string) => (f === 'HostMaintenanceStore.ts' ? code(f).replace('input.spawn();', '') : code(f));
+const withoutClaimSpawn = (f: string) => {
+  if (f === 'HostMaintenanceStore.ts') return code(f).replace('input.spawn();', '');
+  if (f === ENROL) return strip(code(f), [...ENROL_RUNS, ENROL_SCRIPT]).replace("'/etc/sudoers.d/instar-reboot'", '');
+  if (f === READINESS) return strip(code(f), READINESS_READS);
+  return code(f);
+};
+
+describe('enrolment acts only through its pinned calls', () => {
+  it('the rule install runs exactly the five sudo calls, and readiness only its read-only commands', () => {
+    const enrol = code(ENROL);
+    expect([...enrol.matchAll(/this\.deps\.run\([^)]*\)/g)].map((m) => m[0])).toEqual(ENROL_RUNS);
+    expect(enrol).toContain(ENROL_SCRIPT);
+    expect(enrol).toContain("SUDOERS_RULE_PATH = '/etc/sudoers.d/instar-reboot'");
+    const readiness = code(READINESS);
+    expect([...readiness.matchAll(/input\.read\([^)]*\)/g)].map((m) => m[0])).toEqual(READINESS_READS);
+    // Its one execFile is the bounded read runner; it is handed only to readReadiness.
+    expect(readiness.match(/execFile\(/g)).toHaveLength(1);
+  });
+});
 
 describe('machine maintenance acts only through the restart actuator', () => {
   it('holds no restart command outside the actuator', () => {
-    for (const f of watchOnly) expect(code(f), f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|osascript|launchctl)\b/);
+    for (const f of watchOnly) expect(withoutClaimSpawn(f), f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|osascript|launchctl)\b/);
   });
 
   it('holds no way to signal or end a process outside the actuator and the one claimRung spawn', () => {
@@ -37,7 +79,7 @@ describe('machine maintenance acts only through the restart actuator', () => {
       for (const m of source.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) {
         const spec = m[1];
         // readings.ts runs the command table and resolves the shipped canary bundle beside its own module.
-        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && (spec === 'node:child_process' || spec === 'node:url')) || (f === ACTUATOR && spec === 'node:child_process')) continue;
+        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && (spec === 'node:child_process' || spec === 'node:url')) || ((f === ACTUATOR || f === READINESS) && spec === 'node:child_process')) continue;
         throw new Error(`${f} imports ${spec}`);
       }
       expect(source, f).not.toMatch(/\bfetch\(|\brequire\(/);
@@ -46,7 +88,7 @@ describe('machine maintenance acts only through the restart actuator', () => {
 
   it('runs commands only through the one named table, with exact arguments', () => {
     const users = files.filter((f) => /execFile\b/.test(code(f)));
-    expect(users.sort()).toEqual([ACTUATOR, 'readings.ts']);
+    expect(users.sort()).toEqual([ACTUATOR, READINESS, 'readings.ts']);
     expect(code('readings.ts').match(/execFile\(/g)).toHaveLength(1);
     // The actuator's command lines are pinned byte for byte in machine-restart-actuator.test.ts.
     expect(code(ACTUATOR).match(/execFile\(/g)).toHaveLength(1);
@@ -102,6 +144,13 @@ describe('machine maintenance acts only through the restart actuator', () => {
     expect(rest).not.toMatch(/process\.kill|\.kill\(/);
     expect(rest).not.toMatch(/\.(kill\w*|stop\w*|cancel\w*|enqueue|pause|refresh\w*|restart\w*|sendInput|injectMessage|shutdown)\(/);
     expect(rest).not.toMatch(/setAdmissionGate|canRunJob/);
+    // The one restart path in the block: Restart now, started only by the owner's tap. One
+    // actuator, dispatched only through the controller's dispatch dep, and the only session
+    // notice is Restart now's own, labelled for the security log.
+    expect(block.match(/new RestartActuator\(/g)).toHaveLength(1);
+    expect(block.match(/\.dispatch\(/g)).toHaveLength(1);
+    expect(block).toContain('dispatch: async (input) => { holdsBeforeDispatch = await readHolds(); return actuator.dispatch(input); },');
+    expect([...block.matchAll(/injectInternalMessage\(([^)]*)\)/g)].map((m) => m[1])).toEqual(["s.tmuxSession, text, 'machine-restart-now'"]);
   });
 
   it('is consulted by no admission path', () => {

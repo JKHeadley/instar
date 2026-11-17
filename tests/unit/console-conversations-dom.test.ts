@@ -161,6 +161,162 @@ describe('native console Conversations', () => {
     expect(progressLine(f.main)).not.toBe('');
   });
 
+  // Round 2 (topic 144007, 2026-11-16): the 15-minute unlock ran out part-way through Accept all, the page was
+  // cleared to Unlock, and after the PIN the list reloaded ("Loading suggestions…") with the button reset.
+  const submitPin = async () => {
+    const input = dom.window.document.querySelector('.pin-input') as HTMLInputElement;
+    input.value = '123456';
+    input.closest('form')!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 8; i++) await flush();
+  };
+  it('Accept all asks for the PIN in a sheet when the unlock would run out, and the page and its run carry on', async () => {
+    const server = acceptServer([1, 2, 3]);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    const all = allButton(f.main);
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start + 11 * 60000); // 4 minutes of the unlock left
+    all.click();
+    for (let i = 0; i < 8; i++) await flush();
+    // A sheet asks for the PIN; the list, the button and the cards are all still on the page.
+    expect(dom.window.document.querySelector('.pin-input')).not.toBeNull();
+    expect(allButton(f.main)).toBe(all);
+    expect(f.main.textContent).toContain('Project 3');
+    expect(server.accepted).toEqual([]);
+    await submitPin();
+    for (let i = 0; i < 60; i++) await flush();
+    expect(server.accepted).toEqual([1, 2, 3]);
+    expect(progressLine(f.main)).toBe('All 3 projects accepted.');
+    // Finished cards keep their words and link but no Accept/Reject buttons (round 3: one still read "Accept").
+    const left = [...f.main.querySelectorAll('.conversation-suggestion button')].map((b) => b.textContent);
+    expect(left.filter((t) => t === 'Accept' || t === 'Continue' || t === 'Reject')).toEqual([]);
+    expect(f.requests.filter((r) => r.url === '/conversation-graph/suggestions')).toHaveLength(1); // never reloaded
+    clock.mockRestore();
+  });
+
+  it('closing that PIN sheet leaves words and a button that works, never a reload', async () => {
+    const server = acceptServer([1, 2]);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    const all = allButton(f.main);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 12 * 60000);
+    all.click();
+    for (let i = 0; i < 8; i++) await flush();
+    const { closeSheet } = await import('../../dashboard/console/ui.js');
+    closeSheet();
+    for (let i = 0; i < 8; i++) await flush();
+    expect(progressLine(f.main)).toBe('Accept all did not start: it needs your PIN.');
+    expect(all.disabled).toBe(false);
+    expect(all.textContent).toBe('Continue accepting projects');
+    expect(server.accepted).toEqual([]);
+    clock.mockRestore();
+  });
+
+  it('a list with a project part-way accepted offers to continue, not to start again', async () => {
+    const server = acceptServer([1, 2], (url) => url.endsWith('/conversation-graph/suggestions')
+      ? { body: { state: 'ready', items: [{ ...project(1), accepting: true }, project(2)] } } : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    expect(allButton(f.main).textContent).toBe('Continue accepting projects');
+  });
+
+  it('a list that does not load says so and offers Try again, and a slow one says it is still loading', async () => {
+    let fail = true; let release!: () => void;
+    const server = acceptServer([1, 2], async (url) => {
+      if (!url.endsWith('/conversation-graph/suggestions')) return null;
+      if (fail) { fail = false; return { status: 500, body: {} }; }
+      await new Promise<void>((r) => { release = r; });
+      return null;
+    });
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    expect(f.main.textContent).toContain('Suggestions could not be loaded. Nothing is lost. Tap Try again.');
+    const again = [...f.main.querySelectorAll('button')].find((b) => b.textContent === 'Try again') as HTMLButtonElement;
+    expect(again).toBeTruthy();
+    vi.useFakeTimers();
+    try {
+      again.click();
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(f.main.textContent).toContain('Still loading suggestions. Your agent is busy; this can take up to 20 seconds.');
+      release();
+      await vi.advanceTimersByTimeAsync(10);
+    } finally { vi.useRealTimers(); }
+    for (let i = 0; i < 8; i++) await flush();
+    expect(allButton(f.main).textContent).toBe('Accept all 2 projects');
+  });
+
+  it('a graph that is not open yet (after a restart) says what is happening and tries again by itself', async () => {
+    // Accept-all round 3: after a restart the page said "Your agent did not answer in time. Try again." for
+    // half an hour, with nothing happening unless the owner kept tapping.
+    let pending = 2;
+    const server = acceptServer([1, 2], (url) => {
+      if (!url.endsWith('/conversation-graph/suggestions')) return null;
+      if (pending > 0) { pending -= 1; return { status: 503, body: { code: 'conversation-graph-pending' } }; }
+      return null;
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+      for (let i = 0; i < 8; i++) await flush();
+      expect(f.main.textContent).toContain('Your agent is still getting your conversations ready. This can take a few minutes after it restarts. Trying again by itself in 15 seconds.');
+      expect([...f.main.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(true);
+      await vi.advanceTimersByTimeAsync(15000);
+      for (let i = 0; i < 8; i++) await flush();
+      expect(f.main.textContent).toContain('Trying again by itself in 15 seconds.');
+      await vi.advanceTimersByTimeAsync(15000);
+      for (let i = 0; i < 8; i++) await flush();
+      expect(allButton(f.main).textContent).toBe('Accept all 2 projects');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('tapping Try again while an automatic retry is pending loads once, not twice', async () => {
+    let reads = 0;
+    const server = acceptServer([1, 2], (url) => {
+      if (!url.endsWith('/conversation-graph/suggestions')) return null;
+      reads += 1;
+      return reads === 1 ? { status: 503, body: { code: 'conversation-graph-pending' } } : null;
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+      for (let i = 0; i < 8; i++) await flush();
+      const again = [...f.main.querySelectorAll('button')].find((b) => b.textContent === 'Try again') as HTMLButtonElement;
+      again.click();
+      for (let i = 0; i < 8; i++) await flush();
+      expect(allButton(f.main).textContent).toBe('Accept all 2 projects');
+      await vi.advanceTimersByTimeAsync(20000);
+      for (let i = 0; i < 8; i++) await flush();
+      expect(reads).toBe(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('suggestionsUnavailable: joining is not retried; a long wait stops retrying and says so', async () => {
+    const { suggestionsUnavailable } = await import('../../dashboard/console/conversation-suggestions.js');
+    expect(suggestionsUnavailable({ status: 503, data: { awaitingJoin: true } }, 0)).toEqual({ text: 'Suggestions are not available until your machines finish joining.', retryInMs: 0 });
+    expect(suggestionsUnavailable({ status: 0 }, 0).retryInMs).toBe(15000);
+    expect(suggestionsUnavailable({ status: 503, data: {} }, 4 * 60000 + 59000).retryInMs).toBe(15000);
+    const late = suggestionsUnavailable({ status: 0 }, 5 * 60000);
+    expect(late.retryInMs).toBe(0);
+    expect(late.text).toBe('Your agent is still getting your conversations ready after 5 minutes of trying. Nothing is lost. Tap Try again, or come back in a few minutes.');
+    expect(suggestionsUnavailable({ status: 500, data: {} }, 0)).toEqual({ text: 'Suggestions could not be loaded. Nothing is lost. Tap Try again.', retryInMs: 0 });
+  });
+
+  it('a project the agent does not answer for is a wait with plain words, never "no longer available"', async () => {
+    // Real two-machine run (accept-all round 2): with the M5 frozen, the Studio's requests timed out and the
+    // cards said "This suggestion is no longer available" — untrue, nothing was refused.
+    const silentFor = (url: string) => {
+      if (/sg-0123456789abcdef012[23]\/start$/.test(url)) return true;
+      if (!url.includes('/conversation-graph/nodes/')) return false;
+      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
+      return ref.kind === 'conversation' && (ref.topicId === 2 || ref.topicId === 3);
+    };
+    const server = acceptServer([1, 2, 3], (url) => silentFor(url) ? { status: 408, body: {} } : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    allButton(f.main).click();
+    for (let i = 0; i < 60; i++) await flush();
+    expect(server.accepted).toEqual([1]);
+    expect(progressLine(f.main)).toBe('Stopped at 3 of 3: your agent is not answering right now. 1 of 3 accepted. Tap Continue to try again; nothing is lost.');
+    expect(f.main.textContent).not.toContain('no longer available');
+    expect(f.main.textContent).toContain('The agent did not answer. Tap Continue to try again; nothing is lost.');
+    expect(allButton(f.main).disabled).toBe(false);
+  });
+
   it('the ordinary Conversations list keeps the console page refresh', async () => {
     const ctx = { selfRefreshing: vi.fn() };
     await boot('#/work/conversations', (url) => ({ body: url.includes('/pending') ? { items: [] } : { ...page([row(1)]), capabilities: {} } }), ctx);

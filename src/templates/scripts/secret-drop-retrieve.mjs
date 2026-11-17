@@ -18,7 +18,7 @@
  *     → suitable for piping: `... password | gh secret set X`
  *
  *   node .instar/scripts/secret-drop-retrieve.mjs <token> --names
- *     (a field whose name is unsafe to type in a command is shown, and selected, as #N)
+ *     (unsafe or option-like names are selected as '#N'; keep the quotes in a shell)
  *     → prints field names + lengths to stderr; nothing to stdout
  *     → use to discover what fields the submission contains
  *
@@ -167,7 +167,12 @@ if (browserMode && !browserHost) {
 // 1-based position `#N` (the server gives the same references as body.fieldRefs).
 const fieldNames = Object.keys(values);
 const SHELL_UNSAFE = /[\s`$'"\\;|&<>()*?!#~\[\]{}^\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
-const refOf = (name, i) => (name.length > 0 && !SHELL_UNSAFE.test(name) ? name : `#${i + 1}`);
+const refOf = (name, i) => (name.length > 0 && !name.startsWith('-') && !SHELL_UNSAFE.test(name) ? name : `#${i + 1}`);
+// A bare # starts a shell comment. Listings offer a pasteable, quoted selector.
+const commandRefOf = (name, i) => {
+  const ref = refOf(name, i);
+  return ref.startsWith('#') ? `'${ref}'` : ref;
+};
 const origin = body?.origin === 'unverified' ? ' [unverified origin: made without the agent key]' : '';
 
 if (mode === '--names') {
@@ -177,7 +182,7 @@ if (mode === '--names') {
   fieldNames.forEach((k, i) => {
     const v = values[k];
     const len = typeof v === 'string' ? v.length : -1;
-    process.stderr.write(browserHost ? `  ${refOf(k, i)}\n` : `  ${refOf(k, i)} (length ${len})\n`);
+    process.stderr.write(browserHost ? `  ${commandRefOf(k, i)}\n` : `  ${commandRefOf(k, i)} (length ${len})\n`);
   });
   process.exit(0);
 }
@@ -192,26 +197,38 @@ const fieldName = posMatch ? fieldNames[Number(posMatch[1]) - 1] : mode;
 const v = fieldName === undefined ? undefined : values[fieldName];
 if (typeof v !== 'string') {
   process.stderr.write(`retrieve: field '${mode}' not found (available: `
-    + fieldNames.map(refOf).join(', ') + ')\n');
+    + fieldNames.map(commandRefOf).join(', ') + ')\n');
   process.exit(1);
 }
 
-// Helper: consume the submission (idempotent best-effort). Used only after a
-// verified-successful handoff in --run mode.
+// Helper: consume the submission. Returns true only when the server confirmed it. The server
+// removes the stored copy first and answers 503 (nothing consumed) if it cannot, so a
+// failure is retried once and then said out loud: the value stays until its cleanup.
 async function consumeSubmission() {
-  try {
-    await fetch(`http://localhost:${resolvedPort}/secrets/retrieve/${token}?consume=true`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authToken}`,
-        ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
-      },
-    });
-  } catch (e) {
-    // Non-fatal — the sliding/absolute-cap cleanup will reclaim it regardless. Said out loud, because
-    // --consume used to be one atomic call and a caller may rely on the value being gone.
-    process.stderr.write(`consume failed (${e.message}); the submission stays until its cleanup\n`);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(`http://localhost:${resolvedPort}/secrets/retrieve/${token}?consume=true`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
+        },
+      });
+      if (res.ok) return true;
+      if (attempt === 2) {
+        process.stderr.write(`consume refused (HTTP ${res.status}); the secret was NOT marked consumed and stays until its cleanup\n`);
+        return false;
+      }
+    } catch (e) {
+      // @silent-fallback-ok — retried once, then reported on stderr and returned as not consumed
+      if (attempt === 2) {
+        process.stderr.write(`consume failed (${e.message}); the secret was NOT marked consumed and stays until its cleanup\n`);
+        return false;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1500));
   }
+  return false;
 }
 
 if (browserMode) {
@@ -228,8 +245,10 @@ if (browserMode) {
   }
   const code = child.status ?? 1;
   if (code === 0) {
-    await consumeSubmission();
-    process.stderr.write('browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n');
+    const consumed = await consumeSubmission();
+    process.stderr.write(consumed
+      ? 'browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n'
+      : 'browser: typed. If the sign-in fails, ask for a new Secret Drop.\n');
   } else {
     process.stderr.write(`browser: exited ${code} — secret NOT consumed (read the page before retrying).\n`);
   }
@@ -253,8 +272,8 @@ if (runMode) {
   }
   const code = child.status ?? 1;
   if (code === 0) {
-    await consumeSubmission();
-    process.stderr.write('run: command succeeded — secret consumed.\n');
+    const consumed = await consumeSubmission();
+    process.stderr.write(consumed ? 'run: command succeeded — secret consumed.\n' : 'run: command succeeded.\n');
   } else {
     process.stderr.write(`run: command exited ${code} — secret NOT consumed (safe to retry).\n`);
   }
@@ -265,4 +284,4 @@ if (runMode) {
 // `gh secret set` or `bw unlock --raw`. process.stdout.write (not console.log)
 // — no extra newline, no trailing whitespace to confuse downstream consumers.
 process.stdout.write(v);
-if (consume) await consumeSubmission();
+if (consume && !(await consumeSubmission())) process.exitCode = 1;

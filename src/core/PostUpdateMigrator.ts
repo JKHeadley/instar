@@ -6398,103 +6398,12 @@ export class PostUpdateMigrator {
   // Idempotent: re-runs are no-ops via the _instar_migrations marker AND a
   // content-sniff (skip if parity-sentinel service entry already exists).
   private migrateParitySentinelTrust(result: MigrationResult): void {
-    const configPath = path.join(this.config.stateDir, 'config.json');
-    const trustProfilePath = path.join(this.config.stateDir, 'state', 'trust-profile.json');
-    if (!fs.existsSync(configPath)) {
-      result.skipped.push('parity-sentinel-trust: config.json not found');
-      return;
-    }
-
-    let config: Record<string, unknown>;
-    try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    } catch (err) {
-      result.errors.push(`parity-sentinel-trust: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-
-    const migrations = (config._instar_migrations ?? []) as string[];
-    const marker = 'parity-sentinel-trust-seed';
-    if (migrations.some(m => m.startsWith(marker))) {
-      result.skipped.push('parity-sentinel-trust: already migrated');
-      return;
-    }
-
-    // Load existing trust profile (or create skeleton). Content-sniff: skip
-    // if a parity-sentinel service entry already exists (operator-set).
-    let profile: {
-      services: Record<string, {
-        service: string;
-        operations: Record<string, { level: string; source: string; changedAt: string }>;
-        history: { successCount: number; incidentCount: number; streakSinceIncident: number };
-      }>;
-      global: { maturity: number; lastEvent: string; lastEventAt: string; floor: string };
-    };
-    try {
-      if (fs.existsSync(trustProfilePath)) {
-        profile = JSON.parse(fs.readFileSync(trustProfilePath, 'utf-8'));
-      } else {
-        profile = {
-          services: {},
-          global: {
-            maturity: 0,
-            lastEvent: 'Profile created by parity-sentinel-trust-seed migration',
-            lastEventAt: new Date().toISOString(),
-            floor: 'collaborative',
-          },
-        };
-      }
-    } catch (err) {
-      result.errors.push(`parity-sentinel-trust: trust-profile.json read failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-
-    if (profile.services['parity-sentinel']) {
-      // Operator already configured it — never overwrite. Mark migration done.
-      migrations.push(`${marker}-${new Date().toISOString()}-existing-entry-preserved`);
-      config._instar_migrations = migrations;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      result.skipped.push('parity-sentinel-trust: existing entry preserved');
-      return;
-    }
-
-    const now = new Date().toISOString();
-    profile.services['parity-sentinel'] = {
-      service: 'parity-sentinel',
-      operations: {
-        modify: { level: 'log', source: 'default', changedAt: now },
-      },
-      history: { successCount: 0, incidentCount: 0, streakSinceIncident: 0 },
-    };
-
-    // Ensure state dir exists before writing the profile.
-    const stateDir = path.dirname(trustProfilePath);
-    if (!fs.existsSync(stateDir)) {
-      fs.mkdirSync(stateDir, { recursive: true });
-    }
-    fs.writeFileSync(trustProfilePath, JSON.stringify(profile, null, 2));
-
-    migrations.push(`${marker}-${now}`);
-    config._instar_migrations = migrations;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    result.upgraded.push('parity-sentinel-trust: seeded trust profile entry at level=log');
+    // Retired (trust-journey decision 9): `parity-sentinel` is an Instar system service on the
+    // code-constant allowlist (src/data/effect-kinds.ts SYSTEM_SERVICES), never a person kind, so no
+    // trust level is seeded for it any more. An entry seeded earlier is left in place and unused.
+    result.skipped.push('parity-sentinel-trust: retired (system service allowlist)');
   }
 
-  // ── Provider portability v1.0.0 — Phase 7 migration entry ──────────
-  //
-  // Idempotent migrator that runs on every `instar update`. Confirms the
-  // agent's config is portable-ready and records the migration in
-  // `_instar_migrations` so re-runs are no-ops. Auto-detects Codex CLI
-  // presence and surfaces it in the result for the user-visible upgrade
-  // path. No config mutation beyond the migration marker — the runtime
-  // frameworkBinaryPaths population in Config.ts is the load-bearing
-  // piece, and it runs at every boot.
-  //
-  // What this migrator INTENTIONALLY does NOT do:
-  //  - Flip an existing Claude-only agent to a different framework
-  //    default (operator choice via /route or topicFrameworks config).
-  //  - Force-install Codex CLI (user's package-manager choice).
-  //  - Write any credentials (Spec 12 Rule 1 — subscription-only path).
   private migrateProviderPortability(result: MigrationResult): void {
     const configPath = path.join(this.config.stateDir, 'config.json');
     if (!fs.existsSync(configPath)) {
@@ -21545,9 +21454,13 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
   SAFETY_LEVEL=$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('safety', {}).get('level', 1))" 2>/dev/null || echo "1")
 fi
 
-# ALWAYS blocked (catastrophic, irreversible)
-for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+# ALWAYS blocked (catastrophic, irreversible). The database-schema destruction rules match the
+# setup template (src/templates/hooks/dangerous-command-guard.sh); a parity test keeps them in step.
+# -e: a pattern that starts with "-" is a pattern, not a grep option.
+# The setup template's plain-SQL ask-first rules (DROP/TRUNCATE/DELETE FROM) are deliberately NOT here:
+# updated agents have long run without them and routine sqlite maintenance would start blocking (SEC-043).
+for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:" "--accept-data-loss" "prisma migrate reset"; do
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     echo "BLOCKED: Catastrophic command detected: $pattern" >&2
     echo "Always blocked regardless of safety level. User must execute directly." >&2
     exit 2
@@ -21556,7 +21469,7 @@ done
 
 # Deployment/push commands — check coherence gate first
 for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wrangler deploy" "fly deploy" "railway up"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     if [ -f "$INSTAR_DIR/config.json" ]; then
       PORT=$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('port', 4040))" 2>/dev/null || echo "4040")
       TOPIC_ID="\${INSTAR_TELEGRAM_TOPIC:-}"
@@ -21599,8 +21512,8 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
-  if echo "$INPUT" | grep -qiE "$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)" "prisma db push" "prisma migrate deploy"; do
+  if echo "$INPUT" | grep -qiE -e "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
@@ -24805,8 +24718,39 @@ process.stdin.on('end', async () => {
       mutability = 'read';
     }
 
-    // Read operations are always safe — fast-path
-    if (mutability === 'read') {
+    // Trust journey (spec 6a): once this machine has imported its legacy grants, a service with any
+    // governed kind keeps the name-based read fast path only for reads the server's table lists, and
+    // a governed call fails closed when the server cannot be reached. The fallback file lists the
+    // kinds that keep today's behaviour on this machine.
+    let journeyImported = false;
+    let fallback = null;
+    try {
+      const nodeFs = await import('node:fs');
+      const base = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/';
+      const cfg = JSON.parse(nodeFs.readFileSync(base + 'config.json', 'utf-8'));
+      journeyImported = !!(cfg.trustJourney && cfg.trustJourney.legacyImportedAt);
+    } catch { /* @silent-fallback-ok: no config, so the fallback file read just below decides */ }
+    try {
+      const nodeFs = await import('node:fs');
+      const base = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/';
+      // The fallback file existing also means the import ran: losing the config marker (a whole-file
+      // config rewrite) must never quietly restore fail-open.
+      fallback = JSON.parse(nodeFs.readFileSync(base + 'state/trust-legacy-kinds.json', 'utf-8'));
+      journeyImported = true;
+    } catch { fallback = null; }
+    const legacyKinds = fallback && Array.isArray(fallback.legacyKinds) ? fallback.legacyKinds : [];
+    const readNames = fallback && Array.isArray(fallback.readToolNames) ? fallback.readToolNames : [];
+    const serviceAllLegacy = ['write', 'modify', 'delete'].every(op => legacyKinds.includes(service + '.' + op));
+    // Admitted locally when the server cannot answer: only reads it may know about, and unchanged legacy kinds.
+    // Typing into or filling a browser form can be signing in, which never inherits a legacy grant
+    // (decision 15): when the server cannot judge it, it does not pass.
+    const maySignIn = service === 'playwright' && (action === 'browser_type' || action === 'browser_fill_form');
+    const passesWhenUnreachable = () => !journeyImported
+      || (!maySignIn && mutability === 'read' && (serviceAllLegacy || readNames.includes(toolName)))
+      || (!maySignIn && legacyKinds.includes(service + '.' + mutability));
+
+    // Read operations fast-path (today's behaviour, and services whose kinds are all legacy).
+    if (mutability === 'read' && (!journeyImported || serviceAllLegacy || readNames.includes(toolName))) {
       process.exit(0);
     }
 
@@ -24852,6 +24796,10 @@ process.stdin.on('end', async () => {
     // SPEC I13): a session revived to follow through on a dead promise is held
     // status-only until it revalidates. INSTAR_SESSION_NAME is injected into
     // every spawned session via tmux -e; absent for non-session callers (no gate).
+    // tool_name and tool_input let the server derive the kind itself (spec 6a); the fields above stay
+    // for an older server, which ignores the new ones.
+    let toolInputForServer = toolInput;
+    try { if (JSON.stringify(toolInput).length > 200000) toolInputForServer = { _truncated: true }; } catch { toolInputForServer = { _unserializable: true }; }
     const postData = JSON.stringify({
       service,
       mutability,
@@ -24859,10 +24807,13 @@ process.stdin.on('end', async () => {
       description,
       itemCount,
       sessionName: process.env.INSTAR_SESSION_NAME || '',
+      tool_name: toolName,
+      tool_input: toolInputForServer,
     });
 
+    // Above the server's admission forward timeout; the hook entry's own timeout is set higher still.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
     try {
       const res = await fetch('http://127.0.0.1:' + port + '/operations/evaluate', {
@@ -24884,6 +24835,13 @@ process.stdin.on('end', async () => {
       if (actionDecision === 'block') {
         process.stderr.write('BLOCKED: External operation gate denied this action.\\n');
         process.stderr.write('Reason: ' + (decision.reason || 'Operation not permitted') + '\\n');
+        process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
+        process.exit(2);
+      }
+
+      if (actionDecision === 'ask') {
+        // A governed action waits for the person: the server has sent (or tried to send) the card.
+        process.stderr.write('WAITING FOR APPROVAL: ' + (decision.reason || 'This action needs approval from the person.') + '\\n');
         process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
         process.exit(2);
       }
@@ -24959,7 +24917,12 @@ process.stdin.on('end', async () => {
       process.exit(0);
     } catch {
       clearTimeout(timeout);
-      process.exit(0); // Server unreachable or timeout — fail open
+      // Server unreachable, timed out, or unreadable answer. Today's behaviour (fail open) holds for
+      // unchanged legacy kinds and known reads; a governed action is refused (spec 6a).
+      if (passesWhenUnreachable()) process.exit(0);
+      process.stderr.write('BLOCKED: the agent server could not be reached to admit this action, and it needs a grant or approval from the person. Try again once the server answers; continue with other work meanwhile.\\n');
+      process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
+      process.exit(2);
     }
   } catch {
     process.exit(0); // Parse error — fail open
