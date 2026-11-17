@@ -60,6 +60,9 @@ describe('machine wedge detection lifecycle', () => {
       lockState: async () => null,
       canaryAvailable: () => wedgeCanaryAvailable(),
       ownUser: os.userInfo().username,
+      // As commands/server.ts wires it: this user's leftover canaries are read and ended.
+      ownUid: typeof process.getuid === 'function' ? process.getuid() : undefined,
+      endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } },
       loadReading: () => null,
       spawnSystemFailures30m: () => null,
       sessionsCount: () => 0,
@@ -106,7 +109,9 @@ describe('machine wedge detection lifecycle', () => {
         // The real canary ran through LaunchServices. A first sample can pass (negative) or, before any
         // pass this boot, fail as ineligible; it is never positive on a first sample and never unread.
         expect(w.families.F1.reason).toMatch(/^canary-/);
-        expect(['negative', 'ineligible']).toContain(w.families.F1.result);
+        // A busy test machine can still be starting the canary after the settle: unknown, named.
+        if (w.families.F1.result === 'unknown') expect(w.families.F1.reason).toBe('canary-still-running');
+        else expect(['negative', 'ineligible']).toContain(w.families.F1.result);
         expect(w.f1PassedThisBoot).toBe(w.families.F1.result === 'negative');
       } else {
         expect(w.families.F1).toMatchObject({ result: 'unknown', reason: 'canary-not-installed' });

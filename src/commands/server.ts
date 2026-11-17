@@ -27379,6 +27379,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // F1 on macOS: the shipped no-UI canary, opened through LaunchServices (`open -g -j`).
           canaryAvailable: () => wedgeCanaryAvailable(),
           ownUser: os.userInfo().username,
+          // A leftover canary (this user's, listed by its exact executable tail) is stuck: end it,
+          // so a wedged GUI path does not also pile up stopped processes (fb-92ed1f8b-3a2).
+          ownUid: typeof process.getuid === 'function' ? process.getuid() : undefined,
+          endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } }, // @silent-fallback-ok — already gone, or not ours: read again next sample
           loadReading: () => {
             const r = _machineLoadSampler?.read() ?? null;
             return r ? { verdict: r.verdict, cpuIdlePct: r.cpuIdlePct, eventLoopLagP99Ms: r.eventLoopLagP99Ms, sampleAgeMs: r.sampleAgeMs } : null;

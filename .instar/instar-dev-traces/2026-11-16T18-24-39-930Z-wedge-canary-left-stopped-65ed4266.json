@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "wedge-canary-left-stopped",
+  "sessionId": "00592fa8-2a09-4506-8c5e-e34a3414a34c",
+  "timestamp": "2026-11-16T18:24:39.930Z",
+  "artifactPath": "upgrades/side-effects/wedge-canary-left-stopped.md",
+  "artifactSha256": "f438015d122bfad21b750c7189da77637f178b279f181e6923db88ffe6fec80b",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "tests/e2e/machine-wedge-lifecycle.test.ts",
+    "tests/integration/machine-wedge-route.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test wiring for the canary fix (same change)",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as machine-wedge-canary-reap, an Eternal Sentinel: one stuck canary ended per sample, each pid once, at the sampler's 2-minute floor."
+    }
+  }
+}
