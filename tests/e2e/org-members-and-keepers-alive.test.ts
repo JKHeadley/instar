@@ -47,6 +47,8 @@ describe('org-members-and-keepers is alive', () => {
     const record = signRecord({ v: 1, orgId: 'org_AAAAAAAAAAAAAAAAAAAA', orgName: 'Org', version: 1, policySha256: sha256Hex(policy), maxIndependence: 'balanced', publishedAt: 'x', publishedBy: 'A', keepers: [], updateOrigin: 'https://org.example.dev', signerPublicKey: k.publicKey }, k.privateKeyPem);
     fs.mkdirSync(path.join(stateDir, 'org', 'published'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'org', 'published', 'current.json'), JSON.stringify({ bundle: { record, policy }, shareUpdates: true }));
+    // The publishing machine holds the organization key (a machine without it answers 409 org-key-elsewhere).
+    fs.writeFileSync(path.join(stateDir, 'org', 'published', 'org_AAAAAAAAAAAAAAAAAAAA.signing-key'), k.privateKeyPem);
     expect((await request(app).post('/org/checkin').send({})).status).toBe(400);
     expect((await request(app).post('/org/pack/propose').send({})).status).toBe(400);
     expect((await request(app).get('/mobile/org/members').set('Authorization', 'Bearer e2e-token')).status).toBe(403);

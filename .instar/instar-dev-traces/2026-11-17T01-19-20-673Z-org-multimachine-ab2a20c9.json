@@ -23,5 +23,10 @@
   "tier": 2,
   "tierReasoning": "Forwards organization acts between an agent's machines and copies member keys between them.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one forward per incoming request (a non-key machine answers 409 and is skipped, never re-forwards); one fan-out per member-side change"
+  }
 }
