@@ -33,6 +33,10 @@ import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { ownLoopbackHost } from './documentLinkRoutes.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { NO_NOTE, decisionPath } from '../documents/originCheck.js';
+import { peersUpdating, decisionAnswer } from './documentRoutes.js';
+import { decisionMessageRequestId } from '../documents/decisions.js';
+import { REQUEST_ID_PATTERN } from '../core/MobileChatRequests.js';
 
 /** The CSP every document page response carries (§3.6). */
 export const DOC_PAGE_CSP = [
@@ -41,6 +45,8 @@ export const DOC_PAGE_CSP = [
 ].join('; ');
 
 const CODE_TTL_MS = 60_000;
+/** A decline note's text, at most (the owner's own comment limit). */
+const WRITE_NOTE_BYTES = 256 * 1024;
 const COOKIE_TTL_MS = 30 * 60_000;
 const COOKIE = 'instar_doc';
 
@@ -64,6 +70,20 @@ export interface DocPageDeps extends DocumentRouteDeps {
   ownerPresence?: (req: Request, deviceId: string) => { presenceKey: string; host: string } | null;
   agentName?: () => string;
   ownerName?: () => string | null;
+  /**
+   * Document decisions (document-decisions §3.2): the approval root this owner device decides on —
+   * 'telegram', 'pin' (only on an agent with no Telegram owner), or null when it may not decide
+   * (not a phone, a Mac, an agent-introduced or local-install root, a PIN root beside a Telegram owner).
+   */
+  decisionRoot?: (deviceId: string) => 'telegram' | 'pin' | null;
+  /** Did this device's chat request finish delivered on this machine (§3.4)? */
+  chatDelivered?: (deviceId: string, requestId: string, sendPath: string, text: string) => boolean;
+  /** Push "Echo asks you to decide" to the owner's phones (§3.7). */
+  notifyDecisionPhone?: (docId: string, dedupeKey: string, verdict?: 'approve' | 'decline') => Promise<'sent' | 'deduped' | 'unavailable' | 'no-phone'>;
+  /** One fixed system line to a live session for this conversation on this machine (§3.5). */
+  notifySession?: (primary: string, line: string) => boolean;
+  /** The machine's own caller, for machine rows (decision-delivered). */
+  machineCaller?: () => Caller;
 }
 
 interface Session { deviceId: string; docId: string; expiresAt: number }
@@ -115,7 +135,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const access = deps.teamVector();
     const so: SignedOrigin = signedOrigin ?? { keyHash: '', deviceId, domain: 'instar-docpage-v1', payloadB64: '', host: '', timeMs: '', sig: '' };
     if (d.person.role === 'owner') {
-      const approvedVia = d.approvedVia ?? (d.client === 'browser' ? 'dashboard-pin' : 'phone');
+      // A phone with no recorded approval predates the field and was approved in Telegram (MobileDeviceKeys).
+      const approvedVia = d.approvedVia ?? (d.client === 'browser' ? 'dashboard-pin' : 'telegram-dm');
       const principal: Principal = { kind: 'owner-device', client: d.client, approvedVia };
       return { principal, actor: { type: 'owner-phone', deviceId, signedOrigin: so }, access, reader: { kind: 'owner' } };
     }
@@ -272,6 +293,146 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     try { svc.setPrimary(id, caller, b.primary as never, b.docDeps); featureEvidence.record('documents', { kind: 'fired', reason: 'move' }); res.json({ ok: true, primary: b.primary }); } catch (err) { fail(res, err); }
   });
 
+  // ── Decisions (owner phone, Face ID; document-decisions §3.2, §3.4) ───────────────────
+  // The app reads the ask itself, asks for a challenge bound to the exact answer (the note travels
+  // with the challenge and is held until the answer), confirms with biometric Face ID, and signs.
+  const decideChallenges = new ActionChallengeStore();
+  const heldNotes = new Map<string, { blob: Blob; expiresAt: number }>();
+  const HEX64 = /^[0-9a-f]{64}$/;
+  const decideLine = (docId: string, b: DecideBody): string =>
+    `docs-decision ${docId} ${b.askId} ${b.onVersion} ${b.verdict} ${b.questionHash} ${b.noteHash} ${b.supersedes ?? '-'}`;
+  type DecideBody = { askId: string; onVersion: string; verdict: 'approve' | 'decline'; questionHash: string; noteHash: string; supersedes: string | null };
+  const decideBody = (req: Request): DecideBody | null => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (!isUuid(b.askId) || !isUuid(b.onVersion) || (b.verdict !== 'approve' && b.verdict !== 'decline')) return null;
+    if (typeof b.questionHash !== 'string' || !HEX64.test(b.questionHash) || typeof b.noteHash !== 'string' || !HEX64.test(b.noteHash)) return null;
+    if (!(b.supersedes === null || b.supersedes === undefined || (typeof b.supersedes === 'string' && /^[^#\s]{1,200}#\d{1,15}$/.test(b.supersedes)))) return null;
+    return { askId: b.askId as string, onVersion: b.onVersion as string, verdict: b.verdict, questionHash: b.questionHash, noteHash: b.noteHash, supersedes: (b.supersedes as string | null | undefined) ?? null };
+  };
+  const decideGate = (req: Request, res: Response): { deviceId: string; presenceKey: string; host: string; caller: Caller; proof: 'telegram' | 'pin' } | null => {
+    const g = moveGate(req, res);
+    if (!g) return null;
+    const proof = deps.decisionRoot?.(g.deviceId) ?? null;
+    if (!proof) { res.status(403).json({ error: 'cannot-decide-here', detail: 'Decisions are made on your phone paired through Telegram, with Face ID.' }); return null; }
+    if (g.caller.principal.kind !== 'owner-device') { res.status(403).json({ error: 'owner-phone-required' }); return null; }
+    const blocked = deps.decisionWritesBlockedBy?.() ?? null;
+    if (blocked) { res.status(409).json(peersUpdating(blocked)); return null; }
+    return { ...g, proof };
+  };
+
+  router.get('/mobile/docs/:id/decision', (req, res) => {
+    if (off(res)) return;
+    res.setHeader('Cache-Control', 'no-store');
+    const id = req.params.id;
+    const svc = deps.service();
+    const r = resolveCaller(req, res, deps);
+    if (!svc || !r || !isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
+    try {
+      const c = withReader(r, id);
+      const d = svc.read(id, c);
+      const deviceId = (req as Request & { instarPrincipal?: { deviceId?: string } }).instarPrincipal?.deviceId ?? '';
+      const latest = latestVersion(d.state);
+      const f = svc.facts(id);
+      const primary = f?.primary ?? null;
+      const sendPath = primary?.startsWith('telegram:') ? `/mobile/chat/${primary.slice(9)}` : primary?.startsWith('app:') ? `/mobile/chat/app/${primary.slice(4)}` : null;
+      res.json({
+        id, title: d.title, version: latest ? { id: latest.versionId, label: latest.label } : null, sendPath,
+        canDecide: svc.can(id, c, 'decide') && !!deps.decisionRoot?.(deviceId),
+        ...decisionAnswer(svc.decision(id, c)),
+      });
+    } catch (err) { fail(res, err); }
+  });
+
+  router.post('/mobile/docs/:id/decision/challenge', (req, res) => {
+    const g = decideGate(req, res);
+    if (!g) return;
+    const id = req.params.id;
+    const b = decideBody(req);
+    const svc = deps.service();
+    if (!svc || !isUuid(id) || !b) { res.status(400).json({ error: 'bad-request' }); return; }
+    // The note's text rides with the challenge; the signed answer names only its hash.
+    const note = (req.body as { note?: unknown }).note;
+    if (b.noteHash !== NO_NOTE) {
+      if (!note || typeof (note as Blob).text !== 'string') { res.status(400).json({ error: 'note-required' }); return; }
+      if (checkBlob(note).ok !== true) { res.status(400).json({ error: 'note-too-long', detail: 'This note is too long for one piece. Shorten it.' }); return; }
+      const nb = note as Blob;
+      if (Buffer.byteLength(nb.text, 'utf8') > WRITE_NOTE_BYTES) { res.status(400).json({ error: 'note-too-long', detail: 'This note is too long. Shorten it.' }); return; }
+    }
+    try { svc.checkDecision(id, g.caller, b); } catch (err) { fail(res, err); return; }
+    const c = decideChallenges.issue(g.deviceId, g.host, decideLine(id, b));
+    if (b.noteHash !== NO_NOTE) {
+      const now = Date.now();
+      for (const [k, v] of heldNotes) if (v.expiresAt <= now) heldNotes.delete(k);
+      heldNotes.set(`${g.deviceId}|${b.noteHash}`, { blob: note as Blob, expiresAt: c.expiresAt + 5_000 });
+    }
+    res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString() });
+  });
+
+  router.post('/mobile/docs/:id/decision', (req, res) => {
+    const g = decideGate(req, res);
+    if (!g) return;
+    const id = req.params.id;
+    const b = decideBody(req);
+    const svc = deps.service();
+    if (!svc || !isUuid(id) || !b) { res.status(400).json({ error: 'bad-request' }); return; }
+    const body = req.body as { challenge?: unknown; presenceSig?: unknown };
+    const line = decideLine(id, b);
+    if (!decideChallenges.consume(body.challenge, g.deviceId, g.host, line)) { res.status(401).json({ error: 'challenge-invalid' }); return; }
+    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, String(body.challenge), line), body.presenceSig)) { res.status(401).json({ error: 'presence-invalid' }); return; }
+    // The row carries the phone's whole device-signed request, so every machine re-verifies it (§3.2).
+    const raw = (req as Request & { rawBody?: Buffer }).rawBody;
+    const deviceKey = deps.device(g.deviceId)?.publicKey ?? null;
+    const payloadB64 = raw ? raw.toString('base64url') : '';
+    if (!raw || !deviceKey || payloadB64.length > 2048) { res.status(413).json({ error: 'decision-request-too-large' }); return; }
+    const signedOrigin: SignedOrigin = { keyHash: deviceKeyHashOf(deviceKey), deviceId: g.deviceId, domain: 'instar-device-v1', payloadB64, host: g.host, timeMs: String(req.headers['x-instar-device-time'] ?? ''), sig: String(req.headers['x-instar-device-sig'] ?? ''), requestId: String(body.challenge) };
+    const caller: Caller = { ...g.caller, actor: { type: 'owner-phone', deviceId: g.deviceId, signedOrigin } };
+    const held = b.noteHash !== NO_NOTE ? heldNotes.get(`${g.deviceId}|${b.noteHash}`) : undefined;
+    if (b.noteHash !== NO_NOTE && !held) { res.status(409).json({ error: 'note-expired', detail: 'Your note timed out. Try again.' }); return; }
+    try {
+      const out = svc.decide(id, caller, { ...b, proof: g.proof, note: held?.blob });
+      if (held) heldNotes.delete(`${g.deviceId}|${b.noteHash}`);
+      featureEvidence.record('documents', { kind: 'fired', reason: `decision ${b.verdict}` });
+      const f = svc.facts(id);
+      const d = svc.decision(id, { ...g.caller, reader: { kind: 'owner' } });
+      const label = d.current?.versionLabel ?? null;
+      const primary = f?.primary ?? null;
+      const sendPath = primary?.startsWith('telegram:') ? `/mobile/chat/${primary.slice(9)}` : primary?.startsWith('app:') ? `/mobile/chat/app/${primary.slice(4)}` : null;
+      res.status(201).json({ rowKey: out.rowKey, sendPath, ...decisionAnswer(d) });
+    } catch (err) { fail(res, err); }
+  });
+
+  router.post('/mobile/docs/:id/decision/delivered', (req, res) => {
+    if (off(res)) return;
+    res.setHeader('Cache-Control', 'no-store');
+    const id = req.params.id;
+    const svc = deps.service();
+    const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal?.deviceId;
+    const r = resolveCaller(req, res, deps);
+    const b = (req.body ?? {}) as { rowKey?: unknown; requestId?: unknown; text?: unknown };
+    if (!svc || !r || !deviceId || !isUuid(id) || r.principal.kind !== 'owner-device') { res.status(404).json({ error: 'unknown-document' }); return; }
+    if (typeof b.rowKey !== 'string' || typeof b.requestId !== 'string' || typeof b.text !== 'string' || !REQUEST_ID_PATTERN.test(b.requestId)) { res.status(400).json({ error: 'bad-request' }); return; }
+    // The receipt belongs to this decision: its derived request id, or (a later Send again) a message
+    // that links this document, for the decision that is current now.
+    {
+      const cur = svc.decision(id, { ...r, reader: { kind: 'owner' } }).current;
+      if (!cur || cur.rowKey !== b.rowKey) { res.status(409).json({ error: 'not-the-current-decision' }); return; }
+      const derived = decisionMessageRequestId(cur.rowKey, cur.at);
+      if (b.requestId !== derived && !b.text.includes(`/docs/${id}`)) { res.status(409).json({ error: 'not-this-decision', detail: 'That message is not about this decision.' }); return; }
+    }
+    // The message went to the conversation the document was in when the app sent it: its current or a
+    // former primary (a move between the decision and the send must not leave it marked unsent).
+    const st = svc.read(id, { ...r, reader: { kind: 'owner' } }).state;
+    const pathOf = (ref: string): string | null => ref.startsWith('telegram:') ? `/mobile/chat/${ref.slice(9)}` : ref.startsWith('app:') ? `/mobile/chat/app/${ref.slice(4)}` : null;
+    const allowed = new Set([st.primary, ...st.everSharedPrimaries].filter((x): x is string => !!x).map(pathOf).filter((x): x is string => !!x));
+    const sendPath = typeof (b as { sendPath?: unknown }).sendPath === 'string' ? (b as { sendPath: string }).sendPath : null;
+    if (!sendPath || !allowed.has(sendPath) || !deps.chatDelivered?.(deviceId, b.requestId, sendPath, b.text)) { res.status(409).json({ error: 'not-delivered-here', detail: 'This machine has no delivered message with that id.' }); return; }
+    const blocked = deps.decisionWritesBlockedBy?.() ?? null;
+    if (blocked) { res.status(409).json(peersUpdating(blocked)); return; }
+    const machine = deps.machineCaller?.();
+    if (!machine) { res.status(503).json({ error: 'documents-unavailable' }); return; }
+    try { svc.recordDelivered(id, b.rowKey, b.requestId, machine); res.json({ ok: true }); } catch (err) { fail(res, err); }
+  });
+
   // The page exchanges a code (app) or a device-signed `open` (browser) for the read cookie.
   router.post('/docs/:id/session', (req, res) => {
     if (off(res)) return;
@@ -357,7 +518,9 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
         versions: d.state.versionOrder.map((v) => d.state.versions.get(v)!).filter((v) => !v.pruned).map((v) => ({ id: v.versionId, label: v.label })),
         concurrentEdits: d.heads.length > 1,
         blocks, comments,
-        me: { key: me, canComment: svc.can(id, c, 'comment'), canSend: !removed && svc.can(id, c, 'send') },
+        me: { key: me, canComment: svc.can(id, c, 'comment'), canSend: !removed && svc.can(id, c, 'send'), isOwner: c.principal.kind === 'owner-device', canAskPhone: c.principal.kind === 'owner-device' && c.principal.approvedVia !== 'dashboard-pin' },
+        // Document decisions (document-decisions §3.3): what the panel shows. Decisions are made on the phone.
+        decision: (() => { const dd = svc.decision(id, c); return dd.ask || dd.current ? { ...decisionAnswer(dd), ownerName: deps.ownerName?.() ?? null, writesBlockedBy: deps.decisionWritesBlockedBy?.() ?? null } : null; })(),
       });
     } catch (err) { fail(res, err); }
   });
@@ -403,6 +566,15 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
           const f = svc.facts(id);
           if (f && deps.conversationRemoved?.(f.primary)) { res.status(409).json({ error: 'conversation-removed', detail: 'This document\'s conversation was removed' }); return; }
           res.status(201).json(svc.recordSend(id, c, { batchId: p.batchId, messageRequestId: p.messageRequestId, primaryRow: p.primaryRow, commentKeysHash: p.commentKeysHash })); return;
+        }
+        case 'decide-on-phone': {
+          // Ask the owner's phone (§3.3). The owner's own computer only (not a PIN-only browser); one push per press.
+          const ok = c.principal.kind === 'owner-device' && c.principal.approvedVia !== 'dashboard-pin';
+          const d = ok ? svc.decision(id, c) : null;
+          if (!d || !d.ask || d.ask.askId !== p.askId) { res.status(404).json({ error: 'unknown-document' }); return; }
+          const ask = deps.notifyDecisionPhone?.(id, `doc-decide-press:${id}:${v.signedOrigin.requestId ?? ''}`, p.verdict as 'approve' | 'decline') ?? Promise.resolve('unavailable' as const);
+          void ask.then((outcome) => res.json({ outcome }), () => res.json({ outcome: 'unavailable' }));
+          return;
         }
         default: res.status(404).json({ error: 'unknown-document' });
       }

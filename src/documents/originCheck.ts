@@ -24,6 +24,7 @@ import { docpageSignatureValid, type DocpageOp } from './docpageAuth.js';
 import { canonicalString, isStrictLowSDer, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
 import type { DocRow, Vector } from './rows.js';
 import type { TeamAccessState } from '../core/TeamAccessLog.js';
+import { DECIDE_APPROVALS } from './access.js';
 
 export type OriginVerdict = 'ok' | 'denied' | 'pending';
 
@@ -32,7 +33,7 @@ export type OriginVerdict = 'ok' | 'denied' | 'pending';
  * binding, or this machine's own device record); `unknown` while neither has arrived.
  */
 export type DeviceKeyLookup = (deviceId: string, keyHash: string, at?: { access: Vector; personKey: string | null }) =>
-  | { status: 'ok'; publicKey: string; role: 'owner' | 'person' | 'unknown'; personKey: string | null; client: 'phone' | 'browser'; mayWrite: boolean }
+  | { status: 'ok'; publicKey: string; role: 'owner' | 'person' | 'unknown'; personKey: string | null; client: 'phone' | 'browser'; mayWrite: boolean; approvedVia?: string | null }
   | { status: 'unknown' }
   | { status: 'revoked' };
 
@@ -113,7 +114,10 @@ export function checkRowOrigin(row: DocRow, devices: DeviceKeyLookup, usedReques
   if (a.type === 'owner-phone' && d.role !== 'owner') return 'denied';
   if (a.type === 'person' && (d.role !== 'person' || d.personKey !== a.personKey || d.client !== a.client)) return 'denied';
 
-  if (so.domain === 'instar-device-v1') return checkMove(row, so, d.publicKey, d.client);
+  if (so.domain === 'instar-device-v1') {
+    if (row.eventKind === 'decision') return checkDecision(row, so, d.publicKey, d.client, d.approvedVia ?? null);
+    return checkMove(row, so, d.publicKey, d.client);
+  }
   if (so.domain !== 'instar-docpage-v1') return 'denied';
   const op = OP_OF[row.eventKind];
   if (!op) return 'denied';
@@ -146,5 +150,38 @@ function checkMove(row: DocRow, so: { deviceId: string; host: string; timeMs: st
   try { sig = Buffer.from(so.sig, 'base64url'); } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
   if (!isStrictLowSDer(sig)) return 'denied';
   const message = canonicalString(so.deviceId, so.host, 'POST', `/mobile/docs/${row.docId}/primary`, so.timeMs, raw);
+  try { return crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig) ? 'ok' : 'denied'; } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
+}
+
+/** The path a decision's device-signed request is posted to (docs/specs/document-decisions.md §3.2). */
+export const decisionPath = (docId: string): string => `/mobile/docs/${docId}/decision`;
+/** The note hash meaning "no note" in a signed decision body. */
+export const NO_NOTE = '0'.repeat(64);
+
+/**
+ * A decision: the owner phone's device-signed `POST /mobile/docs/<id>/decision`, naming exactly this
+ * answer, its Face ID challenge and presence signature. The presence signature itself is checked by
+ * the machine that took the request (presence keys are not replicated, as for the move).
+ */
+function checkDecision(row: DocRow, so: { deviceId: string; host: string; timeMs: string; sig: string; payloadB64: string; requestId?: string }, publicKey: string, client: 'phone' | 'browser', approvedVia: string | null): OriginVerdict {
+  if (row.eventKind !== 'decision' || row.actor.type !== 'owner-phone' || client !== 'phone') return 'denied';
+  if (!approvedVia || !DECIDE_APPROVALS.has(approvedVia)) return 'denied';
+  // The row's proof label must match the device's own approval (a PIN device never reads as Telegram).
+  if (approvedVia === 'dashboard-pin' && row.proof !== 'pin') return 'denied';
+  if (approvedVia === 'telegram-dm' && row.proof !== 'telegram') return 'denied';
+  const raw = Buffer.from(so.payloadB64, 'base64url');
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(raw.toString('utf8')) as Record<string, unknown>; } catch { return 'denied'; } // @silent-fallback-ok — an unreadable body is unsigned
+  if (!body || typeof body !== 'object') return 'denied';
+  const noteOk = row.noteHash === undefined ? body.noteHash === NO_NOTE : body.noteHash === row.noteHash;
+  const supOk = row.supersedes === undefined ? body.supersedes === null || body.supersedes === undefined : body.supersedes === row.supersedes;
+  if (body.askId !== row.askId || body.onVersion !== row.onVersion || body.verdict !== row.verdict || body.questionHash !== row.questionHash || !noteOk || !supOk) return 'denied';
+  if (typeof body.presenceSig !== 'string' || typeof body.challenge !== 'string' || body.challenge !== so.requestId) return 'denied';
+  const key = parseDevicePublicKey(publicKey);
+  if (!key) return 'denied';
+  let sig: Buffer;
+  try { sig = Buffer.from(so.sig, 'base64url'); } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
+  if (!isStrictLowSDer(sig)) return 'denied';
+  const message = canonicalString(so.deviceId, so.host, 'POST', decisionPath(row.docId), so.timeMs, raw);
   try { return crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig) ? 'ok' : 'denied'; } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
 }

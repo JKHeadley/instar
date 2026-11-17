@@ -15,6 +15,7 @@ import { chunkText } from './chunker.js';
 import { diffWords, type DiffOp } from './diff.js';
 import { foldDocument, latestVersion, nextLabel, versionHeads, type CommentState, type DocState, type Reader, type VersionState } from './fold.js';
 import { PROJECTION_VERSION, projectText } from './projection.js';
+import { decisionView } from './decisions.js';
 import { WRITE_DEFAULTS, commentKeyOf, isConversationRef, isNodeRef, isUuid, rowKeyOf, type Actor, type ConversationRef, type LinkKind, type NodeRef, type Vector } from './rows.js';
 import type { DocumentStore } from './store.js';
 
@@ -328,14 +329,14 @@ export class DocumentService {
   }
 
   /** Documents whose primary is this conversation, filtered to what the caller may see (§3.7). */
-  listForConversation(ref: ConversationRef, caller: Caller): Array<{ id: string; title: string | null; version: number | null; openComments: number }> {
+  listForConversation(ref: ConversationRef, caller: Caller): Array<{ id: string; title: string | null; version: number | null; openComments: number; decision: string | null }> {
     const out = [];
     for (const id of this.store.docIds()) {
       const f = this.facts(id);
       if (!f || f.primary !== ref) continue;
       if (!mayDoDocument(caller.principal, f, 'read-metadata', this.team).ok) continue;
       const m = this.metadata(id, caller);
-      out.push({ id, title: m.title, version: m.version, openComments: m.openComments });
+      out.push({ id, title: m.title, version: m.version, openComments: m.openComments, decision: m.title !== null ? this.decisionWords(id) : null });
     }
     return out.sort((a, b) => b.openComments - a.openComments);
   }
@@ -364,6 +365,127 @@ export class DocumentService {
     const quote = makeQuote(text, input.start, input.end);
     const anchorHash = this.putText(docId, JSON.stringify(quote));
     this.store.append(docId, { eventKind: 'comment-reanchor', commentKey, onVersion: input.onVersion, anchor: { anchorHash, start: input.start, end: input.end, blockHint: '' } }, this.header(caller, s.primaryRowKey));
+  }
+
+  // ── Decisions (docs/specs/document-decisions.md) ────────────────────────────────────
+
+  /** The decision state this caller may see, with the texts resolved. */
+  decision(docId: string, caller: Caller): {
+    ask: { askId: string; question: string | null; questionHash: string } | null;
+    current: { rowKey: string; askId: string; verdict: 'approve' | 'decline'; versionId: string; versionLabel: number | null; latest: boolean; note: string | null; at: string; supersedes: string | null; delivered: string | null; proof: 'telegram' | 'pin' } | null;
+    crossed: boolean; needsOwner: boolean; concurrentVersionLabel: number | null; latestVersionId: string | null; heads: number;
+  } {
+    const r = this.read(docId, caller);
+    const v = decisionView(r.state);
+    const latest = latestVersion(r.state);
+    const c = v.current;
+    return {
+      ask: v.ask ? { askId: v.ask.askId, question: this.textOf(docId, v.ask.questionHash), questionHash: v.ask.questionHash } : null,
+      current: c ? {
+        rowKey: c.rowKey, askId: c.askId, verdict: c.verdict, versionId: c.onVersion, versionLabel: r.state.versions.get(c.onVersion)?.label ?? null,
+        latest: v.currentOnLatest, note: c.noteHash ? this.textOf(docId, c.noteHash) : null, at: c.receivedAt, supersedes: c.supersedes ?? null, delivered: v.delivered, proof: c.proof,
+      } : null,
+      crossed: v.crossed, needsOwner: v.needsOwner, concurrentVersionLabel: v.concurrentVersion?.label ?? null,
+      latestVersionId: latest?.versionId ?? null, heads: versionHeads(r.state).length,
+    };
+  }
+
+  /** Every document where the owner is being asked (the Needs-you source, §3.7). Owner view. */
+  waitingOnOwner(opts: { sharedTitles: boolean } = { sharedTitles: true }): Array<{ id: string; title: string | null; question: string | null; versionLabel: number | null; primary: ConversationRef }> {
+    const out = [];
+    for (const id of this.store.docIds()) {
+      const f = this.facts(id);
+      if (!f || f.tombstoned || f.purged) continue;
+      const s = this.ownerState(id);
+      if (s.asks.size === 0) continue;
+      const v = decisionView(s);
+      if (!v.ask || !v.needsOwner) continue;
+      // Owner-reach sessions never read a shared document's text (viewer §3.3): metadata only for those.
+      const textOk = opts.sharedTitles || !f.everShared;
+      out.push({ id, title: textOk ? this.textOf(id, s.titleHash) : null, question: textOk ? this.textOf(id, v.ask.questionHash) : null, versionLabel: latestVersion(s)?.label ?? null, primary: f.primary });
+    }
+    return out.slice(0, 200);
+  }
+
+  /** One short decision-state word for the documents block (§3.5), or null. */
+  decisionWords(id: string): string | null {
+    const s = this.ownerState(id);
+    if (s.asks.size === 0) return null;
+    const v = decisionView(s);
+    if (!v.ask) return null;
+    if (v.needsOwner) return "waiting for the owner's decision";
+    const c = v.current;
+    if (!c) return null;
+    const label = s.versions.get(c.onVersion)?.label ?? '?';
+    return c.verdict === 'approve' ? `approved by the owner (version ${label})` : `declined by the owner (version ${label}); revise and the owner decides again`;
+  }
+
+  /** Open an ask (the agent asking the owner, §3.1). Closes the open one first. Needs revise standing. */
+  setAsk(docId: string, caller: Caller, question: string, limits: { questionChars: number } = { questionChars: WRITE_DEFAULTS.questionChars }): { askId: string } {
+    if (caller.actor.type !== 'agent') throw new DocError(403, 'agent-only', 'Only the agent asks for a decision.');
+    this.requireAccess(docId, caller, 'revise');
+    const q = String(question ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim();
+    if (!q) throw new DocError(400, 'question-required');
+    if ([...q].length > limits.questionChars) throw new DocError(400, 'question-too-long', `A question is at most ${limits.questionChars} characters. Put the detail in the document.`);
+    const s = this.ownerState(docId);
+    const header = this.header(caller, s.primaryRowKey);
+    for (const a of s.asks.values()) if (!a.closed) this.store.append(docId, { eventKind: 'decision-ask-close', askId: a.askId }, header);
+    const askId = crypto.randomUUID();
+    this.store.append(docId, { eventKind: 'decision-ask', askId, questionHash: this.putText(docId, q) }, header);
+    return { askId };
+  }
+
+  /** Withdraw the open ask. Idempotent. */
+  closeAsk(docId: string, caller: Caller): { closed: string | null } {
+    if (caller.actor.type !== 'agent') throw new DocError(403, 'agent-only');
+    this.requireAccess(docId, caller, 'revise');
+    const s = this.ownerState(docId);
+    const open = [...s.asks.values()].filter((a) => !a.closed);
+    for (const a of open) this.store.append(docId, { eventKind: 'decision-ask-close', askId: a.askId }, this.header(caller, s.primaryRowKey));
+    return { closed: open.length ? open[open.length - 1].askId : null };
+  }
+
+  /**
+   * Check a decision against the document as this machine holds it (§3.2). Throws the refusal;
+   * returns what the row will say. The route verifies the device, Face ID and challenge first.
+   */
+  checkDecision(docId: string, caller: Caller, input: { askId: string; onVersion: string; verdict: string; questionHash: string; noteHash: string; supersedes: string | null }): void {
+    this.requireAccess(docId, caller, 'decide');
+    const s = this.ownerState(docId);
+    if (s.tombstoned) throw new DocError(404, 'unknown-document');
+    const v = decisionView(s);
+    if (!v.ask || v.ask.askId !== input.askId) throw new DocError(409, 'ask-changed', 'Echo changed or withdrew the question. Look again.');
+    if (v.ask.questionHash !== input.questionHash) throw new DocError(409, 'ask-changed');
+    if (input.verdict !== 'approve' && input.verdict !== 'decline') throw new DocError(400, 'bad-verdict');
+    if (versionHeads(s).length > 1) throw new DocError(409, 'concurrent-edits', 'Two edits are being merged. Decide once they are.');
+    const latest = latestVersion(s);
+    if (!latest || latest.versionId !== input.onVersion) throw new DocError(409, 'version-changed', latest ? `Version ${latest.label} arrived while you were reading. Read it, then decide.` : 'This version is not here yet.');
+    if ((v.current?.rowKey ?? null) !== (input.supersedes ?? null)) throw new DocError(409, 'answer-changed', 'The answer changed on another device. Look again.');
+    if (input.noteHash !== '0'.repeat(64) && !/^[0-9a-f]{64}$/.test(input.noteHash)) throw new DocError(400, 'bad-note');
+  }
+
+  /** Write the owner phone's decision row (§3.2). `caller.actor` carries the device-signed request. */
+  decide(docId: string, caller: Caller, input: { askId: string; onVersion: string; verdict: 'approve' | 'decline'; questionHash: string; noteHash: string; supersedes: string | null; proof: 'telegram' | 'pin'; note?: Blob }): { rowKey: string } {
+    this.checkDecision(docId, caller, input);
+    const hasNote = input.noteHash !== '0'.repeat(64);
+    if (hasNote) {
+      const b = input.note;
+      if (!b || blobHash(b.salt, b.text) !== input.noteHash || !this.store.putBlob(docId, b)) throw new DocError(400, 'note-mismatch');
+    }
+    const s = this.ownerState(docId);
+    const row = this.store.append(docId, {
+      eventKind: 'decision', askId: input.askId, onVersion: input.onVersion, verdict: input.verdict, questionHash: input.questionHash,
+      ...(hasNote ? { noteHash: input.noteHash } : {}), ...(input.supersedes ? { supersedes: input.supersedes } : {}), proof: input.proof,
+    }, this.header(caller, s.primaryRowKey));
+    return { rowKey: rowKeyOf(row) };
+  }
+
+  /** Record that the owner's message about a decision was delivered (machine row, §3.4). Idempotent. */
+  recordDelivered(docId: string, decisionRow: string, messageRequestId: string, machine: Caller): void {
+    const s = this.ownerState(docId);
+    if (!s.decisions.some((d) => d.rowKey === decisionRow)) throw new DocError(404, 'unknown-decision');
+    if (s.delivered.has(decisionRow)) return;
+    this.store.append(docId, { eventKind: 'decision-delivered', decisionRow, messageRequestId }, this.header(machine, s.primaryRowKey));
   }
 
   /** The text of a version for the page's render tree (only what the caller may read). */

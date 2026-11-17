@@ -88,6 +88,8 @@ export class DocumentStore {
     incarnation?: string;
     /** Re-checks the device signature behind a person or owner row (originCheck.ts). Production always sets it. */
     origin?: (row: DocRow, usedRequestIds: ReadonlySet<string>) => 'ok' | 'denied' | 'pending';
+    /** Told of each row once it is readable here (written here, synced in, or verified late). Never throws into the store. */
+    onApplied?: (row: DocRow) => void;
   }) {
     this.dir = path.join(stateDir, 'documents');
     this.rowsDir = path.join(this.dir, 'rows');
@@ -338,6 +340,7 @@ export class DocumentStore {
   }
 
   private afterApply(row: DocRow): void {
+    if (this.opts.onApplied) { try { this.opts.onApplied(row); } catch { /* @silent-fallback-ok — a listener's failure never refuses a row */ } }
     if (row.eventKind === 'purge') {
       this.purged.add(row.docId);
       SafeFsExecutor.atomicWriteJsonSync(this.purgedFile, [...this.purged], { operation: 'documents.purged', mode: 0o600 });

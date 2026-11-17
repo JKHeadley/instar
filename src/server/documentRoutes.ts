@@ -14,6 +14,7 @@ import type { ResolvedPerson } from '../core/MobilePeople.js';
 import type { Principal } from '../documents/access.js';
 import type { Reader, ReaderGrant } from '../documents/fold.js';
 import { DocError, type Caller, type DocumentService } from '../documents/service.js';
+import { decisionMessageRequestId } from '../documents/decisions.js';
 import { isDocumentsEnabled } from '../documents/gate.js';
 import { isConversationRef, isNodeRef, isUuid, LINK_KINDS, type Actor, type ConversationRef, type LinkKind, type NodeRef, type Vector } from '../documents/rows.js';
 import type { DocumentStore } from '../documents/store.js';
@@ -62,6 +63,13 @@ export interface DocumentRouteDeps {
   viewSource?: (viewId: string) => { title: string; markdown: string; pinProtected: boolean } | null;
   /** The old-link guarantee's verdict on this machine (§3.9b), shown in GET /docs/health. */
   oldLinkVerdict?: () => string;
+  /**
+   * May this machine write decision rows yet (document-decisions §6)? Null when every recently heard
+   * peer reads them; otherwise the name of a machine that needs the update first. Absent: ready.
+   */
+  decisionWritesBlockedBy?: () => string | null;
+  /** An ask opened: tell the owner's phones (document-decisions §3.7). Best effort. */
+  notifyDecisionAsk?: (docId: string, askId: string, versionId?: string) => void;
 }
 
 /** The conversation a session's place key belongs to, when it is one conversation (§3.3). */
@@ -103,7 +111,7 @@ export function resolveCaller(req: Request, res: Response, deps: DocumentRouteDe
     const signedOrigin = { keyHash: '', deviceId, domain: 'instar-device-v1' as const, payloadB64: '', host: '', timeMs: '', sig: '' };
     if (person.role === 'owner') {
       // A browser whose approval can't be read is treated as PIN-approved: fail closed (§3.6).
-      const approvedVia = deps.deviceApprovedVia(deviceId) ?? (client === 'browser' ? 'dashboard-pin' : 'phone');
+      const approvedVia = deps.deviceApprovedVia(deviceId) ?? (client === 'browser' ? 'dashboard-pin' : 'telegram-dm');
       const principal: Principal = { kind: 'owner-device', client, approvedVia };
       return { principal, actor: { type: 'owner-phone', deviceId, signedOrigin }, access, reader: { kind: 'owner' } };
     }
@@ -197,12 +205,17 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
         const src = r.svc.read(derived, forDoc(r.svc, r.caller, derived));
         primary = src.state.primary;
       }
+      const ask = askInput((req.body ?? {}) as Record<string, unknown>);
+      if (ask.error) { res.status(400).json({ error: ask.error }); return; }
+      if (ask.question !== undefined && ask.question !== null) { const blocked = deps.decisionWritesBlockedBy?.() ?? null; if (blocked) { res.status(409).json(peersUpdating(blocked)); return; } }
       const out = r.svc.create(r.caller, { title: body.title as string, markdown: body.markdown as string, primary: primary!, createdFrom: derived ? (`doc:${derived}` as NodeRef) : primary! });
+      let askId: string | null = null;
+      if (ask.question) { askId = r.svc.setAsk(out.id, forDoc(r.svc, r.caller, out.id), ask.question).askId; deps.notifyDecisionAsk?.(out.id, askId); }
       // The document exists once create returns: a failed link write still answers 201 with its id,
       // so a retry never makes an orphan copy (the agent adds the link with POST /docs/:id/links).
       let linkError: string | null = null;
       if (fromView) { try { r.svc.link(out.id, forDoc(r.svc, r.caller, out.id), { to: `view:${fromView}` as NodeRef, kind: 'supersedes' }, () => true); } catch (err) { linkError = err instanceof DocError ? err.code : 'link-failed'; } }
-      res.status(201).json({ id: out.id, versionId: out.versionId, url: `${origin ?? ''}/docs/${out.id}`, ...(fromView ? { supersedes: linkError ? null : `view:${fromView}`, ...(linkError ? { linkError } : {}) } : {}) });
+      res.status(201).json({ id: out.id, versionId: out.versionId, url: `${origin ?? ''}/docs/${out.id}`, ...(askId ? { askId } : {}), ...(fromView ? { supersedes: linkError ? null : `view:${fromView}`, ...(linkError ? { linkError } : {}) } : {}) });
     } catch (err) { fail(res, err); }
   });
 
@@ -275,7 +288,19 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
     if (!isUuid(id) || typeof body.markdown !== 'string') { res.status(400).json({ error: 'markdown-required' }); return; }
     try {
       const addresses = Array.isArray(body.addresses) ? body.addresses.filter((x): x is string => typeof x === 'string').slice(0, 2000) : [];
-      res.status(201).json(r.svc.revise(id, forDoc(r.svc, r.caller, id), { markdown: body.markdown, note: typeof body.note === 'string' ? body.note : undefined, addresses }));
+      const ask = askInput((req.body ?? {}) as Record<string, unknown>);
+      if (ask.error) { res.status(400).json({ error: ask.error }); return; }
+      if (ask.question !== undefined) { const blocked = deps.decisionWritesBlockedBy?.() ?? null; if (blocked) { res.status(409).json(peersUpdating(blocked)); return; } }
+      const c = forDoc(r.svc, r.caller, id);
+      const out = r.svc.revise(id, c, { markdown: body.markdown, note: typeof body.note === 'string' ? body.note : undefined, addresses });
+      let askId: string | null | undefined;
+      if (ask.question === null) { r.svc.closeAsk(id, c); askId = null; }
+      else if (ask.question) { askId = r.svc.setAsk(id, c, ask.question).askId; deps.notifyDecisionAsk?.(id, askId, out.versionId); }
+      else {
+        // A new version after a Decline asks the owner again (§3.1, §3.7).
+        try { const d = r.svc.decision(id, c); if (d.ask && d.needsOwner && d.current) deps.notifyDecisionAsk?.(id, d.ask.askId, out.versionId); } catch { /* @silent-fallback-ok — Needs-you still lists it */ }
+      }
+      res.status(201).json({ ...out, ...(askId !== undefined ? { askId } : {}) });
     } catch (err) { fail(res, err); }
   });
 
@@ -398,6 +423,43 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
     } catch (err) { fail(res, err); }
   });
 
+  // ── Decisions (document-decisions §3.1, §3.5, §3.7) ─────────────────────────────────
+
+  router.post('/docs/:id/decision-ask', (req, res) => {
+    const r = ready(req, res); if (!r) return;
+    const id = req.params.id;
+    const q = (req.body ?? {}).question;
+    if (!isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
+    if (typeof q !== 'string') { res.status(400).json({ error: 'question-required' }); return; }
+    const blocked = deps.decisionWritesBlockedBy?.() ?? null;
+    if (blocked) { res.status(409).json(peersUpdating(blocked)); return; }
+    try { const out = r.svc.setAsk(id, forDoc(r.svc, r.caller, id), q); deps.notifyDecisionAsk?.(id, out.askId); res.status(201).json(out); } catch (err) { fail(res, err); }
+  });
+
+  router.post('/docs/:id/decision-ask/close', (req, res) => {
+    const r = ready(req, res); if (!r) return;
+    const id = req.params.id;
+    if (!isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
+    const blocked = deps.decisionWritesBlockedBy?.() ?? null;
+    if (blocked) { res.status(409).json(peersUpdating(blocked)); return; }
+    try { res.json(r.svc.closeAsk(id, forDoc(r.svc, r.caller, id))); } catch (err) { fail(res, err); }
+  });
+
+  router.get('/docs/decisions/waiting', (req, res) => {
+    const r = ready(req, res); if (!r) return;
+    // The owner's Needs-you source: owner reach only (the bearer, an owner-reach session, the owner's phone).
+    const p = r.caller.principal;
+    if (!(p.kind === 'bearer' || p.kind === 'owner-device' || (p.kind === 'agent' && p.ownerReach))) { res.status(404).json({ error: 'unknown-document' }); return; }
+    try { res.json({ documents: r.svc.waitingOnOwner({ sharedTitles: p.kind !== 'agent' }) }); } catch (err) { fail(res, err); }
+  });
+
+  router.get('/docs/:id/decision', (req, res) => {
+    const r = ready(req, res); if (!r) return;
+    const id = req.params.id;
+    if (!isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
+    try { res.json(decisionAnswer(r.svc.decision(id, forDoc(r.svc, r.caller, id)))); } catch (err) { fail(res, err); }
+  });
+
   // ── Phone reads (§4.2) ───────────────────────────────────────────────────────────
 
   router.get('/mobile/docs', (req, res) => {
@@ -448,14 +510,14 @@ function linkTargetVisible(svc: DocumentService, caller: Caller, to: NodeRef, de
 }
 
 /** The session-start block: at most 10 lines and 1,600 characters, with an overflow line (§3.7). */
-export function renderSessionContext(conversation: string, docs: Array<{ id: string; title: string | null; version: number | null; openComments: number }>): { text: string; total: number } {
+export function renderSessionContext(conversation: string, docs: Array<{ id: string; title: string | null; version: number | null; openComments: number; decision?: string | null }>): { text: string; total: number } {
   if (docs.length === 0) return { text: '', total: 0 };
   const lines: string[] = ['Documents in this conversation:'];
   let used = lines[0].length;
   let shown = 0;
   for (const d of docs) {
     const title = d.title ? `"${d.title.length > 60 ? d.title.slice(0, 59) + '…' : d.title}"` : 'a document';
-    const line = `- ${title}, version ${d.version ?? '?'}, ${d.openComments} open comment${d.openComments === 1 ? '' : 's'}: /docs/${d.id}`;
+    const line = `- ${title}, version ${d.version ?? '?'}, ${d.openComments} open comment${d.openComments === 1 ? '' : 's'}${d.decision ? `, ${d.decision}` : ''}: /docs/${d.id}`;
     if (shown >= 10 || used + line.length + 1 > 1600) break;
     lines.push(line);
     used += line.length + 1;
@@ -463,4 +525,32 @@ export function renderSessionContext(conversation: string, docs: Array<{ id: str
   }
   if (shown < docs.length) lines.push(`…and ${docs.length - shown} more documents in this conversation: GET /docs?conversation=${conversation}`);
   return { text: lines.join('\n'), total: docs.length };
+}
+
+/** `decision: { question } | null` on create and revise (document-decisions §3.1). */
+function askInput(body: Record<string, unknown>): { question?: string | null; error?: string } {
+  if (!('decision' in body) || body.decision === undefined) return {};
+  if (body.decision === null) return { question: null };
+  const q = (body.decision as { question?: unknown } | null)?.question;
+  if (typeof q !== 'string' || !q.trim()) return { error: 'decision-question-required' };
+  return { question: q };
+}
+
+/** The refusal while another machine can't read decision rows yet (§6). */
+export function peersUpdating(machine: string): { error: string; detail: string; machine: string } {
+  return { error: 'peers-updating', machine, detail: `${machine} needs the update before documents can ask for or record decisions.` };
+}
+
+/** The agent's and the app's view of a decision (§3.5). */
+export function decisionAnswer(d: ReturnType<DocumentService['decision']>): Record<string, unknown> {
+  return {
+    ask: d.ask ? { askId: d.ask.askId, question: d.ask.question, questionHash: d.ask.questionHash } : null,
+    decision: d.current ? {
+      askId: d.current.askId, verdict: d.current.verdict, versionId: d.current.versionId, versionLabel: d.current.versionLabel,
+      latest: d.current.latest, at: d.current.at, note: d.current.note, delivered: d.current.delivered !== null, rowKey: d.current.rowKey,
+      proof: d.current.proof, by: 'owner', messageRequestId: decisionMessageRequestId(d.current.rowKey, d.current.at),
+    } : null,
+    crossed: d.crossed, waitingOnOwner: d.needsOwner, concurrentVersionLabel: d.concurrentVersionLabel,
+    latestVersionId: d.latestVersionId, concurrentEdits: d.heads > 1,
+  };
 }

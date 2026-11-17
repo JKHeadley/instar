@@ -2602,6 +2602,8 @@ export interface MachineCapacity {
    *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
   seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
+    /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
+    documentsDecisionRows?: boolean;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
