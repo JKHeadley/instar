@@ -62,8 +62,14 @@ process.stdin.on('end', async () => {
     const cwdReal = (() => { try { return nodeFs.realpathSync(input.cwd || dir); } catch { return input.cwd || dir; } })();
     const nearInstar = cmd.includes('.instar') || cwdReal === instarReal || cwdReal.startsWith(instarReal + '/');
     const bareName = /(^|[\\s'"\\/=;&|(<>])(config\\.json|org)([\\s'"\\/;&|)<>]|$)/.test(cmd);
-    // Only commands that can write: redirection, tee, file moves and deletes, in-place edits, interpreters given code.
-    const canWrite = /(>|\\b(tee|rm|mv|cp|ln|chmod|chown|truncate|dd|install|rsync|unlink|rmdir)\\b|sed\\s+(-[a-zA-Z]*i|--in-place)|\\b(python3?|node|perl|ruby|bash|sh|zsh|osascript)\\s+(-[a-zA-Z]*[ce]\\b|-))/.test(cmd);
+    // Fail closed: a command that touches these files is allowed only when every part of it is a known
+    // read-only tool and nothing is redirected into a file (EXO 3.0 re-audit round 7: no list of writers is complete).
+    const READ_ONLY = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'ls', 'stat', 'wc', 'diff', 'file', 'test', '[', 'echo', 'printf', 'cd', 'pwd', 'sort', 'uniq', 'cut', 'tr', 'column', 'od', 'xxd', 'shasum', 'md5', 'base64', 'true', 'nl']);
+    const cleaned = cmd.replace(/[0-9]?>&[0-9]/g, '').replace(/[0-9]?>\\s*\\/dev\\/null/g, '');
+    const redirectsToFile = cleaned.includes('>');
+    const segments = cleaned.split(/[;&|\\n]+/).map((x) => x.trim()).filter(Boolean);
+    const firstWord = (seg) => { const w = seg.split(/\\s+/).filter((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)); return (w[0] || '').replace(/^.*\\//, ''); };
+    const canWrite = redirectsToFile || cmd.includes(String.fromCharCode(96)) || cmd.includes('$(') || segments.some((seg) => !READ_ONLY.has(firstWord(seg)));
     const bashTouches = input.tool_name === 'Bash' && canWrite && (cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');

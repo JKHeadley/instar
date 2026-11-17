@@ -120,6 +120,15 @@ One note is recorded, not changed: when the routed framework's binary is missing
 
 No new way past block mode was found. The shell guard now refuses only commands that could write: redirection, `tee`, `rm`, `mv`, `cp`, `ln`, in-place `sed`, `chmod`, and interpreters given code. Plain reads such as `cat .instar/config.json` or `tail .instar/org/action-checks.jsonl` go through. The refusal text now says what was refused.
 
+## Re-audit round 7
+
+A list of commands that write can never be complete: in-place `perl`, `sed -E -i`, `curl -o` and `sponge` all slipped through. So the shell guard now works the other way round, and fails closed. A command that touches the organization files or the config is allowed only if:
+- every part of it is a known read-only tool (`cat`, `head`, `tail`, `grep`, `jq`, `ls`, and similar);
+- it redirects nothing into a file (`2>&1` and `>/dev/null` are fine);
+- it has no command substitution.
+
+Anything else touching those files is refused.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)
