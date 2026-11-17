@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-17T01:19:44.163Z",
+  "slug": "org-multimachine",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 276,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/OrgMemberSide.ts",
+      "src/core/OrgPackUpdater.ts",
+      "src/server/orgPackRoutes.ts"
+    ],
+    "addedLines": 256,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one forward per incoming request (a non-key machine answers 409 and is skipped, never re-forwards); one fan-out per member-side change"
+  },
+  "verdict": "pass"
+}

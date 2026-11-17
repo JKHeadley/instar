@@ -17,6 +17,8 @@ Justin approved "easy setup for new people" on 16 November 2026. An organization
 - **A second keeper.** The admin can add a second person who may propose new versions. The organization's main agent checks each proposal and signs it, so members only ever trust one key. A keeper can change the policy text or make it stricter. It can't add keepers or loosen the limits. The admin's own agent gets a keeper's version like everyone else: it waits for the admin's tap.
 - **Recovery copy** comes next, in its own plan: making it safe when a Mac might come back turned out to need more care.
 
+- **On more than one computer.** If an agent runs on several computers, the ones that don't hold the organization's key pass requests to the one that does. A member's own check-in details are copied between its computers, so it stays one member.
+
 ## Safeguards
 
 - Check-ins are signed, so the same agent can't be impersonated later. A new agent can only appear by using an invitation the admin sent, and the admin can cancel a leaked link. Names are self-reported, and the page says so.
