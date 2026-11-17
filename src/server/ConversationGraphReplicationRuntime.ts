@@ -390,10 +390,24 @@ export class ConversationGraphReplicationRuntime {
  }
  private liveAdmission(){const native=this.options.leaseCoordinator.currentLease();return {admitted:this.alive()&&this.positiveCustodyAllowed()&&this.nativeTailAdmissionAllowed(native)&&this.options.leaseCoordinator.holdsLease()&&this.nativeTailFloor.allows(native),writerId:native?.holder??null,
   leaseEpoch:native?.epoch??0,membershipEpoch:this.config.membership.epoch,fencedLeaseHash:native?canonicalHash(native):null};}
+ /** Finished delivery is final, so it is verified once per process and remembered; every later pass skips the record without re-checking its receipts. */
+ private readonly finishedDeliveries=new Set<string>();
+ private readonly deliveryRetry=new Map<string,{fails:number;next:number}>();private deliveryPass=0;
+ private deliveryFinished(eventId:string):boolean{if(this.finishedDeliveries.has(eventId))return true;if(!this.source.allDeliveryCompletionPersisted(eventId))return false;this.finishedDeliveries.add(eventId);return true;}
  async reconcilePending():Promise<Array<{eventId:string;state:string}>>{if(this.options.leaseCoordinator.holdsLease()&&this.isReady()){try{await this.prepareNativeTailClosure();}catch(error){/* DegradationReporter internalOnly via reportUnavailable; missing closed tails keep recovery held without blocking local queue custody. */this.noteTailClosure(error);this.reportUnavailable('graph-native-tail-closure-unavailable');return [];}}return this.withMutation(async()=>{
   const results:Array<{eventId:string;state:string}>=[];if(!this.options.leaseCoordinator.holdsLease()||!await this.refreshReadinessCore())return results;
-  const records=this.source.recordsForRepair().filter(record=>!record.certificate&&!record.cancellationCertificate).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
+  // Also a certified change whose commit proof never reached every member (the attempt that certified it
+  // stopped there): without this nothing finished it, and the owner's change stayed "saved, pending" for good.
+  const records=this.source.recordsForRepair().filter(record=>!record.cancellationCertificate&&(!record.certificate||!record.materialization&&!record.erasure&&!this.deliveryFinished(record.packet.eventId))).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
+  // Resumed deliveries are bounded: after one does not finish, no other is tried in this pass (a silent member costs one
+  // record's timeouts, not one per parked record), and a record that keeps failing is retried less and less often.
+  const pass=++this.deliveryPass;let deliveryStalled=false;
   for(const record of records){if(!this.alive())break;
+   if(record.certificate){const held=this.deliveryRetry.get(record.packet.eventId);if(deliveryStalled||held&&held.next>pass)continue;
+    const outcome=await this.coordinator.submit(record);results.push({eventId:record.packet.eventId,state:outcome.state});
+    if(outcome.state==='committed'||this.deliveryFinished(record.packet.eventId))this.deliveryRetry.delete(record.packet.eventId);
+    else{const fails=(held?.fails??0)+1;this.deliveryRetry.set(record.packet.eventId,{fails,next:pass+Math.min(2**(fails-1),40)});deliveryStalled=true;}
+    continue;}
    const pending=await this.validatedContinuation(record);if(!pending){results.push({eventId:record.packet.eventId,state:'held'});continue;}
    if(pending.erasure||pending.cancellation||pending.adoption?.disposition==='refused'){
     const outcome=await this.coordinator.cancel(pending,lease=>signGraphRecord('graph-witness-action-v1',witnessActionPayload('cancel',{idempotencyKey:pending.packet.idempotencyKey},lease),this.signingKey));results.push({eventId:record.packet.eventId,state:outcome.state});
