@@ -2716,6 +2716,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/desktop\/requests\/[^/]{1,200}\/(ticket|resume|revoke)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
     { method: 'POST', re: /^\/mobile\/permissions\/requests\/[a-z0-9._:-]{1,128}\/(approve|decline)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/permissions\/features\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Approving a trust raise from the app (docs/specs/app-trust-approval.md): owner devices only, the same
+    // Face ID-confirmed path and bucket. Not in BROWSER_ROUTES, so a browser (key not hardware-held) is refused.
+    { method: 'GET', re: /^\/mobile\/trust\/requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
+    { method: 'POST', re: /^\/mobile\/trust\/requests\/tr-[0-9a-f]{12}-[0-9a-z]{6}\/approve$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/trust\/device-acceptance(\/withdraw)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
     { method: 'POST', re: /^\/mobile\/secrets\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },

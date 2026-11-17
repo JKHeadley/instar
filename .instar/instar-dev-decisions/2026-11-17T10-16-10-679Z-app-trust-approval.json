@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T10:16:10.679Z",
+  "slug": "app-trust-approval",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/server/mobileTrustApproval.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "reader refactor"
+  },
+  "verdict": "pass"
+}
