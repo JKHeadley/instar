@@ -111,3 +111,5 @@ Also from the companion spec's review (forward compatibility): record types and 
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a` (negative declaration)
 - **reason:** user/owner-driven acts: every new Telegram/Slack message is caused by one deliberate act (owner Attach/Detach/Try again/Update link/Post again, or the agent's explicit Try again); the automatic follow-up steps (pin a posted message by id, unpin, edit in place) send nothing new, run once per state change, and stop after any failed step until a fresh act (`nextPinAction`); unconsumed acts expire after 10 minutes; no timer drives anything.
+
+- Follow-up commit: the `projectApps.builtin` ladder entry now passes the registry check (driver text within 80 characters; the fleet rung carries the same two measures as the development rung).
