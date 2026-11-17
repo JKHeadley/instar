@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -7871,6 +7872,9 @@ export class AgentServer {
           updateOrigin: () => pairing.origin(),
           ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
           principalKind: (req) => principalOf(req).kind,
+          intelligence: () => options.intelligence ?? null,
+          config: () => options.config,
+          journal: orgDecisionJournal(options.config.stateDir),
           effects: () => ({
             currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
             currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,

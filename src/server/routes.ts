@@ -5510,6 +5510,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // block, delay, or rewrite the message. Stays route-side (NOT in
     // evaluateOutbound) — there is nothing for it to catch on the proactive-digest
     // path, and keeping it here preserves byte-identical behavior for callers.
+    // ── Organization never rules on outgoing messages (org-never-actions §C) ──
+    // Block: checked before sending; a breach or an uncheckable message is refused with the reason
+    // (returns true: the caller must not send). Observe: checked only after the message went out
+    // (a 2xx answer), fire-and-forget, a note for the next session start — see below.
+    const orgCheck = await import('../core/OrgActionCheck.js');
+    const orgConv = options.attributionConversation ?? (options.topicId !== undefined ? `topic ${options.topicId}` : channel);
+    const orgCtx = { stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: orgCheck.orgDecisionJournal(ctx.config.stateDir) };
+    const orgBlock = orgCheck.orgCheckMode(ctx.config as never) === 'block';
+    if (orgBlock) {
+      const r = await orgCheck.runOrgCheck(orgCtx, orgCheck.messageEvidence(text, channel, orgConv), { userRequest: '', deadlineAt: Date.now() + 6000 });
+      if (r.decision === 'deny') {
+        res.status(422).json({ error: 'org-policy', reason: r.reason, checkId: r.checkId });
+        return true;
+      }
+    }
     void observeSelfViolation(text, options.topicId).catch(() => {
       /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
     });
@@ -5532,6 +5547,14 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!decision.ok) {
       res.status(decision.status).json(decision.body);
       return true;
+    }
+    if (!orgBlock) {
+      res.once('finish', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) return;
+        void orgCheck.runOrgCheck(orgCtx, orgCheck.messageEvidence(text, channel, orgConv), { userRequest: '', deadlineAt: Date.now() + 6000 })
+          .then((r) => { if (r.decision === 'allow' && r.note) orgCheck.appendMessageNote(ctx.config.stateDir, orgConv, r.note); })
+          .catch(() => { /* @silent-fallback-ok — observe-only; a check error never affects delivery */ });
+      });
     }
     // Send-side record (attribution-paper-trail section 5): after delivery, in the background, never
     // blocking a send. The route answering 2xx is what says the message went out.
@@ -33015,7 +33038,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       // Say only what is running: the outbound check exists only with responseReview on (org-pack-and-join §D).
-      const block = formatOrgIntentForSessionStart(parsed, { outboundGateOn: ctx.config.responseReview?.enabled === true });
+      let block = formatOrgIntentForSessionStart(parsed, { outboundGateOn: ctx.config.responseReview?.enabled === true });
+      // Notes from the organization policy check on messages already sent (org-never-actions §C observe).
+      const { takeMessageNotes } = await import('../core/OrgActionCheck.js');
+      const notes = takeMessageNotes(ctx.config.stateDir);
+      const noteLines = notes.map((n) => '  - (' + n.conversation + ') ' + n.note).join('\n');
+      if (notes.length) block += '\n\nPOLICY CHECK NOTES ON MESSAGES YOU SENT:\n' + noteLines;
       res.json({
         present: true,
         block,
@@ -37592,6 +37620,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // A bearer request carries no OperatorProof, so it is refused before anything is written;
       // changes toward more restriction still apply. Compared against the same file config and the
       // same one-level merge the write below uses.
+      // The action check's mode is set only from the app (org-never-actions §C).
+      if (patch && typeof patch === 'object' && 'orgPolicy' in (patch as Record<string, unknown>)) {
+        res.status(403).json({ error: 'org-policy-cap', message: 'The organization policy check is set from the Instar app, not here.' });
+        return;
+      }
       // An organization's cap holds before any other raise check (org-pack-and-join §D): of the
       // capped settings, only evolution.approvalMode can be patched.
       {

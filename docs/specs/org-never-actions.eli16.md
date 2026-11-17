@@ -14,20 +14,20 @@ Justin approved "easy setup for new people" on 16 November 2026. One part is tha
 ## What is new
 
 - **A check before outward actions**, for agents that joined an organization only. Tool calls that write, send or delete, a short list of commands that send data off the computer or publish something, and outgoing messages.
-- **Judged by meaning.** First the keyword check. If that finds nothing, one short question to a small AI model: "does this action break one of these never rules?"
+- **Judged by meaning.** The keyword check is only a hint. Every check asks one short question of a small AI model on the agent's own account: "does this action break one of these never rules?" It reads what is actually being sent, not the agent's description of it.
 - **Two modes.** In "observe" mode, which is all that ships now, nothing is blocked. The agent is told right away which rule might apply and who to ask, and the event is counted. In "block" mode, a likely breach is stopped, with the rule, who to ask, and an allowed alternative.
 - **Block mode waits for Justin.** It can't be turned on until he says yes. He'll get one yes/no question with the exact wording.
 
 ## Safeguards
 
 - Agents that haven't joined an organization are untouched.
-- If the AI check can't run, observe mode records that it couldn't check. Block mode asks the person before anything that can't be undone, and lets reversible actions go ahead with a note. It never silently lets an irreversible action through.
-- The check reuses the existing spending cap, and repeated identical checks are remembered for ten minutes.
+- If the AI check can't run within 9 seconds, observe mode records that it couldn't check. Block mode holds the action until the person allows it once in the app. It never silently lets an action through.
+- The check has its own small daily budget, and identical checks are remembered for ten minutes.
 - Only the person, through the app, can turn block mode on, and only after Justin's yes.
 
 ## What it can't do yet
 
-- Commands outside the listed ones aren't checked. The list is fixed and tested, and it's stated as a limit.
+- Commands outside the listed ones aren't checked (scripts, `git push`, `npm publish`), nor what sits behind an ID the agent only names. These are stated as limits.
 - The AI check can be wrong. Observe mode exists to measure how often before anything blocks.
 
 ## What needs deciding

@@ -25,6 +25,8 @@ import {
 } from '../core/OrgPack.js';
 import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPackStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { writeConfigAtomic } from '../core/BootSelfKnowledge.js';
+import { OrgActionChecker, bashEvidence, lastUserRequest, mcpEvidence, mcpIsNonRead, runOrgCheck, type Evidence, type OrgCheckContext } from '../core/OrgActionCheck.js';
 
 export const ORG_DRAFT_TTL_MS = 24 * 60 * 60_000;
 
@@ -98,6 +100,9 @@ export interface OrgPackRouteDeps {
   /** Send a validated change to the agent's other machines (§Multi-machine). Best effort. */
   fanOut?: FanOutFn;
   principalKind: (req: Request) => string;
+  /** The agent's own intelligence provider and config, for the action check (org-never-actions §B). */
+  intelligence?: () => import('../core/types.js').IntelligenceProvider | null;
+  config?: () => import('../core/types.js').InstarConfig;
   journal?: (event: string, detail: Record<string, unknown>) => void;
   now?: () => number;
 }
@@ -314,6 +319,65 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const after = s.membership();
     if (after) (deps.fanOut ?? orgFanOut)({ membership: after, bundle: held });
     res.json(r);
+  });
+
+  // ── Never rules checking actions (docs/specs/org-never-actions.md) ──
+  const checker = (): OrgActionChecker => new OrgActionChecker(deps.stateDir, now);
+  const actionsCfg = (): { mode?: string; blockingApproved?: boolean; judgeDailyCents?: number } =>
+    ((deps.config?.() as { orgPolicy?: { actions?: { mode?: string; blockingApproved?: boolean; judgeDailyCents?: number } } } | undefined)?.orgPolicy?.actions) ?? {};
+  /** Block is reachable only once approved, and only for a joined agent (spec §C, §D). */
+  const effectiveMode = (): 'observe' | 'block' => {
+    const c = actionsCfg();
+    return c.mode === 'block' && c.blockingApproved === true ? 'block' : 'observe';
+  };
+
+  router.post('/org/check-action', async (req: Request, res: Response) => {
+    const started = now();
+    const b = (req.body ?? {}) as { sessionId?: unknown; toolName?: unknown; toolInput?: unknown; command?: unknown; cwd?: unknown; transcriptPath?: unknown; deadlineMs?: unknown };
+    const budgetMs = Math.min(6000, typeof b.deadlineMs === 'number' && b.deadlineMs > 0 ? b.deadlineMs : 6000);
+    const toolName = typeof b.toolName === 'string' ? b.toolName : '';
+    let evidence: Evidence | null = null;
+    const m = store().membership();
+    if (m?.state === 'joined') {
+      if (toolName === 'Bash' && typeof b.command === 'string') evidence = bashEvidence(b.command, typeof b.cwd === 'string' ? b.cwd : deps.stateDir, started + 2000);
+      else if (mcpIsNonRead(toolName)) evidence = mcpEvidence(toolName, b.toolInput);
+    }
+    const r = await runOrgCheck(
+      { stateDir: deps.stateDir, config: (deps.config?.() ?? {}) as OrgCheckContext['config'], provider: deps.intelligence?.() ?? null, journal: deps.journal, now },
+      evidence,
+      { sessionId: b.sessionId, userRequest: evidence ? lastUserRequest(typeof b.transcriptPath === 'string' ? b.transcriptPath : undefined) : '', deadlineAt: started + budgetMs },
+    );
+    res.json(r);
+  });
+
+  router.get('/mobile/org/pending-checks', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    res.json({ checks: checker().listPending() });
+  });
+
+  router.post('/mobile/org/allow-once', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const r = checker().allowOnce(String((req.body as { checkId?: unknown })?.checkId ?? ''));
+    if (r === 'allowed') { res.json({ ok: true }); return; }
+    res.status(r === 'incomplete' ? 409 : 404).json({ error: r === 'incomplete' ? 'evidence-incomplete' : 'not-found' });
+  });
+
+  router.post('/mobile/org/actions-mode', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const mode = (req.body as { mode?: unknown })?.mode;
+    if (mode !== 'observe' && mode !== 'block') { res.status(400).json({ error: 'mode must be observe or block' }); return; }
+    if (mode === 'block' && actionsCfg().blockingApproved !== true) {
+      res.status(403).json({ error: 'blocking-not-approved', detail: 'Blocking is not available on this version yet.' });
+      return;
+    }
+    writeConfigAtomic(path.join(deps.stateDir, 'config.json'), (raw) => {
+      const op = ((raw.orgPolicy ??= {}) as Record<string, unknown>);
+      ((op.actions ??= {}) as Record<string, unknown>).mode = mode;
+      return { value: true };
+    });
+    const live = deps.config?.() as unknown as Record<string, Record<string, Record<string, unknown>>> | undefined;
+    if (live) ((live.orgPolicy ??= {}).actions ??= {}).mode = mode;
+    res.json({ ok: true, mode: effectiveMode() });
   });
 
   return router;
