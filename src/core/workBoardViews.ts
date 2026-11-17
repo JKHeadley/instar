@@ -52,7 +52,7 @@ function byJson(b: unknown, name: (k: string) => string): unknown {
   return { kind: x.kind };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[] }): Record<string, unknown> {
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
   const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, needLine: needLine(v), newestAt: new Date(c.newestRecordAt).toISOString() };
@@ -85,6 +85,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     retryOf: retryTargetFor(svc, v),
     lineIds: svc.lineIds(c.cardId),
     repliedAfterQuestion: !!extra?.repliedAfterQuestion,
+    ...(extra?.phoneOnly ? { phoneOnly: true } : {}),
     ...(extra?.behind ? { behind: extra.behind } : {}),
     ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn } : {}),
   };

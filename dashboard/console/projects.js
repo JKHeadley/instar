@@ -7,7 +7,7 @@
 // SAFETY: every server value goes through textContent via el(); links are console hash routes only.
 
 import { el, askPin, operatorSession, forgetOperatorSession } from './ui.js';
-import { projectsView, appPath } from './projects-model.js';
+import { projectsView, appPath, appNavigation } from './projects-model.js';
 import { requestId } from './conversation-write-continuity.js';
 
 const DONE_MARK = { pass: '✓', fail: '✗', unknown: '·' };
@@ -54,7 +54,9 @@ function refusal(r) {
 function openApp(ev, projectKey, app) {
   ev.preventDefault(); ev.stopPropagation(); // a tap on the collapsed line must not also fold the row
   void post(appPath(projectKey, app.appRef, 'opened'), {}).catch(() => {});
-  location.hash = app.href;
+  const nav = appNavigation(app.href);
+  if (!nav) return;
+  if (nav.kind === 'hash') location.hash = nav.href; else location.assign(nav.href);
 }
 
 function openLink(projectKey, app, cls = 'btn-quiet btn-inline project-open') {

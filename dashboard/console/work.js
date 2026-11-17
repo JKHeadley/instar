@@ -12,7 +12,7 @@ import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, m
 import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
-  LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, tapBody, tapCovers, pinExplain,
+  LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   OUTWARD_WORDS,
@@ -110,6 +110,7 @@ function cardRowNode(card, refresh, lead) {
     r.sub ? el('p', { class: 'need-sub', text: r.sub }) : null,
     r.outward ? el('p', { class: 'need-sub', text: card.outwardWords || OUTWARD_WORDS }) : null,
     r.notes.map((t) => el('p', { class: 'need-sub work-note', text: t })),
+    phoneOnlyLine(card) ? el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }) : null,
     actionsNode(card, cardActions(card), status, refresh),
     status);
 }
@@ -157,7 +158,7 @@ function confirmTap(card, action, extra, status, refresh) {
   const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel', onclick: () => closeSheet() });
   const go = el('button', { class: action === 'redact' ? 'btn-danger' : 'btn-primary btn-inline', type: 'button', text: 'Continue' });
   go.addEventListener('click', async () => {
-    const pin = await askPin({ title: tapWordsTitle(action), explain: pinExplain(card, action) });
+    const pin = await askPin({ title: tapWordsTitle(action, card), explain: pinExplain(card, action) });
     if (!pin || !pin.pin) { status.textContent = ''; return; }
     status.textContent = 'Working…';
     const res = await send(`/work-board/cards/${encodeURIComponent(card.id)}/tap`, { ...built.body, pin: pin.pin });
@@ -166,12 +167,13 @@ function confirmTap(card, action, extra, status, refresh) {
     status.textContent = refusalWords(res.status, res.data);
     if (res.data && (res.data.error === 'stale-card' || res.data.error === 'question-replaced')) setTimeout(refresh, 1500);
   });
-  sheet({ title: `${tapWordsTitle(action)}: what this covers` },
+  sheet({ title: `${tapWordsTitle(action, card)}: what this covers` },
     coversNode(tapCovers(card, action, extra)),
     el('div', { class: 'confirm-row' }, cancel, go));
 }
 
-function tapWordsTitle(action) {
+function tapWordsTitle(action, card) {
+  if (card && card.phoneOnly && action === 'withdraw-approval') return 'Stop this app';
   return { approve: 'Approve', answer: 'Answer', 'confirm-done': 'Confirm done', reopen: 'Reopen', unhold: 'Release hold', retry: 'Try again', 'withdraw-approval': 'Withdraw approval', archive: 'Archive', unarchive: 'Restore', hold: 'Put on hold', redact: 'Remove for good' }[action] || 'Confirm';
 }
 
@@ -234,6 +236,7 @@ function openCard(card, refresh) {
   if (taps.length) body.push(block('What people decided', el('ul', {}, taps.map((t) => el('li', { text: `${tapWords(t.action)}: ${byWords(t.by)}, ${when(t.at)}` })))));
 
   if (card.conversationKey) body.push(el('p', { class: 'confirm-row' }, el('a', { class: 'btn-quiet btn-inline', href: hashFor({ kind: 'app', id: card.conversationKey }), text: 'Open its conversation', onclick: () => closeSheet() })));
+  if (phoneOnlyLine(card)) body.push(el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }));
   body.push(actionsNode(card, cardActions(card, { inSheet: true }), status, refresh), status);
   sheet({ title: String(card.title || 'Card') }, ...body);
 }

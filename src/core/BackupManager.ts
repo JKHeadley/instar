@@ -59,6 +59,10 @@ const BLOCKED_PATH_PREFIXES = new Set([
   '.instar/backups/documents/',
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
+  // Project apps part 2 (project-apps-sandbox §3.2): the per-machine app key file. Keys are never
+  // backed up, so a restored backup cannot read data the owner erased (a restore re-fetches live keys).
+  'state/project-app-keys.json',
+  '.instar/state/project-app-keys.json',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
   // entry)), so the project-relative '.instar/secrets/' spelling above never matched a
   // stateDir-relative 'secrets/…' entry: `includeFiles: ['secrets/passkeys/']` or

@@ -55,6 +55,8 @@ const ROUTE_SOURCE_FILES = [
   'src/server/workBoardRoutes.ts',
   'src/server/needsRoutes.ts',
   'src/server/workProjectsRoutes.ts',
+  'src/server/projectAppCustomRoutes.ts',
+  'src/server/projectAppSandboxRoutes.ts',
 ];
 const routesSource = ROUTE_SOURCE_FILES
   .map((rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf-8'))

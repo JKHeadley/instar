@@ -64,6 +64,10 @@ import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
+import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
+import { mountProjectAppCustomRoutes } from './projectAppCustomRoutes.js';
+import { isPhoneOnlyCard } from './ProjectAppCustomSource.js';
+import { customProjectAppsEnabled } from './ProjectAppSandbox.js';
 import { projectAppsEnabled } from '../core/ProjectAppStore.js';
 import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
@@ -2052,6 +2056,12 @@ export interface RouteContext {
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
   /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
   projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+  /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound sandbox. */
+  projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+  /** The known-address inputs for the frame's origin check. */
+  projectAppOrigin?: import('./ProjectAppSandbox.js').OriginDeps;
+  /** Project apps part 2 storage + approvals (the real CustomAppSource): late-bound, null where custom apps are off. */
+  projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
   chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
@@ -3197,6 +3207,9 @@ export function createRoutes(ctx: RouteContext): Router {
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
     exposeBoardRead: (read) => { workBoardReadAs = read; },
     specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
+    // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
+    // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
+    phoneOnlyCard: (cardId) => { let src: ReturnType<NonNullable<typeof ctx.projectAppCustom>> | null = null; try { src = ctx.projectAppCustom?.() ?? null; } catch { return true; } return isPhoneOnlyCard(src, cardId); }, // @silent-fallback-ok — fail closed: an unreadable source keeps the card phone-only
   };
   let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
@@ -3252,6 +3265,20 @@ export function createRoutes(ctx: RouteContext): Router {
     invalidateWork: () => _projectsRoute.invalidate(),
     log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
     opens: () => projectAppsOpens(ctx.config.stateDir),
+  });
+  // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.6-3.7): ticket, key, sealed frame, app api.
+  mountProjectAppSandboxRoutes(router, {
+    sandbox: () => ctx.projectAppSandbox?.() ?? null,
+    enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
+    origin: ctx.projectAppOrigin ?? { knownHttpsHosts: () => [] },
+    log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+  });
+  // Project apps part 2 (project-apps-sandbox §3.1, §3.4): the agent creates an app and writes its source.
+  mountProjectAppCustomRoutes(router, {
+    source: () => ctx.projectAppCustom?.() ?? null,
+    enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,

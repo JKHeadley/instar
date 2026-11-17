@@ -23,7 +23,7 @@ import {
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords,
 } from './chats-model.js';
 import { chiefOfStaffNeedRows } from './needs-model.js';
-import { appStripFor, appPath } from './projects-model.js';
+import { appStripFor, appPath, appNavigation } from './projects-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
 const TOKEN_KEY = 'instar_token';
@@ -561,7 +561,8 @@ class ChatsPage {
       open.addEventListener('click', (ev) => {
         ev.preventDefault();
         fetch(appPath(s.projectKey, s.appRef, 'opened'), { method: 'POST', headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' }, body: '{}', keepalive: true }).catch(() => {});
-        location.hash = s.href;
+        const nav = appNavigation(s.href);
+        if (nav && nav.kind === 'hash') location.hash = nav.href; else if (nav) location.assign(nav.href);
       });
       setKids(v.appStrip,
         el('div', { class: 'chat-appstrip-text' },

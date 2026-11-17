@@ -581,6 +581,25 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.2, §5): creating a custom app, its source
+  // revisions, its data and summary writes are journal records (`project-app-record` and the encrypted
+  // `project-app-blob` kind), written on the lease holder only and folded from the union on every machine.
+  // The per-machine key file and the ciphertext disk store under state/ are caches of what the kinds hold
+  // (keys are fetched from the holder, never synced); the frame ticket is in-memory physical-credential-locality.
+  for (const method of ['POST', 'PUT'] as const) {
+    reg.add({
+      kind: 'route',
+      method,
+      pathPrefix: '/project-apps',
+      domain: 'machine-local',
+      story: {
+        logical: 'ws2x-replicated',
+        onSharedGitSyncedPath: false,
+        note: 'per-origin coherence-journal streams (project-app-record + project-app-blob kinds), lease-holder-only writes, replicated by journal sync; dev-gated, dark on the fleet',
+      },
+    });
+  }
+
   // POST /topic-profile/new-topic-default — the "default for dashboard-created
   // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).
   // Machine-local in v1 by declared posture: migrating-to-unified, tracked in

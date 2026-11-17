@@ -344,7 +344,15 @@ export class WorkBoardService {
     return this.write(recordType, cardId, { ...safe, by: { kind: 'system' }, at: new Date(this.deps.now()).toISOString(), machineId: this.deps.machineId }) as Result<{ recordId: string; data: Record<string, unknown>; seq?: number }>;
   }
 
-  createCard(p: WorkPrincipal, input: Record<string, unknown>): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
+  /** Every record in the index as journal union entries (a reader that folds the board itself, e.g. project apps' served version). */
+  entries(): UnionEntry[] { return this.records.map((r) => ({ data: r.d, origin: r.origin })); }
+
+  /**
+   * `serverCard`: a card the server writes on the agent's behalf with a deterministic id (project apps'
+   * version cards, docs/specs/project-apps-sandbox.md §3.4): the caller names the id, and it is not
+   * counted against the agent's daily ceiling (each app has at most one open card per purpose).
+   */
+  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
     if (p.kind === 'session') return refuse(403, 'scoped-session-cannot-create');
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const fields: Record<string, unknown> = {};
@@ -361,14 +369,16 @@ export class WorkBoardService {
     if (fields.carrier === undefined) fields.carrier = 'agent';
     const t = this.checkText(fields); if (t) return t;
     const linkErr = this.checkAttachmentLinks(undefined, fields.links); if (linkErr) return linkErr;
-    if (p.kind === 'agent') {
+    if (serverCard && (p.kind !== 'agent' || !isCardId(serverCard.cardId))) return refuse(400, 'bad-server-card');
+    if (serverCard && this.view(serverCard.cardId)?.card.created) return refuse(409, 'card-exists');
+    if (p.kind === 'agent' && !serverCard) {
       const s = this.deps.settings();
       const { day, resetsAt } = this.deps.dayOf(this.deps.now());
       if (this.agentCardsCreatedOn(day) >= s.maxAgentCardsPerDay) {
         return refuse(429, 'daily-card-ceiling', { limit: s.maxAgentCardsPerDay, resetsAt, waysThrough: ['the team owner raises the limit on the Work page', 'the team owner writes the card (person-written cards are not counted)'] });
       }
     }
-    const cardId = newCardId();
+    const cardId = serverCard?.cardId ?? newCardId();
     const w = this.write('created', cardId, { ...fields, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() });
     if (!w.ok) return w;
     return { ok: true, cardId, conversationKey: cardConversationKey(cardId), ...this.softBudget() };

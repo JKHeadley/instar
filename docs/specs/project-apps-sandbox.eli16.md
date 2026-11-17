@@ -30,3 +30,5 @@ A hostile app can still pass small amounts of its own project data out through t
 ## What gets built
 
 The storage and the locked box, the narrow key and its tests, the phone approval of versions, then an example: a sales-pipeline app on a demo project, made through this whole flow, which Justin attaches.
+
+**What the first build leaves for stage 2.** Some machine-to-machine pieces come in a second build: sending an app's writes to the coordinating machine, fetching keys from it, and confirming erasures on every machine. That work is tracked as CMT-1882. Until it lands, only the coordinating machine opens custom apps; another machine shows "still copying" and exposes nothing. An app that sends requests too fast is slowed down, with a plain "asking too often" answer.

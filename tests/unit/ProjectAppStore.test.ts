@@ -35,9 +35,11 @@ describe('project-app-record schema', () => {
     expect(v({ recordType: 'project-app-pin', conversationKey: CK, appRef: REF, platform: 'telegram', state: 'act', opId: 'abcdefgh12', at })).toBeNull();
     expect(v({ recordType: 'project-app-pin', conversationKey: CK, appRef: REF, platform: 'telegram', state: 'pinned', act: 'attach', opId: 'abcdefgh12', messageId: '1', at })).toBeNull();
   });
-  it('accepts record types and custom app refs from a later build as inert stubs, so replication never stalls', () => {
+  it('accepts record types from a later build as inert stubs, and (part 2) validates custom app refs like builtin ones', () => {
     expect(v({ recordType: 'project-app-summary', conversationKey: CK, appRef: 'custom:pa_0123456789abcdef', at, headline: 'x' })).toEqual({ recordType: 'project-app-summary' });
-    expect(v({ recordType: 'project-app-answer', conversationKey: CK, appRef: 'custom:pa_0123456789abcdef', answer: 'attach', by: 'owner', via: 'console', at })).toEqual({ recordType: 'project-app-answer', inert: true });
+    expect(v({ recordType: 'project-app-later-thing', conversationKey: CK, at })).toEqual({ recordType: 'project-app-later-thing' });
+    expect(v({ recordType: 'project-app-answer', conversationKey: CK, appRef: 'custom:pa_0123456789abcdef', answer: 'attach', by: 'owner', via: 'console', at })).toEqual({ recordType: 'project-app-answer', conversationKey: CK, appRef: 'custom:pa_0123456789abcdef', answer: 'attach', by: 'owner', via: 'console', at });
+    expect(v({ recordType: 'project-app-answer', conversationKey: CK, appRef: 'custom:pa_XYZ', answer: 'attach', by: 'owner', via: 'console', at })).toBeNull();
     expect(v({ recordType: 'not-ours', conversationKey: CK, appRef: REF, at })).toBeNull();
   });
   it('knows the builtin list and the switch', () => {
