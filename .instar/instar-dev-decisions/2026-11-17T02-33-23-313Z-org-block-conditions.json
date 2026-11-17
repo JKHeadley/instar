@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T02:33:23.313Z",
+  "slug": "org-block-conditions",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OrgActionCheck.ts",
+      "src/core/OrgPolicyGateHooks.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one check per action or message"
+  },
+  "verdict": "pass"
+}

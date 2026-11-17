@@ -36,6 +36,8 @@ process.stdin.on('end', async () => {
     const a = (cfg.orgPolicy && cfg.orgPolicy.actions) || {};
     block = a.mode === 'block' && a.blockingApproved === true;
   } catch { cfgOk = false; }
+  // The server's own record of the mode decides; a config edited to observe can't switch the hook off.
+  try { const mf = JSON.parse(nodeFs.readFileSync(dir + '/.instar/org/actions-mode.json', 'utf-8')); if (mf && mf.mode === 'block') block = true; } catch {}
   let input = null;
   try { input = JSON.parse(data); } catch { input = null; }
   if (!input) {
@@ -55,7 +57,12 @@ process.stdin.on('end', async () => {
     let instarReal = dir + '/.instar'; try { instarReal = nodeFs.realpathSync(dir + '/.instar'); } catch {}
     const guarded = (p) => { if (typeof p !== 'string') return false; const r = real(p); return r === instarReal + '/config.json' || r === instarReal + '/org' || r.startsWith(instarReal + '/org/'); };
     const writesGuarded = /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(input.tool_name || '') && (guarded(ti0.file_path) || guarded(ti0.notebook_path));
-    const bashTouches = input.tool_name === 'Bash' && typeof ti0.command === 'string' && (ti0.command.includes('.instar/org') || ti0.command.includes('.instar/config.json'));
+    // Shell commands: the paths in full, or the bare names when the command or its directory reaches .instar.
+    const cmd = typeof ti0.command === 'string' ? ti0.command : '';
+    const cwdReal = (() => { try { return nodeFs.realpathSync(input.cwd || dir); } catch { return input.cwd || dir; } })();
+    const nearInstar = cmd.includes('.instar') || cwdReal === instarReal || cwdReal.startsWith(instarReal + '/');
+    const bareName = /(^|[\\s'"\\/=;&|(<>])(config\\.json|org)([\\s'"\\/;&|)<>]|$)/.test(cmd);
+    const bashTouches = input.tool_name === 'Bash' && (cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
       return out({ permissionDecision: 'deny', permissionDecisionReason: "Your organization's policy files can't be changed by me while its rules are enforced. Your person can manage the organization in the Instar app." });

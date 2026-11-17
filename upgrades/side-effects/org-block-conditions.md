@@ -110,6 +110,12 @@ One note is recorded, not changed: when the routed framework's binary is missing
 - **Leave from another machine.** A leave that arrives from another of the agent's machines now sets this machine back to observe, so it no longer holds everything.
 - **Config edited by hand.** If the config file says observe while the server's file says block, the config was edited outside the app. Blocking stays on, the event is recorded, and the person is told once a day. This holds after a restart.
 
+## Re-audit round 5
+
+- **The server's record wins over the config's flags.** Once the server has recorded block, editing the config file's mode or its approval flag doesn't switch blocking off. The edit is recorded and the person is told.
+- **The hook reads the server's record too.** It takes the stricter of the record and the config file.
+- **Shell commands.** The hook now also refuses the bare names `config.json` and `org` when a command mentions `.instar` or runs inside it (for example `cd .instar && rm -rf org`), and still allows ordinary commands like `cat package.json`.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

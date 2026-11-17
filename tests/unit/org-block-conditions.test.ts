@@ -81,6 +81,8 @@ describe('block-mode conditions', () => {
     writeOrgActionsMode(dir, 'block');
     const edited = { orgPolicy: { actions: { mode: 'observe', blockingApproved: true } } };
     expect(orgCheckMode(edited as never, dir)).toBe('block');
+    // Turning the approval flag off in the config file doesn't switch blocking off either.
+    expect(orgCheckMode({ orgPolicy: { actions: { mode: 'block', blockingApproved: false } } } as never, dir)).toBe('block');
     const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async () => '{"breach": false}' };
     await runOrgCheck({ stateDir: dir, config: edited as never, provider: p }, messageEvidence('hello', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     expect(seen.some((k) => k.startsWith('org-mode-tamper:'))).toBe(true);

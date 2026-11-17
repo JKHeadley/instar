@@ -531,15 +531,17 @@ function serverSetMode(stateDir: string | undefined): 'observe' | 'block' | null
 }
 export function orgCheckMode(cfg: OrgCheckContext['config'], stateDir?: string): 'observe' | 'block' {
   const a = cfg.orgPolicy?.actions ?? {};
-  if (a.blockingApproved !== true) return 'observe';
   const set = serverSetMode(stateDir ?? (cfg as { stateDir?: string }).stateDir);
+  // The server writes block only after approval, so its record stands even if the config's flags are edited.
   if (set === 'block') return 'block';
+  if (a.blockingApproved !== true) return 'observe';
   if (set === 'observe') return 'observe';
   return a.mode === 'block' ? 'block' : 'observe';
 }
 /** True when the server set block but the config file says otherwise: a hand edit. */
 export function orgModeEditedOutsideApp(cfg: OrgCheckContext['config'], stateDir: string): boolean {
-  return serverSetMode(stateDir) === 'block' && cfg.orgPolicy?.actions?.mode !== 'block';
+  const a = cfg.orgPolicy?.actions;
+  return serverSetMode(stateDir) === 'block' && (a?.mode !== 'block' || a?.blockingApproved !== true);
 }
 
 /** Evidence for an outgoing message: the text itself, always complete. */

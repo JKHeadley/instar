@@ -17,5 +17,10 @@
   "tier": 2,
   "tierReasoning": "Block-path fixes from the EXO 3.0 re-audit round 4; block still unreachable.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one check per action or message"
+  }
 }
