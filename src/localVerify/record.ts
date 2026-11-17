@@ -181,7 +181,8 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     const ir = x.independentReview as Record<string, unknown> | null;
     if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
   }
-  if (x.attempt !== undefined && (!isValidAttemptRef(x.attempt) || x.kind === 'main')) errors.push('attempt');
+  // A `main` verify a peer ran for the coordinator carries its attempt like any peer record.
+  if (x.attempt !== undefined && !isValidAttemptRef(x.attempt)) errors.push('attempt');
   if (x.preflight !== undefined) {
     const p = x.preflight as Record<string, unknown> | null;
     const isCount = (n: unknown, max: number) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n <= max;
