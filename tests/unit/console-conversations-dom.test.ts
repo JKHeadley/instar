@@ -65,6 +65,102 @@ describe('native console Conversations', () => {
     expect(f.main.textContent).toContain('no longer available'); // the stop is said in words, never silent
   });
 
+  // "Accept all N projects" (topic 141385, 2026-11-16): the button sat greyed out with no words while the
+  // first project waited on a change, and one stuck project held up every other one.
+  const tgRef = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId });
+  const project = (n: number) => ({ id: `sg-0123456789abcdef012${n}`, title: `Project ${n}`, reason: '', frontDoor: tgRef(n), members: [{ ref: tgRef(n), title: `Conversation ${n}` }] });
+  const effortFor = (n: number) => ({ kind: 'effort', id: `effort-000${n}` });
+  /** A server where every owner change commits at once, except what `override` answers itself. */
+  function acceptServer(projects: number[], override: (url: string, body: any) => any = () => null) {
+    const placed = new Set<number>(); const frontDoors = new Set<number>(); const accepted: number[] = [];
+    const handler = async (url: string, options: any = {}) => {
+      const body = options.body ? JSON.parse(options.body) : undefined;
+      const special = await override(url, body); if (special) return special;
+      if (url.endsWith('/conversation-graph/suggestions')) return { body: { state: 'ready', items: projects.map(project) } };
+      const n = Number(url.match(/sg-0123456789abcdef012(\d)/)?.[1]);
+      if (url.endsWith('/start')) return { body: { createRequestId: `suggestion-create-000${n}` } };
+      if (url.endsWith('/accepted')) { accepted.push(n); return { body: { ok: true } }; }
+      if (url.endsWith('/conversation-graph/preview')) return { body: { eligible: true } };
+      if (url.endsWith('/conversation-graph/changes')) {
+        const c = body.change;
+        if (c.kind === 'create-effort') return { body: { state: 'committed', effort: effortFor(Number(body.requestId.at(-1))) } };
+        if (c.kind === 'set-primary-placement') placed.add(c.subject.topicId);
+        if (c.kind === 'set-front-door') frontDoors.add(c.conversation.topicId);
+        return { body: { state: 'committed' } };
+      }
+      if (url.includes('/conversation-graph/nodes/')) {
+        const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
+        const n2 = ref.kind === 'effort' ? Number(ref.id.at(-1)) : ref.topicId;
+        return { body: { partial: false, node: { ref, title: 'x', ...(ref.kind === 'effort' && frontDoors.has(n2) ? { frontDoor: tgRef(n2) } : {}) },
+          path: ref.kind === 'conversation' && placed.has(n2) ? [{ ref: effortFor(n2), title: 'x' }] : [], children: { items: [], nextCursor: null },
+          correction: { moveEligible: true, replacesPlacementEventIds: [], ...(ref.kind === 'effort' ? { headerVersion: 0, headerForgotten: false, replacesFrontDoorEventIds: [] } : {}) } } };
+      }
+      return { status: 404, body: {} };
+    };
+    return { handler, accepted };
+  }
+  const allButton = (main: Element) => [...main.querySelectorAll('button')].find((b) => /projects/.test(b.textContent || '')) as HTMLButtonElement;
+  const progressLine = (main: Element) => main.querySelector('.conversation-suggestion-progress')!.textContent || '';
+
+  it('Accept all says which project it is on beside the button, goes past one that cannot finish, and re-enables a retry', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const server = acceptServer([1, 2, 3], async (url) => {
+      if (url.endsWith('sg-0123456789abcdef0122/start')) { await gate; return { status: 404, body: {} }; }
+      return null;
+    });
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    const all = allButton(f.main);
+    expect(all.textContent).toBe('Accept all 3 projects');
+    expect(progressLine(f.main)).toBe('');
+    all.click();
+    for (let i = 0; i < 40; i++) await flush();
+    // Held on project 2: the button is disabled, and the line beside it says what is running.
+    expect(all.disabled).toBe(true);
+    expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
+    expect(progressLine(f.main)).toContain('Creating the effort');
+    release();
+    for (let i = 0; i < 40; i++) await flush();
+    expect(server.accepted).toEqual([1, 3]); // project 3 was not held up by project 2
+    expect(progressLine(f.main)).toBe('2 of 3 projects accepted. 1 did not finish; its card says why. Tap Continue to try again.');
+    expect(all.disabled).toBe(false);
+    expect(all.textContent).toBe('Continue accepting projects');
+    expect(f.main.textContent).toContain('no longer available'); // the card of the one that stopped says why
+  });
+
+  it('Accept all shows what a slow change is waiting for, and stops with words when changes are not being confirmed', async () => {
+    const pending = { status: 202, body: { state: 'saved-pending', waitingMachines: [{ name: 'Laptop' }] } };
+    const server = acceptServer([1, 2, 3], (url, body) => (url.endsWith('/conversation-graph/changes') && body.change.kind === 'create-effort')
+      || /\/conversation-graph\/changes\/suggestion-create/.test(url) ? pending : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    const all = allButton(f.main);
+    vi.useFakeTimers();
+    try {
+      all.click();
+      await vi.advanceTimersByTimeAsync(11000);
+      expect(all.disabled).toBe(true);
+      expect(progressLine(f.main)).toMatch(/^Accepting 1 of 3: Project 1\. Creating the effort… Saved here\. Waiting for Laptop to confirm\. \(\d+ s\)$/);
+      await vi.advanceTimersByTimeAsync(140000);
+      expect(progressLine(f.main)).toBe('Stopped at 2 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
+      expect(all.disabled).toBe(false);
+      expect(all.textContent).toBe('Continue accepting projects');
+      expect(server.accepted).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('Accept all never stays disabled without words when the page itself fails', async () => {
+    const server = acceptServer([1, 2]);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    const all = allButton(f.main);
+    // A storage failure inside the page (private window, blocked site data) while an Accept runs.
+    vi.spyOn(dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new TypeError('boom'); });
+    vi.spyOn(JSON, 'stringify').mockImplementationOnce(() => { throw new TypeError('boom'); });
+    all.click();
+    for (let i = 0; i < 40; i++) await flush();
+    expect(all.disabled).toBe(false);
+    expect(progressLine(f.main)).not.toBe('');
+  });
+
   it('the ordinary Conversations list keeps the console page refresh', async () => {
     const ctx = { selfRefreshing: vi.fn() };
     await boot('#/work/conversations', (url) => ({ body: url.includes('/pending') ? { items: [] } : { ...page([row(1)]), capabilities: {} } }), ctx);
