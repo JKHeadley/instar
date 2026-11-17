@@ -267,6 +267,11 @@ describe('source floor (checkOwnerPauseSource)', () => {
     const r = await checkOwnerPauseSource(deps(), MARKER);
     expect(r).toMatchObject({ ok: true, ownerText: OWNER_TEXT, marker: MARKER, at: '2026-11-13T16:52:10.000Z' });
   });
+  it('refuses a marker whose date is not the message date (a misquoted citation), accepts an unreadable timestamp', async () => {
+    expect(await checkOwnerPauseSource(deps(), '[source: telegram 102965/142745 2026-11-01]')).toEqual({ ok: false, reason: 'date-mismatch' });
+    const noTs = { ...row, timestamp: undefined };
+    expect(await checkOwnerPauseSource(deps({}, noTs), '[source: telegram 102965/142745 2026-11-01]')).toMatchObject({ ok: true, at: '2026-11-01T00:00:00.000Z' });
+  });
   it('refuses malformed, non-telegram, not-found, not-human, agent-authored, forwarded, another sender (incl. same first name), no owner', async () => {
     expect((await checkOwnerPauseSource(deps(), 'no marker') as { reason: string }).reason).toBe('marker-malformed');
     expect((await checkOwnerPauseSource(deps(), `${MARKER} ${MARKER}`) as { reason: string }).reason).toBe('marker-malformed');
