@@ -18,5 +18,10 @@
   "eli16Path": "upgrades/side-effects/constitution-item9-app-approval.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/constitution-item9-app-approval.md",
   "secondPass": "false",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "audit record only"
+  }
 }
