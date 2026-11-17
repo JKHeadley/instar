@@ -120,3 +120,5 @@ The silent-fallback rule test counted two new silent catches:
 - the approval-receipt intake catch in `TelegramAdapter` was genuinely silent: it now logs the error before treating the message as not an approval. An unread receipt approves nothing.
 
 Trust-journey tests pass (105/105), and the rule tests pass (16/16).
+
+The write-domain ratchet found two new mutating routes without a declaration: `POST /trust/requests` and `POST /trust/acceptance/withdraw`. Both write TrustJourneyStore records, which replicate through the coherence journal, so both are classified `cluster-shared` in `buildWriteDomainRegistry`. The older `POST /trust/grant` keeps its baseline entry; it is not reclassified here.

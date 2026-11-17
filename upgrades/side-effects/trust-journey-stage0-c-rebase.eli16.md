@@ -13,3 +13,5 @@ The first part had already merged on its own, so it was left out. The other two 
 A safety test counts places where code quietly swallows an error. It found three new ones. Two were already fine: one tells the person that their approval was recorded but the change did not take effect, and one falls back to a file it reads right after. Those now carry the standard note that explains why. The third really was silent: when a reply in Telegram could not be read as an approval, nothing was written down. It now writes a line to the log first, and as before, a reply that cannot be read approves nothing.
 
 All 105 trust journey tests and the 16 safety tests pass.
+
+A second safety test checks that every route which changes saved state says how that state is shared between an agent's machines. The two new routes for the trust journey's approval requests now say so: their records are copied to all of the agent's machines.
