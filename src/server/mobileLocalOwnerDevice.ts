@@ -7,6 +7,8 @@
  * anyone off this Mac and to any agent with no fresh ticket, so it does not exist on an agent the
  * app did not just create.
  */
+// E2E-PAIRING: EXEMPT — reader refactor (deviceKeyOf), behavior unchanged; covered by tests/e2e/mac-app-creates-agent-alive.test.ts
+import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import crypto from 'node:crypto';
 import type { Application, Request, Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
@@ -131,13 +133,13 @@ export function mountLocalOwnerDeviceRoute(app: Application, svc: MobilePairingS
       refuse(503, 'ledger-unreadable');
       return;
     }
-    if (ledger.keyRevoked(kh) || devices.some((d) => d.publicKey === publicKey && d.status === 'revoked')) { refuse(409, 'device-revoked'); return; }
-    const mine = devices.find((d) => d.publicKey === publicKey && d.localBinding);
+    if (ledger.keyRevoked(kh) || devices.some((d) => deviceKeyOf(d) === publicKey && d.status === 'revoked')) { refuse(409, 'device-revoked'); return; }
+    const mine = devices.find((d) => deviceKeyOf(d) === publicKey && d.localBinding);
     if (mine && mine.status === 'active') { answer(mine); return; }
     const at = new Date(t).toISOString();
     const create = (id: string): ReturnType<DeviceRegistry['createActiveLocalOwner']> =>
       svc.devices.createActiveLocalOwner({ id, publicKey, host, label, machineId: selfMachineId, approvedAt: at });
-    if (!devices.some((d) => d.publicKey === publicKey)) {
+    if (!devices.some((d) => deviceKeyOf(d) === publicKey)) {
       const row = rows.find((r) => r.type === 'activation' && r.keyHash === kh && r.approvedVia === 'local-install' && r.host === host
         && r.machineId === ledger.signerMachineId());
       if (row && row.type === 'activation') {

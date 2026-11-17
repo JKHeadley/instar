@@ -73,6 +73,7 @@ export function appTicketRefusal(stateDir: string, publicKey: string): string | 
   try { keyHash = deviceKeyHashOf(publicKey); } catch { return 'That is not a device key.'; } // @silent-fallback-ok — reported to the caller as a refusal
   const ledgerFile = path.join(stateDir, DEVICE_KEY_LEDGER_FILE);
   let lines: string[] = [];
+  // @silent-fallback-ok — no ledger file yet means no device has ever been enrolled; any other read error refuses below
   try { lines = fs.readFileSync(ledgerFile, 'utf-8').split('\n').filter((l) => l.trim()); } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return 'The agent\'s device record could not be read.';
   }
@@ -93,7 +94,7 @@ export function appTicketRefusal(stateDir: string, publicKey: string): string | 
     const raw = JSON.parse(fs.readFileSync(registryFile, 'utf-8')) as { devices?: unknown };
     if (!Array.isArray(raw.devices)) return 'The agent\'s device list could not be read.';
     devices = raw.devices as typeof devices;
-  } catch (err) {
+  } catch (err) { // @silent-fallback-ok — no device list yet is an empty list; any other read error refuses
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return 'The agent\'s device list could not be read.';
   }
   if (devices.some((d) => d.status === 'active' && (d.role === undefined || d.role === 'owner') && !d.localBinding)) {

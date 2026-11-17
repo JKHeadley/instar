@@ -74,3 +74,7 @@ On re-read, all five earlier points are fixed. The Rollback section now prefers 
 ## Evidence pointers
 
 - `tests/unit/mobile-local-owner-device.test.ts` (18), `tests/unit/install-flow.test.ts` (2 added), `tests/integration/mac-app-creates-agent.test.ts`, `tests/e2e/mac-app-creates-agent-alive.test.ts`.
+
+## After local verify
+
+Local verify found two ratchet failures and both are fixed. Three device-record key reads in `mobileLocalOwnerDevice.ts` now go through `deviceKeyOf`, so a browser device's key is read the same way everywhere. The two missing-file fallbacks in `localOwnerTicket.ts` are intended (a missing file means nothing enrolled yet; any other read error refuses) and are now annotated.
