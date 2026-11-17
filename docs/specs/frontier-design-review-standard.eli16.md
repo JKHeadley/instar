@@ -2,6 +2,8 @@
 
 > The one-line version: every plan an agent asks you to approve has been reviewed by the strongest model it can reach and by other providers' models, and arrives with one line saying which models wrote it, which reviewed it and what each concluded — and the system enforces this instead of relying on the agent to remember.
 
+> **Approved** by Justin on 2026-11-17 at 15:32 PST (topic 144319). The build follows on its own branch.
+
 ## The problem in one breath
 
 On November 9 you set a rule: the strongest models design and review, the cheaper ones build. On November 17 the Windows app plan reached you written by the building model in one four-minute pass, with no review. Nothing was broken. The rule lived in a note in my memory, and no part of the system applied it.

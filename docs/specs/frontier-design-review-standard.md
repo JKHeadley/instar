@@ -28,6 +28,10 @@ single-run-completable: true
 frontloaded-decisions: 13
 cheap-to-change-tags: 0
 contested-then-cleared: 0
+approved: true
+approved-by: "Justin (JKHeadley)"
+approved-date: "2026-11-17"
+approval-evidence: "Justin, Telegram topic 144319, message 144458, 2026-11-17 15:32 PST: 'approved', replying to the approval request sent 14:08 PST (message 144392), which named the five things this yes covers (the 'What you actually need to decide' section of the overview)."
 ---
 
 # Design work runs on the frontier model and is reviewed before the operator is asked to approve it
