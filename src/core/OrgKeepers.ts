@@ -67,7 +67,36 @@ export class OrgKeepers {
   constructor(private readonly stateDir: string, private readonly orgId: string, private readonly now: () => number = Date.now) {}
 
   private file(): string { return path.join(this.stateDir, 'org', 'published', `${this.orgId}.keepers.json`); }
+  /** Keepers from a recovery copy, never read by the proposal checks until reactivated (org-recovery-copy §B5). */
+  private restoredFile(): string { return path.join(this.stateDir, 'org', 'published', `${this.orgId}.keepers.restored.json`); }
   list(): KeeperEntry[] { return readJson(this.file(), [] as KeeperEntry[]); }
+  restored(): KeeperEntry[] { return readJson(this.restoredFile(), [] as KeeperEntry[]); }
+
+  restoreFromCopy(keepers: unknown): void {
+    const list = Array.isArray(keepers) ? (keepers as KeeperEntry[]).filter((k) => k && typeof k.publicKey === 'string' && typeof k.name === 'string') : [];
+    writeAtomic(this.restoredFile(), JSON.stringify(list));
+  }
+
+  /** Moves one restored keeper back, through the same limit as adding one. */
+  reactivate(publicKey: string): { ok: true } | { ok: false; error: string } {
+    const r = this.restored();
+    const k = r.find((x) => x.publicKey === publicKey);
+    if (!k) return { ok: false, error: 'not-found' };
+    const list = this.list().filter((x) => x.publicKey !== publicKey);
+    if (list.length >= KEEPERS_MAX) return { ok: false, error: 'too-many-keepers' };
+    list.push({ ...k, addedAt: this.now() });
+    writeAtomic(this.file(), JSON.stringify(list));
+    writeAtomic(this.restoredFile(), JSON.stringify(r.filter((x) => x.publicKey !== publicKey)));
+    return { ok: true };
+  }
+
+  discardRestored(publicKey: string): boolean {
+    const r = this.restored();
+    const rest = r.filter((x) => x.publicKey !== publicKey);
+    if (rest.length === r.length) return false;
+    writeAtomic(this.restoredFile(), JSON.stringify(rest));
+    return true;
+  }
 
   /** The admin's tap with the keeper's code (spec §D): the code must name this organization, the name must be plain. */
   add(code: string): { ok: true; keeper: KeeperEntry; fingerprint: string } | { ok: false; error: string } {

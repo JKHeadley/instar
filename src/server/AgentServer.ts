@@ -1997,6 +1997,8 @@ export class AgentServer {
     // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
     this.app.use('/org/checkin', express.json({ limit: '4kb' }));
     this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
+    // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
+    this.app.use('/mobile/org/recover', express.json({ limit: '32mb', verify: keepRawBody }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
