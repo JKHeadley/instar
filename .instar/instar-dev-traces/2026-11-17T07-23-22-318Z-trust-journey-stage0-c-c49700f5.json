@@ -18,5 +18,10 @@
   "eli16Path": "upgrades/side-effects/trust-journey-stage0-c-rebase.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/trust-journey-stage0-c.md",
   "secondPass": "false",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "annotations and a log line"
+  }
 }
