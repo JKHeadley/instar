@@ -74,7 +74,9 @@ process.stdin.on('end', async () => {
     const canWrite = redirectsToFile || cmd.includes(String.fromCharCode(96)) || cmd.includes('$(') || cmd.includes('<(') || cmd.includes('>(') || segments.some((seg) => !READ_ONLY.has(firstWord(seg)));
     // A command run from inside the organization folder touches its files whatever it names.
     const insideOrg = cwdReal === instarReal + '/org' || cwdReal.startsWith(instarReal + '/org/');
-    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
+    // A wildcard or a variable can hide the guarded name, so near .instar either counts as touching it.
+    const hidesName = ['*', '?', '[', '$'].some((c) => cmd.includes(c));
+    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || (nearInstar && hidesName) || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
       return out({ permissionDecision: 'deny', permissionDecisionReason: "While your organization's rules are enforced, I can't run commands that could change its policy files or this agent's settings. Reading them is fine. Your person can manage the organization in the Instar app." });
