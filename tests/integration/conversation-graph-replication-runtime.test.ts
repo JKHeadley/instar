@@ -128,6 +128,30 @@ describe('actual graph source runtime + authenticated installed peer transport',
   expect(await runtime.refreshReadiness()).toBe(true);expect(runtime.projection().records).toHaveLength(1);
  });
 
+ // Topic 141385, 2026-11-16: an owner change was certified, the commit-proof call to the other machine was
+ // slow, and nothing ever finished it: the dashboard showed it as saved and pending for good.
+ it('finishes a certified change whose commit proof never reached a member, without preparing or certifying it again',async()=>{
+  const {f,runtime,peer}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);
+  const record=f.record(),eventId=record.packet.eventId;const input={coreType:'graph-event' as const,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash({core:record.core,source:'interrupted delivery'}),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('interrupted delivery source')};
+  const send=(runtime as any).request.bind(runtime);let drop=true;
+  vi.spyOn(runtime as any,'request').mockImplementation((...args:any[])=>drop&&args[1]==='proof'?Promise.reject(new Error('peer-slow')):send(...args));
+  const first=await runtime.withSourceMutation(token=>runtime.submitPrepared(input,token));
+  expect(first.state).toBe('saved-pending');
+  expect(runtime.source.repairRecord(eventId)!.certificate).toBeTruthy();expect(runtime.source.status(eventId).state).toBe('committed');
+  expect(runtime.source.allCommitProofDelivered(eventId)).toBe(false);
+  const witness=(runtime as any).coordinator.options.witness,prepare=vi.spyOn(witness,'prepare'),commit=vi.spyOn(witness,'commit');
+  // The member is still not answering: the change stays pending and is tried again on the next pass.
+  expect(await runtime.reconcilePending()).toContainEqual({eventId,state:'saved-pending'});
+  expect(runtime.source.allCommitProofDelivered(eventId)).toBe(false);
+  drop=false;
+  expect(await runtime.reconcilePending()).toContainEqual({eventId,state:'committed'});
+  expect(runtime.source.allDeliveryCompletionPersisted(eventId)).toBe(true);expect(peer.source.allCommitProofDelivered(eventId)).toBe(true);
+  expect(prepare).not.toHaveBeenCalled();expect(commit).not.toHaveBeenCalled();
+  // Finished: the next pass has nothing left to do for it, and the owner's retry reads committed.
+  expect((await runtime.reconcilePending()).filter(r=>r.eventId===eventId)).toEqual([]);
+  expect((await runtime.withSourceMutation(token=>runtime.submitPrepared(input,token))).state).toBe('committed');
+ });
+
  it.each([{withoutTelegram:false},{withoutTelegram:true}])('takes over witnessed pending source under a real new native lease without changing membership or original authority: %j',async({withoutTelegram})=>{
   const {f,runtime,peer,managers,leaseStores}=await setup({withoutTelegram});expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);
   await runtime.prepareNativeTailClosure();
