@@ -408,6 +408,9 @@ program
   .option('--answers <file>', 'A JSON file with name, purpose, door and autostart, for AI tools')
   .option('--status', 'Print the install status as JSON')
   .option('--restart', 'Begin again instead of continuing an unfinished install')
+  .option('--for-app', 'The Instar Mac app is running this install and will connect itself')
+  .option('--app-ticket', 'Write a fresh setup ticket for the Instar app (finished app installs only)')
+  .option('--key <publicKey>', 'The Instar app\'s device key, with --app-ticket')
   .action(async (opts) => {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (major < 20 || (major === 20 && minor < 12)) {

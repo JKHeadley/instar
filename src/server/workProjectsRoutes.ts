@@ -46,6 +46,8 @@ export interface ProjectCard { id: string; title: string; lane: string; needLine
 
 export interface ProjectRow {
   key: string; title: string; goal: string; state: ProjectState; stateWords: string; lastCheckAt: string | null;
+  /** Project apps (docs/specs/project-apps.md §3.3): present only when the feature is on. */
+  apps?: unknown[]; offers?: unknown[]; answers?: unknown[]; addable?: unknown[];
   /** When paused: the owner's own words and when (shown under the state). */
   paused: { at: string; quote: string } | null;
   /** For "Not known yet" only: the tracker's last check note, shortened, so the gap reads as known, not blank. */
@@ -158,9 +160,11 @@ export interface ProjectsDeps {
   boardFor: (req: Request) => { status: number; body: unknown } | null;
   bearerOk: (req: Request) => boolean;
   now?: () => number;
+  /** Project apps for one project (docs/specs/project-apps.md §3.3); null/absent when the feature is off. */
+  appsFor?: (conversationKey: string) => { apps: unknown[]; offers: unknown[]; answers: unknown[]; addable: unknown[] } | null;
 }
 
-export function mountProjectsRoutes(router: Router, deps: ProjectsDeps): void {
+export function mountProjectsRoutes(router: Router, deps: ProjectsDeps): { invalidate: () => void } {
   const now = () => (deps.now ? deps.now() : Date.now());
   let last: { at: number; answer: Omit<ProjectsAnswer, 'viewer'> } | null = null;
   const handle = (req: Request, res: Response) => {
@@ -175,10 +179,19 @@ export function mountProjectsRoutes(router: Router, deps: ProjectsDeps): void {
     if (!last || now() - last.at >= PROJECTS_CACHE_MS) {
       let cos: CosProjectRow[] | null | 'failed';
       try { cos = deps.projects(); } catch { cos = 'failed'; } // @silent-fallback-ok — named in couldNotCheck, never shown as no projects
-      last = { at: now(), answer: composeProjects(cos, deps.boardFor(req)) };
+      const composed = composeProjects(cos, deps.boardFor(req));
+      if (deps.appsFor) {
+        for (const p of composed.projects) {
+          let v: ReturnType<NonNullable<ProjectsDeps['appsFor']>> = null;
+          try { v = deps.appsFor(p.key); } catch { v = null; } // @silent-fallback-ok — apps are additive; a failed read leaves the row without them
+          if (v) Object.assign(p, v);
+        }
+      }
+      last = { at: now(), answer: composed };
     }
     res.json({ ...last.answer, viewer: { role } } satisfies ProjectsAnswer);
   };
   router.get('/work/projects', handle);
   router.get('/mobile/work/projects', handle);
+  return { invalidate: () => { last = null; } };
 }

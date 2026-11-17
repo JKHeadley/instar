@@ -44,7 +44,7 @@ ALWAYS_BLOCK_PATTERNS=(
 )
 
 for pattern in "${ALWAYS_BLOCK_PATTERNS[@]}"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     echo "BLOCKED: Catastrophic command detected: $pattern" >&2
     echo "This command is always blocked regardless of safety level." >&2
     echo "If you genuinely need to run this, the user must execute it directly." >&2
@@ -103,7 +103,7 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 for pattern in "${RISKY_PATTERNS[@]}"; do
-  if echo "$INPUT" | grep -qiE "$pattern"; then
+  if echo "$INPUT" | grep -qiE -e "$pattern"; then
     # Allow the safe force-with-lease-to-own-branch case past the force-push patterns.
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue

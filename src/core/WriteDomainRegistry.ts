@@ -380,6 +380,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'writes ~/.instar/host-maintenance/enrol-offers.json for this physical machine; outside the agent home, never git-synced',
   } });
+  // Restart now offer (CMT-1199): the card's nonce lives in ~/.instar/host-maintenance on THIS machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/restart-now/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/restart-now.<agent>.json for this physical machine; outside the agent home, never git-synced',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
@@ -589,6 +596,20 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       },
     });
   }
+
+  // Project apps (docs/specs/project-apps.md §5): offers, owner answers and pin acts are journal
+  // records of the `project-app-record` kind, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (project-app-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
 
   // POST /topic-profile/new-topic-default — the "default for dashboard-created
   // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "local-pin-guess-budget",
+  "sessionId": "490121e8-ac02-4bab-975b-0d6070e0df16",
+  "timestamp": "2026-11-17T03:48:13.008Z",
+  "artifactPath": "upgrades/side-effects/local-pin-guess-budget.md",
+  "artifactSha256": "a91be351b59acecef2c2d06b780461245371dda2d51deefb26213462e293b3e6",
+  "coveredFiles": [
+    "docs/specs/local-pin-guess-budget.eli16.md",
+    "src/server/AgentServer.ts",
+    "tests/integration/dashboard-pin-throttle.test.ts",
+    "upgrades/next/local-pin-guess-budget.md",
+    "upgrades/side-effects/local-pin-guess-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow change to one route's attempt admission (~50 LOC), fully reversible by revert, one new durable counter key that expires; security-sensitive, so independent second pass done and its concerns addressed.",
+  "eli16Path": "docs/specs/local-pin-guess-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-pin-guess-budget.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

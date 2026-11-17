@@ -116,6 +116,9 @@ export class ConversationGraphDefault {
  /** This route is reachable without a token, so what it logs is fixed-format and bounded. */
  private readonly loggedPeerRefusals=new Set<string>();
  private lastPinFailure:string|null=null;
+ /** Re-sharing the complete pin set with peers once every pin is held here: upkeep, one pass at a time, spaced out. */
+ private repinInFlight:Promise<void>|null=null;
+ private lastRepinAt=0;
  private openStepFailures=new Map<string,string>();
  /** Says why the graph is not ready yet, once per change, without private content. */
  private noteOpenStep(step:string,error:unknown):void{const reason=error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:error instanceof Error?error.name:'unknown';if(this.openStepFailures.get(step)===reason)return;this.openStepFailures.set(step,reason);console.warn(`[conversation-graph] ${step} not passing yet: ${reason}`);}
@@ -300,7 +303,16 @@ if(!publication&&this.publishedMarker())throw new Error('graph-bootstrap-establi
   const waiting=store.waitingMembers(publication.membership.members);for(let offset=0;offset<waiting.length;offset+=4)await Promise.all(waiting.slice(offset,offset+4).map(send));
   // Pins are public signed durability evidence. Every recipient must retain the
   // complete set before constructing its actual active-profile authority.
-  if(!store.waitingMembers(publication.membership.members).length){const peers=this.roster().filter(row=>row.machineId!==local).map(row=>row.machineId);for(let offset=0;offset<peers.length;offset+=4)await Promise.all(peers.slice(offset,offset+4).map(send));}
+  // Once every pin is held here, sharing the complete set again is upkeep for the peers, not something this
+  // request needs: it runs in the background, one pass at a time and at most every 30 s. It used to be awaited on
+  // EVERY owner request inside the serialized section, so one slow or asleep machine held each Conversations read
+  // and write for the peer timeout, one after another (accept-all round 2: 30 s answers, then 408).
+  if(!store.waitingMembers(publication.membership.members).length&&!this.repinInFlight&&Date.now()-this.lastRepinAt>=30_000){
+   this.lastRepinAt=Date.now();const peers=this.roster().filter(row=>row.machineId!==local).map(row=>row.machineId);
+   this.repinInFlight=(async()=>{for(let offset=0;offset<peers.length;offset+=4){if(this.closed)return;await Promise.all(peers.slice(offset,offset+4).map(send));}})()
+    .catch(()=>{/* @silent-fallback-ok: send reports each failed delivery itself (owned-custody-member-pin-pending); the next pass retries. */})
+    .finally(()=>{this.repinInFlight=null;});
+  }
  }
  private async receive(packet:PeerWire){if(!this.native||this.closed)throw new Error('graph-bootstrap-native-unavailable');const local=this.native.identity.loadIdentity().machineId;
   // This route takes no token, so refuse what is cheap to refuse before reading graph state.
@@ -334,5 +346,5 @@ if(!publication&&this.publishedMarker())throw new Error('graph-bootstrap-establi
   const raw={v:1 as const,agentId:this.agentId,sender:local,target:packet.sender,requestHash:canonicalHash(packet),body};return{...raw,signature:signGraphRecord(RES,raw,this.native.identity.loadSigningKey())};
  }
  start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>{if(this.tickWork||this.closed)return;this.tickWork=this.serialized(async()=>{if(!this.native)return;const publication=this.publication();if(publication){await this.distribute(publication);await this.compose(publication);}}).catch(()=>/* @silent-fallback-ok: reports a degradation and retries on the next tick */this.report('owned-custody-background-pending')).finally(()=>{this.tickWork=null;});},10000);this.timer.unref();}
- async close(){this.closed=true;await this.closeSourceSessionsV2();this.privateFrames?.close();this.metadataFrames.close();if(this.timer)clearInterval(this.timer);this.timer=null;this.closed=true;await this.tickWork;await Promise.allSettled([...this.peerJobs]);await this.chain;await this.closeSourceSessionsV2();this.privateFrames?.close();await this.enrolledSpoolValue?.close();await this.runtimeValue?.close();this.runtimeListeners.clear();this.transitionValue?.close();this.owned?.close();await this.standalone?.close();}
+ async close(){this.closed=true;await this.closeSourceSessionsV2();this.privateFrames?.close();this.metadataFrames.close();if(this.timer)clearInterval(this.timer);this.timer=null;this.closed=true;await this.tickWork;await this.repinInFlight;await Promise.allSettled([...this.peerJobs]);await this.chain;await this.closeSourceSessionsV2();this.privateFrames?.close();await this.enrolledSpoolValue?.close();await this.runtimeValue?.close();this.runtimeListeners.clear();this.transitionValue?.close();this.owned?.close();await this.standalone?.close();}
 }

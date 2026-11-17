@@ -12,7 +12,7 @@ export class ConversationGraphHeaderCustody {
  constructor(stateDir:string,private readonly runtime:ConversationGraphReplicationRuntime){
   this.headers=new EffortHeaderStore(stateDir,(headerId,bundleRef)=>{
    if(this.runtime.source.isErased({sourceKind:'header',sourceId:headerId}))return null;
-   const records=this.runtime.retainedProjection().records.filter(record=>record.coreType==='header-op'&&record.core.kind==='set-effort-title'
+   const records=this.runtime.retainedForRead().records.filter(record=>record.coreType==='header-op'&&record.core.kind==='set-effort-title'
     &&record.core.headerId===headerId&&(record.core.bundleRef as {id?:string}|undefined)?.id===bundleRef.id);
    // A duplicate bundle reference cannot choose a different source by arrival
    // order. Only the unique immutable operation can resolve this header text.
@@ -33,9 +33,11 @@ export class ConversationGraphHeaderCustody {
  }
  /** Called before an owner read or correction snapshot. No unverified event,
   * pending proposal or bare witness acceptance reaches applyCertified. */
- synchronize():void{
+ /** `retained`: the records of a read view already built for this read (owner reads); a correction snapshot
+  * passes none and gets a fresh build. */
+ synchronize(retained?:readonly ConversationGraphReplicationRecord[]):void{
   this.incomplete=false;
-  const records=this.runtime.retainedProjection().records.filter(record=>record.coreType==='header-op')
+  const records=(retained??this.runtime.retainedProjection().records).filter(record=>record.coreType==='header-op')
    .sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
   const entries:Array<{operation:HeaderOperation;content:{title:string;salt:string}|null}>=[];
   for(const record of records){

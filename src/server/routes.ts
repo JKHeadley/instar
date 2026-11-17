@@ -66,6 +66,9 @@ import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from '.
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
+import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
+import { projectAppsEnabled } from '../core/ProjectAppStore.js';
+import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
@@ -93,6 +96,7 @@ import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMon
 import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
 import { getActiveEnrolmentStatusReader } from '../monitoring/machineMaintenance/enrolmentReadiness.js';
 import { getActiveEnrolmentController, setEnrolmentTapsProvable } from '../monitoring/machineMaintenance/EnrolmentController.js';
+import { getActiveRestartNowController } from '../monitoring/machineMaintenance/RestartNowController.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import {
   fetchMaintenancePool,
@@ -2094,6 +2098,8 @@ export interface RouteContext {
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+  projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
   chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
@@ -3051,6 +3057,28 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
   'grokInteractiveSessions',
 ];
 
+/** Keys that name JavaScript's object machinery; never valid as config keys (SEC-071). */
+const RESERVED_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** The dotted path of the first reserved key anywhere in a JSON value, or null. */
+export function findReservedObjectKey(value: unknown, prefix = ''): string | null {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = findReservedObjectKey(value[i], `${prefix}[${i}]`);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  for (const key of Object.keys(value)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (RESERVED_OBJECT_KEYS.has(key)) return keyPath;
+    const hit = findReservedObjectKey((value as Record<string, unknown>)[key], keyPath);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
@@ -3271,7 +3299,7 @@ export function createRoutes(ctx: RouteContext): Router {
     machineId: () => ctx.meshSelfId ?? null,
   });
   // Projects on the Work door (work-front-doors stage 2a): the Chief of Staff's projects with their cards.
-  mountProjectsRoutes(router, {
+  const _projectsRoute = mountProjectsRoutes(router, {
     projects: () => {
       if (!ctx.chiefOfStaffLoop) return null;
       return ctx.chiefOfStaffLoop.projectsOverview() ?? 'failed';
@@ -3279,6 +3307,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // Every card, no lane cut: a card past the board page's cut must still appear under its project.
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req, { full: true }) : { status: 503, body: { error: 'work-board-starting' } }),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    // Project apps (docs/specs/project-apps.md §3.3): additive fields on each row, only when the feature is on.
+    appsFor: (key) => { const rt = ctx.projectAppsRuntime?.() ?? null; return rt && projectAppsEnabled(ctx.config) ? rt.view(key) : null; },
+  });
+  ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
+  mountProjectAppsRoutes(router, {
+    runtime: () => ctx.projectAppsRuntime?.() ?? null,
+    enabled: () => projectAppsEnabled(ctx.config),
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    ownerProof: (req) => {
+      const token = req.headers['x-instar-operator-session'];
+      return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true ? { via: 'console', principal: 'owner (dashboard unlock)' } : null;
+    },
+    invalidateWork: () => _projectsRoute.invalidate(),
+    log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+    opens: () => projectAppsOpens(ctx.config.stateDir),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
@@ -15937,12 +15980,23 @@ export function createRoutes(ctx: RouteContext): Router {
     catch (err) { res.status(500).json({ error: 'enrol-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
   });
 
+  // Restart now (Part E operator trigger, CMT-1199): sends the OWNER a card for THIS machine.
+  // Nothing restarts here: the restart begins only on the owner's own tap of that card.
+  router.post('/machine-maintenance/restart-now/offer', async (_req, res) => {
+    const c = getActiveRestartNowController();
+    if (!c) { res.status(503).json({ error: 'restart now not enabled on this agent' }); return; }
+    try {
+      const r = await c.offer();
+      res.status(r.result === 'refused' ? 409 : r.result === 'not-delivered' ? 502 : 200).json(r);
+    } catch (err) { res.status(500).json({ error: 'restart-now-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
+
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
       res.json(await maintenancePoolView('status', async () => {
         const local = getActiveDrainRehearsal();
         return local
-          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() } as Record<string, unknown> }
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus(), restartNow: getActiveRestartNowController()?.readActive() ?? null } as Record<string, unknown> }
           : { reason: 'not-enabled' };
       }));
       return;
@@ -15954,7 +16008,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
     // Wedge detection (Part E) rides it too, dry-run: null where the sampler is not wired, never a guessed value.
-    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() });
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus(), restartNow: getActiveRestartNowController()?.readActive() ?? null });
   });
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside
@@ -37636,6 +37690,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Deep-merges the request body into config.json and updates runtime ctx.config.
   router.patch('/config', (req, res) => {
     const patch = req.body;
+    // SEC-071: a key that names JavaScript's object machinery (`__proto__`, `prototype`,
+    // `constructor`) at ANY depth is refused before anything reads or merges the patch. A JSON
+    // body keeps an own `__proto__` key, and a merge that follows it writes into every object
+    // in the process (and past the PIN check on the flood-brake switch).
+    const reservedAt = findReservedObjectKey(patch);
+    if (reservedAt) {
+      res.status(400).json({ error: `"${reservedAt}" is not a valid config key` });
+      return;
+    }
     if (patch?.notifications && typeof patch.notifications === 'object' && 'selectivity' in patch.notifications) { res.status(403).json({ error: 'Use the confirmed notification preference surface' }); return; }
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
@@ -37784,7 +37847,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (sagPatch) {
         const deepMerge = (base: Record<string, any>, overlay: Record<string, unknown>): Record<string, any> => {
           for (const [k, v] of Object.entries(overlay)) {
-            if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+            if (RESERVED_OBJECT_KEYS.has(k)) continue; // already refused above; never followed here
+            const own = Object.prototype.hasOwnProperty.call(base, k);
+            if (v && typeof v === 'object' && !Array.isArray(v) && own && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
               deepMerge(base[k], v as Record<string, unknown>);
             } else {
               base[k] = v;

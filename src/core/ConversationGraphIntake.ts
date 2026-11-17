@@ -305,6 +305,25 @@ export class ConversationGraphIntake {
     });this.queue=operation.catch(()=>undefined);return operation;
   }
 
+  /**
+   * Durably drop a reservation another writer's record has superseded: the same idempotency key is already
+   * saved and certified with a different packet (this machine held the lease for a moment and reserved its own
+   * copy). Restore never admits it, yet every native-tail reader counted it, so no tail could ever close. The
+   * caller proves the supersession; this re-checks, inside the intake queue, that the file still holds exactly
+   * that packet. True when it was dropped.
+   */
+  retireSuperseded(key:string,packetHash:string):Promise<boolean>{
+    const work=this.queue.then(async()=>{
+      const file=path.join(this.directory,this.digest(key)+'.json');let parsed:Reservation;
+      try{parsed=this.verify(await this.read(file),key);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}
+      if(canonicalHash(parsed.record.packet)!==packetHash)return false;
+      await SafeFsExecutor.safeUnlink(file,{operation:'conversation-graph-intake:retire-superseded-reservation'});
+      await this.syncDirectory(this.directory);return true;
+    });
+    this.queue=work.catch(()=>{/* @silent-fallback-ok: only queue scheduling recovers; the caller receives the failure. */});
+    return work;
+  }
+
   /** Called from the serialized reservation builder to allocate the next global
    * packet position together with the runtime's verified durable source. */
   nativeTailReservations():Promise<ConversationGraphReplicationRecord[]>{const work=this.queue.then(()=>this.frozenReservations());this.queue=work.catch(()=>{/* @silent-fallback-ok: only queue scheduling recovers; the caller receives the original inventory failure and cannot sign closure. */});return work;}
