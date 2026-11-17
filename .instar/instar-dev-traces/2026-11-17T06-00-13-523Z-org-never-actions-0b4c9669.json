@@ -17,5 +17,10 @@
   "eli16Path": "docs/specs/org-never-actions.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
   "secondPass": "false",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "annotations and a doc line"
+  }
 }
