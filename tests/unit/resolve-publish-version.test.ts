@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — .mjs script, no type declarations; runtime import is fine under vitest
-import { compareSemver, resolvePublishVersion, highestConsumedVersion } from '../../scripts/resolve-publish-version.mjs';
+import { compareSemver, resolvePublishVersion, highestConsumedVersion, tagNamesFromLsRemote } from '../../scripts/resolve-publish-version.mjs';
 
 describe('compareSemver', () => {
   it('detects greater-than across each semver field', () => {
@@ -73,6 +73,13 @@ describe('staged npm versions (fb-354bb7b5-b5d)', () => {
     expect(highestConsumedVersion(['v1.3.1872', 'published/v1.3.1873', 'v1.3.186', 'v1.3.999', 'other', 'published/x'])).toBe('1.3.1873');
     expect(highestConsumedVersion(['nope', ''])).toBeNull();
     expect(highestConsumedVersion([])).toBeNull();
+  });
+
+  it('parses git ls-remote --tags output, folding peeled lines', () => {
+    const out = 'aaa\trefs/tags/v1.3.1872\nbbb\trefs/tags/v1.3.1872^{}\nccc\trefs/tags/published/v1.3.1873\nddd\trefs/heads/main\n';
+    expect(tagNamesFromLsRemote(out)).toEqual(['v1.3.1872', 'v1.3.1872', 'published/v1.3.1873']);
+    expect(highestConsumedVersion(tagNamesFromLsRemote(out))).toBe('1.3.1873');
+    expect(tagNamesFromLsRemote('')).toEqual([]);
   });
 
   it('regression: 1.3.1873 staged and invisible on npm resolves 1.3.1874, not 1.3.1873 again', () => {

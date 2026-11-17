@@ -31,10 +31,10 @@
  * version: the effective "last released" is max(npm, consumed tags).
  *
  * Usage:
- *   node scripts/resolve-publish-version.mjs <localVersion> <npmVersion> [--tags-from-git]
+ *   node scripts/resolve-publish-version.mjs <localVersion> <npmVersion> [--tags-from-remote <remote>]
  *   → prints the resolved version to stdout, nothing else. With
- *     --tags-from-git it also reads `git tag -l` in the current directory
- *     (the caller fetches tags first).
+ *     --tags-from-remote it also reads the remote's tags with
+ *     `git ls-remote --tags` (cheap; no fetch, works in a shallow checkout).
  *
  * Exported as a function for unit testing.
  */
@@ -74,6 +74,19 @@ export function highestConsumedVersion(tags) {
 }
 
 /**
+ * Tag names from `git ls-remote --tags` output (`<sha>\trefs/tags/<name>`,
+ * peeled `^{}` lines folded into their tag).
+ * @param {string} out
+ * @returns {string[]}
+ */
+export function tagNamesFromLsRemote(out) {
+  return String(out || '').split('\n')
+    .map((l) => l.split('\t')[1] || '')
+    .filter((r) => r.startsWith('refs/tags/'))
+    .map((r) => r.slice('refs/tags/'.length).replace(/\^\{\}$/, ''));
+}
+
+/**
  * @param {string} localVersion package.json version
  * @param {string} npmVersion `npm view instar version` (or "0.0.0" if unpublished)
  * @returns {{version: string, reason: "operator-intended"|"routine-patch"}}
@@ -97,18 +110,24 @@ export function resolvePublishVersion(localVersion, npmVersion, consumedVersion 
 // CLI entrypoint — only runs when invoked directly, not when imported.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
-  const fromGit = args.includes('--tags-from-git');
-  const [localVersion, npmVersion] = args.filter((a) => a !== '--tags-from-git');
-  if (!localVersion || !npmVersion) {
-    console.error('usage: resolve-publish-version.mjs <localVersion> <npmVersion> [--tags-from-git]');
+  const i = args.indexOf('--tags-from-remote');
+  const remote = i >= 0 ? args[i + 1] : null;
+  const [localVersion, npmVersion] = i >= 0 ? args.filter((_, k) => k !== i && k !== i + 1) : args;
+  if (!localVersion || !npmVersion || (i >= 0 && !remote)) {
+    console.error('usage: resolve-publish-version.mjs <localVersion> <npmVersion> [--tags-from-remote <remote>]');
     process.exit(2);
   }
   let consumed = null;
-  if (fromGit) {
+  if (remote) {
     const { execFileSync } = await import('node:child_process');
-    const out = execFileSync('git', ['tag', '-l', 'v*', 'published/v*'], { encoding: 'utf-8' });
-    consumed = highestConsumedVersion(out.split('\n'));
-    if (consumed) console.error(`highest consumed tag: ${consumed}`);
+    try {
+      const out = execFileSync('git', ['ls-remote', '--tags', remote], { encoding: 'utf-8', timeout: 60_000 });
+      consumed = highestConsumedVersion(tagNamesFromLsRemote(out));
+      if (consumed) console.error(`highest consumed tag: ${consumed}`);
+    } catch (e) {
+      // Best-effort: without the tags this resolves exactly as before.
+      console.error(`could not read tags from ${remote} (${e.message}); resolving from npm only`);
+    }
   }
   const { version } = resolvePublishVersion(localVersion, npmVersion, consumed);
   process.stdout.write(version);

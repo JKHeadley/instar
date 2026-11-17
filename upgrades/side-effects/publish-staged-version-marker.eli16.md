@@ -24,3 +24,7 @@ Right after npm accepts an upload, the release now pushes a second, lightweight 
 ## What a reader needs to decide
 
 Nothing beyond normal review. Undoing it is a plain revert; the extra tags do nothing once the code that reads them is gone.
+
+## Review
+
+An independent reviewer read the change cold. In round 1 it found that writing the marker could run the full set of pre-push checks in the middle of a release, and that one claim in the review notes was wrong. Both were fixed (the marker is now written without those checks, and the notes were corrected), and in round 2 the reviewer agreed.

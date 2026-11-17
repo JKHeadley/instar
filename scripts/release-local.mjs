@@ -654,12 +654,9 @@ let VERSION;
   const npmVersion = npmPublishedVersion();
   const localVersion = readPkgVersion();
   console.log(`npm has:        ${npmVersion}\npackage.json:   ${localVersion}`);
-  // Count vX.Y.Z and published/vX.Y.Z tags as consumed: npm may still hide a
-  // staged publish (fb-354bb7b5-b5d). A failed tag fetch resolves from npm only.
-  if (run('git', ['fetch', '--quiet', '--tags', opts.remote], { capture: true, quiet: true }).status !== 0) {
-    console.log('WARNING: could not fetch tags; resolving from npm only');
-  }
-  VERSION = must('node', ['scripts/resolve-publish-version.mjs', localVersion, npmVersion, '--tags-from-git'], { capture: true }).stdout.trim();
+  // Count the remote's vX.Y.Z and published/vX.Y.Z tags as consumed: npm may
+  // still hide a staged publish (fb-354bb7b5-b5d).
+  VERSION = must('node', ['scripts/resolve-publish-version.mjs', localVersion, npmVersion, '--tags-from-remote', opts.remote], { capture: true }).stdout.trim();
   if (!SEMVER.test(VERSION)) fail(`resolve-publish-version printed ${JSON.stringify(VERSION)}, not X.Y.Z`);
   console.log(`resolved:       ${VERSION}`);
   VERSION_FOR_MSG = VERSION;
@@ -753,10 +750,14 @@ console.log('      attestation; everything else matches publish.yml.');
 
 // Mark the version consumed before the smoke wait, as publish.yml does, so a
 // run on any machine skips it while npm still holds it staged. Best-effort.
-// A tag left from an earlier failed attempt at this same number is kept as is.
-run('git', ['tag', `published/v${VERSION}`, 'HEAD'], { capture: true, quiet: true });
-if (run('git', ['push', opts.remote, `published/v${VERSION}`], { capture: true, quiet: true }).status !== 0) {
-  console.log(`WARNING: could not push published/v${VERSION}; a concurrent publisher may reuse it while npm keeps it staged`);
+// Created through the GitHub API, so no git hook runs between publish and smoke.
+// HEAD is <remote>/main (checked in preflight), so the commit exists there.
+{
+  const sha = must('git', ['rev-parse', 'HEAD'], { capture: true, quiet: true }).stdout.trim();
+  const mark = run('gh', ['api', '--silent', `repos/${SLUG}/git/refs`, '--raw-field', `ref=refs/tags/published/v${VERSION}`, '--raw-field', `sha=${sha}`], { capture: true, quiet: true });
+  if (mark.status !== 0) {
+    console.log(`WARNING: could not create published/v${VERSION} (${String(mark.stderr || '').trim().slice(0, 200)}); a concurrent publisher may reuse it while npm keeps it staged`);
+  }
 }
 
 // ── 11. smoke ─────────────────────────────────────────────────────────
