@@ -21545,9 +21545,13 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
   SAFETY_LEVEL=$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('safety', {}).get('level', 1))" 2>/dev/null || echo "1")
 fi
 
-# ALWAYS blocked (catastrophic, irreversible)
-for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+# ALWAYS blocked (catastrophic, irreversible). The database-schema destruction rules match the
+# setup template (src/templates/hooks/dangerous-command-guard.sh); a parity test keeps them in step.
+# -e: a pattern that starts with "-" is a pattern, not a grep option.
+# The setup template's plain-SQL ask-first rules (DROP/TRUNCATE/DELETE FROM) are deliberately NOT here:
+# updated agents have long run without them and routine sqlite maintenance would start blocking (SEC-043).
+for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:" "--accept-data-loss" "prisma migrate reset"; do
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     echo "BLOCKED: Catastrophic command detected: $pattern" >&2
     echo "Always blocked regardless of safety level. User must execute directly." >&2
     exit 2
@@ -21556,7 +21560,7 @@ done
 
 # Deployment/push commands — check coherence gate first
 for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wrangler deploy" "fly deploy" "railway up"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     if [ -f "$INSTAR_DIR/config.json" ]; then
       PORT=$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('port', 4040))" 2>/dev/null || echo "4040")
       TOPIC_ID="\${INSTAR_TELEGRAM_TOPIC:-}"
@@ -21599,8 +21603,8 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
-  if echo "$INPUT" | grep -qiE "$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)" "prisma db push" "prisma migrate deploy"; do
+  if echo "$INPUT" | grep -qiE -e "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
