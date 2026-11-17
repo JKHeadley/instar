@@ -42,6 +42,19 @@ export function parseApproveCommand(text: string): string | null {
 export const DISCLOSURE = 'approved from your account, which your agent can also use; this does not prove who approved';
 
 export type AdapterKind = 'telegram' | 'slack';
+/** Where a request was sent: a chat adapter's card, or (no chat) the paired devices that accepted (app-trust-approval §B). */
+export type RequestAdapter = AdapterKind | 'device';
+
+/** What a device approval says it is, wherever it is shown or exported (app-trust-approval §B, Recording). */
+export function deviceApprovalDisclosure(deviceName: string | null): string {
+  return `Approved on ${deviceName ? deviceName : 'a paired device'}. The list of paired devices is kept on the agent's own computer, so this is not independently verified.`;
+}
+
+/** What the card and the agent say when a consumption has no outcome record (app-trust-approval §B). */
+export const UNKNOWN_OUTCOME_TEXT = 'Your approval was recorded, but Instar can\'t confirm the change took effect. Check the setting, and ask again if it isn\'t there.';
+
+/** What the agent tells the person when nothing can approve yet (app-trust-approval, What the person sees). */
+export const SET_UP_APPROVALS_TEXT = 'Turn on approvals in the Instar app (open "Changes to approve": on an iPhone under Permissions, on a Mac with Touch ID in the agent\'s window), then I\'ll ask again.';
 
 export function acceptanceStatement(p: { adapter: AdapterKind; accountId: string; installationId: string }): string {
   const service = p.adapter === 'telegram' ? 'Telegram' : 'Slack';
@@ -102,8 +115,8 @@ export interface RequestRecord {
   code: string;
   proposalHash: string;
   principal: string;
-  adapter: AdapterKind;
-  /** The person's platform id for that adapter, from unwritable config. */
+  adapter: RequestAdapter;
+  /** The person's platform id for that adapter, from unwritable config (empty for `device`). */
   approverPlatformId: string;
   /** The message id of the card the server sent into the person's direct chat. */
   cardMessageId: string;

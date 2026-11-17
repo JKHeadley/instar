@@ -789,11 +789,11 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     key: 'monitoring.bootHealthBeacon.enabled',
     kind: 'config',
     configPath: 'monitoring.bootHealthBeacon.enabled',
-    defaultEnabled: false,
+    defaultEnabled: true,
     process: 'server',
     expectRuntime: false,
     component: 'BootHealthBeacon',
-    description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
+    description: 'Boot-time listener: opens the port at boot start and answers a typed starting state (on for every agent since 2026-11-16; enabled:false turns it off).',
   },
   {
     key: 'monitoring.blockerLifecycleLedger.enabled',

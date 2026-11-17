@@ -6,7 +6,8 @@
  * could not be checked.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { poolPeerFetch, isCloudflareEdgeFailure } from '../../src/server/poolPeerFetch.js';
+import { poolPeerFetch, isCloudflareEdgeFailure, PoolPeerBootingError } from '../../src/server/poolPeerFetch.js';
+import { BOOT_STATE_HEADER } from '../../src/server/BootReadiness.js';
 
 const PEER = {
   machineId: 'm_e8c9b243c449b1337713bc29d47a6f3a',
@@ -79,5 +80,29 @@ describe('what never falls through', () => {
     const { ropes: _r, ...single } = PEER;
     expect((await poolPeerFetch(undefined, single, '/x', undefined, f as unknown as typeof fetch, admitAll)).status).toBe(530);
     expect(f).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a booting peer (listen early) is unreached, never "feature off"', () => {
+  const booting = () => new Response(JSON.stringify({ state: 'starting' }), { status: 503, headers: { [BOOT_STATE_HEADER]: 'starting', 'retry-after': '10' } });
+
+  it('the beacon\'s typed starting 503 throws PoolPeerBootingError, records the rope healthy, and does not fall through', async () => {
+    const record = vi.fn();
+    const f = vi.fn(async () => booting());
+    await expect(poolPeerFetch(record, PEER, '/machine-maintenance', undefined, f as unknown as typeof fetch, admitAll)).rejects.toBeInstanceOf(PoolPeerBootingError);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith(PEER.machineId, 'cloudflare', true, expect.any(Number), PEER.ropes[0].url);
+  });
+
+  it('a POST to a booting peer throws too (no route ran there)', async () => {
+    const f = vi.fn(async () => booting());
+    await expect(poolPeerFetch(undefined, PEER, '/x', { method: 'POST' }, f as unknown as typeof fetch, admitAll)).rejects.toBeInstanceOf(PoolPeerBootingError);
+  });
+
+  it('a plain 503 without the boot header is still returned as-is (a dark feature)', async () => {
+    const { ropes: _r, ...single } = PEER;
+    const f = vi.fn(async () => new Response('{}', { status: 503 }));
+    expect((await poolPeerFetch(undefined, single, '/x', undefined, f as unknown as typeof fetch, admitAll)).status).toBe(503);
   });
 });

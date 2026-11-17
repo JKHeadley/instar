@@ -15,6 +15,8 @@
  * binary resolution failures, restart loops).
  */
 
+import { describeRestartRequester, recordRestartRequest } from '../core/restartRequestAttribution.js';
+import { BOOT_STATE_HEADER } from '../server/BootReadiness.js';
 import crypto from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -245,6 +247,10 @@ export class ServerSupervisor extends EventEmitter {
   // reset — a server that has never gone healthy after 3× the grace window is
   // hung, not booting. Cleared on the first healthy tick.
   private firstSpawnedAt = 0;
+  // Listen early: when the boot beacon first answered `starting` in this episode (0 = not booting).
+  private bootingSince = 0;
+  /** What the last /health probe saw (set by checkHealth). */
+  private lastHealthProbe: 'healthy' | 'starting' | 'down' = 'down';
   private readonly graceCeilingMultiplier = 3;
   private retryCooldownMs = 5 * 60_000; // 5 minutes cooldown after max retries exhausted
   private maxRetriesExhaustedAt = 0;
@@ -1227,6 +1233,7 @@ export class ServerSupervisor extends EventEmitter {
       console.log(`[Supervisor] Server started in tmux session: ${this.serverSessionName}`);
       this.isRunning = true;
       this.spawnedAt = Date.now();
+      this.bootingSince = 0; // a fresh process starts a fresh boot episode
       this.startHealthChecks();
       return true;
     } catch (err) {
@@ -1420,6 +1427,7 @@ export class ServerSupervisor extends EventEmitter {
           if (alive) {
             this.lastHealthy = Date.now();
             this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
+            this.bootingSince = 0;
             if (!this.isRunning) {
               this.isRunning = true;
               this.emit('serverUp');
@@ -1430,8 +1438,31 @@ export class ServerSupervisor extends EventEmitter {
       }
 
       try {
+        this.lastHealthProbe = 'down';
         const healthy = await this.checkHealth();
+        // (cast: TS keeps the 'down' narrowing from the line above across the awaited call)
+        const probe = healthy ? 'healthy' : (this.lastHealthProbe as 'healthy' | 'starting' | 'down');
       if (this.detached) return; // detached while the probe was in flight: nothing below may act
+        // Listen early: the boot beacon says the process is alive and still booting. That is
+        // not a failure (a slow boot past the grace window must not be restarted mid-boot,
+        // topic 21816) and not "up" (nothing may be forwarded into it yet). Bounded: a boot
+        // still "starting" after the grace ceiling is treated as a failure like any other.
+        // The bound runs from the episode's first spawn (the existing Fix C ceiling) when the
+        // supervisor spawned it, else from the first "starting" probe (an adopted server). It is
+        // cleared only when the server answers healthy, never by a "down" probe in between.
+        // A "starting" answer is progress evidence, so it clears earlier failures: a sync-heavy
+        // boot step blocks the beacon too, and its timed-out probes must not add up to a restart
+        // of a healthy boot (second review, 2026-11-17). The ceiling stays the backstop: a boot
+        // alternating starting and down is restarted once the ceiling passes.
+        if (probe === 'starting') {
+          if (this.bootingSince === 0) this.bootingSince = now;
+          const anchor = this.firstSpawnedAt > 0 ? Math.min(this.firstSpawnedAt, this.bootingSince) : this.bootingSince;
+          if (!graceCeilingExceeded && now - anchor < this.startupGraceMs * this.graceCeilingMultiplier) {
+            this.consecutiveFailures = 0;
+            this.checkRestartRequest();
+            return;
+          }
+        }
         if (healthy) {
           if (!this.isRunning) {
             if (this.maintenanceWaitStartedAt > 0) {
@@ -1458,6 +1489,7 @@ export class ServerSupervisor extends EventEmitter {
           this.consecutiveFailures = 0;
           this.consecutiveBindFailures = 0;
           this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
+          this.bootingSince = 0; // listen early: the boot episode is over
 
           // F-6: notify any pending Remediator restart-requested entries
           // that the planned restart has completed. Idempotent.
@@ -1501,6 +1533,17 @@ export class ServerSupervisor extends EventEmitter {
   }
 
   private async checkHealth(): Promise<boolean> {
+    this.lastHealthProbe = await this.probeHealth();
+    return this.lastHealthProbe === 'healthy';
+  }
+
+  /**
+   * One /health probe. `starting`: the boot beacon answered (a 503 marked
+   * `x-instar-boot-state: starting`, BootReadiness), so the process is alive and
+   * booting but not serving. Since 2026-11-16 the beacon no longer answers 200 there,
+   * so every caller that reads 200 as "serving" stays right.
+   */
+  private async probeHealth(): Promise<'healthy' | 'starting' | 'down'> {
     try {
       const controller = new AbortController();
       // Use 8s timeout — 5s is too aggressive under high CPU load where even localhost
@@ -1511,12 +1554,13 @@ export class ServerSupervisor extends EventEmitter {
         const response = await fetch(`http://127.0.0.1:${this.port}/health`, {
           signal: controller.signal,
         });
-        return response.ok;
+        if (response.ok) return 'healthy';
+        return response.status === 503 && response.headers.get(BOOT_STATE_HEADER) === 'starting' ? 'starting' : 'down';
       } finally {
         clearTimeout(timer);
       }
     } catch {
-      return false;
+      return 'down';
     }
   }
 
@@ -1595,6 +1639,7 @@ export class ServerSupervisor extends EventEmitter {
       this.slept = false;
       // Give the fresh server the full startup grace from now (mirrors restart path).
       this.spawnedAt = Date.now();
+      this.bootingSince = 0;
       this.consecutiveFailures = 0;
       this.restartAttempts = 0;
       this.spawnServer();
@@ -1664,7 +1709,12 @@ export class ServerSupervisor extends EventEmitter {
         return;
       }
 
-      console.log(`[Supervisor] Restart requested by ${data.requestedBy} for v${data.targetVersion}`);
+      // Name the requester plainly. A hand-written flag names nobody; it still restarts
+      // (refusing would leave its change unapplied, unannounced), but it is said and recorded.
+      const requester = describeRestartRequester(data);
+      console.log(typeof data.targetVersion === 'string' && data.targetVersion
+        ? `[Supervisor] Restart requested by ${requester.label} for v${data.targetVersion}`
+        : `[Supervisor] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${String(data.reason).slice(0, 200)}` : ''})`);
 
       // RESTART LOOP DETECTION: If we've already restarted for this version,
       // the binary isn't actually updating (npx cache mismatch). Don't loop.
@@ -1710,6 +1760,10 @@ export class ServerSupervisor extends EventEmitter {
         console.log(`[Supervisor] Planned restart — entering maintenance wait (${Math.round(this.maintenanceWaitMs / 60_000)}m window)`);
       }
 
+      // Recorded only once the restart is really going ahead (a request skipped as a loop is
+      // not the one that ended this process, so it must never show as previousRestart).
+      recordRestartRequest(this.stateDir, data, 'supervisor');
+
       // Clear the flag BEFORE restarting to prevent re-triggering
       try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:877' }); } catch { /* ignore */ }
 
@@ -1722,7 +1776,7 @@ export class ServerSupervisor extends EventEmitter {
       // Initiate graceful restart
       this.performGracefulRestart(isUpdateRestart
         ? `update to v${data.targetVersion}`
-        : `restart requested by ${String(data.requestedBy ?? 'unknown')}`);
+        : `restart requested by ${requester.label}`);
     } catch {
       // Malformed flag — clean up
       try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:890' }); } catch { /* ignore */ }

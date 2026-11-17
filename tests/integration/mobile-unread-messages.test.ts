@@ -302,4 +302,20 @@ describe('unread messages — the catch-up route (§3.3)', () => {
     expect(fresh.store.dueCount()).toBe(0);
     expect(fresh.store.catchUpState('m1')).toMatchObject({ done: true, cursor: null });
   });
+
+  it('a peer still booting (the boot beacon\'s typed 503) is a failure to retry, never "done" (listen early)', async () => {
+    const { BootHealthBeacon } = await import('../../src/server/BootHealthBeacon.js');
+    const http = await import('node:http');
+    const port = await new Promise<number>((resolve) => { const srv = http.createServer(); srv.listen(0, '127.0.0.1', () => { const p = (srv.address() as { port: number }).port; srv.close(() => resolve(p)); }); });
+    const beacon = new BootHealthBeacon(port, '127.0.0.1');
+    await beacon.start();
+    try {
+      const fresh = setup({ machine: 'm2', peers: () => [{ machineId: 'm1', url: `http://127.0.0.1:${port}`, kind: 'lan' }] });
+      const r = await fresh.unread.catchUp();
+      expect(r.failed).toEqual(['m1']);
+      expect(fresh.store.catchUpState('m1').done).not.toBe(true);
+    } finally {
+      await beacon.stop();
+    }
+  });
 });

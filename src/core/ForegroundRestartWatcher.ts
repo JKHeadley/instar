@@ -17,6 +17,7 @@
  * it handles restarts and this watcher should not be started.
  */
 
+import { describeRestartRequester, recordRestartRequest } from './restartRequestAttribution.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -26,6 +27,8 @@ import { markPlannedRestartDeferred, plannedRestartVerifyState } from './Planned
 export interface RestartRequest {
   requestedAt: string;
   requestedBy: string;
+  /** Why, in the writer's words (optional). */
+  reason?: string;
   /** Absent for a restart that applies a setting rather than an update (connect-enable, money-layer enable). */
   targetVersion?: string;
   previousVersion?: string;
@@ -112,9 +115,11 @@ export class ForegroundRestartWatcher extends EventEmitter {
         console.warn(`[ForegroundRestartWatcher] Restart request EXPIRED but still acting on it — stale process is worse than late restart`);
       }
 
+      const requester = describeRestartRequester(data);
+      recordRestartRequest(path.dirname(path.dirname(this.flagPath)), data, 'foreground-watcher');
       console.log(data.targetVersion
-        ? `[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} for v${data.targetVersion} (from v${data.previousVersion})`
-        : `[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} (no version change)`);
+        ? `[ForegroundRestartWatcher] Restart requested by ${requester.label} for v${data.targetVersion} (from v${data.previousVersion})`
+        : `[ForegroundRestartWatcher] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${data.reason.slice(0, 200)}` : ''})`);
 
       // Clear the flag to prevent re-triggering on next startup
       try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:102' }); } catch { /* ignore */ }

@@ -95,6 +95,12 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/permissions/features'],
       ['POST', '/mobile/permissions/challenge'],
       ['POST', '/mobile/permissions/requests/authreq-1/approve'],
+      // Approving a trust raise from the app (app-trust-approval): the owner's devices only; a team phone
+      // never reaches these (they are not in TEAM_ROUTE_TIERS), so a raise is only ever the owner's yes.
+      ['GET', '/mobile/trust/requests'],
+      ['POST', '/mobile/trust/requests/tr-0123456789ab-abc123/approve'],
+      ['POST', '/mobile/trust/device-acceptance'],
+      ['POST', '/mobile/trust/device-acceptance/withdraw'],
       ['POST', '/mobile/permissions/features/git-backup'],
       ['POST', '/mobile/secrets/requests'],
       ['POST', '/mobile/secrets/requests/abcdef0123456789/cancel'],

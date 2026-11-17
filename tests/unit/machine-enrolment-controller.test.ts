@@ -134,6 +134,36 @@ describe('EnrolmentController', () => {
     expect(fs.existsSync(path.join(dir, 'enrolment.json'))).toBe(false);
   });
 
+  it('Off: the record is kept aside (never deleted), the rule is taken out, and the owner can sign up again', async () => {
+    const c = make();
+    await c.offer();
+    await c.onTap({ data: `mc:enrol:${nonceOf()}`, fromIsOwner: true, fromUserId: 7 });
+    expect(record().principal).toBe('telegram:7');
+    sudo.ran = [];
+    expect(await c.remove('dashboard')).toEqual({ ok: true, wasEnrolled: true, ruleRemoved: true });
+    expect(fs.existsSync(path.join(dir, 'enrolment.json'))).toBe(false);
+    const aside = JSON.parse(fs.readFileSync(path.join(dir, 'enrolment.removed.json'), 'utf-8'));
+    expect(aside).toMatchObject({ by: 'dashboard', record: { principal: 'telegram:7' } });
+    expect(sudo.ran).toEqual([['sudo', '-n', 'true'], ['sudo', '-n', 'rm', '-f', SUDOERS_RULE_PATH], ['sudo', '-k']]);
+    // The offers for this machine are cleared, so Sign up sends a fresh card.
+    expect(await c.offer()).toBe('offered');
+  });
+
+  it('Off without passwordless sudo still removes the record, and says the rule was left', async () => {
+    const c = make();
+    await c.offer();
+    await c.onTap({ data: `mc:enrol:${nonceOf()}`, fromIsOwner: true, fromUserId: 7 });
+    sudo.nopasswd = false; sudo.ran = [];
+    expect(await c.remove('dashboard')).toEqual({ ok: true, wasEnrolled: true, ruleRemoved: false, reason: 'needs-admin' });
+    expect(fs.existsSync(path.join(dir, 'enrolment.json'))).toBe(false);
+    expect(sudo.ran).toEqual([['sudo', '-n', 'true']]);
+  });
+
+  it('Off on a machine that was not signed up changes nothing but says so', async () => {
+    expect(await make().remove('dashboard')).toMatchObject({ ok: true, wasEnrolled: false });
+    expect(fs.existsSync(path.join(dir, 'enrolment.removed.json'))).toBe(false);
+  });
+
   it('card text names no apps when unread', () => {
     expect(cardText('Mac Studio', null, ['echo'])).not.toMatch(/Open on it now/);
   });
