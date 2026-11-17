@@ -16,6 +16,7 @@
  * - The URL token IS the auth — no login or bearer token needed
  */
 
+import { type MintAuth, mintReachesSession, mintIsUnverified } from './secretDropMintPolicy.js';
 import crypto from 'node:crypto';
 
 // E2E-PAIRING: EXEMPT — this change is internal retrieval-lifetime/timer logic on
@@ -38,6 +39,8 @@ export interface SecretField {
 }
 
 export interface SecretRequest {
+  /** Who created it (secret-drop-self-mint-hardening): decides what it may reach. */
+  mintAuth: MintAuth;
   /**
    * The only site this value may be typed into, shown on the form so the person sees it. A submission
    * carrying it leaves only through the helper's --browser mode and is never persisted
@@ -81,6 +84,8 @@ export interface SecretRequest {
 }
 
 export interface SecretSubmission {
+  /** The creating request's class; only master/owner-phone reach a session. Absent on pre-change records = unverified. */
+  mintAuth?: MintAuth;
   /** The values submitted by the user */
   values: Record<string, string>;
   /** When the submission was received */
@@ -98,6 +103,8 @@ export interface SecretSubmission {
 }
 
 export interface CreateSecretRequestOptions {
+  /** Who is creating it. Defaults to 'none' (keyless): fail-closed, never reaches a session. */
+  mintAuth?: MintAuth;
   /** What's being requested — shown as the form title */
   label: string;
   /** Why it's needed — shown as description in the form */
@@ -223,6 +230,8 @@ export type SubmitRefusal = 'signature-format-outdated' | 'signature-format-unkn
  */
 export interface StuckConsumerEvent {
   token: string;
+  /** The request's class: the sink only notifies a session for one that may reach it. */
+  mintAuth?: MintAuth;
   label: string;
   browserHost?: string;
   topicId?: number;
@@ -265,6 +274,16 @@ export class SecretDrop {
    * Create a new secret request. Returns the token for URL construction.
    */
   create(options: CreateSecretRequestOptions): { token: string } {
+    // Unverified requests get their own share of the pending cap, so they can never
+    // crowd out the owner's own requests.
+    if (mintIsUnverified(options.mintAuth ?? 'none')) {
+      this.cleanup();
+      let keyless = 0;
+      for (const r of this.pending.values()) if (mintIsUnverified(r.mintAuth)) keyless++;
+      if (keyless >= MAX_PENDING / 2) {
+        throw new Error(`Too many pending secret requests (max ${MAX_PENDING / 2} made without the agent key are waiting; retrieve or cancel some)`);
+      }
+    }
     if (this.pending.size >= MAX_PENDING) {
       // Clean up expired first
       this.cleanup();
@@ -285,13 +304,16 @@ export class SecretDrop {
       placeholder: 'Paste your secret here',
     }];
 
+    const mintAuth: MintAuth = options.mintAuth ?? 'none';
     const request: SecretRequest = {
+      mintAuth,
       token,
       csrfToken,
       label: options.label,
       description: options.description,
       fields,
-      topicId: options.topicId,
+      // Only a request from the agent's key or the owner's phone may name a conversation.
+      topicId: mintReachesSession(mintAuth) ? options.topicId : undefined,
       createdAt: now,
       expiresAt: now + ttlMs,
       onReceive: options.onReceive,
@@ -407,6 +429,7 @@ export class SecretDrop {
     this.pending.delete(token);
 
     const submission: SecretSubmission = {
+      mintAuth: request.mintAuth,
       values: cleanValues,
       receivedAt: new Date().toISOString(),
       label: request.label,
@@ -446,6 +469,7 @@ export class SecretDrop {
       const cleanupAt = this.receivedDeadline.get(token) ?? (Date.now() + RECEIVED_IDLE_TTL_MS);
       const event: StuckConsumerEvent = {
         token,
+        mintAuth: stillPresent.mintAuth,
         label: stillPresent.label,
         browserHost: stillPresent.browserHost,
         topicId: stillPresent.topicId,
@@ -569,12 +593,14 @@ export class SecretDrop {
   /**
    * List all pending requests (for the agent's management API).
    */
-  listPending(): Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean }> {
+  listPending(): Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean; mintAuth: MintAuth; fields: string[] }> {
     const now = Date.now();
-    const results: Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean }> = [];
+    const results: Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean; mintAuth: MintAuth; fields: string[] }> = [];
     for (const [token, req] of this.pending) {
       results.push({
         token,
+        mintAuth: req.mintAuth,
+        fields: req.fields.map((f) => f.name),
         label: req.label,
         topicId: req.topicId,
         createdAt: req.createdAt,
@@ -792,8 +818,9 @@ export class SecretDrop {
   <div class="drop-box">
     <div id="form-view">
       <div class="agent-badge"><span class="dot"></span> ${escapeHtml(request.agentName)}</div>
+      ${mintIsUnverified(request.mintAuth) ? `<p class="description unverified-banner" role="alert"><strong>This request was not created by your agent's verified helper.</strong> Only fill it in if you expected it.</p>` : ''}
       <h1>${escapeHtml(request.label)}</h1>
-      ${request.description ? `<p class="description">${escapeHtml(request.description)}</p>` : ''}
+      ${request.description && !mintIsUnverified(request.mintAuth) ? `<p class="description">${escapeHtml(request.description)}</p>` : ''}
       ${request.browserHost ? `<p class="description"><strong>This will be typed into ${escapeHtml(request.browserHost)}.</strong> It goes nowhere else.</p>` : ''}
       <p class="expiry">This link expires in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''} and can only be used once.</p>
       <div class="error-banner" id="error-banner"></div>

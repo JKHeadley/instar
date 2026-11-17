@@ -271,6 +271,8 @@ export interface RequestSecretResult {
   tunnelUrl?: string | null;
   /** Milliseconds until the request expires. */
   expiresIn?: number;
+  /** A plain line from the server the agent must see (e.g. no receipt message will come). */
+  notice?: string;
   error?: string;
 }
 
@@ -895,6 +897,7 @@ export class ThreadlineMCPServer {
           note: 'Send the submit URL to the secret holder. The secret is submitted ' +
             'off-relay and is never stored on disk or shown in chat. The link is ' +
             'one-time and expires.',
+          ...(result.notice ? { notice: result.notice } : {}),
         });
       },
     );
