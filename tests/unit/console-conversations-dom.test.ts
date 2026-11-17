@@ -238,6 +238,26 @@ describe('native console Conversations', () => {
     expect(allButton(f.main).textContent).toBe('Accept all 2 projects');
   });
 
+  it('a project the agent does not answer for is a wait with plain words, never "no longer available"', async () => {
+    // Real two-machine run (accept-all round 2): with the M5 frozen, the Studio's requests timed out and the
+    // cards said "This suggestion is no longer available" — untrue, nothing was refused.
+    const silentFor = (url: string) => {
+      if (/sg-0123456789abcdef012[23]\/start$/.test(url)) return true;
+      if (!url.includes('/conversation-graph/nodes/')) return false;
+      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
+      return ref.kind === 'conversation' && (ref.topicId === 2 || ref.topicId === 3);
+    };
+    const server = acceptServer([1, 2, 3], (url) => silentFor(url) ? { status: 408, body: {} } : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    allButton(f.main).click();
+    for (let i = 0; i < 60; i++) await flush();
+    expect(server.accepted).toEqual([1]);
+    expect(progressLine(f.main)).toBe('Stopped at 3 of 3: your agent is not answering right now. 1 of 3 accepted. Tap Continue to try again; nothing is lost.');
+    expect(f.main.textContent).not.toContain('no longer available');
+    expect(f.main.textContent).toContain('The agent did not answer. Tap Continue to try again; nothing is lost.');
+    expect(allButton(f.main).disabled).toBe(false);
+  });
+
   it('the ordinary Conversations list keeps the console page refresh', async () => {
     const ctx = { selfRefreshing: vi.fn() };
     await boot('#/work/conversations', (url) => ({ body: url.includes('/pending') ? { items: [] } : { ...page([row(1)]), capabilities: {} } }), ctx);

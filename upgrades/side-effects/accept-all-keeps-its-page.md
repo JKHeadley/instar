@@ -17,7 +17,9 @@ Fix (Tier 1, 2 source files, about 50 LOC):
 - The button reads "Continue accepting projects" whenever a project is already part-way (on the server or in this tab), so a reload no longer looks like a fresh start.
 - The list load says "Still loading suggestions. Your agent is busy; this can take up to 20 seconds." after 5 seconds, and a failed or timed-out load shows its words with a "Try again" button (it used to show only "Suggestions could not be loaded. Try again." with nothing to tap).
 
-Effort: 1 commit attempt, no spec rounds (Tier 1). In line with the size.
+- A step the agent does not answer (timed out, 408 or 5xx; the real two-machine run with the M5 frozen produced exactly this) is a wait with "The agent did not answer. Tap Continue to try again; nothing is lost.", never "This suggestion is no longer available" (which now means a real 404 only). Two unanswered projects in a row stop with "Stopped at N of M: your agent is not answering right now. …".
+
+Effort: 2 commits, no spec rounds (Tier 1). In line with the size.
 
 ## Decision-point inventory
 
@@ -71,7 +73,7 @@ A long Accept all no longer loses its page and progress to the 15-minute unlock,
 
 ## Evidence pointers
 
-`tests/unit/console-conversations-dom.test.ts`: four new tests (PIN sheet keeps the page and the run finishes with one list load; closing the sheet leaves words and a working button; a part-way project offers Continue; a failed load offers Try again and a slow one says it is still loading). `npx vitest run tests/unit/console-conversations-dom.test.ts tests/unit/console-conversation-suggestions.test.ts`: 44 passed.
+`tests/unit/console-conversations-dom.test.ts`: five new tests (the fifth: a project the agent does not answer for is a wait with plain words); (PIN sheet keeps the page and the run finishes with one list load; closing the sheet leaves words and a working button; a part-way project offers Continue; a failed load offers Try again and a slow one says it is still loading). `npx vitest run tests/unit/console-conversations-dom.test.ts tests/unit/console-conversation-suggestions.test.ts`: 45 passed.
 
 ## Class-Closure Declaration (display-only mirror)
 
