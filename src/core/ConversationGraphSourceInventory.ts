@@ -301,9 +301,11 @@ export function prepareGraphSourceObservation(captured:CapturedGraphSourceObserv
  const authorizationProof:GraphAuthorizationProof={receipt:{...receipt,signature:signGraphRecord('graph-authorization-receipt-v1',receipt,options.identity.loadSigningKey())},membership:m,lease,originalLease:native,sourceObservation:capture};
  return {coreType:'source-observation',core,authorizationProof,plaintextSource:Buffer.from(canonicalJson({sourceObservation:capture,payload})),idempotencyKey,requestHash:canonicalHash(capture)};
 }
-export function materializeGraphSourceInventory(options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;membership?:GraphMembershipEpoch}):{
+export function materializeGraphSourceInventory(options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;membership?:GraphMembershipEpoch;
+ /** The same reader's certifiedUnion, already computed for this read: it is not computed again. */
+ union?:ReturnType<ConversationGraphReplication['certifiedUnion']>}):{
  coverage:GraphSourceInventoryCoverage;unavailableConversations:ConversationRef[];entries:Array<{ref:ConversationRef;row:GraphSourceFlatRow;producerMachineId:string;eventId:string}>;conversations:ConversationSource[];partial:boolean;missingEventIds:string[]} {
- const union=options.source.certifiedUnion(options.reader,options.dropped);let partial=union.partial;const missingEventIds:string[]=[];
+ const union=options.union??options.source.certifiedUnion(options.reader,options.dropped);let partial=union.partial;const missingEventIds:string[]=[];
  const latest=new Map<string,{record:ConversationGraphReplicationRecord;entry:{ref:ConversationRef;row:GraphSourceFlatRow;producerMachineId:string;eventId:string}|null}>();
  for(const record of union.records){const core=validateGraphSourceObservationCore(record.core),observed=record.authorizationProof.sourceObservation;if(!core||observed?.kind!=='conversation-source-observation')continue;const k=canonicalHash({ref:core.subject,producer:observed.producerMachineId});
   // A newer unavailable/erased observation suppresses the old title and alias.
