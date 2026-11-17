@@ -15,5 +15,10 @@
   "tier": 2,
   "tierReasoning": "Live-test fix: plain reasons instead of raw provider errors in agent- and person-facing text.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: text change"
+  }
 }

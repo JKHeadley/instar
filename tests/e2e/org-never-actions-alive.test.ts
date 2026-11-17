@@ -60,5 +60,13 @@ describe('org-never-actions is alive', () => {
     expect(pre).toContain('org-policy-gate');
     const entries = settings.hooks.PreToolUse.filter((e: { hooks?: unknown[] }) => JSON.stringify(e.hooks).includes('org-policy-gate'));
     expect(entries.map((e: { matcher: string }) => e.matcher).sort()).toEqual(['Bash', 'Write|Edit|MultiEdit|NotebookEdit', 'mcp__.*']);
+    // Block mode waits up to 25 seconds for a fresh judge, so every entry allows 30.
+    expect(entries.every((e: { hooks: Array<{ timeout: number }> }) => e.hooks[0]!.timeout === 30)).toBe(true);
+    // An older 12-second entry is raised on the next update.
+    settings.hooks.PreToolUse.find((e: { hooks?: unknown[] }) => JSON.stringify(e.hooks).includes('org-policy-gate')).hooks[0].timeout = 12;
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(settings));
+    new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4049 } as never).migrate();
+    const again = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf-8'));
+    expect(again.hooks.PreToolUse.filter((e: { hooks?: unknown[] }) => JSON.stringify(e.hooks).includes('org-policy-gate')).every((e: { hooks: Array<{ timeout: number }> }) => e.hooks[0]!.timeout === 30)).toBe(true);
   });
 });

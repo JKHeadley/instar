@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "org-block-conditions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T05:00:40.889Z",
+  "artifactPath": "upgrades/side-effects/org-block-conditions.md",
+  "artifactSha256": "c7173543a782a814507beb5d79753c5c437e799f2443120f081303c1b494915d",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "src/core/OrgPolicyGateHooks.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/e2e/org-never-actions-alive.test.ts",
+    "upgrades/side-effects/org-block-conditions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Live-test fix: block mode waits up to 25s for a cold judge; settings timeout 30s with migration.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

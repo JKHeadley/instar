@@ -19,7 +19,9 @@ exec node "\${CLAUDE_PROJECT_DIR:-.}/.instar/hooks/instar/org-policy-gate.js"
 // Organization never rules check (instar spec org-never-actions). PreToolUse hook for Bash and MCP tools
 // of an agent that joined an organization. Observe: a note, never "allow". Block: deny with the reason.
 const started = Date.now();
-const DEADLINE = started + 9000;
+// Observe mode only adds a note, so it never waits long; block mode holds the action, so it waits for a
+// fresh judge (a cold Claude CLI can take over 10 seconds; found in the live test).
+let DEADLINE = started + 9000;
 let data = '';
 process.stdin.on('data', (c) => data += c);
 process.stdin.on('end', async () => {
@@ -38,6 +40,7 @@ process.stdin.on('end', async () => {
   } catch { cfgOk = false; }
   // The server's own record of the mode decides; a config edited to observe can't switch the hook off.
   try { const mf = JSON.parse(nodeFs.readFileSync(dir + '/.instar/org/actions-mode.json', 'utf-8')); if (mf && mf.mode === 'block') block = true; } catch {}
+  if (block) DEADLINE = started + 25000;
   let input = null;
   try { input = JSON.parse(data); } catch { input = null; }
   if (!input) {

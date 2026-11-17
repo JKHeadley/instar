@@ -18389,10 +18389,18 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       if (!has) {
         preToolUse.push({
           matcher,
-          hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/org-policy-gate.sh"', blocking: true, timeout: 12 }],
+          hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/org-policy-gate.sh"', blocking: true, timeout: 30 }],
         });
         patched = true;
         result.upgraded.push(`.claude/settings.json: added PreToolUse ${matcher} organization policy check`);
+      } else {
+        // Block mode waits up to 25 seconds for a fresh judge; an older 12-second entry would cut it off.
+        for (const e of preToolUse) {
+          if (e.matcher !== matcher) continue;
+          for (const h of (e.hooks ?? []) as Array<{ command?: string; timeout?: number }>) {
+            if (h.command?.includes('org-policy-gate') && (h.timeout ?? 0) < 30) { h.timeout = 30; patched = true; result.upgraded.push(`.claude/settings.json: organization policy check timeout raised to 30s (${matcher})`); }
+          }
+        }
       }
     }
 
