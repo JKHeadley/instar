@@ -176,6 +176,10 @@ Condition 9 is therefore closed on these grounds: no route found for a non-adver
 
 `/mobile/org/status` now reports `actions: { mode, blockingAvailable }`. The Mac app shows a "Stop actions that break the rules" switch only when blocking is available: the agent has joined and the pilot approval flag is set. This is a read-only addition. Changing the mode still goes through `/mobile/org/actions-mode`, from the owner's device only.
 
+## Found in the live test
+
+When the judge couldn't run, the agent's note, the refusal and the person's notice all included the raw error. That error carried the provider's text, including the start of the judge's prompt. All three now give a plain reason ("the policy check couldn't run", "today's checking budget is used up", "the check took too long", "the check wasn't sure"). The raw reason stays only in the check record.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

@@ -529,6 +529,17 @@ function serverSetMode(stateDir: string | undefined): 'observe' | 'block' | null
   const m = readJson<{ mode?: string }>(modeFile(stateDir));
   return m?.mode === 'block' ? 'block' : m?.mode === 'observe' ? 'observe' : null;
 }
+/**
+ * Plain words for why a check came back unknown, for the agent and the person. The raw reason (which can
+ * carry a provider's error text) stays in the check record only.
+ */
+export function plainUnknownReason(reason: string | undefined): string {
+  const r = reason ?? '';
+  if (r.startsWith('daily judge budget')) return "today's checking budget is used up";
+  if (r === 'judge timed out' || r === 'out of time') return 'the check took too long';
+  if (r.startsWith('breach without') || r.startsWith('judge reply') || r.startsWith('unparseable')) return "the check wasn't sure";
+  return "the policy check couldn't run";
+}
 export function orgCheckMode(cfg: OrgCheckContext['config'], stateDir?: string): 'observe' | 'block' {
   const a = cfg.orgPolicy?.actions ?? {};
   const set = serverSetMode(stateDir ?? (cfg as { stateDir?: string }).stateDir);
@@ -629,15 +640,15 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     if (mode === 'observe') {
       return { decision: 'allow', note: v.verdict === 'breach'
         ? `This may break ${rec.orgName}'s rule "${v.rule}". Tell your person and ${keepers}.${v.alternative ? ` Suggested by the policy check: ${v.alternative}` : ''}`
-        : `This couldn't be checked against ${rec.orgName}'s policy (${v.reason}). If it might break a rule, ask your person first.` };
+        : `This couldn't be checked against ${rec.orgName}'s policy (${plainUnknownReason(v.reason)}). If it might break a rule, ask your person first.` };
     }
     const checkId = c.registerPending(evidence, rec.policySha256, v.verdict === 'breach' ? v.rule : undefined);
     // The held action reaches the person (EXO 3.0 condition 2): one notice per check, with the allow-once card in the app.
-    notify(`org-check:${checkId}`, `${rec.orgName} policy held an action`, `${v.verdict === 'breach' ? `It may break the rule "${v.rule}".` : `It couldn't be checked (${v.reason}).`} Open the Instar app to read it and allow it once if it's fine.`);
+    notify(`org-check:${checkId}`, `${rec.orgName} policy held an action`, `${v.verdict === 'breach' ? `It may break the rule "${v.rule}".` : `It couldn't be checked (${plainUnknownReason(v.reason)}).`} Open the Instar app to read it and allow it once if it's fine.`);
     const reason = v.verdict === 'breach'
       ? `This would break ${rec.orgName}'s rule "${v.rule}". Ask ${keepers}, or your person can allow it once in the Instar app.${v.alternative ? ` Suggested by the policy check: ${v.alternative}` : ''}`
       : evidence.complete
-        ? `I couldn't check this against ${rec.orgName}'s policy right now (${v.reason}). Your person can allow it once in the Instar app.`
+        ? `I couldn't check this against ${rec.orgName}'s policy right now (${plainUnknownReason(v.reason)}). Your person can allow it once in the Instar app.`
         : evidence.kind === 'message'
           ? `This message is too long to check against ${rec.orgName}'s policy. Send it in shorter parts.`
           : `I couldn't read all of this, so I can't check it against ${rec.orgName}'s policy. Send it as a file I can read.`;

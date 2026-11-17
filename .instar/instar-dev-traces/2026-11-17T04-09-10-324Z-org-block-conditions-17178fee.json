@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "org-block-conditions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T04:09:10.324Z",
+  "artifactPath": "upgrades/side-effects/org-block-conditions.md",
+  "artifactSha256": "2e37dc904e07327c44061e0d7ad61f03e47502f0ed55f0215e54a8a373e11c6e",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "src/core/OrgActionCheck.ts",
+    "tests/unit/org-block-conditions.test.ts",
+    "upgrades/side-effects/org-block-conditions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Live-test fix: plain reasons instead of raw provider errors in agent- and person-facing text.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

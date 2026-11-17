@@ -14,5 +14,10 @@
   "tier": 2,
   "tierReasoning": "Status reports the actions mode so the app can show the switch; read-only addition.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: a status read"
+  }
 }

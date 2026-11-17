@@ -7,7 +7,7 @@ import { describe, it, expect, afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runOrgCheck, messageEvidence, setOrgNotify, OrgActionChecker, orgCheckMode, writeOrgActionsMode } from '../../src/core/OrgActionCheck.js';
+import { runOrgCheck, messageEvidence, setOrgNotify, OrgActionChecker, orgCheckMode, writeOrgActionsMode, plainUnknownReason } from '../../src/core/OrgActionCheck.js';
 import { OrgPackStore } from '../../src/core/OrgPackStore.js';
 import { newOrgKeyPair, sha256Hex, signRecord } from '../../src/core/OrgPack.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -96,5 +96,12 @@ describe('block-mode conditions', () => {
     writeOrgActionsMode(dir, 'observe');
     const r = await runOrgCheck({ stateDir: dir, config: BLOCK as never, provider: p }, messageEvidence('hello', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     expect(r.decision).toBe('pass');
+  });
+  it("a check that couldn't run says so plainly, never with the provider's error text", () => {
+    const raw = 'judge unavailable: Claude CLI error: Command failed: /usr/local/bin/claude -p You check one action';
+    expect(plainUnknownReason(raw)).toBe("the policy check couldn't run");
+    expect(plainUnknownReason('daily judge budget used')).toBe("today's checking budget is used up");
+    expect(plainUnknownReason('judge timed out')).toBe('the check took too long');
+    expect(plainUnknownReason('breach without a valid rule or with low confidence')).toBe("the check wasn't sure");
   });
 });
