@@ -10,6 +10,8 @@ The safety net: older versions of the Codex program cannot use the new models. W
 
 What is not changed: if someone has chosen a Codex model for this agent on purpose (in its settings, or pinned on a topic), that choice is left exactly as it is. Instar never wrote a Codex model into agent settings itself, so any value found there was a person's choice. The safety floor model used after a refusal stays the same.
 
+The version check is built so it can never hold anything up: if Codex is slow, stuck, or cannot even be started, Instar stops waiting after two seconds and treats the version as unknown.
+
 One bookkeeping note: Instar keeps a list of every file the carefully tested Codex message-delivery code can reach, and the small file that reads the Codex version is now reachable from it. It only picks a model, so it is recorded on that list as outside the tested delivery path, and the tested files themselves are unchanged.
 
 What you need to decide: nothing. This follows Justin's directive. If the new models misbehave, undoing this one change puts every size back on the GPT-6 models.

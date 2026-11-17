@@ -98,15 +98,26 @@ export function refreshCodexCliVersion(binaryPath: string): Promise<CodexCliVers
     finish(null);
     return probe;
   }
+  if (!child || typeof child.on !== 'function') {
+    // @silent-fallback-ok: no child to read; the version is unknown and each caller picks its own policy
+    finish(null);
+    return probe;
+  }
   deadline = setTimeout(() => {
     try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok: the child is already gone */ }
     finish(null);
   }, VERSION_PROBE_TIMEOUT_MS);
   deadline.unref?.();
-  child.stdout?.on('data', (chunk: Buffer) => { if (out.length < 4096) out += chunk.toString('utf-8'); });
-  // @silent-fallback-ok: an unreadable CLI version is reported as null; each caller picks its own policy
-  child.on('error', () => finish(null));
-  child.on('close', (code) => finish(code === 0 ? parseVersion(out) : null));
+  try {
+    child.stdout?.on('data', (chunk: Buffer) => { if (out.length < 4096) out += chunk.toString('utf-8'); });
+    // @silent-fallback-ok: an unreadable CLI version is reported as null; each caller picks its own policy
+    child.on('error', () => finish(null));
+    child.on('close', (code) => finish(code === 0 ? parseVersion(out) : null));
+  } catch {
+    // @silent-fallback-ok: a child we cannot listen to is treated as unreadable
+    try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok: the child is already gone */ }
+    finish(null);
+  }
   return probe;
 }
 

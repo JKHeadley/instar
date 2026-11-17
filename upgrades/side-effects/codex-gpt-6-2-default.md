@@ -110,4 +110,6 @@ The reviewer confirmed every codex launch path applies the fallback, local-provi
 
 A Codex CLI below 0.166.0 runs the previous GPT-6 model of the same size instead of failing; no dead session is expected from this model/CLI mismatch.
 
+The local neighbour run then found one more failure (`CodexCliIntelligenceProvider-account.test.ts`): a mocked `spawn` that returns no child made the probe throw. The probe now treats a missing or unlistenable child as an unreadable version, so it can never throw into a caller.
+
 Self-action declaration (unbounded-self-action, closure n/a): not a self-triggered loop. The only new spawn is the `codex --version` probe, at most one per binary per cache window (10 minutes readable, 60 s unreadable), shared by concurrent callers, with a hard 2 s deadline; it never retries or re-drives itself.
