@@ -67,6 +67,30 @@ describe('offers', () => {
   });
 });
 
+describe('custom app offers (part 2, project-apps-sandbox)', () => {
+  const C = 'custom:pa_0123456789abcdef';
+  const app = (o: Partial<{ conversationKey: string; specOk: boolean }> = {}) => ({ appId: 'pa_0123456789abcdef', title: 'Sales pipeline', conversationKey: CK, specOk: true, summary: { state: 'ok' as const, headline: 'Ten deals', counts: [], asOf: '2026-11-17T01:00:00.000Z' }, ...o });
+  it('offers, attaches and shows a custom app on its own project when custom apps are on', () => {
+    const h = harness({ customApp: (ref) => (ref === C ? app() : null) });
+    expect(h.rt.offer(CK, C, 'The pipeline is easier to follow as a board.')).toEqual({ ok: true });
+    expect(h.rt.view(CK).offers).toEqual([expect.objectContaining({ appRef: C, title: 'Sales pipeline' })]);
+    expect(h.rt.answer(CK, C, 'attach', OWNER)).toMatchObject({ ok: true, changed: true });
+    const row = h.rt.view(CK).apps.find((a) => a.appRef === C)!;
+    expect(row).toMatchObject({ title: 'Sales pipeline', openHref: '/dashboard/project-app/?app=pa_0123456789abcdef', summaryState: 'ok' });
+  });
+  it('refuses another project\'s app, an unconverged spec, and hides the rows when custom apps are off', () => {
+    expect(harness({ customApp: () => app({ conversationKey: 'telegram:1' }) }).rt.offer(CK, C, 'x')).toMatchObject({ error: 'unknown-app' });
+    expect(harness({ customApp: () => app({ specOk: false }) }).rt.offer(CK, C, 'x')).toMatchObject({ status: 409, error: 'app-spec-not-converged' });
+    let on = true;
+    const h = harness({ customApp: () => (on ? app() : null) });
+    h.rt.offer(CK, C, 'x'); h.rt.answer(CK, C, 'attach', OWNER);
+    expect(h.rt.view(CK).apps.some((a) => a.appRef === C)).toBe(true);
+    on = false;
+    h.rt.onCommitted();
+    expect(h.rt.view(CK).apps.some((a) => a.appRef === C)).toBe(false);
+  });
+});
+
 describe('answers', () => {
   it('the agent can only withdraw its own open offer, never attach or undo an owner answer', () => {
     const h = harness();

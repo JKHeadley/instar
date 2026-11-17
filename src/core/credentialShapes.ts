@@ -33,6 +33,7 @@ export const CREDENTIAL_SHAPES: Array<{ name: string; pattern: RegExp }> = [
   { name: 'Password in a URL', pattern: /\b[a-z][a-z0-9+.-]{0,30}:\/\/[^\s/@:]{1,256}:[^\s/@]{1,256}@/i },
   { name: 'Token in a URL', pattern: /\bhttps?:\/\/[A-Za-z0-9_-]{16,256}@/i },
   { name: 'Generic bearer token', pattern: /Bearer\s+[A-Za-z0-9_\-.]{20,}/ },
+  { name: 'Project app key', pattern: /\bpak_[A-Za-z0-9_-]{20,4096}\.[A-Za-z0-9_-]{43}/ },
   { name: 'Password assignment', pattern: /(?:password|passwd|pwd)\s*[:=]\s*["']?[^\s"']{8,}/i },
   { name: 'Private key block', pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/ },
 ];

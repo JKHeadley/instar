@@ -131,6 +131,10 @@ export function actionLabel(a) { return ACTION_LABEL[a] || a; }
  */
 export function cardActions(card, { inSheet = false } = {}) {
   if (!card || card.removed || card.status === 'removed') return [];
+  // A phone-only card (a project app's version card, project-apps-sandbox §3.4): the server refuses
+  // every console tap on it except withdraw-approval, which only stops the app. So no Approve here
+  // (phoneOnlyLine says where to approve) and, once approved, one "Stop this app".
+  if (card.phoneOnly) return card.approved && card.status !== 'archived' ? [{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }] : [];
   const out = [];
   const add = (action, tone = 'quiet') => { if (!out.some((x) => x.action === action)) out.push({ action, label: actionLabel(action), tone }); };
   const approved = Boolean(card.approved);
@@ -154,6 +158,12 @@ export function cardActions(card, { inSheet = false } = {}) {
     add('redact', 'danger');
   }
   return out;
+}
+
+/** What a phone-only card says in place of an Approve button, or null for any other card. */
+export function phoneOnlyLine(card) {
+  if (!card || !card.phoneOnly || card.removed || card.status === 'removed') return null;
+  return card.approved ? null : 'Approve this on your phone';
 }
 
 /**
@@ -255,7 +265,9 @@ export function tapCovers(card, action, extra = {}) {
     case 'unarchive': full(); lines.push({ label: 'Restoring', text: 'The card comes back to the board.' }); break;
     case 'reopen': lines.push({ label: 'Reopening', text: 'The card is not finished. From now on every finish of this card needs your sign-off.' }); break;
     case 'hold': lines.push({ label: 'Putting on hold', text: 'The agent stops work on this card until you release it. This always goes through.' }); break;
-    case 'withdraw-approval': lines.push({ label: 'Withdrawing approval', text: 'The agent stops and waits for your approval again. This always goes through.' }); break;
+    case 'withdraw-approval': lines.push(card.phoneOnly
+      ? { label: 'Stopping this app', text: 'The app stops running. Running it again needs your approval on your phone. This always goes through.' }
+      : { label: 'Withdrawing approval', text: 'The agent stops and waits for your approval again. This always goes through.' }); break;
     case 'archive': lines.push({ label: 'Archiving', text: 'The card leaves the board. You can restore it later.' }); break;
     case 'redact': lines.push({ label: 'Removing for good', text: 'The card’s text is hidden from every read and its conversation is deleted. This cannot be undone.' }); break;
     default: break;
@@ -265,7 +277,7 @@ export function tapCovers(card, action, extra = {}) {
 
 /** The one line the PIN prompt says. */
 export function pinExplain(card, action) {
-  return `${actionLabel(action)}: “${String(card.title || '').slice(0, 80)}”. Your PIN confirms exactly what you were just shown.`;
+  return `${card && card.phoneOnly && action === 'withdraw-approval' ? 'Stop this app' : actionLabel(action)}: “${String(card.title || '').slice(0, 80)}”. Your PIN confirms exactly what you were just shown.`;
 }
 
 // ── refusals, in words ────────────────────────────────────────────────────
@@ -286,6 +298,8 @@ const REFUSAL_WORDS = {
   'settings-not-saved': 'The settings could not be saved.',
   'unknown-policy': 'That approval choice is not one the board knows.',
   'over-limit': 'That is longer than a card allows.',
+  'phone-only-card': 'Approve this on your phone.',
+  'server-owned-card': 'Instar writes this card itself; it cannot be changed here.',
 };
 export function refusalWords(status, data) {
   const code = data && typeof data.error === 'string' ? data.error : '';

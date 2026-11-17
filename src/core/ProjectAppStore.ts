@@ -12,6 +12,11 @@
  *                                                                        withdraw (the agent, offers only)
  *   project-app-pin     key apppin:<conversationKey>:<appRef>:<hlc>      the lease holder's link-pin steps
  *
+ * Part 2 (docs/specs/project-apps-sandbox.md §3.3) adds the custom-app types — version cards,
+ * version answers, summaries, key revocations and their per-machine confirms. Their validation and
+ * folds live in ProjectAppCustomFold.ts; a malformed one is kept as an inert stub, like any type a
+ * later build may add, so a peer's stream never stalls on it.
+ *
  * Why a NEW kind (spec §3.2): JournalSyncApplier stops a peer batch at the first record a
  * store refuses, so new record types on `chief-of-staff-record` would hold back bindings and
  * check-ins on a machine still on an older build. An unknown KIND is skipped instead.
@@ -24,6 +29,8 @@ import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { compareHlc } from './TopicPinReplicatedStore.js';
 import { isValidConversationKey, hlcKey, chiefOfStaffStoreEnabled } from './ChiefOfStaffStore.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
+import { CUSTOM_RECORD_TYPES, CUSTOM_KNOWN_FIELDS, validateCustomRecord } from './ProjectAppCustomFold.js';
+import { fitsRecordLine } from './ProjectAppBlobStore.js';
 
 export const PROJECT_APP_RECORD_KIND = 'project-app-record';
 /** The stateSync config sub-key (`multiMachine.stateSync.projectApps`). */
@@ -89,6 +96,7 @@ const KNOWN_FIELDS = [
   'recordType', 'conversationKey', 'appRef', 'why', 'at',
   'answer', 'by', 'via', 'principal',
   'platform', 'state', 'act', 'answerRef', 'opId', 'messageId', 'baseUrl', 'reason', 'replacesMessageId', 'inert',
+  ...CUSTOM_KNOWN_FIELDS,
 ] as const;
 
 /** Only an http(s) origin with no path, query or credentials: the server's own public base. */
@@ -102,21 +110,25 @@ function isBaseUrl(v: unknown): v is string {
 
 export const projectAppRecordStoreSchema: StoreFieldSchema = {
   knownFields: KNOWN_FIELDS as unknown as ReadonlyArray<string>,
-  pathSensitiveFields: ['by', 'via', 'principal', 'platform', 'state', 'act', 'opId'],
+  pathSensitiveFields: ['by', 'via', 'principal', 'platform', 'state', 'act', 'opId', 'machineId', 'keyKind', 'purpose'],
   validate(raw) {
     if (raw.op === 'delete') return null; // every record here is immutable or last-writer; nothing is tombstoned
     const type = raw.recordType;
     if (typeof type !== 'string' || !/^project-app-[a-z-]{1,40}$/.test(type)) return null;
+    // Part-2 custom-app types (ProjectAppCustomFold.ts). Within the kind's 64 KiB serialized line.
+    if ((CUSTOM_RECORD_TYPES as ReadonlyArray<string>).includes(type)) {
+      const v = fitsRecordLine(raw) ? validateCustomRecord(raw) : null;
+      return v ?? { recordType: type };
+    }
     // Forward compatibility (part 2, docs/specs/project-apps-sandbox.md): a record type or app ref this
     // build does not know yet is ACCEPTED as an inert stub and ignored by every fold. Refusing it would
     // mark the peer's whole stream suspect and stall replication on a machine still on this build.
     if (!(PROJECT_APP_RECORD_TYPES as ReadonlyArray<string>).includes(type)) return { recordType: type };
     const ck = raw.conversationKey;
     if (!isValidConversationKey(ck) || !isIso(raw.at)) return null;
-    if (!isAppRef(raw.appRef)) {
-      if (typeof raw.appRef === 'string' && CUSTOM_APP_REF_RE.test(raw.appRef)) return { recordType: type, inert: true };
-      return null;
-    }
+    // Part 2 (project-apps-sandbox §3.1): a `custom:` ref is now validated like a builtin one. A build that
+    // predates part 2 keeps it as an inert stub; whether a custom app shows is the runtime's decision.
+    if (!isAppRef(raw.appRef) && !(typeof raw.appRef === 'string' && CUSTOM_APP_REF_RE.test(raw.appRef))) return null;
     const base = { recordType: type, conversationKey: ck, appRef: raw.appRef, at: raw.at };
     switch (type as ProjectAppRecordType) {
       case 'project-app-offer': {
@@ -241,7 +253,7 @@ export function foldPairs(union: UnionEntry[]): Map<string, PairState> {
   for (const e of union) {
     const d = e.data; const h = hlcOf(d);
     // Only records this build understands are folded (inert stubs from a later build are skipped).
-    if (!h || d.inert || typeof d.conversationKey !== 'string' || typeof d.appRef !== 'string' || !APP_REF_RE.test(d.appRef)) continue;
+    if (!h || d.inert || typeof d.conversationKey !== 'string' || typeof d.appRef !== 'string' || !(APP_REF_RE.test(d.appRef) || CUSTOM_APP_REF_RE.test(d.appRef))) continue;
     if (d.recordType === 'project-app-offer') offers.push({ d, h });
     else if (d.recordType === 'project-app-answer') answers.push({ d, h });
   }

@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { readLastRestartRequest, UNATTRIBUTED_RESTART_LABEL } from '../../src/core/restartRequestAttribution.js';
 
 describe('ForegroundRestartWatcher', () => {
   let tmpDir: string;
@@ -283,6 +284,43 @@ describe('ForegroundRestartWatcher', () => {
       watcher.start();
       watcher.start();
       watcher.stop();
+    });
+  });
+
+  // ── Attribution (2026-11-16: "Restart requested by undefined" on the M5) ──
+
+  describe('restart attribution', () => {
+    async function consume(flag: Record<string, unknown>): Promise<string[]> {
+      const lines: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+      try {
+        const watcher = new ForegroundRestartWatcher({ stateDir, exitOnRestart: false, pollIntervalMs: 20 });
+        writeFlagFile(flag);
+        const detected = new Promise<void>((resolve) => watcher.on('restartDetected', () => resolve()));
+        watcher.start();
+        await detected;
+        watcher.stop();
+      } finally {
+        spy.mockRestore();
+      }
+      return lines;
+    }
+
+    it('a hand-written flag with no requestedBy is named unattributed, never "undefined", and recorded', async () => {
+      const lines = await consume({ requestedAt: new Date().toISOString(), plannedRestart: true, reason: 'load operatorGhLogin' });
+      const line = lines.find((l) => l.includes('Restart requested by'));
+      expect(line).toBeDefined();
+      expect(line).not.toContain('undefined');
+      expect(line).toContain(UNATTRIBUTED_RESTART_LABEL);
+      expect(line).toContain('load operatorGhLogin');
+      const rec = readLastRestartRequest(stateDir);
+      expect(rec).toMatchObject({ consumer: 'foreground-watcher', attributed: false, requestedBy: null, reason: 'load operatorGhLogin' });
+    });
+
+    it('a named writer is logged and recorded by name', async () => {
+      const lines = await consume({ requestedAt: new Date().toISOString(), requestedBy: 'role-change', plannedRestart: true });
+      expect(lines.some((l) => l.includes('Restart requested by role-change (no version change'))).toBe(true);
+      expect(readLastRestartRequest(stateDir)).toMatchObject({ attributed: true, requestedBy: 'role-change' });
     });
   });
 });

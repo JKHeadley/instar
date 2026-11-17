@@ -293,6 +293,12 @@ export interface LocalVerifyServiceConfig {
   agentHome: string;
   expectedGhLogin: string;
   operatorGhLogin?: string | null;
+  /**
+   * `monitoring.localVerify.operatorGhLogin`, read live. When set it wins over the boot-time
+   * `operatorGhLogin`, so changing the trusted operator login needs no server restart (a
+   * hand-written restart on 2026-11-16 took the M5 offline for 2m43s to apply it).
+   */
+  liveOperatorGhLogin?: () => string | null;
   verifierVersion: string;
   /** Defaults to computePolicyHash(). */
   policyHash?: string;
@@ -1543,7 +1549,7 @@ export class LocalVerifyService {
       }
       return { ok: false, code: 'pr-closed' };
     }
-    if (!checkEligibility(view, this.cfg).eligible) {
+    if (!checkEligibility(view, this.logins()).eligible) {
       this.audit({ event: 'refused', pr, reason: 'untrusted-head' });
       this.waiting.remove(pr, 'untrusted-head');
       return { ok: false, code: 'untrusted-head' };
@@ -1897,7 +1903,7 @@ export class LocalVerifyService {
     } else {
       const view = await this.seams.prView(req.pr).catch(() => null);
       if (!view) return refuse('pr-unreadable');
-      if (!checkEligibility(view, this.cfg).eligible) return refuse('untrusted-head');
+      if (!checkEligibility(view, this.logins()).eligible) return refuse('untrusted-head');
       if (view.headRefOid !== req.headSha || view.baseRefName !== req.baseRefName) return refuse('head-moved');
     }
     // The read awaited: re-check everything that could have changed meanwhile, the role and the
@@ -3880,6 +3886,12 @@ export class LocalVerifyService {
   }
 
   /** Metadata-only audit log, rotating at 5 MB, 10 files kept. */
+  /** The trusted logins for eligibility, with the operator login read live when a reader is wired. */
+  private logins(): { expectedGhLogin: string; operatorGhLogin: string | null } {
+    const live = this.cfg.liveOperatorGhLogin;
+    return { expectedGhLogin: this.cfg.expectedGhLogin, operatorGhLogin: live ? live() : (this.cfg.operatorGhLogin ?? null) };
+  }
+
   private audit(event: Record<string, unknown>): void {
     appendLocalVerifyAudit(this.auditPath, event, this.now());
   }

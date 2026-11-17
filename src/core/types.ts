@@ -3804,6 +3804,8 @@ export interface InstarConfig {
    *  Staff, which is where projects come from. */
   projectApps?: {
     enabled?: boolean;
+    /** Part 2 custom apps (docs/specs/project-apps-sandbox.md §9): dev-gated; omit to follow the gate. */
+    custom?: { enabled?: boolean };
   };
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
    *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
