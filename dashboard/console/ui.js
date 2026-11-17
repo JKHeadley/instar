@@ -347,6 +347,10 @@ let opSession = null; // { token, expiresAt }
 export function operatorSession() {
   return opSession && Date.parse(opSession.expiresAt) > Date.now() + 5000 ? opSession.token : null;
 }
+/** How long the PIN unlock in this page has left, in ms (0 when there is none). */
+export function operatorSessionRemainingMs() {
+  return opSession ? Math.max(0, Date.parse(opSession.expiresAt) - Date.now() - 5000) : 0;
+}
 export function forgetOperatorSession() {
   opSession = null;
   window.dispatchEvent(new window.Event('instar-owner-locked'));
@@ -397,8 +401,9 @@ export function refusedUnlock(check) {
   );
 }
 
-export function askPin({ title, explain, adapter = 'body' }) {
-  if (adapter === 'session' && operatorSession()) return Promise.resolve({ session: operatorSession() });
+export function askPin({ title, explain, adapter = 'body', fresh = false }) {
+  // `fresh`: ask even while an unlock is held, for a long action that would outlive the one it has.
+  if (adapter === 'session' && operatorSession() && !fresh) return Promise.resolve({ session: operatorSession() });
   return unlockCheck().then((check) => new Promise((resolve) => {
     if (!check.accepted) {
       sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
