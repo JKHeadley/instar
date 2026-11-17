@@ -26,7 +26,7 @@ import {
 import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPackStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { writeConfigAtomic } from '../core/BootSelfKnowledge.js';
-import { noteOrgLeave, OrgActionChecker, bashEvidence, lastUserRequest, mcpEvidence, mcpIsNonRead, runOrgCheck, type Evidence, type OrgCheckContext } from '../core/OrgActionCheck.js';
+import { noteOrgLeave, orgCheckMode, writeOrgActionsMode, OrgActionChecker, bashEvidence, lastUserRequest, mcpEvidence, mcpIsNonRead, runOrgCheck, type Evidence, type OrgCheckContext } from '../core/OrgActionCheck.js';
 
 export const ORG_DRAFT_TTL_MS = 24 * 60 * 60_000;
 
@@ -63,7 +63,7 @@ export function handleOrgApply(stateDir: string, machineId: string, cmd: { membe
     return { ok: true };
   }
   const r = store.reconcile(cmd.membership, cmd.bundle, effects);
-  if (r.ok && cmd.membership?.state === 'left') noteOrgLeave(stateDir);
+  if (r.ok && cmd.membership?.state === 'left') { noteOrgLeave(stateDir); writeOrgActionsMode(stateDir, 'observe'); }
   return r.ok ? { ok: true } : { ok: false, reason: r.reason };
 }
 const INDEPENDENCE = new Set<MaxIndependence>(['careful', 'balanced', 'trusting', 'independent']);
@@ -302,6 +302,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const r = s.leave({}, deps.effects());
     if (r.ok) {
       noteOrgLeave(deps.stateDir);
+      writeOrgActionsMode(deps.stateDir, 'observe');
       // Block mode belongs to a membership: leaving through the app sets it back to observe (EXO 3.0 re-audit).
       writeConfigAtomic(path.join(deps.stateDir, 'config.json'), (raw) => {
         const op = raw.orgPolicy as { actions?: { mode?: string } } | undefined;
@@ -339,8 +340,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     ((deps.config?.() as { orgPolicy?: { actions?: { mode?: string; blockingApproved?: boolean; judgeDailyCents?: number } } } | undefined)?.orgPolicy?.actions) ?? {};
   /** Block is reachable only once approved, and only for a joined agent (spec §C, §D). */
   const effectiveMode = (): 'observe' | 'block' => {
-    const c = actionsCfg();
-    return c.mode === 'block' && c.blockingApproved === true ? 'block' : 'observe';
+    return orgCheckMode({ orgPolicy: { actions: actionsCfg() } }, deps.stateDir);
   };
 
   router.post('/org/check-action', async (req: Request, res: Response) => {
@@ -393,6 +393,8 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     });
     const live = deps.config?.() as unknown as Record<string, Record<string, Record<string, unknown>>> | undefined;
     if (live) ((live.orgPolicy ??= {}).actions ??= {}).mode = mode;
+    writeOrgActionsMode(deps.stateDir, mode);
+    // E2E-PAIRING: EXEMPT — no new route; the existing mode and leave routes also record the mode (unit-tested in org-block-conditions); the routes' liveness is covered by org-never-actions-alive.
     res.json({ ok: true, mode: effectiveMode() });
   });
 

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "org-block-conditions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T02:14:19.873Z",
+  "artifactPath": "upgrades/side-effects/org-block-conditions.md",
+  "artifactSha256": "ad5b00f14df8af547713e6f31a455c6caba9fd491274e733bc72eebb0a03ca5d",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "src/core/OrgActionCheck.ts",
+    "src/data/state-coherence-registry.json",
+    "src/server/orgPackRoutes.ts",
+    "tests/unit/org-block-conditions.test.ts",
+    "upgrades/side-effects/org-block-conditions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Block-path fixes from the EXO 3.0 re-audit round 4; block still unreachable.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one check per action or message"
+  }
+}

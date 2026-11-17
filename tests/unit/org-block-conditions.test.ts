@@ -7,7 +7,7 @@ import { describe, it, expect, afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runOrgCheck, messageEvidence, setOrgNotify, OrgActionChecker } from '../../src/core/OrgActionCheck.js';
+import { runOrgCheck, messageEvidence, setOrgNotify, OrgActionChecker, orgCheckMode, writeOrgActionsMode } from '../../src/core/OrgActionCheck.js';
 import { OrgPackStore } from '../../src/core/OrgPackStore.js';
 import { newOrgKeyPair, sha256Hex, signRecord } from '../../src/core/OrgPack.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -73,5 +73,22 @@ describe('block-mode conditions', () => {
     const r = await runOrgCheck({ stateDir: dir, config: BLOCK as never, provider: p }, messageEvidence('Donor list', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     expect(r.decision).toBe('deny');
     expect(seen.some((k) => k.startsWith('org-membership-tamper:'))).toBe(true);
+  });
+  it('the mode the server set decides: a config edited to observe stays blocking and tells the person; a leave from another machine sets observe', async () => {
+    const dir = joined();
+    const seen: string[] = [];
+    setOrgNotify((key) => seen.push(key));
+    writeOrgActionsMode(dir, 'block');
+    const edited = { orgPolicy: { actions: { mode: 'observe', blockingApproved: true } } };
+    expect(orgCheckMode(edited as never, dir)).toBe('block');
+    const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async () => '{"breach": false}' };
+    await runOrgCheck({ stateDir: dir, config: edited as never, provider: p }, messageEvidence('hello', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
+    expect(seen.some((k) => k.startsWith('org-mode-tamper:'))).toBe(true);
+    // A peer's leave: membership left and the mode set back to observe, so nothing is held.
+    const mf = path.join(dir, 'org', 'membership.json');
+    fs.writeFileSync(mf, JSON.stringify({ ...JSON.parse(fs.readFileSync(mf, 'utf-8')), state: 'left' }));
+    writeOrgActionsMode(dir, 'observe');
+    const r = await runOrgCheck({ stateDir: dir, config: BLOCK as never, provider: p }, messageEvidence('hello', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
+    expect(r.decision).toBe('pass');
   });
 });

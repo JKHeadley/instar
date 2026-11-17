@@ -104,6 +104,12 @@ One note is recorded, not changed: when the routed framework's binary is missing
 - **The hook** asks the server whenever the organization folder exists or the config says block.
 - **Proxy-flagged Telegram sends.** The pre-check is back, but only when the Telegram origin service isn't running; when it is, its send path already reviews every message.
 
+## Re-audit round 4
+
+- **The server's own record of the mode.** The server writes the mode to `org/actions-mode.json`, and that file decides it. Only the app's mode switch and every leave write it: a leave made in the app, and a leave arriving from another of the agent's machines.
+- **Leave from another machine.** A leave that arrives from another of the agent's machines now sets this machine back to observe, so it no longer holds everything.
+- **Config edited by hand.** If the config file says observe while the server's file says block, the config was edited outside the app. Blocking stays on, the event is recorded, and the person is told once a day. This holds after a restart.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

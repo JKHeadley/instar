@@ -515,9 +515,31 @@ export type OrgCheckResult =
   | { decision: 'allow'; note?: string }
   | { decision: 'deny'; reason: string; checkId: string };
 
-export function orgCheckMode(cfg: OrgCheckContext['config']): 'observe' | 'block' {
+/**
+ * The mode the server last set (org/actions-mode.json), written only by the app's mode switch and by every
+ * leave (this machine's or a peer's). It decides the mode; a config file that disagrees was edited outside the
+ * app, and the stricter of the two holds (EXO 3.0 re-audit round 4).
+ */
+function modeFile(stateDir: string): string { return path.join(stateDir, 'org', 'actions-mode.json'); }
+export function writeOrgActionsMode(stateDir: string, mode: 'observe' | 'block', at = Date.now()): void {
+  writeAtomic(modeFile(stateDir), JSON.stringify({ mode, at }));
+}
+function serverSetMode(stateDir: string | undefined): 'observe' | 'block' | null {
+  if (!stateDir) return null;
+  const m = readJson<{ mode?: string }>(modeFile(stateDir));
+  return m?.mode === 'block' ? 'block' : m?.mode === 'observe' ? 'observe' : null;
+}
+export function orgCheckMode(cfg: OrgCheckContext['config'], stateDir?: string): 'observe' | 'block' {
   const a = cfg.orgPolicy?.actions ?? {};
-  return a.mode === 'block' && a.blockingApproved === true ? 'block' : 'observe';
+  if (a.blockingApproved !== true) return 'observe';
+  const set = serverSetMode(stateDir ?? (cfg as { stateDir?: string }).stateDir);
+  if (set === 'block') return 'block';
+  if (set === 'observe') return 'observe';
+  return a.mode === 'block' ? 'block' : 'observe';
+}
+/** True when the server set block but the config file says otherwise: a hand edit. */
+export function orgModeEditedOutsideApp(cfg: OrgCheckContext['config'], stateDir: string): boolean {
+  return serverSetMode(stateDir) === 'block' && cfg.orgPolicy?.actions?.mode !== 'block';
 }
 
 /** Evidence for an outgoing message: the text itself, always complete. */
@@ -538,9 +560,14 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     const m = s.membership();
     const seen = SEEN_JOINED.get(ctx.stateDir);
     if (m?.state === 'joined') SEEN_JOINED.set(ctx.stateDir, m.orgId);
+    if (orgModeEditedOutsideApp(ctx.config, ctx.stateDir)) {
+      const day = new Date(now()).toISOString().slice(0, 10);
+      try { new OrgActionChecker(ctx.stateDir, now).record({ mode: 'block', outcome: 'mode-changed-outside-the-app' }); } catch { /* @silent-fallback-ok — the notice below reports it */ }
+      notify(`org-mode-tamper:${day}`, 'Organization blocking changed unexpectedly', "This agent's settings were changed outside the Instar app to stop blocking organization rules, so blocking stays on. Switch it from the app if that's what you want.");
+    }
     // Block mode is only ever set for a joined agent, and leaving through the app sets it back to observe,
     // so "block mode, but not joined" means the membership was changed outside the app, also after a restart.
-    else if (orgCheckMode(ctx.config) === 'block') {
+    if (m?.state !== 'joined' && orgCheckMode(ctx.config, ctx.stateDir) === 'block') {
       // Joined earlier in this process, and no leave went through the server: the file was changed by hand.
       try { new OrgActionChecker(ctx.stateDir, now).record({ mode: 'block', outcome: 'membership-changed-outside-the-app', orgId: seen ?? m?.orgId ?? null }); } catch { /* @silent-fallback-ok — the notice and stderr below report it */ }
       console.error('[org-policy] membership file changed outside the app; still checking');
@@ -554,13 +581,13 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     if (!rec) return { decision: 'pass' };
     if (policy === null) {
       // Joined, but the applied policy can't be read: recorded, and held in block mode (never a silent pass).
-      const mode0 = orgCheckMode(ctx.config);
+      const mode0 = orgCheckMode(ctx.config, ctx.stateDir);
       try { new OrgActionChecker(ctx.stateDir, now).record({ sessionId: extra.sessionId ?? null, mode: mode0, outcome: 'policy-unreadable', operation: evidence.operation }); } catch { /* @silent-fallback-ok — the stderr line reports it */ }
       console.error('[org-policy] the applied policy could not be read');
       return mode0 === 'block' ? { decision: 'deny', reason: "Your organization's policy couldn't be read, so I can't check this. Try again in a moment, or ask your person.", checkId: '' } : { decision: 'pass' };
     }
     const c = new OrgActionChecker(ctx.stateDir, now);
-    const mode = orgCheckMode(ctx.config);
+    const mode = orgCheckMode(ctx.config, ctx.stateDir);
     const envelope = OrgActionChecker.envelopeHash(evidence, rec.policySha256);
     if (mode === 'block' && c.consumeAllowOnce(envelope)) {
       c.record({ sessionId: extra.sessionId, mode, outcome: 'allowed-once', operation: evidence.operation, evidenceHash: evidence.contentHash });
@@ -605,7 +632,7 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     return { decision: 'deny', reason, checkId };
   } catch (err) {
     // Recorded, never silent (EXO 3.0 no-silent-fallback): block holds the action, observe passes with the failure on record.
-    const mode = orgCheckMode(ctx.config);
+    const mode = orgCheckMode(ctx.config, ctx.stateDir);
     try { new OrgActionChecker(ctx.stateDir, ctx.now ?? Date.now).record({ sessionId: extra.sessionId ?? null, mode, outcome: 'check-failed', reason: err instanceof Error ? err.message.slice(0, 200) : 'error' }); } catch { /* @silent-fallback-ok — the stderr line below still reports it */ }
     console.error('[org-policy] check failed:', err instanceof Error ? err.message : String(err));
     ctx.journal?.('org-action-check', { outcome: 'check-failed', mode });
