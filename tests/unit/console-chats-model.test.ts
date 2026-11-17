@@ -423,7 +423,7 @@ describe('the list grouped by the conversation hierarchy (console-chats-grouped)
     ])!;
     expect(index.get('telegram:2')?.title).toBe('App work');
     expect(index.get('telegram:4')).toEqual(index.get('telegram:2'));
-    expect(index.get('telegram:5')?.title).toBe('Untitled');
+    expect(index.get('telegram:5')?.title).toBe('Untitled group');
     expect(index.has('telegram:3')).toBe(false);
   });
 
@@ -433,7 +433,7 @@ describe('the list grouped by the conversation hierarchy (console-chats-grouped)
     expect(m.hierarchyIndex([page([{ ref: { kind: 'bogus' }, title: 'x' }])])).toBeNull();
   });
 
-  it('groupRows: Chief of Staff leads alone, one group per effort with count and unread, the rest "Not in a project yet"', () => {
+  it('groupRows: Chief of Staff leads alone, one group per effort with count and unread, the rest "Not in a group yet"', () => {
     const index = m.hierarchyIndex([page([conv(2, [{ ref: effortA, title: 'App work' }]), conv(4, [{ ref: effortA, title: 'App work' }]), conv(5, [{ ref: effortB, title: 'Windows' }])])]);
     const g = m.groupRows(m.listRows(body), index, 'telegram:1');
     expect(g.lead?.key).toBe('telegram:1');
@@ -448,5 +448,59 @@ describe('the list grouped by the conversation hierarchy (console-chats-grouped)
   it('the remembered view: only "all" means all; anything else is grouped', () => {
     expect(m.listViewFrom('all')).toBe('all');
     for (const v of ['grouped', null, '', 'x']) expect(m.listViewFrom(v)).toBe('grouped');
+  });
+});
+
+describe('which groups are tracked projects (console-chats-grouped)', () => {
+  const effA = { kind: 'effort', id: 'eff-a' };
+  const effB = { kind: 'effort', id: 'eff-b' };
+  const tgRef = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-100', topicId });
+  const conv = (topicId: number, path: Array<{ ref: unknown; title: string }>) => ({
+    ref: tgRef(topicId), title: `T${topicId}`, kind: 'conversation', role: 'worker', primaryPath: path, visibleChildCount: 0,
+    source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` },
+  });
+  const effort = (ref: unknown, title: string, frontDoor?: unknown) => ({ ref, title, kind: 'effort', role: 'effort', primaryPath: [], visibleChildCount: 1, metadata: frontDoor ? { frontDoor } : {} });
+  const pages = [{ partial: false, nextCursor: null, items: [
+    conv(20, [{ ref: effA, title: 'Apps' }]), conv(21, [{ ref: effA, title: 'Apps' }, { ref: { kind: 'effort', id: 'sub' }, title: 'Sub' }]),
+    effort(effA, 'Apps', tgRef(21)), conv(30, [{ ref: effB, title: 'Misc' }]), effort(effB, 'Misc'),
+  ] }];
+
+  it('effortMembers lists every conversation under each top-level effort, front door first, nested ones included', () => {
+    const members = m.effortMembers(pages)!;
+    const keyA = [...members.keys()].find((k) => members.get(k)!.includes('telegram:20'))!;
+    expect(members.get(keyA)).toEqual(['telegram:21', 'telegram:20']);
+    expect([...members.values()]).toContainEqual(['telegram:30']);
+    expect(m.effortMembers([{ items: 'x', partial: false }])).toBeNull();
+  });
+
+  it('the status chip mapping is shared with the phone apps: route states and raw verdicts; pausedBy wins; anything else no chip', () => {
+    const chip = (p: object) => m.projectStatusOf(p)?.label ?? null;
+    for (const w of ['moving', 'moving-under-existing-owner']) expect(chip({ state: w })).toBe('Moving');
+    for (const w of ['stalled', 'stopped-retrying', 'stuck']) expect(chip({ state: w })).toBe('Stuck');
+    for (const w of ['waiting-on-you', 'waiting-on-user']) expect(chip({ lastVerdict: w })).toBe('Needs you');
+    for (const w of ['done', 'done-verified']) expect(chip({ state: w })).toBe('Done');
+    expect(chip({ state: 'drifting' })).toBe('Drifting');
+    expect(chip({ state: 'paused' })).toBe('Paused');
+    expect(chip({ state: 'moving', pausedBy: 'owner' })).toBe('Paused');
+    for (const w of ['claims-done', 'unknown', 'toString', '']) expect(chip({ state: w })).toBeNull();
+  });
+
+  it('projectsForGroups: a group is a project when ANY conversation under it is tracked (front door first); a failed read leaves all plain', () => {
+    const members = m.effortMembers(pages)!;
+    const tracked = m.trackedProjects({ projects: [
+      { key: 'telegram:20', conversationKey: 'telegram:20', title: 'Worker project', state: 'stalled' },
+      { key: 'telegram:21', title: 'Front door project', state: 'waiting-on-you' },
+    ] })!;
+    const byGroup = m.projectsForGroups(members, tracked);
+    expect(byGroup.size).toBe(1);
+    const p = [...byGroup.values()][0];
+    expect(p.title).toBe('Front door project');
+    expect(p.status.label).toBe('Needs you');
+    expect(p.href).toBe('#/work/board?project=telegram%3A21');
+    expect(m.projectsForGroups(members, m.trackedProjects(null)).size).toBe(0);
+    expect(m.projectsForGroups(null, tracked).size).toBe(0);
+    // A bare app id is an app conversation key.
+    const app = '3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+    expect(m.trackedProjects({ projects: [{ key: app, state: 'moving' }] })!.has(`app:${app}`)).toBe(true);
   });
 });

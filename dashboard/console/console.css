@@ -1348,6 +1348,17 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-effort-row:hover, .chat-effort-row:focus-visible { background: var(--surface); }
 .chat-effort-chev { flex: none; width: 16px; font-size: 20px; line-height: 1; text-align: center; color: var(--text-faint); transition: transform var(--dur) var(--ease); }
 .chat-effort-row.expanded .chat-effort-chev { transform: rotate(90deg); }
+/* Tracked projects (Chief of Staff) vs plain groups: a flag and a status chip, or a folder. Tones as the Work page's projects. */
+.chat-group-icon { flex: none; width: 18px; height: 18px; color: var(--text-faint); display: inline-flex; }
+.chat-group-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.chat-group-icon-project { color: var(--accent); }
+.chat-project-row .chat-row-title { color: var(--text-strong); }
+.chat-project-status { flex: none; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline-strong); color: var(--text-muted); }
+.chat-project-status.tone-ok { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
+.chat-project-status.tone-attn { border-color: var(--attn-line); color: var(--attn); background: var(--attn-wash); }
+.chat-project-status.tone-bad { border-color: var(--bad-line); color: var(--bad); background: var(--bad-wash); }
+.chat-project-status.tone-quiet { color: var(--text-muted); }
+.chat-open-project { display: inline-block; margin: 0 0 var(--s-1) calc(var(--s-2) + var(--s-5)); font-size: 13px; }
 .chat-ungrouped-label { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-2); }
 .chat-review-suggestions { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--accent); }
 .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

@@ -405,7 +405,7 @@ describe('Conversations page', () => {
     primaryPath: [{ ref: effort, title: '<b>App work</b>' }], visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` } });
   const GRAPH = { items: [worker(2), worker(4)], partial: false, nextCursor: null };
 
-  it('grouped: Chief of Staff first, each effort one collapsed row with count and unread, the rest under "Not in a project yet"; All shows the flat list and is remembered', async () => {
+  it('grouped: Chief of Staff first, a "Groups" header, each group one collapsed row with folder, count and unread, the rest under "Not in a group yet"; All shows the flat list and is remembered', async () => {
     const { idb, publicKey } = await seeded();
     const { doc } = await boot((c) => {
       if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
@@ -428,22 +428,79 @@ describe('Conversations page', () => {
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(head.textContent).toContain('2 conversations');
     expect(head.querySelector('.chat-unread')?.textContent).toBe('3');
-    expect(head.getAttribute('aria-label')).toBe('Project <b>App work</b>, 2 conversations, 3 unread');
-    // Owner-facing words say "project", never "effort".
-    expect(doc.querySelector('.chat-rows')!.textContent!.toLowerCase()).not.toContain('effort');
-    expect([...doc.querySelectorAll('.chat-rows [aria-label]')].map((x) => x.getAttribute('aria-label')!.toLowerCase()).join(' ')).not.toContain('effort');
-    expect(doc.querySelector('.chat-ungrouped-label')?.textContent).toContain('Not in a project yet');
+    expect(head.getAttribute('aria-label')).toBe('Group <b>App work</b>, 2 conversations, 3 unread');
+    expect(head.classList.contains('chat-project-row')).toBe(false);
+    expect(head.querySelector('.chat-group-icon svg')).not.toBeNull();
+    expect(head.querySelector('.chat-group-icon-project, .chat-project-status')).toBeNull();
+    expect(doc.querySelector('.chat-groups-label')?.textContent).toBe('Groups');
+    // Owner-facing words: never "effort"; a plain group (no tracked project) never says "project".
+    const words = () => [doc.querySelector('.chat-rows')!.textContent!, ...[...doc.querySelectorAll('.chat-rows [aria-label]')].map((x) => x.getAttribute('aria-label')!)].join(' ').toLowerCase();
+    expect(words()).not.toContain('effort');
+    expect(words()).not.toContain('project');
+    expect(doc.querySelector('.chat-ungrouped-label')?.textContent).toContain('Not in a group yet');
     expect(doc.querySelector('a.chat-review-suggestions')?.getAttribute('href')).toBe('#/work/conversations?view=suggestions');
     expect(doc.querySelector('.chat-rows img')).toBeNull();
     // Expand inline.
     head.click();
     expect(titles()).toEqual(['Chief of Staff', '<b>App work</b>', '<img src=x onerror=alert(1)>Build', 'Deep', 'Loose']);
+    expect(doc.querySelector('.chat-open-project')).toBeNull();
+    expect(words()).not.toContain('project');
     // All: today's flat list, remembered in this browser.
     chip('All').click();
     expect(doc.querySelector('.chat-effort-row')).toBeNull();
     expect(titles()).toEqual(['Chief of Staff', '<img src=x onerror=alert(1)>Build', 'Loose', 'Deep']);
     expect(chip('All').getAttribute('aria-pressed')).toBe('true');
     expect(dom.window.localStorage.getItem('instar_chats_list_view')).toBe('all');
+  });
+
+  it('a group linked to a tracked project shows the project mark, its status chip and, open, an "Open project" link; plain groups stay plain', async () => {
+    const { idb } = await seeded();
+    const effB = { kind: 'effort', id: 'eff-b' };
+    const plain = { ref: { kind: 'conversation', platform: 'telegram', chatId: '-100', topicId: 3 }, title: 'T3', kind: 'conversation', role: 'worker',
+      primaryPath: [{ ref: effB, title: 'Misc' }], visibleChildCount: 0, source: { platform: 'telegram', conversationId: 3, title: 'T3' } };
+    // Topic 9 is the project's conversation: under the group but not loaded in the list; any conversation under the group counts.
+    const hidden = { ...worker(9), ref: { kind: 'conversation', platform: 'telegram', chatId: '-100', topicId: 9 }, source: { platform: 'telegram', conversationId: 9, title: 'T9' } };
+    const graph = { items: [worker(2), worker(4), hidden, plain], partial: false, nextCursor: null };
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: LIST() };
+      if (c.url.startsWith('/mobile/conversation-graph/roots?view=all')) return { status: 200, body: graph };
+      if (c.url === '/work/projects') return { status: 200, body: { projects: [{ key: 'telegram:9', conversationKey: 'telegram:9', title: 'App project', state: 'waiting-on-you' }] } };
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const rows = [...doc.querySelectorAll('.chat-effort-row')] as HTMLButtonElement[];
+    expect(rows).toHaveLength(2);
+    const [proj, folder] = rows;
+    expect(proj.classList.contains('chat-project-row')).toBe(true);
+    expect(proj.querySelector('.chat-group-icon-project svg')).not.toBeNull();
+    expect(proj.querySelector('.chat-project-status')?.textContent).toBe('Needs you');
+    expect(proj.querySelector('.chat-project-status')?.classList.contains('tone-attn')).toBe(true);
+    expect(proj.getAttribute('aria-label')).toBe('Project <b>App work</b>, Needs you, 2 conversations, 3 unread');
+    expect(folder.classList.contains('chat-project-row')).toBe(false);
+    expect(folder.querySelector('.chat-project-status, .chat-group-icon-project')).toBeNull();
+    expect(folder.getAttribute('aria-label')).toBe('Group Misc, 1 conversation');
+    expect(doc.querySelector('.chat-open-project')).toBeNull();
+    proj.click();
+    const open = doc.querySelector('a.chat-open-project') as HTMLAnchorElement;
+    expect(open.textContent).toBe('Open project');
+    expect(open.getAttribute('href')).toBe('#/work/board?project=telegram%3A9');
+  });
+
+  it('the projects read fails: every group looks plain', async () => {
+    const { idb } = await seeded();
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: LIST() };
+      if (c.url.startsWith('/mobile/conversation-graph/roots?view=all')) return { status: 200, body: GRAPH };
+      if (c.url === '/work/projects') return { status: 500, body: {} };
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const head = doc.querySelector('.chat-effort-row') as HTMLButtonElement;
+    expect(head).toBeTruthy();
+    expect(head.classList.contains('chat-project-row')).toBe(false);
+    expect(head.querySelector('.chat-project-status')).toBeNull();
   });
 
   it('a remembered "All" opens the flat list even when the hierarchy is available', async () => {

@@ -248,4 +248,14 @@ describe('the rendered Projects section (jsdom)', () => {
     expect(sec.querySelector('.project-apps-detail')).toBeNull();
     expect(sec.querySelector('.project-open')).toBeNull();
   });
+
+  it('"Open project" from the conversation list (?project=<key>) opens that row, finished ones too; other rows stay closed', async () => {
+    const { projectsSection } = await import('../../dashboard/console/projects.js');
+    const data = { couldNotCheck: [], projects: [{ key: 'telegram:71', title: 'A', state: 'moving' }, { key: 'telegram:72', title: 'B', state: 'done' }] };
+    const sec = projectsSection(data, { openKey: 'telegram:72' });
+    const row = (k: string) => sec.querySelector(`details.project-row[data-project="${k}"]`) as HTMLDetailsElement;
+    expect(row('telegram:72').open).toBe(true);
+    expect((sec.querySelector('details.projects-finished') as HTMLDetailsElement).open).toBe(true);
+    expect(row('telegram:71').open).toBe(false);
+  });
 });
