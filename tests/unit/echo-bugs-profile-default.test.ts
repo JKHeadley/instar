@@ -62,7 +62,7 @@ describe('issues group profile defaults', () => {
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'echo-bugs-profile-default test cleanup' }); }
   });
 
-  it('uses gpt-6-sol with a plain note when this machine has an older Codex CLI', () => {
+  it('uses gpt-6-sol and records why (no chat note) when this machine has an older Codex CLI', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-profile-'));
     try {
       const resolver = new TopicProfileResolver({
@@ -74,7 +74,8 @@ describe('issues group profile defaults', () => {
       });
       const result = resolver.resolve(10_000_001_618);
       expect(result.model).toBe('gpt-6-sol');
-      expect(result.notices.join(' ')).toMatch(/older Codex CLI.*gpt-6-sol/);
+      expect(result.sources.model).toBe('older-codex-cli-fallback');
+      expect(result.notices).toEqual([]);
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'echo-bugs-profile-default test cleanup' }); }
   });
 
@@ -85,7 +86,9 @@ describe('issues group profile defaults', () => {
   ])('falls back from %s to %s on an older Codex CLI, and keeps it on a current one', (wanted, older) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-profile-'));
     try {
+      const audits: Array<Record<string, unknown>> = [];
       const make = (supported: boolean) => new TopicProfileResolver({
+        audit: (e: Record<string, unknown>) => { audits.push(e); },
         store: new TopicProfileStore({ stateFilePath: path.join(dir, `profiles-${supported}.json`) }),
         defaultFramework: () => 'codex-cli', configTopicFrameworks: () => ({}), configProfileDefaults: () => ({}),
         frameworkDefaultModels: () => ({ 'codex-cli': wanted }), tierEscalationConfig: () => undefined,
@@ -94,7 +97,8 @@ describe('issues group profile defaults', () => {
       const old = make(false).resolve(4242);
       expect(old.model).toBe(older);
       expect(old.sources.model).toBe('older-codex-cli-fallback');
-      expect(old.notices.join(' ')).toContain(`cannot run ${wanted}; using ${older}`);
+      expect(old.notices).toEqual([]);
+      expect(audits).toContainEqual(expect.objectContaining({ type: 'fallback', reason: 'older-codex-cli', failure: `cannot-run:${wanted}` }));
       const current = make(true).resolve(4242);
       expect(current.model).toBe(wanted);
       expect(current.notices).toEqual([]);

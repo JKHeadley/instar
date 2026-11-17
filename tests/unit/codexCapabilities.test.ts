@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { codexSupportsHookTrustBypass, codexSupportsGpt61Sol, codexSupportsNewerModels, codexModelForCli, codexCliVersion, CODEX_OLDER_CLI_FALLBACKS, __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
+import { codexSupportsHookTrustBypass, codexSupportsGpt61Sol, codexSupportsNewerModels, codexModelForCli, codexModelForCliAsync, codexCliVersion, codexCliVersionCached, refreshCodexCliVersion, CODEX_OLDER_CLI_FALLBACKS, __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const made: string[] = [];
@@ -91,20 +91,83 @@ describe('older-CLI fallback for the GPT-6.x ids (live boundary 2026-11-17: 0.16
     ['gpt-6.2-sol', 'gpt-6-sol'],
     ['gpt-6.2-astra', 'gpt-6-astra'],
     ['gpt-6.1-sol', 'gpt-6-sol'],
-  ])('%s: kept on 0.166.0+, falls back to %s on 0.165.0', (model, older) => {
+  ])('%s: kept on 0.166.0+, falls back to %s on 0.165.0', async (model, older) => {
     const current = fakeCodex('codex-cli 0.166.0');
     const old = fakeCodex('codex-cli 0.165.0');
     for (const policy of ['fallback', 'keep'] as const) {
+      expect(await codexModelForCliAsync(model, current, policy)).toBe(model);
+      expect(await codexModelForCliAsync(model, old, policy)).toBe(older);
+      // Once probed, the synchronous form answers the same from the cache.
       expect(codexModelForCli(model, current, policy)).toBe(model);
       expect(codexModelForCli(model, old, policy)).toBe(older);
     }
   });
 
-  it('an unreadable version falls back for session launches and keeps the id for one-shot calls', () => {
+  it('an unreadable version falls back for session launches and keeps the id for one-shot calls', async () => {
     const unknown = fakeCodex('not a version');
-    expect(codexModelForCli('gpt-6.2-sol', unknown, 'fallback')).toBe('gpt-6-sol');
-    expect(codexModelForCli('gpt-6.2-sol', unknown, 'keep')).toBe('gpt-6.2-sol');
-    expect(codexModelForCli('gpt-6.2-astra', '/nonexistent/codex', 'fallback')).toBe('gpt-6-astra');
+    expect(await codexModelForCliAsync('gpt-6.2-sol', unknown, 'fallback')).toBe('gpt-6-sol');
+    expect(await codexModelForCliAsync('gpt-6.2-sol', unknown, 'keep')).toBe('gpt-6.2-sol');
+    expect(await codexModelForCliAsync('gpt-6.2-astra', '/nonexistent/codex', 'fallback')).toBe('gpt-6-astra');
+  });
+
+  it('the synchronous form never spawns: a cache miss is treated as unknown and warms the cache in the background', async () => {
+    const old = fakeCodex('codex-cli 0.165.0');
+    expect(codexCliVersionCached(old)).toBeUndefined();
+    expect(codexModelForCli('gpt-6.2-sol', old, 'keep')).toBe('gpt-6.2-sol');
+    expect(codexModelForCli('gpt-6.2-sol', old, 'fallback')).toBe('gpt-6-sol');
+    await refreshCodexCliVersion(old); // joins the background probe the miss started
+    expect(codexCliVersionCached(old)).toEqual({ major: 0, minor: 165, patch: 0 });
+    expect(codexModelForCli('gpt-6.2-sol', old, 'keep')).toBe('gpt-6-sol');
+  });
+
+  it('a wedged codex does not block the event loop and is cached as unreadable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-'));
+    made.push(dir);
+    const bin = path.join(dir, 'codex');
+    fs.writeFileSync(bin, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 50);
+    const started = Date.now();
+    const model = await codexModelForCliAsync('gpt-6.2-sol', bin, 'keep');
+    clearInterval(timer);
+    expect(model).toBe('gpt-6.2-sol');
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(ticks).toBeGreaterThan(10); // the loop kept running during the probe
+    expect(codexCliVersionCached(bin)).toBeNull();
+  }, 10_000);
+
+  it('a codex that reads stdin and ignores SIGTERM still settles within the probe deadline', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-'));
+    made.push(dir);
+    const bin = path.join(dir, 'codex');
+    fs.writeFileSync(bin, "#!/bin/sh\ntrap '' TERM\ncat > /dev/null\nsleep 30\n", { mode: 0o755 });
+    const started = Date.now();
+    expect(await codexModelForCliAsync('gpt-6.2-astra', bin, 'fallback')).toBe('gpt-6-astra');
+    expect(Date.now() - started).toBeLessThan(4000);
+  }, 10_000);
+
+  it('a spawn that throws synchronously settles to unknown, never rejects, and does not poison later probes', async () => {
+    const bad = 'codex\u0000bad'; // a NUL byte makes spawn throw ERR_INVALID_ARG_VALUE synchronously
+    await expect(refreshCodexCliVersion(bad)).resolves.toBeNull();
+    await expect(codexModelForCliAsync('gpt-6.2-sol', bad, 'fallback')).resolves.toBe('gpt-6-sol');
+    // A later probe of a good binary is unaffected, and the bad path re-probes after its entry expires.
+    const good = fakeCodex('codex-cli 0.169.0');
+    await expect(refreshCodexCliVersion(good)).resolves.toEqual({ major: 0, minor: 169, patch: 0 });
+  });
+
+  it('an unreadable result expires after 60 s while a readable one lasts 10 minutes', async () => {
+    const good = fakeCodex('codex-cli 0.169.0');
+    const bad = fakeCodex('garbage');
+    await refreshCodexCliVersion(good);
+    await refreshCodexCliVersion(bad);
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 61_000;
+      expect(codexCliVersionCached(bad)).toBeUndefined();
+      expect(codexCliVersionCached(good)).toEqual({ major: 0, minor: 169, patch: 0 });
+      // The sync form serves the stale answer and refreshes in the background.
+      expect(codexCliVersion(bad)).toBeNull();
+    } finally { Date.now = realNow; }
   });
 
   it('never touches an id without a fallback, even on an old CLI', () => {

@@ -169,17 +169,25 @@
           "id": "gpt-6.2-astra",
           "role": "capable-openai",
           "frontier": true,
-          "pricing": null,
+          "pricing": {
+            "inPerMtok": 8,
+            "outPerMtok": 40,
+            "currency": "USD"
+          },
           "verifiedAt": "2026-11-17",
-          "note": "Released 2026-11-17. Live-probed that day on codex CLI 0.169.0 on all five Codex accounts (listed in models_cache.json; codex exec answered OK), and on CLI 0.166.0 and 0.168.0. CLI 0.165.0, 0.160.0 and 0.156.1 refuse it (400 'not supported when using Codex with a ChatGPT account'). The codex `capable` tier target since 2026-11-17 on the operator's directive to move all codex usage to the GPT-6.2 family; a CLI below 0.166.0 falls back to gpt-6-astra. Pricing not yet recorded for this id."
+          "note": "Released 2026-11-17. Live-probed that day on codex CLI 0.169.0 on all five Codex accounts (listed in models_cache.json; codex exec answered OK), and on CLI 0.166.0 and 0.168.0. CLI 0.165.0, 0.160.0 and 0.156.1 refuse it (400 'not supported when using Codex with a ChatGPT account'). The codex `capable` tier target since 2026-11-17 on the operator's directive to move all codex usage to the GPT-6.2 family; a CLI below 0.166.0 falls back to gpt-6-astra. List price from the OpenRouter models API on 2026-11-17 (also in routing-prices.manifest.json)."
         },
         {
           "id": "gpt-6.2-sol",
           "role": "mid-openai",
           "frontier": false,
-          "pricing": null,
+          "pricing": {
+            "inPerMtok": 2,
+            "outPerMtok": 10,
+            "currency": "USD"
+          },
           "verifiedAt": "2026-11-17",
-          "note": "Released 2026-11-17. Same live probe as gpt-6.2-astra (all five accounts on CLI 0.169.0; also 0.166.0 and 0.168.0; refused on 0.165.0 and older). The codex `balanced` tier target since 2026-11-17; a CLI below 0.166.0 falls back to gpt-6-sol. No gpt-6.2-luna exists, so `fast` stays gpt-6-luna. Pricing not yet recorded for this id."
+          "note": "Released 2026-11-17. Same live probe as gpt-6.2-astra (all five accounts on CLI 0.169.0; also 0.166.0 and 0.168.0; refused on 0.165.0 and older). The codex `balanced` tier target since 2026-11-17; a CLI below 0.166.0 falls back to gpt-6-sol. No gpt-6.2-luna exists, so `fast` stays gpt-6-luna. List price from the OpenRouter models API on 2026-11-17 (also in routing-prices.manifest.json)."
         },
         {
           "id": "gpt-6-astra",

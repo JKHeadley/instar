@@ -24,8 +24,20 @@ const mockTmuxSessions = new Set<string>();
 let mockCodexVersion = 'codex-cli 0.169.0';
 
 // Mock child_process to avoid needing real tmux
-vi.mock('node:child_process', () => {
+vi.mock('node:child_process', async () => {
+  const { EventEmitter } = await import('node:events');
   return {
+    // The Codex version probe (codexCapabilities.refreshCodexCliVersion).
+    spawn: vi.fn().mockImplementation((_cmd: string, args?: string[]) => {
+      const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; kill: () => boolean };
+      child.stdout = new EventEmitter();
+      child.kill = () => true;
+      setImmediate(() => {
+        if (args?.[0] === '--version') child.stdout.emit('data', Buffer.from(mockCodexVersion));
+        child.emit('close', 0);
+      });
+      return child;
+    }),
     execFileSync: vi.fn().mockImplementation((_cmd: string, args?: string[]) => {
       if (!args) return '';
       if (args[0] === '--version') return mockCodexVersion;
@@ -71,6 +83,11 @@ vi.mock('node:child_process', () => {
       (_cmd: string, args: string[], _opts: unknown, cb?: (err: Error | null, result: { stdout: string }) => void) => {
         if (typeof _opts === 'function') {
           cb = _opts as (err: Error | null, result: { stdout: string }) => void;
+        }
+        if (args[0] === '--version') {
+          // Node's execFile callback receives stdout as the second argument.
+          if (cb) (cb as unknown as (err: Error | null, stdout: string) => void)(null, mockCodexVersion);
+          return;
         }
         if (args[0] === 'has-session') {
           const target = args[2]?.replace(/^=/, '');

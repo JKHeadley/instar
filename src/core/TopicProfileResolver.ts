@@ -259,13 +259,14 @@ export class TopicProfileResolver {
       const binary = this.opts.frameworkBinaryPath(framework);
       const supported = binary && (this.opts.codexModelSupported ?? codexSupportsNewerModels)(binary);
       if (!supported) {
+        // Recorded, not announced (Near-Silent Notifications): the resolved
+        // source and the session's launch model carry the fallback, and the
+        // audit names the requested id. Nothing here needs the person to act.
         const wanted = model;
         model = CODEX_OLDER_CLI_FALLBACKS[wanted];
         modelSource = 'older-codex-cli-fallback';
-        const notice = this.onceNotice(key, 'older-codex-cli',
-          `This machine has an older Codex CLI that cannot run ${wanted}; using ${model} for this session.`);
-        if (notice) notices.push(notice);
-      } else this.clearTransition(key, 'older-codex-cli');
+        this.opts.audit?.({ type: 'fallback', reason: 'older-codex-cli', topic: key, failure: `cannot-run:${wanted}` });
+      }
     }
 
     // ── thinking arm ─────────────────────────────────────────────────────

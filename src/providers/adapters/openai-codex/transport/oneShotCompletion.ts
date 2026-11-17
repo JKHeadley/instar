@@ -20,7 +20,7 @@ import { AbortError } from '../../../errors.js';
 import type { OpenAiCodexConfig } from '../config.js';
 import { OPENAI_CODEX_ID, mapExecError } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
-import { codexModelForCli } from '../../../../core/codexCapabilities.js';
+import { codexModelForCliAsync } from '../../../../core/codexCapabilities.js';
 import { buildCodexChildEnv, spawnCodexAndWait } from './codexSpawn.js';
 
 class OpenAiCodexOneShotCompletion implements OneShotCompletion {
@@ -33,7 +33,7 @@ class OpenAiCodexOneShotCompletion implements OneShotCompletion {
     options?: OneShotCompletionOptions,
   ): Promise<OneShotCompletionResult> {
     const timeoutMs = options?.timeoutMs ?? this.config.defaultOneShotTimeoutMs ?? 60_000;
-    const model = codexModelForCli(resolveCliModelFlag(options?.model ?? this.config.defaultModel), this.config.codexPath, 'keep');
+    const model = await codexModelForCliAsync(resolveCliModelFlag(options?.model ?? this.config.defaultModel), this.config.codexPath, 'keep');
     const sandbox = this.config.defaultSandboxMode ?? 'read-only';
 
     const outFile = path.join(tmpdir(), `codex-oneshot-${randomBytes(8).toString('hex')}.txt`);

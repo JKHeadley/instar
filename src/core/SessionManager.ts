@@ -122,7 +122,7 @@ import {
 import { createCliVersionReader, defaultCliVersionReaderDeps, CLI_VERSION_UNKNOWN, type CliVersionReader } from './cliVersionReader.js';
 import { boundLaunchRecord, type JobRunLaunch } from '../scheduler/JobRunHistory.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
-import { CODEX_OLDER_CLI_FALLBACKS, codexModelForCli } from './codexCapabilities.js';
+import { CODEX_OLDER_CLI_FALLBACKS, codexModelForCliAsync } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -7976,7 +7976,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           claudePath: this.config.claudePath,
           configuredFramework: this.config.framework,
         });
-        const launched = codexModelForCli(concrete, binary ?? '', 'fallback');
+        const launched = await codexModelForCliAsync(concrete, binary ?? '', 'fallback');
         if (launched !== concrete) {
           console.warn(`[SessionManager] This machine has an older Codex CLI that cannot run ${concrete}; using ${launched} for this session.`);
           return launched;

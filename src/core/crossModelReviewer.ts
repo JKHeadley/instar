@@ -76,7 +76,7 @@ import {
 } from '../providers/adapters/grok-build/policy.js';
 import { validateRule1 } from '../providers/adapters/openai-codex/credentials.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
-import { codexModelForCli } from './codexCapabilities.js';
+import { codexModelForCli, codexModelForCliAsync } from './codexCapabilities.js';
 import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { ClaudeForbiddenError } from './claudeForbiddenGuard.js';
@@ -1457,10 +1457,8 @@ const codexReviewer: SupportedReviewerFramework = {
     const tier = args.codexModelOverride === 'sol' ? 'balanced' : REVIEW_MODEL_TIER;
     // The feedback override also takes the older-CLI model on a CLI known to be
     // below 0.166.0; judgeRoutedFeedbackReview accepts either id of that size.
-    const overrideModel = args.codexModelOverride
-      ? codexModelForCli(resolveCliModelFlag(tier), detection.binaryPath ?? '', 'keep')
-      : undefined;
-    const model = overrideModel ?? detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
+    const baseModel = args.codexModelOverride ? resolveCliModelFlag(tier) : detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
+    const model = detection.binaryPath ? await codexModelForCliAsync(baseModel, detection.binaryPath, 'keep') : baseModel;
     const tag = `cross-model:codex-cli:${model}`;
 
     // Fail-loud model canary (Piece 3): NEVER silently review with a

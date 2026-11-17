@@ -236,7 +236,7 @@ function authorityForm(kind, card, action, deps, { lead = false, detail = '', ti
     const pin = await askPin({ title: title || card.title, explain: `${what} Your PIN goes in this one request and is not kept.`, adapter: 'body' });
     if (!pin) return;
     go.disabled = true; status.textContent = 'Working…';
-    const body = (kind === 'readiness' ? readinessAuthorityRequest : triageAuthorityRequest)(action, env, pin.pin, newDecisionRef(`console-${kind}`));
+    const body = (kind === 'readiness' ? readinessAuthorityRequest : triageAuthorityRequest)(action, env, pin.pin, newDecisionRef(`console-${kind}`), card.shownModelFamily);
     pin.pin = '';
     const r = await send(route, body);
     body.pin = '';

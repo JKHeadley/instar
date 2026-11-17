@@ -28,7 +28,7 @@ import {
   resolveCliModelFlag,
 } from '../providers/adapters/openai-codex/models.js';
 import { classifyCodexErrorMessage } from '../providers/adapters/openai-codex/observability/eventNormalizer.js';
-import { codexModelForCli } from './codexCapabilities.js';
+import { codexModelForCliAsync } from './codexCapabilities.js';
 import { KNOWN_CODEX_MODEL_IDS } from './ModelTierEscalation.js';
 import {
   buildCodexChildEnv,
@@ -471,7 +471,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     const requestedModel = resolveCliModelFlag(options?.model);
     const model = options?.strictModelPin
       ? requestedModel
-      : codexModelForCli(requestedModel, this.codexPath, 'keep');
+      : await codexModelForCliAsync(requestedModel, this.codexPath, 'keep');
     // Observable Intelligence: surface the resolved provider/model up front so
     // the metrics funnel attributes the call to codex on every path (including
     // failures and the plain mode, which surfaces no token usage).

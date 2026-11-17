@@ -151,6 +151,17 @@ describe('readiness authority dashboard path — proposal → PIN approve → ti
     expect((await tick('readiness-ui-nonce-0003')).status).toBe(403);
   });
 
+  it('an approval whose shown model no longer matches the proposal is refused', async () => {
+    const before = (await request(server.getApp()).get('/feedback-factory/readiness-authorities/proposal').set(H)).body;
+    const res = await request(server.getApp()).post('/feedback-factory/readiness-authorities')
+      .set({ ...H, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, pin: PIN, operatorDecisionRef: 'dashboard:replace:stale', shownModelFamily: 'gpt-0-not-shown' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/changed since it was shown/);
+    const after = (await request(server.getApp()).get('/feedback-factory/readiness-authorities/proposal').set(H)).body;
+    expect(after.current?.generation).toBe(before.current?.generation);
+  });
+
   it('an out-of-range envelope is refused and records nothing', async () => {
     const res = await request(server.getApp()).post('/feedback-factory/readiness-authorities')
       .set({ ...H, 'X-Instar-Request': '1' })

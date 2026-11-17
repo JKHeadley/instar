@@ -2,11 +2,11 @@
 
 ## What Changed
 
-Codex work now runs on the GPT-6.2 models released 2026-11-17: the `balanced` tier uses `gpt-6.2-sol` and the `capable` tier uses `gpt-6.2-astra`. The `fast` tier stays on `gpt-6-luna`, since there is no GPT-6.2 small model. Both new ids are recognized for topic pins, the dashboard model picker and the configured Codex default. Echo Bugs topics now default to `gpt-6.2-sol`. A machine whose Codex CLI is older than 0.166.0 uses `gpt-6-sol` or `gpt-6-astra` instead of starting a session that fails. Session launches also use the older model when the CLI version cannot be read. The feedback reviewer and feedback triage checks accept the GPT-6.2 model of the same size. A model you chose yourself in settings or on a topic is left as it is.
+Codex work now runs on the GPT-6.2 models released 2026-11-17: the `balanced` tier uses `gpt-6.2-sol` and the `capable` tier uses `gpt-6.2-astra`. The `fast` tier stays on `gpt-6-luna`, since there is no GPT-6.2 small model. Both new ids are recognized for topic pins, the dashboard model picker and the configured Codex default. Echo Bugs topics now default to `gpt-6.2-sol`. A machine whose Codex CLI is older than 0.166.0 uses `gpt-6-sol` or `gpt-6-astra` instead of starting a session that fails. Session launches also use the older model when the CLI version cannot be read. A fallback is recorded on the session and in the audit log, not posted in the chat (this also retires the older gpt-6.1 chat note). Feedback readiness and triage approval proposals name a model the local Codex can run. List prices for both new ids are recorded so spend is reported from the first call. The feedback reviewer and feedback triage checks accept the GPT-6.2 model of the same size. A model you chose yourself in settings or on a topic is left as it is.
 
 ## What to Tell Your User
 
-Codex now uses the new GPT-6.2 Sol and Astra models for everyday and heavy work. If a machine still has an older Codex version, it keeps using the previous models until Codex is updated, and a topic that falls back says so in one sentence.
+Codex now uses the new GPT-6.2 Sol and Astra models for everyday and heavy work. If a machine still has an older Codex version, it keeps using the previous models until Codex is updated.
 
 ## Summary of New Capabilities
 

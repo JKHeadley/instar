@@ -23,6 +23,11 @@ import {
 import { resolveCliModelFlag } from '../../src/providers/adapters/openai-codex/models.js';
 import type { AuthorityRecord } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import type { IntelligenceOptions } from '../../src/core/types.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { __resetCodexCapabilityCache, refreshCodexCliVersion } from '../../src/core/codexCapabilities.js';
 
 const BASE = {
   agentId: 'echo',
@@ -168,5 +173,31 @@ describe('proposal-built authority vs the arbiter, on recorded live shapes', () 
   it('retirement-fallback shape codex-cli/gpt-5.6-sol → refused (model drift is not silently accepted)', async () => {
     await expect(arbiterWith({ model: 'gpt-5.6-sol', framework: 'codex-cli' }).decideBatch(authority(), [candidate]))
       .rejects.toThrow(/resolved model does not match/);
+  });
+});
+
+describe('a codex proposal names a model this machine can run', () => {
+  const route = { framework: 'codex-cli' as const, model: 'capable' };
+  function fakeCodex(version: string): { bin: string; dir: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-codex-'));
+    const bin = path.join(dir, 'codex');
+    fs.writeFileSync(bin, `#!/bin/sh\necho "${version}"\n`, { mode: 0o755 });
+    return { bin, dir };
+  }
+  it.each([
+    ['codex-cli 0.165.0', 'gpt-6-astra'],
+    ['codex-cli 0.169.0', 'gpt-6.2-astra'],
+    ['unreadable', 'gpt-6.2-astra'],
+  ])('CLI "%s" proposes %s (after the route warms the version cache)', async (version, expected) => {
+    __resetCodexCapabilityCache();
+    const { bin, dir } = fakeCodex(version);
+    try {
+      await refreshCodexCliVersion(bin);
+      expect(buildReadinessAuthorityProposal({ ...BASE, route, codexBinaryPath: bin }).proposal?.modelFamily).toBe(expected);
+      expect(reportedModelFor('codex-cli', 'capable', undefined, bin)).toBe(expected);
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'proposal-codex cleanup' }); }
+  });
+  it('without a binary path the tier map decides', () => {
+    expect(buildReadinessAuthorityProposal({ ...BASE, route }).proposal?.modelFamily).toBe('gpt-6.2-astra');
   });
 });
