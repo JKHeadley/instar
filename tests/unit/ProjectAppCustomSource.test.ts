@@ -117,11 +117,13 @@ describe('ProjectAppCustomSource — source, the version card and the served ver
 
   it('source chunks are stored encrypted, in the journal and in the disk store; another reader serves from them', () => {
     const { h, appId } = created();
-    h.source.writeSource(appId, HTML1, 'v1');
+    // A long plaintext sentinel: a short needle like 'v1' turns up in random ciphertext/ids by chance.
+    const NOTE_SENTINEL = 'change-note-sentinel-QZX-must-never-appear-in-plaintext';
+    h.source.writeSource(appId, HTML1, NOTE_SENTINEL);
     phoneApprove(h, versionCardId(appId, 'serve'));
     const journal = JSON.stringify(h.blobs) + JSON.stringify(h.records);
     expect(journal).not.toContain('sales pipeline');
-    expect(journal).not.toContain('v1');
+    expect(journal).not.toContain(NOTE_SENTINEL);
     const disk = path.join(h.stateDir, 'state', 'project-app-blobs', appId, 'source');
     const files = fs.readdirSync(path.join(disk, '1'));
     expect(files).toEqual([sha(HTML1)]);
