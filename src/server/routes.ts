@@ -93,6 +93,7 @@ import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMon
 import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
 import { getActiveEnrolmentStatusReader } from '../monitoring/machineMaintenance/enrolmentReadiness.js';
 import { getActiveEnrolmentController, setEnrolmentTapsProvable } from '../monitoring/machineMaintenance/EnrolmentController.js';
+import { getActiveRestartNowController } from '../monitoring/machineMaintenance/RestartNowController.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import {
   fetchMaintenancePool,
@@ -15920,12 +15921,23 @@ export function createRoutes(ctx: RouteContext): Router {
     catch (err) { res.status(500).json({ error: 'enrol-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
   });
 
+  // Restart now (Part E operator trigger, CMT-1199): sends the OWNER a card for THIS machine.
+  // Nothing restarts here: the restart begins only on the owner's own tap of that card.
+  router.post('/machine-maintenance/restart-now/offer', async (_req, res) => {
+    const c = getActiveRestartNowController();
+    if (!c) { res.status(503).json({ error: 'restart now not enabled on this agent' }); return; }
+    try {
+      const r = await c.offer();
+      res.status(r.result === 'refused' ? 409 : r.result === 'not-delivered' ? 502 : 200).json(r);
+    } catch (err) { res.status(500).json({ error: 'restart-now-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
+
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
       res.json(await maintenancePoolView('status', async () => {
         const local = getActiveDrainRehearsal();
         return local
-          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() } as Record<string, unknown> }
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus(), restartNow: getActiveRestartNowController()?.readActive() ?? null } as Record<string, unknown> }
           : { reason: 'not-enabled' };
       }));
       return;
@@ -15937,7 +15949,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
     // Wedge detection (Part E) rides it too, dry-run: null where the sampler is not wired, never a guessed value.
-    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() });
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus(), restartNow: getActiveRestartNowController()?.readActive() ?? null });
   });
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside
