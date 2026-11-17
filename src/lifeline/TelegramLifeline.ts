@@ -114,6 +114,9 @@ import { inboundTopicId, normalizeInboundThread, toWireParams } from '../messagi
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
+/** Each live message's Telegram update_id, for the server's single-use receipt key (trust-journey decision 5). */
+const lifelineUpdateIds = new WeakMap<object, number>();
+
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {
   return spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf-8', timeout }).stdout ?? '';
@@ -1332,6 +1335,8 @@ export class TelegramLifeline {
   private notificationInbound = new Map<number, Map<string, number>>();
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     const msg = update.message;
+    // Trust-journey decision 5: the server records a reply's update_id as its single-use key.
+    if (msg && typeof update.update_id === 'number') lifelineUpdateIds.set(msg, update.update_id);
     normalizeInboundThread(msg, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
     const configured = this.projectConfig.messaging?.find(item => item.type === 'telegram')?.config;
     const authorized = configured?.authorizedUserIds as number[] | undefined;
@@ -1430,7 +1435,9 @@ export class TelegramLifeline {
     // Remote desktop approval codes are one-use credentials. If forwarding
     // fails, do not put the command (and its code) into the durable queue.
     if (isEphemeralCredentialCommand(text)) {
-      await this.sendFixedNotice(topicId, "I couldn't pass that remote desktop approval through just now. Ask for a new code in the dashboard and try again.");
+      await this.sendFixedNotice(topicId, /^\s*approve\s/i.test(text)
+        ? "I couldn't pass that approval through just now, so nothing was approved. In a minute, reply to the request card again with the same code."
+        : "I couldn't pass that remote desktop approval through just now. Ask for a new code in the dashboard and try again.");
       return;
     }
     // A pairing invite is never queued (its secret would sit on disk): say so instead.
@@ -1974,6 +1981,7 @@ export class TelegramLifeline {
         fromUsername: rawMsg.from.username,
         fromFirstName: rawMsg.from.first_name,
         messageId: rawMsg.message_id,
+        ...(lifelineUpdateIds.has(rawMsg) ? { updateId: lifelineUpdateIds.get(rawMsg) } : {}),
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
         senderIsBot,
         ...(typeof replyToMessageId === 'number' ? { replyToMessageId } : {}),

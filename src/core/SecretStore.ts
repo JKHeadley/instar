@@ -200,8 +200,12 @@ export class MasterKeyManager {
   /**
    * Every key this agent could plausibly have encrypted its store with, primary
    * first: [resolved primary, the OTHER source's key if it exists and differs].
-   * Read-only — alternates NEVER generate. Backs the dual-key read fallback
-   * (a v1 store written before the sources diverged stays readable, loudly).
+   * Read-only — this NEVER generates, adopts or writes key material (primary
+   * included): it backs SecretStore.read(), and a read that minted a key on a
+   * keychain miss orphaned the existing vault (feedback-1ddb71cc). An empty
+   * result means no key is reachable; read() then fails loudly. Backs the
+   * dual-key read fallback (a v1 store written before the sources diverged
+   * stays readable, loudly).
    */
   getCandidateKeys(): Array<{ key: Buffer; source: 'keychain' | 'file' }> {
     const out: Array<{ key: Buffer; source: 'keychain' | 'file' }> = [];
@@ -209,7 +213,7 @@ export class MasterKeyManager {
       if (key && !out.some((c) => c.key.equals(key))) out.push({ key, source });
     };
     if (this.forceFile) {
-      push(this.getFileKey(), 'file');
+      push(this.readExistingFileKey(), 'file');
       // Alternate: an existing keychain key (never generated) — covers a store
       // written under keychain resolution before forceFileKey was flipped on.
       push(this.tryRead(perAgentKeychainAccount(this.stateDir)), 'keychain');
@@ -219,14 +223,18 @@ export class MasterKeyManager {
     push(this.tryRead(perAgentKeychainAccount(this.stateDir)), 'keychain');
     push(this.tryRead(KEYCHAIN_ACCOUNT_LEGACY), 'keychain');
     // Existing file key as an alternate (do NOT generate one here — getFileKey
-    // generates; alternates must be read-only).
-    try {
-      if (fs.existsSync(this.keyFilePath)) {
-        push(Buffer.from(fs.readFileSync(this.keyFilePath, 'utf-8').trim(), 'hex'), 'file');
-      }
-    } catch { /* @silent-fallback-ok — unreadable alternate is simply absent */ }
-    if (out.length === 0) push(this.getMasterKey(), this.forceFile ? 'file' : 'keychain');
+    // generates; candidates must be read-only).
+    push(this.readExistingFileKey(), 'file');
     return out;
+  }
+
+  /** The existing file key, or null. Never generates. */
+  private readExistingFileKey(): Buffer | null {
+    try {
+      if (!fs.existsSync(this.keyFilePath)) return null;
+      const key = Buffer.from(fs.readFileSync(this.keyFilePath, 'utf-8').trim(), 'hex');
+      return key.length === MASTER_KEY_LENGTH ? key : null;
+    } catch { return null; /* @silent-fallback-ok — unreadable key is simply absent; read() fails loudly */ }
   }
 
   /** Flush an existing fallback key. A successful OS-keychain persistence/read
@@ -416,6 +424,15 @@ export class SecretStore {
 
     const raw = fs.readFileSync(this.encryptedPath);
     const candidates = this.keyManager.getCandidateKeys();
+    if (candidates.length === 0) {
+      // Reads never mint a key: on a keychain miss (locked keychain, SSH session
+      // without a login keychain) generating one would orphan this vault.
+      throw new Error(
+        'SecretStore: no master key is reachable (keychain entry unavailable and no key file). ' +
+        'The vault is NOT empty and was left untouched; no key was created. ' +
+        'Unlock the keychain (e.g. `security unlock-keychain` over SSH) and retry.',
+      );
+    }
 
     // ── v2 format: 'ISv2' | keyId(8) | iv | tag | ct — the keyId names the key ──
     if (raw.length > STORE_MAGIC_V2.length + KEY_ID_LENGTH && raw.subarray(0, STORE_MAGIC_V2.length).equals(STORE_MAGIC_V2)) {

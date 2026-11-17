@@ -226,3 +226,63 @@ describe('GET /machine-maintenance (integration)', () => {
     expect(res.body.inputs).toMatchObject({ flagLocked: true, passwordRequired: 'off', screensaverRunning: true, lockShieldSeen: false });
   });
 });
+
+describe('POST /machine-maintenance/skip, /unskip, /window (integration, Part F)', () => {
+  let dir: string;
+  const SESSION = 'operator-session-ok';
+  const appWith = (verify: boolean): express.Express => {
+    const a = express();
+    a.use(express.json());
+    a.use(authMiddleware(() => AUTH, 'test'));
+    a.use('/', createRoutes({ ...ctx(), verifyDashboardOperatorSession: verify ? (s?: string) => s === SESSION : undefined } as unknown as RouteContext));
+    return a;
+  };
+  const wire = () => {
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    setActiveDrainRehearsal(new DrainRehearsal({
+      agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
+      store, controls: () => store.readControls(), enabled: () => true, settings: () => DEFAULT_MACHINE_MAINTENANCE,
+      readSignals: async () => { throw new Error('no read'); }, census: async () => { throw new Error('no read'); },
+      resumeQueue: () => null, coResidentAgents: () => [], holdsLease: () => null, ownUser: 'me',
+    }));
+    return store;
+  };
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-controls-route-')); setActiveDrainRehearsal(null); });
+  afterEach(() => { setActiveDrainRehearsal(null); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/machine-maintenance-route.test.ts' }); });
+
+  it('refuses without a bearer, and without a recent PIN unlock, and changes nothing', async () => {
+    const store = wire();
+    expect((await request(appWith(true)).post('/machine-maintenance/skip')).status).toBe(401);
+    const noPin = await request(appWith(true)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`);
+    expect(noPin.status).toBe(401);
+    expect(noPin.body.error).toMatch(/PIN unlock/);
+    const wrong = await request(appWith(true)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', 'nope');
+    expect(wrong.status).toBe(401);
+    expect((await request(appWith(false)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', SESSION)).status).toBe(401);
+    expect(store.readControls()).toBeNull();
+  });
+
+  it('503 when dark', async () => {
+    const res = await request(appWith(true)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', SESSION);
+    expect(res.status).toBe(503);
+  });
+
+  it('skip, unskip and window through the real route, shown in GET /machine-maintenance', async () => {
+    wire();
+    const op = (p: string) => request(appWith(true)).post(p).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', SESSION);
+    const skip = await op('/machine-maintenance/skip');
+    expect(skip.status).toBe(200);
+    expect(skip.body).toMatchObject({ ok: true, controls: { skipUntil: expect.any(Number) } });
+    let status = await request(appWith(true)).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(status.body.controls).toMatchObject({ skipped: true });
+    expect((await op('/machine-maintenance/unskip')).body).toMatchObject({ ok: true, controls: { skipUntil: null } });
+    const bad = await op('/machine-maintenance/window').send({ window: { start: '01:00', end: '02:00' } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('window-invalid');
+    const good = await op('/machine-maintenance/window').send({ window: { start: '01:00', end: '04:00' } });
+    expect(good.body).toMatchObject({ ok: true, effectiveWindow: { start: '01:00', end: '04:00' } });
+    status = await request(appWith(true)).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(status.body).toMatchObject({ controls: { skipped: false, window: { start: '01:00', end: '04:00' } }, settings: { window: { start: '01:00', end: '04:00' } } });
+    expect((await op('/machine-maintenance/window').send({ reset: true })).body).toMatchObject({ ok: true, effectiveWindow: DEFAULT_MACHINE_MAINTENANCE.window });
+  });
+});

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T09:44:24.045Z",
+  "slug": "project-apps-builtin",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: registry metadata, a focus call on a user tap, and an allow-list entry."
+  },
+  "verdict": "blocked"
+}

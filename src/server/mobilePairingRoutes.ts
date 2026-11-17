@@ -2511,6 +2511,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Not in BROWSER_ROUTES, so a browser device (key not hardware-held) is refused.
     { method: 'POST', re: /^\/mobile\/org\/(publish|join|leave|update-accept)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 5, bucket: 'org-acts' },
     { method: 'GET', re: /^\/mobile\/org\/status$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    // Work agents page, departure and keepers (org-members-and-keepers §B–D).
+    { method: 'GET', re: /^\/mobile\/org\/current-bundle$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'GET', re: /^\/mobile\/org\/members$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'POST', re: /^\/mobile\/org\/(members\/(remove|restore)|invitations\/revoke|keepers\/(add|remove)|keeper-request|keeper-propose|checkin-consent|recovery-copy|recover|recover-latest|recovery\/(keepers|invitations)\/(reactivate|discard)|recovery\/members\/confirm)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 10, bucket: 'org-admin' }, // its own budget: keeper and recovery steps never use up publishing (local verify 3294)
     // Conversations v3 owner hierarchy. Admission still requires a live device
     // signature; the mounted graph source separately enforces increment A.
     { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
