@@ -25,7 +25,7 @@ process.stdin.on('end', async () => {
   const nodeFs = await import('node:fs');
   const dir = process.env.CLAUDE_PROJECT_DIR || '.';
   const out = (o) => { process.stdout.write(JSON.stringify({ hookSpecificOutput: Object.assign({ hookEventName: 'PreToolUse' }, o) }), () => process.exit(0)); };
-  const note = (why) => { try { nodeFs.appendFileSync(dir + '/.instar/org/action-checks.jsonl', JSON.stringify({ at: new Date().toISOString(), outcome: 'hook-failed', reason: why }) + '\\n'); } catch {} };
+  const note = (why) => { try { nodeFs.appendFileSync(dir + '/.instar/org/action-checks.jsonl', JSON.stringify({ at: new Date().toISOString(), outcome: 'hook-failed', reason: why }) + '\\n'); } catch { /* @silent-fallback-ok: recording the failure is best effort; the hook's decision does not depend on it */ } };
   // Never fail open in block mode (EXO 3.0): an unreadable config or input is a hold, and is recorded either way.
   let port = 4040; let auth = process.env.INSTAR_AUTH_TOKEN || ''; let block = false; let cfgOk = true;
   try {
@@ -34,9 +34,9 @@ process.stdin.on('end', async () => {
     if (!auth && typeof cfg.authToken === 'string') auth = cfg.authToken;
     const a = (cfg.orgPolicy && cfg.orgPolicy.actions) || {};
     block = a.mode === 'block' && a.blockingApproved === true;
-  } catch { cfgOk = false; }
+  } catch { cfgOk = false; } // @silent-fallback-ok: an unreadable config is recorded below and asks the server; block mode holds
   let input = null;
-  try { input = JSON.parse(data); } catch { input = null; }
+  try { input = JSON.parse(data); } catch { input = null; } // @silent-fallback-ok: unreadable input is recorded and held in block mode just below
   if (!input) {
     note('hook input unreadable');
     // Block mode (or a mode we couldn't read) holds an action it can't read; observe adds a note.

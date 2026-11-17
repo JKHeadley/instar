@@ -100,3 +100,7 @@ The first read did not concur. It found that in block mode a refused message was
 ## Evidence pointers
 
 - `tests/unit/org-action-check.test.ts`, `tests/integration/org-never-actions.test.ts`, `tests/e2e/org-never-actions-alive.test.ts`, `tests/fixtures/org-never-actions-eval.json`.
+
+## Rule-test fixes (merge line, 2026-11-16)
+
+Three catches in the generated hook script were already recorded or held, but lacked the `@silent-fallback-ok` note the silent-fallback test looks for, and one was an empty `catch {}`. They now carry the note and a reason. The spec's ladder line now says "not applicable" with its reason, because no feature-ladder entry governs this rollout.
