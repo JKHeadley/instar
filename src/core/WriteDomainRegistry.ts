@@ -383,6 +383,15 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'writes ~/.instar/host-maintenance/restart-now.<agent>.json for this physical machine; outside the agent home, never git-synced',
   } });
+  // Operator controls (Part F, CMT-1203): Skip once and Change window for THIS machine.
+  for (const control of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix: control, domain: 'machine-local', story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine; outside the agent home, never git-synced',
+    } });
+  }
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,

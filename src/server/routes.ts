@@ -90,7 +90,7 @@ import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
 import { seatNotMovedReason } from '../core/poolTransferReason.js';
-import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
+import { getActiveDrainRehearsal, type ControlResult } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
 import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
@@ -15951,6 +15951,24 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(r.result === 'refused' ? 409 : r.result === 'not-delivered' ? 502 : 200).json(r);
     } catch (err) { res.status(500).json({ error: 'restart-now-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
   });
+
+  // Operator controls (Part F, CMT-1203): Skip once, Unskip and Change window for THIS machine.
+  // Each needs a recent dashboard PIN unlock. All are in the safe direction: none can start a
+  // restart, and a night already announced keeps its time.
+  const machineControl = (run: (r: NonNullable<ReturnType<typeof getActiveDrainRehearsal>>, body: Record<string, unknown>) => ControlResult) =>
+    (req: ExpressRequest, res: ExpressResponse) => {
+      if (!ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))) {
+        res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+        return;
+      }
+      const r = getActiveDrainRehearsal();
+      if (!r) { res.status(503).json({ error: 'machine maintenance not enabled on this agent' }); return; }
+      const out = run(r, (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);
+      res.status(out.ok ? 200 : out.error === 'window-invalid' ? 400 : 409).json(out);
+    };
+  router.post('/machine-maintenance/skip', machineControl((r) => r.skip('dashboard')));
+  router.post('/machine-maintenance/unskip', machineControl((r) => r.unskip('dashboard')));
+  router.post('/machine-maintenance/window', machineControl((r, body) => r.setWindow('dashboard', body.reset === true ? null : body.window)));
 
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
