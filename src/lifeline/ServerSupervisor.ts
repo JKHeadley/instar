@@ -1449,13 +1449,16 @@ export class ServerSupervisor extends EventEmitter {
         // still "starting" after the grace ceiling is treated as a failure like any other.
         // The bound runs from the episode's first spawn (the existing Fix C ceiling) when the
         // supervisor spawned it, else from the first "starting" probe (an adopted server). It is
-        // cleared only when the server answers healthy, never by a "down" probe in between, and a
-        // "starting" probe does not clear earlier failures: a boot that alternates starting and
-        // down still reaches the failure threshold.
+        // cleared only when the server answers healthy, never by a "down" probe in between.
+        // A "starting" answer is progress evidence, so it clears earlier failures: a sync-heavy
+        // boot step blocks the beacon too, and its timed-out probes must not add up to a restart
+        // of a healthy boot (second review, 2026-11-17). The ceiling stays the backstop: a boot
+        // alternating starting and down is restarted once the ceiling passes.
         if (probe === 'starting') {
           if (this.bootingSince === 0) this.bootingSince = now;
           const anchor = this.firstSpawnedAt > 0 ? Math.min(this.firstSpawnedAt, this.bootingSince) : this.bootingSince;
           if (!graceCeilingExceeded && now - anchor < this.startupGraceMs * this.graceCeilingMultiplier) {
+            this.consecutiveFailures = 0;
             this.checkRestartRequest();
             return;
           }
@@ -1709,7 +1712,6 @@ export class ServerSupervisor extends EventEmitter {
       // Name the requester plainly. A hand-written flag names nobody; it still restarts
       // (refusing would leave its change unapplied, unannounced), but it is said and recorded.
       const requester = describeRestartRequester(data);
-      recordRestartRequest(this.stateDir, data, 'supervisor');
       console.log(typeof data.targetVersion === 'string' && data.targetVersion
         ? `[Supervisor] Restart requested by ${requester.label} for v${data.targetVersion}`
         : `[Supervisor] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${String(data.reason).slice(0, 200)}` : ''})`);
@@ -1757,6 +1759,10 @@ export class ServerSupervisor extends EventEmitter {
         this.pendingUpdateVersion = data.targetVersion ?? null;
         console.log(`[Supervisor] Planned restart — entering maintenance wait (${Math.round(this.maintenanceWaitMs / 60_000)}m window)`);
       }
+
+      // Recorded only once the restart is really going ahead (a request skipped as a loop is
+      // not the one that ended this process, so it must never show as previousRestart).
+      recordRestartRequest(this.stateDir, data, 'supervisor');
 
       // Clear the flag BEFORE restarting to prevent re-triggering
       try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:877' }); } catch { /* ignore */ }

@@ -18,6 +18,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { resetBootReadinessForTests } from '../../src/server/BootReadiness.js';
+import { recordRestartRequest, restartRequestsLogPath } from '../../src/core/restartRequestAttribution.js';
 
 const TOKEN = 'server-restart-route-token';
 
@@ -90,6 +91,23 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
     expect(res.body.alreadyPending).toEqual({ kind: 'update', targetVersion: '9.9.9' });
     expect(JSON.parse(fs.readFileSync(flagPath(), 'utf8'))).toMatchObject({ requestedBy: 'auto-updater', targetVersion: '9.9.9' });
     SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
+  });
+
+  it('refuses (429 + Retry-After) when a restart was consumed under 2 minutes ago; allows it again after', async () => {
+    recordRestartRequest(stateDir, { requestedBy: 'looping-session', reason: 'again' }, 'supervisor', new Date(Date.now() - 30_000));
+    try {
+      const res = await post({ requestedBy: 'looping-session', reason: 'again' });
+      expect(res.status).toBe(429);
+      expect(res.body.error).toBe('restarted-recently');
+      expect(Number(res.headers['retry-after'])).toBeGreaterThan(0);
+      expect(fs.existsSync(flagPath())).toBe(false);
+      recordRestartRequest(stateDir, { requestedBy: 'someone', reason: 'old' }, 'supervisor', new Date(Date.now() - 3 * 60_000));
+      const ok = await post({ requestedBy: 'tester', reason: 'later' });
+      expect(ok.status).toBe(202);
+    } finally {
+      SafeFsExecutor.safeUnlinkSync(restartRequestsLogPath(stateDir), { operation: 'tests/integration/server-restart-route.test.ts' });
+      try { SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' }); } catch { /* none */ }
+    }
   });
 
   it('answers 503 when the request cannot be written (nothing will restart)', async () => {

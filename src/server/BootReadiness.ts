@@ -47,6 +47,9 @@ export function isPeerBooting(res: { status: number; headers?: { get(name: strin
   return res.status === 503 && res.headers?.get(BOOT_STATE_HEADER) === 'starting';
 }
 
+/** A restart request recorded this long before the process started can still be the one that ended the previous process (graceful shutdown + respawn). */
+export const PREVIOUS_RESTART_WINDOW_MS = 10 * 60_000;
+
 /** Retry-After bounds (seconds). */
 export const MIN_RETRY_AFTER_S = 2;
 export const MAX_RETRY_AFTER_S = 30;
@@ -101,7 +104,11 @@ export class BootReadinessTracker {
         this.lastBootMs = parsed.bootMs;
       }
     } catch { /* @silent-fallback-ok — first boot, or unreadable: the default retry applies */ }
-    this.previousRestart = readLastRestartRequest(stateDir);
+    // Only a request consumed shortly before this process started ended the previous one;
+    // an older record (a crash or reboot came after it) is not this restart's cause.
+    const last = readLastRestartRequest(stateDir);
+    const at = last ? Date.parse(last.at) : NaN;
+    this.previousRestart = last && Number.isFinite(at) && at >= this.startedAtMs - PREVIOUS_RESTART_WINDOW_MS ? last : null;
   }
 
   markListeningEarly(host: string): void {

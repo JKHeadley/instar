@@ -226,8 +226,8 @@ describe('ServerSupervisor — a booting server answering "starting"', () => {
     sup.on('serverUp', up);
     sup.consecutiveFailures = 1;
     for (let i = 0; i < 4; i++) await sup.runHealthTick();
-    // Not counted, and not cleared either: earlier failures stand.
-    expect(sup.consecutiveFailures).toBe(1);
+    // Not counted, and earlier failures are cleared: "starting" is progress evidence.
+    expect(sup.consecutiveFailures).toBe(0);
     expect(evaluate).not.toHaveBeenCalled();
     expect(up).not.toHaveBeenCalled();
     expect(sup.isRunning).toBe(false);
@@ -245,17 +245,32 @@ describe('ServerSupervisor — a booting server answering "starting"', () => {
     expect(evaluate).toHaveBeenCalled();
   });
 
-  it('a boot alternating "starting" and "down" still reaches the failure threshold (review finding)', async () => {
+  it('a boot alternating "starting" and "down" (a sync step blocking the beacon) is not restarted inside the ceiling', async () => {
     const sup = makeSup();
     pastGrace(sup);
     const probe = vi.spyOn(sup, 'probeHealth');
     const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
-    for (const kind of ['starting', 'down', 'starting', 'down'] as const) {
+    for (const kind of ['starting', 'down', 'starting', 'down', 'starting', 'down'] as const) {
+      probe.mockResolvedValueOnce(kind);
+      await sup.runHealthTick();
+    }
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(sup.bootingSince).toBeGreaterThan(0); // a "down" probe does not reset the boot clock
+  });
+
+  it('...but once the ceiling passes, the same alternation reaches the failure threshold', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    const probe = vi.spyOn(sup, 'probeHealth');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    probe.mockResolvedValueOnce('starting');
+    await sup.runHealthTick();
+    sup.bootingSince = Date.now() - sup.startupGraceMs * sup.graceCeilingMultiplier - 1000;
+    for (const kind of ['down', 'starting', 'down'] as const) {
       probe.mockResolvedValueOnce(kind);
       await sup.runHealthTick();
     }
     expect(evaluate).toHaveBeenCalled();
-    expect(sup.bootingSince).toBeGreaterThan(0); // a "down" probe does not reset the boot clock
   });
 
   it('the bound runs from the episode\'s first spawn (Fix C ceiling), not from the first "starting" past grace', async () => {

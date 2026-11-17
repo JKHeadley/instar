@@ -5,6 +5,7 @@
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { bootReadiness } from './BootReadiness.js';
+import { readLastRestartRequest } from '../core/restartRequestAttribution.js';
 import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
@@ -6489,6 +6490,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // (2026-11-16: an unattributed restart took the M5 offline for 2m43s and nobody could
   // tell from the machine who asked). Planned-restart holds (Local Verify) still apply.
   // @write-domain:none — machine-local: writes this machine's own restart request flag, no replicated agent state.
+  const SERVER_RESTART_MIN_INTERVAL_MS = 2 * 60_000;
   router.post('/server/restart', async (req, res) => {
     const body = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : {};
     const clean = (v: unknown, max: number): string | null =>
@@ -6505,6 +6507,16 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     if (!ctx.requestSupervisedRestart) {
       res.status(503).json({ error: 'restart-unavailable', detail: 'this server has no supervised restart wired' });
+      return;
+    }
+    // Rate limit: a looping caller must not restart the server over and over. A non-update
+    // restart has no loop guard of its own, so one consumed less than 2 minutes ago refuses.
+    const lastConsumed = readLastRestartRequest(ctx.config.stateDir);
+    const sinceLastMs = lastConsumed ? Date.now() - Date.parse(lastConsumed.at) : Infinity;
+    if (Number.isFinite(sinceLastMs) && sinceLastMs >= 0 && sinceLastMs < SERVER_RESTART_MIN_INTERVAL_MS) {
+      const retryAfterS = Math.ceil((SERVER_RESTART_MIN_INTERVAL_MS - sinceLastMs) / 1000);
+      res.setHeader('Retry-After', String(retryAfterS));
+      res.status(429).json({ error: 'restarted-recently', detail: `This server restarted ${Math.round(sinceLastMs / 1000)}s ago (asked by ${lastConsumed!.requestedBy ?? 'an unattributed writer'}). Wait ${retryAfterS}s and ask again if it is still needed.`, retryAfterSeconds: retryAfterS });
       return;
     }
     // A pending UPDATE restart (one naming a targetVersion) already restarts the server, and

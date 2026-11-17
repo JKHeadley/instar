@@ -26,6 +26,14 @@ This listener existed before, but only on development machines, and only on the 
 - The new restart route keeps the existing holds. It will not cut off a running Local Verify test.
 - The new restart route is recorded as affecting only its own machine, and is left out of the public capability list. Agents learn about it from their instructions.
 
+## What a second, independent review changed
+
+- Older agents that had the early listener switched off by an old default get it switched on once, by an update step. An owner who switches it off afterwards stays off.
+- When one machine asks another for something while that other machine is still starting, it now hears "not reachable yet, try again", never "that feature is off there".
+- A boot that answers "starting" is treated as progress, so slow steps don't add up to a restart. A boot stuck past the usual limit is still restarted.
+- The "who asked for the last restart" note only names a request from just before this boot, not one from days ago.
+- Asking for a restart again within 2 minutes of the last one is refused with a "try again in N seconds" answer.
+
 ## What you need to decide
 
 Nothing. It is on by default, and `monitoring.bootHealthBeacon.enabled: false` turns the early listener off for one agent.

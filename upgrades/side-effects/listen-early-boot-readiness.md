@@ -101,7 +101,7 @@ Machine-local by design. Boot state, the boot-length record and the restart reco
 
 ## 8. Rollback cost
 
-`monitoring.bootHealthBeacon.enabled: false` turns the early listener off on one agent, with no release needed. A code revert removes the rest; the two new state files are inert and safe to leave. No migration and no data repair. The supervisor change falls back to the old behaviour whenever no typed header is present.
+`monitoring.bootHealthBeacon.enabled: false` turns the early listener off on one agent, with no release needed. A code revert removes the rest; the two new state files are inert and safe to leave. One run-once config migration (`boot-beacon-graduation-strip`, fleet agents only) removes a stale dark-default `enabled: false`; a revert leaves the key absent, which the old code read as dark on the fleet, so nothing needs repairing. The supervisor change falls back to the old behaviour whenever no typed header is present.
 
 ---
 
@@ -129,3 +129,17 @@ Local Verify on `3220dce69` failed three registry tests from this change: the `/
 - The `bootReadiness` lines move to the end of the `/health` handler, before the pool branch. Behaviour is unchanged.
 
 **unbounded-self-action:** closure `n/a`. `POST /server/restart` writes one restart request per authenticated call from a session or operator. That is a one-shot, caller-driven action, not a self-triggered loop. How the request is consumed is unchanged, so the supervisor's restart-loop detection still applies.
+
+## Independent review at adoption (2026-11-17, rebased on main 1c2377d66)
+
+The PR passed Local Verify at `9f18a8745` but was held `refused:needs-independent-review`: the concurring trace covered only the follow-up commit's files. A fresh independent reviewer (general-purpose subagent, read-only, not the author) read the whole rebased diff.
+
+**First pass: did not concur.** Six findings, all fixed in this commit with tests:
+1. (should-fix) A fleet agent with a persisted dark-default `monitoring.bootHealthBeacon.enabled: false` would keep the beacon off silently (`enabled !== false`, and dev-gate-teeth skips fleet agents). Fixed: run-once `migrateBootBeaconFleetGraduation` strips it on non-dev agents (`tests/unit/PostUpdateMigrator-bootBeaconFleetGraduation.test.ts`).
+2. (should-fix) Pool fan-outs read the beacon's 503 as "feature off there" (machine maintenance, mobile session move, conversations, pairing, queue pace, maturation board, subscription relogin). Fixed once at the funnel: `poolPeerFetch` throws `PoolPeerBootingError` on the typed "starting" 503 (rope recorded healthy, no fallthrough), so every caller sees "unreached, retry" as before listen early (`tests/unit/pool-peer-fetch-fallthrough.test.ts`).
+3. (nit) A "starting" probe kept earlier failures, so timed-out probes during a sync-heavy boot step could add up to a restart of a healthy boot. Fixed: an in-bounds "starting" clears the count; the 3× grace ceiling still restarts a boot alternating starting and down (both sides tested).
+4. (nit) `previousRestart` showed the last record however old. Fixed: only a request consumed within 10 minutes before this process started.
+5. (nit) A restart skipped as a loop was still recorded as consumed. Fixed: recorded only when the restart goes ahead.
+6. (nit) No rate limit on `POST /server/restart`. Fixed: 429 + `Retry-After` when a restart was consumed under 2 minutes ago (integration test).
+
+**Second pass, after the fixes: Concur.** Remaining nits accepted: an agent promoted to dev after both migrations ran keeps a stale `false` (owner can clear it); media/Slack holder proxies show a booting peer as their generic error (no worse than the old refused connection); the 2-minute window counts from consumption, so a boot slower than 2 minutes allows one restart per boot (bounded).

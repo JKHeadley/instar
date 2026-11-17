@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  BootReadinessTracker, BOOT_SUBSYSTEMS, isPeerBooting, DEFAULT_RETRY_AFTER_S, MAX_RETRY_AFTER_S, MIN_RETRY_AFTER_S,
+  BootReadinessTracker, BOOT_SUBSYSTEMS, isPeerBooting, DEFAULT_RETRY_AFTER_S, MAX_RETRY_AFTER_S, MIN_RETRY_AFTER_S, PREVIOUS_RESTART_WINDOW_MS,
 } from '../../src/server/BootReadiness.js';
 import {
   describeRestartRequester, recordRestartRequest, readLastRestartRequest, restartRequestsLogPath, UNATTRIBUTED_RESTART_LABEL,
@@ -94,8 +94,8 @@ describe('BootReadinessTracker', () => {
   });
 
   it('reports the early listen and, only when asked, the restart that ended the last process', () => {
-    recordRestartRequest(stateDir, { requestedAt: '2026-11-16T19:42:12Z', plannedRestart: true, reason: 'load a setting' }, 'supervisor');
     const c = clock();
+    recordRestartRequest(stateDir, { requestedAt: '2026-11-16T19:42:12Z', plannedRestart: true, reason: 'load a setting' }, 'supervisor', new Date(c.now() - 30_000));
     const t = new BootReadinessTracker(c.now, c.now());
     t.init(stateDir);
     t.markListeningEarly('0.0.0.0');
@@ -103,6 +103,18 @@ describe('BootReadinessTracker', () => {
     expect(t.snapshot().earlyListen?.host).toBe('0.0.0.0');
     expect(t.snapshot().previousRestart).toBeUndefined();
     expect(t.snapshot({ includePreviousRestart: true }).previousRestart).toMatchObject({ attributed: false, requestedBy: null, reason: 'load a setting' });
+  });
+
+  it('a restart record from long before this process started (a crash or reboot came after) is not shown as its cause', () => {
+    const c = clock(1_800_000_000_000);
+    recordRestartRequest(stateDir, { requestedBy: 'old-session', reason: 'days ago' }, 'supervisor', new Date(c.now() - PREVIOUS_RESTART_WINDOW_MS - 60_000));
+    const t = new BootReadinessTracker(c.now, c.now());
+    t.init(stateDir);
+    expect(t.snapshot({ includePreviousRestart: true }).previousRestart).toBeNull();
+    recordRestartRequest(stateDir, { requestedBy: 'recent-session', reason: 'just now' }, 'supervisor', new Date(c.now() - 60_000));
+    const t2 = new BootReadinessTracker(c.now, c.now());
+    t2.init(stateDir);
+    expect(t2.snapshot({ includePreviousRestart: true }).previousRestart).toMatchObject({ requestedBy: 'recent-session', attributed: true });
   });
 
   it('without a recorded restart, previousRestart is null when asked for', () => {
