@@ -34,3 +34,5 @@ Justin approved "easy setup for new people" on 16 November 2026. One part is tha
 ## What needs deciding
 
 Justin's yes or no on turning on blocking for agents that join an organization. Nothing else.
+
+Three small fixes after local verify: new agents now get the safety check at creation, not only after their first update; the check is listed with the other safety checks; and conversations are labelled by their plain id.

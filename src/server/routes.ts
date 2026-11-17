@@ -5541,7 +5541,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // (returns true: the caller must not send). Observe: checked only after the message went out
     // (a 2xx answer), fire-and-forget, a note for the next session start — see below.
     const orgCheck = await import('../core/OrgActionCheck.js');
-    const orgConv = options.attributionConversation ?? (options.topicId !== undefined ? `topic ${options.topicId}` : channel);
+    const orgConv = options.attributionConversation ?? (options.topicId !== undefined ? String(options.topicId) : channel); // the raw id, as the other channels key it
     const orgCtx = { stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: orgCheck.orgDecisionJournal(ctx.config.stateDir) };
     const orgBlock = orgCheck.orgCheckMode(ctx.config as never) === 'block';
     if (orgBlock) {

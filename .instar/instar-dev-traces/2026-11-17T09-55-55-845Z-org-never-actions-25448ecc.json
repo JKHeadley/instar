@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "org-never-actions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T09:55:55.845Z",
+  "artifactPath": "upgrades/side-effects/org-never-actions.md",
+  "artifactSha256": "9bf63e5ac09d1311d3a771f39db67ccc61f068d5edf9d71bab5e734ac3534bc3",
+  "coveredFiles": [
+    "docs/LLM-ROUTING-REGISTRY.md",
+    "docs/specs/org-never-actions.eli16.md",
+    "src/commands/init.ts",
+    "src/core/componentCategories.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/org-never-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Rule-test fixes: register a label and its routing row, install an existing hook on init, a plain conversation key.",
+  "eli16Path": "docs/specs/org-never-actions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "org-never-actions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T09:55:06.662Z",
+  "artifactPath": "upgrades/side-effects/org-never-actions.md",
+  "artifactSha256": "4cf459ca5b497e14fe8754fcd03ddd37e6fd078059b417ba2424583be1087028",
+  "coveredFiles": [
+    "docs/specs/org-never-actions.eli16.md",
+    "src/commands/init.ts",
+    "src/core/componentCategories.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/org-never-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Rule-test fixes: register a label, install an existing hook on init, a plain conversation key.",
+  "eli16Path": "docs/specs/org-never-actions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}
