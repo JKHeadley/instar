@@ -28,6 +28,7 @@ import type { InboundFacts } from '../users/MemoryInboundTracker.js';
 import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
+import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
@@ -90,6 +91,7 @@ import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierR
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { markedInboundPrefix, markedHistoryLabel } from '../messaging/shared/onBehalfMarker.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { compareVersions as compareInstarVersions } from '../core/threadlineMcpSpawn.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
@@ -1033,6 +1035,8 @@ let _threadlineBoot: import('../threadline/ThreadlineBootstrap.js').ThreadlineBo
 let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdentityServer | null = null;
 /** interrupted-move-resume receiver: built on the first request, keeps its once-per-epoch memory. */
 let _interruptedMoveResumeReceiver: InterruptedMoveResumeReceiver | null = null;
+/** The autonomy manager, late-bound for the org-apply mesh handler (org-pack-and-join §Multi-machine). */
+let _orgAutonomy: import('../core/AutonomyProfileManager.js').AutonomyProfileManager | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
 // session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
@@ -12415,6 +12419,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         // §4: a Chief-of-Staff-started run is not revived once the operator check-in lease has expired.
         const rec = _cosRunRecordRead?.(topicId);
         if (rec?.cosNoRespawn && !_cosProtocol.operatorLeaseLive()) return 'cos-lease-expired';
+        // The owner paused this project (spec cos-owner-pause-record §3.3): a Chief-of-Staff-started run that ends is not revived.
+        if (rec?.cosNoRespawn && _cosLoop?.isOwnerPaused(`telegram:${topicId}`)) return 'cos-owner-paused';
         return null;
       } catch { /* @silent-fallback-ok: a throwing Chief of Staff read makes the producer STAND DOWN (the safe side), never act */ return 'cos-dep-threw'; }
     };
@@ -18760,7 +18766,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             cosSuppress: (topicId) => {
               try {
                 const rec = _cosRunRecordRead?.(topicId) ?? null;
-                return rec?.cosNoRespawn && _cosProtocol && !_cosProtocol.operatorLeaseLive() ? 'cos-lease-expired' : null;
+                if (rec?.cosNoRespawn && _cosProtocol && !_cosProtocol.operatorLeaseLive()) return 'cos-lease-expired';
+                return rec?.cosNoRespawn && _cosLoop?.isOwnerPaused(`telegram:${topicId}`) ? 'cos-owner-paused' : null;
               } catch { /* @silent-fallback-ok: an unreadable run record cannot suppress the heartbeat; the heartbeat then behaves exactly as before this feature */ return null; }
             },
             getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
@@ -20950,13 +20957,52 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Adaptive Autonomy — unified profile coordinator
+    const { OrgPackStore } = await import('../core/OrgPackStore.js');
     const autonomyManager = new AutonomyProfileManager({
       stateDir: config.stateDir,
       config,
       adaptiveTrust: adaptiveTrust ?? null,
       evolution: evolution ?? null,
+      // An organization's independence cap, from the applied, signature-checked pack (org-pack-and-join §D).
+      orgCap: () => new OrgPackStore(config.stateDir, '').cap(),
     });
     console.log(pc.green(`  Autonomy profile: ${autonomyManager.getProfile()}`));
+    _orgAutonomy = autonomyManager;
+
+    // Organization pack: finish an interrupted apply, then check daily for policy updates
+    // (docs/specs/org-pack-and-join.md §D recovery, §F).
+    {
+      const { OrgPackUpdater } = await import('../core/OrgPackUpdater.js');
+      const orgMachineId = coordinator.identity?.machineId ?? 'single-machine';
+      const orgEffects = () => ({
+        currentProfile: () => autonomyManager.getProfile(),
+        currentSettings: () => autonomyManager.authoritySettings(),
+        lowerProfile: (cap: import('../core/types.js').AutonomyProfileLevel, orgName: string) => autonomyManager.lowerForOrgPolicy(cap, orgName),
+        restoreProfile: (prev: import('../core/types.js').AutonomyProfileLevel, cap: import('../core/types.js').AutonomyProfileLevel) => { autonomyManager.restoreAfterOrgPolicy(prev, cap); },
+        clampSettings: (cap: import('../core/types.js').AutonomyProfileLevel) => autonomyManager.clampForOrgPolicy(cap),
+        restoreSettings: (prev: Record<string, unknown>, cap: import('../core/types.js').AutonomyProfileLevel) => autonomyManager.restoreClampedSettings(prev, cap),
+      });
+      try {
+        const orgStore = new OrgPackStore(config.stateDir, orgMachineId);
+        if (!orgStore.finish(orgEffects()) && fs.existsSync(path.join(config.stateDir, 'org', 'txn.json'))) {
+          // Recovery stopped on a hand-edited rules file: the person decides (§D Recovery).
+          void telegram?.createAttentionItem({ id: 'org-pack:hand-edit', title: 'Organization rules were edited by hand', summary: "Your organization's policy update is waiting because the rules file was changed by hand. Ask me to keep your edit or replace it.", description: '', category: 'system', priority: 'NORMAL', sourceContext: 'org-pack' } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]).catch(() => { /* @silent-fallback-ok — /org/status still shows the pending apply */ });
+        }
+      } catch (err) {
+        console.warn(`  Organization pack recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const orgUpdater = new OrgPackUpdater({
+        stateDir: config.stateDir, machineId: orgMachineId,
+        isLeaseHolder: () => coordinator.holdsLease(),
+        effects: orgEffects,
+        fanOut: (c) => { void import('../server/orgPackRoutes.js').then((m) => m.orgFanOut(c)); },
+        notify: (title, body) => {
+          // App-only agents see held updates through /org/status (the app's update card).
+          void telegram?.createAttentionItem({ id: `org-pack:${title}`, title, summary: body, description: body, category: 'system', priority: 'NORMAL', sourceContext: 'org-pack' } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]).catch(() => { /* @silent-fallback-ok — the held update is still shown by /org/status */ });
+        },
+      });
+      orgUpdater.start();
+    }
 
     // Trust Elevation Tracker — monitors acceptance rates and surfaces upgrade opportunities
     const trustElevationTracker = new TrustElevationTracker({
@@ -22401,7 +22447,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn(`Threadline MCP local secret could not be created: ${err instanceof Error ? err.message : err}`);
     }
     /** Shared reply waiters for threadline waitForReply support */
-    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null }>();
+    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>();
     try {
       const threadline = await bootstrapThreadline({
         agentName: config.projectName,
@@ -22787,10 +22833,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Waiters are keyed by thread id only (PR-3); the old by-name fallback could never
           // match one, so it is gone (memory-privacy-agent-places §3).
           const waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
-          // Memory privacy: on a multi-person agent a waiter is resolved only by the peer its
-          // send addressed, and never under `linkedPeerReplies: post-only` (§3).
-          const waiterAllowed = !waiter || !(_memoryInbound && sessionManager.isMultiPersonAgent())
-            || (sessionManager.linkedPeerReplies() === 'deliver' && !!waiter.recipientFp && waiter.recipientFp === senderFingerprint.toLowerCase());
+          // Only the peer the send was routed to resolves a waiter (the relay authenticated
+          // senderFingerprint), on every agent; on a multi-person agent only the addressed
+          // peer, and never under `linkedPeerReplies: post-only` (§3).
+          const waiterAllowed = !waiter || replyWaiterAccepts(waiter, {
+            senderFp: senderFingerprint,
+            multiPerson: !!_memoryInbound && sessionManager.isMultiPersonAgent(),
+            linkedPeerReplies: sessionManager.linkedPeerReplies(),
+            allowUnprovenSender: false,
+          });
           if (waiter && waiterAllowed && !isAutoAck && !looksLikeAutoAckText(textContent)) {
             waiter.resolve(textContent);
             // Don't return — still process the message normally for routing
@@ -27397,6 +27448,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // so a wedged GUI path does not also pile up stopped processes (fb-92ed1f8b-3a2).
           ownUid: typeof process.getuid === 'function' ? process.getuid() : undefined,
           endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } }, // @silent-fallback-ok — already gone, or not ours: read again next sample
+          // The gentle rung: a launch LaunchServices left stopped is resumed (SIGCONT), only while
+          // the canary itself is left stopped and only when wedgeRestart.gentleResume is 'on'.
+          resumeStopped: (pid) => { try { process.kill(pid, 'SIGCONT'); return true; } catch { return false; } }, // @silent-fallback-ok — gone or not ours: counted as failed
+          home: os.homedir(),
           loadReading: () => {
             const r = _machineLoadSampler?.read() ?? null;
             return r ? { verdict: r.verdict, cpuIdlePct: r.cpuIdlePct, eventLoopLagP99Ms: r.eventLoopLagP99Ms, sampleAgeMs: r.sampleAgeMs } : null;
@@ -27503,6 +27558,80 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           setActivePostRestartProof(proof);
           proof.start();
+        }
+
+        // Enrolment readiness (Part C, CMT-1200 first slice): read-only. Whether the owner's
+        // tap may be offered here and whether the machine could come back by itself.
+        {
+          const er = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+          const setActiveEnrolmentStatusReaderRef = er.setActiveEnrolmentStatusReader;
+          const { readHostCensus } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+          const read = er.makeReadCommand();
+          const user = os.userInfo().username;
+          const machineId = coordinator.identity?.machineId ?? null;
+          setActiveEnrolmentStatusReaderRef(new er.EnrolmentStatusReader({
+            platform: process.platform === 'darwin' ? 'darwin' : isWslHost() ? 'wsl' : process.platform === 'linux' ? 'linux' : 'other',
+            user,
+            agents: () => [...new Set([config.projectName, ...readHostCensus(path.join(os.homedir(), '.instar', 'registry.json'), Date.now())])],
+            read,
+            refusalInputs: async () => {
+              const ownership = machineId ? liveConfig.get<string | undefined>(`machineMaintenance.ownershipByMachine.${machineId}`, undefined) : undefined;
+              return {
+                throwaway,
+                testProcess: !!(process.env.VITEST || process.env.CI),
+                doNotMaintainMarker: fs.existsSync(er.defaultDoNotMaintainPath()),
+                ownership: ownership === 'shared' ? 'shared' : ownership === 'owned' ? 'owned' : undefined,
+                inContainer: fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv'),
+                otherUsers: er.otherUsersFromWho(await read('/usr/bin/who', []), user),
+              };
+            },
+          }));
+        }
+
+        // Enrolment: the owner's one tap (Part C, CMT-1200). Offered once per machine in the
+        // owner's conversation; the tap is owner-only and re-checked here before anything is written.
+        if (telegram) {
+          const ec = await import('../monitoring/machineMaintenance/EnrolmentController.js');
+          const er2 = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+          const { readHostCensus: census2 } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+          const { execFile: execFileCb } = await import('node:child_process');
+          const runCmd = (command: string, args: string[]) => new Promise<{ code: number | null; stdout: string }>((resolve) => {
+            try {
+              execFileCb(command, args, { timeout: 20_000, killSignal: 'SIGKILL' }, (err, stdout) => {
+                const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : null) : 0;
+                resolve({ code, stdout: String(stdout ?? '') });
+              });
+            } catch { resolve({ code: null, stdout: '' }); } // @silent-fallback-ok — a command that cannot start is a failed step
+          });
+          const reader = er2.getActiveEnrolmentStatusReader();
+          const tg = telegram;
+          const controller = new ec.EnrolmentController({
+            hostDir: path.join(os.homedir(), '.instar', 'host-maintenance'),
+            agent: config.projectName,
+            user: os.userInfo().username,
+            platform: process.platform === 'darwin' ? 'darwin' : isWslHost() ? 'wsl' : process.platform === 'linux' ? 'linux' : 'other',
+            machineId: () => coordinator.identity?.machineId ?? null,
+            machineLabel: () => coordinator.identity?.name || os.hostname(),
+            status: async () => { if (!reader) throw new Error('enrolment status not wired'); return reader.read(); },
+            ingressArmed: ec.enrolmentTapsProvable,
+            sendOffer: async (text, buttons) => {
+              const topic = tg.getLifelineTopicId();
+              return topic === undefined ? null : tg.sendOfferList(topic, text, buttons);
+            },
+            openApps: async () => {
+              if (process.platform !== 'darwin') return null;
+              // lsappinfo reads LaunchServices without Apple Events, so a wedged GUI cannot hang it into a prompt.
+              const r = await runCmd('/usr/bin/lsappinfo', ['visibleProcessList']);
+              if (r.code !== 0) return null;
+              const names = [...r.stdout.matchAll(/"([^"]+)"/g)].map((x) => x[1].replace(/_/g, ' '));
+              return [...new Set(names)].filter((n) => n !== 'Finder');
+            },
+            run: runCmd,
+            coResident: () => census2(path.join(os.homedir(), '.instar', 'registry.json'), Date.now()),
+            log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+          });
+          ec.setActiveEnrolmentController(controller);
+          tg.setMachineCareTapHandler((tap) => controller.onTap(tap));
         }
 
         // Honest lock reading (Part A): a read of the session, never the flag alone.
@@ -30364,6 +30493,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return { response: decision };
             },
+            'org-state-pull': async () => {
+              const { orgStateForPeer } = await import('../server/orgPackRoutes.js');
+              return { ok: true, result: orgStateForPeer(config.stateDir) };
+            },
+            'org-apply': async (cmd) => {
+              const { handleOrgApply } = await import('../server/orgPackRoutes.js');
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'org-apply' };
+              return handleOrgApply(config.stateDir, meshSelfId ?? 'single-machine', c, {
+                currentProfile: () => _orgAutonomy?.getProfile() ?? 'supervised',
+                currentSettings: () => _orgAutonomy?.authoritySettings() ?? {},
+                lowerProfile: (cap, orgName) => _orgAutonomy?.lowerForOrgPolicy(cap, orgName) ?? null,
+                restoreProfile: (prev, cap) => { _orgAutonomy?.restoreAfterOrgPolicy(prev, cap); },
+                clampSettings: (cap) => _orgAutonomy?.clampForOrgPolicy(cap) ?? null,
+                restoreSettings: (prev, cap) => { _orgAutonomy?.restoreClampedSettings(prev, cap); },
+              });
+            },
             'secret-share': (cmd, sender) =>
               _secretShareHandler
                 ? _secretShareHandler.handle(cmd as { type: 'secret-share'; encrypted: string }, sender)
@@ -30524,6 +30669,35 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!url) return { ok: false, reason: 'no-url' };
             return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
           };
+          // Organization pack fan-out to this agent's other machines (org-pack-and-join §Multi-machine).
+          {
+            const { setOrgFanOut } = await import('../server/orgPackRoutes.js');
+            setOrgFanOut((change) => {
+              for (const m of meshIdMgr.getActiveMachines()) {
+                if (m.machineId === meshSelfId) continue;
+                void _identityMeshSend?.(m.machineId, { type: 'org-apply', ...change }, 5000).catch(() => { /* @silent-fallback-ok — a missed peer catches up at its own start */ });
+              }
+            });
+            // Catch up at start: take the newest membership any peer holds (§Multi-machine).
+            setTimeout(() => {
+              void (async () => {
+                const { handleOrgApply } = await import('../server/orgPackRoutes.js');
+                for (const m of meshIdMgr.getActiveMachines()) {
+                  if (m.machineId === meshSelfId) continue;
+                  const r = await _identityMeshSend?.(m.machineId, { type: 'org-state-pull' }, 5000).catch(() => null);
+                  const st = (r?.ok ? r.result : null) as { membership: import('../core/OrgPackStore.js').Membership | null; bundle: import('../core/OrgPack.js').OrgBundle | null } | null;
+                  if (!st?.membership) continue;
+                  handleOrgApply(config.stateDir, meshSelfId ?? 'single-machine', { membership: st.membership, bundle: st.bundle }, {
+                    currentProfile: () => _orgAutonomy?.getProfile() ?? 'supervised',
+                    lowerProfile: (cap, orgName) => _orgAutonomy?.lowerForOrgPolicy(cap, orgName) ?? null,
+                    restoreProfile: (prev, cap) => { _orgAutonomy?.restoreAfterOrgPolicy(prev, cap); },
+                clampSettings: (cap) => _orgAutonomy?.clampForOrgPolicy(cap) ?? null,
+                restoreSettings: (prev, cap) => { _orgAutonomy?.restoreClampedSettings(prev, cap); },
+                  });
+                }
+              })().catch(() => { /* @silent-fallback-ok — catch-up is retried at the next start */ });
+            }, 30_000).unref?.();
+          }
           // ── Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4) ──
           // Dev-gated: `chiefOfStaff.enabled` omitted ⇒ live on a development agent, dark on the
           // fleet. Nothing CALLS claim() until the check-in loop ships (PR 3); this wires the
@@ -30761,6 +30935,50 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
                 rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
+                // Owner pause / resume asks (spec cos-owner-pause-record §3.2): only where the owner's button presses arrive.
+                ...(telegram ? { pauseAsk: {
+                  receivesCallbacks: () => coordinator.isAwake,
+                  asksEnabled: () => liveConfig.get<boolean | undefined>('chiefOfStaff.ownerPause.asks', undefined) !== false,
+                  ownerName: () => { try { return readPairingOwnerName(config.stateDir, config.users, telegram?.getOwnerUserId() ?? config.monitoring?.promptGate?.ownerId) || null; } catch { /* @silent-fallback-ok: an unreadable name records "owner" */ return null; } },
+                  conversationName: (conversation: string) => { const n = Number(conversation); return Number.isSafeInteger(n) && n > 0 ? telegram?.getTopicName(n) ?? null : null; },
+                  olderMachines: () => {
+                    const out: string[] = [];
+                    try {
+                      for (const m of _listPoolMachines?.() ?? []) {
+                        if (m.machineId === _meshSelfId) continue;
+                        const cap = machinePoolRegistry?.getCapacity(m.machineId) ?? null;
+                        const v = cap?.coherenceAdvert?.instarVersion ?? cap?.hardware?.instarVersion ?? null;
+                        const cmp = compareInstarVersions(v, startupVersion);
+                        if (cmp !== null && cmp < 0) out.push(verifiedEntityName(m.machineId, m.nickname) ?? m.machineId);
+                      }
+                    } catch { /* @silent-fallback-ok: the older-machine list is a warning only; an unreadable pool warns about nothing */ }
+                    return out;
+                  },
+                  store: {
+                    load: () => (state.get<Record<string, import('../core/ChiefOfStaffLoop.js').PauseAsk>>('cos-pause-asks') ?? {}),
+                    save: (asks: Record<string, import('../core/ChiefOfStaffLoop.js').PauseAsk>) => { state.set('cos-pause-asks', asks); },
+                  },
+                  removeButtons: (chatId: string, messageId: number) => telegram!.clearInlineButtons(chatId, messageId),
+                  // The chat actually used (the one-reader rule picks the topic or the owner's private chat), so the tap can match it.
+                  send: async (text: string, button: { label: string; id: string }, ownerTextFirst?: string) => {
+                    const tg = telegram!;
+                    const cosTopic = _cosTopicId();
+                    const readers = await (tg.groupReaderCount?.() ?? Promise.resolve(null));
+                    const btn = { text: button.label.slice(0, 48), data: button.id.slice(0, 64) };
+                    if (!cosTopic || readers === null || readers > 1) {
+                      const owner = tg.getOwnerUserId();
+                      if (!owner) return null;
+                      if (ownerTextFirst) { const first = await tg.sendOwnerDMWithButton(ownerTextFirst, null, { reportHeld: true }); if (first === null) return null; if (first === TelegramAdapter.OWNER_DM_HELD) return 'unconfirmed'; }
+                      const id = await tg.sendOwnerDMWithButton(text, [btn], { reportHeld: true });
+                      if (id === null) return null;
+                      if (id === TelegramAdapter.OWNER_DM_HELD) return 'unconfirmed';
+                      return { chatId: String(owner), messageId: id };
+                    }
+                    if (ownerTextFirst) { const first = await tg.sendOfferList(cosTopic, ownerTextFirst, []); if (first === null) return null; }
+                    const id = await tg.sendOfferList(cosTopic, text, [btn]);
+                    return id === null ? null : { chatId: String(tg.getChatId()), messageId: id };
+                  },
+                } } : {}),
                 log: (m) => console.log(pc.dim(`  ${m}`)),
               });
               loop.start();
@@ -30771,7 +30989,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // counts as a check-in (§4: "a Telegram message or callback tap whose from.id === ownerUserId").
                 telegram.onChiefOfStaffTap = async (tap) => {
                   loop.recordRenewal({ renewedVia: 'telegram', principal: `telegram:${tap.fromUserId}`, eventRef: `telegram-callback:${tap.callbackQueryId}`, sign: (c) => idMod.sign(c, localSigningKeyPem) });
-                  return loop.ownerTap(tap.data, 'owner-tap');
+                  return loop.ownerTap(tap.data, 'owner-tap', { chatId: tap.chatId, messageId: tap.messageId });
                 };
               }
               _cosRenewalHook = (topicId, telegramUserId, messageId) => {

@@ -29,6 +29,8 @@ export interface InstallProgress {
   needs?: { state: string; field: string; reason?: string };
   /** Set while status is failed. */
   failure?: { state: string; message: string; nextStep: string };
+  /** Set by owner-slot for an install the Mac app runs (mac-app-creates-agent §B): where its agent is. */
+  appEnroll?: { agentDir: string; port: number };
 }
 
 export function installProgressPath(home: string = os.homedir()): string {

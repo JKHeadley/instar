@@ -79,11 +79,11 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'chiefOfStaff',
     prefixes: ['/chief-of-staff'],
-    description: 'The Chief of Staff (docs/specs/chief-of-staff-topic.md): which projects it watches, each one\'s last verdict (moving, stalled, waiting on you, claims done, unknown), restarts, parks, and whether the owner\'s check-in lease is live. Check this for "is anything stalled" before reading topics one by one.',
+    description: 'The Chief of Staff (docs/specs/chief-of-staff-topic.md): which projects it watches, each one\'s last verdict (moving, stalled, waiting on you, claims done, unknown), restarts, parks, and whether the owner\'s check-in lease is live, and which projects the owner paused (pausedBy). To pause or resume one when the owner asks, POST /chief-of-staff/projects/:key/pause-ask with their message marker: the owner gets one Telegram button, and only their tap pauses or resumes. Check this for "is anything stalled" before reading topics one by one.',
     build: ({ ctx }) => {
       const loop = (ctx as { chiefOfStaffLoop?: { status?: () => { lease?: { live?: boolean } } } | null }).chiefOfStaffLoop;
       if (!loop?.status) return { enabled: false };
-      return { enabled: true, leaseLive: loop.status().lease?.live === true, endpoints: ['GET /chief-of-staff', 'GET /chief-of-staff/projects/:key'] };
+      return { enabled: true, leaseLive: loop.status().lease?.live === true, endpoints: ['GET /chief-of-staff', 'GET /chief-of-staff/projects/:key', 'POST /chief-of-staff/projects/:key/pause-ask'] };
     },
   },
   {

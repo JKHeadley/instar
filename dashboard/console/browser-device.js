@@ -251,7 +251,12 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
   async function readStatus(keyHash) {
     const q = keyHash ? `?keyHash=${encodeURIComponent(keyHash)}` : '';
     const sentAt = Date.now();
-    const r = await fetchFn(`/mobile/browser-devices/status${q}`, { headers: bearerHeaders(), cache: 'no-store' });
+    let r;
+    // A dropped or missing connection is an answer too ("couldn't reach"), never a page stuck on "Checking this browser…".
+    try { r = await fetchFn(`/mobile/browser-devices/status${q}`, { headers: bearerHeaders(), cache: 'no-store' }); } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      return { error: 'unreachable', networkError: true };
+    }
     const receivedAt = Date.now();
     if (r.status === 503) return { off: true };
     if (!r.ok) return { error: `status-${r.status}` };

@@ -99,8 +99,14 @@ export function isLegalTransition(from: CosTransition, to: CosTransition): boole
   return LEGAL_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-export const COS_LIFECYCLE_EVENTS = ['closed', 'reopened', 'unpark'] as const;
+export const COS_LIFECYCLE_EVENTS = ['closed', 'reopened', 'unpark', 'owner-pause', 'owner-resume'] as const;
 export type CosLifecycleEvent = typeof COS_LIFECYCLE_EVENTS[number];
+/** The owner's pause on a project (docs/specs/cos-owner-pause-record.md). */
+export interface OwnerPauseRecord { who: string; at: string; quote: string; messageRef: string }
+/** §3.5: Telegram's own message limit, so a whole owner message always fits. */
+export const OWNER_PAUSE_QUOTE_MAX = 4096;
+/** Server-produced fields (owner name, parsed marker); the merged reader's bound. */
+export const OWNER_PAUSE_FIELD_MAX = 2000;
 
 export const COS_ACTIONS = ['restart-inject', 'restart-run', 'redirect', 'close', 'mirror-status'] as const;
 export type CosAction = typeof COS_ACTIONS[number];
@@ -137,7 +143,7 @@ export function deriveOutcomeKey(intentKey: string, transition: CosTransition): 
 const KNOWN_FIELDS = [
   'recordType', 'conversationKey', 'parentConversationKey', 'role', 'deletedAt',
   'goal', 'doneDefinition', 'checkCadenceHours', 'linked', 'initiativeId', 'confirmedBy', 'confirmedAt',
-  'event', 'bindingHlc', 'by', 'at',
+  'event', 'bindingHlc', 'by', 'at', 'who', 'quote', 'messageRef', 'askId',
   'verdict', 'evidenceHash', 'evidenceIds', 'progressSeen', 'netDiffHighWater', 'machine', 'note',
   'action', 'leaseEpoch', 'sequence', 'claimedAt', 'holderSignature', 'intentKey', 'transition', 'writer', 'runId', 'injectId', 'reason',
   'renewedAt', 'renewedVia', 'principal', 'eventRef', 'machineSignature',
@@ -145,6 +151,8 @@ const KNOWN_FIELDS = [
   'tickAt',
 ] as const;
 
+/** A lifecycle event name a later build may add: one or more lower-case words joined by '-'. */
+const UNKNOWN_EVENT_RE = /^[a-z]+(-[a-z]+)*$/;
 const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_RE.test(v);
 const isMachine = (v: unknown): v is string => typeof v === 'string' && MACHINE_ID_RE.test(v);
 const isShortText = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -236,10 +244,23 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
       }
       case 'binding-lifecycle': {
         if (!isValidConversationKey(ck)) return null;
-        if (typeof raw.event !== 'string' || !(COS_LIFECYCLE_EVENTS as ReadonlyArray<string>).includes(raw.event)) return null;
+        if (typeof raw.event !== 'string') return null;
         if (!isHlc(raw.bindingHlc)) return null;
-        if (raw.by !== 'owner-tap' && raw.by !== 'chief-of-staff') return null;
         if (!isIso(raw.at)) return null;
+        // Forward-compatible reader (spec cos-owner-pause-record, Multi-machine posture): an event this build does
+        // not know is stored and IGNORED by every fold, never rejected. A rejected record stalls the whole
+        // peer stream on an older machine, so rejecting would turn every later addition (and a rollback) into a freeze.
+        if (!(COS_LIFECYCLE_EVENTS as ReadonlyArray<string>).includes(raw.event)) {
+          if (raw.event.length > 200 || !UNKNOWN_EVENT_RE.test(raw.event) || !isShortText(raw.by, 200)) return null;
+          return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at };
+        }
+        if (raw.event === 'owner-pause' || raw.event === 'owner-resume') {
+          // Only the owner's own tap pauses or resumes (spec cos-owner-pause-record §3.1): never the Chief of Staff.
+          if (raw.by !== 'owner-tap') return null;
+          if (!isShortText(raw.who, OWNER_PAUSE_FIELD_MAX) || !isShortText(raw.quote, OWNER_PAUSE_QUOTE_MAX) || !isShortText(raw.messageRef, OWNER_PAUSE_FIELD_MAX) || !isShortText(raw.askId, 64)) return null;
+          return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at, who: raw.who, quote: raw.quote, messageRef: raw.messageRef, askId: raw.askId };
+        }
+        if (raw.by !== 'owner-tap' && raw.by !== 'chief-of-staff') return null;
         return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at };
       }
       case 'check-event': {
@@ -377,6 +398,14 @@ export function buildLifecycleEvent(conversationKey: string, event: CosLifecycle
   };
 }
 
+/** An owner pause / resume (spec cos-owner-pause-record §3.1), written only from the owner's own tap. */
+export function buildOwnerPauseEvent(conversationKey: string, event: 'owner-pause' | 'owner-resume', bindingHlc: HlcTimestamp, rec: OwnerPauseRecord, askId: string): Build {
+  return (hlc, origin, observed) => {
+    if (!isValidConversationKey(conversationKey)) return null;
+    return envelope(`lifecycle:${conversationKey}:${hlcKey(hlc)}`, hlc, origin, observed, 'put', { recordType: 'binding-lifecycle', conversationKey, event, bindingHlc, by: 'owner-tap', at: rec.at, who: rec.who, quote: rec.quote, messageRef: rec.messageRef, askId });
+  };
+}
+
 export interface CheckEventInput {
   conversationKey: string; verdict: CosVerdict; evidenceHash: string; evidenceIds: string[]; progressSeen: boolean; netDiffHighWater?: number; machine: string; at: string; note?: string;
   /** The deterministic done-item results at this check — the DURABLE baseline the next check's progress detection compares against (never an in-memory map). */
@@ -499,6 +528,8 @@ export interface BindingState {
   closed: boolean;
   /** A breaker/attempt park is cleared ONLY by an owner `unpark` (§2.7); this is the `at` of the newest valid unpark. */
   lastUnparkAt: string | null;
+  /** The owner's pause (spec cos-owner-pause-record): the newest owner pause/resume tap wins; null when not paused. */
+  pausedBy: OwnerPauseRecord | null;
 }
 
 /**
@@ -513,7 +544,7 @@ export function foldBindingState(entries: UnionEntry[]): Map<string, BindingStat
   for (const [key, w] of latest) {
     if (w.data.recordType !== 'binding' || !key.startsWith('binding:')) continue;
     const ck = w.data.conversationKey as string;
-    out.set(ck, { conversationKey: ck, binding: w.data, bindingHlc: w.hlc, confirmed: w.data.confirmedBy === 'owner', closed: false, lastUnparkAt: null });
+    out.set(ck, { conversationKey: ck, binding: w.data, bindingHlc: w.hlc, confirmed: w.data.confirmedBy === 'owner', closed: false, lastUnparkAt: null, pausedBy: null });
   }
   // Lifecycle events are immutable (unique keys), so read them all, not just the latest per key.
   const byConv = new Map<string, Array<{ data: Record<string, unknown>; hlc: HlcTimestamp }>>();
@@ -527,6 +558,19 @@ export function foldBindingState(entries: UnionEntry[]): Map<string, BindingStat
     const st = out.get(ck);
     if (!st || !st.bindingHlc) continue;
     events.sort((a, b) => compareHlc(a.hlc, b.hlc));
+    // Owner pause / resume (spec cos-owner-pause-record §3.1): the newest owner tap wins, by record HLC like every
+    // lifecycle event here. Never written by the Chief of Staff; the validator already refuses that.
+    // One ask decides once: a second event carrying an askId already seen (a crash between write and ask-delete,
+    // or a redelivered callback) is ignored, so it can never re-pause over a later resume.
+    const seenAsks = new Set<string>();
+    for (const ev of events) {
+      const d = ev.data;
+      if ((d.event !== 'owner-pause' && d.event !== 'owner-resume') || d.by !== 'owner-tap') continue;
+      if (typeof d.askId !== 'string' || seenAsks.has(d.askId)) continue;
+      seenAsks.add(d.askId);
+      if (d.event === 'owner-resume') { st.pausedBy = null; continue; }
+      if (isIso(d.at) && typeof d.who === 'string' && typeof d.quote === 'string' && typeof d.messageRef === 'string') st.pausedBy = { who: d.who, at: d.at, quote: d.quote, messageRef: d.messageRef };
+    }
     for (const ev of events) {
       const valid =
         (ev.data.event === 'closed' && isHlc(ev.data.bindingHlc) && compareHlc(ev.data.bindingHlc as HlcTimestamp, st.bindingHlc) === 0) ||
@@ -538,6 +582,31 @@ export function foldBindingState(entries: UnionEntry[]): Map<string, BindingStat
     }
   }
   return out;
+}
+
+/**
+ * Lifecycle events this build does not know, counted by name (spec cos-owner-pause-record, Multi-machine posture;
+ * maintainer approval condition). The validator keeps them and every fold ignores them, so this count is what makes
+ * an older machine skipping a newer machine's events visible instead of silent. Surfaced in the loop's status.
+ */
+export function unknownLifecycleEvents(entries: UnionEntry[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const e of entries) {
+    const d = e.data;
+    if (d.recordType !== 'binding-lifecycle' || typeof d.event !== 'string') continue;
+    if ((COS_LIFECYCLE_EVENTS as ReadonlyArray<string>).includes(d.event)) continue;
+    out[d.event] = (out[d.event] ?? 0) + 1;
+  }
+  return out;
+}
+
+/** The owner pause/resume event already written for an ask, if any (tap idempotency, spec cos-owner-pause-record §3.2). */
+export function ownerPauseEventForAsk(entries: UnionEntry[], askId: string): 'owner-pause' | 'owner-resume' | null {
+  for (const e of entries) {
+    const d = e.data;
+    if (d.recordType === 'binding-lifecycle' && d.askId === askId && (d.event === 'owner-pause' || d.event === 'owner-resume')) return d.event;
+  }
+  return null;
 }
 
 export interface IntentState {

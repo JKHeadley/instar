@@ -2,6 +2,8 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { OrgPackStore } from '../core/OrgPackStore.js';
+import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
@@ -44,6 +46,7 @@ import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGua
 import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
+import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -91,6 +94,8 @@ import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainR
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
 import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
+import { getActiveEnrolmentStatusReader } from '../monitoring/machineMaintenance/enrolmentReadiness.js';
+import { getActiveEnrolmentController, setEnrolmentTapsProvable } from '../monitoring/machineMaintenance/EnrolmentController.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import {
   fetchMaintenancePool,
@@ -277,6 +282,9 @@ import {
 import { evaluateConfigureRequest } from '../core/SubscriptionReloginRemoteConfigure.js';
 import { acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
 import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
+import { evaluateLoopbackGuard } from '../threadline/ThreadlineMcpHttpService.js';
+import { performApprovedDelete } from '../threadline/performApprovedDelete.js';
+import type { OwnerApprovalGate } from '../threadline/ThreadlineMCPServer.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -637,7 +645,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { configPatchRaises, isKnownTrustLevel, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
+import { configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import type { AutonomousEvolution } from '../core/AutonomousEvolution.js';
@@ -1736,7 +1744,7 @@ export interface RouteContext {
    *  Key: threadId (UUID — unique per conversation, unlike agent names which
    *  can collide when multiple agents share a name). Value: resolve callback
    *  with reply text. */
-  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null }>;
+  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>;
   /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
    *  the service behind `POST /mcp/threadline`. Absent ⇒ the route answers 503. */
   threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null;
@@ -3009,6 +3017,28 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
   'grokInteractiveSessions',
 ];
 
+/** Keys that name JavaScript's object machinery; never valid as config keys (SEC-071). */
+const RESERVED_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** The dotted path of the first reserved key anywhere in a JSON value, or null. */
+export function findReservedObjectKey(value: unknown, prefix = ''): string | null {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = findReservedObjectKey(value[i], `${prefix}[${i}]`);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  for (const key of Object.keys(value)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (RESERVED_OBJECT_KEYS.has(key)) return keyPath;
+    const hit = findReservedObjectKey((value as Record<string, unknown>)[key], keyPath);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
@@ -4110,6 +4140,8 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     },
   });
+  // Machine care enrolment accepts a tap only when this guard can prove taps (Part C).
+  setEnrolmentTapsProvable(() => lifelineIngressGuard.tapsProvable());
 
   // Pairing by invite, Telegram surface (docs/specs/a2a-pairing-invite-link.md §6.1). Buttons
   // are offered only when the lifeline is this agent's Telegram ingress AND its guard enforces;
@@ -9582,6 +9614,19 @@ export function createRoutes(ctx: RouteContext): Router {
     const key = String(req.params.key ?? '');
     const r = await ctx.chiefOfStaffLoop.ownerTap(`cos:${action}:${key}`, 'owner-tap');
     res.status(r === 'ok' ? 200 : 409).json({ ok: r === 'ok', result: r });
+  });
+  // POST /chief-of-staff/projects/:key/pause-ask — the agent asks the OWNER to pause or resume a tracked project
+  // (spec cos-owner-pause-record §3.2). Body: { action: 'pause'|'resume', marker } citing the owner's own logged
+  // message. This sends the owner one Telegram button; only the owner's tap on that exact message pauses or resumes.
+  router.post('/chief-of-staff/projects/:key/pause-ask', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (b.action !== 'pause' && b.action !== 'resume') { res.status(400).json({ error: 'action must be pause or resume' }); return; }
+    if (typeof b.marker !== 'string' || !b.marker.trim()) { res.status(400).json({ error: 'marker is required: the owner message, as [source: telegram <topic>/<message> <date>]' }); return; }
+    const key = String(req.params.key ?? '');
+    const r = await ctx.chiefOfStaffLoop.requestOwnerPause(key, b.action, b.marker);
+    if (!r.ok) { res.status(r.status).json({ error: r.reason }); return; }
+    res.json({ ok: true, asked: true, olderMachines: r.olderMachines, note: 'The owner has been asked; nothing is paused until they tap.' });
   });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -15879,12 +15924,28 @@ export function createRoutes(ctx: RouteContext): Router {
     return view;
   }
 
+  // Enrolment readiness (Part C, CMT-1200): a reading for the card; null where not wired.
+  async function readEnrolmentStatus(): Promise<unknown> {
+    const reader = getActiveEnrolmentStatusReader();
+    if (!reader) return null;
+    try { return await reader.read(); } catch { return { error: 'enrolment-read-failed' }; } // @silent-fallback-ok — named, never a guessed status
+  }
+
+  // Offer the owner's enrolment tap for THIS machine (Part C, CMT-1200). Sends at most one
+  // offer per machine and set of facts; the tap itself arrives as an owner-only Telegram button.
+  router.post('/machine-maintenance/enrol/offer', async (_req, res) => {
+    const c = getActiveEnrolmentController();
+    if (!c) { res.status(503).json({ error: 'machine maintenance enrolment not enabled on this agent' }); return; }
+    try { res.json({ outcome: await c.offer() }); }
+    catch (err) { res.status(500).json({ error: 'enrol-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
+
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
       res.json(await maintenancePoolView('status', async () => {
         const local = getActiveDrainRehearsal();
         return local
-          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null } as Record<string, unknown> }
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() } as Record<string, unknown> }
           : { reason: 'not-enabled' };
       }));
       return;
@@ -15896,7 +15957,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
     // Wedge detection (Part E) rides it too, dry-run: null where the sampler is not wired, never a guessed value.
-    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null });
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() });
   });
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside
@@ -16315,6 +16376,18 @@ export function createRoutes(ctx: RouteContext): Router {
   const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
   function checkMandatePin(req: import('express').Request, res: import('express').Response, pinOverride?: string): boolean {
     return requireMandatePin(req, res, { pinOverride });
+  }
+  // The operator-PIN check for a route reachable WITHOUT the bearer token. Such a route
+  // holds the unlock route's limits too: refusal on an insecure connection, and one cap
+  // across every source address (behind a tunnel every caller shares one IP bucket).
+  function checkPublicPin(req: import('express').Request, res: import('express').Response): boolean {
+    if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
+    if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) { res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return false; }
+    const ok = checkMandatePin(req, res);
+    // Only a wrong PIN counts. An empty one guesses nothing, and charging it would let one address lock out unlock.
+    const { pin } = (req.body ?? {}) as { pin?: unknown };
+    if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
+    return ok;
   }
 
   // Evaluate an action against a mandate (the enforcement consumption point).
@@ -17120,6 +17193,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pin: document.getElementById('mcpPin').value })
     });
+    if ((r.headers.get('content-type') || '').indexOf('application/json') !== -1) {
+      // A refused PIN comes back as JSON: show it in plain words and let the operator retry.
+      var j = {}; try { j = await r.json(); } catch (_) { j = {}; }
+      var msg = j.error === 'insecure-connection' ? 'PIN entry is not allowed on this connection. Open the link through your agent\'s secure address and try again.'
+        : r.status === 429 ? 'Too many PIN attempts. Wait a few minutes and try again.'
+        : j.error === 'Incorrect PIN' ? 'That PIN is not right. Please try again.'
+        : (j.error || 'The approval did not go through. Please try again.');
+      btn.disabled = false; btn.textContent = 'Approve';
+      alert(msg);
+      return;
+    }
     var html = await r.text();
     document.open(); document.write(html); document.close();
   } catch (err) {
@@ -17135,8 +17219,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     void (async (): Promise<void> => {
       const svc = ctx.dynamicMcpService;
       if (!svc || !svc.enabled()) { res.status(503).type('html').send('<p>Not enabled.</p>'); return; }
-      if (!checkMandatePin(req, res)) return; // dashboard-PIN gate (rate-limited); response already sent on failure
-      const result = await svc.approveByRequestId(String(req.params.requestId));
+      const requestId = String(req.params.requestId);
+      // The request must exist BEFORE any PIN is checked: this route is reachable without
+      // the bearer, so a PIN is only ever tested against a live, operator-visible request.
+      if (!svc.peekApproval(requestId)) { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
+      if (!checkPublicPin(req, res)) return; // public-route PIN gate (insecure-connection refusal, global cap); response already sent on failure
+      const result = await svc.approveByRequestId(requestId);
       if (result.status === 'unknown-request') { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
       const ok = result.status === 'applied';
       res.status(ok ? 200 : 409).type('html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:system-ui,sans-serif;max-width:30rem;margin:2rem auto;padding:0 1rem}</style></head><body><h2>${ok ? '✅ Approved' : '⚠️ Not applied'}</h2><p>${ok ? 'The tool change was approved and is being applied — the session will restart briefly and continue.' : `The change was not applied (status: ${mcpHtmlEscape(result.status)}). You can close this page.`}</p></body></html>`);
@@ -17868,21 +17956,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     checkPin: (req, res) => checkMandatePin(req, res),
     // Reachable with no bearer token, so it holds the unlock route's limits too: the same refusal on
     // an insecure connection, and the same cap across every source address.
-    checkConfirmPin: (req, res) => {
-      if (ctx.pinEntryRefusedHere?.(req)) {
-        res.status(403).json({ error: 'insecure-connection' });
-        return false;
-      }
-      if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
-        return false;
-      }
-      const ok = checkMandatePin(req, res);
-      // Only a wrong PIN counts. An empty one guesses nothing, and charging it would let one address lock out unlock.
-      const { pin } = (req.body ?? {}) as { pin?: unknown };
-      if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
-      return ok;
-    },
+    checkConfirmPin: (req, res) => checkPublicPin(req, res),
     owner: () => { const uid = callbackApprover(); return uid === undefined ? null : String(uid); },
     recordApproval: (subject, evidenceRef) => {
       if (!ctx.approvalLedger) throw new Error('approval ledger unavailable');
@@ -17910,14 +17984,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // A one-off has one text, so anything but the owner's own conversation counts as other readers.
     topicHasOtherReaders: (topicId) => ['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? 'none'),
     hasGrant: () => { const l = ctx.recommendedServicesLedger; return !!l && l.activeGrant('email', l.machineId()) !== null; },
-    checkConfirmPin: (req, res) => {
-      if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
-      if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) { res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return false; }
-      const ok = checkMandatePin(req, res);
-      const { pin } = (req.body ?? {}) as { pin?: unknown };
-      if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
-      return ok;
-    },
+    checkConfirmPin: (req, res) => checkPublicPin(req, res),
     holdsLease: () => { try { return ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { return false; } }, // @silent-fallback-ok — an unreadable lease reads as not held: forward, never send twice
     forwardToHolder: (input) => (ctx.emailForwardToHolder ? ctx.emailForwardToHolder(input) : Promise.resolve({ ok: false as const, reason: 'holder-unreachable' })),
   });
@@ -30201,11 +30268,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    const submission = secretDrop.submit(req.params.token, _csrf, values as Record<string, string>);
-    if (!submission) {
+    const submitted = secretDrop.submitWithReason(req.params.token, _csrf, values as Record<string, string>);
+    if ('refused' in submitted) {
+      if (submitted.refused === 'signature-format-outdated' || submitted.refused === 'signature-format-unknown') {
+        // The link is still valid (a refused submit never consumes it): tell the sender what to do.
+        res.status(400).json({
+          error: submitted.refused === 'signature-format-outdated'
+            ? 'This secret was signed by an Instar version that cannot sign multi-line values safely. Update Instar on the sending machine and send it again.'
+            : 'This secret was signed in a format this agent does not recognise. Make sure both machines run a current Instar and send it again.',
+          reason: submitted.refused,
+        });
+        return;
+      }
       res.status(410).json({ error: 'This link has expired or already been used' });
       return;
     }
+    const submission = submitted.submission;
 
     // ── Store-first durable persistence (2026-06-04) ──────────────────────────
     // Before we confirm or nudge the agent, persist the submission to the durable,
@@ -30409,7 +30487,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Retrieve a received secret (agent-facing, requires auth).
   //
   // Non-destructive by default — repeated calls return the same value
-  // until the in-memory cleanup timer fires (~5 min). Pass `?consume=true`
+  // until the in-memory cleanup fires (a sliding idle window under an absolute cap). Pass `?consume=true`
   // for the legacy one-shot semantics. Rationale: a buggy consumer that
   // dropped the response value used to lose the secret with no recovery;
   // non-destructive default lets the caller retry. See
@@ -30418,41 +30496,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const token = req.params.token;
     const consumeFlag = req.query.consume;
     const consume = consumeFlag === 'true' || consumeFlag === '1';
-    let submission = consume
-      ? secretDrop.consumeReceived(token)
-      : secretDrop.peekReceived(token);
-
     const persistDrops = ctx.config.secrets?.persistDrops !== false;
+
+    // A consume is reported only once the stored copy is gone. The stored copy is deleted
+    // FIRST; if that fails, nothing is consumed and the caller can retry. (A path that does
+    // not exist deletes cleanly.) Synchronous from peek to consume, so nothing interleaves.
+    const durableDeleted = (): boolean => {
+      if (!persistDrops) return true;
+      try {
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+        return true;
+      } catch (err) {
+        // @silent-fallback-ok — not silent: reported below, and the route refuses the consume (503) so nothing is lost
+        // Counts only: a drop token is a bearer handle and is never recorded.
+        DegradationReporter.getInstance().report({
+          feature: 'SecretDrop.consume',
+          primary: 'Consuming a received secret removes its stored copy',
+          fallback: 'Nothing was consumed; the caller is told to try again',
+          reason: err instanceof Error ? err.name : 'unknown error',
+          impact: 'A consumed secret would otherwise stay in the encrypted store.',
+        });
+        return false;
+      }
+    };
+    const refuseUnconsumed = (): void => {
+      res.status(503).json({ error: 'Could not remove the stored copy of this secret, so nothing was consumed. Try again.' });
+    };
+
+    let submission = secretDrop.peekReceived(token);
+    if (submission && consume) {
+      // A browser password is never stored, so there is no stored copy to remove.
+      if (!submission.browserHost && !durableDeleted()) { refuseUnconsumed(); return; }
+      submission = secretDrop.consumeReceived(token) ?? submission;
+    }
 
     if (!submission && persistDrops) {
       // Durable fallback: the in-memory `received` copy is gone (server restart,
-      // compaction, cross-machine handoff, or grace-window cleanup). The store-first
-      // persisted copy is the recovery path — without it, churn between submit and
-      // retrieve dropped the secret with no recovery.
+      // compaction, or grace-window cleanup). The store-first persisted copy is the
+      // recovery path on the machine that received the drop (drops never sync to peers).
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         const durable = store.get(`secretDrops.${token}`) as
           | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string> }
           | undefined;
         if (durable && durable.values) {
+          if (consume && !durableDeleted()) { refuseUnconsumed(); return; }
           submission = {
             values: durable.values,
             receivedAt: durable.receivedAt ?? new Date().toISOString(),
             label: durable.label ?? 'Secret',
             topicId: durable.topicId ?? undefined,
           };
-          // A successful consume against the durable copy removes it.
-          if (consume) store.delete(`secretDrops.${token}`);
         }
       } catch (err) {
+        // @silent-fallback-ok — logged, and the caller gets a plain 404 (nothing is returned or consumed)
         console.error(`[secret-drop] durable fallback read failed (token ${token.slice(0, 8)}…):`, err instanceof Error ? err.message : String(err));
       }
-    } else if (submission && consume && persistDrops) {
-      // In-memory consume succeeded — clean the durable copy too, so a consumed
-      // secret never lingers in the encrypted store (matters for one-time codes).
-      try {
-        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
-      } catch { /* @silent-fallback-ok — durable cleanup is best-effort */ }
     }
 
     if (!submission) {
@@ -32977,7 +33076,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ present: false });
         return;
       }
-      const block = formatOrgIntentForSessionStart(parsed);
+      // Say only what is running: the outbound check exists only with responseReview on (org-pack-and-join §D).
+      const block = formatOrgIntentForSessionStart(parsed, { outboundGateOn: ctx.config.responseReview?.enabled === true });
       res.json({
         present: true,
         block,
@@ -37433,6 +37533,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Deep-merges the request body into config.json and updates runtime ctx.config.
   router.patch('/config', (req, res) => {
     const patch = req.body;
+    // SEC-071: a key that names JavaScript's object machinery (`__proto__`, `prototype`,
+    // `constructor`) at ANY depth is refused before anything reads or merges the patch. A JSON
+    // body keeps an own `__proto__` key, and a merge that follows it writes into every object
+    // in the process (and past the PIN check on the flood-brake switch).
+    const reservedAt = findReservedObjectKey(patch);
+    if (reservedAt) {
+      res.status(400).json({ error: `"${reservedAt}" is not a valid config key` });
+      return;
+    }
     if (patch?.notifications && typeof patch.notifications === 'object' && 'selectivity' in patch.notifications) { res.status(403).json({ error: 'Use the confirmed notification preference surface' }); return; }
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
@@ -37554,6 +37663,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // A bearer request carries no OperatorProof, so it is refused before anything is written;
       // changes toward more restriction still apply. Compared against the same file config and the
       // same one-level merge the write below uses.
+      // An organization's cap holds before any other raise check (org-pack-and-join §D): of the
+      // capped settings, only evolution.approvalMode can be patched.
+      {
+        const cap = new OrgPackStore(ctx.config.stateDir, '').cap();
+        const evo = (patch as { evolution?: { approvalMode?: unknown } }).evolution;
+        if (cap && evo?.approvalMode === 'autonomous' && ORG_PROFILE_DEFAULTS[cap.level]?.evolutionApprovalMode !== 'autonomous') {
+          res.status(403).json(orgCapRefusal(cap));
+          return;
+        }
+      }
       const configRaises = configPatchRaises(fileConfig, patch as Record<string, unknown>, ctx.autonomyManager?.getProfile());
       if (configRaises.length > 0) {
         const refusal = raiseRefusal(configRaises);
@@ -37571,7 +37690,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (sagPatch) {
         const deepMerge = (base: Record<string, any>, overlay: Record<string, unknown>): Record<string, any> => {
           for (const [k, v] of Object.entries(overlay)) {
-            if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+            if (RESERVED_OBJECT_KEYS.has(k)) continue; // already refused above; never followed here
+            const own = Object.prototype.hasOwnProperty.call(base, k);
+            if (v && typeof v === 'object' && !Array.isArray(v) && own && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
               deepMerge(base[k], v as Record<string, unknown>);
             } else {
               base[k] = v;
@@ -43350,6 +43471,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       // Enforcing and proven: the fingerprint derived from the verified key.
       let provenSenderFp: string | null = null;
+      // A verified signature proves the sender in ANY signature mode; used for reply-waiter matching only.
+      let signedSenderFp: string | null = null;
       if (sigMode !== 'off') {
         let sigVerdict: Awaited<ReturnType<typeof verifyLocalRouteEnvelope>> | null = null;
         try {
@@ -43368,6 +43491,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         if (sigVerdict) {
           countLocalEnvelopeVerdict(sigMode, sigVerdict, ctx.config.stateDir);
+          if (sigVerdict.ok && sigVerdict.fingerprint) signedSenderFp = sigVerdict.fingerprint;
           if (!sigVerdict.ok) {
             const line = localEnvelopeRefusalLogLine(sigMode === 'enforcing' ? 'refuse' : 'would-refuse', sigVerdict.senderName, sigVerdict.reason);
             if (line) console.log(line);
@@ -43700,11 +43824,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // A recognised ack never reaches here (the ack stage returned before
             // relay()); a message that merely opens like one is still not "the reply".
             const waiter = ctx.threadlineReplyWaiters.get(inboundThreadId);
-            // Memory privacy: on a multi-person agent only the addressed peer, proven by its
-            // signature, resolves a waiter, and never under post-only (§3).
-            const waiterAllowed = !waiter || !(ctx.sessionManager?.isMultiPersonAgent?.() ?? false)
-              || ((ctx.sessionManager?.linkedPeerReplies?.() ?? 'deliver') === 'deliver' && !!waiter.recipientFp && !!provenSenderFp
-                && waiter.recipientFp === provenSenderFp.toLowerCase());
+            // Only the peer the send was routed to resolves a waiter; on a multi-person agent,
+            // only the addressed peer and never under post-only (§3). Every same-machine agent
+            // holds this route's token, so the token proves nothing about WHO sent this: the
+            // sender is its verified signature when there is one (any signature mode), else the
+            // registry fingerprint for the name it claims. No match, no resolution.
+            // A multi-person agent's memory-privacy rule needs a proven sender, never a name lookup.
+            const waiterMultiPerson = ctx.sessionManager?.isMultiPersonAgent?.() ?? false;
+            const waiterSenderFp = waiterMultiPerson
+              ? signedSenderFp
+              : (signedSenderFp ?? resolvePeerFingerprintByName(ctx.config.stateDir, relayFromAgent) ?? null);
+            const waiterAllowed = !waiter || replyWaiterAccepts(waiter, {
+              senderFp: waiterSenderFp,
+              multiPerson: waiterMultiPerson,
+              linkedPeerReplies: ctx.sessionManager?.linkedPeerReplies?.() ?? 'deliver',
+              allowUnprovenSender: false,
+            });
             if (waiter && waiterAllowed && !looksLikeAutoAckText(textContent)) {
               console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
               waiter.resolve(textContent);
@@ -44944,6 +45079,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     onRegistered?: (cancel: () => void) => void,
     /** Memory privacy: the fingerprint this send addressed (a fingerprint, or an owner-curated nickname). */
     recipientFp?: string | null,
+    /** The full routing fingerprint the send was delivered to; only that peer resolves the wait. */
+    routedFp?: string | null,
   ): Promise<string | null> {
     const timeout = Math.min(Math.max(timeoutSec ?? 120, 5), 300) * 1000; // 5s–300s, default 120s
 
@@ -44966,6 +45103,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderAgent,
         timer,
         recipientFp: recipientFp ? recipientFp.toLowerCase() : null,
+        routedFp: routedFp ? routedFp.toLowerCase() : null,
       };
       routeCtx.threadlineReplyWaiters.set(threadId, entry);
       // Honest delivery (spec §4): a refused send cancels ITS OWN waiter only —
@@ -45848,7 +45986,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   // a2a-required-acknowledgment D5: only an accepted send closes a watch.
                   if (accepted) ctx.requiredAck?.onSessionSendAccepted(resolvePeerFingerprint(localTarget) || localTarget.name, effectiveThreadId);
                   if (waitForReply) {
-                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose, addressedFpNow());
+                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose, addressedFpNow(), resolvePeerFingerprint(localTarget) || null);
                     res.json({
                       success: true,
                       accepted,
@@ -46136,7 +46274,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // budget, and a fast reply can never land in a gap with no listener).
       let cancelReplyWait: (() => void) | undefined;
       const replyPromise = waitForReply
-        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); }, addressedFpNow())
+        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); }, addressedFpNow(), resolvedId)
         : null;
 
       // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §4). Order:
@@ -46489,6 +46627,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       answer.sent = false;
     }
     res.json(answer);
+  });
+
+  // SEC-018 companion (docs/specs/owner-approved-action-stdio-transport.md): the loopback route
+  // the stdio MCP helper calls so the GATED delete (consume + the irreversible mutation) happens
+  // at the authority in this server process, not in the helper. Auth = the ordinary authMiddleware
+  // agent-token (this route is NOT in THREADLINE_PUBLIC_ROUTES) PLUS the extracted loopback/Origin
+  // guard that refuses any tunnel-arriving request. It does NOT and CANNOT authenticate the calling
+  // process; its safety rests on redeem-only (no caller-facing register/clear/consume/enabled
+  // action — only "attempt this delete") plus the off-machine device signature. A hostile LOCAL
+  // caller holding every on-disk secret passes auth and still gets owner-approval-required.
+  router.post('/threadline/approved-delete', (req, res) => {
+    const guard = evaluateLoopbackGuard(req);
+    if (!guard.ok) { res.status(guard.status).json({ error: guard.error }); return; }
+    const threadId = typeof (req.body as { threadId?: unknown })?.threadId === 'string'
+      ? (req.body as { threadId: string }).threadId.trim() : '';
+    if (!threadId) { res.status(400).json({ error: 'threadId (string) is required' }); return; }
+    const map = ctx.threadResumeMap;
+    const store = ctx.ownerApprovedActionStore;
+    const pending = ctx.ownerApprovedActionPending;
+    if (!map || !store || !pending) {
+      res.status(503).json({ error: 'owner-approved-delete-unavailable' });
+      return;
+    }
+    const gate: OwnerApprovalGate = {
+      enabled: () => ctx.config.security?.ownerApprovedActions?.enabled === true,
+      consume: (k) => store.consume(k),
+      registerPending: (r) => { pending.register(r); },
+      clearPending: (p, a) => { pending.remove(p, a); },
+      machineName: () => ctx.config.projectName || 'this agent',
+    };
+    const result = performApprovedDelete(threadId, { threadResumeMap: map, ownerApproval: gate });
+    res.json(result);
   });
 
   router.post('/threadline/ack', async (req, res) => {

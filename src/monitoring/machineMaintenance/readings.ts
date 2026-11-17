@@ -71,6 +71,10 @@ const READ_ONLY_CALLS = {
   // canary, even when the canary is then left stopped (STAT T) and never runs. So a pass
   // also needs the canary gone shortly after. This lists canary processes and their state.
   canaryProcesses: { command: 'ps', args: ['-axo', 'pid=,uid=,stat=,args='] },
+  // The gentle rung on macOS: app launches LaunchServices left stopped (STAT T). The parent
+  // (launchd is 1, a shell's Ctrl-Z job is not), the age, and the executable path are what
+  // decide whether one is resumed; `comm` is the full executable path on macOS.
+  stoppedLaunches: { command: 'ps', args: ['-axo', 'pid=,uid=,ppid=,stat=,etime=,comm='] },
   // F1 eligibility on macOS: who owns the console. `root` is the login window (no one
   // logged in); another name is someone else's session. A file stat, no GUI involved.
   consoleOwner: { command: '/usr/bin/stat', args: ['-f', '%Su', '/dev/console'] },
@@ -201,6 +205,54 @@ export function parseCanaryProcesses(psOutput: string, uid: number): CanaryProce
     if (at < 0 || !(args.length === at + WEDGE_CANARY_EXECUTABLE_TAIL.length || args[at + WEDGE_CANARY_EXECUTABLE_TAIL.length] === ' ')) continue;
     if (!args.startsWith('/') || args.slice(0, at).includes(' -')) continue;
     out.push({ pid: Number(m[1]), stopped: m[3].startsWith('T') });
+  }
+  return out;
+}
+
+/** A stopped launch younger than this may still be starting; it is left alone. */
+export const STOPPED_LAUNCH_MIN_AGE_MS = 60_000;
+
+export interface StoppedLaunch { pid: number; app: string; ageMs: number }
+
+/** Where an app the gentle rung may resume is installed: the system's and this user's app folders. */
+export function stoppedLaunchRoots(home: string | null): string[] {
+  const roots = ['/Applications/', '/System/Applications/', '/System/Library/CoreServices/'];
+  if (home && home.startsWith('/')) roots.push(`${home.replace(/\/+$/, '')}/Applications/`);
+  return roots;
+}
+
+/** `ps` elapsed time, `[[dd-]hh:]mm:ss`, in milliseconds; null when it does not parse. */
+export function parseElapsed(etime: string): number | null {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime.trim());
+  if (!m) return null;
+  const [d, h, mi, se] = [m[1], m[2], m[3], m[4]].map((v) => (v === undefined ? 0 : Number(v)));
+  return (((d * 24 + h) * 60 + mi) * 60 + se) * 1000;
+}
+
+/**
+ * This user's app launches that LaunchServices left stopped, from
+ * `ps -axo pid=,uid=,ppid=,stat=,etime=,comm=`. Only a process that is stopped (STAT T),
+ * owned by `uid`, parented by launchd (ppid 1: a launch, not a shell job someone suspended),
+ * at least STOPPED_LAUNCH_MIN_AGE_MS old, and whose executable is an app's own
+ * `X.app/Contents/MacOS/X` under a known app folder. The wedge canary is never listed
+ * (it is ended, not resumed).
+ */
+export function parseStoppedLaunches(psOutput: string, uid: number, home: string | null): StoppedLaunch[] {
+  const roots = stoppedLaunchRoots(home);
+  const out: StoppedLaunch[] = [];
+  for (const line of psOutput.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\/.*)$/.exec(line);
+    if (!m) continue;
+    if (Number(m[2]) !== uid || m[3] !== '1' || !m[4].startsWith('T')) continue;
+    const ageMs = parseElapsed(m[5]);
+    if (ageMs === null || ageMs < STOPPED_LAUNCH_MIN_AGE_MS) continue;
+    const exe = m[6].trimEnd();
+    if (exe.endsWith(WEDGE_CANARY_EXECUTABLE_TAIL)) continue;
+    const root = roots.find((r) => exe.startsWith(r));
+    if (!root) continue;
+    const app = /^((?:[^/]+\/)*)([^/]+)\.app\/Contents\/MacOS\/[^/]+$/.exec(exe.slice(root.length));
+    if (!app || app[1].includes('.app/')) continue;
+    out.push({ pid: Number(m[1]), app: app[2], ageMs });
   }
   return out;
 }

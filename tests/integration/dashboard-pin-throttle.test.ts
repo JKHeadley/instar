@@ -11,7 +11,8 @@
  *  - a genuinely-local request (loopback Host) unlocks while the tunnel cap is drained (recovery);
  *  - the paired phone-app route is unaffected by the throttle.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
@@ -123,5 +124,69 @@ describe('dashboard PIN throttle (b) — integration', () => {
     const res = await request(app).get('/dashboard/unlock-check').set('Host', TUNNEL_HOST).set('x-forwarded-proto', 'https');
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('accepted');
+  });
+});
+
+// SEC-070: "local" must not mean "unlimited": other processes on this machine, including
+// confined sessions that share the loopback, reach the same local address. An unknown local
+// caller gets its own small budget; a browser that unlocked before (signed marker) is never
+// capped; the local and remote budgets never drain each other.
+describe('dashboard PIN throttle — local guesses are bounded too', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  async function localWrong(n: number, cookie?: string) {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const r = local(); if (cookie) r.set('Cookie', cookie);
+      out.push((await r.send({ pin: '000000' })).status);
+    }
+    return out;
+  }
+
+  it('after 10 wrong PINs, an unknown local caller is refused (429) even with the right PIN', async () => {
+    expect(await localWrong(10)).toEqual(Array(10).fill(403));
+    const res = await local().send({ pin: PIN });
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatch(/from this machine/);
+  });
+
+  it('the owner is alerted once when the local budget runs out', async () => {
+    const spy = vi.spyOn(DegradationReporter.getInstance(), 'report');
+    await localWrong(10);
+    await local().send({ pin: '000000' });
+    const local429 = spy.mock.calls.filter((c) => (c[0] as { feature: string }).feature === 'DashboardPin.localGuessing');
+    expect(local429).toHaveLength(1);
+  });
+
+  it('a local browser that unlocked before still unlocks after unknown local callers used up the local budget', async () => {
+    const first = await local().send({ pin: PIN });
+    const cookie = String(first.headers['set-cookie']?.[0] ?? '').split(';')[0];
+    expect(cookie).toContain('instar_pin_ok=');
+    await localWrong(10);
+    expect((await local().send({ pin: PIN })).status).toBe(429); // unknown local caller
+    expect((await local().set('Cookie', cookie).send({ pin: PIN })).status).toBe(200); // the owner's browser
+  });
+
+  it('a copied marker cookie is not an unlimited pass from this machine: it backs off like a known remote browser', async () => {
+    const first = await local().send({ pin: PIN });
+    const cookie = String(first.headers['set-cookie']?.[0] ?? '').split(';')[0];
+    const statuses = await localWrong(15, cookie);
+    expect(statuses).toContain(429);
+  });
+
+  it('a correct PIN does not hand a guessing program a fresh local budget', async () => {
+    await localWrong(9);
+    expect((await local().send({ pin: PIN })).status).toBe(200);
+    expect((await local().send({ pin: '000000' })).status).toBe(403); // the 10th failure in the window
+    expect((await local().send({ pin: PIN })).status).toBe(429);
+  });
+
+  it('the local and remote budgets do not drain each other', async () => {
+    await localWrong(10);
+    expect((await tunnel('198.51.100.9').send({ pin: PIN })).status).toBe(200); // a remote browser is unaffected
+    project.cleanup(); project = createTempProject();
+    const server = new AgentServer({ config: makeConfig(project.stateDir), sessionManager: mockSM as any, state: project.state, tunnel: { url: `https://${TUNNEL_HOST}` } } as any);
+    app = server.getApp();
+    await drainCap();
+    expect((await local().send({ pin: PIN })).status).toBe(200); // the machine still unlocks while remote is drained
   });
 });

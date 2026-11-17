@@ -80,7 +80,7 @@ export function proofCovers(proof: OperatorProof | null | undefined, proposalHas
 
 /** The person-facing refusal: what was refused and the approval it needs. */
 export interface RaiseRefusal {
-  error: 'operator-approval-required';
+  error: 'operator-approval-required' | 'org-policy-cap';
   message: string;
   /** The approval this change needs. */
   needs: string;
@@ -98,6 +98,17 @@ export function raiseRefusal(raises: string[]): RaiseRefusal {
       + 'Narrowing never needs it. That approval path is not installed on this version yet, so the setting stays as it is.',
     needs: RAISE_NEEDS,
     raises,
+  };
+}
+
+/** An organization's independence cap refused a raise (org-pack-and-join §D). */
+export function orgCapRefusal(cap: { level: AutonomyProfileLevel; orgName: string }): RaiseRefusal {
+  const words: Record<AutonomyProfileLevel, string> = { cautious: 'Careful', supervised: 'Balanced', collaborative: 'Trusting', autonomous: 'Independent' };
+  return {
+    error: 'org-policy-cap',
+    message: `${cap.orgName}'s policy allows at most ${words[cap.level]}, so the setting stays as it is.`,
+    needs: `a change to ${cap.orgName}'s policy`,
+    raises: [],
   };
 }
 
