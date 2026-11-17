@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { HostMaintenanceStore } from '../../src/monitoring/machineMaintenance/HostMaintenanceStore.js';
 import {
-  BASELINE_EVERY_MS, PROOF_ATTEMPT_GAP_MS, PostRestartProof, runChecks, type Baseline, type ProofReaders, type RestartProofRecord,
+  BASELINE_EVERY_MS, PROOF_ATTEMPT_GAP_MS, PostRestartProof, runChecks, serverHealthFromResponse, type Baseline, type ProofReaders, type RestartProofRecord,
 } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
 
 const MIN = 60_000;
@@ -186,5 +186,50 @@ describe('PostRestartProof lifecycle', () => {
     });
     await p.tick();
     expect(fs.existsSync(path.join(dir, 'p.json'))).toBe(false);
+  });
+});
+
+describe('server row: back only when /health says it finished starting', () => {
+  const hdr = (v: string | null) => ({ get: (n: string) => (n === 'x-instar-boot-state' ? v : null) });
+  it('200 with bootReadiness ready passes', () => {
+    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: { bootReadiness: { state: 'ready' } } })).toEqual({ state: 'pass', reason: 'health-200-ready' });
+  });
+  it('the boot beacon 503 and a 200 still starting are unknown, read again next attempt', () => {
+    expect(serverHealthFromResponse({ status: 503, headers: hdr('starting'), body: {} })).toEqual({ state: 'unknown', reason: 'server-still-starting' });
+    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: { bootReadiness: { state: 'starting' } } }).state).toBe('unknown');
+    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: {} })).toEqual({ state: 'unknown', reason: 'boot-state-unread' });
+  });
+  it('any other 503, another status or no answer fails', () => {
+    expect(serverHealthFromResponse({ status: 503, headers: hdr(null), body: {} })).toEqual({ state: 'fail', reason: 'health-503' });
+    expect(serverHealthFromResponse({ status: 500, body: null })).toEqual({ state: 'fail', reason: 'health-500' });
+    expect(serverHealthFromResponse(null)).toEqual({ state: 'fail', reason: 'health-unreachable' });
+  });
+  it('in the proof: still starting keeps it running, ready then passes; still starting at the bound fails', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-proof-boot-'));
+    try {
+      let clock = 100 * DAY; let bootAt = 90 * DAY; let ready = false;
+      const lifeline = { lifelineAt: null as number | null };
+      const readers = healthyReaders({ serverHealth: async () => serverHealthFromResponse(ready
+        ? { status: 200, headers: hdr(null), body: { bootReadiness: { state: 'ready' } } }
+        : { status: 503, headers: hdr('starting'), body: {} }) }, lifeline);
+      const p = new PostRestartProof({
+        agentName: 'echo', store: new HostMaintenanceStore({ dir: path.join(dir, 'host'), now: () => clock }), readBootAt: async () => bootAt,
+        isMaintainer: () => true, readers, baselinePath: path.join(dir, 'b.json'), proofPath: path.join(dir, 'p.json'),
+        logPath: path.join(dir, 'l.jsonl'), enabled: () => true, now: () => clock,
+      });
+      ready = true; await p.tick(); ready = false;
+      clock += 2 * DAY; bootAt = clock; lifeline.lifelineAt = clock;
+      await p.tick();
+      expect((p.status() as any).lastProof).toMatchObject({ verdict: 'running', attempts: 1 });
+      expect((p.status() as any).lastProof.checks.server).toEqual({ state: 'unknown', reason: 'server-still-starting' });
+      ready = true; clock += PROOF_ATTEMPT_GAP_MS; await p.tick();
+      expect((p.status() as any).lastProof).toMatchObject({ verdict: 'passed', attempts: 2 });
+
+      clock += BASELINE_EVERY_MS; await p.tick();
+      ready = false; clock += 2 * DAY; bootAt = clock; lifeline.lifelineAt = clock;
+      for (let i = 0; i < 6; i++) { await p.tick(); clock += PROOF_ATTEMPT_GAP_MS; }
+      expect((p.status() as any).lastProof).toMatchObject({ verdict: 'failed', attempts: 5 });
+      expect((p.status() as any).lastProof.checks.server.reason).toBe('server-still-starting');
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/machine-restart-proof.test.ts' }); }
   });
 });

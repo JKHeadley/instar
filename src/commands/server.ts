@@ -27550,13 +27550,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // written once to the host ledger, attributed or `unattributed`, and each agent proves its
         // own parts came back against a baseline taken before the restart. Restarts nothing.
         {
-          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
+          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt, serverHealthFromResponse } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
           const self = `http://127.0.0.1:${config.port}`;
           const authed = { Authorization: `Bearer ${config.authToken ?? ''}` };
-          const getJson = async (p: string, auth = true): Promise<{ status: number; body: any } | null> => {
+          const getJson = async (p: string, auth = true): Promise<{ status: number; headers: Headers; body: any } | null> => {
             try {
               const r = await fetch(`${self}${p}`, { headers: auth ? authed : {}, signal: AbortSignal.timeout(8_000) });
-              return { status: r.status, body: await r.json().catch(() => null) };
+              return { status: r.status, headers: r.headers, body: await r.json().catch(() => null) };
             } catch { return null; } // @silent-fallback-ok — an unreachable read is unknown in the proof, never a pass
           };
           const proofDir = path.join(config.stateDir, 'state', 'machine-maintenance');
@@ -27575,10 +27575,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             logPath: path.join(config.stateDir, '..', 'logs', 'machine-maintenance.jsonl'),
             log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
             readers: {
-              serverHealth: async () => {
-                const r = await getJson('/health', false);
-                return r && r.status === 200 ? { state: 'pass', reason: 'health-200' } : { state: 'fail', reason: r ? `health-${r.status}` : 'health-unreachable' };
-              },
+              // Back only when /health answers 200 and says it finished starting; still starting reads again next attempt.
+              serverHealth: async () => serverHealthFromResponse(await getJson('/health', false)),
               lifelineProofAt,
               relay: async () => {
                 const r = await getJson('/threadline/health');
