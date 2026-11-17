@@ -370,15 +370,21 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
       const { accountChoiceStep } = await import('../install/accountChoice.js');
       const door = answers.door as 'claude-code' | 'codex-cli';
       const found = door === 'claude-code' || door === 'codex-cli' ? discoverAccounts(door) : [];
-      return accountChoiceStep(answers, progress.awaiting, found);
+      const { newAccountFolder } = await import('../install/accountEnroll.js');
+      return accountChoiceStep(answers, progress.awaiting, found, () => newAccountFolder(answers.agentName!, door));
     },
 
-    'door-sign-in': async (answers, progress) => doorSignInStep(env, answers.door!, {
-      words: INSTALL_RESUME_WORDS,
-      awaiting: progress.awaiting,
-      claudeTokenHeld: claudeToken.value !== null,
-      obtainClaudeToken: () => askClaudeToken(env, claudeToken),
-    }),
+    'door-sign-in': async (answers, progress) => {
+      // Sign in to the account chosen at the account choice: its own folder, not the AI's default.
+      const { signInEnvFor } = await import('../install/accountEnroll.js');
+      Object.assign(process.env, signInEnvFor(answers));
+      return doorSignInStep(env, answers.door!, {
+        words: INSTALL_RESUME_WORDS,
+        awaiting: progress.awaiting,
+        claudeTokenHeld: claudeToken.value !== null,
+        obtainClaudeToken: () => askClaudeToken(env, claudeToken),
+      });
+    },
 
     'agent-init': async (answers) => {
       const file = agentConfigFile(answers);
@@ -393,6 +399,24 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         return { kind: 'failed', message: `Your agent's files weren't created. Details are in ${env.logFile}.`, nextStep: resume };
       }
       finishAgentConfig(file);
+      // The account chosen at the account choice joins the new agent's pool (create-agent-accounts-and-always-on §A.3-§A.5).
+      if (answers.accountConfigHome && !answers.accountIsDefault) {
+        const { enrollChosenAccount } = await import('../install/accountEnroll.js');
+        const { SubscriptionPool, SubscriptionAccountEmailRegistrar } = await import('../core/SubscriptionPool.js');
+        const { CompositeCredentialIdentityOracle } = await import('../core/CompositeCredentialIdentityOracle.js');
+        const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
+        const stateDir = path.dirname(file);
+        let machineId: string | null = null;
+        try { machineId = (JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8')) as { machineId?: string }).machineId ?? null; } catch { /* @silent-fallback-ok: no machine identity yet; the pool entry carries none */ }
+        const pool = new SubscriptionPool({ stateDir, machineId });
+        const registrar = new SubscriptionAccountEmailRegistrar(pool, new CompositeCredentialIdentityOracle({ anthropic: new CredentialIdentityOracle() }));
+        const enrolled = await enrollChosenAccount(answers, {
+          machineId,
+          has: (id) => pool.get(id) !== null,
+          register: (input, rawExtra) => registrar.register(input, rawExtra),
+        });
+        if (!enrolled.ok) return { kind: 'failed', message: enrolled.message, nextStep: resume };
+      }
       if (answers.door === 'claude-code' && !claudeToken.value && env.interactive && !env.browser
         && (await env.proveSignedIn('claude-code')) === 'signed-out') {
         // A resume after sign-in lost the pasted token, which lives only in memory: ask again.

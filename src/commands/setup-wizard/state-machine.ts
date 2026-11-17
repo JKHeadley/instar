@@ -50,6 +50,8 @@ export interface WizardAnswers {
   /** Set by the account-choice step: the config folder the new agent uses, and whose pool it came from. */
   accountConfigHome?: string;
   accountBorrowedFrom?: string | null;
+  /** True when the chosen folder is the AI's default one (left untouched at sign-in). */
+  accountIsDefault?: boolean;
   /** True when the person chose to sign in to a new account. */
   accountNew?: boolean;
 }
