@@ -79,7 +79,8 @@ describe('MacLocalNetworkAccessMonitor', () => {
 });
 
 describe('curlReach (real /usr/bin/curl)', () => {
-  it.runIf(process.platform === 'darwin')('reads a listening port as reachable and a closed one as unreachable', async () => {
+  it('reads a listening port as reachable and a closed one as unreachable (macOS only: returns early elsewhere, where /usr/bin/curl may be absent)', async () => {
+    if (process.platform !== 'darwin') return;
     const srv = http.createServer((_q, s) => s.end('ok'));
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
     const port = (srv.address() as { port: number }).port;
