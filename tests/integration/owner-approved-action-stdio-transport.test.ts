@@ -25,7 +25,10 @@ const dirs: string[] = [];
 function entry(subject: string): ThreadResumeEntry {
   const iso = new Date().toISOString();
   return { uuid: 'u-' + subject, sessionName: 'sess-' + subject, createdAt: iso, savedAt: iso, lastAccessedAt: iso,
-    remoteAgent: 'peer', subject, state: 'active', pinned: false, messageCount: 2 };
+    remoteAgent: 'peer', subject, state: 'active', pinned: false, messageCount: 2,
+    // A thread bound to a conversation: get() then does not require a transcript file on
+    // disk (an unpinned, unbound entry with no transcript reads as absent).
+    originTopicId: 4242 };
 }
 
 function boot(enabled: boolean) {
