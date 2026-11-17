@@ -129,6 +129,10 @@ A list of commands that write can never be complete: in-place `perl`, `sed -E -i
 
 Anything else touching those files is refused.
 
+## Re-audit round 8
+
+`sort`, `uniq`, `xxd`, `base64` and `rg` were taken off the read-only list, because each can write a file without `>` (`sort -o`, `uniq` with a second filename, `xxd -r`, `base64 -o`, `rg --pre`). `less`, `more` and `column` were taken off too, as unneeded. Reading the auth token with `$(jq ...)` is still refused, which fails closed; `$INSTAR_AUTH_TOKEN` covers that.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

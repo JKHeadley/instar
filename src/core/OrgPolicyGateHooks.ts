@@ -64,7 +64,8 @@ process.stdin.on('end', async () => {
     const bareName = /(^|[\\s'"\\/=;&|(<>])(config\\.json|org)([\\s'"\\/;&|)<>]|$)/.test(cmd);
     // Fail closed: a command that touches these files is allowed only when every part of it is a known
     // read-only tool and nothing is redirected into a file (EXO 3.0 re-audit round 7: no list of writers is complete).
-    const READ_ONLY = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'ls', 'stat', 'wc', 'diff', 'file', 'test', '[', 'echo', 'printf', 'cd', 'pwd', 'sort', 'uniq', 'cut', 'tr', 'column', 'od', 'xxd', 'shasum', 'md5', 'base64', 'true', 'nl']);
+    // Only tools with no way to write a file (sort -o, uniq, xxd -r, base64 -o and rg --pre can, so they are out).
+    const READ_ONLY = new Set(['cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'ls', 'stat', 'wc', 'diff', 'file', 'test', '[', 'echo', 'printf', 'cd', 'pwd', 'cut', 'tr', 'od', 'shasum', 'md5', 'true', 'nl']);
     const cleaned = cmd.replace(/[0-9]?>&[0-9]/g, '').replace(/[0-9]?>\\s*\\/dev\\/null/g, '');
     const redirectsToFile = cleaned.includes('>');
     const segments = cleaned.split(/[;&|\\n]+/).map((x) => x.trim()).filter(Boolean);
