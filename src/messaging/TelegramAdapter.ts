@@ -7,6 +7,8 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
+/** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
+const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
 import { consolePageUrl } from '../server/dashboardPaths.js';
@@ -1135,12 +1137,17 @@ export class TelegramAdapter implements MessagingAdapter {
   async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
     try {
       // Telegram allows up to 8 buttons a row; one per row keeps the names readable on a phone.
-      const result = await this.apiCall('sendMessage', {
+      // An unstamped offer is an owner-tap flow (Chief of Staff note and pause ask, machine enrolment): a
+      // decision, never a report, so Quiet by Default delivers it (owner-decision, in-process only).
+      // A caller that stamped its own envelope (recommended services) keeps it. Do not call this from
+      // an inbound-message handler: it would inherit that handler's conversation category instead.
+      const send = () => this.apiCall('sendMessage', {
         chat_id: this.config.chatId,
         message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
         text,
         reply_markup: { inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.data }]) },
-      }) as { message_id: number };
+      });
+      const result = await (notificationContext.getStore() ? send() : withNotificationEnvelope(OWNER_DECISION_ENVELOPE, send)) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null means "not delivered", and the offer stays pending
