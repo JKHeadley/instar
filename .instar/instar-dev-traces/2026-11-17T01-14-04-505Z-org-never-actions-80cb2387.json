@@ -38,5 +38,10 @@
   "tier": 2,
   "tierReasoning": "New check on every outward action of a joined agent; block mode unreachable until approved.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one judgment per tool call or outgoing message, under its own daily budget and a 9 second deadline"
+  }
 }
