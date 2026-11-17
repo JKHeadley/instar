@@ -141,3 +141,9 @@ Tests: 502 unit tests across 16 files, 32 integration and 7 e2e, all passing; ty
 Decision-point delta:
 - The closer is a server write on the agent's behalf. It is bounded to once per approval and only acts once a phone approval has been folded, so it adds no new authority.
 - The `serverOwnedRewrite` edit option is internal only.
+
+## Pre-slot check follow-up (2026-11-17)
+
+Two fast checks failed on the merge with main. Both are fixed with no behavior change:
+- The `projectApps.custom` ladder is now in `src/data/feature-ladders.json`, mirroring part 1's entry. The fleet advance waits for stage 2 (CMT-1882).
+- The two HTML-sending sites are now classified in the HTML-site ratchet as `agent-served-code`, the same class as the dashboard preview. One is the frame route, which serves the approved app under its own CSP sandbox. The other is its escaped refusal page.
