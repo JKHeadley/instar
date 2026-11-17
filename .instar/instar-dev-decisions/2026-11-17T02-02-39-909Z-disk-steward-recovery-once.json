@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-17T02:02:39.909Z",
+  "slug": "disk-steward-recovery-once",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/DiskSteward.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
