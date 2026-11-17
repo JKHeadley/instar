@@ -85,7 +85,10 @@ function appFor(sd: string, layers: ReturnType<typeof buildContextLayers>, store
   return app;
 }
 
-const at = (i: number) => new Date(Date.UTC(2026, 10, 10, 10, 0, i)).toISOString();
+// Message times sit one hour before the run, never at a fixed date: the routes read the real clock, and a
+// confirmation asked more than 7 days ago reads 'expired' (a fixed 2026-11-10 date broke this file on 2026-11-17).
+const AT_BASE = Math.floor(Date.now() / 1000) * 1000 - 3_600_000;
+const at = (i: number) => new Date(AT_BASE + i * 1000).toISOString();
 const HISTORY = [
   { messageId: 10, text: 'We are designing the fold gate for the pilot; it must keep my decisions.', fromUser: true },
   { messageId: 11, text: 'Should the gate block or warn?', fromUser: false },
