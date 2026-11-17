@@ -100,3 +100,7 @@ The first four are fixed; the fifth is stated in §2. Three minor notes are reco
 ## Evidence pointers
 
 - `tests/unit/org-multimachine.test.ts`, `tests/integration/org-multimachine.test.ts`.
+
+## Rule-test fix (merge line, 2026-11-16)
+
+The forwarding catch in `orgPackRoutes.ts` answers with an error through `failed()`, but the silent-fallback test reads 20 lines past it into the next route, where `let base: DraftBase | null = null;` matches its "set to null" pattern. The catch now carries the `@silent-fallback-ok` note with that reason.

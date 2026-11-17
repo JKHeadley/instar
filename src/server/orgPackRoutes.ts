@@ -430,7 +430,8 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     if (entry.device && !deviceOnly(req, res)) return;
     void forwardIfElsewhere(deps.stateDir, entry.op()).then((fw) => {
       if (fw) res.status(fw.status).json(fw.body); else next();
-    }).catch((err) => failed(res, `forward ${req.path}`, err));
+    }).catch((err) => failed(res, `forward ${req.path}`, err)); // @silent-fallback-ok: failed() logs it and answers with an error; nothing falls back
+  // E2E-PAIRING: EXEMPT — comment-only change; the forwarding route's liveness is covered by org-multimachine-alive.
   });
 
   router.post('/org/draft', (req: Request, res: Response) => { void (async () => {
