@@ -16,6 +16,7 @@ import { fillPartial } from './home-model.js';
 import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
+import { renderMachineCare } from './machine-care.js';
 import { renderHealth } from './health.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
@@ -758,6 +759,7 @@ const NATIVE = {
   'work/chats': renderChats,
   'work/documents': renderDocuments,
   'capacity/machines': renderMachines,
+  'capacity/machine-care': renderMachineCare,
   'capacity/health': renderHealth,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,

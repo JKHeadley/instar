@@ -71,7 +71,8 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   trustJourney: 'written only by the server trust-journey account path (TrustJourneyStore, docs/specs/trust-journey.md); receipts by the receiving machine, everything else by the lease holder; no CLI path; immutable records',
   workBoard: 'written only by the server Work Board routes and its pickup controller (WorkCardStore, docs/specs/work-board-asks.md); no CLI path; immutable event records',
   contextLayers: 'written only by the server context-layer store and fold coordinator (contextLayerKind, docs/specs/context-budget-layered-summaries.md §14); no CLI path; per-entry records, HLC-latest per key',
-  projectApps: 'written only by the server project-apps runtime on the lease holder and the owner-tap routes (ProjectAppStore, docs/specs/project-apps.md); no CLI path; immutable or last-writer records',
+  projectApps: 'written only by the server project-apps runtime and the custom-app source on the lease holder (ProjectAppStore + ProjectAppCustomFold, docs/specs/project-apps.md, project-apps-sandbox.md); no CLI path; immutable or last-writer records',
+  projectAppBlobs: 'written only by the server custom-app source on the lease holder (ProjectAppBlobStore, docs/specs/project-apps-sandbox.md §3.2); no CLI path; immutable encrypted chunks and revisions',
   sessionTranscripts: 'written only by the server transcript checkpoint tick and peer ingest (transcriptCheckpoints.ts, docs/specs/native-conversation-any-machine-access.md §3f); no CLI path; dark by default',
 });
 

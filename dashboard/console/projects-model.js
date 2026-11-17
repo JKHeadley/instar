@@ -61,7 +61,8 @@ export function projectsView(data, now = Date.now()) {
 // ── Project apps (docs/specs/project-apps.md §3.5) ──────────────────────────────────────────────
 // The server adds apps / offers / answers / addable to a row only when the feature is on; a row
 // without them has no apps. Every address comes from the server's own console route, and only a
-// console hash route ("#/...") is ever used as a link, so a stored value can never become a script URL.
+// console hash route ("#/...") or the one custom-app wrapper path is ever used as a link, so a
+// stored value can never become a script URL.
 
 const MAX_BUTTONS = 3;
 const DAY_MS = 24 * 3600 * 1000;
@@ -72,6 +73,22 @@ const VIA = { console: 'console', desktop: 'desktop app', phone: 'phone', bearer
 export function safeHash(href) {
   const h = String(href || '');
   return /^#\/[A-Za-z0-9/_\-?=&%.:]*$/.test(h) ? h : null;
+}
+
+/** The shared custom-app wrapper page, exactly this shape (project-apps-sandbox §3.6), never anything else. */
+const WRAPPER_RE = /^\/dashboard\/project-app\/\?app=pa_[0-9a-f]{16}$/;
+
+/** An app's Open link: a console hash route, or the custom-app wrapper path; null for anything else. */
+export function safeAppHref(href) {
+  const h = String(href || '');
+  return safeHash(h) || (WRAPPER_RE.test(h) ? h : null);
+}
+
+/** How the page follows an app link: a hash route stays in the console, the wrapper is a page load. */
+export function appNavigation(href) {
+  const h = safeAppHref(href);
+  if (!h) return null;
+  return h.startsWith('#') ? { kind: 'hash', href: h } : { kind: 'page', href: h };
 }
 
 function hhmm(t) {
@@ -129,7 +146,7 @@ export function appsView(row, now = Date.now()) {
   const r = row || {};
   const has = ['apps', 'offers', 'answers', 'addable'].some((k) => Array.isArray(r[k]));
   const apps = (Array.isArray(r.apps) ? r.apps : []).filter((a) => a && a.appRef).map((a) => ({
-    appRef: String(a.appRef), title: String(a.title || a.appRef), label: `Open ${String(a.title || a.appRef)}`, href: safeHash(a.openHref),
+    appRef: String(a.appRef), title: String(a.title || a.appRef), label: `Open ${String(a.title || a.appRef)}`, href: safeAppHref(a.openHref),
     line: summaryLine(a, now), pin: pinLine(a.pin),
   }));
   const titles = new Map();

@@ -37,6 +37,7 @@ describe('SecretDrop', () => {
         label: 'Database Password',
         description: 'Needed for production migration',
         topicId: 42,
+        mintAuth: 'master',
       });
       const pending = drop.getPending(token);
       expect(pending).not.toBeNull();
@@ -71,10 +72,11 @@ describe('SecretDrop', () => {
 
     it('enforces max pending limit', () => {
       // Create 20 (the max)
+      // (with the agent's key: keyless requests have their own, smaller share)
       for (let i = 0; i < 20; i++) {
-        drop.create({ label: `Key ${i}` });
+        drop.create({ label: `Key ${i}`, mintAuth: 'master' });
       }
-      expect(() => drop.create({ label: 'One too many' })).toThrow(/Too many pending/);
+      expect(() => drop.create({ label: 'One too many', mintAuth: 'master' })).toThrow(/Too many pending/);
     });
   });
 
@@ -182,7 +184,7 @@ describe('SecretDrop', () => {
     });
 
     it('preserves topicId in submission', () => {
-      const { token } = drop.create({ label: 'Topic Test', topicId: 999 });
+      const { token } = drop.create({ label: 'Topic Test', topicId: 999, mintAuth: 'master' });
       const pending = drop.getPending(token)!;
 
       const submission = drop.submit(token, pending.csrfToken, { secret: 'value' });
@@ -240,9 +242,48 @@ describe('SecretDrop', () => {
     });
   });
 
+  // secret-drop-self-mint-hardening: who created a request decides what it may reach.
+  describe('creator class (mintAuth)', () => {
+    it('defaults to keyless: the request cannot name a conversation', () => {
+      const { token } = drop.create({ label: 'X', topicId: 7 });
+      const p = drop.getPending(token)!;
+      expect(p.mintAuth).toBe('none');
+      expect(p.topicId).toBeUndefined();
+    });
+    it('the agent key, the owner phone and the owner dashboard keep the conversation; keyless does not', () => {
+      expect(drop.getPending(drop.create({ label: 'A', topicId: 7, mintAuth: 'master' }).token)!.topicId).toBe(7);
+      expect(drop.getPending(drop.create({ label: 'B', topicId: 7, mintAuth: 'owner-phone' }).token)!.topicId).toBe(7);
+      expect(drop.getPending(drop.create({ label: 'C', topicId: 7, mintAuth: 'dashboard' }).token)!.topicId).toBe(7);
+      expect(drop.getPending(drop.create({ label: 'D', topicId: 7, mintAuth: 'none' }).token)!.topicId).toBeUndefined();
+    });
+    it('keyless requests get half the pending cap; the owner keeps the other half', () => {
+      for (let i = 0; i < 10; i++) drop.create({ label: `k${i}` });
+      expect(() => drop.create({ label: 'k10' })).toThrow(/made without the agent key/);
+      for (let i = 0; i < 10; i++) expect(() => drop.create({ label: `m${i}`, mintAuth: 'master' })).not.toThrow();
+    });
+    it('the class travels with the submission, the stuck event and the pending list', () => {
+      const { token } = drop.create({ label: 'K', mintAuth: 'master' });
+      expect(drop.listPending().find((p) => p.token === token)!.mintAuth).toBe('master');
+      const sub = drop.submit(token, drop.getPending(token)!.csrfToken, { secret: 'v' })!;
+      expect(sub.mintAuth).toBe('master');
+    });
+    it('a keyless request\'s page shows the fixed warning and omits its description', () => {
+      const { token } = drop.create({ label: 'Looks official', description: 'Please paste your bank password' });
+      const html = drop.renderForm(drop.getPending(token)!);
+      expect(html).toContain('was not created by your agent');
+      expect(html).not.toContain('Please paste your bank password');
+    });
+    it('a verified request\'s page has no warning and shows its description', () => {
+      const { token } = drop.create({ label: 'Mine', description: 'For the deploy', mintAuth: 'master' });
+      const html = drop.renderForm(drop.getPending(token)!);
+      expect(html).not.toContain('was not created by your agent');
+      expect(html).toContain('For the deploy');
+    });
+  });
+
   describe('renderForm', () => {
     it('renders valid HTML with agent name and label', () => {
-      const { token } = drop.create({ label: 'API Key', description: 'For OpenAI access' });
+      const { token } = drop.create({ label: 'API Key', description: 'For OpenAI access', mintAuth: 'master' });
       const request = drop.getPending(token)!;
 
       const html = drop.renderForm(request);

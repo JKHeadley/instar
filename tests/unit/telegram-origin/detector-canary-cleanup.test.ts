@@ -102,10 +102,14 @@ it('accepts cleanup completed before its deadline when parent receipt is event-l
     const {workerData}=await import('node:worker_threads');
     parentPort.postMessage({type:'checks',passed:true,checks,checkedAt:performance.now()});
     setTimeout(async()=>{await rm(workerData.directory,{recursive:true,force:true});parentPort.postMessage({type:'cleanup',verified:true,fixtureRemoved:true,completedAt:performance.now()})},50);`,
-  { cleanupTimeoutMs: 100 });
+  // The worker finishes ~50 ms in; the deadline leaves it ~950 ms of room. With a 100 ms deadline the
+  // worker's own timer plus rm overran it on a busy machine (two verify runs, 2026-11-17) and the
+  // cleanup was honestly late, which is not what this case tests.
+  { cleanupTimeoutMs: 1000 });
   const run = canary.run();
   await vi.waitFor(() => expect(canary.getHealth().reason).toBe('canary-cleanup-running'), { interval: 1 });
-  const stalledUntil = performance.now() + 200;
+  // Stall the parent past the deadline, so the receipt is late while the completion was on time.
+  const stalledUntil = performance.now() + 1200;
   while (performance.now() < stalledUntil) { /* Deliberately stall only the parent thread. */ }
   await run;
   expect(canary.getHealth().state, JSON.stringify(report.mock.calls)).toBe('pass');

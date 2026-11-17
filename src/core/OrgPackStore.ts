@@ -15,8 +15,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { readStandardPolicy } from './OrgPolicyGrammar.js';
 import {
-  INDEPENDENCE_TO_PROFILE, generateOrgIntent, parsePolicy, sha256Hex, validateBundle, verifyRecordSignature,
+  INDEPENDENCE_TO_PROFILE, generateOrgIntent, sha256Hex, validateBundle, verifyRecordSignature,
   type BundleRefusal, type HeldMembership, type OrgBundle, type OrgRecord,
 } from './OrgPack.js';
 import type { AutonomyProfileLevel } from './types.js';
@@ -237,7 +238,10 @@ export class OrgPackStore {
     } else {
       const b = input.bundle!;
       const verDir = path.join(this.root, b.record.orgId, `v${b.record.version}`);
-      const parsed = parsePolicy(b.policy);
+      // Already validated in the standard form; read it the one way every reader does (SEC-078).
+      const standard = readStandardPolicy(b.policy);
+      if (!standard.ok) throw new Error(`org policy not in the standard form: ${standard.reason}`);
+      const parsed = standard.parsed;
       const intent = generateOrgIntent(b.record.orgName, b.record.version, b.record.policySha256, parsed);
       if (!fs.existsSync(path.join(verDir, 'record.json'))) {
         writeAtomic(path.join(verDir, 'policy.md'), b.policy);

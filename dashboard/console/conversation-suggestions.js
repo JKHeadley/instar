@@ -208,12 +208,33 @@ export async function keepUnlocked(needMs, { remaining = operatorSessionRemainin
   return Boolean(answer) && remaining() > 0;
 }
 
+const SUGGESTIONS_RETRY_MS = 15000;
+const SUGGESTIONS_AUTO_RETRY_FOR_MS = 5 * 60000; // tries again by itself for 5 minutes (by the clock, not a count)
+
+/**
+ * What the page says when suggestions could not be read, and when it tries again by itself.
+ * `r` is the send() result; `tryingForMs` is how long the page has already been trying by itself.
+ */
+export function suggestionsUnavailable(r, tryingForMs) {
+  const auto = tryingForMs < SUGGESTIONS_AUTO_RETRY_FOR_MS;
+  if (r.status === 503 && r.data && r.data.awaitingJoin) {
+    return { text: 'Suggestions are not available until your machines finish joining.', retryInMs: 0 };
+  }
+  if (r.status === 0 || r.status === 503) {
+    return auto
+      ? { text: 'Your agent is still getting your conversations ready. This can take a few minutes after it restarts. Trying again by itself in 15 seconds.', retryInMs: SUGGESTIONS_RETRY_MS }
+      : { text: 'Your agent is still getting your conversations ready after 5 minutes of trying. Nothing is lost. Tap Try again, or come back in a few minutes.', retryInMs: 0 };
+  }
+  return { text: 'Suggestions could not be loaded. Nothing is lost. Tap Try again.', retryInMs: 0 };
+}
+
 /** The "Review suggestions" page. */
 export async function renderSuggestions({ main, send, current, unlock, header, back, openEffort }) {
   const status = el('p', { class: 'need-sub', role: 'status', 'aria-live': 'polite' });
   const list = el('div', { class: 'rows conversation-suggestions' });
   const body = el('div', { class: 'conversations-page' }, header, back, status, list);
   setKids(main, body);
+  let tryingSince = null; // when the page started trying by itself; null while suggestions load fine
   const load = async () => {
     status.textContent = 'Loading suggestions…';
     // A slow answer says so, instead of looking frozen.
@@ -223,14 +244,19 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
     if (r.needsUnlock) { unlock(); return; }
     const model = r.ok ? suggestionsModel(r.data) : { ok: false };
     if (!model.ok) {
-      status.textContent = r.status === 503 ? 'Suggestions are not available until your machines finish joining.'
-        : r.status === 0 ? 'Your agent did not answer in time. Try again.' : 'Suggestions could not be loaded. Try again.';
-      // Never a dead end: the words always come with a way to act.
+      // Never a dead end: plain words, what happens next, and a way to act. A slow or not-yet-open graph
+      // (for a while after a restart) is retried by the page itself, so nobody has to keep tapping.
+      tryingSince ??= Date.now();
+      const words = suggestionsUnavailable(r, Date.now() - tryingSince);
+      status.textContent = words.text;
       const again = el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again' });
-      again.addEventListener('click', () => { again.remove(); load(); });
+      const go = () => { clearTimeout(timer); again.remove(); load(); };
+      again.addEventListener('click', () => { tryingSince = null; go(); });
       list.replaceChildren(again);
+      const timer = words.retryInMs ? setTimeout(() => { if (current() && again.isConnected) go(); }, words.retryInMs) : null;
       return;
     }
+    tryingSince = null;
     const cards = model.items.map((s) => ({ s, ...card(s) }));
     list.replaceChildren(...cards.map((c) => c.box));
     // "Accept all projects": the same owner path, one project at a time; a stop leaves Continue on the rest.
@@ -301,11 +327,12 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
     const accept = el('button', { type: 'button', class: 'btn-primary btn-inline', text: s.accepting || readProgress(s.id).effort ? 'Continue' : 'Accept' });
     const reject = el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Reject' });
     let finished = false;
+    const actions = el('div', { class: 'conversation-suggestion-actions' }, accept, reject);
     const box = el('div', { class: 'need-card conversation-suggestion' },
       el('p', { class: 'row-title', text: s.title }),
       s.reason ? el('p', { class: 'need-sub', text: s.reason }) : null,
       el('ul', { class: 'conversation-suggestion-members' }, s.members.map((m) => el('li', { text: m.title }))),
-      el('div', { class: 'conversation-suggestion-actions' }, accept, reject), words);
+      actions, words);
     // One Accept (or Continue); true when this suggestion is finished. "Accept all projects" calls it too.
     // Resolves to { ok:true } or { ok:false, kind, text }; never throws, and never leaves the buttons disabled
     // without words. `mirror(text)` receives the same progress words ("Accept all" shows them by its button).
@@ -318,6 +345,9 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
         .catch(() => ({ done: false, kind: 'retry', text: 'Something went wrong on this page. Tap Continue to try again; nothing is lost.' }))
         .finally(() => box.removeAttribute('data-interaction-open'));
       if (!current()) return { ok: false, kind: 'gone', text: '' };
+      // A finished card keeps its words and its link, never its Accept/Reject buttons: after "All 4 projects
+      // accepted." a card still showing Accept read as not done (accept-all round 3, real two-machine run).
+      if (out.done) actions.remove();
       if (out.done && out.placedElsewhere) {
         finished = true;
         words.textContent = 'Its conversation is already inside another project, so nothing was created.';

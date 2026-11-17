@@ -15,7 +15,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/org-keepers.test.ts' }); });
 const ORG = 'org_AAAAAAAAAAAAAAAAAAAA';
-const POLICY = '## Never\n- Spend organization money\n';
+const POLICY = '## Never\n- Spend organization money'; // the standard form (SEC-077/078)
 
 function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'org-keep-')); dirs.push(dir);
@@ -25,7 +25,7 @@ function setup() {
   const k = newMemberKeyPair();
   const keepers = new OrgKeepers(dir, ORG);
   const propose = (over: Partial<Proposal> = {}) => {
-    const { sig: _s, ...rest } = { v: 1 as const, orgId: ORG, baseVersion: 3, basePolicySha256: record.policySha256, policy: POLICY + '- Sign contracts\n', maxIndependence: 'careful' as const, proposedBy: 'Justin', keeperKey: k.publicKey, at: Date.now(), sig: '', ...over };
+    const { sig: _s, ...rest } = { v: 1 as const, orgId: ORG, baseVersion: 3, basePolicySha256: record.policySha256, policy: POLICY + '\n- Sign contracts', maxIndependence: 'careful' as const, proposedBy: 'Justin', keeperKey: k.publicKey, at: Date.now(), sig: '', ...over };
     return signPayload(rest, k.privateKeyPem);
   };
   return { keepers, current, org, k, propose };

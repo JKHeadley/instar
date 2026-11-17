@@ -256,6 +256,7 @@ const STATE_SYNC_FEATURE_BY_KIND: Readonly<Record<string, string>> = {
   'trust-grant-record': 'multiMachine.stateSync.trustJourney',
   'trust-outcome-record': 'multiMachine.stateSync.trustJourneyOutcomes',
   'project-app-record': 'multiMachine.stateSync.projectApps',
+  'project-app-blob': 'multiMachine.stateSync.projectAppBlobs',
   'context-layer-record': 'multiMachine.stateSync.contextLayers',
   'session-transcript-checkpoint': 'multiMachine.stateSync.sessionTranscripts',
 };

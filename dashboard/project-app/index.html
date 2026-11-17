@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Project app</title>
+<link rel="stylesheet" href="wrapper.css">
+</head>
+<body>
+<!-- Instar code (docs/specs/project-apps-sandbox.md §3.6). The bar is outside the frame, so the app
+     cannot cover or change it. -->
+<header id="bar" role="banner">
+  <div id="bar-text"><span id="bar-title">Loading…</span><span id="bar-made"></span><span id="bar-warn">anything you type here goes to your agent</span></div>
+  <div id="bar-status" aria-live="polite"></div>
+  <div id="bar-actions">
+    <button type="button" id="btn-conversation" disabled>Conversation</button>
+    <button type="button" id="btn-close">Close</button>
+  </div>
+</header>
+<main id="stage">
+  <iframe id="app-frame" title="Project app" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+  <p id="stage-note" hidden></p>
+</main>
+<script type="module" src="wrapper.js"></script>
+</body>
+</html>
