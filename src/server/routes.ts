@@ -16114,7 +16114,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const c = getActiveEnrolmentController();
     if (!c) { res.status(503).json({ error: 'machine maintenance enrolment not enabled on this agent' }); return; }
     try { res.json(await c.remove('dashboard')); }
-    catch (err) { res.status(500).json({ error: 'remove-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+    catch (err) { /* @silent-fallback-ok — not silent: the dashboard gets the 500 with the reason */ res.status(500).json({ error: 'remove-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
   });
 
   // The app's machine care (Part F, CMT-1203): the owner's own phone, by its device signature only.
@@ -16158,7 +16158,7 @@ export function createRoutes(ctx: RouteContext): Router {
       try {
         const r = await c.offer();
         res.status(r.result === 'refused' ? 409 : r.result === 'not-delivered' ? 502 : 200).json({ ...r, viaMobileDevice: true });
-      } catch (err) { res.status(500).json({ error: 'restart-now-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+      } catch (err) { /* @silent-fallback-ok — not silent: the phone gets the 500 with the reason */ res.status(500).json({ error: 'restart-now-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
       return;
     }
     const r = getActiveDrainRehearsal();

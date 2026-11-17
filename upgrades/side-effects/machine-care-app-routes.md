@@ -14,6 +14,7 @@ Machine self-maintenance Part F, the app's fixed addition to its device-signed l
 - `restart` sends the owner the Restart now card (the same offer as the dashboard). Nothing restarts until the owner taps it there. The spec's in-app 2-minute confirm, which would let the app start the countdown itself, is not built. Until it is, the phone takes the same path as the dashboard.
 - Both routes are owner phones only (`ownerOnly` device rules, re-checked in the route), and they refuse the agent's bearer token (403). So the agent cannot use the phone path to act on its own, as it cannot use the PIN-gated dashboard routes.
 - Machine-local `WriteDomainRegistry` row for `POST /mobile/machine-care/`.
+- The phone restart's catch and the Turn off route's catch are marked `@silent-fallback-ok`: each answers 500 with the reason, so neither is silent. The no-silent-fallbacks count counted the Turn off one once the new routes moved a neighbouring exemption out of its window.
 
 The app's screen ships in the app's own release; the dashboard page works on a phone until then.
 
