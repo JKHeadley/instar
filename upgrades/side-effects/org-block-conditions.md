@@ -133,6 +133,12 @@ Anything else touching those files is refused.
 
 `sort`, `uniq`, `xxd`, `base64` and `rg` were taken off the read-only list, because each can write a file without `>` (`sort -o`, `uniq` with a second filename, `xxd -r`, `base64 -o`, `rg --pre`). `less`, `more` and `column` were taken off too, as unneeded. Reading the auth token with `$(jq ...)` is still refused, which fails closed; `$INSTAR_AUTH_TOKEN` covers that.
 
+## Re-audit round 9
+
+The 25 remaining tools were confirmed read-only on macOS and GNU. Two shell-syntax holes were closed:
+- process substitution `<(...)` and `>(...)` is refused;
+- a program named by a path (for example `/tmp/x/cat`) no longer counts as the read-only tool it is named after.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

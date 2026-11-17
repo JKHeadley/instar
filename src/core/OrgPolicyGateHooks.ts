@@ -69,8 +69,8 @@ process.stdin.on('end', async () => {
     const cleaned = cmd.replace(/[0-9]?>&[0-9]/g, '').replace(/[0-9]?>\\s*\\/dev\\/null/g, '');
     const redirectsToFile = cleaned.includes('>');
     const segments = cleaned.split(/[;&|\\n]+/).map((x) => x.trim()).filter(Boolean);
-    const firstWord = (seg) => { const w = seg.split(/\\s+/).filter((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)); return (w[0] || '').replace(/^.*\\//, ''); };
-    const canWrite = redirectsToFile || cmd.includes(String.fromCharCode(96)) || cmd.includes('$(') || segments.some((seg) => !READ_ONLY.has(firstWord(seg)));
+    const firstWord = (seg) => { const w = seg.split(/\\s+/).filter((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)); return w[0] || ''; };
+    const canWrite = redirectsToFile || cmd.includes(String.fromCharCode(96)) || cmd.includes('$(') || cmd.includes('<(') || cmd.includes('>(') || segments.some((seg) => !READ_ONLY.has(firstWord(seg)));
     const bashTouches = input.tool_name === 'Bash' && canWrite && (cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
