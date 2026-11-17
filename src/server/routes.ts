@@ -44,6 +44,7 @@ import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGua
 import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
+import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -1736,7 +1737,7 @@ export interface RouteContext {
    *  Key: threadId (UUID — unique per conversation, unlike agent names which
    *  can collide when multiple agents share a name). Value: resolve callback
    *  with reply text. */
-  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null }>;
+  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>;
   /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
    *  the service behind `POST /mcp/threadline`. Absent ⇒ the route answers 503. */
   threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null;
@@ -43350,6 +43351,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       // Enforcing and proven: the fingerprint derived from the verified key.
       let provenSenderFp: string | null = null;
+      // A verified signature proves the sender in ANY signature mode; used for reply-waiter matching only.
+      let signedSenderFp: string | null = null;
       if (sigMode !== 'off') {
         let sigVerdict: Awaited<ReturnType<typeof verifyLocalRouteEnvelope>> | null = null;
         try {
@@ -43368,6 +43371,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         if (sigVerdict) {
           countLocalEnvelopeVerdict(sigMode, sigVerdict, ctx.config.stateDir);
+          if (sigVerdict.ok && sigVerdict.fingerprint) signedSenderFp = sigVerdict.fingerprint;
           if (!sigVerdict.ok) {
             const line = localEnvelopeRefusalLogLine(sigMode === 'enforcing' ? 'refuse' : 'would-refuse', sigVerdict.senderName, sigVerdict.reason);
             if (line) console.log(line);
@@ -43700,11 +43704,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // A recognised ack never reaches here (the ack stage returned before
             // relay()); a message that merely opens like one is still not "the reply".
             const waiter = ctx.threadlineReplyWaiters.get(inboundThreadId);
-            // Memory privacy: on a multi-person agent only the addressed peer, proven by its
-            // signature, resolves a waiter, and never under post-only (§3).
-            const waiterAllowed = !waiter || !(ctx.sessionManager?.isMultiPersonAgent?.() ?? false)
-              || ((ctx.sessionManager?.linkedPeerReplies?.() ?? 'deliver') === 'deliver' && !!waiter.recipientFp && !!provenSenderFp
-                && waiter.recipientFp === provenSenderFp.toLowerCase());
+            // Only the peer the send was routed to resolves a waiter; on a multi-person agent,
+            // only the addressed peer and never under post-only (§3). Every same-machine agent
+            // holds this route's token, so the token proves nothing about WHO sent this: the
+            // sender is its verified signature when there is one (any signature mode), else the
+            // registry fingerprint for the name it claims. No match, no resolution.
+            // A multi-person agent's memory-privacy rule needs a proven sender, never a name lookup.
+            const waiterMultiPerson = ctx.sessionManager?.isMultiPersonAgent?.() ?? false;
+            const waiterSenderFp = waiterMultiPerson
+              ? signedSenderFp
+              : (signedSenderFp ?? resolvePeerFingerprintByName(ctx.config.stateDir, relayFromAgent) ?? null);
+            const waiterAllowed = !waiter || replyWaiterAccepts(waiter, {
+              senderFp: waiterSenderFp,
+              multiPerson: waiterMultiPerson,
+              linkedPeerReplies: ctx.sessionManager?.linkedPeerReplies?.() ?? 'deliver',
+              allowUnprovenSender: false,
+            });
             if (waiter && waiterAllowed && !looksLikeAutoAckText(textContent)) {
               console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
               waiter.resolve(textContent);
@@ -44944,6 +44959,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     onRegistered?: (cancel: () => void) => void,
     /** Memory privacy: the fingerprint this send addressed (a fingerprint, or an owner-curated nickname). */
     recipientFp?: string | null,
+    /** The full routing fingerprint the send was delivered to; only that peer resolves the wait. */
+    routedFp?: string | null,
   ): Promise<string | null> {
     const timeout = Math.min(Math.max(timeoutSec ?? 120, 5), 300) * 1000; // 5s–300s, default 120s
 
@@ -44966,6 +44983,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderAgent,
         timer,
         recipientFp: recipientFp ? recipientFp.toLowerCase() : null,
+        routedFp: routedFp ? routedFp.toLowerCase() : null,
       };
       routeCtx.threadlineReplyWaiters.set(threadId, entry);
       // Honest delivery (spec §4): a refused send cancels ITS OWN waiter only —
@@ -45848,7 +45866,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   // a2a-required-acknowledgment D5: only an accepted send closes a watch.
                   if (accepted) ctx.requiredAck?.onSessionSendAccepted(resolvePeerFingerprint(localTarget) || localTarget.name, effectiveThreadId);
                   if (waitForReply) {
-                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose, addressedFpNow());
+                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose, addressedFpNow(), resolvePeerFingerprint(localTarget) || null);
                     res.json({
                       success: true,
                       accepted,
@@ -46136,7 +46154,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // budget, and a fast reply can never land in a gap with no listener).
       let cancelReplyWait: (() => void) | undefined;
       const replyPromise = waitForReply
-        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); }, addressedFpNow())
+        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); }, addressedFpNow(), resolvedId)
         : null;
 
       // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §4). Order:

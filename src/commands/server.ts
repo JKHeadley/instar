@@ -28,6 +28,7 @@ import type { InboundFacts } from '../users/MemoryInboundTracker.js';
 import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
+import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
@@ -22387,7 +22388,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn(`Threadline MCP local secret could not be created: ${err instanceof Error ? err.message : err}`);
     }
     /** Shared reply waiters for threadline waitForReply support */
-    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null }>();
+    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>();
     try {
       const threadline = await bootstrapThreadline({
         agentName: config.projectName,
@@ -22773,10 +22774,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Waiters are keyed by thread id only (PR-3); the old by-name fallback could never
           // match one, so it is gone (memory-privacy-agent-places §3).
           const waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
-          // Memory privacy: on a multi-person agent a waiter is resolved only by the peer its
-          // send addressed, and never under `linkedPeerReplies: post-only` (§3).
-          const waiterAllowed = !waiter || !(_memoryInbound && sessionManager.isMultiPersonAgent())
-            || (sessionManager.linkedPeerReplies() === 'deliver' && !!waiter.recipientFp && waiter.recipientFp === senderFingerprint.toLowerCase());
+          // Only the peer the send was routed to resolves a waiter (the relay authenticated
+          // senderFingerprint), on every agent; on a multi-person agent only the addressed
+          // peer, and never under `linkedPeerReplies: post-only` (§3).
+          const waiterAllowed = !waiter || replyWaiterAccepts(waiter, {
+            senderFp: senderFingerprint,
+            multiPerson: !!_memoryInbound && sessionManager.isMultiPersonAgent(),
+            linkedPeerReplies: sessionManager.linkedPeerReplies(),
+            allowUnprovenSender: false,
+          });
           if (waiter && waiterAllowed && !isAutoAck && !looksLikeAutoAckText(textContent)) {
             waiter.resolve(textContent);
             // Don't return — still process the message normally for routing
