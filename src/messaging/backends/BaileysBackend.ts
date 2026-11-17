@@ -177,6 +177,7 @@ export class BaileysBackend {
           this._pairingCodeRequested = false; // Reset for future reconnections
           const me = this.socket?.user;
           this.phoneNumber = me?.id?.split(':')[0] ?? null;
+          this.adapter.setOwnLid(me?.lid ?? null);
           this.adapter.setConnectionState('connected', this.phoneNumber ?? undefined);
 
           // Inject full backend capabilities (Phase 4)
