@@ -36,7 +36,7 @@ describe('org-pack-and-join is alive on the production boot path', () => {
     await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
     const dev = makeDevice();
     fs.writeFileSync(path.join(stateDir, 'state', 'mobile-devices.json'), JSON.stringify({ devices: [{
-      id: 'dev-e2e', deviceName: 'Mac', label: null, pairedAt: new Date().toISOString(), status: 'active',
+      id: 'dev-e2e-mac', deviceName: 'Mac', label: null, pairedAt: new Date().toISOString(), status: 'active',
       publicKey: dev.publicKey, fingerprint: deviceFingerprint(dev.publicKey), host: HOST, approvedAt: new Date().toISOString(), approvedVia: 'dashboard-pin',
     }] }));
     const config = {
@@ -58,8 +58,8 @@ describe('org-pack-and-join is alive on the production boot path', () => {
     const body = Buffer.from(JSON.stringify({ draftId: draft.body.draftId, readBackConfirmed: true, shareUpdates: true }));
     const time = String(Date.now());
     const pub = await request(app).post('/mobile/org/publish').set('Host', HOST).set('Content-Type', 'application/json')
-      .set('X-Instar-Device', 'dev-e2e').set('X-Instar-Device-Time', time)
-      .set('X-Instar-Device-Sig', dev.sign(canonicalString('dev-e2e', HOST, 'POST', '/mobile/org/publish', time, body)))
+      .set('X-Instar-Device', 'dev-e2e-mac').set('X-Instar-Device-Time', time)
+      .set('X-Instar-Device-Sig', dev.sign(canonicalString('dev-e2e-mac', HOST, 'POST', '/mobile/org/publish', time, body)))
       .send(body.toString());
     expect(pub.status).toBe(200);
     expect((await bearer(request(app).post('/org/invitations')).send({})).status).toBe(200);

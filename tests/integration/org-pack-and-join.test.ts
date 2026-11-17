@@ -40,7 +40,7 @@ async function boot(name: string) {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: `${name} machine` });
   // An owner device (the app), written as an active owner record with the stored host.
   const dev = makeDevice();
-  const deviceId = `dev-${name}`;
+  const deviceId = `device-${name}`;
   fs.writeFileSync(path.join(stateDir, 'state', 'mobile-devices.json'), JSON.stringify({ devices: [{
     id: deviceId, deviceName: 'Mac', label: null, pairedAt: new Date().toISOString(), status: 'active',
     publicKey: dev.publicKey, fingerprint: deviceFingerprint(dev.publicKey), host: HOST, approvedAt: new Date().toISOString(), approvedVia: 'dashboard-pin',
@@ -134,10 +134,12 @@ describe('organization pack across two agents', () => {
     const admin = await boot('pub');
     expect((await request(admin.app).get('/org/pack/current')).status).toBe(404);
     const d = await admin.bearer(request(admin.app).post('/org/draft')).send({ orgName: 'X', policyMarkdown: POLICY });
-    await admin.signed('POST', '/mobile/org/publish', { draftId: d.body.draftId, readBackConfirmed: true, shareUpdates: false });
+    const p1 = await admin.signed('POST', '/mobile/org/publish', { draftId: d.body.draftId, readBackConfirmed: true, shareUpdates: false });
+    expect(p1.status, JSON.stringify(p1.body)).toBe(200);
     expect((await request(admin.app).get('/org/pack/current')).status).toBe(404);
     const d2 = await admin.bearer(request(admin.app).post('/org/draft')).send({ orgName: 'X', policyMarkdown: POLICY });
-    await admin.signed('POST', '/mobile/org/publish', { draftId: d2.body.draftId, readBackConfirmed: true, shareUpdates: true });
+    const p2 = await admin.signed('POST', '/mobile/org/publish', { draftId: d2.body.draftId, readBackConfirmed: true, shareUpdates: true });
+    expect(p2.status, JSON.stringify(p2.body)).toBe(200);
     const pub = await request(admin.app).get('/org/pack/current');
     expect(pub.status).toBe(200);
     expect(pub.body.record.version).toBe(2);
