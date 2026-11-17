@@ -883,7 +883,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance; rowOrigin?: 'relay' | 'a2a' }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance; rowOrigin?: 'relay' | 'a2a'; senderRole?: 'owner' | 'msp' | 'team'; via?: 'mobile-device' }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -1826,14 +1826,18 @@ export class TelegramAdapter implements MessagingAdapter {
     eventId?: string;
     senderRole?: 'owner' | 'msp' | 'team';
     senderPerson?: { machineId: string; userId: string };
+    /** Sent by a team member (SEC-069): persisted so no learning path treats it as the owner's words. */
+    teamPhone?: boolean;
   }): void {
     const fromApp = entry.via === 'mobile-device';
+    const fromTeam = entry.teamPhone === true || entry.senderRole === 'team';
     if (entry.telegramUserId && this.isAuthorized(entry.telegramUserId)) this.selectivity?.observeInbound(entry.topicId, entry.messageId, entry.telegramUserId === this.getOwnerUserId() && entry.forwarded === false, Date.parse(entry.timestamp));
     this.appendToLog({
       messageId: entry.messageId,
       topicId: entry.topicId,
       text: entry.text,
       fromUser: true,
+      ...(fromTeam ? { teamPhone: true } : {}),
       timestamp: entry.timestamp,
       sessionName: this.topicToSession.get(entry.topicId) ?? null,
       senderName: entry.senderName,
