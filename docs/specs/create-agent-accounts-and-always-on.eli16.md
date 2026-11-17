@@ -10,13 +10,15 @@ Separately, an agent only runs while you're logged in and the Mac is awake. For 
 
 **Choosing the account.** After you pick Claude or ChatGPT, setup looks for accounts of that kind already signed in on this Mac and shows each one by its email, including the ones your other agents use. You tap one to use it, or choose to sign in to a different account. An existing account is shared with the new agent, not copied. A new sign-in gets its own space that belongs to the new agent. Setup only reads who each account belongs to; it never reads a password or a key.
 
-**Always available.** The confirm step gets one switch, off unless you turn it on. When it's on:
-- the agent starts when the Mac starts, even before anyone logs in;
-- the Mac stays awake while it's plugged in (the screen can still turn off).
+**Always available.** The confirm step gets one switch, off unless you turn it on. Turning it on asks for your Mac's password once, and turning it off asks again. When it's on:
+- the Mac stays awake while it's plugged in and the lid is open (a closed laptop lid still sleeps);
+- after a power cut, the Mac starts again by itself.
 
-These two settings need your Mac's password once, because macOS requires it for both. Instar keeps a record of exactly what it changed, so switching it off later puts everything back.
+Instar keeps a protected record of exactly what it changed, so switching it off puts everything back.
 
-**One catch.** Before anyone logs in, macOS keeps the usual Claude sign-in locked away. So turning on Always available also sets up a second Claude sign-in that works before login. ChatGPT doesn't have this problem.
+**Starting before anyone logs in** depends on FileVault, the disk encryption that's on by default on new Macs. With FileVault on, a restarted Mac waits for someone to type the password before anything can run, so Instar doesn't promise more than that. With FileVault off, the agent can also start before anyone logs in. There's one more step in that case: before login, macOS keeps the usual Claude sign-in locked, so setup asks you to sign in to Claude once more and paste the code it shows. That code is kept just for this agent, readable only by you, and checked against the account you chose. ChatGPT normally doesn't need this.
+
+**Accounts used by other agents** are shared, not taken over: the agent that set the account up keeps looking after its sign-in, and the card tells you that the agents share that account's usage limit.
 
 ## What stays the same
 
