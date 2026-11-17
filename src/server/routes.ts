@@ -21787,15 +21787,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // credential wall. (A willRelay hand-off is walled by the lease holder's
     // own receive path, which re-enters the full authority.)
     if ((isProxy || isSystemTemplate) && refuseIfCredential(text, res)) return;
-    // Nor the organization's never rules in block mode: a caller flag can't skip them (EXO 3.0 re-audit).
-    if (isProxy || isSystemTemplate) {
-      const oc = await import('../core/OrgActionCheck.js');
-      if (oc.orgCheckMode(ctx.config as never) === 'block') {
-        const r = await oc.runOrgCheck({ stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: oc.orgDecisionJournal(ctx.config.stateDir) },
-          oc.messageEvidence(text, 'telegram', `topic ${topicId}`), { userRequest: '', deadlineAt: Date.now() + 6000 });
-        if (r.decision === 'deny') { res.status(422).json({ error: 'org-policy', reason: r.reason, checkId: r.checkId }); return; }
-      }
-    }
+    // The organization's never rules (block mode) are checked by evaluateOutbound, which the Telegram send
+    // path runs for every message including proxy and system-template sends.
     const gateLocally = async (): Promise<boolean> => {
       if (await checkOutboundMessage(text, 'telegram', res, {
         topicId,

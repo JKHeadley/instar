@@ -45,7 +45,7 @@ async function boot(actions: Record<string, unknown>) {
   const dev = makeDevice();
   fs.writeFileSync(path.join(stateDir, 'state', 'mobile-devices.json'), JSON.stringify({ devices: [{ id: 'dev-a-mac1', deviceName: 'Mac', label: null, pairedAt: new Date().toISOString(), status: 'active', publicKey: dev.publicKey, fingerprint: deviceFingerprint(dev.publicKey), host: HOST, approvedAt: new Date().toISOString(), approvedVia: 'dashboard-pin' }] }));
   let calls = 0;
-  const intelligence: IntelligenceProvider = { evaluate: async (prompt: string) => { calls++; return /supporters|Pat Lee/.test(prompt) ? '{"breach": true, "rule": 1, "confidence": 0.92, "alternative": "Send the venue a badge count only"}' : '{"breach": false}'; } };
+  const intelligence: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async (prompt: string) => { calls++; return /supporters|Pat Lee/.test(prompt) ? '{"breach": true, "rule": 1, "confidence": 0.92, "alternative": "Send the venue a badge count only"}' : '{"breach": false}'; } };
   const config = {
     projectName: 'maple', projectDir: dir, stateDir, port: 0, authToken: 'act-token', developmentAgent: true,
     mobilePairing: { enabled: true, multiRoute: { enabled: false }, native: { enabled: true } },

@@ -6,9 +6,9 @@
 export const OrgPolicyGateHooks = {
   wrapper(): string {
     return `#!/bin/bash
-# Organization never rules check (instar spec org-never-actions). Exits at once unless joined.
-M="\${CLAUDE_PROJECT_DIR:-.}/.instar/org/membership.json"
-[ -f "$M" ] && grep -Eq '"state": *"joined"' "$M" || exit 0
+# Organization never rules check (instar spec org-never-actions). Exits at once for an agent with no
+# organization data; otherwise the server decides (it doesn't trust an edited membership file).
+[ -d "\${CLAUDE_PROJECT_DIR:-.}/.instar/org" ] || exit 0
 exec node "\${CLAUDE_PROJECT_DIR:-.}/.instar/hooks/instar/org-policy-gate.js"
 `;
   },
@@ -48,7 +48,11 @@ process.stdin.on('end', async () => {
   // (EXO 3.0 re-audit). Only the person, through the app and the server, changes these.
   if (block) {
     const ti0 = input.tool_input || {};
-    const guarded = (p) => { if (typeof p !== 'string') return false; const abs = p.startsWith('/') ? p : (input.cwd || dir) + '/' + p; return abs.includes('/.instar/org/') || abs.endsWith('/.instar/org') || abs.endsWith('/.instar/config.json'); };
+    // Real paths, so ./, //, .. and symlinks can't hide the target.
+    const nodePath = await import('node:path');
+    const real = (p) => { let cur = nodePath.resolve(input.cwd || dir, p); const tail = []; while (cur !== nodePath.dirname(cur)) { try { return nodePath.join(nodeFs.realpathSync(cur), ...tail.reverse()); } catch { tail.push(nodePath.basename(cur)); cur = nodePath.dirname(cur); } } return nodePath.resolve(input.cwd || dir, p); };
+    let instarReal = dir + '/.instar'; try { instarReal = nodeFs.realpathSync(dir + '/.instar'); } catch {}
+    const guarded = (p) => { if (typeof p !== 'string') return false; const r = real(p); return r === instarReal + '/config.json' || r === instarReal + '/org' || r.startsWith(instarReal + '/org/'); };
     const writesGuarded = /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(input.tool_name || '') && (guarded(ti0.file_path) || guarded(ti0.notebook_path));
     const bashTouches = input.tool_name === 'Bash' && typeof ti0.command === 'string' && (ti0.command.includes('.instar/org') || ti0.command.includes('.instar/config.json'));
     if (writesGuarded || bashTouches) {

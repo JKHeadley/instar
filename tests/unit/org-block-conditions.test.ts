@@ -31,7 +31,7 @@ describe('block-mode conditions', () => {
     const dir = joined();
     const seen: string[] = [];
     setOrgNotify((key) => seen.push(key));
-    const p: IntelligenceProvider = { evaluate: async () => '{"breach": true, "rule": 1, "confidence": 0.9}' };
+    const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async () => '{"breach": true, "rule": 1, "confidence": 0.9}' };
     const r = await runOrgCheck({ stateDir: dir, config: BLOCK as never, provider: p }, messageEvidence('Donor list: Pat, 1 Elm St', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     expect(r.decision).toBe('deny');
     expect(seen).toEqual([`org-check:${(r as { checkId: string }).checkId}`]);
@@ -40,7 +40,7 @@ describe('block-mode conditions', () => {
   it('the judge asks for no failure swap, and spend follows reported tokens', async () => {
     const dir = joined();
     let opts: Record<string, unknown> = {};
-    const p: IntelligenceProvider = { evaluate: async (_p: string, o?: unknown) => {
+    const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async (_p: string, o?: unknown) => {
       opts = (o ?? {}) as Record<string, unknown>;
       (opts.onUsage as ((u: object) => void) | undefined)?.({ inputTokens: 1000, outputTokens: 100 });
       return '{"breach": false}';
@@ -55,10 +55,23 @@ describe('block-mode conditions', () => {
     const dir = joined();
     const seen: string[] = [];
     setOrgNotify((key) => seen.push(key));
-    const p: IntelligenceProvider = { evaluate: async () => '{"breach": false}' };
+    const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async () => '{"breach": false}' };
     const cfg = { orgPolicy: { actions: { judgeDailyCents: 0 } } };
     await runOrgCheck({ stateDir: dir, config: cfg as never, provider: p }, messageEvidence('a', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     await runOrgCheck({ stateDir: dir, config: cfg as never, provider: p }, messageEvidence('b', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     expect(seen.filter((k) => k.startsWith('org-budget:'))).toHaveLength(1);
+  });
+  it('a membership file changed by hand after joining still checks, holds, and tells the person', async () => {
+    const dir = joined();
+    const seen: string[] = [];
+    setOrgNotify((key) => seen.push(key));
+    const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async () => '{"breach": false}' };
+    await runOrgCheck({ stateDir: dir, config: BLOCK as never, provider: p }, messageEvidence('hello', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
+    const mf = path.join(dir, 'org', 'membership.json');
+    const m = JSON.parse(fs.readFileSync(mf, 'utf-8'));
+    fs.writeFileSync(mf, JSON.stringify({ ...m, state: 'left' }));
+    const r = await runOrgCheck({ stateDir: dir, config: BLOCK as never, provider: p }, messageEvidence('Donor list', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
+    expect(r.decision).toBe('deny');
+    expect(seen.some((k) => k.startsWith('org-membership-tamper:'))).toBe(true);
   });
 });

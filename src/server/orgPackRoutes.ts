@@ -26,7 +26,7 @@ import {
 import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPackStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { writeConfigAtomic } from '../core/BootSelfKnowledge.js';
-import { OrgActionChecker, bashEvidence, lastUserRequest, mcpEvidence, mcpIsNonRead, runOrgCheck, type Evidence, type OrgCheckContext } from '../core/OrgActionCheck.js';
+import { noteOrgLeave, OrgActionChecker, bashEvidence, lastUserRequest, mcpEvidence, mcpIsNonRead, runOrgCheck, type Evidence, type OrgCheckContext } from '../core/OrgActionCheck.js';
 
 export const ORG_DRAFT_TTL_MS = 24 * 60 * 60_000;
 
@@ -63,6 +63,7 @@ export function handleOrgApply(stateDir: string, machineId: string, cmd: { membe
     return { ok: true };
   }
   const r = store.reconcile(cmd.membership, cmd.bundle, effects);
+  if (r.ok && cmd.membership?.state === 'left') noteOrgLeave(stateDir);
   return r.ok ? { ok: true } : { ok: false, reason: r.reason };
 }
 const INDEPENDENCE = new Set<MaxIndependence>(['careful', 'balanced', 'trusting', 'independent']);
@@ -299,6 +300,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     if (!deviceOnly(req, res)) return;
     const s = store();
     const r = s.leave({}, deps.effects());
+    if (r.ok) noteOrgLeave(deps.stateDir);
     if (!r.ok) { res.status(409).json({ error: r.reason }); return; }
     const m = s.membership();
     if (m) (deps.fanOut ?? orgFanOut)({ membership: m, bundle: null });

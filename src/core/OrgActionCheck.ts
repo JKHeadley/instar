@@ -350,7 +350,14 @@ export interface CheckDecision {
 
 interface PendingCheck { checkId: string; createdAt: number; envelope: string | null; kind: string; operation: string; target: string; sample: string; complete: boolean; rule: string | null }
 /** Per state directory: pending checks and approvals held in the server process only. */
-const MEMORY = new Map<string, { pending: Map<string, PendingCheck>; allowed: Map<string, number> }>();
+const MEMORY = new Map<string, { pending: Map<string, PendingCheck>; allowed: Map<string, number>; cache: Map<string, { at: number; v: OrgActionVerdict }> }>();
+/**
+ * Joined organizations this server process has seen, per state directory (EXO 3.0 re-audit). A membership file
+ * that later says "not joined" without a leave made through the server (the app's Leave, or a peer's fan-out)
+ * is treated as still joined, recorded, and reported: the agent can't switch the check off by editing it.
+ */
+const SEEN_JOINED = new Map<string, string>();
+export function noteOrgLeave(stateDir: string): void { SEEN_JOINED.delete(stateDir); }
 
 export class OrgActionChecker {
   private readonly root: string;
@@ -372,17 +379,15 @@ export class OrgActionChecker {
     writeAtomic(this.spendFile(), JSON.stringify({ day: new Date(this.now()).toISOString().slice(0, 10), cents: this.spentToday() + cents }));
   }
 
-  private cacheFile(): string { return path.join(this.root, 'check-cache.json'); }
+  // The verdict cache is in memory only, so no file the agent can write turns into an "allowed" verdict.
   private cacheGet(key: string): OrgActionVerdict | null {
-    const c = readJson<Record<string, { at: number; v: OrgActionVerdict }>>(this.cacheFile()) ?? {};
-    const hit = c[key];
+    const hit = this.mem().cache.get(key);
     return hit && this.now() - hit.at < CACHE_MS ? hit.v : null;
   }
   private cachePut(key: string, v: OrgActionVerdict): void {
-    const c = readJson<Record<string, { at: number; v: OrgActionVerdict }>>(this.cacheFile()) ?? {};
-    for (const [k, x] of Object.entries(c)) if (this.now() - x.at >= CACHE_MS) delete c[k];
-    c[key] = { at: this.now(), v };
-    writeAtomic(this.cacheFile(), JSON.stringify(c));
+    const c = this.mem().cache;
+    for (const [k, x] of c) if (this.now() - x.at >= CACHE_MS) c.delete(k);
+    c.set(key, { at: this.now(), v });
   }
 
   record(entry: Record<string, unknown>): void {
@@ -396,9 +401,9 @@ export class OrgActionChecker {
   // Pending checks and allow-once approvals live only in this server's memory (EXO 3.0 re-audit): no file the
   // agent can write grants an approval or changes what the person's card shows. They last ten minutes and do
   // not survive a restart (the agent simply asks again).
-  private mem(): { pending: Map<string, PendingCheck>; allowed: Map<string, number> } {
+  private mem(): { pending: Map<string, PendingCheck>; allowed: Map<string, number>; cache: Map<string, { at: number; v: OrgActionVerdict }> } {
     let m = MEMORY.get(this.stateDir);
-    if (!m) { m = { pending: new Map(), allowed: new Map() }; MEMORY.set(this.stateDir, m); }
+    if (!m) { m = { pending: new Map(), allowed: new Map(), cache: new Map() }; MEMORY.set(this.stateDir, m); }
     return m;
   }
 
@@ -531,6 +536,15 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
   try {
     const s = new OrgPackStore(ctx.stateDir, '', now);
     const m = s.membership();
+    const seen = SEEN_JOINED.get(ctx.stateDir);
+    if (m?.state === 'joined') SEEN_JOINED.set(ctx.stateDir, m.orgId);
+    else if (seen && orgCheckMode(ctx.config) === 'block') {
+      // Joined earlier in this process, and no leave went through the server: the file was changed by hand.
+      try { new OrgActionChecker(ctx.stateDir, now).record({ mode: 'block', outcome: 'membership-changed-outside-the-app', orgId: seen }); } catch { /* @silent-fallback-ok — the notice and stderr below report it */ }
+      console.error('[org-policy] membership file changed outside the app; still checking');
+      notify(`org-membership-tamper:${seen}`, 'Organization membership changed unexpectedly', "This agent's organization membership file was changed outside the Instar app, so I'm still checking actions against the organization's rules. Leave the organization from the app if that's what you want.");
+      return { decision: 'deny', reason: "Your organization's membership changed outside the Instar app, so I'm holding this until your person looks.", checkId: '' };
+    }
     if (!m || m.state !== 'joined' || !evidence) return { decision: 'pass' };
     const rec = s.currentRecord();
     let policy: string | null = null;
@@ -554,7 +568,9 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     const parsed = parsePolicy(policy);
     const intent = { name: rec.orgName, constraints: parsed.never.map((text) => ({ text, source: 'org-intent' as const })), goals: [], values: [], tradeoffHierarchy: [], raw: '' };
     const framework = ctx.config.sessions?.framework ?? CLAUDE_CODE_FRAMEWORK;
-    const providerIsOwn = !!ctx.provider && (ctx.provider.frameworkId === undefined || ctx.provider.frameworkId === framework);
+    // The router honors the framework pin; any other provider counts only if it says it is that framework.
+    const isRouter = !!ctx.provider && typeof (ctx.provider as unknown as { resolveFramework?: unknown }).resolveFramework === 'function';
+    const providerIsOwn = !!ctx.provider && (isRouter || ctx.provider.frameworkId === framework);
     const j = await c.judge({
       intent, policyHash: rec.policySha256, evidence, userRequest: extra.userRequest, provider: ctx.provider, providerIsOwn, framework,
       dailyCents: ctx.config.orgPolicy?.actions?.judgeDailyCents ?? DEFAULT_DAILY_CENTS, remainingMs: extra.deadlineAt - now(), mode,

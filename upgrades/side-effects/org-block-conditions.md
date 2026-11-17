@@ -88,6 +88,21 @@ The independent code re-audit of the block path found nine defects. The general 
 
 One note is recorded, not changed: when the routed framework's binary is missing, the router falls back to the agent's default provider. That is still one of the agent's own configured accounts, never a swap tail.
 
+## Re-audit round 2
+
+- **The verdict cache** is now in memory only.
+- **Membership** that this server process has seen as joined stays joined until a leave goes through the server: the app's Leave or a peer's fan-out. In block mode, a membership file changed by hand is recorded, the person is told, and the action is held.
+- **The hook** now asks the server whenever any organization data exists. It no longer trusts the membership file, and the path guard compares real paths, so `./`, `//`, `..` and symlinks can't hide the target.
+- **Own provider.** Only the router, which honors the pin, or a provider that says it is the agent's own framework counts as "own".
+- **Proxy-flagged Telegram sends.** The pre-check is removed. The Telegram send path already runs `evaluateOutbound` for every message.
+
+**Limit, stated plainly.** The agent runs as the same computer account as its server. A determined agent with shell access could still change state the check relies on, for example between restarts, or by obfuscating a write. The check is built for an agent that is being talked into breaking a rule, not for one trying to disable its own safeguards. Every other instar safeguard has the same limit. Separating the server's account from the agent's is the structural fix, and it is outside this PR.
+
+## Second-pass review (if required)
+
+**Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)
+**Independent read of the artifact: concur** (conditions 2, 5, 6, after three small fixes). The EXO 3.0 re-audit rounds are recorded above. Block mode stays unreachable until a re-audit pass finds nothing new, and the live check (condition 8) passes.
+
 ## Evidence pointers
 
 - `tests/unit/org-block-conditions.test.ts`; Mac fb9a9e7.
