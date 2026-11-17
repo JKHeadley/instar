@@ -1035,6 +1035,8 @@ let _threadlineBoot: import('../threadline/ThreadlineBootstrap.js').ThreadlineBo
 let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdentityServer | null = null;
 /** interrupted-move-resume receiver: built on the first request, keeps its once-per-epoch memory. */
 let _interruptedMoveResumeReceiver: InterruptedMoveResumeReceiver | null = null;
+/** The autonomy manager, late-bound for the org-apply mesh handler (org-pack-and-join §Multi-machine). */
+let _orgAutonomy: import('../core/AutonomyProfileManager.js').AutonomyProfileManager | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
 // session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
@@ -20941,13 +20943,52 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Adaptive Autonomy — unified profile coordinator
+    const { OrgPackStore } = await import('../core/OrgPackStore.js');
     const autonomyManager = new AutonomyProfileManager({
       stateDir: config.stateDir,
       config,
       adaptiveTrust: adaptiveTrust ?? null,
       evolution: evolution ?? null,
+      // An organization's independence cap, from the applied, signature-checked pack (org-pack-and-join §D).
+      orgCap: () => new OrgPackStore(config.stateDir, '').cap(),
     });
     console.log(pc.green(`  Autonomy profile: ${autonomyManager.getProfile()}`));
+    _orgAutonomy = autonomyManager;
+
+    // Organization pack: finish an interrupted apply, then check daily for policy updates
+    // (docs/specs/org-pack-and-join.md §D recovery, §F).
+    {
+      const { OrgPackUpdater } = await import('../core/OrgPackUpdater.js');
+      const orgMachineId = coordinator.identity?.machineId ?? 'single-machine';
+      const orgEffects = () => ({
+        currentProfile: () => autonomyManager.getProfile(),
+        currentSettings: () => autonomyManager.authoritySettings(),
+        lowerProfile: (cap: import('../core/types.js').AutonomyProfileLevel, orgName: string) => autonomyManager.lowerForOrgPolicy(cap, orgName),
+        restoreProfile: (prev: import('../core/types.js').AutonomyProfileLevel, cap: import('../core/types.js').AutonomyProfileLevel) => { autonomyManager.restoreAfterOrgPolicy(prev, cap); },
+        clampSettings: (cap: import('../core/types.js').AutonomyProfileLevel) => autonomyManager.clampForOrgPolicy(cap),
+        restoreSettings: (prev: Record<string, unknown>, cap: import('../core/types.js').AutonomyProfileLevel) => autonomyManager.restoreClampedSettings(prev, cap),
+      });
+      try {
+        const orgStore = new OrgPackStore(config.stateDir, orgMachineId);
+        if (!orgStore.finish(orgEffects()) && fs.existsSync(path.join(config.stateDir, 'org', 'txn.json'))) {
+          // Recovery stopped on a hand-edited rules file: the person decides (§D Recovery).
+          void telegram?.createAttentionItem({ id: 'org-pack:hand-edit', title: 'Organization rules were edited by hand', summary: "Your organization's policy update is waiting because the rules file was changed by hand. Ask me to keep your edit or replace it.", description: '', category: 'system', priority: 'NORMAL', sourceContext: 'org-pack' } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]).catch(() => { /* @silent-fallback-ok — /org/status still shows the pending apply */ });
+        }
+      } catch (err) {
+        console.warn(`  Organization pack recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const orgUpdater = new OrgPackUpdater({
+        stateDir: config.stateDir, machineId: orgMachineId,
+        isLeaseHolder: () => coordinator.holdsLease(),
+        effects: orgEffects,
+        fanOut: (c) => { void import('../server/orgPackRoutes.js').then((m) => m.orgFanOut(c)); },
+        notify: (title, body) => {
+          // App-only agents see held updates through /org/status (the app's update card).
+          void telegram?.createAttentionItem({ id: `org-pack:${title}`, title, summary: body, description: body, category: 'system', priority: 'NORMAL', sourceContext: 'org-pack' } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]).catch(() => { /* @silent-fallback-ok — the held update is still shown by /org/status */ });
+        },
+      });
+      orgUpdater.start();
+    }
 
     // Trust Elevation Tracker — monitors acceptance rates and surfaces upgrade opportunities
     const trustElevationTracker = new TrustElevationTracker({
@@ -30364,6 +30405,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return { response: decision };
             },
+            'org-state-pull': async () => {
+              const { orgStateForPeer } = await import('../server/orgPackRoutes.js');
+              return { ok: true, result: orgStateForPeer(config.stateDir) };
+            },
+            'org-apply': async (cmd) => {
+              const { handleOrgApply } = await import('../server/orgPackRoutes.js');
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'org-apply' };
+              return handleOrgApply(config.stateDir, meshSelfId ?? 'single-machine', c, {
+                currentProfile: () => _orgAutonomy?.getProfile() ?? 'supervised',
+                currentSettings: () => _orgAutonomy?.authoritySettings() ?? {},
+                lowerProfile: (cap, orgName) => _orgAutonomy?.lowerForOrgPolicy(cap, orgName) ?? null,
+                restoreProfile: (prev, cap) => { _orgAutonomy?.restoreAfterOrgPolicy(prev, cap); },
+                clampSettings: (cap) => _orgAutonomy?.clampForOrgPolicy(cap) ?? null,
+                restoreSettings: (prev, cap) => { _orgAutonomy?.restoreClampedSettings(prev, cap); },
+              });
+            },
             'secret-share': (cmd, sender) =>
               _secretShareHandler
                 ? _secretShareHandler.handle(cmd as { type: 'secret-share'; encrypted: string }, sender)
@@ -30524,6 +30581,35 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!url) return { ok: false, reason: 'no-url' };
             return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
           };
+          // Organization pack fan-out to this agent's other machines (org-pack-and-join §Multi-machine).
+          {
+            const { setOrgFanOut } = await import('../server/orgPackRoutes.js');
+            setOrgFanOut((change) => {
+              for (const m of meshIdMgr.getActiveMachines()) {
+                if (m.machineId === meshSelfId) continue;
+                void _identityMeshSend?.(m.machineId, { type: 'org-apply', ...change }, 5000).catch(() => { /* @silent-fallback-ok — a missed peer catches up at its own start */ });
+              }
+            });
+            // Catch up at start: take the newest membership any peer holds (§Multi-machine).
+            setTimeout(() => {
+              void (async () => {
+                const { handleOrgApply } = await import('../server/orgPackRoutes.js');
+                for (const m of meshIdMgr.getActiveMachines()) {
+                  if (m.machineId === meshSelfId) continue;
+                  const r = await _identityMeshSend?.(m.machineId, { type: 'org-state-pull' }, 5000).catch(() => null);
+                  const st = (r?.ok ? r.result : null) as { membership: import('../core/OrgPackStore.js').Membership | null; bundle: import('../core/OrgPack.js').OrgBundle | null } | null;
+                  if (!st?.membership) continue;
+                  handleOrgApply(config.stateDir, meshSelfId ?? 'single-machine', { membership: st.membership, bundle: st.bundle }, {
+                    currentProfile: () => _orgAutonomy?.getProfile() ?? 'supervised',
+                    lowerProfile: (cap, orgName) => _orgAutonomy?.lowerForOrgPolicy(cap, orgName) ?? null,
+                    restoreProfile: (prev, cap) => { _orgAutonomy?.restoreAfterOrgPolicy(prev, cap); },
+                clampSettings: (cap) => _orgAutonomy?.clampForOrgPolicy(cap) ?? null,
+                restoreSettings: (prev, cap) => { _orgAutonomy?.restoreClampedSettings(prev, cap); },
+                  });
+                }
+              })().catch(() => { /* @silent-fallback-ok — catch-up is retried at the next start */ });
+            }, 30_000).unref?.();
+          }
           // ── Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4) ──
           // Dev-gated: `chiefOfStaff.enabled` omitted ⇒ live on a development agent, dark on the
           // fleet. Nothing CALLS claim() until the check-in loop ships (PR 3); this wires the

@@ -39,6 +39,8 @@ export interface WizardAnswers {
   installConsent?: boolean;
   /** Install flow only: the person agreed to start on reboot. Defaults to the install consent. */
   autostartConsent?: boolean;
+  /** Install flow only: an organization invitation the person accepted on the app's join screen (org-pack-and-join §C). */
+  orgBundle?: string;
 }
 
 /** The doors the installer can carry today. Other doors arrive with their proofs (spec section 5). */

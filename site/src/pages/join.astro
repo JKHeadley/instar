@@ -1,0 +1,121 @@
+---
+// Organization invitation (docs/specs/org-pack-and-join.md §C, §E). The whole policy travels in
+// the URL fragment, which browsers never send to this server; the page decodes it client-side,
+// renders every line as text (never as HTML), and makes no network requests (connect-src 'none').
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+    <title>Join an organization on Instar</title>
+    <style>
+      :root { color-scheme: dark; --bg: #0a0e17; --ink: #e2e8f0; --muted: #94a3b8; --accent: #2dd4bf; --line: #1e293b; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { max-width: 640px; margin: 0 auto; padding: 32px 16px 48px; }
+      h1 { font-size: 26px; margin: 0 0 6px; }
+      h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 26px 0 8px; }
+      ul { margin: 0; padding-left: 20px; }
+      li { margin: 4px 0; }
+      .card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 18px; }
+      .code { font: 600 17px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); letter-spacing: .03em; }
+      .muted { color: var(--muted); font-size: 14px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+      a.button, button { display: inline-block; background: var(--accent); color: #0a0e17; border: 0; border-radius: 10px; font-weight: 600; font-size: 16px; padding: 12px 18px; text-decoration: none; cursor: pointer; }
+      button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+      pre { white-space: pre-wrap; word-break: break-word; font: 14px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="bad" hidden>
+        <h1>This invitation can't be read</h1>
+        <p class="muted">The link may have been cut short when it was copied. Ask the person who sent it for the link again.</p>
+      </div>
+      <div id="ok" hidden>
+        <h1 id="title"></h1>
+        <p class="muted" id="meta"></p>
+        <div class="card"><h2 style="margin-top:0">Your agent will never</h2><ul id="never"></ul></div>
+        <div class="card"><h2 style="margin-top:0">It will ask you first before</h2><ul id="ask"></ul></div>
+        <div class="card"><h2 style="margin-top:0">By default it will</h2><p id="purpose"></p><ul id="normally"></ul></div>
+        <div class="card" id="otherCard" hidden><h2 style="margin-top:0">Also in this policy</h2><pre id="other"></pre></div>
+        <div class="card"><h2 style="margin-top:0">Most independence allowed</h2><p id="indep"></p></div>
+        <div class="card">
+          <h2 style="margin-top:0">What the organization can see</h2>
+          <p id="see"></p>
+          <h2>What it can't see</h2>
+          <p>Your conversations, your files, what you ask.</p>
+        </div>
+        <div class="card">
+          <h2 style="margin-top:0">How strict this is today</h2>
+          <p>Your agent reads these rules at the start of every conversation. Whether its outgoing messages are also checked depends on its settings (off by default).</p>
+        </div>
+        <div class="card">
+          <h2 style="margin-top:0">Check the code</h2>
+          <p><span id="orgName2"></span>'s code is <span class="code" id="code"></span>. Check it matches what they told you.</p>
+        </div>
+        <div class="actions">
+          <a class="button" id="openApp" href="#">Open in the Instar app</a>
+          <button class="secondary" id="copy" type="button">Copy for my agent</button>
+        </div>
+        <p class="muted" id="copied" hidden>Copied. Paste it into a conversation with your agent; it will ask you to confirm in the Instar app.</p>
+        <p class="muted">Joining happens only when you confirm in the Instar app.</p>
+      </div>
+    </main>
+    <script is:inline>
+      (function () {
+        var WORDS = { careful: 'Careful (the same limits as Balanced today)', balanced: 'Balanced: small, safe things, and asks before changing or deleting', trusting: 'Trusting', independent: 'Independent' };
+        function show(id) { document.getElementById(id).hidden = false; }
+        function text(id, t) { document.getElementById(id).textContent = t; }
+        function list(id, items) { var ul = document.getElementById(id); items.forEach(function (i) { var li = document.createElement('li'); li.textContent = i; ul.appendChild(li); }); }
+        function b64urlBytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var bin = atob(s); var out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+        function parse(policy) {
+          var heads = { purpose: 'purpose', never: 'never', 'ask first': 'ask', normally: 'normally' };
+          var out = { purpose: [], never: [], ask: [], normally: [], other: [] }; var cur = null;
+          policy.replace(/\r\n/g, '\n').split('\n').forEach(function (raw) {
+            var line = raw.trim(); if (!line) return;
+            // The same rule as the agent: a #-line, or a bold lead of at most 4 words.
+            var m = /^#{1,6}\s+(.+?)\s*:?\s*$/.exec(line) || /^\*\*(.+?)\*\*/.exec(line);
+            if (m && line.charAt(0) === '*' && m[1].replace(/[.:]\s*$/, '').split(/\s+/).length > 4) m = null;
+            if (m) { var name = m[1].replace(/\s*\(.*\)\s*$/, '').replace(/[.:]\s*$/, '').trim().toLowerCase(); if (heads[name]) { cur = heads[name]; var rest = line.replace(/^\*\*.+?\*\*\s*/, '').replace(/^\(.*\):?$/, '').replace(/^[.:]\s*/, ''); if (cur === 'purpose' && rest && !/^#/.test(line)) out.purpose.push(rest); return; } cur = 'other'; out.other.push(line); return; }
+            var isItem = /^(?:[-*+]|\d+[.)])\s+/.test(line); var item = line.replace(/^(?:[-*+]|\d+[.)])\s+/, '');
+            if (cur === 'purpose') out.purpose.push(item); else if (cur && cur !== 'other' && isItem) out[cur].push(item); else out.other.push(line);
+          });
+          return out;
+        }
+        async function main() {
+          var p = new URLSearchParams(location.hash.slice(1)).get('p');
+          if (!p) { show('bad'); return; }
+          var json;
+          try {
+            var stream = new Blob([b64urlBytes(p)]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+            json = JSON.parse(await new Response(stream).text());
+          } catch (e) { show('bad'); return; }
+          var r = json && json.record; if (!r || typeof json.policy !== 'string') { show('bad'); return; }
+          var keyBytes = b64urlBytes(r.signerPublicKey);
+          var digest = new Uint8Array(await crypto.subtle.digest('SHA-256', keyBytes));
+          var hex = Array.prototype.map.call(digest.slice(0, 10), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').toUpperCase();
+          var code = hex.match(/.{4}/g).join('-');
+          var pol = parse(json.policy);
+          text('title', 'Join ' + r.orgName + '?');
+          text('meta', 'Policy version ' + r.version + ', published by ' + r.publishedBy + ' on ' + String(r.publishedAt).slice(0, 10) + '.');
+          list('never', pol.never); list('ask', pol.ask); list('normally', pol.normally);
+          text('purpose', pol.purpose.join(' '));
+          if (pol.other.length) { text('other', pol.other.join('\n')); show('otherCard'); }
+          text('indep', WORDS[r.maxIndependence] || r.maxIndependence);
+          text('see', r.updateOrigin ? 'Your agent sends it nothing. Your agent asks ' + r.orgName + "'s agent for a newer version once a day, so that computer can see your network address and when the check happens." : 'Your agent sends it nothing, and has no contact with it after joining.');
+          text('code', code); text('orgName2', r.orgName);
+          document.getElementById('openApp').href = 'instar://join#p=' + p;
+          document.getElementById('copy').addEventListener('click', function () {
+            navigator.clipboard.writeText('Join this organization: ' + location.href).then(function () { show('copied'); });
+          });
+          show('ok');
+        }
+        main();
+      })();
+    </script>
+  </body>
+</html>

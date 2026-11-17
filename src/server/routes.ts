@@ -2,6 +2,8 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { OrgPackStore } from '../core/OrgPackStore.js';
+import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
@@ -638,7 +640,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { configPatchRaises, isKnownTrustLevel, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
+import { configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import type { AutonomousEvolution } from '../core/AutonomousEvolution.js';
@@ -33012,7 +33014,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ present: false });
         return;
       }
-      const block = formatOrgIntentForSessionStart(parsed);
+      // Say only what is running: the outbound check exists only with responseReview on (org-pack-and-join §D).
+      const block = formatOrgIntentForSessionStart(parsed, { outboundGateOn: ctx.config.responseReview?.enabled === true });
       res.json({
         present: true,
         block,
@@ -37589,6 +37592,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // A bearer request carries no OperatorProof, so it is refused before anything is written;
       // changes toward more restriction still apply. Compared against the same file config and the
       // same one-level merge the write below uses.
+      // An organization's cap holds before any other raise check (org-pack-and-join §D): of the
+      // capped settings, only evolution.approvalMode can be patched.
+      {
+        const cap = new OrgPackStore(ctx.config.stateDir, '').cap();
+        const evo = (patch as { evolution?: { approvalMode?: unknown } }).evolution;
+        if (cap && evo?.approvalMode === 'autonomous' && ORG_PROFILE_DEFAULTS[cap.level]?.evolutionApprovalMode !== 'autonomous') {
+          res.status(403).json(orgCapRefusal(cap));
+          return;
+        }
+      }
       const configRaises = configPatchRaises(fileConfig, patch as Record<string, unknown>, ctx.autonomyManager?.getProfile());
       if (configRaises.length > 0) {
         const refusal = raiseRefusal(configRaises);

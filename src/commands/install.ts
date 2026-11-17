@@ -389,6 +389,25 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         await askClaudeToken(env, claudeToken);
       }
       if (claudeToken.value && answers.door === 'claude-code') writeClaudeToken(file, claudeToken.value);
+      if (answers.orgBundle) {
+        // Applied before the server first starts; no server needed (org-pack-and-join §C, §D).
+        const { decodeBundle } = await import('../core/OrgPack.js');
+        const { OrgPackStore } = await import('../core/OrgPackStore.js');
+        const { AutonomyProfileManager } = await import('../core/AutonomyProfileManager.js');
+        const stateDir = path.dirname(file);
+        const d = decodeBundle(answers.orgBundle);
+        if (d.ok) {
+          const config = readAgentConfig(answers) as never;
+          const autonomy = new AutonomyProfileManager({ stateDir, config });
+          const r = new OrgPackStore(stateDir, 'single-machine').apply(d.bundle, {}, {
+            currentProfile: () => autonomy.getProfile(),
+            currentSettings: () => autonomy.authoritySettings(),
+            lowerProfile: (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName),
+            clampSettings: (cap) => autonomy.clampForOrgPolicy(cap),
+          });
+          if (!r.ok) return { kind: 'failed', message: `Your organization's policy couldn't be applied (${r.reason}).`, nextStep: resume };
+        }
+      }
       return { kind: 'done' };
     },
 
@@ -710,6 +729,10 @@ export interface InstallAnswersFile {
   purpose?: string;
   door?: string;
   autostart?: boolean;
+  /** An organization invitation's bundle (org-pack-and-join §C), applied only with orgAccepted. */
+  orgBundle?: string;
+  /** Written by the Mac app only after the person tapped Join on its join screen. */
+  orgAccepted?: boolean;
 }
 
 /** Maps an answers file onto the flow's questions. `--yes` alone supplies consent (spec 4.1). */
@@ -748,6 +771,8 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
   if (file.autostart !== undefined && typeof file.autostart !== 'boolean') {
     return 'In the answers file, autostart must be true or false.';
   }
+  if (file.orgBundle !== undefined && typeof file.orgBundle !== 'string') return 'In the answers file, orgBundle must be text.';
+  if (file.orgAccepted !== undefined && typeof file.orgAccepted !== 'boolean') return 'In the answers file, orgAccepted must be true or false.';
   return null;
 }
 
@@ -820,6 +845,22 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
     return 'needs-answers';
   }
   if (answersFile.autostart !== undefined) progress.answers.autostartConsent = answersFile.autostart;
+  // An organization invitation, checked before any step runs (org-pack-and-join §C "Joining before AI
+  // sign-in"); applied only when the person accepted it on the app's join screen.
+  if (answersFile.orgBundle !== undefined) {
+    if (answersFile.orgAccepted !== true) {
+      console.log('  The answers file has an organization invitation that was not accepted, so it is ignored.');
+    } else {
+      const { decodeBundle, validateBundle } = await import('../core/OrgPack.js');
+      const d = decodeBundle(answersFile.orgBundle);
+      const v = d.ok ? validateBundle(d.bundle, { pinnedKey: null, versionFloor: 0, joined: false, joinedVersion: null, joinedHash: null, joinedOrgId: null }) : d;
+      if (!v.ok) {
+        console.log(`  The organization invitation could not be used (${v.reason}).`);
+        return 'needs-answers';
+      }
+      progress.answers.orgBundle = answersFile.orgBundle;
+    }
+  }
 
   const context: InstallFlowContext = {
     detectedDoors: detectInstallDoors(),
