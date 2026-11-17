@@ -83,6 +83,8 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/console/promises-model.js', 'javascript'],
       ['/dashboard/console/machines.js', 'javascript'],
       ['/dashboard/console/machines-model.js', 'javascript'],
+      ['/dashboard/console/machine-care.js', 'javascript'],
+      ['/dashboard/console/machine-care-model.js', 'javascript'],
       ['/dashboard/console/accounts.js', 'javascript'],
       ['/dashboard/console/accounts-model.js', 'javascript'],
       ['/dashboard/console/messages.js', 'javascript'],
