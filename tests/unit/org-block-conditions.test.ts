@@ -81,6 +81,10 @@ describe('block-mode conditions', () => {
     writeOrgActionsMode(dir, 'block');
     const edited = { orgPolicy: { actions: { mode: 'observe', blockingApproved: true } } };
     expect(orgCheckMode(edited as never, dir)).toBe('block');
+    // A record edited to observe while the config still says block (and the agent is still a member) holds.
+    writeOrgActionsMode(dir, 'observe');
+    expect(orgCheckMode({ orgPolicy: { actions: { mode: 'block', blockingApproved: true } } } as never, dir)).toBe('block');
+    writeOrgActionsMode(dir, 'block');
     // Turning the approval flag off in the config file doesn't switch blocking off either.
     expect(orgCheckMode({ orgPolicy: { actions: { mode: 'block', blockingApproved: false } } } as never, dir)).toBe('block');
     const p: IntelligenceProvider = { frameworkId: 'claude-code', evaluate: async () => '{"breach": false}' };

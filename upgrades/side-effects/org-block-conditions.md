@@ -153,6 +153,25 @@ The server and the routes are clean. One gap was closed: a wildcard or a shell v
 
 The server and the routes are clean. One gap was closed: moving or linking the whole `.instar` folder (`ln -s .instar /tmp/i`, `mv .instar ...`) reached the guarded files by another path. A write-capable command whose arguments name the `.instar` folder itself, or `.` or `..` near it, now counts as touching them. Paths under `.instar`, such as `.instar/state/...`, are not affected.
 
+## Re-audit round 13, and where the re-audit stops
+
+Round 13 found `find . -name actions-mode.json -exec sed ...` run from the project folder. Two fixes:
+- **A mismatch is a hand edit.** The server's mode record and the config are always written together, and a leave sets both to observe. So when the record says observe but the config says block while the agent is still a member, blocking holds and the person is told.
+- **File names.** The guard now also matches the organization's own file names (`actions-mode.json`, `membership.json`) wherever a command runs.
+
+**Where the re-audit stops (condition 9).** Over 13 rounds:
+- The server and the routes have come back clean for the last three rounds.
+- Every remaining finding has been the shell guard, which has a fix every round and can't be complete, because it reads command text.
+- Every route since round 10 is an agent deliberately turning off its own check: moving the folder, find-and-replace across files, wildcards.
+
+That is outside the threat model stated above. The check exists for an agent that is being talked into breaking an organization rule, not for an agent trying to switch off its own safeguards. Against that second kind of agent:
+- the server's stricter-of-both rule means it must rewrite two files consistently;
+- any mismatch is held and reported to the person.
+
+The structural fix is to run the server under a different computer account than the agent, so the agent can't write the server's state at all. That is outside this PR and has been filed as instar feedback.
+
+Condition 9 is therefore closed on these grounds: no route found for a non-adversarial agent, and fail-closed behaviour plus reporting for an adversarial one.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)

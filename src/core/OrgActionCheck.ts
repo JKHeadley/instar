@@ -535,13 +535,23 @@ export function orgCheckMode(cfg: OrgCheckContext['config'], stateDir?: string):
   // The server writes block only after approval, so its record stands even if the config's flags are edited.
   if (set === 'block') return 'block';
   if (a.blockingApproved !== true) return 'observe';
+  // The two are always written together; a record of observe beside a config of block means one was
+  // edited by hand, so the stricter holds while the agent is still a member (a leave sets both to observe).
+  if (set === 'observe' && a.mode === 'block') return memberStill(stateDir ?? (cfg as { stateDir?: string }).stateDir) ? 'block' : 'observe';
   if (set === 'observe') return 'observe';
   return a.mode === 'block' ? 'block' : 'observe';
+}
+function memberStill(stateDir: string | undefined): boolean {
+  if (!stateDir) return false;
+  const m = readJson<{ state?: string }>(path.join(stateDir, 'org', 'membership.json'));
+  return m?.state === 'joined';
 }
 /** True when the server set block but the config file says otherwise: a hand edit. */
 export function orgModeEditedOutsideApp(cfg: OrgCheckContext['config'], stateDir: string): boolean {
   const a = cfg.orgPolicy?.actions;
-  return serverSetMode(stateDir) === 'block' && (a?.mode !== 'block' || a?.blockingApproved !== true);
+  const set = serverSetMode(stateDir);
+  if (set === 'block') return a?.mode !== 'block' || a?.blockingApproved !== true;
+  return set === 'observe' && a?.mode === 'block' && a?.blockingApproved === true && memberStill(stateDir);
 }
 
 /** Evidence for an outgoing message: the text itself, always complete. */

@@ -78,7 +78,10 @@ process.stdin.on('end', async () => {
     const hidesName = ['*', '?', '[', '$'].some((c) => cmd.includes(c));
     // Moving, linking or copying the whole .instar folder (or its parent) reaches the guarded files by another path.
     const wholeFolder = cmd.split(/[ \\t\\n;&|()<>'"]+/).some((t) => { const u = t.replace(/\\/+$/, ''); return u === '.instar' || u.endsWith('/.instar') || u === '.' || u === '..'; }) && nearInstar;
-    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || wholeFolder || (nearInstar && hidesName) || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
+    // The organization's own file names, wherever the command runs (config.json and policy.md are too common
+    // to match everywhere; near .instar they are caught above).
+    const namesFile = ['actions-mode.json', 'membership.json'].some((n) => cmd.includes(n));
+    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || namesFile || wholeFolder || (nearInstar && hidesName) || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
       return out({ permissionDecision: 'deny', permissionDecisionReason: "While your organization's rules are enforced, I can't run commands that could change its policy files or this agent's settings. Reading them is fine. Your person can manage the organization in the Instar app." });

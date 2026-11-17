@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "org-block-conditions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T03:43:11.705Z",
+  "artifactPath": "upgrades/side-effects/org-block-conditions.md",
+  "artifactSha256": "13a4fad4f9cd4fce8b577d289cb1d7ccc5bb469a06c6346d2b330a135308798d",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "src/core/OrgActionCheck.ts",
+    "src/core/OrgPolicyGateHooks.ts",
+    "tests/unit/org-block-conditions.test.ts",
+    "upgrades/side-effects/org-block-conditions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Block-path fix from the EXO 3.0 re-audit round 13; block still unreachable.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
