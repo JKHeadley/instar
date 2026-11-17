@@ -28,7 +28,7 @@ function shortDate(iso) {
  * The section's model. `ok: false` when the answer cannot be read at all (the page says so, never "no projects").
  * `line` names what could not be checked; `empty` is said only on a complete read with no projects.
  */
-export function projectsView(data) {
+export function projectsView(data, now = Date.now()) {
   if (!data || !Array.isArray(data.projects)) return { ok: false };
   const active = [], finished = [];
   for (const p of data.projects) {
@@ -44,6 +44,7 @@ export function projectsView(data) {
       cards: (p.cards || []).map(cardView), moreCards: Number(p.moreCards) || 0,
       cardsLine: (p.cards || []).length ? `${(p.cards || []).length + (Number(p.moreCards) || 0)} card${(p.cards || []).length + (Number(p.moreCards) || 0) === 1 ? '' : 's'}` : null,
       chatHref: conversationHref(p.conversationKey || p.key),
+      apps: appsView(p, now),
     };
     (state === 'done' ? finished : active).push(row);
   }
@@ -55,4 +56,126 @@ export function projectsView(data) {
   const off = !!cos && cos.state === 'off' && !active.length && !finished.length;
   const empty = !off && !active.length && !finished.length && !couldNot.length;
   return { ok: true, active, finished, loose, line, empty, off, count: active.length + finished.length };
+}
+
+// ── Project apps (docs/specs/project-apps.md §3.5) ──────────────────────────────────────────────
+// The server adds apps / offers / answers / addable to a row only when the feature is on; a row
+// without them has no apps. Every address comes from the server's own console route, and only a
+// console hash route ("#/...") is ever used as a link, so a stored value can never become a script URL.
+
+const MAX_BUTTONS = 3;
+const DAY_MS = 24 * 3600 * 1000;
+const PLATFORM = { telegram: 'Telegram', slack: 'Slack' };
+const VIA = { console: 'console', desktop: 'desktop app', phone: 'phone', bearer: 'agent' };
+
+/** A console hash route, or null for anything else (never a javascript: or outside URL). */
+export function safeHash(href) {
+  const h = String(href || '');
+  return /^#\/[A-Za-z0-9/_\-?=&%.:]*$/.test(h) ? h : null;
+}
+
+function hhmm(t) {
+  return new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/**
+ * One app's summary as a line: "headline · as of 14:05", or "last updated Nov 3" when the summary is
+ * more than a day old. Pending and unreadable are said as such, never as zeros.
+ * Returns { text, state, action?: {label, href} }.
+ */
+export function summaryLine(app, now = Date.now()) {
+  const state = app && app.summaryState;
+  if (state === 'ok' && app.summary && app.summary.headline) {
+    const t = Date.parse(app.summary.asOf);
+    const when = !Number.isFinite(t) ? '' : now - t > DAY_MS ? ` · last updated ${shortDate(app.summary.asOf)}` : ` · as of ${hhmm(t)}`;
+    return { text: `${String(app.summary.headline)}${when}`, state: 'ok' };
+  }
+  if (state === 'pending') return { text: 'Reading the board…', state: 'pending' };
+  const action = app && app.summaryAction && safeHash(app.summaryAction.href) ? { label: String(app.summaryAction.label || 'Open'), href: safeHash(app.summaryAction.href) } : null;
+  return { text: app && app.summaryWhy ? String(app.summaryWhy) : 'The summary could not be read.', state: 'unreadable', ...(action ? { action } : {}) };
+}
+
+/** The pin status line for an attached app, or null when there is nothing to say or do. */
+export function pinLine(pin) {
+  if (!pin || typeof pin !== 'object') return null;
+  const where = PLATFORM[pin.platform] || 'the conversation';
+  if (pin.state === 'failed') return { text: `Couldn't pin the link in ${where}: ${pin.reason ? String(pin.reason) : 'no reason was given'}`, tone: 'bad', action: { label: 'Try again', act: 'retry' } }; // warning-path: inline
+  if (pin.state === 'out-of-date') return { text: 'The pinned link is out of date', tone: 'attn', action: { label: 'Update link', act: 'update-link' } }; // warning-path: inline
+  if (pin.state === 'uncertain') return { text: 'I may have posted the link already; check the conversation', tone: 'attn', action: { label: 'Post the link again', act: 'post-again' } }; // warning-path: inline
+  if (pin.state === 'pending') return { text: `Pinning the link in ${where}…`, tone: 'quiet', action: null };
+  return null;
+}
+
+function answerWords(a, title) {
+  const on = shortDate(a.at);
+  const via = VIA[a.via] ? ` (${VIA[a.via]})` : '';
+  if (a.by === 'agent') return `Your agent withdrew ${title}${on ? ` on ${on}` : ''}`;
+  const verb = a.answer === 'attach' ? 'attached' : a.answer === 'decline' ? 'said no to' : a.answer === 'detach' ? 'removed' : String(a.answer || 'answered');
+  return `You ${verb} ${title}${on ? ` on ${on}` : ''}${via}`;
+}
+
+/** The first line of the agent's reason, and the rest (shown when expanded). */
+function splitWhy(why) {
+  const s = String(why || '').trim();
+  const i = s.indexOf('\n');
+  return i < 0 ? { first: s, rest: '' } : { first: s.slice(0, i).trim(), rest: s.slice(i + 1).trim() };
+}
+
+/**
+ * A project row's apps, shaped for the page. `has` is false when the row carries no app fields at
+ * all (feature off), so the page adds nothing.
+ */
+export function appsView(row, now = Date.now()) {
+  const r = row || {};
+  const has = ['apps', 'offers', 'answers', 'addable'].some((k) => Array.isArray(r[k]));
+  const apps = (Array.isArray(r.apps) ? r.apps : []).filter((a) => a && a.appRef).map((a) => ({
+    appRef: String(a.appRef), title: String(a.title || a.appRef), label: `Open ${String(a.title || a.appRef)}`, href: safeHash(a.openHref),
+    line: summaryLine(a, now), pin: pinLine(a.pin),
+  }));
+  const titles = new Map();
+  for (const list of [r.addable, r.offers, r.apps]) for (const x of Array.isArray(list) ? list : []) if (x && x.appRef) titles.set(String(x.appRef), String(x.title || x.appRef));
+  const titleOf = (ref) => titles.get(String(ref)) || String(ref);
+  const offers = (Array.isArray(r.offers) ? r.offers : []).filter((o) => o && o.appRef).map((o) => {
+    const why = splitWhy(o.why);
+    return { appRef: String(o.appRef), title: titleOf(o.appRef), label: `Your agent suggests: ${titleOf(o.appRef)}`, whyFirst: why.first, whyRest: why.rest, at: String(o.at || '') };
+  });
+  const addable = (Array.isArray(r.addable) ? r.addable : []).filter((x) => x && x.appRef).map((x) => ({ appRef: String(x.appRef), title: titleOf(x.appRef), note: x.note ? String(x.note) : null }));
+  const answers = (Array.isArray(r.answers) ? r.answers : []).filter((a) => a && a.appRef).map((a) => ({ appRef: String(a.appRef), text: answerWords(a, titleOf(a.appRef)) }));
+  const withHref = apps.filter((a) => a.href);
+  return {
+    has,
+    buttons: withHref.slice(0, MAX_BUTTONS),
+    more: Math.max(0, withHref.length - MAX_BUTTONS),
+    headline: apps.length ? apps[0].line : null,
+    apps, offers, addable, answers,
+    pins: apps.filter((a) => a.pin).map((a) => ({ appRef: a.appRef, title: a.title, ...a.pin })),
+    hint: offers.length ? (offers.length === 1 ? 'Your agent has a suggestion' : `Your agent has ${offers.length} suggestions`) : null,
+  };
+}
+
+/** A project key in the console's conversation form ("telegram:128732", "app:<id>"). */
+export function conversationRefOf(key) {
+  const k = String(key || '');
+  if (!k) return '';
+  return /^[a-z]+:/.test(k) ? k : `app:${k}`;
+}
+
+/**
+ * The strip for an open conversation: the project whose key is that conversation, when it has an
+ * attached app. `ref` is the conversation as "kind:id". Null when there is none or the read failed.
+ */
+export function appStripFor(data, ref, now = Date.now()) {
+  if (!data || !Array.isArray(data.projects) || !ref) return null;
+  const want = String(ref);
+  const p = data.projects.find((x) => x && conversationRefOf(x.conversationKey || x.key) === want);
+  if (!p) return null;
+  const v = appsView(p, now);
+  const first = v.apps.find((a) => a.href);
+  if (!first) return null;
+  return { projectKey: String(p.key), appRef: first.appRef, title: first.title, label: 'Open', href: first.href, line: first.line };
+}
+
+/** The path of a project-app write route. */
+export function appPath(projectKey, appRef, what) {
+  return `/work/projects/${encodeURIComponent(String(projectKey))}/apps/${encodeURIComponent(String(appRef))}/${what}`;
 }

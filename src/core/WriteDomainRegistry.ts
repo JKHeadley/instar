@@ -593,6 +593,20 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     });
   }
 
+  // Project apps (docs/specs/project-apps.md §5): offers, owner answers and pin acts are journal
+  // records of the `project-app-record` kind, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (project-app-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
+
   // POST /topic-profile/new-topic-default — the "default for dashboard-created
   // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).
   // Machine-local in v1 by declared posture: migrating-to-unified, tracked in

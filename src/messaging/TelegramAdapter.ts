@@ -2642,6 +2642,25 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Pin or unpin one message in a topic's chat in Telegram itself, quietly (conversation-pinned-messages). */
+  /**
+   * Edit a link message in place (docs/specs/project-apps.md §3.6), with the same rejection rules
+   * the dashboard-link broadcast uses: `not-modified` is success, `message-missing` means the message
+   * is gone (only that permits a replacement); any other failure throws and is recorded as failed.
+   */
+  async editTopicLinkMessage(messageId: number, text: string): Promise<'edited' | 'not-modified' | 'missing'> {
+    try {
+      await this.apiCall('editMessageText', { chat_id: this.config.chatId, message_id: messageId, text });
+      return 'edited';
+    } catch (err) {
+      const rejection = takeTelegramEditRejection(err, { method: 'editMessageText',
+        accountId: typeof this.config.token === 'string' ? this.config.token.split(':')[0] : '',
+        params: { chat_id: this.config.chatId, message_id: messageId } });
+      if (rejection === 'not-modified') return 'not-modified';
+      if (rejection === 'message-missing') return 'missing';
+      throw err;
+    }
+  }
+
   async setTopicMessagePin(topicId: number, messageId: number, pinned: boolean): Promise<void> {
     // The chat a topic lives in (issues-group topics live in the issues chat); the pin calls take no thread.
     const dest = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());

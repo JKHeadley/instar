@@ -944,6 +944,8 @@ export class AgentServer {
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
     windowLifecycleTick?: (() => void) | null;
     passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1918,6 +1920,8 @@ export class AgentServer {
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -6754,6 +6758,7 @@ export class AgentServer {
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      projectAppsRuntime: options.projectAppsRuntime,
       chiefOfStaffProtocol: options.chiefOfStaffProtocol ?? null,
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,

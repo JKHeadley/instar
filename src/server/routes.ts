@@ -66,6 +66,9 @@ import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from '.
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
+import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
+import { projectAppsEnabled } from '../core/ProjectAppStore.js';
+import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
@@ -2056,6 +2059,8 @@ export interface RouteContext {
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+  projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
   chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
@@ -3255,7 +3260,7 @@ export function createRoutes(ctx: RouteContext): Router {
     machineId: () => ctx.meshSelfId ?? null,
   });
   // Projects on the Work door (work-front-doors stage 2a): the Chief of Staff's projects with their cards.
-  mountProjectsRoutes(router, {
+  const _projectsRoute = mountProjectsRoutes(router, {
     projects: () => {
       if (!ctx.chiefOfStaffLoop) return null;
       return ctx.chiefOfStaffLoop.projectsOverview() ?? 'failed';
@@ -3263,6 +3268,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // Every card, no lane cut: a card past the board page's cut must still appear under its project.
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req, { full: true }) : { status: 503, body: { error: 'work-board-starting' } }),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    // Project apps (docs/specs/project-apps.md §3.3): additive fields on each row, only when the feature is on.
+    appsFor: (key) => { const rt = ctx.projectAppsRuntime?.() ?? null; return rt && projectAppsEnabled(ctx.config) ? rt.view(key) : null; },
+  });
+  ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
+  mountProjectAppsRoutes(router, {
+    runtime: () => ctx.projectAppsRuntime?.() ?? null,
+    enabled: () => projectAppsEnabled(ctx.config),
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    ownerProof: (req) => {
+      const token = req.headers['x-instar-operator-session'];
+      return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true ? { via: 'console', principal: 'owner (dashboard unlock)' } : null;
+    },
+    invalidateWork: () => _projectsRoute.invalidate(),
+    log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+    opens: () => projectAppsOpens(ctx.config.stateDir),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,

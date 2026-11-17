@@ -3799,6 +3799,12 @@ export interface InstarConfig {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
   };
+  /** Project apps (docs/specs/project-apps.md): a project's own app one tap from its Work row and
+   *  conversation. `enabled` is dev-gated (omit it to follow the gate); it also needs the Chief of
+   *  Staff, which is where projects come from. */
+  projectApps?: {
+    enabled?: boolean;
+  };
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
    *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
    *  owner-tunable at the agent level; per-project values live on the binding. */
