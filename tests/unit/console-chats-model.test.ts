@@ -371,3 +371,29 @@ describe('conversations pinned to the top of the list (conversation-list-pins)',
     expect(m.listPinOutcomeWords({ ok: false, data: { error: 'list-pins-off' } })).toContain('turned off');
   });
 });
+
+describe('message time (bubble and pin line)', () => {
+  // Local-time constructors keep these independent of the machine's time zone.
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo, d, h, mi).toISOString();
+  const nowMs = new Date(2026, 10, 17, 0, 1).getTime(); // Nov 17, 2026, 00:01
+
+  it('shows only the time for a message sent today', () => {
+    const text = m.messageTime(at(2026, 10, 17, 0, 0), nowMs, 'en-US');
+    expect(text).toMatch(/^12:00\sAM$/);
+    expect(text).not.toMatch(/2026|Nov/);
+  });
+
+  it('shows day, month, year and time for yesterday at 23:59 when it is now 00:01', () => {
+    expect(m.messageTime(at(2026, 10, 16, 23, 59), nowMs, 'en-US')).toMatch(/^Nov 16, 2026,? 11:59\sPM$/);
+  });
+
+  it('shows the other year for a message from a previous year', () => {
+    expect(m.messageTime(at(2025, 0, 3, 9, 5), nowMs, 'en-US')).toMatch(/^Jan 3, 2025,? 9:05\sAM$/);
+  });
+
+  it('returns nothing for a missing or unreadable time', () => {
+    expect(m.messageTime('', nowMs)).toBe('');
+    expect(m.messageTime('not a date', nowMs)).toBe('');
+    expect(m.messageTime(undefined as unknown as string, nowMs)).toBe('');
+  });
+});

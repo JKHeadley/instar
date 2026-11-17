@@ -20,7 +20,7 @@ import {
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
-  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords,
+  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime,
 } from './chats-model.js';
 import { chiefOfStaffNeedRows } from './needs-model.js';
 import { appStripFor, appPath } from './projects-model.js';
@@ -685,7 +685,7 @@ class ChatsPage {
 
   bubbleNode(v, b) {
     const meta = [];
-    if (b.at) meta.push(el('span', { class: 'chat-time', text: shortTime(b.at) }));
+    if (b.at) meta.push(el('span', { class: 'chat-time', text: messageTime(b.at) }));
     if (b.delivery) meta.push(el('span', { class: `chat-delivery tone-${b.delivery.tone}`, text: b.delivery.label }));
     if (b.mark) meta.push(el('span', { class: `chat-mark tone-${b.mark.tone}`, text: b.mark.label }));
     const pinId = this.canPin(v) ? pinIdOf(v.ref.kind, b) : null;
@@ -797,7 +797,7 @@ class ChatsPage {
   pinList(v) {
     const rows = v.pins.map((p) => {
       const open = el('button', { class: 'chat-pin-row-open', type: 'button' }, el('span', { class: 'chat-pin-preview', text: p.preview || 'Pinned message' }),
-        el('span', { class: 'chat-pin-by', text: [p.who ? `Pinned by ${p.who}` : 'Pinned', p.fromTelegram ? 'in Telegram' : '', p.pinnedAt ? shortTime(p.pinnedAt) : ''].filter(Boolean).join(' · ') }));
+        el('span', { class: 'chat-pin-by', text: [p.who ? `Pinned by ${p.who}` : 'Pinned', p.fromTelegram ? 'in Telegram' : '', p.pinnedAt ? messageTime(p.pinnedAt) : ''].filter(Boolean).join(' · ') }));
       open.addEventListener('click', async () => { closeSheet(); const ok = await this.jumpTo(v, p.messageId); if (!ok) v.statusLine.textContent = 'That message is further back than the dashboard has loaded.'; });
       const kids = [open];
       if (this.canPin(v)) {
