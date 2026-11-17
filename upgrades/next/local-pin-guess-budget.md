@@ -1,0 +1,17 @@
+# Dashboard PIN: wrong guesses from the machine itself are limited too
+
+## What Changed
+
+The dashboard PIN already limits wrong guesses that come in over the network, and it deliberately never limited guesses typed at the machine itself, so a stranger elsewhere could never lock the owner out locally. Other programs on the same machine look "local" too, though, so local guessing now has its own small limit: after 10 wrong PINs within a few minutes from a caller that has never unlocked before, PIN entry from the machine pauses briefly and the owner is alerted once. A browser that has unlocked before is never limited, and the network limit and the local limit never use up each other.
+
+## What to Tell Your User
+
+Nothing changes when you unlock normally. If you mistype your PIN ten times in a row in a new browser on the machine, wait a few minutes or use a browser you have unlocked before.
+
+## Summary of New Capabilities
+
+None. Security hardening of the dashboard PIN.
+
+## Evidence
+
+Reproduced in the integration test: before this change an unknown local caller could submit wrong PINs indefinitely (every one answered 403, never 429); now the eleventh attempt within the window is refused with 429 even with the right PIN, the owner alert fires once, and a browser that unlocked before still unlocks.
