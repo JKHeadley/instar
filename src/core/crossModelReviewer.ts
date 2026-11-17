@@ -76,6 +76,7 @@ import {
 } from '../providers/adapters/grok-build/policy.js';
 import { validateRule1 } from '../providers/adapters/openai-codex/credentials.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
+import { codexModelForCli } from './codexCapabilities.js';
 import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { ClaudeForbiddenError } from './claudeForbiddenGuard.js';
@@ -426,7 +427,10 @@ export function detectCodexReviewer(
   return {
     available: true,
     framework: 'codex-cli',
-    model: resolveCliModelFlag(REVIEW_MODEL_TIER),
+    // A CLI known to be below 0.166.0 reviews on gpt-6-astra (the review call is
+    // strictly pinned, so the provider never swaps it later).
+    model: codexModelForCli(resolveCliModelFlag(REVIEW_MODEL_TIER), codexPath, 'keep'),
+    binaryPath: codexPath,
     crossFamily: true,
   };
 }
@@ -1451,12 +1455,17 @@ const codexReviewer: SupportedReviewerFramework = {
   review: async (args) => {
     const detection = args.detectionOverride ?? detectCodexReviewer();
     const tier = args.codexModelOverride === 'sol' ? 'balanced' : REVIEW_MODEL_TIER;
-    const model = args.codexModelOverride ? resolveCliModelFlag(tier) : detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
+    // The feedback override also takes the older-CLI model on a CLI known to be
+    // below 0.166.0; judgeRoutedFeedbackReview accepts either id of that size.
+    const overrideModel = args.codexModelOverride
+      ? codexModelForCli(resolveCliModelFlag(tier), detection.binaryPath ?? '', 'keep')
+      : undefined;
+    const model = overrideModel ?? detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
     const tag = `cross-model:codex-cli:${model}`;
 
     // Fail-loud model canary (Piece 3): NEVER silently review with a
     // tier-word model — a fall-through 'capable' is a dead reviewer.
-    if (!isConcreteReviewerModel(model) || (args.codexModelOverride && model !== (args.codexModelOverride === 'sol' ? 'gpt-6-sol' : 'gpt-6-astra'))) {
+    if (!isConcreteReviewerModel(model) || (args.codexModelOverride && !(args.codexModelOverride === 'sol' ? ['gpt-6.2-sol', 'gpt-6-sol'] : ['gpt-6.2-astra', 'gpt-6-astra']).includes(model))) {
       return {
         status: 'degraded',
         framework: 'codex-cli',
@@ -1490,7 +1499,9 @@ const codexReviewer: SupportedReviewerFramework = {
     let raw: string;
     try {
       raw = await provider.evaluate(args.promptText, {
-        model: tier,
+        // The concrete id the canary checked and the outcome reports, so the
+        // strictly pinned call runs exactly the model this review is recorded as.
+        model: model as typeof tier,
         strictModelPin: true,
         timeoutMs: args.timeoutMs,
         attribution: { component: 'crossModelReviewer' }, // attribution for /metrics/features

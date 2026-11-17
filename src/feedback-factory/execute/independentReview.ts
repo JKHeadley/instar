@@ -164,17 +164,28 @@ export function judgeIndependentReview(outcomes: ReviewerOutcome[]): { pass: boo
   return { pass: true, reason: `pass:${crossPass.family}+${claudePass.family}` };
 }
 
+/**
+ * The codex ids that satisfy each lead: same size only (an astra lead never
+ * passes on a sol review; an opus lead pairs with a sol review). The GPT-6.2 id is what the reviewer requests since
+ * 2026-11-17; the GPT-6 id stays accepted for a review recorded by a machine
+ * still on the previous build during the rollout.
+ */
+export const FEEDBACK_REVIEW_CODEX_MODELS: Readonly<Record<FeedbackReviewLead, readonly string[]>> = {
+  astra: ['gpt-6.2-astra', 'gpt-6-astra'],
+  opus: ['gpt-6.2-sol', 'gpt-6-sol'],
+};
+
 /** Feedback's selected models are required; Gemini cannot replace a failed Astra/Sol call. */
 export function judgeRoutedFeedbackReview(outcomes: ReviewerOutcome[], lead: FeedbackReviewLead): { pass: boolean; reason: string } {
   const base = judgeIndependentReview(outcomes);
   if (!base.pass) return base;
-  const expectedCodex = lead === 'astra' ? 'gpt-6-astra' : 'gpt-6-sol';
+  const expectedCodex = FEEDBACK_REVIEW_CODEX_MODELS[lead];
   const codex = outcomes.find((o) => o.family === 'codex-cli' && o.status === 'ok' && (o.verdict === 'CLEAN' || o.verdict === 'MINOR ISSUES'));
   if (!codex) return { pass: false, reason: 'required-codex-unavailable' };
-  if (codex.model !== expectedCodex) return { pass: false, reason: 'required-codex-model-mismatch' };
+  if (!codex.model || !expectedCodex.includes(codex.model)) return { pass: false, reason: 'required-codex-model-mismatch' };
   const claude = outcomes.find((o) => o.family === CLAUDE_REVIEWER && o.status === 'ok' && (o.verdict === 'CLEAN' || o.verdict === 'MINOR ISSUES'));
   if (!claude || claude.model !== 'claude-opus-5-5') return { pass: false, reason: 'required-opus-model-mismatch' };
-  return { pass: true, reason: `${FEEDBACK_REVIEW_PASS_PREFIX}${lead}:${expectedCodex}+claude-opus-5-5` };
+  return { pass: true, reason: `${FEEDBACK_REVIEW_PASS_PREFIX}${lead}:${codex.model}+claude-opus-5-5` };
 }
 
 /** True when a refusal is about the CHANGE (recorded against the head, listed once) rather than about a reviewer being away (retried). */

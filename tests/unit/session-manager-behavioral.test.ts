@@ -20,12 +20,15 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Track mock tmux sessions at module scope so the mock and tests share state
 const mockTmuxSessions = new Set<string>();
+// What a mocked `codex --version` prints (the older-CLI model fallback reads it).
+let mockCodexVersion = 'codex-cli 0.169.0';
 
 // Mock child_process to avoid needing real tmux
 vi.mock('node:child_process', () => {
   return {
     execFileSync: vi.fn().mockImplementation((_cmd: string, args?: string[]) => {
       if (!args) return '';
+      if (args[0] === '--version') return mockCodexVersion;
 
       // tmux has-session
       if (args[0] === 'has-session') {
@@ -91,6 +94,7 @@ vi.mock('node:child_process', () => {
 // Import after mock
 import { execFileSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { SessionManagerConfig, Session } from '../../src/core/types.js';
 import { resolveFrameworkTranscriptPath } from '../../src/core/FrameworkSessionStore.js';
@@ -243,7 +247,8 @@ describe('SessionManager behavioral tests', () => {
       ['codex-cli', undefined, 'gpt-6-astra'],
       ['claude-code', undefined, 'opus'],
       ['codex-cli', 'gpt-6-luna', 'gpt-6-luna'],
-      ['codex-cli', 'balanced', 'gpt-6-sol'],
+      ['codex-cli', 'balanced', 'gpt-6.2-sol'],
+      ['codex-cli', 'capable', 'gpt-6.2-astra'],
     ] as const)('uses the saved default only for omitted models: %s / %s', async (framework, model, expected) => {
       config.frameworkDefaultModels = { 'codex-cli': 'gpt-6-astra', 'claude-code': 'opus' };
       vi.mocked(execFileSync).mockClear();
@@ -271,8 +276,48 @@ describe('SessionManager behavioral tests', () => {
       vi.mocked(execFileSync).mockClear();
       const session = await manager.spawnSession({ name: 'no-default-model', prompt: 'Do work', framework: 'codex-cli' });
       const argv = newSessionArgs();
-      expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6-sol']);
+      expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6.2-sol']);
       expect(session.model).toBeUndefined();
+    });
+
+    describe('older Codex CLI (below 0.166.0) takes the previous GPT-6 model', () => {
+      afterEach(() => { mockCodexVersion = 'codex-cli 0.169.0'; __resetCodexCapabilityCache(); });
+      it.each([
+        [undefined, 'gpt-6-sol'],          // tier default balanced -> gpt-6.2-sol -> fallback
+        ['balanced', 'gpt-6-sol'],
+        ['capable', 'gpt-6-astra'],
+        ['gpt-6.2-astra', 'gpt-6-astra'],
+        ['gpt-6.1-sol', 'gpt-6-sol'],
+        ['gpt-6-luna', 'gpt-6-luna'],      // no fallback needed
+      ] as const)('model %s launches as %s on CLI 0.165.0', async (model, expected) => {
+        mockCodexVersion = 'codex-cli 0.165.0';
+        __resetCodexCapabilityCache();
+        config.frameworkDefaultModels = {};
+        vi.mocked(execFileSync).mockClear();
+        await manager.spawnSession({ name: `old-cli-${model ?? 'unset'}`, prompt: 'Do work', framework: 'codex-cli', model });
+        const argv = newSessionArgs();
+        expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', expected]);
+      });
+
+      it('a local-provider launch is never given a cloud model id, even on an old CLI', async () => {
+        mockCodexVersion = 'codex-cli 0.165.0';
+        __resetCodexCapabilityCache();
+        config.frameworkDefaultModels = {};
+        vi.mocked(execFileSync).mockClear();
+        await manager.spawnSession({ name: 'old-cli-local', prompt: 'Do work', framework: 'codex-cli', codexLocalProvider: 'ollama' });
+        const argv = newSessionArgs();
+        expect(argv.some((a) => /^gpt-/.test(a))).toBe(false);
+      });
+
+      it('an unreadable CLI version also takes the older model (session launches have no retry)', async () => {
+        mockCodexVersion = 'unknown';
+        __resetCodexCapabilityCache();
+        config.frameworkDefaultModels = {};
+        vi.mocked(execFileSync).mockClear();
+        await manager.spawnSession({ name: 'unknown-cli', prompt: 'Do work', framework: 'codex-cli', model: 'capable' });
+        const argv = newSessionArgs();
+        expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6-astra']);
+      });
     });
 
     it('records the framework-RESOLVED model for a Codex session (not the raw tier)', async () => {

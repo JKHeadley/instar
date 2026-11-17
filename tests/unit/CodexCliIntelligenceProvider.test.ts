@@ -199,6 +199,35 @@ describe('CodexCliIntelligenceProvider — fenced triage launch', () => {
     expect(fs.readFileSync(argsFile, 'utf8')).toContain('cli_auth_credentials_store="file"');
   });
 
+  it.each([
+    ['codex-cli 0.165.0', 'balanced', 'gpt-6-sol'],
+    ['codex-cli 0.165.0', 'capable', 'gpt-6-astra'],
+    ['codex-cli 0.169.0', 'balanced', 'gpt-6.2-sol'],
+    ['codex-cli 0.169.0', 'capable', 'gpt-6.2-astra'],
+    ['not a version', 'capable', 'gpt-6.2-astra'], // unreadable: keep; the refusal self-heal covers it
+    ['codex-cli 0.165.0', 'fast', 'gpt-6-luna'],
+  ])('CLI "%s", tier %s launches --model %s', async (versionLine, tier, expected) => {
+    const argsFile = path.join(tmpDir, `older-cli-args-${tier}-${versionLine.replace(/\W/g, '')}`);
+    const binary = path.join(tmpDir, `older-cli-codex-${tier}-${versionLine.replace(/\W/g, '')}`);
+    fs.writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "${versionLine}"; exit 0; fi\nprintf '%s\\n' "$@" > "${argsFile}"\necho DONE\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir, resolveExecJson: () => false });
+    let reported: string | undefined;
+    await expect(provider.evaluate('hello', { model: tier as 'balanced', onModel: (m) => { reported = m.model; } })).resolves.toBe('DONE');
+    const args = fs.readFileSync(argsFile, 'utf8').split('\n');
+    expect(args[args.indexOf('--model') + 1]).toBe(expected);
+    expect(reported).toBe(expected);
+  });
+
+  it('never swaps a strict pin, even on an older CLI', async () => {
+    const argsFile = path.join(tmpDir, 'older-cli-strict-args');
+    const binary = path.join(tmpDir, 'older-cli-strict-codex');
+    fs.writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.165.0"; exit 0; fi\nprintf '%s\\n' "$@" > "${argsFile}"\necho DONE\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir, resolveExecJson: () => false });
+    await expect(provider.evaluate('hello', { model: 'gpt-6.2-astra' as 'capable', strictModelPin: true })).resolves.toBe('DONE');
+    const args = fs.readFileSync(argsFile, 'utf8').split('\n');
+    expect(args[args.indexOf('--model') + 1]).toBe('gpt-6.2-astra');
+  });
+
   it('requires an explicit subscription account and refuses before spawning when the launch fence fails', async () => {
     const calls = path.join(tmpDir, 'fenced-triage-calls');
     const binary = path.join(tmpDir, 'fenced-triage-codex');

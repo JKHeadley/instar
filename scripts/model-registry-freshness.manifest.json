@@ -166,12 +166,28 @@
       },
       "topModels": [
         {
-          "id": "gpt-6-astra",
+          "id": "gpt-6.2-astra",
           "role": "capable-openai",
           "frontier": true,
           "pricing": null,
+          "verifiedAt": "2026-11-17",
+          "note": "Released 2026-11-17. Live-probed that day on codex CLI 0.169.0 on all five Codex accounts (listed in models_cache.json; codex exec answered OK), and on CLI 0.166.0 and 0.168.0. CLI 0.165.0, 0.160.0 and 0.156.1 refuse it (400 'not supported when using Codex with a ChatGPT account'). The codex `capable` tier target since 2026-11-17 on the operator's directive to move all codex usage to the GPT-6.2 family; a CLI below 0.166.0 falls back to gpt-6-astra. Pricing not yet recorded for this id."
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "role": "mid-openai",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-17",
+          "note": "Released 2026-11-17. Same live probe as gpt-6.2-astra (all five accounts on CLI 0.169.0; also 0.166.0 and 0.168.0; refused on 0.165.0 and older). The codex `balanced` tier target since 2026-11-17; a CLI below 0.166.0 falls back to gpt-6-sol. No gpt-6.2-luna exists, so `fast` stays gpt-6-luna. Pricing not yet recorded for this id."
+        },
+        {
+          "id": "gpt-6-astra",
+          "role": "capable-openai-older-cli-fallback",
+          "frontier": false,
+          "pricing": null,
           "verifiedAt": "2026-09-09",
-          "note": "Live-probed 2026-09-09 on the ChatGPT-account codex surface: answered a trivial prompt (15,449 input / 5 output). Promoted to frontier because the previous frontier id (gpt-5.5) was retired in the same sweep. Pricing not yet published for this id."
+          "note": "Live-probed 2026-09-09 on the ChatGPT-account codex surface: answered a trivial prompt (15,449 input / 5 output). Was the frontier/capable pin from 2026-09-09 until 2026-11-17, when the capable tier moved to gpt-6.2-astra; it remains the model a Codex CLI below 0.166.0 runs instead. Pricing not yet published for this id."
         },
         {
           "id": "gpt-6-sol",
@@ -179,7 +195,7 @@
           "frontier": false,
           "pricing": null,
           "verifiedAt": "2026-09-23",
-          "note": "Live-probed 2026-09-23 on codex CLI 0.156.1 against the ChatGPT account: answered a trivial prompt (2,145 tokens). codex CLI 0.153.4 refuses it (400 'not supported when using Codex with a ChatGPT account'). The codex `balanced` tier target since 2026-09-23. Pricing not yet published for this id."
+          "note": "Live-probed 2026-09-23 on codex CLI 0.156.1 against the ChatGPT account: answered a trivial prompt (2,145 tokens). codex CLI 0.153.4 refuses it (400 'not supported when using Codex with a ChatGPT account'). The codex `balanced` tier target from 2026-09-23 until 2026-11-17 (now gpt-6.2-sol); remains the model a Codex CLI below 0.166.0 runs instead. Pricing not yet published for this id."
         },
         {
           "id": "gpt-6-luna",

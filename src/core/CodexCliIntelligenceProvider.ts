@@ -28,6 +28,7 @@ import {
   resolveCliModelFlag,
 } from '../providers/adapters/openai-codex/models.js';
 import { classifyCodexErrorMessage } from '../providers/adapters/openai-codex/observability/eventNormalizer.js';
+import { codexModelForCli } from './codexCapabilities.js';
 import { KNOWN_CODEX_MODEL_IDS } from './ModelTierEscalation.js';
 import {
   buildCodexChildEnv,
@@ -463,7 +464,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
   }
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
-    const model = resolveCliModelFlag(options?.model);
+    // Older-CLI safety: a CLI known to be below 0.166.0 runs the previous
+    // GPT-6 id instead of a GPT-6.2 one. An unreadable version keeps the
+    // requested id (the retirement self-heal below still catches a refusal),
+    // and a strict pin is never swapped: its caller checks the exact id.
+    const requestedModel = resolveCliModelFlag(options?.model);
+    const model = options?.strictModelPin
+      ? requestedModel
+      : codexModelForCli(requestedModel, this.codexPath, 'keep');
     // Observable Intelligence: surface the resolved provider/model up front so
     // the metrics funnel attributes the call to codex on every path (including
     // failures and the plain mode, which surfaces no token usage).

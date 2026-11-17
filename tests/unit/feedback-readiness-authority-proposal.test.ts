@@ -153,9 +153,15 @@ describe('proposal-built authority vs the arbiter, on recorded live shapes', () 
   });
   const authority = (): AuthorityRecord => ({ ...buildReadinessAuthorityProposal({ ...BASE, route: liveRoute }).proposal!, generation: 1, revoked: false });
 
-  it('recorded shape codex-cli/gpt-6-astra → the arbiter accepts and decides', async () => {
-    expect(authority()).toMatchObject({ provider: 'codex-cli', modelFamily: 'gpt-6-astra' });
-    const decisions = await arbiterWith({ model: 'gpt-6-astra', framework: 'codex-cli' }).decideBatch(authority(), [candidate]);
+  it('recorded shape codex-cli/gpt-6-astra → an authority approved for it still accepts and decides', async () => {
+    const approvedBefore: AuthorityRecord = { ...authority(), modelFamily: 'gpt-6-astra' };
+    const decisions = await arbiterWith({ model: 'gpt-6-astra', framework: 'codex-cli' }).decideBatch(approvedBefore, [candidate]);
+    expect(decisions[0]).toMatchObject({ clusterId: 'c1', outcome: 'ready' });
+  });
+
+  it('since 2026-11-17 the proposal binds gpt-6.2-astra, and the arbiter accepts that shape', async () => {
+    expect(authority()).toMatchObject({ provider: 'codex-cli', modelFamily: 'gpt-6.2-astra' });
+    const decisions = await arbiterWith({ model: 'gpt-6.2-astra', framework: 'codex-cli' }).decideBatch(authority(), [candidate]);
     expect(decisions[0]).toMatchObject({ clusterId: 'c1', outcome: 'ready' });
   });
 

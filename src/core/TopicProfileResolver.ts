@@ -45,7 +45,7 @@ import {
 import { resolveTierModel, type TierEscalationConfig } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
 import { isIssuesTopicId } from '../messaging/telegramTopicSpace.js';
-import { codexSupportsGpt61Sol } from './codexCapabilities.js';
+import { CODEX_OLDER_CLI_FALLBACKS, codexSupportsNewerModels } from './codexCapabilities.js';
 
 export interface ResolvedTopicProfile {
   framework: IntelligenceFramework;
@@ -137,7 +137,7 @@ export class TopicProfileResolver {
     const pin: TopicProfile | null = this.opts.store.resolve(key);
     const notices: string[] = [];
     const groupDefault = isIssuesTopicId(topicKey)
-      ? { framework: 'codex-cli' as IntelligenceFramework, model: 'gpt-6.1-sol', ...this.opts.configGroupDefaults?.().issues }
+      ? { framework: 'codex-cli' as IntelligenceFramework, model: 'gpt-6.2-sol', ...this.opts.configGroupDefaults?.().issues }
       : undefined;
 
     // ── framework arm ────────────────────────────────────────────────────
@@ -255,14 +255,15 @@ export class TopicProfileResolver {
         modelSource = 'frameworkDefaultModels';
       }
     }
-    if (framework === 'codex-cli' && model === 'gpt-6.1-sol') {
+    if (framework === 'codex-cli' && model !== undefined && CODEX_OLDER_CLI_FALLBACKS[model]) {
       const binary = this.opts.frameworkBinaryPath(framework);
-      const supported = binary && (this.opts.codexModelSupported ?? codexSupportsGpt61Sol)(binary);
+      const supported = binary && (this.opts.codexModelSupported ?? codexSupportsNewerModels)(binary);
       if (!supported) {
-        model = 'gpt-6-sol';
+        const wanted = model;
+        model = CODEX_OLDER_CLI_FALLBACKS[wanted];
         modelSource = 'older-codex-cli-fallback';
         const notice = this.onceNotice(key, 'older-codex-cli',
-          'This machine has an older Codex CLI that cannot run gpt-6.1-sol; using gpt-6-sol for this session.');
+          `This machine has an older Codex CLI that cannot run ${wanted}; using ${model} for this session.`);
         if (notice) notices.push(notice);
       } else this.clearTransition(key, 'older-codex-cli');
     }

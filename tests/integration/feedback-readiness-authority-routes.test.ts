@@ -138,7 +138,7 @@ describe('readiness authority dashboard path — proposal → PIN approve → ti
     expect(accepted.status).toBe(202);
     const status = await settle();
     expect(status.body.lastRun.state, JSON.stringify(status.body.lastRun)).toBe('succeeded');
-    expect(arbiterCalls).toEqual(['capable']);
+    expect(arbiterCalls).toEqual([resolveCliModelFlag('capable')]); // a codex authority runs on its exact approved id
     expect(status.body.authority).toMatchObject({ generation: 1, revoked: false, mode: 'active' });
     expect(status.body.drain.readiness.collecting ?? 0).toBe(0);
 
