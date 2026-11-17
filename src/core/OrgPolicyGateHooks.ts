@@ -76,7 +76,9 @@ process.stdin.on('end', async () => {
     const insideOrg = cwdReal === instarReal + '/org' || cwdReal.startsWith(instarReal + '/org/');
     // A wildcard or a variable can hide the guarded name, so near .instar either counts as touching it.
     const hidesName = ['*', '?', '[', '$'].some((c) => cmd.includes(c));
-    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || (nearInstar && hidesName) || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
+    // Moving, linking or copying the whole .instar folder (or its parent) reaches the guarded files by another path.
+    const wholeFolder = cmd.split(/[ \\t\\n;&|()<>'"]+/).some((t) => { const u = t.replace(/\\/+$/, ''); return u === '.instar' || u.endsWith('/.instar') || u === '.' || u === '..'; }) && nearInstar;
+    const bashTouches = input.tool_name === 'Bash' && canWrite && (insideOrg || wholeFolder || (nearInstar && hidesName) || cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
       return out({ permissionDecision: 'deny', permissionDecisionReason: "While your organization's rules are enforced, I can't run commands that could change its policy files or this agent's settings. Reading them is fine. Your person can manage the organization in the Instar app." });

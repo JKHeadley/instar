@@ -149,6 +149,10 @@ Brace groups, subshells, function definitions, `exec`, backgrounding, line conti
 
 The server and the routes are clean. One gap was closed: a wildcard or a shell variable could hide the guarded name (`.instar/o*/actions-mode.json`, or `$D/org`). A write-capable command that mentions `.instar`, or runs inside it, and uses `*`, `?`, `[` or `$` now counts as touching the guarded files.
 
+## Re-audit round 12
+
+The server and the routes are clean. One gap was closed: moving or linking the whole `.instar` folder (`ln -s .instar /tmp/i`, `mv .instar ...`) reached the guarded files by another path. A write-capable command whose arguments name the `.instar` folder itself, or `.` or `..` near it, now counts as touching them. Paths under `.instar`, such as `.instar/state/...`, are not affected.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)
