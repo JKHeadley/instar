@@ -1340,6 +1340,16 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-row.chat-depth-1 { padding-left: calc(var(--s-2) + var(--s-5)); }
 .chat-row.chat-depth-2 { padding-left: calc(var(--s-2) + var(--s-5) * 2); }
 .chat-row.chat-depth-3 { padding-left: calc(var(--s-2) + var(--s-5) * 3); }
+/* The list grouped by the conversation hierarchy (console-chats-grouped): Grouped | All, one row per effort. */
+.chat-view-toggle { display: flex; gap: var(--s-2); margin: 0 0 var(--s-2); }
+.chat-view-toggle[hidden] { display: none; }
+.chat-view-toggle .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
+.chat-effort-row { display: flex; gap: var(--s-3); align-items: center; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0; padding: var(--s-3) var(--s-2); border-radius: var(--r-md); cursor: pointer; }
+.chat-effort-row:hover, .chat-effort-row:focus-visible { background: var(--surface); }
+.chat-effort-chev { flex: none; width: 16px; font-size: 20px; line-height: 1; text-align: center; color: var(--text-faint); transition: transform var(--dur) var(--ease); }
+.chat-effort-row.expanded .chat-effort-chev { transform: rotate(90deg); }
+.chat-ungrouped-label { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-2); }
+.chat-review-suggestions { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--accent); }
 .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chat-row-top { display: flex; gap: var(--s-2); align-items: center; min-width: 0; }
 .chat-row-title { font-weight: 600; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

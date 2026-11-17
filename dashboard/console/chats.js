@@ -10,7 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
-import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession } from './ui.js';
+import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
 } from './browser-device.js';
@@ -21,6 +21,7 @@ import {
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime,
+  LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
 } from './chats-model.js';
 import { chiefOfStaffNeedRows } from './needs-model.js';
 import { appStripFor, appPath, appNavigation } from './projects-model.js';
@@ -31,6 +32,8 @@ const POLL_LOCK = 'instar-chat-poll';
 const CHANNEL = 'instar-chat';
 const OWN_KEY = 'instar_chat_own:';
 const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.';
+// The hierarchy is read again at most this often (the list itself refreshes every 30 s).
+const HIERARCHY_TTL_MS = 60000;
 
 const bearer = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 const now = () => Date.now();
@@ -79,6 +82,12 @@ class ChatsPage {
     this.union = [];
     this.scheduler = createScheduler();
     this.retries401 = 0;
+    // The list grouped by the conversation hierarchy: null until (and unless) the hierarchy read answers.
+    this.hierarchy = null;
+    this.hierarchyAt = 0;
+    this.hierarchyLoading = false;
+    this.listView = (() => { try { return listViewFrom(localStorage.getItem(LIST_VIEW_KEY)); } catch { return 'grouped'; } })();
+    this.openGroups = new Set();
   }
 
   // ── lifecycle ──
@@ -357,6 +366,10 @@ class ChatsPage {
     this.moreBtn.addEventListener('click', () => this.loadList(true));
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
+    // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
+    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'All' }) };
+    for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
+    this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
     newBtn.addEventListener('click', () => this.newConversation());
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
@@ -368,7 +381,7 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
+        this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
@@ -401,6 +414,51 @@ class ChatsPage {
     const meta = listMeta(data);
     this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
     this.paintList();
+    if (!more) void this.loadHierarchy();
+  }
+
+  /**
+   * The conversation hierarchy behind the grouped list: every node (view=all), read signed by this
+   * browser; with a PIN unlock already in this page, the dashboard route is tried when the signed read
+   * is refused. Refused / missing / off (403, 404, 503) → no hierarchy: the list is flat, exactly as
+   * before. Any other failure keeps the last answer, so a blip never reshuffles the list.
+   */
+  async loadHierarchy(force = false) {
+    if (this.hierarchyLoading || (!force && now() - this.hierarchyAt < HIERARCHY_TTL_MS)) return;
+    this.hierarchyLoading = true;
+    try {
+      let r = await this.readHierarchy((path) => this.call('GET', `/mobile${path}`));
+      if (!this.live || r.gone) return;
+      if (!r.ok && r.status === 403 && operatorSession()) r = await this.readHierarchy((path) => dashboardRead(path));
+      if (!this.live) return;
+      this.hierarchyAt = now();
+      if (r.ok) this.hierarchy = hierarchyIndex(r.pages);
+      else if ([403, 404, 503].includes(r.status)) this.hierarchy = null;
+      this.paintList();
+    } finally { this.hierarchyLoading = false; }
+  }
+  async readHierarchy(get) {
+    this.spent();
+    const pages = [];
+    let cursor = null;
+    for (let i = 0; i < HIERARCHY_MAX_PAGES; i++) {
+      const r = await get(`/conversation-graph/roots?view=all${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      if (!this.live || r.gone) return { ok: false, gone: true };
+      if (!r.ok) return { ok: false, status: r.status };
+      pages.push(r.data);
+      cursor = r.data && typeof r.data.nextCursor === 'string' && r.data.nextCursor ? r.data.nextCursor : null;
+      if (!cursor) break;
+    }
+    return { ok: true, pages };
+  }
+  setListView(view) {
+    this.listView = listViewFrom(view);
+    try { localStorage.setItem(LIST_VIEW_KEY, this.listView); } catch { /* blocked: the choice lasts for this page */ }
+    this.paintList();
+  }
+  toggleGroup(key) {
+    if (this.openGroups.has(key)) this.openGroups.delete(key); else this.openGroups.add(key);
+    this.paintList();
   }
   paintList() {
     if (!this.listEl) return;
@@ -408,6 +466,12 @@ class ChatsPage {
     if (this.view && this.view.titleEl) {
       const row = this.rows.find((r) => r.key === open);
       if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
+    }
+    // Grouped | All: the toggle shows only when the hierarchy answered; without it the list is the full flat list.
+    const grouped = Boolean(this.hierarchy) && this.listView === 'grouped';
+    if (this.viewToggleEl) {
+      this.viewToggleEl.hidden = !this.hierarchy;
+      for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
     }
     if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
@@ -431,9 +495,33 @@ class ChatsPage {
       if (pinned.length) {
         kids.push(el('div', { class: 'chat-group-label chat-pinned-group', text: 'Pinned' }));
         for (const r of pinned) kids.push(rowEl(r, true));
-        kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
+        if (!grouped) kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
       }
-      for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+      if (grouped) {
+        const { lead, groups, ungrouped } = groupRows(rest, this.hierarchy, this.pinnedKey);
+        if (lead) kids.push(rowEl(lead, false));
+        for (const g of groups) {
+          // The group holding the open conversation stays open, so the row on screen is never hidden.
+          const expanded = this.openGroups.has(g.key) || g.rows.some((r) => r.key === open);
+          const head = el('button', { class: `chat-effort-row${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false' },
+            el('span', { class: 'chat-row-main' },
+              el('span', { class: 'chat-row-title', text: g.title }),
+              el('span', { class: 'chat-row-preview', text: groupCountWords(g.count) })),
+            el('span', { class: 'chat-row-side' },
+              g.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(g.lastActivity) }) : null,
+              g.unread > 0 ? el('span', { class: 'chat-unread', text: String(g.unread), 'aria-label': `${g.unread} unread` }) : null),
+            el('span', { class: 'chat-effort-chev', 'aria-hidden': 'true', text: '›' }));
+          head.addEventListener('click', () => this.toggleGroup(g.key));
+          kids.push(head);
+          if (expanded) for (const r of g.rows) kids.push(rowEl(r, false));
+        }
+        if (ungrouped.length) {
+          kids.push(el('div', { class: 'chat-group-label chat-ungrouped-label' },
+            el('span', { text: 'Not grouped yet' }),
+            el('a', { class: 'chat-review-suggestions', href: '#/work/conversations?view=suggestions', text: 'Review suggestions' })));
+          for (const r of ungrouped) kids.push(rowEl(r, false));
+        }
+      } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
       setKids(this.listEl, kids);
     }
     this.moreBtn.hidden = !this.meta.nextCursor;
@@ -1264,6 +1352,15 @@ class ChatsPage {
 }
 
 // ── small helpers ──
+/** A hierarchy read on the dashboard route with this page's PIN unlock (never asks for the PIN). */
+async function dashboardRead(path) {
+  const proof = operatorSession();
+  if (!proof) return { ok: false, status: 403 };
+  try {
+    const r = await fetch(path, { headers: { Authorization: `Bearer ${bearer()}`, 'X-Instar-Operator-Session': proof }, cache: 'no-store' });
+    return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+  } catch { return { ok: false, status: 0 }; }
+}
 function shortTime(isoText) {
   const t = Date.parse(isoText);
   if (!Number.isFinite(t)) return '';

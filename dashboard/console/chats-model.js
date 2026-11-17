@@ -2,6 +2,8 @@
 // Pure: no DOM, no fetch, no timers. chats.js renders these; tests/unit/console-chats-model.test.ts
 // checks them.
 
+import { listModel, encodeNodeRef } from './conversations-model.js';
+
 // ── conversations and their address in the hash (#/work/chats?c=<kind>:<id>) ──
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -617,3 +619,57 @@ export function pinOutcomeWords(r) {
   }
   return r.data && r.data.mirror === 'failed' && typeof r.data.mirrorDetail === 'string' ? r.data.mirrorDetail : '';
 }
+
+// ── the list grouped by the conversation hierarchy (docs/specs/console-chats-grouped.eli16.md) ──
+// The hierarchy is read from the same records the Conversations page reads (conversations-model.js
+// listModel); this module only joins it to the list rows. Placement is never guessed from a title.
+export const LIST_VIEW_KEY = 'instar_chats_list_view';
+/** The remembered list view: 'grouped' or 'all'; anything else (or nothing) → 'grouped'. */
+export function listViewFrom(stored) { return stored === 'all' ? 'all' : 'grouped'; }
+/** The most hierarchy pages one refresh reads (50 nodes each). */
+export const HIERARCHY_MAX_PAGES = 20;
+/**
+ * GET …/conversation-graph/roots?view=all pages → Map(list row key → { key, title } of the top-level
+ * effort holding that conversation), or null when any page is malformed (the list then stays flat).
+ * A conversation with no effort above it is absent from the map: it is "Not grouped yet".
+ */
+export function hierarchyIndex(pages) {
+  if (!Array.isArray(pages) || !pages.length) return null;
+  const index = new Map();
+  for (const page of pages) {
+    const model = listModel(page, 'all');
+    if (!model.ok) return null;
+    for (const item of model.items) {
+      if (item.kind !== 'conversation' || !item.source) continue;
+      const ref = parseConversationRef(`${item.source.platform}:${item.source.conversationId}`);
+      const top = item.primaryPath[0];
+      if (!ref || !top || top.ref.kind !== 'effort') continue;
+      const key = encodeNodeRef(top.ref);
+      if (key) index.set(refString(ref), { key, title: top.title.trim() || 'Untitled' });
+    }
+  }
+  return index;
+}
+/**
+ * Splits the (unpinned) rows by the hierarchy: the Chief of Staff row leads on its own; each
+ * top-level effort becomes one group (in the order its newest conversation appears in the list);
+ * everything else is "Not grouped yet", kept in the list's own tree order. Pure.
+ */
+export function groupRows(rows, index, leadKey) {
+  const list = Array.isArray(rows) ? rows : [];
+  const lead = leadKey ? list.find((r) => r.key === leadKey) || null : null;
+  const groups = new Map();
+  const ungrouped = [];
+  for (const r of list) {
+    if (lead && r.key === lead.key) continue;
+    const effort = index && index.get(r.key);
+    if (!effort) { ungrouped.push(r); continue; }
+    let g = groups.get(effort.key);
+    if (!g) { g = { key: effort.key, title: effort.title, rows: [], unread: 0, lastActivity: r.lastActivity || null }; groups.set(effort.key, g); }
+    g.rows.push({ ...r, depth: 1 });
+    if (r.unread > 0) g.unread += r.unread;
+  }
+  return { lead: lead ? { ...lead, depth: 0 } : null, groups: [...groups.values()].map((g) => ({ ...g, count: g.rows.length })), ungrouped: orderWithTree(ungrouped, null) };
+}
+/** "3 conversations" / "1 conversation". */
+export function groupCountWords(n) { return `${n} conversation${n === 1 ? '' : 's'}`; }

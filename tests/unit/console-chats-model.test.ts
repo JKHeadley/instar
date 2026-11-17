@@ -397,3 +397,56 @@ describe('message time (bubble and pin line)', () => {
     expect(m.messageTime(undefined as unknown as string, nowMs)).toBe('');
   });
 });
+
+describe('the list grouped by the conversation hierarchy (console-chats-grouped)', () => {
+  const effortA = { kind: 'effort', id: 'eff-a' };
+  const effortB = { kind: 'effort', id: 'eff-b' };
+  const sub = { kind: 'effort', id: 'eff-a-sub' };
+  const tg = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-100', topicId });
+  const conv = (topicId: number, path: Array<{ ref: unknown; title: string }>) => ({
+    ref: tg(topicId), title: `T${topicId}`, kind: 'conversation', role: path.length ? 'worker' : 'unassigned', primaryPath: path,
+    visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` },
+  });
+  const page = (items: unknown[], nextCursor: string | null = null) => ({ items, partial: false, nextCursor });
+  const body = { conversations: [
+    { id: 1, platform: 'telegram', title: 'Chief of Staff', lastActivity: '2026-11-17T12:00:00Z', unreadCount: 1 },
+    { id: 2, platform: 'telegram', title: 'Build', lastActivity: '2026-11-17T11:00:00Z', unreadCount: 2 },
+    { id: 3, platform: 'telegram', title: 'Loose', lastActivity: '2026-11-17T10:00:00Z' },
+    { id: 4, platform: 'telegram', title: 'Deep', lastActivity: '2026-11-17T09:00:00Z', unreadCount: 3 },
+    { id: 5, platform: 'telegram', title: 'Other', lastActivity: '2026-11-17T08:00:00Z' },
+  ] };
+
+  it('indexes each conversation under its TOP-LEVEL effort, across pages; nested efforts roll up', () => {
+    const index = m.hierarchyIndex([
+      page([conv(2, [{ ref: effortA, title: 'App work' }]), { ref: effortA, title: 'App work', kind: 'effort', role: 'effort', primaryPath: [], visibleChildCount: 2 }], 'next'),
+      page([conv(4, [{ ref: effortA, title: 'App work' }, { ref: sub, title: 'Sub' }]), conv(5, [{ ref: effortB, title: '  ' }]), conv(3, [])]),
+    ])!;
+    expect(index.get('telegram:2')?.title).toBe('App work');
+    expect(index.get('telegram:4')).toEqual(index.get('telegram:2'));
+    expect(index.get('telegram:5')?.title).toBe('Untitled');
+    expect(index.has('telegram:3')).toBe(false);
+  });
+
+  it('a malformed or missing hierarchy reads as none (the list stays flat)', () => {
+    expect(m.hierarchyIndex([])).toBeNull();
+    expect(m.hierarchyIndex([{ items: 'x', partial: false }])).toBeNull();
+    expect(m.hierarchyIndex([page([{ ref: { kind: 'bogus' }, title: 'x' }])])).toBeNull();
+  });
+
+  it('groupRows: Chief of Staff leads alone, one group per effort with count and unread, the rest "Not grouped yet"', () => {
+    const index = m.hierarchyIndex([page([conv(2, [{ ref: effortA, title: 'App work' }]), conv(4, [{ ref: effortA, title: 'App work' }]), conv(5, [{ ref: effortB, title: 'Windows' }])])]);
+    const g = m.groupRows(m.listRows(body), index, 'telegram:1');
+    expect(g.lead?.key).toBe('telegram:1');
+    expect(g.groups.map((x: { title: string; count: number; unread: number }) => [x.title, x.count, x.unread])).toEqual([['App work', 2, 5], ['Windows', 1, 0]]);
+    expect(g.groups[0].rows.map((r: { key: string; depth: number }) => [r.key, r.depth])).toEqual([['telegram:2', 1], ['telegram:4', 1]]);
+    expect(g.groups[0].lastActivity).toBe('2026-11-17T11:00:00Z');
+    expect(g.ungrouped.map((r: { key: string }) => r.key)).toEqual(['telegram:3']);
+    expect(m.groupCountWords(1)).toBe('1 conversation');
+    expect(m.groupCountWords(2)).toBe('2 conversations');
+  });
+
+  it('the remembered view: only "all" means all; anything else is grouped', () => {
+    expect(m.listViewFrom('all')).toBe('all');
+    for (const v of ['grouped', null, '', 'x']) expect(m.listViewFrom(v)).toBe('grouped');
+  });
+});

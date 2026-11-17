@@ -385,6 +385,96 @@ describe('Conversations page', () => {
     expect(doc.querySelectorAll('.chat-list-unpin')).toHaveLength(2);
   });
 
+  // ── the list grouped by the conversation hierarchy (console-chats-grouped) ──
+  async function seeded() {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    return { idb, publicKey };
+  }
+  const at = () => new Date().toISOString();
+  const LIST = () => ({ conversations: [
+    { id: 1, platform: 'telegram', title: 'Chief of Staff', lastActivity: at(), lastPreview: '' },
+    { id: 2, platform: 'telegram', title: '<img src=x onerror=alert(1)>Build', lastActivity: at(), lastPreview: '', unreadCount: 2 },
+    { id: 3, platform: 'telegram', title: 'Loose', lastActivity: at(), lastPreview: '' },
+    { id: 4, platform: 'telegram', title: 'Deep', lastActivity: at(), lastPreview: '', unreadCount: 1 },
+  ], pinned: { id: 1, platform: 'telegram', title: 'Chief of Staff', lastActivity: at() }, nextCursor: null });
+  const effort = { kind: 'effort', id: 'eff-a' };
+  const worker = (topicId: number) => ({ ref: { kind: 'conversation', platform: 'telegram', chatId: '-100', topicId }, title: `T${topicId}`, kind: 'conversation', role: 'worker',
+    primaryPath: [{ ref: effort, title: '<b>App work</b>' }], visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` } });
+  const GRAPH = { items: [worker(2), worker(4)], partial: false, nextCursor: null };
+
+  it('grouped: Chief of Staff first, each effort one collapsed row with count and unread, the rest under "Not grouped yet"; All shows the flat list and is remembered', async () => {
+    const { idb, publicKey } = await seeded();
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: LIST() };
+      if (c.url.startsWith('/mobile/conversation-graph/roots?view=all')) return { status: 200, body: GRAPH };
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const graphRead = calls.find((c) => c.url.startsWith('/mobile/conversation-graph/roots'))!;
+    expect(verifySigned(graphRead, publicKey).ok).toBe(true);
+    const titles = () => [...doc.querySelectorAll('.chat-rows .chat-row-title')].map((x) => x.textContent);
+    const toggle = doc.querySelector('.chat-view-toggle') as HTMLElement;
+    expect(toggle.hidden).toBe(false);
+    const chip = (t: string) => [...toggle.querySelectorAll('button')].find((b) => b.textContent === t) as HTMLButtonElement;
+    expect(chip('Grouped').getAttribute('aria-pressed')).toBe('true');
+    // Collapsed: Chief of Staff, the effort row (title as text, never markup), then the ungrouped row.
+    expect(titles()).toEqual(['Chief of Staff', '<b>App work</b>', 'Loose']);
+    const head = doc.querySelector('.chat-effort-row') as HTMLButtonElement;
+    expect(head.querySelector('b')).toBeNull();
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(head.textContent).toContain('2 conversations');
+    expect(head.querySelector('.chat-unread')?.textContent).toBe('3');
+    expect(doc.querySelector('.chat-ungrouped-label')?.textContent).toContain('Not grouped yet');
+    expect(doc.querySelector('a.chat-review-suggestions')?.getAttribute('href')).toBe('#/work/conversations?view=suggestions');
+    expect(doc.querySelector('.chat-rows img')).toBeNull();
+    // Expand inline.
+    head.click();
+    expect(titles()).toEqual(['Chief of Staff', '<b>App work</b>', '<img src=x onerror=alert(1)>Build', 'Deep', 'Loose']);
+    // All: today's flat list, remembered in this browser.
+    chip('All').click();
+    expect(doc.querySelector('.chat-effort-row')).toBeNull();
+    expect(titles()).toEqual(['Chief of Staff', '<img src=x onerror=alert(1)>Build', 'Loose', 'Deep']);
+    expect(chip('All').getAttribute('aria-pressed')).toBe('true');
+    expect(dom.window.localStorage.getItem('instar_chats_list_view')).toBe('all');
+  });
+
+  it('a remembered "All" opens the flat list even when the hierarchy is available', async () => {
+    const { idb } = await seeded();
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) { dom.window.localStorage.setItem('instar_chats_list_view', 'all'); return { status: 200, body: STATUS }; }
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: LIST() };
+      if (c.url.startsWith('/mobile/conversation-graph/roots?view=all')) return { status: 200, body: GRAPH };
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 10; i++) await flush();
+    expect((doc.querySelector('.chat-view-toggle') as HTMLElement).hidden).toBe(false);
+    expect(doc.querySelector('.chat-effort-row')).toBeNull();
+    expect([...doc.querySelectorAll('.chat-rows .chat-row-title')]).toHaveLength(4);
+  });
+
+  for (const status of [403, 404, 503]) {
+    it(`hierarchy answers ${status}: the flat list exactly as before, no toggle`, async () => {
+      const { idb } = await seeded();
+      const { doc } = await boot((c) => {
+        if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+        if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: LIST() };
+        if (c.url.startsWith('/mobile/conversation-graph/roots')) return { status, body: { code: 'x' } };
+        return undefined;
+      }, '#/work/chats', idb);
+      for (let i = 0; i < 10; i++) await flush();
+      expect((doc.querySelector('.chat-view-toggle') as HTMLElement).hidden).toBe(true);
+      expect(doc.querySelector('.chat-effort-row')).toBeNull();
+      expect(doc.querySelector('.chat-ungrouped-label')).toBeNull();
+      expect([...doc.querySelectorAll('.chat-rows .chat-row-title')].map((x) => x.textContent)).toEqual(['Chief of Staff', '<img src=x onerror=alert(1)>Build', 'Loose', 'Deep']);
+      // No PIN unlock in the page: the dashboard route is never tried.
+      expect(calls.some((c) => c.url.startsWith('/conversation-graph/'))).toBe(false);
+    });
+  }
+
   it('a 401 answered "revoked" deletes the key and shows the setup card', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');
