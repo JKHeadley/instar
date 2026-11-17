@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "create-agent-account-choice",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T23:11:46.381Z",
+  "artifactPath": "upgrades/side-effects/create-agent-account-choice.md",
+  "artifactSha256": "d933097e5bcd74cc17d2b8227fbc54c2c83a7822296fb99ce03604a2113026e7",
+  "specPath": "docs/specs/create-agent-accounts-and-always-on.md",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/commands/install/engine.ts",
+    "src/commands/install/progress.ts",
+    "src/commands/setup-wizard/codex-driver.ts",
+    "src/commands/setup-wizard/gemini-driver.ts",
+    "src/commands/setup-wizard/state-machine.ts",
+    "src/install/accountChoice.ts",
+    "src/install/accountEnroll.ts",
+    "src/install/accounts.ts",
+    "src/install/doorSteps.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
