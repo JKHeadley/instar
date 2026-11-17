@@ -93,3 +93,7 @@ Run on the throwaway agent Maple (`home3`, port 4043), on this branch's build, 2
 ## Local-verify fix (merge line, 2026-11-17 14:22Z)
 
 The e2e alive test got 401 device-unauthorized: tests/helpers/trustAppServer.ts marked a local device (localBinding, approvedVia local-install) but kept its stored and request host at the tunnel name, and localBindingOk requires the loopback host (mac-app-creates-agent §A, #3259). The helper now stores and signs with 127.0.0.1:4040 for local devices. Test-only; no product change.
+
+## Local-verify fix 2 (merge line, 2026-11-17 17:44Z)
+
+team-access-status-table: the approve route (`tr-<12 hex>-<6>`) had no generated sample path; the test NAMED table gains `/mobile/trust/requests/tr-0123456789ab-abc123/approve`. Test-only; 6/6.
