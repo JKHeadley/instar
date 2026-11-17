@@ -59,6 +59,8 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       expect(r.status).toBe(503); expect(r.body.error).toMatch(/not enabled/);
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(503);
+      const ask = await request(server.getApp()).post(`/chief-of-staff/projects/${encodeURIComponent(CK)}/pause-ask`).set(auth()).send({ action: 'pause', marker: '[source: telegram 1/2 2026-11-13]' });
+      expect(ask.status).toBe(503);
     } finally { await server.stop(); }
   });
 
@@ -95,6 +97,13 @@ describe('Chief of Staff E2E (feature is alive)', () => {
 
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(200); expect(d.body.conversationKey).toBe(CK); expect(Array.isArray(d.body.checks)).toBe(true); expect(Array.isArray(d.body.intents)).toBe(true);
+      // Owner pause (spec cos-owner-pause-record): the read carries pausedBy and the unknown-event count; the ask route is
+      // mounted and answers honestly — this boot has no Telegram callback machine, so 503 not-callback-machine, never 404.
+      expect(d.body.pausedBy).toBeNull();
+      expect(r.body.projects[0].pausedBy).toBeNull();
+      expect(r.body.unknownLifecycleEvents).toEqual({});
+      const ask = await request(server.getApp()).post(`/chief-of-staff/projects/${encodeURIComponent(CK)}/pause-ask`).set(auth()).send({ action: 'pause', marker: '[source: telegram 1/2 2026-11-13]' });
+      expect(ask.status).toBe(503); expect(ask.body.error).toBe('not-callback-machine');
 
       const nf = await request(server.getApp()).get('/chief-of-staff/projects/telegram:1').set(auth());
       expect(nf.status).toBe(404);

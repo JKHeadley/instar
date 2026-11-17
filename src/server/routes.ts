@@ -9567,6 +9567,19 @@ export function createRoutes(ctx: RouteContext): Router {
     const r = await ctx.chiefOfStaffLoop.ownerTap(`cos:${action}:${key}`, 'owner-tap');
     res.status(r === 'ok' ? 200 : 409).json({ ok: r === 'ok', result: r });
   });
+  // POST /chief-of-staff/projects/:key/pause-ask — the agent asks the OWNER to pause or resume a tracked project
+  // (spec cos-owner-pause-record §3.2). Body: { action: 'pause'|'resume', marker } citing the owner's own logged
+  // message. This sends the owner one Telegram button; only the owner's tap on that exact message pauses or resumes.
+  router.post('/chief-of-staff/projects/:key/pause-ask', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (b.action !== 'pause' && b.action !== 'resume') { res.status(400).json({ error: 'action must be pause or resume' }); return; }
+    if (typeof b.marker !== 'string' || !b.marker.trim()) { res.status(400).json({ error: 'marker is required: the owner message, as [source: telegram <topic>/<message> <date>]' }); return; }
+    const key = String(req.params.key ?? '');
+    const r = await ctx.chiefOfStaffLoop.requestOwnerPause(key, b.action, b.marker);
+    if (!r.ok) { res.status(r.status).json({ error: r.reason }); return; }
+    res.json({ ok: true, asked: true, olderMachines: r.olderMachines, note: 'The owner has been asked; nothing is paused until they tap.' });
+  });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });

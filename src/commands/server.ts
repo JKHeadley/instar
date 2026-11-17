@@ -91,6 +91,7 @@ import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierR
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { markedInboundPrefix, markedHistoryLabel } from '../messaging/shared/onBehalfMarker.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { compareVersions as compareInstarVersions } from '../core/threadlineMcpSpawn.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
@@ -12402,6 +12403,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         // §4: a Chief-of-Staff-started run is not revived once the operator check-in lease has expired.
         const rec = _cosRunRecordRead?.(topicId);
         if (rec?.cosNoRespawn && !_cosProtocol.operatorLeaseLive()) return 'cos-lease-expired';
+        // The owner paused this project (spec cos-owner-pause-record §3.3): a Chief-of-Staff-started run that ends is not revived.
+        if (rec?.cosNoRespawn && _cosLoop?.isOwnerPaused(`telegram:${topicId}`)) return 'cos-owner-paused';
         return null;
       } catch { /* @silent-fallback-ok: a throwing Chief of Staff read makes the producer STAND DOWN (the safe side), never act */ return 'cos-dep-threw'; }
     };
@@ -18747,7 +18750,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             cosSuppress: (topicId) => {
               try {
                 const rec = _cosRunRecordRead?.(topicId) ?? null;
-                return rec?.cosNoRespawn && _cosProtocol && !_cosProtocol.operatorLeaseLive() ? 'cos-lease-expired' : null;
+                if (rec?.cosNoRespawn && _cosProtocol && !_cosProtocol.operatorLeaseLive()) return 'cos-lease-expired';
+                return rec?.cosNoRespawn && _cosLoop?.isOwnerPaused(`telegram:${topicId}`) ? 'cos-owner-paused' : null;
               } catch { /* @silent-fallback-ok: an unreadable run record cannot suppress the heartbeat; the heartbeat then behaves exactly as before this feature */ return null; }
             },
             getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
@@ -30757,6 +30761,50 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
                 rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
+                // Owner pause / resume asks (spec cos-owner-pause-record §3.2): only where the owner's button presses arrive.
+                ...(telegram ? { pauseAsk: {
+                  receivesCallbacks: () => coordinator.isAwake,
+                  asksEnabled: () => liveConfig.get<boolean | undefined>('chiefOfStaff.ownerPause.asks', undefined) !== false,
+                  ownerName: () => { try { return readPairingOwnerName(config.stateDir, config.users, telegram?.getOwnerUserId() ?? config.monitoring?.promptGate?.ownerId) || null; } catch { /* @silent-fallback-ok: an unreadable name records "owner" */ return null; } },
+                  conversationName: (conversation: string) => { const n = Number(conversation); return Number.isSafeInteger(n) && n > 0 ? telegram?.getTopicName(n) ?? null : null; },
+                  olderMachines: () => {
+                    const out: string[] = [];
+                    try {
+                      for (const m of _listPoolMachines?.() ?? []) {
+                        if (m.machineId === _meshSelfId) continue;
+                        const cap = machinePoolRegistry?.getCapacity(m.machineId) ?? null;
+                        const v = cap?.coherenceAdvert?.instarVersion ?? cap?.hardware?.instarVersion ?? null;
+                        const cmp = compareInstarVersions(v, startupVersion);
+                        if (cmp !== null && cmp < 0) out.push(verifiedEntityName(m.machineId, m.nickname) ?? m.machineId);
+                      }
+                    } catch { /* @silent-fallback-ok: the older-machine list is a warning only; an unreadable pool warns about nothing */ }
+                    return out;
+                  },
+                  store: {
+                    load: () => (state.get<Record<string, import('../core/ChiefOfStaffLoop.js').PauseAsk>>('cos-pause-asks') ?? {}),
+                    save: (asks: Record<string, import('../core/ChiefOfStaffLoop.js').PauseAsk>) => { state.set('cos-pause-asks', asks); },
+                  },
+                  removeButtons: (chatId: string, messageId: number) => telegram!.clearInlineButtons(chatId, messageId),
+                  // The chat actually used (the one-reader rule picks the topic or the owner's private chat), so the tap can match it.
+                  send: async (text: string, button: { label: string; id: string }, ownerTextFirst?: string) => {
+                    const tg = telegram!;
+                    const cosTopic = _cosTopicId();
+                    const readers = await (tg.groupReaderCount?.() ?? Promise.resolve(null));
+                    const btn = { text: button.label.slice(0, 48), data: button.id.slice(0, 64) };
+                    if (!cosTopic || readers === null || readers > 1) {
+                      const owner = tg.getOwnerUserId();
+                      if (!owner) return null;
+                      if (ownerTextFirst) { const first = await tg.sendOwnerDMWithButton(ownerTextFirst, null, { reportHeld: true }); if (first === null) return null; if (first === TelegramAdapter.OWNER_DM_HELD) return 'unconfirmed'; }
+                      const id = await tg.sendOwnerDMWithButton(text, [btn], { reportHeld: true });
+                      if (id === null) return null;
+                      if (id === TelegramAdapter.OWNER_DM_HELD) return 'unconfirmed';
+                      return { chatId: String(owner), messageId: id };
+                    }
+                    if (ownerTextFirst) { const first = await tg.sendOfferList(cosTopic, ownerTextFirst, []); if (first === null) return null; }
+                    const id = await tg.sendOfferList(cosTopic, text, [btn]);
+                    return id === null ? null : { chatId: String(tg.getChatId()), messageId: id };
+                  },
+                } } : {}),
                 log: (m) => console.log(pc.dim(`  ${m}`)),
               });
               loop.start();
@@ -30767,7 +30815,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // counts as a check-in (§4: "a Telegram message or callback tap whose from.id === ownerUserId").
                 telegram.onChiefOfStaffTap = async (tap) => {
                   loop.recordRenewal({ renewedVia: 'telegram', principal: `telegram:${tap.fromUserId}`, eventRef: `telegram-callback:${tap.callbackQueryId}`, sign: (c) => idMod.sign(c, localSigningKeyPem) });
-                  return loop.ownerTap(tap.data, 'owner-tap');
+                  return loop.ownerTap(tap.data, 'owner-tap', { chatId: tap.chatId, messageId: tap.messageId });
                 };
               }
               _cosRenewalHook = (topicId, telegramUserId, messageId) => {

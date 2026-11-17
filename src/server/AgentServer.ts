@@ -7075,6 +7075,20 @@ export class AgentServer {
     routeCtx.desktopSetupTarget = this.desktopSetupTarget;
     this.attribution = this.createAttribution(options, routeCtx);
     routeCtx.attribution = this.attribution;
+    // Chief of Staff owner pause asks (spec cos-owner-pause-record §3.2): the source floor reads the attribution
+    // resolver and the same verified-owner principal the `cos:` button check uses. Bound here because the loop
+    // is built before attribution exists; unbound, asks answer `attribution-unavailable`.
+    {
+      const attribution = this.attribution;
+      const cosLoop = options.chiefOfStaffLoop;
+      // A stand-in loop (tests) may lack the binder; unbound, pause asks refuse 503 attribution-unavailable.
+      if (cosLoop && attribution?.enabled && typeof cosLoop.bindPauseSourceCheck === 'function') {
+        cosLoop.bindPauseSourceCheck(async (marker) => {
+          const { checkOwnerPauseSource } = await import('../core/cosOwnerPauseSource.js');
+          return checkOwnerPauseSource({ resolve: (ref) => attribution.resolve(ref), ownerUid: () => options.telegram?.getVerifiedOwner() ?? null, identity: attribution.identity.map }, marker);
+        });
+      }
+    }
     const routes = createRoutes(routeCtx);
     this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick

@@ -74,6 +74,7 @@ export type CosProtocolOutcome =
 
 export type CosRejectReason =
   | 'cos-disabled'
+  | 'owner-paused'
   | 'invalid-command'
   | 'holder-signature-invalid'
   | 'not-current-holder'
@@ -197,7 +198,7 @@ export interface CosProtocolDeps {
   /** The operator check-in lease (§4), derived by PR 3; PR 2 takes it as a dep. */
   operatorLeaseLive(): boolean;
   /** Derived `nextActionAllowedAt` ISO for the conversation (null = none) and the newest check age in ms. */
-  actionGate(conversationKey: string): { nextActionAllowedAt: string | null; newestCheckAgeMs: number | null };
+  actionGate(conversationKey: string): { nextActionAllowedAt: string | null; newestCheckAgeMs: number | null; paused?: boolean };
   /** Freshness ceiling for the fold at execution (§2.4 step 2c): 2 ticks. */
   laggingFoldMs: number;
   withConversationLock<T>(conversationKey: string, fn: () => Promise<T>): Promise<T>;
@@ -432,6 +433,16 @@ export class ChiefOfStaffActionProtocol {
       for (const s of arb.supersede) await this.writeOutcome(s.intentKey, 'superseded', 'ownership-machine', 'lower-hlc-won');
       const sd = this.standDown(cmd.conversationKey, key);
       if (sd && sd !== 'cos-intent-open') { await this.writeOutcome(key, 'rejected', 'ownership-machine', sd); return { outcome: 'rejected', reason: 'stand-down' }; }
+      // The owner's pause (spec cos-owner-pause-record §3.3), re-read INSIDE the lock just before `executing`:
+      // a restart/redirect claimed before the pause, or by a holder whose fold lagged, does not run.
+      let paused = false;
+      try {
+        const g = this.d.actionGate(cmd.conversationKey);
+        // An unreadable union reads as an infinitely old fold: refuse rather than read "not paused".
+        if (g.newestCheckAgeMs === Number.POSITIVE_INFINITY) { await this.writeOutcome(key, 'rejected', 'ownership-machine', 'lagging-fold'); return { outcome: 'rejected', reason: 'lagging-fold' }; }
+        paused = g.paused === true;
+      } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — an unreadable gate refuses (docs/specs/chief-of-staff-topic.md §2.4) */ await this.writeOutcome(key, 'rejected', 'ownership-machine', 'lagging-fold'); return { outcome: 'rejected', reason: 'lagging-fold' }; }
+      if (paused) { await this.writeOutcome(key, 'rejected', 'ownership-machine', 'owner-paused'); return { outcome: 'rejected', reason: 'owner-paused' }; }
       // `executing` durable BEFORE the side effect.
       const ex = this.d.journal.emit(`${key}:outcome:executing`, buildOutcome({ intentKey: key, transition: 'executing', writer: 'ownership-machine', machine: this.d.machineId, at: new Date(this.d.now()).toISOString() }));
       if ((ex.outcome !== 'emitted' && ex.outcome !== 'accepted') || ex.seq === undefined) { await this.writeOutcome(key, 'rejected', 'ownership-machine', 'durability-failed'); return { outcome: 'rejected', reason: 'durability-failed' }; }

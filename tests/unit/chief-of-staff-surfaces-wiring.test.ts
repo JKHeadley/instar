@@ -32,7 +32,7 @@ describe('Chief of Staff surfaces — static wiring', () => {
     expect(server).toContain('chiefOfStaffInboundVerdict({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId: telegramUserId, owner })');
     expect(server).toContain('_cosOwnerOnlyTopicId = _cosTopicId;');
     expect(server).toContain("telegram.onChiefOfStaffTap = async (tap) => {");
-    expect(server).toContain("return loop.ownerTap(tap.data, 'owner-tap');");
+    expect(server).toContain("return loop.ownerTap(tap.data, 'owner-tap', { chatId: tap.chatId, messageId: tap.messageId });");
     expect(server).toContain('sign: (c) => idMod.sign(c, localSigningKeyPem),');
     // The VERIFIED owner (configured id, else the one verified operator) — Echo Bugs 10000002533.
     expect(server).toContain('const owner = telegram.getVerifiedOwner();');
