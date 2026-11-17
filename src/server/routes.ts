@@ -30181,11 +30181,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    const submission = secretDrop.submit(req.params.token, _csrf, values as Record<string, string>);
-    if (!submission) {
+    const submitted = secretDrop.submitWithReason(req.params.token, _csrf, values as Record<string, string>);
+    if ('refused' in submitted) {
+      if (submitted.refused === 'signature-format-outdated' || submitted.refused === 'signature-format-unknown') {
+        // The link is still valid (a refused submit never consumes it): tell the sender what to do.
+        res.status(400).json({
+          error: submitted.refused === 'signature-format-outdated'
+            ? 'This secret was signed by an Instar version that cannot sign multi-line values safely. Update Instar on the sending machine and send it again.'
+            : 'This secret was signed in a format this agent does not recognise. Make sure both machines run a current Instar and send it again.',
+          reason: submitted.refused,
+        });
+        return;
+      }
       res.status(410).json({ error: 'This link has expired or already been used' });
       return;
     }
+    const submission = submitted.submission;
 
     // ── Store-first durable persistence (2026-06-04) ──────────────────────────
     // Before we confirm or nudge the agent, persist the submission to the durable,

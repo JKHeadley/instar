@@ -166,6 +166,18 @@ export function canonicalSubmitMessage(token: string, declaredValues: Record<str
  * The sender POSTs the returned object as the submission body. Keeping the signer
  * and verifier in one module guarantees they share {@link canonicalSubmitMessage}.
  */
+/**
+ * v2 canonical message (SEC-056): domain-tagged JSON over the token and the declared
+ * fields as `[name, value]` pairs sorted by name. `JSON.stringify` escapes quotes,
+ * backslashes and control characters, so different value maps can never produce the
+ * same bytes (v1's newline-joined `name=value` text could, when a value held a newline).
+ */
+export const SUBMIT_SIGNATURE_VERSION = '2';
+export function canonicalSubmitMessageV2(token: string, declaredValues: Record<string, string>): Buffer {
+  const pairs = Object.keys(declaredValues).sort().map((k) => [k, declaredValues[k]]);
+  return Buffer.from(JSON.stringify(['instar-secret-drop-submit', 2, token, pairs]), 'utf8');
+}
+
 export function buildSignedSubmission(
   token: string,
   declaredValues: Record<string, string>,
@@ -180,9 +192,22 @@ export function buildSignedSubmission(
     format: 'der',
     type: 'pkcs8',
   });
-  const sig = crypto.sign(null, canonicalSubmitMessage(token, declaredValues), privateKey);
-  return { ...declaredValues, _sig: sig.toString('hex') };
+  // Sign exactly what the receiver verifies and stores: the trimmed values. When no value
+  // spans a line, the v1 encoding is unambiguous and older receivers can verify it, so use
+  // it; otherwise v2 (older receivers cannot take a multi-line value safely anyway).
+  const trimmed: Record<string, string> = {};
+  for (const [k, v] of Object.entries(declaredValues)) trimmed[k] = typeof v === 'string' ? v.trim() : v;
+  const multiLine = Object.values(trimmed).some((v) => /[\r\n]/.test(v));
+  if (!multiLine) {
+    const sig = crypto.sign(null, canonicalSubmitMessage(token, trimmed), privateKey);
+    return { ...declaredValues, _sig: sig.toString('hex') };
+  }
+  const sig = crypto.sign(null, canonicalSubmitMessageV2(token, trimmed), privateKey);
+  return { ...declaredValues, _sig: sig.toString('hex'), _sigv: SUBMIT_SIGNATURE_VERSION };
 }
+
+/** Why a submit was refused, when the caller can be told something useful. */
+export type SubmitRefusal = 'signature-format-outdated' | 'signature-format-unknown' | 'rejected';
 
 /**
  * Event emitted when a submission has been sitting in `received` for longer
@@ -298,21 +323,28 @@ export class SecretDrop {
    * Returns the submission on success, null on failure.
    */
   submit(token: string, csrfToken: string, values: Record<string, string>): SecretSubmission | null {
+    const r = this.submitWithReason(token, csrfToken, values);
+    return 'submission' in r ? r.submission : null;
+  }
+
+  /** Same as {@link submit}, but says why a submission was refused. A refused submit never consumes the token. */
+  submitWithReason(token: string, csrfToken: string, values: Record<string, string>): { submission: SecretSubmission } | { refused: SubmitRefusal } {
+    const reject = (refused: SubmitRefusal): { refused: SubmitRefusal } => ({ refused });
     const request = this.getPending(token);
-    if (!request) return null;
+    if (!request) return reject('rejected');
 
     // Verify CSRF token (timing-safe)
     const ha = crypto.createHash('sha256').update(csrfToken).digest();
     const hb = crypto.createHash('sha256').update(request.csrfToken).digest();
     if (!crypto.timingSafeEqual(ha, hb)) {
-      return null;
+      return reject('rejected');
     }
 
     // Validate all required fields are present and non-empty
     for (const field of request.fields) {
       const value = values[field.name];
       if (!value || typeof value !== 'string' || value.trim().length === 0) {
-        return null;
+        return reject('rejected');
       }
     }
 
@@ -330,22 +362,45 @@ export class SecretDrop {
     // behavior for ordinary human Secret Drops.
     if (request.senderVerification) {
       const sigHex = values['_sig'];
-      if (!sigHex || typeof sigHex !== 'string') return null;
-      let verified = false;
+      if (!sigHex || typeof sigHex !== 'string') return reject('rejected');
+      const version = values['_sigv'];
+      let pub: crypto.KeyObject | null = null;
       try {
         const pubRaw = Buffer.from(request.senderVerification.senderPubKeyHex, 'hex');
         if (pubRaw.length === 32) {
-          const pub = crypto.createPublicKey({
+          pub = crypto.createPublicKey({
             key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), pubRaw]),
             format: 'der',
             type: 'spki',
           });
-          verified = crypto.verify(null, canonicalSubmitMessage(token, cleanValues), pub, Buffer.from(sigHex, 'hex'));
         }
       } catch {
-        verified = false;
+        pub = null;
       }
-      if (!verified) return null;
+      if (!pub) return reject('rejected');
+      const sigBuf = Buffer.from(sigHex, 'hex');
+      const check = (msg: Buffer): boolean => { try { return crypto.verify(null, msg, pub as crypto.KeyObject, sigBuf); } catch { return false; } };
+      let verified = false;
+      if (version === SUBMIT_SIGNATURE_VERSION) {
+        verified = check(canonicalSubmitMessageV2(token, cleanValues));
+      } else if (version === undefined) {
+        // v1 (older senders): its encoding is unambiguous only when no value holds a line
+        // break (the declared names are fixed by the request, the token has none). Refuse
+        // anything else with a reason the sender can act on.
+        const rawDeclared: Record<string, string> = {};
+        for (const field of request.fields) rawDeclared[field.name] = values[field.name];
+        // Each v1 encoding is accepted only when ITS values hold no line break. v1 signers signed
+        // the values as sent; the stored values are trimmed, so either form may verify.
+        const hasBreak = (vals: Record<string, string>): boolean => Object.values(vals).some((v) => /[\r\n]/.test(v));
+        const trimmedOk = !hasBreak(cleanValues);
+        const rawOk = !hasBreak(rawDeclared);
+        if (!trimmedOk && !rawOk) return reject('signature-format-outdated');
+        verified = (trimmedOk && check(canonicalSubmitMessage(token, cleanValues)))
+          || (rawOk && check(canonicalSubmitMessage(token, rawDeclared)));
+      } else {
+        return reject('signature-format-unknown');
+      }
+      if (!verified) return reject('rejected');
     }
 
     // Consume the request (one-time use)
@@ -419,7 +474,7 @@ export class SecretDrop {
       }
     }
 
-    return submission;
+    return { submission };
   }
 
   /**
