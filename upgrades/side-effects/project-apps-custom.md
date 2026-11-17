@@ -122,3 +122,22 @@ Independent reviewer (Claude Opus 5.5 subagent, given the diff and spec, not thi
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a` (negative declaration)
 - **reason:** owner-driven: a version card opens once per (app, content hash), with a deterministic id, and sends one notice when it opens. Writes come from the app in the owner's browser and are capped by the pool-wide daily budget. Key renewal is bound to the loaded version, with bounded back-off and a two-hour breaker that stops and offers Try again. No timer creates work.
+
+## Live-proof follow-up (2026-11-17)
+
+The user-role proof on a throwaway agent passed every step. Evidence is in `.instar/lanes/project-apps-proof/part2-live/` in the agent home. It found four defects, all fixed here:
+
+1. **An approved version card never closed.** It stayed "Yours to do" and stayed in Needs you.
+   - The done item is now `agent-may-certify`. The carrier stays the owner, so the card never becomes workable and never triggers an agent pickup.
+   - `settleApprovedCards()` closes the card on the lease holder. It runs only after the phone approval has made that version served. It adds evidence and then calls `claimDone`. It tries once per approval key, logs a refusal and does not retry.
+   - It runs once after each commit (coalesced) and once at boot.
+   - `WorkBoardService.edit` gains `{ serverOwnedRewrite: true }`, passed only by the version-card rewrite and never by an HTTP route. A new version can therefore reopen a finished card into needs-approval. An ordinary agent edit of a done card is still refused, and a test covers that.
+2. **The "sends something outside your team" warning is hidden on phone-only cards.** The record keeps `outward: true`, because that is what makes the card need approval under every board policy. The JSON shows `outward: false` and no warning words.
+3. **The need line on phone-only cards** now reads "Approve this version on your phone to run it" (with its withdrawn, starting and running variants).
+4. **The example app** now says "1 open deal" in the singular.
+
+Tests: 502 unit tests across 16 files, 32 integration and 7 e2e, all passing; typecheck is clean.
+
+Decision-point delta:
+- The closer is a server write on the agent's behalf. It is bounded to once per approval and only acts once a phone approval has been folded, so it adds no new authority.
+- The `serverOwnedRewrite` edit option is internal only.

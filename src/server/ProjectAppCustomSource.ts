@@ -197,6 +197,9 @@ interface Indexed {
   };
 }
 
+/** The version card's one done-item; the server certifies it once the phone's approve serves the version. */
+const VERSION_DONE_ITEM = 'approved';
+
 export class ProjectAppCustomSource implements CustomAppSource {
   readonly keys: ProjectAppKeyStore;
   private readonly now: () => number;
@@ -204,6 +207,9 @@ export class ProjectAppCustomSource implements CustomAppSource {
   private ownBlobs: UnionEntry[] = [];
   private idx: Indexed | null = null;
   private servedCache = new Map<string, { revId: string; html: string }>();
+  /** Approvals settleApprovedCards already tried (tap id + material), so each is tried once. */
+  private readonly settled = new Set<string>();
+  private settlePending = false;
   /** Chunk files known present (true) or absent (false) on disk; kept across rebuilds, changed only by writeDisk / rmDisk. */
   private diskKnown = new Map<string, boolean>();
   /** How often each fold ran (observability, and the proof that reads do not refold). */
@@ -652,7 +658,9 @@ export class ProjectAppCustomSource implements CustomAppSource {
     const fields = this.cardFields({ title: a.title, project, conversationKey: a.conversationKey, note, bytes, findings, appId, contentSha, gen, owner });
     let state: 'opened' | 'rewritten';
     if (existing?.card.created) {
-      const r = svc.edit({ kind: 'agent' }, cardId, fields);
+      // A new version is a new request: the rewrite may reopen a finished card (its approval and
+      // finish are bound to the old material, so the card reads as needing approval again).
+      const r = svc.edit({ kind: 'agent' }, cardId, fields, { serverOwnedRewrite: true });
       if (!r.ok) return { state: 'none', cardId, reason: `The version card could not be rewritten (${r.error}).` };
       state = 'rewritten';
     } else {
@@ -675,6 +683,64 @@ export class ProjectAppCustomSource implements CustomAppSource {
     return { state, cardId };
   }
 
+  /**
+   * Finish every serve card the owner's phone has approved (§3.4): the same approval match that makes
+   * the version served. Only the lease holder writes (the same holder rule every card write follows).
+   * Idempotent: a card already finished for its current material is skipped, and each approval is
+   * tried at most once in this process per hold state (a refusal is logged, never retried in a loop; an approval
+   * whose version is not served here yet is not counted as tried, so a later commit finishes it).
+   * Called (through scheduleSettle) after a commit of any of the three streams, and once at boot.
+   */
+  settleApprovedCards(): { closed: string[]; refused: Array<{ cardId: string; error: string }> } {
+    return this.settle();
+  }
+
+  /** settleApprovedCards after the current commit (coalesced). */
+  scheduleSettle(): void {
+    if (this.settlePending) return;
+    this.settlePending = true;
+    // After the commit that asked: the observer that calls this is inside a journal commit, and
+    // settling writes Work Board records of its own.
+    setImmediate(() => {
+      this.settlePending = false;
+      try { this.settleApprovedCards(); } catch (err) { this.d.log?.({ event: 'custom-card-close-failed', error: (err as Error)?.message }); }
+    });
+  }
+
+  private settle(): { closed: string[]; refused: Array<{ cardId: string; error: string }> } {
+    const out = { closed: [] as string[], refused: [] as Array<{ cardId: string; error: string }> };
+    if (!this.d.holdsLease()) return out;
+    const svc = this.d.workBoard();
+    if (!svc) return out;
+    for (const a of this.apps()) {
+      const cardId = versionCardId(a.appId, 'serve');
+      const v = svc.view(cardId);
+      const card = v?.card;
+      if (!card || !card.created || card.redacted || card.done) continue;
+      if (!card.approvalValid) continue;
+      const { ix, view } = this.servedView(a.appId);
+      const approval = this.approvals(ix, a.appId).find((x) => x.binding.cardId === cardId && x.binding.purpose === 'serve' && x.binding.materialHash === card.materialHash);
+      if (!approval) continue;
+      if (!view.served || view.served.contentSha !== approval.binding.contentSha) continue; // not running here yet
+      // One try per approval and per state of the things that refuse a finish (holds, unreadable parts):
+      // a person releasing a hold earns one more try; nothing the server writes does.
+      const attempt = `${approval.tapId}:${card.materialHash}:${card.holds.join(',')}:${card.unknown.length}`;
+      if (this.settled.has(attempt)) continue;
+      this.settled.add(attempt);
+      if (this.settled.size > 1000) this.settled.delete(this.settled.values().next().value as string);
+      const agent = { kind: 'agent' } as const;
+      if (!card.evidence.some((e) => e.itemId === VERSION_DONE_ITEM && e.counts)) {
+        const e = svc.addEvidence(agent, cardId, { itemId: VERSION_DONE_ITEM, text: 'Approved on your phone; this version is now running.' });
+        if (!e.ok) { out.refused.push({ cardId, error: e.error }); this.d.log?.({ event: 'custom-card-close-refused', appId: a.appId, cardId, step: 'evidence', error: e.error }); continue; }
+      }
+      const c = svc.claimDone(agent, cardId);
+      if (!c.ok) { out.refused.push({ cardId, error: c.error }); this.d.log?.({ event: 'custom-card-close-refused', appId: a.appId, cardId, step: 'claim', error: c.error }); continue; }
+      out.closed.push(cardId);
+      this.d.log?.({ event: 'custom-card-closed', appId: a.appId, cardId, contentSha: approval.binding.contentSha });
+    }
+    return out;
+  }
+
   private cardFields(c: { title: string; project: string; conversationKey: string; note: string; bytes: number; findings: string[]; appId: string; contentSha: string; gen: number; owner: string }): Record<string, unknown> {
     const kb = c.bytes < 1024 ? `${c.bytes} bytes` : c.bytes < 1024 * 1024 ? `${(c.bytes / 1024).toFixed(1)} KB` : `${(c.bytes / 1024 / 1024).toFixed(2)} MB`;
     const titleRaw = `Run ${c.title} new version for ${c.project}?`;
@@ -693,7 +759,15 @@ export class ProjectAppCustomSource implements CustomAppSource {
     ].join('\n\n');
     return {
       title, need,
-      doneWhen: [{ id: 'approved', text: 'You approved this version on your phone', certify: 'owner-confirms' }],
+      // The server finishes the card itself once the phone's approve serves this version
+      // (settleApprovedCards), so the item is agent-certified: an owner-confirms item would leave the
+      // card "Yours to do" after the approve with nothing to close it. The carrier stays the owner:
+      // a card carried by the agent is workable once approved and would start an agent pickup.
+      // `outward` stays true in the record: in the Work Board it is what makes a card need its own
+      // approve tap under every board policy (under "Only outward cards wait" an inward agent card
+      // needs none, and the phone shows Approve only on a card that needs approval). The display
+      // does not say it sends anything outward: cardJson drops the outward wording for phone-only cards.
+      doneWhen: [{ id: VERSION_DONE_ITEM, text: 'You approved this version on your phone', certify: 'agent-may-certify' }],
       carrier: { personKey: c.owner }, outward: true, links: [], projectKey: c.conversationKey,
     };
   }

@@ -25,7 +25,7 @@ describe('custom project apps wiring', () => {
     reg.register(PROJECT_APP_BLOB_KIND_REGISTRATION);
   });
 
-  it('server.ts registers the kind, forces its store on with custom apps, builds the real source and the sandbox, and invalidates on commits', () => {
+  it('server.ts registers the kind, forces its store on with custom apps, builds the real source and the sandbox, and invalidates and settles on commits', () => {
     const src = read('src/commands/server.ts');
     expect(src).toContain('replicatedKindRegistry.register(PROJECT_APP_BLOB_KIND_REGISTRATION)');
     expect(src).toContain('if (_projectAppsCustomOn) s = { ...s, projectAppBlobs: { enabled: true } };');
@@ -33,7 +33,10 @@ describe('custom project apps wiring', () => {
     expect(src).toContain('_projectAppSandbox = new ProjectAppSandbox({ source: paCustom, hmacSecret: () => paCustom.hmacSecret() });');
     expect(src).toContain('workBoardUnion: () => _workBoardRuntime?.svc.entries() ?? []');
     expect(src).toContain('projectAppSandbox: () => _projectAppSandbox, projectAppCustom: () => _projectAppCustom');
-    expect((src.match(/kind === 'project-app-blob' \|\| kind === 'work-card-record'\) _projectAppCustom\?\.invalidate\(\)/g) ?? []).length).toBe(2);
+    // Both commit observers (own and peer) refold and then finish any version card the phone approved.
+    expect((src.match(/kind === 'project-app-blob' \|\| kind === 'work-card-record'\) \{ _projectAppCustom\?\.invalidate\(\); _projectAppCustom\?\.scheduleSettle\(\); \}/g) ?? []).length).toBe(2);
+    // And once at boot (an approve that landed while this machine was down or not the holder).
+    expect(src).toContain('paCustom.scheduleSettle();');
     expect(src).toContain('customApp: (appRef) => {');
   });
 

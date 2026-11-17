@@ -6128,7 +6128,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Project apps: this machine's own offers, answers and pin steps.
           if (kind === 'project-app-record') _projectAppsRuntime?.onCommitted();
           // Custom project apps fold the records, the blobs and the Work Board's approvals.
-          if (kind === 'project-app-record' || kind === 'project-app-blob' || kind === 'work-card-record') _projectAppCustom?.invalidate();
+          if (kind === 'project-app-record' || kind === 'project-app-blob' || kind === 'work-card-record') { _projectAppCustom?.invalidate(); _projectAppCustom?.scheduleSettle(); }
         });
         journalSyncApplier?.setReplicatedRecordCommitObserver((senderMachineId, kind, entries) => {
           conversationGraphReplicationRuntime?.onPeerJournalCommit(senderMachineId, kind, entries);
@@ -6141,7 +6141,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Project apps: a peer's offers, answers and pin acts (the acting machine may be this one).
           if (kind === 'project-app-record') _projectAppsRuntime?.onCommitted();
           // Custom project apps: a peer's revisions, version cards, answers or an owner's approve tap.
-          if (kind === 'project-app-record' || kind === 'project-app-blob' || kind === 'work-card-record') _projectAppCustom?.invalidate();
+          if (kind === 'project-app-record' || kind === 'project-app-blob' || kind === 'work-card-record') { _projectAppCustom?.invalidate(); _projectAppCustom?.scheduleSettle(); }
           // Merge path for replicated pairings (step 5b): null unless the gate is on.
           _threadlinePairingWiring?.onRecordsCommitted(kind);
           // Native app conversations: land peers' events in the local conversation store.
@@ -30931,6 +30931,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 });
                 const paCustom = _projectAppCustom;
                 _projectAppSandbox = new ProjectAppSandbox({ source: paCustom, hmacSecret: () => paCustom.hmacSecret() });
+                // An approve that landed while this machine was down or not the holder: finish its card now.
+                paCustom.scheduleSettle();
                 console.log(pc.dim('  [project-apps] custom apps wired (dev-gated; mesh forwarding and key fetch are not built)'));
               }
             }

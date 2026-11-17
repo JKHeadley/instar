@@ -50,11 +50,12 @@
   const $ = (id) => document.getElementById(id);
   const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
   const say = (t) => { $('status').textContent = t || ''; };
+  const openDeals = (n) => `${n} open ${n === 1 ? 'deal' : 'deals'}`;
 
   function render() {
     const open = deals.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
     const openValue = open.reduce((s, d) => s + (Number(d.value) || 0), 0);
-    $('headline').textContent = `${open.length} open deals worth ${money(openValue)} · ${deals.filter((d) => d.stage === 'Won').length} won`;
+    $('headline').textContent = `${openDeals(open.length)} worth ${money(openValue)} · ${deals.filter((d) => d.stage === 'Won').length} won`;
     const root = $('stages'); root.textContent = '';
     for (const stage of STAGES) {
       const sec = document.createElement('section'); sec.className = 'stage';
@@ -101,7 +102,7 @@
       revision = r.data.revision || revision;
       const open = deals.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
       await call('PUT', 'summary', {
-        headline: `${open.length} open deals worth ${money(open.reduce((s, d) => s + (Number(d.value) || 0), 0))}`,
+        headline: `${openDeals(open.length)} worth ${money(open.reduce((s, d) => s + (Number(d.value) || 0), 0))}`,
         counts: STAGES.slice(0, 4).map((s) => ({ label: s, value: deals.filter((d) => d.stage === s).length })),
         asOf: new Date().toISOString(),
       });

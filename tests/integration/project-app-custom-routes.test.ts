@@ -104,6 +104,11 @@ describe('PUT /project-apps/:appId/source → the version card → the owner\'s 
     expect(h.svc.cardIds()).toEqual([cardId]);
     expect(h.notices).toHaveLength(1);
 
+    // The card as the routes show it: phone-only, the phone's words, nothing outward.
+    const shown = await agent(request(app).get(`/work-board/cards/${cardId}`));
+    expect(shown.status).toBe(200);
+    expect(shown.body.card).toMatchObject({ phoneOnly: true, status: 'needs-approval', lane: 'waiting-on-you', needLine: 'Approve this version on your phone to run it', outward: false, outwardWords: null });
+
     // Not served yet: no ticket.
     expect((await agent(request(app).post(`/project-apps/${appId}/ticket`)).send({})).body).toMatchObject({ error: 'not-served', state: 'none' });
 
@@ -130,6 +135,14 @@ describe('PUT /project-apps/:appId/source → the version card → the owner\'s 
     expect(frame.status).toBe(200);
     expect(frame.text).toBe(HTML);
     expect(frame.headers['content-security-policy']).toContain('sandbox allow-scripts allow-forms');
+
+    // The holder finishes the card (the commit observer's settle): done, off the owner's waiting lane.
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [cardId], refused: [] });
+    const done = await agent(request(app).get(`/work-board/cards/${cardId}`));
+    expect(done.body.card).toMatchObject({ status: 'done', lane: 'done', needLine: 'Approved on your phone; this version is running', done: true });
+    const board = await agent(request(app).get('/work-board'));
+    const waiting = (board.body.lanes as Array<{ lane: string; cards: Array<{ id: string }> }>).find((l) => l.lane === 'waiting-on-you')!;
+    expect(waiting.cards.map((c) => c.id)).not.toContain(cardId);
 
     // The narrow key reads and writes the app's data (and is no Bearer anywhere else).
     const k = await agent(request(app).post(`/project-apps/${appId}/key`)).send({ contentSha: t.body.contentSha });

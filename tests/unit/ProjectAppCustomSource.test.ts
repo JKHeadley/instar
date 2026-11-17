@@ -10,6 +10,7 @@ import { makeHarness, phoneApprove, PROJECT, CONVERGED_SPEC, DRAFT_SPEC, OWNER }
 import { checkAppVersion, checkSpecConverged, HMAC_SLOT_APP_ID, cardNoteText, isPhoneOnlyCard, CARD_NOTE_MAX } from '../../src/server/ProjectAppCustomSource.js';
 import { versionCardId, buildVersionCard, buildKeyRevoked } from '../../src/core/ProjectAppCustomFold.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { cardJson } from '../../src/core/workBoardViews.js';
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/ProjectAppCustomSource.test.ts' }); });
@@ -64,7 +65,11 @@ describe('ProjectAppCustomSource — source, the version card and the served ver
     expect(card.title).toBe('Run Sales pipeline new version for Example: sales pipeline?');
     expect(card.need).toContain('First version: ten made-up deals');
     expect(card.need).toContain(`For support: app ${appId}, version ${sha(HTML1)}, request 1`);
+    // The record keeps outward (it is what makes the card need its own approve under every policy);
+    // the display drops the outward wording for phone-only cards (see the cardJson test below).
     expect(card.outward).toBe(true);
+    expect(card.doneWhen).toEqual([{ id: 'approved', text: 'You approved this version on your phone', certify: 'agent-may-certify' }]);
+    expect(card.carrier).toEqual({ personKey: OWNER });
     expect(h.source.isVersionCard(versionCardId(appId, 'serve'))).toBe(true);
     expect(h.notices).toHaveLength(1);
     expect(h.source.servedVersion(appId)).toEqual({ state: 'none' });
@@ -133,6 +138,143 @@ describe('ProjectAppCustomSource — source, the version card and the served ver
   it('per-write size: a source over the limit answers 413 naming it', () => {
     const { h, appId } = created(makeHarness({ dirs, limits: { sourceBytes: 100 } }));
     expect(h.source.writeSource(appId, '<p>' + 'x'.repeat(200) + '</p>', 'big')).toMatchObject({ status: 413, error: 'too-large', limit: 100 });
+  });
+});
+
+describe('ProjectAppCustomSource — the version card closes once the phone\'s approve serves it', () => {
+  const OWNER_VIEW = { personKey: OWNER, isOwner: true, isAgent: false };
+  const json = (h: ReturnType<typeof makeHarness>, cardId: string) => cardJson(h.svc, h.svc.view(cardId)!, OWNER_VIEW, (k) => k, { phoneOnly: h.source.isVersionCard(cardId) });
+
+  it('approve → done and out of Needs you; v2 → needs approval again; v2 approve → done again', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    expect(h.svc.view(cardId)!.status).toBe('needs-approval');
+    expect(json(h, cardId)).toMatchObject({ lane: 'waiting-on-you', needLine: 'Approve this version on your phone to run it', outward: false, outwardWords: null });
+    expect(JSON.stringify(json(h, cardId))).not.toContain('before the agent starts');
+    // An ordinary card (no phone-only signal) keeps the Work Board's own words.
+    expect(cardJson(h.svc, h.svc.view(cardId)!, OWNER_VIEW, (k) => k)).toMatchObject({ needLine: 'Needs your approval before the agent starts', outward: true });
+    // Nothing to close before the approve.
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+
+    phoneApprove(h, cardId);
+    expect(h.svc.view(cardId)!.status).toBe('with-person'); // approved, served, not yet closed
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [cardId], refused: [] });
+    let v = h.svc.view(cardId)!;
+    expect(v.status).toBe('done');
+    expect(v.card.done).toBe(true);
+    expect(v.card.needsConfirm).toBe(false);
+    expect(v.card.evidence.map((e) => e.text)).toEqual(['Approved on your phone; this version is now running.']);
+    expect(v.card.workable).toBe(false); // carried by the owner: no agent pickup, ever
+    expect(v.pickups).toEqual([]);
+    expect(json(h, cardId)).toMatchObject({ lane: 'done', needLine: 'Approved on your phone; this version is running' });
+    expect(h.svc.lane(v, { isOwner: true, personKey: OWNER })).toBe('done');
+
+    // Idempotent: a second pass (and a rebuilt source) writes nothing.
+    const n = h.board.length;
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    h.source.invalidate();
+    expect(h.rebuild().settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect(h.board.length).toBe(n);
+
+    // v2 rewrites the finished card: it needs approval again; v1 keeps running.
+    const w2 = h.source.writeSource(appId, HTML2, 'v2');
+    expect(w2).toMatchObject({ ok: true, card: { state: 'rewritten', cardId } });
+    h.source.invalidate();
+    v = h.svc.view(cardId)!;
+    expect(v.status).toBe('needs-approval');
+    expect(v.card.done).toBe(false);
+    expect(json(h, cardId)).toMatchObject({ lane: 'waiting-on-you', needLine: 'Approve this version on your phone to run it' });
+    expect(h.source.servedVersion(appId)).toMatchObject({ contentSha: sha(HTML1) });
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+
+    phoneApprove(h, cardId);
+    expect(h.source.servedVersion(appId)).toMatchObject({ state: 'served', contentSha: sha(HTML2) });
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [cardId], refused: [] });
+    v = h.svc.view(cardId)!;
+    expect(v.status).toBe('done');
+    expect(v.card.needsConfirm).toBe(false);
+    expect(json(h, cardId)).toMatchObject({ lane: 'done' });
+  });
+
+  it('scheduleSettle coalesces calls into one settle after the current commit', async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const { h, appId } = created();
+    const src = h.rebuild({ log: (e) => logs.push(e) });
+    const cardId = versionCardId(appId, 'serve');
+    src.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId); src.invalidate();
+    src.scheduleSettle(); src.scheduleSettle(); src.scheduleSettle();
+    expect(h.svc.view(cardId)!.card.done).toBe(false); // not inside the caller's commit
+    await new Promise((r) => setImmediate(r));
+    expect(h.svc.view(cardId)!.card.done).toBe(true);
+    expect(logs.filter((e) => e.event === 'custom-card-closed')).toHaveLength(1);
+  });
+
+  it('a PIN (console) approve serves nothing and closes nothing', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId, 'pin');
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect(h.svc.view(cardId)!.card.done).toBe(false);
+  });
+
+  it('a machine that does not hold the lease writes nothing; the holder then closes it', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId);
+    h.lease.holds = false; h.lease.holder = 'm_mini';
+    const n = h.board.length;
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect(h.board.length).toBe(n);
+    expect(h.svc.view(cardId)!.card.done).toBe(false);
+    h.lease.holds = true; h.lease.holder = 'm_self';
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [cardId], refused: [] });
+  });
+
+  it('a refusal is logged once and not retried for the same approval; releasing the hold earns one more try', () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const h0 = makeHarness({ dirs });
+    const { h, appId } = created(h0);
+    const src = h.rebuild({ log: (e) => logs.push(e) });
+    const cardId = versionCardId(appId, 'serve');
+    src.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId); src.invalidate();
+    // A hold refuses the claim (the evidence lands; the claim is refused 409 held).
+    const hold = h.svc.tap({ kind: 'person', personKey: OWNER, proof: 'pin', isOwner: true }, cardId, { action: 'hold' });
+    expect(hold).toMatchObject({ ok: true });
+    expect(src.settleApprovedCards()).toEqual({ closed: [], refused: [{ cardId, error: 'held' }] });
+    const n = h.board.length;
+    expect(src.settleApprovedCards()).toEqual({ closed: [], refused: [] }); // not retried
+    expect(src.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect(h.board.length).toBe(n);
+    expect(logs.filter((e) => e.event === 'custom-card-close-refused')).toEqual([{ event: 'custom-card-close-refused', appId, cardId, step: 'claim', error: 'held' }]);
+    // The owner releases the hold: one more try, which finishes it (the evidence is not written twice).
+    expect(h.svc.tap({ kind: 'person', personKey: OWNER, proof: 'pin', isOwner: true }, cardId, { action: 'unhold', names: (hold as { recordId: string }).recordId })).toMatchObject({ ok: true });
+    expect(src.settleApprovedCards()).toEqual({ closed: [cardId], refused: [] });
+    expect(h.svc.view(cardId)!.card.evidence).toHaveLength(1);
+    expect(h.svc.view(cardId)!.status).toBe('done');
+  });
+
+  it('under the "Only outward cards wait" policy the version card still needs its own approve', () => {
+    const { h, appId } = created();
+    expect(h.svc.setPolicy({ kind: 'person', personKey: OWNER, proof: 'pin', isOwner: true }, 'outward-only')).toMatchObject({ ok: true });
+    h.source.writeSource(appId, HTML1, 'v1');
+    const cardId = versionCardId(appId, 'serve');
+    expect(h.svc.view(cardId)!.status).toBe('needs-approval');
+    const j = json(h, cardId);
+    expect(j).toMatchObject({ outward: false, outwardWords: null, phoneOnly: true, approvalRequired: true });
+  });
+
+  it('an agent edit of a finished card is still refused without the server-owned rewrite', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId);
+    h.source.settleApprovedCards();
+    expect(h.svc.edit({ kind: 'agent' }, cardId, { need: 'changed by the agent' })).toMatchObject({ status: 409, error: 'reopen-required' });
   });
 });
 

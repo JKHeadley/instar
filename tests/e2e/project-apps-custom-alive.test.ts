@@ -17,7 +17,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ProjectAppSandbox } from '../../src/server/ProjectAppSandbox.js';
-import { makeHarness, PROJECT, CONVERGED_SPEC } from '../helpers/projectAppCustomHarness.js';
+import { makeHarness, phoneApprove, PROJECT, CONVERGED_SPEC } from '../helpers/projectAppCustomHarness.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 const servers: AgentServer[] = [];
@@ -86,6 +86,14 @@ describe('custom project apps — production wiring', () => {
     const pinTap = await agent(request(app).post(`/work-board/cards/${encodeURIComponent(ids[0])}/tap`)).send({ action: 'approve', materialHash: card.body.card.materialHash, titleHash: card.body.card.titleHash, pin: PIN });
     expect(pinTap.status).toBe(403);
     expect(pinTap.body.error).toBe('phone-only-card');
+    expect(card.body.card.needLine).toBe('Approve this version on your phone to run it');
+    expect(card.body.card.outward).toBe(false);
+
+    // The owner's phone approve serves it; the holder's settle finishes the card.
+    expect(phoneApprove(h, ids[0])).toMatchObject({ ok: true });
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [ids[0]], refused: [] });
+    const done = await agent(request(app).get(`/work-board/cards/${encodeURIComponent(ids[0])}`));
+    expect(done.body.card).toMatchObject({ status: 'done', lane: 'done', needLine: 'Approved on your phone; this version is running' });
 
     const list = await agent(request(app).get('/project-apps'));
     expect(list.status).toBe(200);

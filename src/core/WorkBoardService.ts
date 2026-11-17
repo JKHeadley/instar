@@ -414,7 +414,14 @@ export class WorkBoardService {
     return { v };
   }
 
-  edit(p: WorkPrincipal, cardId: string, input: Record<string, unknown>): Result<{ recordId: string; changed: string[] }> {
+  /**
+   * `serverOwnedRewrite` is for the server's own card classes only (a project app's version card,
+   * project-apps-sandbox §3.4): the server rewrites the one card per app to the newest version, and a
+   * new version is a new request, so it may rewrite a finished card. The rewrite changes the material,
+   * which by itself voids the old approval and the old finish (the fold binds both to the material
+   * hash), so the card reads as needing approval again. No HTTP route passes it.
+   */
+  edit(p: WorkPrincipal, cardId: string, input: Record<string, unknown>, opts: { serverOwnedRewrite?: boolean } = {}): Result<{ recordId: string; changed: string[] }> {
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
@@ -428,7 +435,7 @@ export class WorkBoardService {
     const names = Object.keys(changed);
     if (!names.length) return { ok: true, recordId: '', changed: [] };
     const material = names.filter((n) => (MATERIAL_FIELDS as ReadonlyArray<string>).includes(n));
-    if (p.kind !== 'person' && material.length && card.done) return refuse(409, 'reopen-required', { message: 'A finished card can be unfinished only by a person.' });
+    if (p.kind !== 'person' && material.length && card.done && !(opts.serverOwnedRewrite && p.kind === 'agent')) return refuse(409, 'reopen-required', { message: 'A finished card can be unfinished only by a person.' });
     if (changed.carrier !== undefined && changed.carrier !== 'agent') {
       const owner = this.deps.ownerPersonKey();
       if (!owner || (changed.carrier as { personKey?: string })?.personKey !== owner) return refuse(400, 'carrier-not-allowed');
