@@ -39,11 +39,12 @@ Each item names its file and line.
    - No account found: sign-in runs as today.
    - One or more found: it writes `install-progress.json` with `status: "awaiting-person"`, `waitingFor: "account-choice"` and `accounts: [{ id, label, plan?, borrowedFrom? }]`, then stops.
    - The answers file gains `account: { use: <id> } | { new: true }`. A `--resume` reads it; an id that no longer matches a found account is refused with a plain reason.
-   - An older Mac app that doesn't know `account-choice` sees a waiting state it doesn't understand. It shows its generic "Continue" screen, and continuing without an answer means "use the default folder", which is today's behaviour.
+   - An older Mac app that doesn't know `account-choice` sees a waiting state it doesn't understand. It shows its generic "Continue" screen. Continuing without an answer means "use the default folder" when that folder is signed in (today's behaviour), and otherwise goes to sign-in.
 3. **Using an existing account.**
    - **The default folder:** the new agent's pool gets it as its first account, as today.
-   - **A folder inside another agent's home:** it is added as *borrowed*. The new agent uses it but never refreshes its sign-in; only the owning agent refreshes, which avoids two agents racing on one refresh token. If the owner is deleted, the borrowed entry shows "signed out" with a sign-in button, and nothing fails silently.
-   - The card says plainly that the agents share that account's usage limit.
+   - **A folder inside another agent's home:** it is added with `borrowed: { from: <agent> }`, a new pool field. Sharing a folder is the same posture as agents sharing the default `~/.claude` today. The `claude` and `codex` tools refresh their own sign-in when a session runs, so two agents on one folder can race on a refresh exactly as they can now; this change does not make that worse, and it does not claim to fix it.
+   - The card is honest about it: "Shared with <agent>. The agents share this account's usage limit and sign-in. For an agent that runs on its own, sign in to a different account." When that account is borrowed, "Sign in to a different account" is shown first.
+   - If the owning agent is deleted, the borrowed entry shows "signed out" with a sign-in button; nothing fails silently.
 4. **A new account.**
    - A fresh folder is made under the new agent's home (`<agentHome>/.instar/accounts/<door>-<n>`, the next free n, so a re-run never reuses a folder).
    - Sign-in runs into it with `FrameworkLoginDriver` setting `CLAUDE_CONFIG_DIR` or `CODEX_HOME` (`src/core/FrameworkLoginDriver.ts:96-98`), with the same browser handoff as today.
@@ -62,7 +63,10 @@ This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read
    - **FileVault on** (the default on new Macs): a restarted Mac waits at the unlock screen and nothing can run before someone types the password. The switch then reads "Keep <agent> available: restarts after a power cut once you unlock the Mac, and stays awake while plugged in". It promises nothing before login.
    - **FileVault off:** "Starts when the Mac starts, even before anyone logs in, and stays awake while plugged in."
    - Either way it says the Mac's password is asked once to turn it on, and once again to turn it off.
-2. **The privileged helper.** It is an `SMAppService.daemon` helper bundled in the Direct build (Apple's signed route); macOS shows a one-time "allow" in System Settings plus the password. No `osascript` admin shell is used, so no name or path is ever spliced into a root command. The helper takes a fixed, typed request: the agent's home path, validated as being under the user's home and an existing Instar agent.
+2. **The privileged helper.** It is an `SMAppService.daemon` helper bundled in the Direct build (Apple's signed route); macOS shows a one-time "allow" in System Settings plus the password. No `osascript` admin shell is used, so no name or path is ever spliced into a root command. The helper:
+   - **checks the caller:** it accepts an XPC connection only when the caller's code signature satisfies a code requirement naming the Instar app's Team ID and bundle id (audit token, `SecCodeCheckValidity`). Any other process is refused.
+   - **takes the user from the caller:** the user the daemon runs as is read from the caller's audit token (its uid), never from a field in the request.
+   - **checks the path after resolving it:** the agent home in the request is resolved to its real path (symlinks followed) and must lie under that user's home and hold an Instar agent config.
 3. **What it changes.**
    - `pmset -c sleep 0`: on mains power the Mac does not sleep while the lid is open; a closed laptop lid still sleeps, and the switch says so.
    - `pmset autorestart 1`: power returns, the Mac starts.
@@ -72,10 +76,13 @@ This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read
 4. **Claude before login (FileVault off only).** A daemon runs outside the login session and cannot read the login keychain. A daemon-started agent therefore needs a Claude token as its main sign-in, not a fallback. Setup asks the person for one:
    - "Paste the code from the Claude sign-in page" opens `claude setup-token` in the browser; this reuses the existing paste route (`src/commands/install.ts:546-558`, `setClaudeKey`).
    - The token is checked against the chosen account's email (`GET /api/oauth/profile`, `CredentialIdentityOracle`), and a mismatch is refused.
-   - It is stored for that account only, readable by the user alone (mode 0600). It never replaces another account's credentials (a test covers this).
+   - It is stored agent-wide, where the existing route puts it (`sessions.credentials.anthropic`, `writeClaudeKeyToConfig`), with the config file at mode 0600. That makes it the Claude sign-in for every session of this agent while Always available is on; the email check above is what makes it the chosen account. Turning Always available off removes the token and the agent goes back to its pool folder. Other agents' credentials are never touched.
+   - The paste screen shows the expected email first ("Sign in as <email>, then paste the code"), so the email check doesn't loop on a browser signed in to another account.
    - If the person skips it, the daemon is not installed: the switch keeps restart and awake, and says the agent starts at login.
    - **Codex:** a file-based sign-in needs nothing more. A keyring-stored Codex sign-in is treated like Claude: start at login only.
-5. **Settings** gets "Always available" with the same switch; turning it off asks for the password and undoes exactly what the record lists.
+5. **Other things that start the agent.** The fleet watchdog (`ai.instar.watchdog`, `setup.ts:1668`), recovery autostart and the update migrations that reinstall the per-user LaunchAgent all read the Always available record first. While it is on they leave the LaunchAgent off and never start a second copy. A test covers each of them.
+6. **Limits of a daemon-started agent.** It runs outside a desktop session: browser automation, notifications and anything needing the logged-in desktop don't work until someone logs in. The switch's detail line says so in plain words.
+7. **Settings** gets "Always available" with the same switch. It re-checks FileVault each time it opens and updates the wording if that changed. Turning it off asks for the password and undoes exactly what the record lists.
 
 ## Rollback
 
@@ -85,10 +92,14 @@ This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read
 ## Tests
 
 - **Unit:**
-  - account discovery against a fixture home holding two Claude folders, one with the same email, and one Codex folder;
-  - the `account-choice` state, both answers and a stale id;
-  - the pool written for `use` and for `new`;
-  - the Always available plist and the pmset undo record.
+  - account discovery against a fixture home holding two Claude folders, one with the same email, one Codex folder and a keyring-stored Codex;
+  - the `account-choice` state, both answers, a stale id, and the older-app fallback both with and without a signed-in default folder;
+  - the pool written for `use`, for `new` (next free folder on a re-run) and for a borrowed folder;
+  - the FileVault on/off wording;
+  - the Always available plist; the undo record only restoring values still Instar's; the LaunchAgent turned off and back on;
+  - the watchdog, recovery and update paths respecting the record;
+  - the token refused on an email mismatch, and removed on turn-off.
+- **Helper (Swift):** a request from an unsigned or foreign process is refused; a request naming a symlinked or out-of-home path is refused; the user is taken from the caller.
 - **Integration:** an install with `--answers` and an account choice, resumed, ending with the pool's first account being the chosen folder.
 - **E2E:** the install-progress file carries `accounts` on a fixture Mac home.
 - **Live:**
@@ -112,4 +123,4 @@ Round 1, an independent review on 2026-11-17, found three critical issues, four 
 - the lid-close and turn-off-password wording is added;
 - `disksleep` is dropped.
 
-Round 2 is pending.
+Round 2 found two high findings (the helper must check its caller's signature, take the user from the caller and resolve the path; the token's agent-wide storage must be named) plus a partial one (borrowed accounts can still race, because the tools refresh themselves), and six more. All are covered above: the caller signature check, the agent-wide token at mode 0600 removed on turn-off, the shared-account card that recommends a fresh sign-in, watchdog/recovery/updates respecting the record, the older-app fallback to sign-in, the daemon limits wording, the expected email shown first, FileVault re-checked in Settings, and the expanded tests. Round 3 is pending.
