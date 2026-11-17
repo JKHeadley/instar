@@ -142,3 +142,8 @@ Its test gaps are closed with source checks that every session sink tests the st
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable (a code defect in Secret Drop's trust boundary, closed by the tests above).
+
+
+## Follow-up (Local Verify, 2026-11-17)
+
+`writePrivatePasteFile`'s outer catch now carries the `@silent-fallback-ok` annotation with its reason (it logs, and the caller injects the notification inline instead), satisfying the silent-fallback ratchet. No behaviour change.

@@ -859,6 +859,7 @@ export function writePrivatePasteFile(content: string, baseDir: string = os.tmpd
     try { fs.writeSync(fd, content); } finally { fs.closeSync(fd); }
     return filepath;
   } catch (err) {
+    // @silent-fallback-ok — not silent: logged here, and the caller injects the notification inline instead, so it is never lost
     console.error('[session] private paste file refused:', err instanceof Error ? err.message : String(err));
     return null;
   }
