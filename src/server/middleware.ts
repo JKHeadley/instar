@@ -1054,7 +1054,8 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
 
 const DOC_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const DOC_PAGE_GET = new RegExp(`^/docs/(?:_assets/[a-z0-9-]+\\.(?:js|css)|${DOC_UUID}(?:/page-data|/page-compare)?)$`);
-const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+)$`);
+// Page write ops are lower-case words joined by hyphens (`decide-on-phone`, document-decisions §3.3).
+const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+(?:-[a-z]+){0,3})$`);
 /** The document page's self-authenticating routes (documentPageRoutes.ts). */
 export function DOC_PAGE_PATH(method: string, p: string): boolean {
   // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).

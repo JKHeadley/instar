@@ -816,16 +816,19 @@ function renderDecision(page) {
   for (const line of v.lines) kids.push(el('p', { cls: 'decision-line', text: line }));
   const actions = el('div', { cls: 'decision-actions' });
   if (v.controls === 'app-buttons' && (v.waiting || v.changeAnswer || !page.decision.decision)) {
-    if (v.changeAnswer && !v.waiting) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
-    actions.appendChild(button('Approve', () => askApp('approve'), 'btn primary'));
-    actions.appendChild(button('Decline', () => askApp('decline'), 'btn'));
+    const current = page.decision.decision && v.changeAnswer && !v.waiting ? page.decision.decision.verdict : null;
+    if (current) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
+    if (current !== 'approve') actions.appendChild(button('Approve', () => askApp('approve'), 'btn primary'));
+    if (current !== 'decline') actions.appendChild(button('Decline', () => askApp('decline'), current ? 'btn primary' : 'btn'));
   } else if (v.controls === 'update-app') {
     actions.appendChild(el('p', { cls: 'decision-line', text: 'Update the Instar app to decide here.' }));
   } else if (v.controls === 'phone-buttons' && (v.waiting || v.changeAnswer)) {
     // On a computer: the buttons stay on the document; one tap sends it to the phone for Face ID.
-    if (v.changeAnswer && !v.waiting) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
-    actions.appendChild(button('Approve', (e) => askPhone(e.currentTarget, 'approve'), 'btn primary'));
-    actions.appendChild(button('Decline', (e) => askPhone(e.currentTarget, 'decline'), 'btn'));
+    // After an answer, only the other answer is offered (the current one is already recorded).
+    const current = page.decision.decision && v.changeAnswer && !v.waiting ? page.decision.decision.verdict : null;
+    if (current) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
+    if (current !== 'approve') actions.appendChild(button('Approve', (e) => askPhone(e.currentTarget, 'approve'), 'btn primary'));
+    if (current !== 'decline') actions.appendChild(button('Decline', (e) => askPhone(e.currentTarget, 'decline'), current ? 'btn' : 'btn'));
     actions.appendChild(el('span', { cls: 'decision-line', text: 'You confirm on your phone with Face ID.' }));
   } else if (v.controls === 'open-in-app' && v.waiting) {
     const link = M.appDocLink(location.origin, DOC_ID);

@@ -56,6 +56,10 @@ One judgment-candidate value: the 2,000-character question default (WRITE_DEFAUL
 
 New routes (documents-gated): agent `POST /docs/:id/decision-ask`, `POST /docs/:id/decision-ask/close`, `GET /docs/:id/decision`, `GET /docs/decisions/waiting`; phone `GET /mobile/docs/:id/decision`, `POST /mobile/docs/:id/decision/challenge`, `POST /mobile/docs/:id/decision`, `POST /mobile/docs/:id/decision/delivered`; page op `decide-on-phone`. Push kind `document` gains `decide`. Needs-you gains `document-decisions`. App needs build with the native sheet (announced by number).
 
+## Live proof
+
+`scripts/document-decisions-live-proof.ts` on a throwaway agent: all five scenarios PASS (ask; web shows Approve/Decline at both sizes; web Approve → phone Face ID → owner message to the session → page marked approved and sent; Decline + new version asks again; refusals). It caught `DOC_PAGE_POST` in `src/server/middleware.ts` refusing the hyphenated op `decide-on-phone` (fixed, with a test). After an answer the page offers only the other answer.
+
 ## 6b. Operator-surface quality
 
 Surfaces: the document page's decision panel (`dashboard/docs/doc-page.js`, `doc-page-model.js`, `doc-page.css`), the Needs-you row (`dashboard/console/needs-model.js`), and the app's native sheet.

@@ -23,6 +23,7 @@ import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRou
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import type { TeamView } from '../../src/documents/access.js';
 import { checkRowOrigin, NO_NOTE } from '../../src/documents/originCheck.js';
+import { DOC_PAGE_PATH } from '../../src/server/middleware.js';
 
 const tmp: string[] = [];
 afterEach(() => { for (const d of tmp.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/documents-decisions.test.ts' }); });
@@ -177,6 +178,14 @@ describe('document decisions over HTTP', () => {
     expect((await request(no.a).post(`/mobile/docs/${d2.id}/decision/delivered`).set('x-test-device', 'owner-phone').send({ rowKey: dd.body.rowKey, requestId: dd.body.decision.messageRequestId, text: `Approved version 1: https://${HOST}/docs/${d2.id}`, sendPath: '/mobile/chat/7' })).body.error).toBe('not-delivered-here');
     // A receipt for a message that is not about this decision is refused.
     expect((await request(s.a).post(`/mobile/docs/${id}/decision/delivered`).set('x-test-device', 'owner-phone').send({ rowKey: d.body.rowKey, requestId: `${Date.now()}-${crypto.randomUUID()}`, text: 'hi', sendPath: '/mobile/chat/7' })).body.error).toBe('not-this-decision');
+  });
+
+  it('the page write for decide-on-phone passes the bearer-exempt page path (it carries its own device signature)', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(DOC_PAGE_PATH('POST', `/docs/${id}/w/decide-on-phone`)).toBe(true);
+    expect(DOC_PAGE_PATH('POST', `/docs/${id}/w/comment`)).toBe(true);
+    expect(DOC_PAGE_PATH('POST', `/docs/${id}/w/decide-on-phone/x`)).toBe(false);
+    expect(DOC_PAGE_PATH('POST', `/docs/${id}/w/-bad`)).toBe(false);
   });
 
   it('a browser asks the phone (a signed decide-on-phone) and the page data carries the decision panel', async () => {
