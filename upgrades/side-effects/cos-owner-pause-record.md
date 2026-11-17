@@ -104,3 +104,7 @@ Findings (none blocking):
 3. Low. `RECHECK_UNAVAILABLE` (`:387`) treats `not-found` and `identity-unverified` as "could not look". A cited row that has since disappeared still records. That is acceptable because the tap proves current intent, but it should be stated in the spec.
 4. Low. `server.ts:18753`: the heartbeat `cosSuppress` catch returns null, so an unreadable union does not suppress a nudge to a paused run. This matches the documented pre-existing behaviour.
 5. Nit. `server.ts:30681`: the DM goes to `getOwnerUserId()`, but the tap is checked against `getVerifiedOwner()`. If the two differ, the button lands with someone who cannot tap it, which is a safe failure.
+
+## Follow-up (LV e2e failure)
+
+`tests/e2e/conversation-graph-suggestions-alive.test.ts` builds `AgentServer` with a stand-in Chief of Staff loop that has no `bindPauseSourceCheck`, so the unconditional bind threw at construction. The bind now runs only when the loop has the method. Effect on a real loop: none. Effect on a loop without it: pause asks refuse `503 attribution-unavailable` (the existing unbound path), so nothing can pause without the source check.

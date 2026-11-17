@@ -7017,7 +7017,8 @@ export class AgentServer {
     {
       const attribution = this.attribution;
       const cosLoop = options.chiefOfStaffLoop;
-      if (cosLoop && attribution?.enabled) {
+      // A stand-in loop (tests) may lack the binder; unbound, pause asks refuse 503 attribution-unavailable.
+      if (cosLoop && attribution?.enabled && typeof cosLoop.bindPauseSourceCheck === 'function') {
         cosLoop.bindPauseSourceCheck(async (marker) => {
           const { checkOwnerPauseSource } = await import('../core/cosOwnerPauseSource.js');
           return checkOwnerPauseSource({ resolve: (ref) => attribution.resolve(ref), ownerUid: () => options.telegram?.getVerifiedOwner() ?? null, identity: attribution.identity.map }, marker);
