@@ -2,7 +2,9 @@
 title: "Create my agent: choose the AI account, and an Always available option"
 slug: create-agent-accounts-and-always-on
 author: echo
-status: draft
+status: converged
+review-convergence: "2026-11-17T20:58:00Z"
+review-iterations: 3
 parent-principle: "User setup must be trivial"
 eli16-overview: create-agent-accounts-and-always-on.eli16.md
 ---
@@ -76,7 +78,9 @@ This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read
 4. **Claude before login (FileVault off only).** A daemon runs outside the login session and cannot read the login keychain. A daemon-started agent therefore needs a Claude token as its main sign-in, not a fallback. Setup asks the person for one:
    - "Paste the code from the Claude sign-in page" opens `claude setup-token` in the browser; this reuses the existing paste route (`src/commands/install.ts:546-558`, `setClaudeKey`).
    - The token is checked against the chosen account's email (`GET /api/oauth/profile`, `CredentialIdentityOracle`), and a mismatch is refused.
-   - It is stored agent-wide, where the existing route puts it (`sessions.credentials.anthropic`, `writeClaudeKeyToConfig`), with the config file at mode 0600. That makes it the Claude sign-in for every session of this agent while Always available is on; the email check above is what makes it the chosen account. Turning Always available off removes the token and the agent goes back to its pool folder. Other agents' credentials are never touched.
+   - It is stored agent-wide, where the existing route puts it (`sessions.credentials.anthropic`, `writeClaudeKeyToConfig`), with the config file at mode 0600. That makes it the Claude sign-in for every session of this agent while Always available is on; the email check above is what makes it the chosen account. The record keeps any token that was there before (one set with `set-claude-key`). Turning Always available off removes the token only if it is still the one setup wrote, and otherwise puts the earlier one back; the agent then goes back to its pool folder.
+   - While the switch is on, this token overrides the pool: every session uses the chosen account, and the pool can't move to another account when this one reaches its usage limit. The switch's detail line says so, and a test covers it.
+   - The token lasts about a year. The existing `ClaudeKeyHealth` warning watches it, so the person is told before a daemon-started agent loses Claude. Other agents' credentials are never touched.
    - The paste screen shows the expected email first ("Sign in as <email>, then paste the code"), so the email check doesn't loop on a browser signed in to another account.
    - If the person skips it, the daemon is not installed: the switch keeps restart and awake, and says the agent starts at login.
    - **Codex:** a file-based sign-in needs nothing more. A keyring-stored Codex sign-in is treated like Claude: start at login only.
@@ -104,7 +108,7 @@ This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read
 - **E2E:** the install-progress file carries `accounts` on a fixture Mac home.
 - **Live:**
   - on a Mac with two Claude accounts, create an agent, pick the second, and check the first session reports that account's email;
-  - with Always available on a throwaway user, reboot and check the agent answers before login.
+  - with Always available on a throwaway user, reboot and check the agent answers before login; then log in and check that the watchdog and the LaunchAgent don't start a second copy.
 
 ## Review
 
@@ -123,4 +127,4 @@ Round 1, an independent review on 2026-11-17, found three critical issues, four 
 - the lid-close and turn-off-password wording is added;
 - `disksleep` is dropped.
 
-Round 2 found two high findings (the helper must check its caller's signature, take the user from the caller and resolve the path; the token's agent-wide storage must be named) plus a partial one (borrowed accounts can still race, because the tools refresh themselves), and six more. All are covered above: the caller signature check, the agent-wide token at mode 0600 removed on turn-off, the shared-account card that recommends a fresh sign-in, watchdog/recovery/updates respecting the record, the older-app fallback to sign-in, the daemon limits wording, the expected email shown first, FileVault re-checked in Settings, and the expanded tests. Round 3 is pending.
+Round 2 found two high findings (the helper must check its caller's signature, take the user from the caller and resolve the path; the token's agent-wide storage must be named) plus a partial one (borrowed accounts can still race, because the tools refresh themselves), and six more. All are covered above: the caller signature check, the agent-wide token at mode 0600 removed on turn-off, the shared-account card that recommends a fresh sign-in, watchdog/recovery/updates respecting the record, the older-app fallback to sign-in, the daemon limits wording, the expected email shown first, FileVault re-checked in Settings, and the expanded tests. Round 3 closed every critical and high finding. Its four remaining points are folded in: an earlier token is kept and restored, the pool override is stated and tested, the token's expiry is watched, and the live test covers a login after boot. The spec is converged after three rounds.
