@@ -1,0 +1,85 @@
+# Side-Effects Review — Block mode's EXO 3.0 conditions 2, 5 and 6 (organization never rules)
+
+**Version / slug:** `org-block-conditions`
+**Date:** `2026-11-16`
+**Author:** `echo`
+**Second-pass reviewer:** `independent subagent (see below)`
+
+## Summary of the change
+
+Three of the remaining EXO 3.0 conditions in `docs/specs/org-never-actions.md` ("Block mode: Justin's approval and its EXO 3.0 conditions"). Block mode stays unreachable (`blockingApproved` is still never set by code).
+
+- **Condition 2, a held action reaches the person.**
+  - `setOrgNotify` in `OrgActionCheck.ts`, wired in `AgentServer.raiseOrgNotice`. It raises an attention item when Telegram is connected; otherwise it adds to the local attention list and sends an app push.
+  - Every held action raises one notice, keyed by its check id.
+  - The Mac app shows the held action, its rule and content, and "Allow once" (Mac commit fb9a9e7).
+- **Condition 5, the judge never swaps provider or account.** A new `attribution.noFailureSwap` flag in `IntelligenceRouter` skips every swap position (other doors and sibling accounts) for that call. `judgeOrgAction` sets it, so a failure is returned and the check fails closed.
+- **Condition 6, budget.**
+  - The judge's `onUsage` tokens are charged at fast-model rates. The fixed estimate is used only when the provider reports nothing.
+  - When the budget is used up, the person is told once that day (`org/budget-notice-day`).
+
+## Decision-point inventory
+
+- Router swap — modify — a caller may opt out; only `OrgPolicyJudge` does.
+- Notices — add — one per held action, one per day for the budget.
+
+---
+
+## 1. Over-block
+
+None new. In block mode a judge failure was already held for the person; now it's held without first trying another provider.
+
+## 2. Under-block
+
+None.
+
+## 3. Level-of-abstraction fit
+
+The opt-out lives in the router, which owns swap decisions. Notices reuse the existing attention path.
+
+## 4. Signal vs authority compliance
+
+Unchanged: the judge decides, and a failure is "unknown", which holds in block mode.
+
+## 4b. Judgment-point check
+
+The same judge; this changes only where its content may go.
+
+## 5. Interactions
+
+- The router: every other caller is unaffected, because the flag defaults off.
+- Attention: items are keyed `agent:org-check:<id>` and `agent:org-budget:<day>`.
+
+## 6. External surfaces
+
+None.
+
+## 7. Multi-machine posture (Cross-Machine Coherence)
+
+Machine-local, like the checks themselves.
+
+## 8. Rollback cost
+
+Revert: the judge may swap again, and the notices stop. No migration.
+
+## Class-Closure Declaration
+
+- `unbounded-self-action` — closure `n/a`: one notice per held action, and at most one budget notice a day.
+
+## Conclusion
+
+Conditions 2, 5 and 6 are met. Conditions 8 (a live block-mode check) and 9 (a code re-audit) come before `blockingApproved` is set for the pilot.
+
+## Second-pass review (if required)
+
+**Reviewer:** second-pass subagent
+**Independent read of the artifact: concur**, with three small fixes, all applied:
+- `noFailureSwap` now also closes the non-gating swap path.
+- The budget notice says what really happens in observe mode, where actions aren't held.
+- A notice the local list refuses is logged.
+
+One note is recorded, not changed: when the routed framework's binary is missing, the router falls back to the agent's default provider. That is still one of the agent's own configured accounts, never a swap tail.
+
+## Evidence pointers
+
+- `tests/unit/org-block-conditions.test.ts`; Mac fb9a9e7.

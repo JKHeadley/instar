@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "org-block-conditions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T01:31:25.504Z",
+  "artifactPath": "upgrades/side-effects/org-block-conditions.md",
+  "artifactSha256": "07150d87981b9513dc97b98ebdf0600eef2d58c5a1da285e14094176722c7e8f",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "docs/specs/org-never-actions.eli16.md",
+    "docs/specs/org-never-actions.md",
+    "src/core/IntelligenceRouter.ts",
+    "src/core/IntentTestHarness.ts",
+    "src/core/OrgActionCheck.ts",
+    "src/core/types.ts",
+    "src/data/state-coherence-registry.json",
+    "src/server/AgentServer.ts",
+    "tests/unit/org-block-conditions.test.ts",
+    "upgrades/side-effects/org-block-conditions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Router swap opt-out and the person's notices for block mode; block still unreachable.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

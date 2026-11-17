@@ -1,7 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
-import { orgDecisionJournal } from '../core/OrgActionCheck.js';
+import { orgDecisionJournal, setOrgNotify } from '../core/OrgActionCheck.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -820,6 +820,24 @@ export class AgentServer {
     people.onNewSender = pass;
     const boot = setTimeout(pass, 3 * 60_000); boot.unref();
     const hourly = setInterval(pass, 60 * 60_000); hourly.unref();
+  }
+
+  /** The organization policy check's notices (org-never-actions; EXO 3.0 conditions 2 and 6): same route as below. */
+  private async raiseOrgNotice(key: string, title: string, text: string): Promise<void> {
+    const id = `agent:${key}`;
+    if (!this.telegramAdapter) {
+      const stored = this.localAttention?.raise({ id, title, summary: text, description: text, priority: 'NORMAL', category: 'system', source: 'agent', sourceContext: 'org-policy' }) ?? false;
+      if (!stored) console.warn(`[org-policy] notice not stored (${key}): ${title}`);
+      if (stored) {
+        try { this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}`, priority: 'NORMAL' }); } catch { /* @silent-fallback-ok — the item is stored; the push reports its own degradation */ }
+      }
+      return;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id, conditionKey: key, title, summary: text, description: text, priority: 'NORMAL', category: 'system', sourceContext: 'org-policy' });
+    } catch (err) {
+      console.warn(`[org-policy] notice not raised: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** With Telegram, an attention item keyed by condition; without, the local list and a push. */
@@ -7875,6 +7893,7 @@ export class AgentServer {
           intelligence: () => options.intelligence ?? null,
           config: () => options.config,
           journal: orgDecisionJournal(options.config.stateDir),
+          ...(() => { setOrgNotify((key, title, text) => { void this.raiseOrgNotice(key, title, text); }); return {}; })(),
           effects: () => ({
             currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
             currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,

@@ -30,6 +30,19 @@ Justin approved "easy setup for new people" on 16 November 2026. One part is tha
 - Commands outside the listed ones aren't checked (scripts, `git push`, `npm publish`), nor what sits behind an ID the agent only names. These are stated as limits.
 - The AI check can be wrong. Observe mode exists to measure how often before anything blocks.
 
+## Where blocking stands
+
+Justin said yes to blocking on 16 November 2026, as long as it meets the EXO 3.0 requirements. An independent check listed nine things to do first. Done so far:
+- A blocked message reaches the agent as itself, not as the wrong refusal.
+- A held action reaches the person, with an "Allow once" card in the app.
+- The check never fails open.
+- Every judgment goes in the decision log.
+- The check never moves to another provider.
+- The budget follows the real cost.
+- A fresh test set passed.
+
+Still to do: a live test on a throwaway agent and a final code review. Then it goes to the Monroe pilot first.
+
 ## What needs deciding
 
-Justin's yes or no on turning on blocking for agents that join an organization. Nothing else.
+Nothing more for Justin.

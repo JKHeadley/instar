@@ -1547,8 +1547,11 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // child inherited, and inventing an id here would make the self-exclusion filter below
     // silently wrong. Null simply means no sibling can be excluded by identity.
     const primaryAccountId: string | null = options?.accountOverride?.accountId ?? null;
+    // A caller whose content may only go to the provider and account it chose (the organization policy judge:
+    // org-never-actions §B, EXO 3.0) opts out of every swap; it fails closed instead.
+    const noSwap = options?.attribution?.noFailureSwap === true;
     const doorPositions: ReadonlyArray<{ door: IntelligenceFramework; model?: string }> =
-      gating || deferrable
+      (gating || deferrable) && !noSwap
         ? enforced
           ? enforced.swapTail.map((p) => ({ door: p.door as IntelligenceFramework, model: p.modelId }))
           : (cfg?.failureSwap ?? []).map((fw) => ({ door: fw }))
@@ -1625,7 +1628,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // calls carry no probe (byte-identical). A provider that never surfaces usage
     // (gemini-cli) leaves `primaryProducedTokens` false, so its errors are treated as
     // invocation-level (swap) — the conservative, error-reducing direction when unobservable.
-    const nonGatingSwapEligible =
+    const nonGatingSwapEligible = !noSwap &&
       !gating &&
       !deferrable &&
       !enforced &&

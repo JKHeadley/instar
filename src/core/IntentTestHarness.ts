@@ -290,7 +290,7 @@ export type OrgActionVerdict =
 export async function judgeOrgAction(
   input: { never: string[]; kind: string; target: string; evidence: string; userRequest: string },
   provider: IntelligenceProvider,
-  opts: { timeoutMs: number },
+  opts: { timeoutMs: number; onUsage?: (u: { inputTokens: number; outputTokens: number }) => void },
 ): Promise<OrgActionVerdict> {
   if (input.never.length === 0) return { verdict: 'allowed' };
   const fence = (label: string, text: string): string => `<<<${label}\n${text.replace(/>>>/g, '> > >')}\n${label}>>>`;
@@ -314,8 +314,8 @@ export async function judgeOrgAction(
   let raw: string;
   try {
     raw = await provider.evaluate(prompt, {
-      model: 'fast', maxTokens: 250, temperature: 0, timeoutMs: opts.timeoutMs,
-      attribution: { component: 'OrgPolicyJudge', category: 'gate', gating: true },
+      model: 'fast', maxTokens: 250, temperature: 0, timeoutMs: opts.timeoutMs, ...(opts.onUsage ? { onUsage: opts.onUsage } : {}),
+      attribution: { component: 'OrgPolicyJudge', category: 'gate', gating: true, noFailureSwap: true },
     });
   } catch (err) {
     return { verdict: 'unknown', reason: `judge unavailable: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200) };

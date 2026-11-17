@@ -25,6 +25,16 @@ export const CACHE_MS = 10 * 60_000;
 export const PENDING_MS = 30 * 60_000;
 export const DEFAULT_DAILY_CENTS = 50;
 const FALLBACK_CALL_CENTS = 0.1;
+/** Fast-model rates used to turn reported tokens into cents (conservative; spec §B budget, EXO 3.0 condition 6). */
+const CENTS_PER_INPUT_TOKEN = 0.0001;
+const CENTS_PER_OUTPUT_TOKEN = 0.0005;
+
+/** Tells the person something about the policy check (an attention item, or the app's list and a push). */
+let orgNotify: ((key: string, title: string, text: string) => void) | null = null;
+export function setOrgNotify(fn: ((key: string, title: string, text: string) => void) | null): void { orgNotify = fn; }
+function notify(key: string, title: string, text: string): void {
+  try { orgNotify?.(key, title, text); } catch (err) { console.error('[org-policy] notice failed:', err instanceof Error ? err.message : String(err)); }
+}
 
 export interface Evidence {
   kind: 'mcp' | 'bash' | 'message';
@@ -430,7 +440,7 @@ export class OrgActionChecker {
    */
   async judge(args: {
     intent: ParsedOrgIntent; policyHash: string; evidence: Evidence; userRequest: string;
-    provider: IntelligenceProvider | null; providerIsOwn: boolean; dailyCents: number; remainingMs: number;
+    provider: IntelligenceProvider | null; providerIsOwn: boolean; dailyCents: number; remainingMs: number; mode?: 'observe' | 'block';
   }): Promise<{ verdict: OrgActionVerdict; keywordSignal?: string; cached: boolean }> {
     const never = args.intent.constraints.map((c) => c.text);
     const e = args.evidence;
@@ -442,14 +452,31 @@ export class OrgActionChecker {
     const hit = this.cacheGet(key);
     if (hit) return { verdict: hit, ...(keywordSignal ? { keywordSignal } : {}), cached: true };
     if (!args.provider || !args.providerIsOwn) return { verdict: { verdict: 'unknown', reason: 'no judge on the agent\'s own provider' }, ...(keywordSignal ? { keywordSignal } : {}), cached: false };
-    if (this.spentToday() >= args.dailyCents) return { verdict: { verdict: 'unknown', reason: 'daily judge budget used' }, ...(keywordSignal ? { keywordSignal } : {}), cached: false };
+    if (this.spentToday() >= args.dailyCents) {
+      // Told once a day, before a day of held actions (EXO 3.0 condition 6).
+      const day = new Date(this.now()).toISOString().slice(0, 10);
+      const told = path.join(this.root, 'budget-notice-day');
+      let last = ''; try { last = fs.readFileSync(told, 'utf-8').trim(); } catch { last = ''; } // @silent-fallback-ok — never told yet
+      if (last !== day) {
+        writeAtomic(told, day);
+        notify(`org-budget:${day}`, 'Organization policy checks paused for today', args.mode === 'block'
+          ? "Today's budget for checking actions against your organization's policy is used up. Until tomorrow, actions that need a check are held for you in the Instar app."
+          : "Today's budget for checking actions against your organization's policy is used up. Until tomorrow, actions go ahead without being checked; your agent is told it couldn't check them.");
+      }
+      return { verdict: { verdict: 'unknown', reason: 'daily judge budget used' }, ...(keywordSignal ? { keywordSignal } : {}), cached: false };
+    }
     const timeoutMs = Math.max(0, args.remainingMs - 500);
     if (timeoutMs < 500) return { verdict: { verdict: 'unknown', reason: 'out of time' }, cached: false };
+    let usedCents: number | null = null;
     const verdict = await Promise.race([
-      judgeOrgAction({ never, kind: e.kind, target: `${e.operation} ${e.target}`, evidence: (keywordSignal ? `[keyword hint: "${keywordSignal}"]\n` : '') + e.sample, userRequest: args.userRequest }, args.provider, { timeoutMs }),
+      judgeOrgAction({ never, kind: e.kind, target: `${e.operation} ${e.target}`, evidence: (keywordSignal ? `[keyword hint: "${keywordSignal}"]\n` : '') + e.sample, userRequest: args.userRequest }, args.provider, {
+        timeoutMs,
+        onUsage: (u) => { usedCents = u.inputTokens * CENTS_PER_INPUT_TOKEN + u.outputTokens * CENTS_PER_OUTPUT_TOKEN; },
+      }),
       new Promise<OrgActionVerdict>((r) => setTimeout(() => r({ verdict: 'unknown', reason: 'judge timed out' }), timeoutMs).unref?.()),
     ]);
-    this.addSpend(FALLBACK_CALL_CENTS);
+    // The cost the provider reported, or the fixed estimate when it reported nothing.
+    this.addSpend(usedCents ?? FALLBACK_CALL_CENTS);
     if (verdict.verdict !== 'unknown') this.cachePut(key, verdict);
     return { verdict, ...(keywordSignal ? { keywordSignal } : {}), cached: false };
   }
@@ -518,7 +545,7 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     const providerIsOwn = !!ctx.provider && (ctx.provider.frameworkId === undefined || ctx.provider.frameworkId === framework);
     const j = await c.judge({
       intent, policyHash: rec.policySha256, evidence, userRequest: extra.userRequest, provider: ctx.provider, providerIsOwn,
-      dailyCents: ctx.config.orgPolicy?.actions?.judgeDailyCents ?? DEFAULT_DAILY_CENTS, remainingMs: extra.deadlineAt - now(),
+      dailyCents: ctx.config.orgPolicy?.actions?.judgeDailyCents ?? DEFAULT_DAILY_CENTS, remainingMs: extra.deadlineAt - now(), mode,
     });
     const v = j.verdict;
     const keepers = rec.keepers.length ? rec.keepers.join(' or ') : 'the policy owners';
@@ -536,6 +563,8 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
         : `This couldn't be checked against ${rec.orgName}'s policy (${v.reason}). If it might break a rule, ask your person first.` };
     }
     const checkId = c.registerPending(evidence, rec.policySha256, v.verdict === 'breach' ? v.rule : undefined);
+    // The held action reaches the person (EXO 3.0 condition 2): one notice per check, with the allow-once card in the app.
+    notify(`org-check:${checkId}`, `${rec.orgName} policy held an action`, `${v.verdict === 'breach' ? `It may break the rule "${v.rule}".` : `It couldn't be checked (${v.reason}).`} Open the Instar app to read it and allow it once if it's fine.`);
     const reason = v.verdict === 'breach'
       ? `This would break ${rec.orgName}'s rule "${v.rule}". Ask ${keepers}, or your person can allow it once in the Instar app.${v.alternative ? ` Suggested by the policy check: ${v.alternative}` : ''}`
       : evidence.complete

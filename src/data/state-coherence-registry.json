@@ -2871,7 +2871,8 @@
         "org/message-notes.jsonl",
         "org/judge-spend.json",
         "org/check-cache.json",
-        "org/pending-checks/*"
+        "org/pending-checks/*",
+        "org/budget-notice-day"
       ],
       "grandfathered": false,
       "retention": {

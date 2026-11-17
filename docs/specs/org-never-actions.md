@@ -88,11 +88,11 @@ Until then the code ships with `observe` as the only reachable mode (the owner r
 Justin approved block mode in topic 143810 at 16:52 PST on 2026-11-16 ("please proceed as you recommend, as long as it is EXO 3.0 compliant"). He was replying to my recommendation that it stay off until a fresh evaluation set passes, then go to the Monroe pilot first. An independent EXO 3.0 check (docs/exo3, and the standards that cite it) found the core compliant: it fails closed, judges by meaning, and needs approval. It listed what must change first. `blockingApproved` stays unset until every item below is done and verified. Items 2, 5, 6, 8 and 9 land in the PR that turns block mode on:
 
 1. **Done in this PR.** The reply scripts (Telegram, app, Slack, WhatsApp) show a 422 `org-policy` refusal as the rule, who to ask and the checkId, not as a tone-gate block.
-2. A held action reaches the person: an attention item and an app card that calls `/mobile/org/allow-once`, verified on a phone.
+2. **Done.** A held action reaches the person: an attention item and an app card that calls `/mobile/org/allow-once`, verified on a phone.
 3. **Done in this PR.** The hook never fails open in block mode. An unreadable config or bad input with a joined membership denies. Observe mode records checks that failed or went unanswered.
 4. **Done in this PR.** Every judgment is written to the decision journal (the routes and the outgoing-message path).
-5. Same provider and account: compare the router's resolved provider and account, and turn off the failure swap for this judge, as the spec requires.
-6. The budget charges the cost the provider reports, and the person is told once when it runs out.
+5. **Done** (the judge opts out of every router swap with `noFailureSwap`). Same provider and account: compare the router's resolved provider and account, and turn off the failure swap for this judge, as the spec requires.
+6. **Done.** The budget charges the cost the provider reports, and the person is told once when it runs out.
 7. **Done.** A fresh held-out set (tests/fixtures/org-never-actions-eval-2.json), written after the last prompt change, passes the same thresholds: 0/20 routine flagged, 0/20 breaches missed, 0/10 injections changing the verdict, 0 unknown (2026-11-16).
 8. A block-mode live check: a throwaway joined agent sees the refusal naming the rule, then allow-once, then the retry going through. Then the Monroe pilot.
 9. A code re-audit of the hook, routes and reply paths until a pass finds nothing new.

@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-17T01:31:51.689Z",
+  "slug": "org-block-conditions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/IntelligenceRouter.ts",
+      "src/core/IntentTestHarness.ts",
+      "src/core/OrgActionCheck.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one notice per held action and at most one budget notice a day; no loop"
+  },
+  "verdict": "pass"
+}

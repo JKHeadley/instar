@@ -1320,6 +1320,11 @@ export interface IntelligenceOptions {
      */
     gating?: boolean;
     /**
+     * No failure swap: this call's content may only go to the provider and account the router picked first
+     * (org-never-actions §B). A failure is returned to the caller, which fails closed.
+     */
+    noFailureSwap?: boolean;
+    /**
      * DEFERRABLE marker (Resilient Degradation Ladder, docs/specs/resilient-degradation-ladder.md).
      * When true, this is BACKGROUND work the caller is NOT synchronously awaiting (a sentinel /
      * reflector / sweep), so the degradation ladder may slow it down (backoff) and queue it on a
