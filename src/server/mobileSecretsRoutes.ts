@@ -246,9 +246,9 @@ export const PHONE_REQUEST_TTL_MS = 3_600_000;
 
 /** The part of SecretDrop the writes use. */
 export interface SecretDropWrites {
-  create: (o: { label: string; description?: string; topicId?: number; ttlMs: number }) => { token: string };
+  create: (o: { label: string; description?: string; topicId?: number; ttlMs: number; mintAuth?: 'owner-phone' }) => { token: string };
   cancel: (token: string) => boolean;
-  listPending: () => Array<{ token: string; label: string; expiresAt: number; expired: boolean }>;
+  listPending: () => Array<{ token: string; label: string; expiresAt: number; expired: boolean; mintAuth?: string }>;
 }
 
 export interface SecretWriteResult { status: number; body: unknown }
@@ -256,12 +256,14 @@ export interface SecretWriteResult { status: number; body: unknown }
 /** Make one request. The token stays here: the answer names it only by its one-way key. */
 export function askForSecret(drop: SecretDropWrites, label: string, note: string, topicId: number | null, now: number): SecretWriteResult {
   const same = label.trim().toLowerCase();
-  if (drop.listPending().some((p) => p.expired !== true && p.expiresAt > now && p.label.trim().toLowerCase() === same)) {
+  // An unverified request (not made with the agent's key) can never pre-claim the owner's request name.
+  const verified = (p: { mintAuth?: string }) => p.mintAuth === undefined || p.mintAuth === 'master' || p.mintAuth === 'owner-phone' || p.mintAuth === 'dashboard';
+  if (drop.listPending().some((p) => verified(p) && p.expired !== true && p.expiresAt > now && p.label.trim().toLowerCase() === same)) {
     return { status: 409, body: { error: 'already-waiting', detail: 'A request with this name is already waiting. Its link is in the console. To start again, cancel it first.' } };
   }
   let token: string;
   try {
-    ({ token } = drop.create({ label, ...(note ? { description: note } : {}), ...(topicId !== null ? { topicId } : {}), ttlMs: PHONE_REQUEST_TTL_MS }));
+    ({ token } = drop.create({ label, ...(note ? { description: note } : {}), ...(topicId !== null ? { topicId } : {}), ttlMs: PHONE_REQUEST_TTL_MS, mintAuth: 'owner-phone' }));
   } catch (err) {
     // Anything but the pending cap goes up to the route's reported failure.
     if (!(err instanceof Error) || !err.message.startsWith('Too many pending')) throw err;

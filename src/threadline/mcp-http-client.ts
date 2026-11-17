@@ -366,59 +366,59 @@ export async function getThreadReceiptsViaHttp(threadId: string, serverPort: num
 }
 
 /**
- * Sealed-handoff keystone — self-mint a Secret Drop request via the agent
- * server's loopback `/threadline/secrets/request` route.
+ * Mint a Secret Drop request for this agent (sealed-handoff keystone).
  *
- * Deliberately sends NO Authorization header: this route is one of the few
- * exact `/threadline/*` routes the bearer gate leaves public (middleware.ts
- * THREADLINE_PUBLIC_ROUTES) and it enforces loopback-only itself. It predates
- * the stdio helper's vault-aware token resolution (mcpAuthToken.ts) and stays
- * token-free so a helper with NO resolvable token can still mint a sealed
- * handoff — which is the exact gap this route closes.
+ * With the agent's key (`agentToken`), the request goes to the key-gated
+ * `/secrets/request`, so it may name this conversation and its "secret received"
+ * message reaches the session (docs/specs/secret-drop-self-mint-hardening.md).
+ * With no key, or if the key is refused (401), it falls back to the keyless loopback
+ * route: the link still works, but no receipt message can reach a conversation, and
+ * the server's answer carries a plain `notice` saying so.
  * The mint goes through the server's durable SecretDrop store, so the request
  * survives session churn.
  */
 export async function requestSecretViaHttp(
   params: RequestSecretParams,
   serverPort: number,
+  agentToken?: string | null,
 ): Promise<RequestSecretResult> {
-  try {
-    const response = await fetch(`http://localhost:${serverPort}/threadline/secrets/request`, {
+  const body = JSON.stringify({
+    label: params.label,
+    description: params.description,
+    fields: params.fields,
+    topicId: params.topicId,
+    ttlMs: params.ttlMs,
+    senderVerification: params.senderVerification,
+  });
+  const attempt = async (path: string, token?: string | null): Promise<{ status: number; parsed: { token?: string; localUrl?: string; tunnelUrl?: string | null; expiresIn?: number; error?: string; notice?: string } }> => {
+    const response = await fetch(`http://localhost:${serverPort}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: params.label,
-        description: params.description,
-        fields: params.fields,
-        topicId: params.topicId,
-        ttlMs: params.ttlMs,
-        senderVerification: params.senderVerification,
-      }),
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body,
     });
-
     const raw = await response.text();
-    let parsed: {
-      token?: string;
-      localUrl?: string;
-      tunnelUrl?: string | null;
-      expiresIn?: number;
-      error?: string;
-    } = {};
+    let parsed: { token?: string; localUrl?: string; tunnelUrl?: string | null; expiresIn?: number; error?: string; notice?: string } = {};
     try {
       parsed = raw ? JSON.parse(raw) : {};
     } catch {
       /* tolerate a non-JSON body */
     }
-
-    if (!response.ok) {
-      return { success: false, error: parsed.error || `HTTP ${response.status}` };
+    return { status: response.status, parsed };
+  };
+  try {
+    let r = agentToken ? await attempt('/secrets/request', agentToken) : null;
+    // A refused key (401) or a stale one (403, e.g. after a key rotation) falls back to the keyless route.
+    if (!r || r.status === 401 || r.status === 403) r = await attempt('/threadline/secrets/request');
+    if (r.status < 200 || r.status >= 300) {
+      return { success: false, error: r.parsed.error || `HTTP ${r.status}` };
     }
     return {
       success: true,
-      token: parsed.token,
-      localUrl: parsed.localUrl,
-      tunnelUrl: parsed.tunnelUrl ?? null,
-      expiresIn: parsed.expiresIn,
+      token: r.parsed.token,
+      localUrl: r.parsed.localUrl,
+      tunnelUrl: r.parsed.tunnelUrl ?? null,
+      expiresIn: r.parsed.expiresIn,
+      ...(r.parsed.notice ? { notice: r.parsed.notice } : {}),
     };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
