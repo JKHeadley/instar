@@ -16,5 +16,10 @@
   "tier": 2,
   "tierReasoning": "Live-test fix: block mode waits up to 25s for a cold judge; settings timeout 30s with migration.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: a timeout value"
+  }
 }
