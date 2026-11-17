@@ -132,3 +132,5 @@ An independent reviewer read the change on head f0d15898d (2026-11-17, before an
 - No brittle blocking logic was added, and nothing fails open.
 
 One note: the feature-toggle path returned the full proposal result, approval code included. That granted nothing, since approving needs the owner's account to reply to the card. It contradicted part B's note that the agent never sees the code, so this commit strips the code there too, the same way `POST /trust/requests` does.
+
+The same reviewer then read commit b0b8b7a89 and the branch head b8f5d77d7 and answered: **Concur with the review.** The code is removed the same way as on POST /trust/requests, the notes are accurate, and the rest of the diff is trace records only.
