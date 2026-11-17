@@ -183,7 +183,7 @@ export class JevFirstDecision {
       context: {
         stateSha256: stateHash, stateBytes: bytes, stage: point.stage, band: point.band,
         promptVersion: point.promptId, gradingGap: point.gradingGap ?? 'no-linked-outcome-for-commitment-prefilter',
-        jevModel: point.model, jevProbability: jev?.probability ?? null, jevMs: jev?.ms ?? null,
+        jevModel: point.model, jevServedModel: jev?.model ?? null, jevProbability: jev?.probability ?? null, jevMs: jev?.ms ?? null,
         jevTokensIn: jev?.tokensIn ?? null, fallbackModel: incumbent?.model ?? null,
         fallbackSelection: point.fallbackSelection, benchmarkTaskId: point.benchmarkTaskId ?? null,
         handoffReason: reason, jevFailureKind: failure?.kind ?? null,

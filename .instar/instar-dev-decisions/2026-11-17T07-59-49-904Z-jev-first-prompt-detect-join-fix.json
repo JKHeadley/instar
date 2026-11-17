@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-17T07:59:49.904Z",
+  "slug": "jev-first-prompt-detect-join-fix",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/JevFirstDecision.ts",
+      "src/core/JudgmentProvenanceLog.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
