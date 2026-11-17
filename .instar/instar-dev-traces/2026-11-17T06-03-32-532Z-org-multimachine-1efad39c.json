@@ -15,5 +15,10 @@
   "eli16Path": "docs/specs/org-members-and-keepers.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/org-multimachine.md",
   "secondPass": "false",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a comment"
+  }
 }

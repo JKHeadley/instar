@@ -16,5 +16,10 @@
   "eli16Path": "upgrades/side-effects/org-multimachine-rule-fix.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/org-multimachine.md",
   "secondPass": "false",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a comment"
+  }
 }
