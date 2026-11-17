@@ -5238,6 +5238,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // An awareness entry (src/data/awareness/) that failed its checks is left out of the agent's instructions: say so once.
     for (const event of unreportedRegistryDegradations()) degradationReporter.report(event);
 
+    // macOS Local Network access (signal only): a background-started server whose node program
+    // macOS has not approved fails every home-network peer call with EHOSTUNREACH. Name it, with
+    // the fix, instead of letting it read as a dead peer. No-op off macOS.
+    {
+      const { installMacLocalNetworkMonitor } = await import('../core/MacLocalNetworkAccess.js');
+      installMacLocalNetworkMonitor({
+        report: (event) => degradationReporter.report(event),
+        log: (line) => console.warn(`[mac-local-network] ${line}`),
+      });
+    }
+
     // HumanAsDetectorLog — treats a human-caught coherence break (a correction,
     // a "you already said", a "why didn't you catch this") as evidence that some
     // automated guardian failed. Configured early; the inbound-message observe()
