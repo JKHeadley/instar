@@ -11,10 +11,12 @@
 **What it does not do.** It changes nothing. It doesn't move sessions, switch models, pause jobs or send messages. It is a reading on a page that the agent can check. Later steps, each with their own spec, may act on it, with the owner's approval.
 
 **How it stays honest.**
-- A missing or old reading shows as "can't tell", never as empty or full.
-- Forecasts are a range (normal pace and busiest pace), not one confident number.
+- A missing or old reading shows as "can't tell", with the reason (signed out, checks backed off, not checked yet), never as empty or full.
+- Each forecast is a best guess at the current pace, plus a range from the slowest to the fastest recent pace.
+- The same account seen from several machines is counted once, matched by who it actually belongs to, not by its label. If two machines disagree about it, it shows as "machines disagree" instead of an average.
 - Claude and Codex are never added together, and the five-hour, weekly and Fable windows are kept apart.
+- It leads with the group ("9 of 14 accounts have room"), because one account running out early is fine as long as the group has room.
 
-**How we know it works.** After two resets per account, the forecast range should contain the real number at reset in at least 8 out of 10 cases. Until it does, no later step that acts on it starts.
+**How we know it works.** Tests prove the arithmetic. Replaying 17 November from the history has to show that Codex account as "will leave quota unused". After every reset, it also checks itself: what it would have said a day earlier against what actually happened. That record is what a later review uses to decide whether it is good enough to act on. No single number decides it.
 
-**Off switch.** One setting. It is on for the development agent and off for everyone else to begin with.
+**Off switch and rollout.** One setting. It is tried first on a throwaway test agent with replayed history, then runs on Echo for about three weeks (two resets for every account). It reaches every agent only after a review of how well it predicted. The history stays on each machine; it isn't synced or backed up, and it rebuilds itself if lost.
