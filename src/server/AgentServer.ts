@@ -1994,6 +1994,8 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
+    this.app.use('/mobile/local-owner-device', express.json({ limit: '4kb' }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
