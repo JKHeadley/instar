@@ -13,5 +13,10 @@
   "eli16Path": "upgrades/side-effects/org-policy-judge-classified.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "routing classification entry removed until the bench lands"
+  }
 }
