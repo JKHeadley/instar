@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mac-local-network-access",
+  "sessionId": "b9f0b57b-ea17-4159-a631-f9163566e5db",
+  "timestamp": "2026-11-17T16:36:13.782Z",
+  "artifactPath": "upgrades/side-effects/mac-local-network-access.md",
+  "artifactSha256": "5dfba1f50c3ab4cec13ebb9df9f2619f0d6796f16903cab1b9b0ac005015ec34",
+  "coveredFiles": [
+    "upgrades/next/mac-local-network-access.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release note for the signal-only detector",
+  "eli16Path": "docs/specs/mac-local-network-access.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-local-network-access.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
