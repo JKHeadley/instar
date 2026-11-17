@@ -23,12 +23,18 @@ const TS = '1700000002.000002';
 
 function appWith(onMessageLogged: ((row: Record<string, unknown>) => void) | null) {
   const seen: Array<Record<string, unknown>> = [];
-  const promises: string[] = [];
+  const promises: Array<{ channelId: string; sessionName: string; text: string }> = [];
   const slack = {
     sendToChannel: async () => TS,
     resolveRoutingKey: (ch: string) => ch,
     getSessionForChannel: () => 'session-a',
-    trackPromise: (session: string) => { promises.push(session); },
+    // Real signature (SlackAdapter.ts): trackPromise(channelId, sessionName, text).
+    // Record the whole tuple so the assertion pins the production contract rather than
+    // one positional value — a stub that took only the first argument recorded the
+    // CHANNEL and read as a session, which is what the positive control caught.
+    trackPromise: (channelId: string, sessionName: string, text: string) => {
+      promises.push({ channelId, sessionName, text });
+    },
     onMessageLogged,
     logMessage: (row: Record<string, unknown>) => { seen.push(row); },
   };
@@ -62,7 +68,7 @@ describe('POST /slack/reply — a failing onMessageLogged subscriber', () => {
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0].fromUser).toBe(false);
     expect(dispatched[0].messageId).toBe(TS);
-    expect(promises).toEqual(['session-a']);
+    expect(promises).toEqual([{ channelId: 'C_MAIN', sessionName: 'session-a', text: 'hello' }]);
   });
 
   it('a throwing subscriber leaves the delivered reply reported as delivered (not 500)', async () => {
@@ -74,7 +80,7 @@ describe('POST /slack/reply — a failing onMessageLogged subscriber', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.ts).toBe(TS);
     // The work AFTER the dispatch still runs — the throw used to skip it.
-    expect(promises).toEqual(['session-a']);
+    expect(promises).toEqual([{ channelId: 'C_MAIN', sessionName: 'session-a', text: 'hello' }]);
   });
 
   it('a genuine send failure is still 500 (the containment did not widen)', async () => {
