@@ -13,6 +13,7 @@ export const notificationCategories = [
   ['message-loss-notice', 'Message delivery problems'], ['command-response', 'Command responses'],
   ['disk-steward', 'Disk space'], ['never-silent-notice', 'Unanswered message notices'],
   ['pairing-outcome', 'Phone pairing results'],
+  ['owner-decision', 'Decisions only you can make'],
   ['uncategorized', 'Other automated notices'],
 ] as const;
 export type NotificationCategoryId = typeof notificationCategories[number][0];
@@ -25,7 +26,7 @@ export const CONVERSATION_CATEGORIES = new Set<NotificationCategoryId>([
  * the conversation categories plus `pairing-outcome` (docs/specs/mobile-pairing-outcome-notice.md
  * §3.4), which answers the operator's own request in its topic and has its own delivery rule.
  */
-export const PROTECTED_DELIVERY_CATEGORIES = new Set<NotificationCategoryId>([...CONVERSATION_CATEGORIES, 'pairing-outcome']);
+export const PROTECTED_DELIVERY_CATEGORIES = new Set<NotificationCategoryId>([...CONVERSATION_CATEGORIES, 'pairing-outcome', 'owner-decision']);
 export const SIGNIFICANT_TABLE: Readonly<Partial<Record<NotificationCategoryId, readonly SignificantClass[]>>> = {
   // These classes require trusted wiring; arbitrary HTTP metadata cannot grant them.
   'attention-item': ['security-incident', 'data-loss', 'agent-cannot-operate'],
