@@ -84,6 +84,14 @@ export const SIGNAL_GAP_UNARMED_MS = 12 * 60 * 60 * 1000;
  * only the Bearer token cannot drive lifeline restarts faster than that.
  */
 export const SIGNAL_GAP_ARMED_MS = 24 * 60 * 60 * 1000;
+/**
+ * Once armed, a lifeline that sent the valid secret within this window (it
+ * re-proves every 15 minutes) is known to be running and current. An
+ * unverified request in that window is not evidence about the lifeline, so it
+ * writes NO restart signal: otherwise a caller holding only the Bearer token
+ * could bounce the real Telegram intake by claiming any lifelineVersion.
+ */
+export const LIFELINE_RECENT_PROOF_MS = 60 * 60 * 1000;
 /** A lifeline that has not proven itself for this long is reported. */
 export const UNARMED_REPORT_AFTER_MS = 60 * 60 * 1000;
 /**
@@ -153,6 +161,8 @@ export interface LifelineIngressState {
   graduatedBy: 'quiet-window' | 'deadline' | null;
   /** Last restart-signal write (persisted so a server restart keeps the budget). */
   lastSignalAt: string | null;
+  /** Last valid-secret request from the LIFELINE (not the server's own call). */
+  lastLifelineVerifiedAt?: string | null;
   /**
    * Last operator attention item PER KIND (persisted throttle). Per kind, so a
    * recoverable notice ("the lifeline has not updated") can never use up the
@@ -254,6 +264,7 @@ function freshState(nowIso: string): LifelineIngressState {
     graduatedAt: null,
     graduatedBy: null,
     lastSignalAt: null,
+    lastLifelineVerifiedAt: null,
     attentionAt: {},
   };
 }
@@ -503,6 +514,7 @@ export class LifelineIngressGuard {
         // A startup proof arms the guard but is not Telegram traffic, so it
         // does not count toward the quiet-window arm of the exit rule.
         if (route !== 'lifeline-proof') this.state.verifiedSinceLastWouldRefuse++;
+        this.state.lastLifelineVerifiedAt = nowIso;
         this.arm(nowMs, nowIso, 'lifeline-proof');
         this.maybeGraduate(nowMs, nowIso);
       }
@@ -595,7 +607,7 @@ export class LifelineIngressGuard {
     // SIGNAL_GAP_* constants.
     const gap = armed ? SIGNAL_GAP_ARMED_MS : SIGNAL_GAP_UNARMED_MS;
     const lastSignalMs = this.state.lastSignalAt ? Date.parse(this.state.lastSignalAt) : NaN;
-    if (!Number.isFinite(lastSignalMs) || nowMs - lastSignalMs >= gap) {
+    if (!this.lifelineRecentlyProven(nowMs) && (!Number.isFinite(lastSignalMs) || nowMs - lastSignalMs >= gap)) {
       try {
         const wrote = this.opts.writeRestartSignal({
           previousVersion: typeof info.lifelineVersion === 'string' ? info.lifelineVersion.slice(0, 64) : 'unknown',
@@ -624,12 +636,25 @@ export class LifelineIngressGuard {
    */
   spendSignalBudget(): boolean {
     const nowMs = this.now();
+    // An unverified request cannot outweigh a recent proof from the lifeline.
+    if (this.lifelineRecentlyProven(nowMs)) return false;
     const gap = this.state.armedAt !== null ? SIGNAL_GAP_ARMED_MS : SIGNAL_GAP_UNARMED_MS;
     const last = this.state.lastSignalAt ? Date.parse(this.state.lastSignalAt) : NaN;
     if (Number.isFinite(last) && nowMs - last < gap) return false;
     this.state.lastSignalAt = new Date(nowMs).toISOString();
     this.persistSoon(nowMs);
     return true;
+  }
+
+  /**
+   * Armed, and the lifeline itself sent the valid secret within
+   * LIFELINE_RECENT_PROOF_MS: it is running current code, so an unverified
+   * request must not restart it.
+   */
+  private lifelineRecentlyProven(nowMs: number): boolean {
+    if (this.state.armedAt === null) return false;
+    const last = this.state.lastLifelineVerifiedAt ? Date.parse(this.state.lastLifelineVerifiedAt) : NaN;
+    return Number.isFinite(last) && nowMs - last >= 0 && nowMs - last < LIFELINE_RECENT_PROOF_MS;
   }
 
   /** The block published on the authed /health. No secret material. */

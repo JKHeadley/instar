@@ -1,0 +1,20 @@
+{
+  "ts": "2026-11-17T05:47:58.747Z",
+  "slug": "feedback-51b64aa0-17f5-4-3e019d37-a2",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-51b64aa0-17f5-4851-8679-030adf2d2264:a2",
+  "initiativeId": "feedback-51b64aa0-17f5-4851-8679-030adf2d2264",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 1,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/server/LifelineIngressGuard.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

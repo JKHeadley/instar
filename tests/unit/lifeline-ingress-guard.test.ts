@@ -22,6 +22,7 @@ import {
   PERSIST_BURST,
   PERSIST_COALESCE_MS,
   LIFELINE_INGRESS_STATE_RELPATH,
+  LIFELINE_RECENT_PROOF_MS,
 } from '../../src/server/LifelineIngressGuard.js';
 import {
   ensureLifelineIngressSecret,
@@ -553,9 +554,10 @@ describe('LifelineIngressGuard', () => {
       g.evaluate({}, 'telegram-forward');
       expect(signals.length).toBe(2);
     });
-    it('after arming: a refusal writes it, at most once per 24 hours', () => {
+    it('after arming: a refusal writes it once the lifeline has gone quiet, at most once per 24 hours', () => {
       const g = make(true);
       g.evaluate(good(), 'telegram-forward');
+      now += LIFELINE_RECENT_PROOF_MS; // no proof from the lifeline for this long
       g.evaluate({}, 'telegram-forward', { lifelineVersion: '1.3.900' });
       expect(signals).toEqual([{ previousVersion: '1.3.900' }]);
       now += SIGNAL_GAP_ARMED_MS - 1;
@@ -568,6 +570,7 @@ describe('LifelineIngressGuard', () => {
     it('the budget survives a server restart', () => {
       const first = make(true);
       first.evaluate(good(), 'telegram-forward');
+      now += LIFELINE_RECENT_PROOF_MS;
       first.evaluate({}, 'telegram-forward');
       const restarted = restart(first, true);
       restarted.evaluate({}, 'telegram-forward');
@@ -590,6 +593,23 @@ describe('LifelineIngressGuard', () => {
       expect(signals.length).toBe(0);
       now += SIGNAL_GAP_UNARMED_MS;
       expect(g.spendSignalBudget()).toBe(true);
+    });
+    it('a refused secretless request does not restart a lifeline that recently proved itself', () => {
+      // Report: an ordinary-token caller claiming a lifelineVersion bounced the
+      // real lifeline through a refusal (source server-lifeline-secret).
+      const g = make(true); // enforce
+      g.evaluate(good(), 'lifeline-proof', { lifelineVersion: '1.3.1651' });
+      now += 5 * 60 * 1000;
+      const d = g.evaluate({}, 'telegram-forward', { lifelineVersion: '1.3.1651' });
+      expect(d.action).toBe('refuse');
+      expect(signals).toEqual([]);
+      // …and the route's 426 writer is refused the budget too.
+      expect(g.spendSignalBudget()).toBe(false);
+      expect(signals).toEqual([]);
+      // The proof is remembered across a server restart.
+      const restarted = restart(g, true);
+      restarted.evaluate({}, 'telegram-forward', { lifelineVersion: '1.3.1651' });
+      expect(signals).toEqual([]);
     });
     it('a throwing signal writer never turns an accept into an error', () => {
       const g = new LifelineIngressGuard({
