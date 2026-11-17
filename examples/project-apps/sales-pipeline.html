@@ -18,7 +18,7 @@
   .stage h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; display: flex; justify-content: space-between; }
   .deal { border-top: 1px solid var(--line); padding: 8px 0; }
   .deal:first-of-type { border-top: 0; }
-  .deal .name { font-weight: 600; }
+  .deal .name { font-weight: 600; overflow-wrap: anywhere; }
   .deal .meta { color: var(--muted); font-size: 13px; }
   .deal select { margin-top: 6px; width: 100%; padding: 6px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
   form { display: grid; gap: 8px; padding: 0 16px 24px; grid-template-columns: 1fr 120px auto; }
@@ -46,7 +46,7 @@
   const STAGES = ['Lead', 'Qualified', 'Proposal', 'Won', 'Lost'];
   const appId = (location.pathname.match(/project-apps\/(pa_[0-9a-f]{16})\//) || [])[1];
   const api = (p) => `/project-apps/${appId}/api/${p}`;
-  let key = null, revision = null, deals = [], saving = false;
+  let key = null, revision = null, deals = [], saving = false, pending = false, loaded = false;
   const $ = (id) => document.getElementById(id);
   const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
   const say = (t) => { $('status').textContent = t || ''; };
@@ -68,7 +68,7 @@
         const row = document.createElement('div'); row.className = 'deal';
         const n = document.createElement('div'); n.className = 'name'; n.textContent = d.name;
         const m = document.createElement('div'); m.className = 'meta'; m.textContent = money(Number(d.value) || 0);
-        const sel = document.createElement('select'); sel.setAttribute('aria-label', `Stage for ${d.name}`);
+        const sel = document.createElement('select'); sel.setAttribute('aria-label', `Stage for ${d.name}`); sel.disabled = !loaded;
         for (const s of STAGES) { const o = document.createElement('option'); o.value = s; o.textContent = s; if (s === d.stage) o.selected = true; sel.append(o); }
         sel.addEventListener('change', () => { d.stage = sel.value; save(); });
         row.append(n, m, sel); sec.append(row);
@@ -84,40 +84,54 @@
     return { status: r.status, data };
   }
 
+  // Editing stays off until the saved list has loaded, so a late load can never replace an edit.
+  const setEditable = (on) => { for (const el of $('add').elements) el.disabled = !on; };
+  setEditable(false);
+
   async function load() {
-    const r = await call('GET', 'data');
-    if (r.status !== 200) { say("Couldn't load the pipeline right now."); return; }
+    let r;
+    try { r = await call('GET', 'data'); } catch { r = { status: 0 }; }
+    if (r.status !== 200) { say("Couldn't load the pipeline right now. Trying again…"); setTimeout(load, 5000); return; }
     revision = r.data.revision || null;
     deals = (r.data.body && Array.isArray(r.data.body.deals)) ? r.data.body.deals : [];
-    render(); say('');
+    loaded = true; setEditable(true); render(); say('');
   }
 
+  // One save at a time; a change made while a save runs is saved right after it (never dropped).
   async function save() {
-    if (saving) return; saving = true; render(); say('Saving…');
+    if (!loaded) return;
+    if (saving) { pending = true; return; }
+    saving = true; pending = false; render(); say('Saving…');
+    const snapshot = deals.map((d) => ({ name: d.name, value: d.value, stage: d.stage }));
     try {
-      const r = await call('PUT', 'data', { body: { deals }, base: revision });
-      if (r.status === 409 && r.data && r.data.error === 'conflict') { say('Someone else changed this; reloading.'); await load(); return; }
-      if (r.status === 429) { say('Saving is paused until tomorrow.'); return; }
+      const r = await call('PUT', 'data', { body: { deals: snapshot }, base: revision });
+      if (r.status === 409 && r.data && r.data.error === 'conflict') { pending = false; loaded = false; setEditable(false); render(); say('Someone else changed this; reloading.'); await load(); return; }
+      if (r.status === 429 && r.data && r.data.error === 'daily-budget') { pending = false; say('Saving is paused until tomorrow.'); return; }
+      if (r.status === 429) { pending = false; say('Busy; saving again in a moment…'); setTimeout(save, 2000); return; }
       if (r.status !== 200) { say("Can't save right now; your changes are still here."); return; }
       revision = r.data.revision || revision;
-      const open = deals.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
-      await call('PUT', 'summary', {
-        headline: `${openDeals(open.length)} worth ${money(open.reduce((s, d) => s + (Number(d.value) || 0), 0))}`,
-        counts: STAGES.slice(0, 4).map((s) => ({ label: s, value: deals.filter((d) => d.stage === s).length })),
-        asOf: new Date().toISOString(),
-      });
-      parent.postMessage({ type: 'summary-changed' }, '*');
-      say('Saved.');
+      const open = snapshot.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
+      let sum;
+      try {
+        sum = await call('PUT', 'summary', {
+          headline: `${openDeals(open.length)} worth ${money(open.reduce((s, d) => s + (Number(d.value) || 0), 0))}`,
+          counts: STAGES.slice(0, 4).map((s) => ({ label: s, value: snapshot.filter((d) => d.stage === s).length })),
+          asOf: new Date().toISOString(),
+        });
+      } catch { sum = { status: 0 }; }
+      if (sum.status === 200) { parent.postMessage({ type: 'summary-changed' }, '*'); say('Saved.'); }
+      else say('Saved. The project row will catch up with the next save.');
     } catch { say("Can't save right now; your changes are still here."); }
-    finally { saving = false; }
+    finally { saving = false; if (pending) save(); }
   }
 
   $('add').addEventListener('submit', (e) => {
     e.preventDefault();
+    if (!loaded) return;
     const f = e.target;
     const name = String(f.name.value || '').trim(); if (!name) return;
     deals.push({ name, value: Number(f.value.value) || 0, stage: 'Lead' });
-    f.reset(); save();
+    f.reset(); render(); save();
   });
 
   window.addEventListener('message', (e) => {
