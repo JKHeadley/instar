@@ -137,6 +137,15 @@ h2.blk { font-size: 1.5rem; } h3.blk { font-size: 1.25rem; } h4.blk, h5.blk, h6.
 .item.ordered::before { content: attr(data-n); position: absolute; inset-inline-start: -0.4em; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .row { font-family: var(--font-mono); font-size: 0.9rem; margin-bottom: 0.2em; padding: 2px 6px; background: var(--surface-sunk); }
 .row.header { font-weight: 700; }
+/* Tables: real columns. A wide table scrolls sideways inside its own box, never the page. */
+.table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--hairline); border-radius: 8px; }
+.table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.doc-table { border-collapse: collapse; width: 100%; font-size: 0.92rem; line-height: 1.4; }
+.doc-table th, .doc-table td { padding: 8px 12px; text-align: start; vertical-align: top; border-bottom: 1px solid var(--hairline); overflow-wrap: normal; word-break: normal; min-width: 4em; max-width: 28em; }
+.doc-table th { font-weight: 600; color: var(--text-strong); background: var(--surface-sunk); white-space: nowrap; }
+.doc-table tbody tr:last-child td { border-bottom: 0; }
+.doc-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-sunk) 45%, transparent); }
+.doc-table th + th, .doc-table td + td { border-inline-start: 1px solid var(--hairline); }
 .quoted { border-inline-start: 3px solid var(--hairline); padding-inline-start: 12px; color: var(--text-muted); }
 pre.blk {
   font-family: var(--font-mono); font-size: 0.875rem; background: var(--surface-sunk);
