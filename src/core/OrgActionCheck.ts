@@ -112,17 +112,30 @@ export function splitCommands(cmd: string): Array<{ text: string; piped: boolean
 }
 
 /** Joined short flags and `--flag=value` are split so `-d@f`, `-XPOST` and `--data=x` read like their spaced forms. */
-function normalizeFlags(t: string[]): string[] {
+/** curl/wget short options that take a value (so a group like `-sd@f` or `-sXPOST` splits correctly). */
+const VALUE_SHORT = new Set(['d', 'X', 'F', 'T', 'H', 'u', 'o', 'b', 'e', 'A', 'K', 'x', 'w', 'r', 'm']);
+function normalizeFlags(t: string[], tool: string): string[] {
   const out: string[] = [];
+  const curlish = tool === 'curl' || tool === 'wget';
   for (const a of t) {
     const long = /^(--[A-Za-z][\w-]*)=(.*)$/s.exec(a);
-    const short = /^(-[dXFTbtf])(.+)$/s.exec(a);
-    if (long) out.push(long[1]!, long[2]!);
-    else if (short) out.push(short[1]!, short[2]!);
-    else out.push(a);
+    if (long) { out.push(long[1]!, long[2]!); continue; }
+    if (curlish && /^-[A-Za-z]/.test(a) && a.length > 2) {
+      // A group of short flags: each letter is a flag until one takes a value, which is the rest.
+      for (let i = 1; i < a.length; i++) {
+        const c = a[i]!;
+        out.push(`-${c}`);
+        if (VALUE_SHORT.has(c)) { if (i + 1 < a.length) out.push(a.slice(i + 1)); break; }
+      }
+      continue;
+    }
+    out.push(a);
   }
   return out;
 }
+
+/** A value whose real content comes from the shell or a file we didn't read (`$(…)`, backticks, `<file`). */
+function shellSourced(v: string): boolean { return /\$\(|`|\$\{?[A-Za-z_]/.test(v); }
 
 /** A shell-ish tokenizer good enough for the listed commands (quotes, no expansion). */
 export function tokenize(cmd: string): string[] {
@@ -166,11 +179,13 @@ export function bashEvidence(command: string, cwd: string, deadline: number, now
 }
 
 function segmentEvidence(segment: string, piped: boolean, cwd: string, deadline: number, now: () => number): Evidence | null {
-  let t = normalizeFlags(tokenize(segment.replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '')));
+  const raw0 = tokenize(segment.replace(/^[({\s]+/, '').replace(/[)}\s]+$/, ''));
+  let t = raw0;
   while (t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0]!)) t = t.slice(1); // env prefix: FOO=1 curl …
   if (t[0] === 'env' || t[0] === 'command' || t[0] === 'exec' || t[0] === 'sudo') { t = t.slice(1); while (t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0]!)) t = t.slice(1); }
   if (t.length === 0) return null;
   const tool = path.basename(t[0]!);
+  t = [t[0]!, ...normalizeFlags(t.slice(1), tool)];
   const files: FileRead[] = [];
   let bytes = 0;
   let complete = true; let reason: string | undefined;
@@ -198,8 +213,9 @@ function segmentEvidence(segment: string, piped: boolean, cwd: string, deadline:
       if (a === '-X' || a === '--request') method = next().toUpperCase();
       else if (/^(-d|--data|--data-raw|--data-binary|--data-urlencode|--json|-F|--form|--post-data|--body-data)$/.test(a)) {
         const v = next(); method = method === 'GET' ? 'POST' : method;
-        const ref = /^@(.+)$/.exec(v.replace(/^[^=@]*=@/, '@'));
+        const ref = /^[@<](.+)$/.exec(v.replace(/^[^=@<]*=([@<])/, '$1'));
         if (ref) { if (ref[1] === '-') { complete = false; reason = 'body from stdin'; } else files.push(readFile(ref[1]!)); }
+        else if (shellSourced(v)) { complete = false; reason = 'body built by the shell'; bodies.push(v); }
         else bodies.push(v);
       } else if (/^(--post-file|--body-file|-T|--upload-file)$/.test(a)) { method = 'POST'; files.push(readFile(next())); }
       else if (/^https?:\/\//.test(a)) target = a;
@@ -210,10 +226,17 @@ function segmentEvidence(segment: string, piped: boolean, cwd: string, deadline:
     if (/^(issue|pr) (create|comment)$/.test(sub) || t[1] === 'api') {
       for (let i = 2; i < t.length; i++) {
         const a = t[i]!;
-        if (/^(-t|--title|-b|--body|-f|--field|-F|--raw-field)$/.test(a)) {
+        const isApi = t[1] === 'api';
+        if (!isApi && a === '-F') {
+          // In gh issue/pr, -F is --body-file.
+          const f = t[++i] ?? '';
+          if (f === '-') { complete = false; reason = 'body from stdin'; } else files.push(readFile(f));
+        } else if (/^(-t|--title|-b|--body|-f|--field|-F|--raw-field)$/.test(a)) {
           const v = t[++i] ?? '';
           const ref = /^[^=]*=@(.+)$/.exec(v);
-          if (ref) files.push(readFile(ref[1]!)); else bodies.push(v);
+          if (ref) files.push(readFile(ref[1]!));
+          else if (shellSourced(v)) { complete = false; reason = 'body built by the shell'; bodies.push(v); }
+          else bodies.push(v);
         } else if (/^(--body-file|--input)$/.test(a)) {
           const f = t[++i] ?? '';
           if (f === '-') { complete = false; reason = 'body from stdin'; } else files.push(readFile(f));
@@ -223,7 +246,15 @@ function segmentEvidence(segment: string, piped: boolean, cwd: string, deadline:
       checked = t[1] !== 'api' || bodies.length + files.length > 0;
     }
   } else if (tool === 'scp' || tool === 'rsync') {
-    const args = t.slice(1).filter((a) => !a.startsWith('-'));
+    // Options that take a value (a key file, a port, a remote shell) are never read as files to send.
+    const withValue = tool === 'scp' ? /^-[iPoFcSJl]$/ : /^(-e|--rsh|--rsync-path|--password-file|--exclude-from|--include-from|--files-from|-f|--filter)$/;
+    const args: string[] = [];
+    for (let i = 1; i < t.length; i++) {
+      const a = t[i]!;
+      if (withValue.test(a)) { i++; continue; }
+      if (a.startsWith('-')) continue;
+      args.push(a);
+    }
     const dest = args[args.length - 1] ?? '';
     if (/^[^/]*:/.test(dest) || /^rsync:\/\//.test(dest)) {
       target = dest;
@@ -407,7 +438,7 @@ export class OrgActionChecker {
     const kw = new IntentTestHarness(args.intent).testRefusal(`${e.operation} ${e.target} ${e.sample}`.slice(0, 4000));
     const keywordSignal = kw.refused ? kw.matchedConstraint : undefined;
     if (!e.complete) return { verdict: { verdict: 'unknown', reason: e.incompleteReason ?? 'incomplete evidence' }, ...(keywordSignal ? { keywordSignal } : {}), cached: false };
-    const key = sha256([e.contentHash, e.target, args.userRequest, args.policyHash].join('\n'));
+    const key = sha256([e.kind, e.operation, e.contentHash, e.target, args.userRequest, args.policyHash].join('\n'));
     const hit = this.cacheGet(key);
     if (hit) return { verdict: hit, ...(keywordSignal ? { keywordSignal } : {}), cached: true };
     if (!args.provider || !args.providerIsOwn) return { verdict: { verdict: 'unknown', reason: 'no judge on the agent\'s own provider' }, ...(keywordSignal ? { keywordSignal } : {}), cached: false };
@@ -465,12 +496,20 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     const rec = s.currentRecord();
     let policy: string | null = null;
     try { policy = rec ? fs.readFileSync(path.join(ctx.stateDir, 'org', rec.orgId, `v${rec.version}`, 'policy.md'), 'utf-8') : null; } catch { policy = null; } // @silent-fallback-ok — nothing applied, nothing to check
-    if (!rec || policy === null) return { decision: 'pass' };
+    if (!rec) return { decision: 'pass' };
+    if (policy === null) {
+      // Joined, but the applied policy can't be read: recorded, and held in block mode (never a silent pass).
+      const mode0 = orgCheckMode(ctx.config);
+      try { new OrgActionChecker(ctx.stateDir, now).record({ sessionId: extra.sessionId ?? null, mode: mode0, outcome: 'policy-unreadable', operation: evidence.operation }); } catch { /* @silent-fallback-ok — the stderr line reports it */ }
+      console.error('[org-policy] the applied policy could not be read');
+      return mode0 === 'block' ? { decision: 'deny', reason: "Your organization's policy couldn't be read, so I can't check this. Try again in a moment, or ask your person.", checkId: '' } : { decision: 'pass' };
+    }
     const c = new OrgActionChecker(ctx.stateDir, now);
     const mode = orgCheckMode(ctx.config);
     const envelope = OrgActionChecker.envelopeHash(evidence, rec.policySha256);
     if (mode === 'block' && c.consumeAllowOnce(envelope)) {
       c.record({ sessionId: extra.sessionId, mode, outcome: 'allowed-once', operation: evidence.operation, evidenceHash: evidence.contentHash });
+      ctx.journal?.('org-action-check', { sessionId: extra.sessionId ?? null, principle: `org-policy:${rec.orgName}`, outcome: 'allowed-once', operation: evidence.operation, mode });
       return { decision: 'allow' };
     }
     const parsed = parsePolicy(policy);
@@ -489,7 +528,7 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
       keywordSignal: j.keywordSignal ?? null, rule: v.verdict === 'breach' ? v.rule : null, confidence: v.verdict === 'breach' ? v.confidence : null,
       reason: v.verdict === 'unknown' ? v.reason : null, cached: j.cached, sample: maskSample(evidence.sample),
     });
-    if (v.verdict !== 'allowed') ctx.journal?.('org-action-check', { principle: `org-policy:${rec.orgName}`, outcome: v.verdict, rule: v.verdict === 'breach' ? v.rule : null, operation: evidence.operation, mode });
+    ctx.journal?.('org-action-check', { sessionId: extra.sessionId ?? null, principle: `org-policy:${rec.orgName}`, outcome: v.verdict, rule: v.verdict === 'breach' ? v.rule : null, operation: evidence.operation, mode, cached: j.cached });
     if (v.verdict === 'allowed') return { decision: 'allow' };
     if (mode === 'observe') {
       return { decision: 'allow', note: v.verdict === 'breach'

@@ -75,7 +75,22 @@ Justin approved block mode on 2026-11-16 at 16:52 PST, on condition that it is E
 
 Block mode stays unreachable. Its remaining conditions (the person's alert and app card, the same-provider rule with the router's failure swap turned off for this judge, real-cost budget, a live block-mode check, a code re-audit) land in the PR that turns it on.
 
-## Second-pass review (if required)
+## After the EXO 3.0 code re-audit
+
+An independent re-audit of the block path found nine defects. These ones also matter in observe mode and are fixed in this PR:
+- Joined curl flag groups (`-sd@file`, `-sXPOST`) are split.
+- `gh issue|pr -F` reads the body file.
+- Shell-built bodies (`$(…)`, backticks, variables) are marked incomplete.
+- curl `-F "f=<file"` reads the file.
+- scp and rsync option values (`-i key`, `-e …`) are never read as files to send, so a private key can't reach the judge.
+- A joined agent whose policy can't be read is recorded, and held in block mode.
+- Every judgment is journaled, including allowed and allowed-once, with the session id.
+- The verdict cache key includes the tool.
+- Unreadable hook input holds the action in block mode.
+
+The block-only defects (a forgeable allow-once, the proxy-flag and relay paths, provider pinning, late usage) are fixed in the block-mode PR before `blockingApproved` is set.
+
+
 
 **Reviewer:** second-pass subagent (two reads)
 **Independent read of the artifact: concur** (second read)

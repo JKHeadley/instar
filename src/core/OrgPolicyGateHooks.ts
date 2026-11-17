@@ -38,8 +38,9 @@ process.stdin.on('end', async () => {
   let input = null;
   try { input = JSON.parse(data); } catch { input = null; }
   if (!input) {
-    // Nothing to forward: a note, never a block (the mode can't matter for an action we can't read).
     note('hook input unreadable');
+    // Block mode (or a mode we couldn't read) holds an action it can't read; observe adds a note.
+    if (block || !cfgOk) return out({ permissionDecision: 'deny', permissionDecisionReason: "I couldn't read this action to check it against your organization's policy. Try again, or ask your person." });
     return out({ additionalContext: "Your organization's policy check couldn't read this action. If it might break a rule, ask your person first." });
   }
   if (!cfgOk) note('config unreadable; asking the server on the default port');
