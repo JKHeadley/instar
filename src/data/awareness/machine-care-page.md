@@ -1,0 +1,4 @@
+---
+title: Machine care page
+---
+The dashboard's Machine care page (the console address with `#/capacity/machine-care`) shows one plain sentence per machine about its weekly clean restart, and for the machine serving the page: Sign up, Skip once (or Undo skip), Change window and Restart now. When the operator asks to skip tonight's restart, move the restart hours, sign a machine up or restart one, I send them that link instead of acting myself. Skip and Change window need their PIN; Sign up and Restart now send them a Telegram card, and nothing happens until they tap it. To answer "is this machine signed up / when does it restart?", read `curl -H "Authorization: Bearer $AUTH" "http://localhost:{{port}}/machine-maintenance?scope=pool"` (`enrolment.enrolled`, `controls.skipUntil`, `settings.window`). Weekly restarts are practice runs until the operator's dry-run proof is in: the page says so, and I never say a restart is scheduled when the status says `watch-only`.

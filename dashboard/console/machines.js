@@ -61,6 +61,7 @@ export async function renderMachines(main, ctx) {
     // warning-path: card click opens the machine, which says what isn't answering
     usage.ok ? note(['Resource use, last hour: ' + usage.summary, usage.busiest].filter(Boolean).join(' · ')) : note(`Can’t tell resource use: ${usage.reason}.`),
     carePool ? note([carePool.header, ...carePool.missing].join(' · ')) : null,
+    el('p', { class: 'foot-note' }, el('a', { href: '#/capacity/machine-care', text: 'Machine care: sign up, skip a night, change the hours, or restart now' })),
     cards,
     legacyLink(),
   );
