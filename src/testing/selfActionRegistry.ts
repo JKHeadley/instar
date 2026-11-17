@@ -4376,6 +4376,50 @@ const machineWedgeCanaryReap: SelfActionController = {
   },
 };
 
+const machineWedgeGentleResume: SelfActionController = {
+  id: 'machine-wedge-gentle-resume',
+  actionVerb: 'stopped-launch-nudge',
+  models: 'src/monitoring/machineMaintenance/WedgeMonitor.ts (gentleRung: SIGCONT to stopped app launches while the canary itself is left stopped; GENTLE_MAX_PER_PROCESS per pid, GENTLE_MAX_PER_SAMPLE per sample)',
+  modelsPath: 'src/monitoring/machineMaintenance/WedgeMonitor.ts',
+  // Three launches that LaunchServices stops again after every resume (the wedge never clears).
+  boundK: 3 * 2,
+  perTargetBoundK: 2,
+  ticks: 720,
+  tickMs: 2 * 60_000,
+  delegatedGiveUp: 'Rungs 1-7 and the operator notice: a launch stopped again after two resumes is left to them',
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason: 'The per-pid count is in memory: a server restart allows at most two more resumes per stuck launch, and SIGCONT only continues a process, so a reset can neither end one nor lose work.',
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineWedgeGentleResume(f, sink);
+  },
+};
+
+function makeMachineWedgeGentleResume(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const CADENCE_MS = 2 * 60_000;
+  const MAX_PER_PID = 2;
+  const stuck = [405, 406, 407];
+  const resumes = new Map<number, number>();
+  let last: number | undefined;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      if (last !== undefined && now - last < CADENCE_MS) return;
+      last = now;
+      // The pressure: the canary is left stopped every sample, and every launch is stopped again.
+      if (!f.targetAlwaysRejects()) return;
+      for (const pid of stuck) {
+        const n = resumes.get(pid) ?? 0;
+        if (n >= MAX_PER_PID) continue;
+        resumes.set(pid, n + 1);
+        sink.emit({ verb: 'stopped-launch-nudge', target: `pid:${pid}` });
+      }
+    },
+  };
+}
+
 function makeMachineWedgeCanaryReap(f: PressureFixture, sink: ActionSink): { tick(): void } {
   const CADENCE_MS = 2 * 60_000;
   return {
@@ -6042,6 +6086,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   machineWedgeNotice,
   machineWedgeCanaryReap,
   machineRestart,
+  machineWedgeGentleResume,
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
   appPoolEnforcer,
