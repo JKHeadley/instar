@@ -62,10 +62,12 @@ process.stdin.on('end', async () => {
     const cwdReal = (() => { try { return nodeFs.realpathSync(input.cwd || dir); } catch { return input.cwd || dir; } })();
     const nearInstar = cmd.includes('.instar') || cwdReal === instarReal || cwdReal.startsWith(instarReal + '/');
     const bareName = /(^|[\\s'"\\/=;&|(<>])(config\\.json|org)([\\s'"\\/;&|)<>]|$)/.test(cmd);
-    const bashTouches = input.tool_name === 'Bash' && (cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
+    // Only commands that can write: redirection, tee, file moves and deletes, in-place edits, interpreters given code.
+    const canWrite = /(>|\\b(tee|rm|mv|cp|ln|chmod|chown|truncate|dd|install|rsync|unlink|rmdir)\\b|sed\\s+(-[a-zA-Z]*i|--in-place)|\\b(python3?|node|perl|ruby|bash|sh|zsh|osascript)\\s+(-[a-zA-Z]*[ce]\\b|-))/.test(cmd);
+    const bashTouches = input.tool_name === 'Bash' && canWrite && (cmd.includes('.instar/org') || cmd.includes('.instar/config.json') || (nearInstar && bareName));
     if (writesGuarded || bashTouches) {
       note('guarded org file write refused');
-      return out({ permissionDecision: 'deny', permissionDecisionReason: "Your organization's policy files can't be changed by me while its rules are enforced. Your person can manage the organization in the Instar app." });
+      return out({ permissionDecision: 'deny', permissionDecisionReason: "While your organization's rules are enforced, I can't run commands that could change its policy files or this agent's settings. Reading them is fine. Your person can manage the organization in the Instar app." });
     }
   }
   const ti = input.tool_input || {};

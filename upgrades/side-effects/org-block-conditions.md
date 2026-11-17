@@ -116,6 +116,10 @@ One note is recorded, not changed: when the routed framework's binary is missing
 - **The hook reads the server's record too.** It takes the stricter of the record and the config file.
 - **Shell commands.** The hook now also refuses the bare names `config.json` and `org` when a command mentions `.instar` or runs inside it (for example `cd .instar && rm -rf org`), and still allows ordinary commands like `cat package.json`.
 
+## Re-audit round 6
+
+No new way past block mode was found. The shell guard now refuses only commands that could write: redirection, `tee`, `rm`, `mv`, `cp`, `ln`, in-place `sed`, `chmod`, and interpreters given code. Plain reads such as `cat .instar/config.json` or `tail .instar/org/action-checks.jsonl` go through. The refusal text now says what was refused.
+
 ## Second-pass review (if required)
 
 **Reviewer:** second-pass subagent; then the EXO 3.0 re-auditor (condition 9)
