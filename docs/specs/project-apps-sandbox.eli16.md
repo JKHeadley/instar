@@ -35,3 +35,4 @@ The storage and the locked box, the narrow key and its tests, the phone approval
 
 **Registry entries (2026-11-17).** Custom apps now have their own entry on the maturation ladder, and the two pages that serve app code are listed with the other pages that serve agent-written code. The behavior is unchanged.
 The two places where a key can't be made are now marked in the code as deliberate: both refuse plainly instead of guessing.
+App keys are now written by their own small helper, kept apart from the agent's identity keys.

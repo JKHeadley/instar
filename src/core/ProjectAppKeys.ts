@@ -20,7 +20,23 @@
 
 import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { writeFileAtomicOwnerOnly } from '../identity/IdentityKeyFile.js';
+import path from 'node:path';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+
+/** Atomic, owner-only (0600) write of the key file: temp file, chmod, rename; a failed write leaves no
+ *  stray copy. Kept here so app keys never reach through the agent-identity key-file module. */
+function writeFileAtomicOwnerOnly(filePath: string, data: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, data, { mode: 0o600 });
+    fs.chmodSync(tmpPath, 0o600);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/ProjectAppKeys.ts:writeFileAtomicOwnerOnly' }); } catch { /* @silent-fallback-ok — nothing was created; the original error is rethrown */ }
+    throw err;
+  }
+}
 
 export const APP_KEY_KINDS = ['data', 'source', 'hmac'] as const;
 export type AppKeyKind = typeof APP_KEY_KINDS[number];
