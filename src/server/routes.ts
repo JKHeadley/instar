@@ -30389,7 +30389,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Retrieve a received secret (agent-facing, requires auth).
   //
   // Non-destructive by default — repeated calls return the same value
-  // until the in-memory cleanup timer fires (~5 min). Pass `?consume=true`
+  // until the in-memory cleanup fires (a sliding idle window under an absolute cap). Pass `?consume=true`
   // for the legacy one-shot semantics. Rationale: a buggy consumer that
   // dropped the response value used to lose the secret with no recovery;
   // non-destructive default lets the caller retry. See
@@ -30398,41 +30398,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const token = req.params.token;
     const consumeFlag = req.query.consume;
     const consume = consumeFlag === 'true' || consumeFlag === '1';
-    let submission = consume
-      ? secretDrop.consumeReceived(token)
-      : secretDrop.peekReceived(token);
-
     const persistDrops = ctx.config.secrets?.persistDrops !== false;
+
+    // A consume is reported only once the stored copy is gone. The stored copy is deleted
+    // FIRST; if that fails, nothing is consumed and the caller can retry. (A path that does
+    // not exist deletes cleanly.) Synchronous from peek to consume, so nothing interleaves.
+    const durableDeleted = (): boolean => {
+      if (!persistDrops) return true;
+      try {
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+        return true;
+      } catch (err) {
+        // @silent-fallback-ok — not silent: reported below, and the route refuses the consume (503) so nothing is lost
+        // Counts only: a drop token is a bearer handle and is never recorded.
+        DegradationReporter.getInstance().report({
+          feature: 'SecretDrop.consume',
+          primary: 'Consuming a received secret removes its stored copy',
+          fallback: 'Nothing was consumed; the caller is told to try again',
+          reason: err instanceof Error ? err.name : 'unknown error',
+          impact: 'A consumed secret would otherwise stay in the encrypted store.',
+        });
+        return false;
+      }
+    };
+    const refuseUnconsumed = (): void => {
+      res.status(503).json({ error: 'Could not remove the stored copy of this secret, so nothing was consumed. Try again.' });
+    };
+
+    let submission = secretDrop.peekReceived(token);
+    if (submission && consume) {
+      // A browser password is never stored, so there is no stored copy to remove.
+      if (!submission.browserHost && !durableDeleted()) { refuseUnconsumed(); return; }
+      submission = secretDrop.consumeReceived(token) ?? submission;
+    }
 
     if (!submission && persistDrops) {
       // Durable fallback: the in-memory `received` copy is gone (server restart,
-      // compaction, cross-machine handoff, or grace-window cleanup). The store-first
-      // persisted copy is the recovery path — without it, churn between submit and
-      // retrieve dropped the secret with no recovery.
+      // compaction, or grace-window cleanup). The store-first persisted copy is the
+      // recovery path on the machine that received the drop (drops never sync to peers).
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         const durable = store.get(`secretDrops.${token}`) as
           | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string> }
           | undefined;
         if (durable && durable.values) {
+          if (consume && !durableDeleted()) { refuseUnconsumed(); return; }
           submission = {
             values: durable.values,
             receivedAt: durable.receivedAt ?? new Date().toISOString(),
             label: durable.label ?? 'Secret',
             topicId: durable.topicId ?? undefined,
           };
-          // A successful consume against the durable copy removes it.
-          if (consume) store.delete(`secretDrops.${token}`);
         }
       } catch (err) {
+        // @silent-fallback-ok — logged, and the caller gets a plain 404 (nothing is returned or consumed)
         console.error(`[secret-drop] durable fallback read failed (token ${token.slice(0, 8)}…):`, err instanceof Error ? err.message : String(err));
       }
-    } else if (submission && consume && persistDrops) {
-      // In-memory consume succeeded — clean the durable copy too, so a consumed
-      // secret never lingers in the encrypted store (matters for one-time codes).
-      try {
-        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
-      } catch { /* @silent-fallback-ok — durable cleanup is best-effort */ }
     }
 
     if (!submission) {
