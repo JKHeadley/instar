@@ -100,3 +100,14 @@ The first read did not concur. It found that in block mode a refused message was
 ## Evidence pointers
 
 - `tests/unit/org-action-check.test.ts`, `tests/integration/org-never-actions.test.ts`, `tests/e2e/org-never-actions-alive.test.ts`, `tests/fixtures/org-never-actions-eval.json`.
+
+## Rule-test fixes (merge line, 2026-11-16)
+
+Three catches in the generated hook script were already recorded or held, but lacked the `@silent-fallback-ok` note the silent-fallback test looks for, and one was an empty `catch {}`. They now carry the note and a reason. The spec's ladder line now says "not applicable" with its reason, because no feature-ladder entry governs this rollout.
+
+## Local verify fixes (2026-11-17)
+
+Local verify ran three rule tests against a merge with main and failed them; all three are fixed here, and 35/35 pass on that merge.
+- **The model-call label:** `OrgPolicyJudge` (the model call that judges an action against the organization's rules) is registered as a `gate` in `src/core/componentCategories.ts`, with its row in `docs/LLM-ROUTING-REGISTRY.md` (fast tier, explicit category, as `IntentLlmJudge`).
+- **New agents:** `instar init` now writes `org-policy-gate.sh` and `org-policy-gate.js` too, so a new agent gets the gate as an existing one does on update. It allows everything until the agent joins an organization.
+- **The conversation key:** with a topic id, an outgoing message's organization check is keyed by the plain topic id, as the other channels key theirs. It was "topic <id>", which the topic-reference rule counts as a bare render, and it would have changed if the format of topic references changed.

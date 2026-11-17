@@ -368,6 +368,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
   // Linux browser install: sets this machine's own flag and installs on this machine.
+  // Machine self-maintenance enrolment offer (CMT-1200): the offer and the enrolment record
+  // live in ~/.instar/host-maintenance on THIS machine; a peer offers for its own machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/enrol/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/enrol-offers.json for this physical machine; outside the agent home, never git-synced',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,

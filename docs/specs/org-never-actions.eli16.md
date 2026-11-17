@@ -29,6 +29,7 @@ Justin approved "easy setup for new people" on 16 November 2026. One part is tha
 
 - Commands outside the listed ones aren't checked (scripts, `git push`, `npm publish`), nor what sits behind an ID the agent only names. These are stated as limits.
 - The AI check can be wrong. Observe mode exists to measure how often before anything blocks.
+- Rollout: observe mode ships with the normal release. Blocking is switched on one agent at a time, only after the operator's approval: first a test agent, then Echo, then everyone.
 
 ## Where blocking stands
 
@@ -46,3 +47,5 @@ Still to do: a live test on a throwaway agent and a final code review. Then it g
 ## What needs deciding
 
 Nothing more for Justin.
+
+Three small fixes after local verify: new agents now get the safety check at creation, not only after their first update; the check is listed with the other safety checks; and conversations are labelled by their plain id.

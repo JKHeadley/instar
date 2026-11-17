@@ -98,6 +98,52 @@ describe('DiskSteward', () => {
     expect(h.logs.some((l) => l.event === 'healed')).toBe(true);
   });
 
+  it('a finished cleanup collected again at every boot counts its recovery once (Mac Mini, 2026-11-16)', async () => {
+    const h = harness();
+    const done: PruneChildResult = {
+      runId: 'boot-run', startedAt: 1_800_000_000_000, finishedAt: 1_800_000_000_000, trigger: 'auto', dryRun: false,
+      categories: [{ category: 'npm-cache', plannedBytes: 9 * GiB, plannedItems: 1, removedItems: 1, bytesFreed: 9 * GiB }],
+      bytesFreed: 9 * GiB, statfsBefore: 100 * GiB, statfsAfter: 109 * GiB, cachesLock: 'held',
+    };
+    const recoveredOnDisk = () => (JSON.parse(fs.readFileSync(h.deps.stateFile, 'utf8')).samples as Array<{ recovered?: number }>)
+      .reduce((a, x) => a + (x.recovered ?? 0), 0);
+    const first = h.make();
+    await first.tick();
+    first.adoptRecoveredResult(done);
+    expect(recoveredOnDisk()).toBe(9 * GiB);
+    // Five more boots, each a new steward reading the same state and the same run.json result.
+    for (let i = 0; i < 5; i++) {
+      h.advance(15 * MIN);
+      const s = h.make();
+      await s.tick();
+      s.adoptRecoveredResult(done);
+    }
+    expect(recoveredOnDisk()).toBe(9 * GiB);
+    expect(h.logs.filter((l) => l.event === 'prune-already-recorded')).toHaveLength(5);
+    // A different run still counts.
+    const s = h.make();
+    s.adoptRecoveredResult({ ...done, runId: 'next-run', statfsBefore: 100 * GiB, statfsAfter: 102 * GiB, bytesFreed: 2 * GiB });
+    expect(recoveredOnDisk()).toBe(11 * GiB);
+  });
+
+  it('a state written before run ids were kept still refuses its last run a second time', async () => {
+    const h = harness();
+    const s0 = h.make();
+    await s0.tick();
+    const done: PruneChildResult = {
+      runId: 'old-run', startedAt: 1_800_000_000_000, finishedAt: 1_800_000_000_000, trigger: 'auto', dryRun: false,
+      categories: [], bytesFreed: 9 * GiB, statfsBefore: 100 * GiB, statfsAfter: 109 * GiB, cachesLock: 'held',
+    };
+    s0.adoptRecoveredResult(done);
+    const st = JSON.parse(fs.readFileSync(h.deps.stateFile, 'utf8'));
+    delete st.recordedRuns;
+    fs.writeFileSync(h.deps.stateFile, JSON.stringify(st));
+    const s1 = h.make();
+    s1.adoptRecoveredResult(done);
+    const after = JSON.parse(fs.readFileSync(h.deps.stateFile, 'utf8')).samples.reduce((a: number, x: { recovered?: number }) => a + (x.recovered ?? 0), 0);
+    expect(after).toBe(9 * GiB);
+  });
+
   it('still low after the cleanup: posts what was cleared', async () => {
     const h = harness({ prune: true, freeAfterPrune: 125 * GiB });
     const s = h.make();

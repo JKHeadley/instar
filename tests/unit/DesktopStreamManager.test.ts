@@ -38,8 +38,9 @@ describe('DesktopStreamManager', () => {
   async function pacingDelays(frameIntervalMs?: () => number | undefined): Promise<number[]> {
     const delays: number[] = [];
     const real = globalThis.setTimeout;
+    let lastPaceTimerAt = Date.now();
     const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
-      if (typeof ms === 'number' && ms >= 5 && ms <= 67) delays.push(ms);
+      if (typeof ms === 'number' && ms >= 5 && ms <= 67) { delays.push(ms); lastPaceTimerAt = Date.now(); }
       return real(fn, ms, ...rest);
     }) as typeof setTimeout);
     try {
@@ -53,11 +54,14 @@ describe('DesktopStreamManager', () => {
       await once(ws, 'open');
       await new Promise(resolve => real(resolve, 400));
       ws.close();
-      // End this stream and let a tick already in flight run out before the
-      // next measurement, so its 67 ms timers cannot land in the next spy
-      // (it failed this way on loaded CI runners).
+      // End this stream and wait until it has really stopped scheduling
+      // ticks before the next measurement, so its 67 ms timers cannot land in
+      // the next spy. A fixed pause was not enough: on loaded CI runners the
+      // socket's close arrived late and the old stream kept ticking.
       manager.closeAll();
-      await new Promise(resolve => real(resolve, 150));
+      const drainCap = Date.now() + 5000;
+      do { await new Promise(resolve => real(resolve, 50)); }
+      while (Date.now() - lastPaceTimerAt < 250 && Date.now() < drainCap);
     } finally { spy.mockRestore(); }
     return delays;
   }

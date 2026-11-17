@@ -59,6 +59,7 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
+import { OrgPolicyGateHooks } from '../core/OrgPolicyGateHooks.js';
 import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
@@ -4494,8 +4495,8 @@ if [ -f "\$INSTAR_DIR/config.json" ]; then
 fi
 
 # ALWAYS blocked (catastrophic, irreversible)
-for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:"; do
-  if echo "\$INPUT" | grep -qi "\$pattern"; then
+for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:" "--accept-data-loss" "prisma migrate reset"; do
+  if echo "\$INPUT" | grep -qi -e "\$pattern"; then
     echo "BLOCKED: Catastrophic command detected: \$pattern" >&2
     echo "Always blocked regardless of safety level. User must execute directly." >&2
     exit 2
@@ -4519,8 +4520,8 @@ if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
-  if echo "\$INPUT" | grep -qiE "\$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)" "prisma db push" "prisma migrate deploy"; do
+  if echo "\$INPUT" | grep -qiE -e "\$pattern"; then
     if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
@@ -4657,6 +4658,10 @@ fi
   // External operation gate — intercepts MCP tool calls to external services.
   // Uses shared template from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'external-operation-gate.js'), migrator.getHookContent('external-operation-gate'), { mode: 0o755 });
+  // Organization never rules check (docs/specs/org-never-actions.md §A): a new agent gets the gate too.
+  // It allows everything until the agent joins an organization whose policy says otherwise.
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
 
   // Claim intercept — catches false operational claims against canonical state.
   // PostToolUse hook checks tool output; Stop hook checks direct responses.
