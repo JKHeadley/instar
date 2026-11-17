@@ -57,13 +57,15 @@ describe('machine maintenance acts only through the restart actuator', () => {
       "/usr/bin/stat '-f', '%Su', '/dev/console'",
       "/usr/bin/zprint '-L', 'data.kalloc.1024'",
       "cmd.exe '/c', 'exit', '0'", "ioreg '-c', 'IOHIDSystem', '-d', '4'", "pmset '-g', 'batt'", "ps '-axo', 'args='", "ps '-axo', 'pid=,lstart=,args='",
+      // The gentle rung on macOS: the process table read that finds launches left stopped.
+      "ps '-axo', 'pid=,uid=,ppid=,stat=,etime=,comm='",
       // F1 on macOS: the process table read that finds a canary left stopped (the canary pile-up).
       "ps '-axo', 'pid=,uid=,stat=,args='",
       "ps '-axo', 'stat='", "sysctl '-n', 'kern.boottime'", "systemd-run '--user', '--quiet', '--wait', '--collect', '/bin/true'",
       "tasklist.exe '/NH', '/FO', 'CSV'", "tmux 'list-sessions', '-F', '#{session_name}'", "who '-u'",
     ]);
     // Every entry is matched above, so nothing else can hide in the table.
-    expect(table.match(/command:/g)).toHaveLength(15);
+    expect(table.match(/command:/g)).toHaveLength(16);
   });
 
   it('declares no callable yield on any kind', () => {
@@ -90,7 +92,13 @@ describe('machine maintenance acts only through the restart actuator', () => {
     // this login's InstarWedgeCanary executable; this line is the only signal in the block.
     const canaryEnd = "endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } },";
     expect(block.split(canaryEnd)).toHaveLength(2);
-    const rest = block.replace(canaryEnd, '');
+    // The second, pinned the same way: the gentle rung resumes a launch LaunchServices left
+    // stopped (SIGCONT, which continues a process and cannot end one). The monitor passes only
+    // pids parsed as this login's stopped app launches, only while the canary itself was left
+    // stopped, and only when wedgeRestart.gentleResume is 'on'.
+    const gentleResume = "resumeStopped: (pid) => { try { process.kill(pid, 'SIGCONT'); return true; } catch { return false; } },";
+    expect(block.split(gentleResume)).toHaveLength(2);
+    const rest = block.replace(canaryEnd, '').replace(gentleResume, '');
     expect(rest).not.toMatch(/process\.kill|\.kill\(/);
     expect(rest).not.toMatch(/\.(kill\w*|stop\w*|cancel\w*|enqueue|pause|refresh\w*|restart\w*|sendInput|injectMessage|shutdown)\(/);
     expect(rest).not.toMatch(/setAdmissionGate|canRunJob/);

@@ -1,0 +1,33 @@
+# A Mac that leaves apps frozen at launch gets them un-frozen first, before any restart
+
+<!-- bump: patch -->
+
+## What Changed
+
+Sometimes macOS starts an app but leaves it frozen, so it never opens. On the Mac Studio on 2026-11-16 this lasted about 20 hours and affected every app opened in that time. Sending each frozen app a "continue" signal freed it. The wedge check can now do this itself. The check runs its own test launch; when macOS leaves that test app frozen too, the check looks for this user's other frozen apps and continues them. That is the gentle step, tried before anything as strong as a restart.
+
+The check continues an app only when all of these hold:
+- the app was started by the system, not by a shell that someone paused on purpose;
+- it is installed in a normal app folder;
+- it has been frozen for at least a minute.
+
+It continues at most 20 apps per check and the same app at most twice. Continuing an app only lets it carry on, so it cannot close anything or lose work.
+
+The step ships in dry-run: it lists what it would continue and continues nothing. The `machineMaintenance.wedgeRestart.gentleResume` setting turns it `on`; `off` stops it reading at all.
+
+## What to Tell Your User
+
+- **Frozen apps on a Mac**: "If your Mac starts leaving apps frozen when they open, I can un-freeze them myself before suggesting a restart. For now I only note which apps I would un-freeze; I'll turn it on once that has proved right."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Gentle step for frozen launches (macOS) | Automatic once the wedge check is on. The `machineMaintenance.wedgeRestart.gentleResume` setting is `dry-run` (default), `on` or `off`. The last run shows in Machine care status (`GET /machine-maintenance` → `wedge.lastGentle`). |
+
+## Evidence
+
+- Mac Studio, 2026-11-16: GUI launches left in process state T for about 20 hours; `kill -CONT` freed each one (the brief for this work, and #3248's canary reading of the same wedge).
+- Unit: `tests/unit/machine-wedge-gentle-rung.test.ts`. The parser's boundaries: running, another user's, a shell job, a launch under a minute old, the canary, an unknown folder, a nested helper. The monitor: on, dry-run, off, a healthy canary, no resumer, an unread table, a failed resume, the per-process cap, the per-sample cap.
+- Route: `tests/integration/machine-wedge-route.test.ts`, a stopped canary resumes the launch and the route shows it. Lifecycle: `tests/e2e/machine-wedge-lifecycle.test.ts`, which wires it as the server does and ships it in dry-run.
+- Guarantees: `tests/unit/machine-maintenance-watch-only.test.ts` pins the one new read and the one SIGCONT line. `tests/unit/self-action-convergence.test.ts` covers the new registry entry `machine-wedge-gentle-resume`.

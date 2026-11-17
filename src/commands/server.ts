@@ -27383,6 +27383,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // so a wedged GUI path does not also pile up stopped processes (fb-92ed1f8b-3a2).
           ownUid: typeof process.getuid === 'function' ? process.getuid() : undefined,
           endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } }, // @silent-fallback-ok — already gone, or not ours: read again next sample
+          // The gentle rung: a launch LaunchServices left stopped is resumed (SIGCONT), only while
+          // the canary itself is left stopped and only when wedgeRestart.gentleResume is 'on'.
+          resumeStopped: (pid) => { try { process.kill(pid, 'SIGCONT'); return true; } catch { return false; } }, // @silent-fallback-ok — gone or not ours: counted as failed
+          home: os.homedir(),
           loadReading: () => {
             const r = _machineLoadSampler?.read() ?? null;
             return r ? { verdict: r.verdict, cpuIdlePct: r.cpuIdlePct, eventLoopLagP99Ms: r.eventLoopLagP99Ms, sampleAgeMs: r.sampleAgeMs } : null;
