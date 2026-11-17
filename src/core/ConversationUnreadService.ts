@@ -18,6 +18,7 @@
  * CATCH_UP_RETRY_MS, at most CATCH_UP_MAX_FAILURES times in a row; then it waits for the peer to come
  * back (onPeerOnline) or the next boot. Proven in tests/unit/self-action-convergence.test.ts.
  */
+import { isPeerBooting } from '../server/BootReadiness.js';
 import type { OwnerIdentity, ResolvedPerson, ConversationOwner } from './MobilePeople.js';
 import type { BrowsedMessage, ConversationSummary } from './AppConversationStore.js';
 import type { PoolPeerTarget, RopeResultRecorder } from '../server/poolPeerFetch.js';
@@ -554,6 +555,7 @@ export class ConversationUnreadService {
             const r = await poolPeerFetch(this.deps.recordRope, p, `/mobile/conversations/read-markers?limit=${CATCH_UP_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, {
               headers: { Authorization: `Bearer ${this.deps.authToken()}` }, signal: AbortSignal.timeout(CATCH_UP_PAGE_TIMEOUT_MS), redirect: 'manual',
             }, this.deps.fetchImpl ?? fetch);
+            if (isPeerBooting(r)) throw new Error('peer-starting'); // still booting: retry later, never "done"
             if (r.status === 404 || r.status === 503) { // an older peer, or unread off there: nothing to merge, and nothing to retry
               this.store.setCatchUpState(p.machineId, { cursor: null, done: true, lastAttemptAt: this.now(), failures: st.failures });
               return;

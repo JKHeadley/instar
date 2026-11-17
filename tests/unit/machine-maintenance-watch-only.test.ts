@@ -17,11 +17,15 @@ const code = (f: string) => fs.readFileSync(path.join(dir, f), 'utf-8').replace(
 // inside the lock. Every other file stays watch-only, so a second way to act fails here.
 const ACTUATOR = 'RestartActuator.ts';
 // Enrolment (CMT-1200): the owner's tap installs the reboot rule through five pinned sudo calls,
+// and Off (CMT-1203) takes it out through three (probe, the one rm of the rule file, -k),
 // and readiness reads six pinned, read-only commands. Each is matched exactly below and removed
 // before the general checks, so anything else in those files is held to the watch-only rules.
 const ENROL = 'EnrolmentController.ts';
 const READINESS = 'enrolmentReadiness.ts';
 const ENROL_RUNS = [
+  "this.deps.run('sudo', ['-n', 'true'])",
+  "this.deps.run('sudo', ['-n', 'rm', '-f', SUDOERS_RULE_PATH])",
+  "this.deps.run('sudo', ['-k'])",
   "this.deps.run('sudo', ['-n', 'true'])",
   "this.deps.run('sudo', ['-n', 'sh', '-c', script, '_', rule, SUDOERS_RULE_PATH])",
   "this.deps.run('sudo', ['-k'])",
@@ -49,7 +53,7 @@ const withoutClaimSpawn = (f: string) => {
 };
 
 describe('enrolment acts only through its pinned calls', () => {
-  it('the rule install runs exactly the five sudo calls, and readiness only its read-only commands', () => {
+  it('the rule install and Off run exactly their pinned sudo calls, and readiness only its read-only commands', () => {
     const enrol = code(ENROL);
     expect([...enrol.matchAll(/this\.deps\.run\([^)]*\)/g)].map((m) => m[0])).toEqual(ENROL_RUNS);
     expect(enrol).toContain(ENROL_SCRIPT);

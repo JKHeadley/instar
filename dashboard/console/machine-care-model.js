@@ -81,6 +81,7 @@ export function careRow(state, { self = false, name = 'This machine', now = Date
       unskip: skipped,
       window: true,
       restartNow: enrolled && !s.restartNow,
+      off: enrolled,
     } : null,
   };
 }
@@ -126,6 +127,12 @@ export function controlAnswer(action, r) {
   if (action === 'unskip') return { ok: true, message: 'Skip undone. Restarts go back to the usual nights.' };
   if (action === 'window') return { ok: true, message: d.effectiveWindow ? `From the next night, restarts happen between ${d.effectiveWindow.start} and ${d.effectiveWindow.end}.` : 'Saved.' };
   if (action === 'restart') return { ok: true, message: 'I sent you a card in Telegram. Tap Restart now there to start the 5-minute countdown.' };
+  if (action === 'off') {
+    if (!d.wasEnrolled) return { ok: true, message: 'This machine was not signed up, so nothing changed.' };
+    return { ok: true, message: d.ruleRemoved
+      ? 'Turned off. This machine won’t be restarted, and its restart permission is removed. Sign up again any time.'
+      : 'Turned off. This machine won’t be restarted. Its restart permission is still installed but unused; it goes when an administrator step is possible.' };
+  }
   if (action === 'sign-up') {
     const o = d.outcome;
     if (o === 'offered') return { ok: true, message: 'I sent you a card in Telegram. Tap Approve there to sign this machine up.' };

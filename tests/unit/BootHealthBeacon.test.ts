@@ -1,9 +1,11 @@
 // BootHealthBeacon (topic 21816 post-mortem, root cause #1 — Liveness Before
 // Load): a minimal /health responder that answers during the heavy boot and
 // cleanly releases the port at handoff so the real server can bind it.
-import { describe, it, expect, afterEach } from 'vitest';
+// Since 2026-11-16 (listen early) it answers the typed BootReadiness state.
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import http from 'node:http';
 import { BootHealthBeacon } from '../../src/server/BootHealthBeacon.js';
+import { bootReadiness, resetBootReadinessForTests, BOOT_STATE_HEADER } from '../../src/server/BootReadiness.js';
 
 // Grab a free ephemeral port, then release it for the test to reuse.
 async function freePort(): Promise<number> {
@@ -20,29 +22,54 @@ async function get(port: number, path: string): Promise<{ status: number; body: 
 }
 
 let beacon: BootHealthBeacon | undefined;
+beforeEach(() => { resetBootReadinessForTests(); });
 afterEach(async () => {
   await beacon?.stop();
   beacon = undefined;
 });
 
 describe('BootHealthBeacon', () => {
-  it('answers /health with 200 ok while booting', async () => {
+  it('answers /health with a typed 503 "starting" (never 200: a 200 means serving)', async () => {
     const port = await freePort();
     beacon = new BootHealthBeacon(port);
     await beacon.start();
     expect(beacon.active).toBe(true);
-    const r = await get(port, '/health');
-    expect(r.status).toBe(200);
-    expect(JSON.parse(r.body)).toMatchObject({ status: 'ok', phase: 'booting' });
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(503);
+    expect(res.headers.get(BOOT_STATE_HEADER)).toBe('starting');
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    const body = await res.json() as { status: string; bootReadiness: { state: string; retryAfterSeconds?: number; subsystems: Record<string, string> } };
+    // Not "ok": a reader that waits for ok (the Slack lifeline) must keep queueing.
+    expect(body.status).toBe('starting');
+    expect(body.bootReadiness.state).toBe('starting');
+    expect(typeof body.bootReadiness.retryAfterSeconds).toBe('number');
+    expect(body.bootReadiness.subsystems.http).toBe('pending');
   });
 
-  it('answers everything else with 503 warming', async () => {
+  it('answers everything else with a typed 503 "starting, retry after N s"', async () => {
     const port = await freePort();
     beacon = new BootHealthBeacon(port);
     await beacon.start();
-    const r = await get(port, '/sessions');
+    const res = await fetch(`http://127.0.0.1:${port}/conversation-graph/message`, { method: 'POST', body: '{}' });
+    expect(res.status).toBe(503);
+    expect(res.headers.get(BOOT_STATE_HEADER)).toBe('starting');
+    const retryAfter = Number(res.headers.get('retry-after'));
+    expect(retryAfter).toBeGreaterThanOrEqual(2);
+    const body = await res.json() as { error: string; retryAfterSeconds: number; message: string; bootReadiness: { state: string } };
+    expect(body.error).toBe('starting');
+    expect(body.retryAfterSeconds).toBe(retryAfter);
+    expect(body.message).toContain(`Retry after ${retryAfter} s`);
+    expect(body.bootReadiness.state).toBe('starting');
+  });
+
+  it('binds the host it is given, so mesh peers reach it (0.0.0.0 answers on loopback too)', async () => {
+    const port = await freePort();
+    beacon = new BootHealthBeacon(port, '0.0.0.0');
+    await beacon.start();
+    const r = await get(port, '/health');
     expect(r.status).toBe(503);
-    expect(JSON.parse(r.body)).toMatchObject({ status: 'warming' });
+    expect(JSON.parse(r.body).bootReadiness.state).toBe('starting');
+    expect(bootReadiness().snapshot().earlyListen?.host).toBe('0.0.0.0');
   });
 
   it('stop() releases the port so the real server can bind it (the handoff)', async () => {
