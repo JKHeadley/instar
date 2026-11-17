@@ -24,43 +24,63 @@ Each item names its file and line.
 
 - **Who an account is.** Claude: the keychain item `Claude Code-credentials`, or `Claude Code-credentials-<sha256(home)[0:8]>` for any other `CLAUDE_CONFIG_DIR` (`src/core/OAuthRefresher.ts:175-176`); the email comes from `<home>/.claude.json` via `readAccountEmail` (`src/core/QuotaPoller.ts:316`), with no network call. Codex: `readCodexSlotIdentity` decodes `<CODEX_HOME>/auth.json` into email, accountId and planType, also with no network call (`src/providers/adapters/openai-codex/codexSlotIdentity.ts:104`).
 - **Several accounts.** Only an agent's own subscription pool holds several, one config folder each (`src/core/SubscriptionPool.ts:118-136`). Sessions point the tool at an account with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` (`src/core/SessionManager.ts:728,932,1027`).
-- **The install's sign-in** checks only the default `~/.claude` or `~/.codex` (`src/install/doors.ts:83,156`, `src/install/doorSteps.ts:156`). The new agent records no account folder.
+- **The install's sign-in** checks the default `~/.claude` (or `CLAUDE_CONFIG_DIR`) or `~/.codex` (`src/install/doors.ts:83,156`, `src/install/doorSteps.ts:156`). The new agent records no account folder.
 - **How the app and the installer talk.** The Mac app writes an answers file and runs `instar install --yes --answers` (`MacCreateAgent.swift:113,126`). It polls `~/.instar/state/install-progress.json` (`MacAgentCreator.swift:35`; `src/commands/install/progress.ts`), turns `awaiting-person` into a waiting screen, and re-runs with `--resume`.
 - **Always available today.** The agent starts at login with a per-user LaunchAgent, with no admin needed (`src/commands/setup.ts:1756`). The server runs `caffeinate -s` while it is up, which holds only on mains power (`src/core/CaffeinateManager.ts`). Nothing starts before login and nothing changes `pmset`.
 
 ## A. Choosing the account
 
-1. **Finding accounts (new: `src/install/accounts.ts`).** For the chosen AI, list the accounts signed in on this Mac, using names and identity only and never reading a secret:
-   - Claude: the default `~/.claude`, plus every config folder named in any Instar agent's `subscription-pool.json` under `~/.instar/agents/*/.instar/` on this Mac, keeping those with a keychain item or `.credentials.json` present. The label is the email from `.claude.json`, or "Claude account (email unknown)".
-   - ChatGPT: `~/.codex`, plus the pool folders whose `auth.json` decodes. The label is email and plan.
-   - Accounts with the same email are shown once. The list is sorted with the default folder first.
+1. **Finding accounts (new: `src/install/accounts.ts`).** For the chosen AI, list the accounts signed in on this Mac, reading identity only and never a secret.
+   - **Claude:** the default `~/.claude` (or `CLAUDE_CONFIG_DIR`), plus every config folder in any Instar agent's `subscription-pool.json` on this Mac (`~/.instar/agents/*/.instar/`) that belongs to this machine and has a keychain item or `.credentials.json`. The label is the email from `.claude.json`, or "Claude account (email unknown)".
+   - **ChatGPT:** `~/.codex`, plus pool folders whose `auth.json` decodes. If Codex is set to keep its sign-in in the keychain (keyring storage), the account is listed by its config only, with no email, labelled "ChatGPT account on this Mac".
+   - **Ids:** an account's id is a hash of its real folder path, so a resume cannot land on a different account.
+   - **Same email:** when two folders share an email, the one that proves signed in is kept, and the default folder wins a tie. Sorted default first.
 2. **The install step (new state `account-choice`, after `door-install` and before `door-sign-in`).**
-   - No account found: it goes straight to sign-in, as today.
-   - One or more found: it writes `install-progress.json` with `status: "awaiting-person"`, `waitingFor: "account-choice"` and `accounts: [{ id, label, plan? }]`, then stops.
+   - No account found: sign-in runs as today.
+   - One or more found: it writes `install-progress.json` with `status: "awaiting-person"`, `waitingFor: "account-choice"` and `accounts: [{ id, label, plan?, borrowedFrom? }]`, then stops.
    - The answers file gains `account: { use: <id> } | { new: true }`. A `--resume` reads it; an id that no longer matches a found account is refused with a plain reason.
-3. **Using an existing account.** The new agent's pool gets that config folder as its first account, and sessions use it through the existing pin. Nothing is copied; the account is shared, the way agents on one Mac already share it.
-4. **A new account.** A fresh config folder is made under the new agent's home (`<agentHome>/.instar/accounts/<door>-1`). Sign-in runs into it, with `FrameworkLoginDriver` setting `CLAUDE_CONFIG_DIR` or `CODEX_HOME` (`src/core/FrameworkLoginDriver.ts:96-98`). The browser handoff is the same as today. The folder becomes the pool's first account.
-5. **The app.** On `waitingFor: "account-choice"`, the Mac shows the choice in the restyled create look:
-   - one card per account, titled "Use <email>", with its plan when known;
-   - a last card, "Sign in to a different <Claude|ChatGPT> account".
+   - An older Mac app that doesn't know `account-choice` sees a waiting state it doesn't understand. It shows its generic "Continue" screen, and continuing without an answer means "use the default folder", which is today's behaviour.
+3. **Using an existing account.**
+   - **The default folder:** the new agent's pool gets it as its first account, as today.
+   - **A folder inside another agent's home:** it is added as *borrowed*. The new agent uses it but never refreshes its sign-in; only the owning agent refreshes, which avoids two agents racing on one refresh token. If the owner is deleted, the borrowed entry shows "signed out" with a sign-in button, and nothing fails silently.
+   - The card says plainly that the agents share that account's usage limit.
+4. **A new account.**
+   - A fresh folder is made under the new agent's home (`<agentHome>/.instar/accounts/<door>-<n>`, the next free n, so a re-run never reuses a folder).
+   - Sign-in runs into it with `FrameworkLoginDriver` setting `CLAUDE_CONFIG_DIR` or `CODEX_HOME` (`src/core/FrameworkLoginDriver.ts:96-98`), with the same browser handoff as today.
+   - The install's sign-in check (`doors.ts:83,156`) is given that folder.
+5. **Pool entries** are insert-if-absent, keyed by the account id, and carry the machine id, so another machine of a multi-machine agent never tries a path that exists only here.
+6. **The app.** On `waitingFor: "account-choice"`, the Mac shows the choice in the restyled create look:
+   - one card per account, titled "Use" plus the email, with its plan when known and "shared with <agent>" for a borrowed one;
+   - a last card, "Sign in to a different account".
    - The pick goes into the answers file, then `--resume`.
-6. **The agent's config** records the account by its config folder, never by a secret.
 
 ## B. Always available
 
-1. On the confirm step, one switch: "Always available: starts when the Mac starts, even before anyone logs in, and keeps the Mac awake." It is off by default; turning it on says plainly that the Mac's password is asked once.
-2. When it is on, after the agent is created, the app runs one privileged helper with a single macOS password prompt (`osascript … with administrator privileges`, or `SMAppService.daemon` with a bundled helper; the choice is settled in review). The helper does three things:
-   - installs a LaunchDaemon that runs the agent's server as the person's user (`UserName` in the plist), so it starts at boot;
-   - sets `pmset -c sleep 0` and `pmset -c disksleep 0` (on mains power, never sleep), keeping the display's own sleep;
-   - writes a record of what it changed, so "Turn off Always available" can undo exactly that.
-3. **The keychain catch.** Before anyone logs in, the login keychain is locked, so a Claude sign-in kept in the keychain can't be read and the agent can't use Claude until someone logs in. When Always available is on, setup therefore also creates a long-lived token (`claude setup-token`, saved with the existing `writeClaudeKeyToConfig` route, `src/core/claudeChildAuth.ts:209`) as the pre-login fallback. Codex keeps `auth.json` on disk, so it needs no fallback. If the token can't be made, the switch says it will start at login instead.
-4. The per-user LaunchAgent stays as it is; the daemon and the agent refuse to run twice (the existing instance lock).
-5. Settings gets "Always available" with the same switch, and turning it off undoes the record.
+This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read `~/.instar` or run the helper, and it doesn't show the switch.
+
+1. **What the switch promises, honestly.** It is off by default. Before showing it, setup checks FileVault (`fdesetup isactive`).
+   - **FileVault on** (the default on new Macs): a restarted Mac waits at the unlock screen and nothing can run before someone types the password. The switch then reads "Keep <agent> available: restarts after a power cut once you unlock the Mac, and stays awake while plugged in". It promises nothing before login.
+   - **FileVault off:** "Starts when the Mac starts, even before anyone logs in, and stays awake while plugged in."
+   - Either way it says the Mac's password is asked once to turn it on, and once again to turn it off.
+2. **The privileged helper.** It is an `SMAppService.daemon` helper bundled in the Direct build (Apple's signed route); macOS shows a one-time "allow" in System Settings plus the password. No `osascript` admin shell is used, so no name or path is ever spliced into a root command. The helper takes a fixed, typed request: the agent's home path, validated as being under the user's home and an existing Instar agent.
+3. **What it changes.**
+   - `pmset -c sleep 0`: on mains power the Mac does not sleep while the lid is open; a closed laptop lid still sleeps, and the switch says so.
+   - `pmset autorestart 1`: power returns, the Mac starts.
+   - **FileVault off only:** a LaunchDaemon that runs the agent's server as the person's user (`UserName`).
+   - **Turned-on period:** while the daemon is on, the agent's per-user LaunchAgent is turned off, so the two never fight over the instance lock. Undo turns it back on.
+   - Before changing them, it records the previous `pmset` values in a **root-owned** file (`/Library/Application Support/Instar/always-available/<agent>.json`). Undo puts a value back only if it is still the one Instar set.
+4. **Claude before login (FileVault off only).** A daemon runs outside the login session and cannot read the login keychain. A daemon-started agent therefore needs a Claude token as its main sign-in, not a fallback. Setup asks the person for one:
+   - "Paste the code from the Claude sign-in page" opens `claude setup-token` in the browser; this reuses the existing paste route (`src/commands/install.ts:546-558`, `setClaudeKey`).
+   - The token is checked against the chosen account's email (`GET /api/oauth/profile`, `CredentialIdentityOracle`), and a mismatch is refused.
+   - It is stored for that account only, readable by the user alone (mode 0600). It never replaces another account's credentials (a test covers this).
+   - If the person skips it, the daemon is not installed: the switch keeps restart and awake, and says the agent starts at login.
+   - **Codex:** a file-based sign-in needs nothing more. A keyring-stored Codex sign-in is treated like Claude: start at login only.
+5. **Settings** gets "Always available" with the same switch; turning it off asks for the password and undoes exactly what the record lists.
 
 ## Rollback
 
 - A: without an `account` answer, the install behaves as today.
-- B: the switch is off by default, and "Turn off" removes the daemon and restores the recorded `pmset` values.
+- B: the switch is off by default. "Turn off" removes the daemon, turns the LaunchAgent back on, and restores the recorded `pmset` values that are still Instar's.
 
 ## Tests
 
@@ -75,7 +95,21 @@ Each item names its file and line.
   - on a Mac with two Claude accounts, create an agent, pick the second, and check the first session reports that account's email;
   - with Always available on a throwaway user, reboot and check the agent answers before login.
 
-## Open for review
+## Review
 
-- The privileged helper route: `osascript` (simplest, one prompt, unsigned script) or an `SMAppService` daemon (signed and Apple's recommended route, but needs a bundled helper and a one-time approval in System Settings).
-- Whether a shared account (two agents on one Claude account) should warn about sharing the usage limit. The default is a one-line note on the card.
+Round 1, an independent review on 2026-11-17, found three critical issues, four high and four medium. The text above now covers them:
+- the before-login Claude sign-in is a pasted token that becomes the agent's main sign-in, checked against the chosen account and stored with mode 0600;
+- FileVault is checked, and the switch's words follow it;
+- `autorestart` is set;
+- the LaunchAgent is turned off while the daemon runs;
+- folders in other agents' homes are borrowed, not refreshed;
+- the helper is an `SMAppService` daemon taking a typed request, with no osascript;
+- the undo record is root-owned and conditional;
+- keyring-stored Codex sign-ins are detected;
+- account ids are path hashes;
+- runs can repeat safely, with insert-if-absent pool entries tied to their machine;
+- of two folders with the same email, the signed-in one is kept;
+- the lid-close and turn-off-password wording is added;
+- `disksleep` is dropped.
+
+Round 2 is pending.
