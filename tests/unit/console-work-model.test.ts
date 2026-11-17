@@ -10,7 +10,7 @@ import path from 'node:path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  readBoard, headline, cardActions, tapBody, tapCovers, cardRow, workBoardNeedRows, settingsPatch, donePaging, donePageFrom,
+  readBoard, headline, cardActions, phoneOnlyLine, pinExplain, tapBody, tapCovers, cardRow, workBoardNeedRows, settingsPatch, donePaging, donePageFrom,
   cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords,
 } from '../../dashboard/console/work-model.js';
 import { NEED_SOURCES } from '../../dashboard/console/needs-model.js';
@@ -92,6 +92,20 @@ describe('which buttons each status offers', () => {
     expect(acts(card({ status: 'with-agent', approved: true, retryOf: 'rw1' }))).toEqual(['retry', 'withdraw-approval', 'archive']);
     expect(acts(card({ status: 'archived', archives: ['ra1'] }), { inSheet: true })).toEqual(['unarchive', 'redact']);
     expect(acts({ id: 'wc_1', status: 'removed', removed: { note: 'x' } }, { inSheet: true })).toEqual([]);
+  });
+  it('a phone-only card (a project app version): no Approve, "Approve this on your phone"; once approved only "Stop this app"', () => {
+    const pending = card({ phoneOnly: true, outward: false });
+    expect(cardActions(pending)).toEqual([]);
+    expect(cardActions(pending, { inSheet: true })).toEqual([]);
+    expect(phoneOnlyLine(pending)).toBe('Approve this on your phone');
+    const running = card({ phoneOnly: true, status: 'with-agent', approved: true });
+    expect(cardActions(running, { inSheet: true })).toEqual([{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }]);
+    expect(phoneOnlyLine(running)).toBeNull();
+    expect(tapBody(running, 'withdraw-approval')).toMatchObject({ ok: true, body: { action: 'withdraw-approval' } });
+    expect(tapCovers(running, 'withdraw-approval').map((l) => l.label)).toContain('Stopping this app');
+    expect(pinExplain(running, 'withdraw-approval')).toMatch(/^Stop this app: /);
+    expect(phoneOnlyLine(card())).toBeNull(); // an ordinary card keeps its Approve
+    expect(acts(card())).toContain('approve');
   });
   it('a question open on a held card can still be answered', () => {
     expect(acts(card({ status: 'held', holds: ['rh1'], question: { id: 'rq1', text: 'Which?' } }))).toEqual(['unhold', 'answer', 'archive']);

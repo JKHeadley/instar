@@ -7,6 +7,7 @@ import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
@@ -61,6 +62,19 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   // cross-origin (spec skill-driven-signin-repair §5). A preflight gets a bare refusal.
   if (RELOGIN_HELPER_CODE_PATH.test(req.path)) {
     if (req.method === 'OPTIONS') { res.sendStatus(403); return; }
+    next();
+    return;
+  }
+  // Project app api paths (docs/specs/project-apps-sandbox.md §3.6): the sandboxed frame has an
+  // opaque origin, so its fetches carry `Origin: null`. Exactly these paths, ahead of the generic
+  // branch; no credentials, and the narrow key header is the only extra header allowed.
+  if (PROJECT_APP_API_PATH.test(req.path)) {
+    if (req.headers.origin === 'null') res.header('Access-Control-Allow-Origin', 'null');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'X-Project-App-Key, Content-Type');
+    res.header('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
     next();
     return;
   }
@@ -397,6 +411,15 @@ export function authMiddleware(
       return;
     }
 
+    // Project apps (docs/specs/project-apps-sandbox.md §3.6): the sealed frame (single-use ticket,
+    // checked in the handler) and the app's own api (the narrow X-Project-App-Key, checked in the
+    // handler, the ONLY gate there). Exact method + path shapes, never a prefix; the ticket and key
+    // mint routes stay behind this gate.
+    if (isProjectAppPublicRoute(req.method, req.path)) {
+      next();
+      return;
+    }
+
     // Internal endpoints: enforce localhost AND bearer token.
     //
     // Per context-death-pitfall-prevention spec § P0.5 (PR3 fix):
@@ -470,6 +493,11 @@ export function authMiddleware(
 
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+    // A project app's narrow key is never a Bearer (project-apps-sandbox §3.7): a plain 401.
+    if (header.startsWith('Bearer pak_')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
       return;
     }
@@ -988,6 +1016,21 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
           ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
           : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
+    // The project app wrapper (project-apps-sandbox §3.6): its own policy, whose frame-src names the
+    // one frame path for this app on this request's own origin, so the frame cannot navigate itself
+    // anywhere else. The origin must be one of the agent's known addresses (the resolver AgentServer
+    // puts on app.locals); without one the page is refused rather than served with a looser policy.
+    if (isWrapperPagePath(p)) {
+      const appId = typeof req.query?.app === 'string' ? req.query.app : '';
+      const resolve = req.app?.locals?.projectAppOrigin as ((r: Request) => string | null) | undefined;
+      const origin = resolve ? resolve(req) : null;
+      if (!APP_ID_RE.test(appId) || !origin) {
+        res.status(400).type('text/plain').set('Cache-Control', 'no-store')
+          .send(!APP_ID_RE.test(appId) ? 'No such app.' : 'This address is not one of this agent\'s addresses.');
+        return;
+      }
+      res.header('Content-Security-Policy', wrapperCsp(origin, appId));
+    }
   }
   next();
 }

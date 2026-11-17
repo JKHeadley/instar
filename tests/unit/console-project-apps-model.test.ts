@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  appsView, summaryLine, pinLine, appStripFor, conversationRefOf, safeHash, appPath, projectsView,
+  appsView, summaryLine, pinLine, appStripFor, conversationRefOf, safeHash, safeAppHref, appNavigation, appPath, projectsView,
 } from '../../dashboard/console/projects-model.js';
 import { NEED_EXEMPT } from '../../dashboard/console/needs-model.js';
 
@@ -43,6 +43,22 @@ describe('appsView: the Work row', () => {
     expect(v.buttons).toEqual([]);
     expect(safeHash('#/work/maturation')).toBe('#/work/maturation');
     expect(safeHash('javascript:x')).toBeNull();
+  });
+
+  it('a custom app opens the shared wrapper page, and only that exact path shape is accepted', () => {
+    const W = '/dashboard/project-app/?app=pa_0123456789abcdef';
+    const v = appsView(row({ apps: [app({ appRef: 'custom:pa_0123456789abcdef', title: 'Sales pipeline', openHref: W })] }), NOW);
+    expect(v.buttons.map((b) => b.href)).toEqual([W]);
+    expect(appNavigation(W)).toEqual({ kind: 'page', href: W });
+    expect(appNavigation('#/work/maturation')).toEqual({ kind: 'hash', href: '#/work/maturation' });
+    for (const bad of [
+      '/dashboard/project-app/?app=pa_0123456789ABCDEF', '/dashboard/project-app/?app=pa_0123456789abcde',
+      '/dashboard/project-app/?app=pa_0123456789abcdef&x=1', '//evil.example/dashboard/project-app/?app=pa_0123456789abcdef',
+      '/dashboard/project-app/?app=pa_0123456789abcdef#x', 'https://evil.example/dashboard/project-app/?app=pa_0123456789abcdef',
+      '/dashboard/project-app/../?app=pa_0123456789abcdef', '/dashboard/other/?app=pa_0123456789abcdef', 'javascript:alert(1)',
+    ]) { expect(safeAppHref(bad)).toBeNull(); expect(appNavigation(bad)).toBeNull(); }
+    // A summary action stays console-hash only.
+    expect(summaryLine(app({ summaryState: 'unreadable', summaryWhy: 'x', summaryAction: { label: 'Open', href: W } }), NOW).action).toBeUndefined();
   });
 
   it('the first app headline is the second line, "as of HH:MM" when fresh', () => {

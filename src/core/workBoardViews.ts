@@ -14,8 +14,18 @@ export interface Viewer { personKey: string | null; isOwner: boolean; isAgent: b
 export interface BehindInfo { machineId: string; since: string }
 
 /** Plain words for each status, for the row's "what is needed" line. */
-export function needLine(v: CardView): string {
+export function needLine(v: CardView, opts: { phoneOnly?: boolean } = {}): string {
   const c = v.card;
+  // A phone-only card (a project app's version card, project-apps-sandbox §3.4) is approved only on
+  // the owner's phone and no agent starts anything from it, so it never says "before the agent starts".
+  if (opts.phoneOnly) {
+    switch (v.status) {
+      case 'needs-approval': return c.withdrawn ? 'Stopped. Approve this version on your phone to run it again' : 'Approve this version on your phone to run it';
+      case 'with-person': return c.approvalValid ? 'Approved on your phone; starting this version' : 'Approve this version on your phone to run it';
+      case 'done': return 'Approved on your phone; this version is running';
+      default: break;
+    }
+  }
   switch (v.status) {
     case 'removed': return 'Removed';
     case 'unknown': return 'Part of this card could not be read';
@@ -52,10 +62,10 @@ function byJson(b: unknown, name: (k: string) => string): unknown {
   return { kind: x.kind };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[] }): Record<string, unknown> {
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
-  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, needLine: needLine(v), newestAt: new Date(c.newestRecordAt).toISOString() };
+  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, needLine: needLine(v, { phoneOnly: extra?.phoneOnly === true }), newestAt: new Date(c.newestRecordAt).toISOString() };
   if (c.redacted) {
     return { ...base, title: `Removed by ${byName(c.redacted.by, name)}`, removed: { by: byJson(c.redacted.by, name), at: c.redacted.at, note: 'The text is hidden from every read. Its bytes stay in the journal until compaction, and a backup taken earlier still holds it.' } };
   }
@@ -64,8 +74,10 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
   const out: Record<string, unknown> = {
     ...base,
     title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, doneWhen: c.doneWhen,
-    carrier: principalJson(c.carrier, name), outward: c.outward,
-    outwardWords: c.outward ? 'This sends something outside your team or spends money' : null,
+    // A phone-only card keeps `outward` in its record so it needs its own approve under every board
+    // policy, but approving an app version sends nothing outside the team and spends nothing.
+    carrier: principalJson(c.carrier, name), outward: c.outward && !extra?.phoneOnly,
+    outwardWords: c.outward && !extra?.phoneOnly ? 'This sends something outside your team or spends money' : null,
     links: c.links.map((l) => ('url' in l ? { ...l, host: safeHost(l.url), note: 'Approval covers this address, not what it serves later' } : { ...l, removed: extra?.brokenAttachments?.includes(l.attachmentId) ?? false })),
     waitingOn: principalJson(c.waitingOn, name), due: c.due,
     materialHash: c.materialHash, approvalRequired: c.approvalRequired, approved: c.approvalValid, approvedBy: c.approvedBy ? { ...c.approvedBy, by: byJson(c.approvedBy.by, name) } : null,
@@ -85,6 +97,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     retryOf: retryTargetFor(svc, v),
     lineIds: svc.lineIds(c.cardId),
     repliedAfterQuestion: !!extra?.repliedAfterQuestion,
+    ...(extra?.phoneOnly ? { phoneOnly: true } : {}),
     ...(extra?.behind ? { behind: extra.behind } : {}),
     ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn } : {}),
   };

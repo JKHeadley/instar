@@ -77,6 +77,12 @@ export interface WorkBoardRouteDeps {
    * result? A hold refuses the write with 422 and the way through. Absent ⇒ no judge.
    */
   specApprovalJudge?: (text: string) => Promise<{ hold: boolean; issue?: string; suggestion?: string; unavailable?: boolean; noProvider?: boolean }>;
+  /**
+   * Project apps part 2 (docs/specs/project-apps-sandbox.md §3.4): a server-owned, phone-only card (a
+   * custom app's version card). Its fields are the server's, so no caller's record lands on it, and a
+   * console (PIN) tap is refused except withdraw-approval, which only stops an app. Absent ⇒ none.
+   */
+  phoneOnlyCard?: (cardId: string) => boolean;
 }
 
 /** The card text an approval ask lives in: the fields a person reads to decide. */
@@ -153,6 +159,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     behind: deps.behind(), lastWrittenOn: deps.lastWrittenOn(v), repliedAfterQuestion: deps.repliedAfterQuestion(v),
     capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
     brokenAttachments: deps.brokenAttachments(v),
+    phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
   });
 
   /** Visible to this viewer? The owner and the agent see every card; others need read access to its conversation. */
@@ -253,6 +260,10 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
       res.status(400).json({ error: 'record-kind-not-allowed', message: 'Pickup records are written only by the pickup controller, the policy only by the settings route, and taps only by the tap route.' });
       return;
     }
+    if (deps.phoneOnlyCard?.(String(req.params.id))) {
+      res.status(403).json({ error: 'server-owned-card', message: 'This card is written by Instar itself (an app version waiting for your phone); it cannot be changed here.' });
+      return;
+    }
     const p = writerOf(req, res, 'Enter your dashboard PIN to change this card'); if (!p) return;
     const id = String(req.params.id);
     const { pin: _pin, kind: _k, recordType: _rt, ...rest } = body;
@@ -294,6 +305,12 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const c = deps.caller(req);
     // A scoped session or a phone has no console PIN path; a bearer request must prove the PIN.
     if (c.kind !== 'bearer') { res.status(403).json({ error: 'person-required' }); return; }
+    // A phone-only card (project-apps-sandbox §3.4): a PIN tap could make it read approved while nothing
+    // runs, and the PIN is available to the agent. Only withdraw-approval (it only stops an app) is taken here.
+    if (deps.phoneOnlyCard?.(String(req.params.id)) && (req.body as { action?: unknown } | undefined)?.action !== 'withdraw-approval') {
+      res.status(403).json({ error: 'phone-only-card', message: 'Approve this on your phone' });
+      return;
+    }
     if ((req.body as { pin?: unknown } | undefined)?.pin === undefined) { res.status(403).json({ error: 'person-required', message: 'A tap is a person\'s: it needs the dashboard PIN (console) or Face ID (phone). The agent cannot tap.' }); return; }
     if (!deps.requirePin(req, res, 'Enter your dashboard PIN to confirm')) return;
     const owner = deps.ownerPersonKey();
@@ -364,7 +381,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
  * redact), a poke to the pickup controller. Shared by the console route (PIN) and the phone route
  * (presence signature, mounted in mobilePermissionsRoutes behind the write gate).
  */
-export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log' | 'phoneOnlyCard'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
   // A tap that PERMITS something must name the title the person saw (its hash): the title is what
   // they read on screen, and an answer, a release or a Try again is bound to nothing else that shows it.
   if (!isRestrictingTap(String(body.action)) && !(typeof body.titleHash === 'string' && /^[0-9a-f]{64}$/.test(body.titleHash))) {
@@ -386,5 +403,5 @@ export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayNam
   }
   deps.controller()?.poke();
   const v = svc.view(cardId)!;
-  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, { personKey: deps.ownerPersonKey(), isOwner: true, isAgent: false }, deps.displayName) } };
+  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, { personKey: deps.ownerPersonKey(), isOwner: true, isAgent: false }, deps.displayName, { phoneOnly: deps.phoneOnlyCard?.(cardId) === true }) } };
 }

@@ -55,6 +55,12 @@ export interface ProjectAppsRuntimeDeps {
   builtinSummary: (appId: string) => BuiltinSummary;
   /** Whether the feature behind a builtin app is on (an off feature cannot be offered). */
   builtinAvailable: (appId: string) => boolean;
+  /**
+   * Part 2 (docs/specs/project-apps-sandbox.md): a custom app by its ref, or null when there is no such
+   * app or custom apps are off on this agent (then its rows are hidden and it cannot be offered).
+   * Absent ⇒ custom apps are not available on this build.
+   */
+  customApp?: (appRef: string) => { appId: string; title: string; conversationKey: string; specOk: boolean; summary?: BuiltinSummary } | null;
   log?: (entry: Record<string, unknown>) => void;
 }
 
@@ -129,22 +135,35 @@ export class ProjectAppsRuntime {
     return this.load().pairs.get(`${ck}\u0000${ref}`);
   }
 
-  private titleOf(ref: string): string { return builtinApp(ref)?.title ?? ref; }
+  private titleOf(ref: string): string { return builtinApp(ref)?.title ?? this.custom(ref)?.title ?? ref; }
+
+  private custom(ref: string): ReturnType<NonNullable<ProjectAppsRuntimeDeps['customApp']>> {
+    if (!CUSTOM_APP_REF_RE.test(ref) || !this.d.customApp) return null;
+    try { return this.d.customApp(ref); } catch { return null; } // @silent-fallback-ok — an unreadable custom app is hidden, never shown wrong
+  }
+
+  /** A pair's app is shown: a builtin, or a custom app that exists, on this project, with custom apps on. */
+  private visible(ck: string, ref: string): boolean {
+    if (APP_REF_RE.test(ref)) return true;
+    const c = this.custom(ref);
+    return !!c && c.conversationKey === ck;
+  }
 
   /** The Work read's per-project fields (spec §3.3). */
   view(conversationKey: string): ProjectAppsView {
     const { union, pairs } = this.load();
-    const mine = [...pairs.values()].filter((p) => p.conversationKey === conversationKey);
+    const mine = [...pairs.values()].filter((p) => p.conversationKey === conversationKey && this.visible(conversationKey, p.appRef));
     const base = this.d.publicBase();
     const apps: ProjectAppRow[] = mine.filter((p) => p.state === 'attached')
       .sort((a, b) => String(b.attachedAt).localeCompare(String(a.attachedAt)))
       .map((p) => {
         const b = builtinApp(p.appRef);
-        const s = b ? this.d.builtinSummary(b.id) : { state: 'unreadable' as const, why: 'This app is not available on this machine.' };
+        const c = b ? null : this.custom(p.appRef);
+        const s: BuiltinSummary = b ? this.d.builtinSummary(b.id) : c ? (c.summary ?? { state: 'pending' }) : { state: 'unreadable' as const, why: 'This app is not available on this machine.' };
         const pins = foldPins(union, conversationKey, p.appRef);
         const platform = this.d.platformFor(conversationKey)?.platform;
         return {
-          appRef: p.appRef, title: this.titleOf(p.appRef), openHref: b?.consoleRoute ?? '#/work/board',
+          appRef: p.appRef, title: this.titleOf(p.appRef), openHref: b?.consoleRoute ?? (c ? `/dashboard/project-app/?app=${c.appId}` : '#/work/board'),
           ...(b ? { nativeScreen: b.nativeScreen } : {}),
           summary: s.state === 'ok' && s.headline && s.asOf ? { headline: s.headline, counts: s.counts ?? [], asOf: s.asOf } : null,
           summaryState: s.state, ...(s.why ? { summaryWhy: s.why } : {}), ...(s.action ? { summaryAction: s.action } : {}),
@@ -178,10 +197,17 @@ export class ProjectAppsRuntime {
     if (!this.d.holdsLease()) return refuse(409, 'not-lease-holder', 'Offers are made on the machine that serves Telegram.');
     const keys = this.d.projectKeys();
     if (!keys || !keys.includes(conversationKey)) return refuse(404, 'unknown-project');
-    if (CUSTOM_APP_REF_RE.test(appRef)) return refuse(409, 'custom-apps-not-available', 'Custom apps are not available yet.');
-    const b = APP_REF_RE.test(appRef) ? builtinApp(appRef) : null;
-    if (!b) return refuse(404, 'unknown-app');
-    if (!this.d.builtinAvailable(b.id)) return refuse(409, 'app-unavailable', `${b.title} is switched off on this agent.`);
+    if (CUSTOM_APP_REF_RE.test(appRef)) {
+      if (!this.d.customApp) return refuse(409, 'custom-apps-not-available', 'Custom apps are not available on this agent.');
+      const c = this.custom(appRef);
+      if (!c || c.conversationKey !== conversationKey) return refuse(404, 'unknown-app', 'No such custom app on this project.');
+      // The spec process (project-apps-sandbox §3.4): every custom-app offer names a converged spec.
+      if (!c.specOk) return refuse(409, 'app-spec-not-converged', 'The app\'s spec no longer carries review-convergence and review-report.');
+    } else {
+      const b = APP_REF_RE.test(appRef) ? builtinApp(appRef) : null;
+      if (!b) return refuse(404, 'unknown-app');
+      if (!this.d.builtinAvailable(b.id)) return refuse(409, 'app-unavailable', `${b.title} is switched off on this agent.`);
+    }
     const text = String(why ?? '').trim();
     if (!text) return refuse(400, 'why-required', 'Say in a line why this project would be easier to follow with the app.');
     const at = new Date(this.d.now()).toISOString();
@@ -204,7 +230,12 @@ export class ProjectAppsRuntime {
   answer(conversationKey: string, appRef: string, answer: string, proof: { by: 'owner' | 'agent'; via: AnswerVia; principal?: string }, requestId?: string): { ok: true; changed: boolean } | Refusal {
     const keys = this.d.projectKeys();
     if (!keys || !keys.includes(conversationKey)) return refuse(404, 'unknown-project');
-    if (!builtinApp(appRef)) return refuse(404, CUSTOM_APP_REF_RE.test(appRef) ? 'custom-apps-not-available' : 'unknown-app');
+    if (!builtinApp(appRef)) {
+      if (!CUSTOM_APP_REF_RE.test(appRef)) return refuse(404, 'unknown-app');
+      if (!this.d.customApp) return refuse(404, 'custom-apps-not-available');
+      const c = this.custom(appRef);
+      if (!c || c.conversationKey !== conversationKey) return refuse(404, 'unknown-app');
+    }
     if (requestId) {
       const seen = this.recentRequestIds.get(`${conversationKey}|${appRef}|${requestId}`);
       if (seen !== undefined) return { ok: true, changed: false };
@@ -253,6 +284,7 @@ export class ProjectAppsRuntime {
   async process(): Promise<void> {
     const { pairs } = this.load();
     for (const p of pairs.values()) {
+      if (!this.visible(p.conversationKey, p.appRef)) continue;
       const platform = this.d.platformFor(p.conversationKey);
       if (!platform) continue;
       if (!this.d.isActingMachine(p.conversationKey)) continue;
@@ -337,6 +369,8 @@ export class ProjectAppsRuntime {
 
   private linkText(ref: string, base: string | null): string {
     const b = builtinApp(ref);
+    const c = b ? null : this.custom(ref);
+    if (c) return `📌 ${this.titleOf(ref)}: ${base ?? ''}/dashboard/project-app/?app=${c.appId}`;
     const route = b?.consoleRoute ?? '#/work/board';
     return `📌 ${this.titleOf(ref)}: ${base ?? ''}/dashboard/console/${route}`;
   }

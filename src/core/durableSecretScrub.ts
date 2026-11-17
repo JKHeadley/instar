@@ -153,6 +153,8 @@ export const DURABLE_SECRET_PATTERNS: readonly ScrubPattern[] = [
   { kind: 'jwt', regex: /\b[A-Za-z0-9_-]{16,1024}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{16,}\b/gd },
   // Bearer tokens.
   { kind: 'bearer-token', regex: /Bearer\s+[A-Za-z0-9_\-.]{20,}/gd },
+  // Project app narrow keys (project-apps-sandbox §3.7), redacted like bearer tokens.
+  { kind: 'bearer-token', regex: /\bpak_[A-Za-z0-9_-]{20,4096}\.[A-Za-z0-9_-]{43}/gd },
   // URLs with embedded credentials (scheme://user:pass@host) — redact the
   // credential group (group 1), keep the scheme/host structure readable.
   {
