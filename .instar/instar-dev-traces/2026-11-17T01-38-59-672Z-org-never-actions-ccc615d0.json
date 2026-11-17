@@ -16,5 +16,10 @@
   "tier": 2,
   "tierReasoning": "Re-audit fixes to evidence, journaling and hook input.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one judgment per tool call or outgoing message"
+  }
 }
