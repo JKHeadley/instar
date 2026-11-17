@@ -20,3 +20,5 @@
 **How we know it works.** Tests prove the arithmetic. Replaying 17 November from the history has to show that Codex account as "will leave quota unused". After every reset, it also checks itself: what it would have said a day earlier against what actually happened. That record is what a later review uses to decide whether it is good enough to act on. No single number decides it.
 
 **Off switch and rollout.** One setting. It is tried first on a throwaway test agent with replayed history, then runs on Echo for about three weeks (two resets for every account). It reaches every agent only after a review of how well it predicted. The history stays on each machine; it isn't synced or backed up, and it rebuilds itself if lost.
+
+**Status.** Spec converged in three review rounds and approved; built in the same change, with unit, integration and end-to-end tests.

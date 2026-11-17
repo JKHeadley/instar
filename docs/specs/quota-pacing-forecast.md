@@ -2,7 +2,7 @@
 title: "Quota pacing, step 1: reading history, provider runway and per-account forecast (read-only)"
 slug: "quota-pacing-forecast"
 author: "echo"
-parent-principle: "Structure > Willpower; Signal vs Authority (a forecast is a measurement, never a gate)"
+parent-principle: "Signal vs. Authority"
 eli16-overview: "quota-pacing-forecast.eli16.md"
 status: "converged"
 approved: true
