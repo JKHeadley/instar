@@ -201,6 +201,27 @@ describe('PATCH /config — the nested-path validator (INT9-1) + PIN-gated disab
     expect(JSON.stringify(cfg)).not.toContain(PIN);
   });
 
+  // SEC-071: a JSON body keeps an own `__proto__` key; following it in the merge wrote onto
+  // every object in the process and past the PIN check above. Refused at any depth.
+  it('a reserved object key anywhere in the patch is refused, and nothing is polluted or flipped', async () => {
+    const app = makeApp();
+    const before = fs.existsSync(path.join(tmp, '.instar', 'config.json')) ? fs.readFileSync(path.join(tmp, '.instar', 'config.json'), 'utf-8') : null;
+    for (const raw of [
+      '{"intelligence":{"selfActionGovernor":{"__proto__":{"emergencyDisable":true}}}}',
+      '{"intelligence":{"selfActionGovernor":{"classes":{"constructor":{"prototype":{"x":1}}}}}}',
+      '{"__proto__":{"emergencyDisable":true}}',
+    ]) {
+      const res = await request(app).patch('/config').set(auth()).set('Content-Type', 'application/json').send(raw);
+      expect(res.status).toBe(400);
+    }
+    expect(({} as Record<string, unknown>).emergencyDisable).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'emergencyDisable')).toBe(false);
+    const after = fs.existsSync(path.join(tmp, '.instar', 'config.json')) ? fs.readFileSync(path.join(tmp, '.instar', 'config.json'), 'utf-8') : null;
+    expect(after).toBe(before);
+    const gov = await request(app).get('/self-action-governor').set(auth());
+    expect(gov.body.emergencyDisable).toBe(false);
+  });
+
   it('RE-ENABLE is Bearer-OK (the safe direction needs no PIN)', async () => {
     const app = makeApp();
     await request(app)

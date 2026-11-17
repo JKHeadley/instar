@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { JSDOM } from 'jsdom';
-import { SecretDrop, canonicalSubmitMessage, buildSignedSubmission } from '../../src/server/SecretDrop.js';
+import { SecretDrop, canonicalSubmitMessage, canonicalSubmitMessageV2, buildSignedSubmission } from '../../src/server/SecretDrop.js';
 
 describe('SecretDrop', () => {
   let drop: SecretDrop;
@@ -399,6 +399,98 @@ describe('SecretDrop', () => {
 
     it('buildSignedSubmission rejects a non-32-byte seed', () => {
       expect(() => buildSignedSubmission('t', { secret: 'x' }, 'aabb')).toThrow(/32 bytes/);
+    });
+
+    // Signed-submission encoding: two different value maps must never share signed bytes.
+    describe('unambiguous signed encoding (v2) and the safe v1 subset', () => {
+      function seedKey() {
+        const seed = crypto.randomBytes(32);
+        const priv = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]), format: 'der', type: 'pkcs8' });
+        const pubHex = Buffer.from(Buffer.from(crypto.createPublicKey(priv).export({ type: 'spki', format: 'der' })).subarray(-32)).toString('hex');
+        return { seedHex: seed.toString('hex'), priv, pubHex };
+      }
+      const twoFields = [{ name: 'a', label: 'a' }, { name: 'b', label: 'b' }];
+      const before = { a: 'first\nb=middle', b: 'last' };
+      const after = { a: 'first', b: 'middle\nb=last' };
+
+      it('v2 bytes differ for value maps whose v1 bytes collide', () => {
+        expect(canonicalSubmitMessage('T', before).equals(canonicalSubmitMessage('T', after))).toBe(true);
+        expect(canonicalSubmitMessageV2('T', before).equals(canonicalSubmitMessageV2('T', after))).toBe(false);
+      });
+
+      it('a v2 signature for one value map does not verify a different one; the signed map is accepted', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: twoFields, senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, before, k.seedHex);
+        expect(drop.submit(token, csrf(token), { ...after, _sig: signed._sig, _sigv: signed._sigv })).toBeNull();
+        expect(drop.getPending(token)).not.toBeNull(); // a refused submit never burns the token
+        const sub = drop.submit(token, csrf(token), signed);
+        expect(sub).not.toBeNull();
+        expect(sub!.values).toEqual(before);
+        expect(sub!.values._sigv).toBeUndefined();
+      });
+
+      it('a v1 signature over multi-line values is refused with a reason the sender can act on', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: twoFields, senderVerification: { senderPubKeyHex: k.pubHex } });
+        const v1sig = crypto.sign(null, canonicalSubmitMessage(token, before), k.priv).toString('hex');
+        expect(drop.submitWithReason(token, csrf(token), { ...after, _sig: v1sig })).toEqual({ refused: 'signature-format-outdated' });
+        expect(drop.submitWithReason(token, csrf(token), { ...before, _sig: v1sig })).toEqual({ refused: 'signature-format-outdated' });
+        expect(drop.getPending(token)).not.toBeNull();
+      });
+
+      it('v2 carries multi-line values (e.g. a PEM key) end to end', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: [{ name: 'key', label: 'key' }], senderVerification: { senderPubKeyHex: k.pubHex } });
+        const pem = '-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----';
+        const sub = drop.submit(token, csrf(token), buildSignedSubmission(token, { key: pem }, k.seedHex));
+        expect(sub!.values.key).toBe(pem);
+      });
+
+      it('v1 single-line signatures still verify, including an old signer that signed surrounding spaces', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const raw = { secret: '  tok-123  ' }; // v1 signed as sent; the stored value is trimmed
+        const v1sig = crypto.sign(null, canonicalSubmitMessage(token, raw), k.priv).toString('hex');
+        const sub = drop.submit(token, csrf(token), { ...raw, _sig: v1sig });
+        expect(sub).not.toBeNull();
+        expect(sub!.values.secret).toBe('tok-123');
+      });
+
+      it('values with surrounding whitespace verify (signer and verifier agree on trimming)', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const sub = drop.submit(token, csrf(token), buildSignedSubmission(token, { secret: '  spaced  ' }, k.seedHex));
+        expect(sub!.values.secret).toBe('spaced');
+      });
+
+      it('an unknown signature version is refused, not guessed', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, { secret: 'x' }, k.seedHex);
+        expect(drop.submitWithReason(token, csrf(token), { ...signed, _sigv: '9' })).toEqual({ refused: 'signature-format-unknown' });
+        expect(drop.getPending(token)).not.toBeNull();
+      });
+
+      it('single-line values are signed in the v1 form older receivers can verify (no _sigv)', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, { secret: ' one-line ' }, k.seedHex);
+        expect(signed._sigv).toBeUndefined();
+        const v1ok = crypto.verify(null, canonicalSubmitMessage(token, { secret: 'one-line' }), crypto.createPublicKey(k.priv), Buffer.from(signed._sig, 'hex'));
+        expect(v1ok).toBe(true);
+        expect(drop.submit(token, csrf(token), signed)!.values.secret).toBe('one-line');
+      });
+
+      it('stripping the version marker from a multi-line v2 submission does not get it accepted', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: twoFields, senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, before, k.seedHex);
+        expect(signed._sigv).toBe('2');
+        const { _sigv, ...stripped } = signed;
+        expect(drop.submitWithReason(token, csrf(token), stripped)).toEqual({ refused: 'signature-format-outdated' });
+        expect(drop.getPending(token)).not.toBeNull();
+      });
     });
   });
 });

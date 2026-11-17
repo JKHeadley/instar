@@ -63,6 +63,7 @@ import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { localBindingOk, mountLocalOwnerDeviceRoute } from './mobileLocalOwnerDevice.js';
 import { TeamAccessLog, rowSignedByKnownMachine, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { attentionForNonOwner, tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
@@ -1226,6 +1227,8 @@ const json503 = (res: Response) => res.status(503).json({ error: 'Mobile pairing
 
 /** Public routes: registered on the app BEFORE the bearer middleware. */
 export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePairingService): void {
+  // The Mac app's first owner device on this same Mac (docs/specs/mac-app-creates-agent.md §A).
+  mountLocalOwnerDeviceRoute(app, svc, { agentName: () => String(svc.deps.config.projectName ?? '') });
   app.get(MOBILE_PING_PATH, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     // Multi-route proves own names with this same ping, so it answers whenever multi-route is on.
@@ -1854,6 +1857,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!svc.enabled()) { json503(res); return; }
     const p = principalOf(req);
     if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+    // A device created on this Mac by the Mac app never gets a notification read token: the token
+    // branch runs before the host branches, so it could otherwise be used off this Mac (mac-app-creates-agent §A).
+    if (svc.devices.get(p.deviceId)?.localBinding) { res.status(403).json({ error: 'not-for-local-devices' }); return; }
     const b = (req.body ?? {}) as Record<string, unknown>;
     const revision = b.revision;
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) { res.status(400).json({ error: 'bad-revision' }); return; }
@@ -2501,6 +2507,10 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
 export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   const rules: DeviceRule[] = [
+    // Organization pack acts (docs/specs/org-pack-and-join.md §B2): only the person's tap in the app.
+    // Not in BROWSER_ROUTES, so a browser device (key not hardware-held) is refused.
+    { method: 'POST', re: /^\/mobile\/org\/(publish|join|leave|update-accept)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 5, bucket: 'org-acts' },
+    { method: 'GET', re: /^\/mobile\/org\/status$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
     // Conversations v3 owner hierarchy. Admission still requires a live device
     // signature; the mounted graph source separately enforces increment A.
     { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
@@ -2778,7 +2788,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       if (req.method !== 'GET' || !NOTIFY_TOKEN_PATHS.some((re) => re.test(pathNorm)) || req.headers['x-instar-device-sig'] !== undefined || typeof notifyToken !== 'string' || typeof id !== 'string') return refuse(403, 'notify-token-not-allowed');
       const d = svc.devices.get(id);
       // A browser has no notification token: the branch refuses it (dashboard-conversations-browser-device §4.4).
-      if (d && isBrowserDevice(d)) return refuse(403, 'notify-token-not-allowed');
+      if (d && (isBrowserDevice(d) || d.localBinding)) return refuse(403, 'notify-token-not-allowed');
       const h = crypto.createHash('sha256').update(notifyToken).digest();
       const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
       if (!d || d.status !== 'active' || !stored || stored.length !== h.length || !crypto.timingSafeEqual(stored, h)) return refuse(401, 'device-unauthorized');
@@ -2819,8 +2829,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // loopback peer with no forwarding header, in both multi-route modes.
     const peek = typeof id === 'string' ? svc.devices.get(id) : null;
     const browserDevice = !!peek && isBrowserDevice(peek);
-    if (browserDevice && !svc.browserOn()) return refuse(403, 'browser-devices-off');
-    if (browserDevice && isLoopbackHost(peek!.host)) {
+    if (peek?.localBinding) {
+      // The Mac app that created this agent on this Mac (mac-app-creates-agent §A): its own branch,
+      // in both multi-route modes, and never a fall-through to the stored host.
+      if (!localBindingOk(peek, req, svc.deps.selfMachineId)) return refuse(401, 'device-unauthorized');
+      host = peek.host;
+    } else if (browserDevice && !svc.browserOn()) return refuse(403, 'browser-devices-off');
+    else if (browserDevice && isLoopbackHost(peek!.host)) {
       if (!loopbackBindingOk(peek!, req)) { svc.browser.noteRefusal(peek!.id, 'host-refused'); return refuse(401, 'device-unauthorized'); }
       host = peek!.host;
     } else if (svc.ownNames) {

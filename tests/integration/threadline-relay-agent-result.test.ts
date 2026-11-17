@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MessageStore } from '../../src/messaging/MessageStore.js';
 import { MessageFormatter } from '../../src/messaging/MessageFormatter.js';
 import { MessageDelivery } from '../../src/messaging/MessageDelivery.js';
@@ -340,6 +341,55 @@ describe('/messages/relay-agent — accept-boundary response (duplicate-reply ro
     expect(resolvedReply).toBe('actual reply content');
     expect(routeCtx.threadlineReplyWaiters.has(threadId)).toBe(false);
     if (releaseHandler) (releaseHandler as () => void)();
+  });
+
+  // SEC: a wait records the peer the send was routed to. Every same-machine agent holds
+  // this route's token, so the sender is identified by its signature, else by the registry
+  // fingerprint for the name it claims; only the routed peer resolves the wait.
+  describe('routed-peer waiters on /messages/relay-agent', () => {
+    const ROUTED = 'aa11'.repeat(8);
+    const IMPOSTOR = 'bb22'.repeat(8);
+    const knownAgentsPath = () => path.join(project.stateDir, 'threadline', 'known-agents.json');
+    function setKnownAgent(fp: string | null) {
+      fs.mkdirSync(path.dirname(knownAgentsPath()), { recursive: true });
+      fs.writeFileSync(knownAgentsPath(), JSON.stringify({ agents: fp ? [{ name: 'other-agent', fingerprint: fp }] : [] }));
+    }
+    async function postToWaiter(): Promise<boolean> {
+      releaseHandler = null;
+      const routeCtx = (server as any).routeContext as { threadlineReplyWaiters: Map<string, any> };
+      const threadId = crypto.randomUUID();
+      let resolved = false;
+      routeCtx.threadlineReplyWaiters.set(threadId, {
+        resolve: () => { resolved = true; routeCtx.threadlineReplyWaiters.delete(threadId); },
+        threadId,
+        senderAgent: 'routed-peer',
+        timer: setTimeout(() => {}, 10_000) as ReturnType<typeof setTimeout>,
+        recipientFp: null,
+        routedFp: ROUTED,
+      });
+      const env = validEnvelope();
+      env.message.threadId = threadId;
+      env.message.body = 'a reply';
+      await request(app).post('/messages/relay-agent').set('Authorization', `Bearer ${relayAgentToken}`).send(env).expect(200);
+      await new Promise((r) => setTimeout(r, 50));
+      routeCtx.threadlineReplyWaiters.delete(threadId);
+      if (releaseHandler) (releaseHandler as () => void)();
+      return resolved;
+    }
+    afterAll(() => { SafeFsExecutor.safeRmSync(knownAgentsPath(), { force: true, operation: 'tests/integration/threadline-relay-agent-result.test.ts:routed-peer' }); });
+
+    it('the routed peer (registry fingerprint for its name) resolves the wait', async () => {
+      setKnownAgent(ROUTED);
+      expect(await postToWaiter()).toBe(true);
+    });
+    it('another same-machine agent posting on the same thread does NOT resolve it', async () => {
+      setKnownAgent(IMPOSTOR);
+      expect(await postToWaiter()).toBe(false);
+    });
+    it('a sender that cannot be identified does NOT resolve it', async () => {
+      setKnownAgent(null);
+      expect(await postToWaiter()).toBe(false);
+    });
   });
 
   it('does not resolve waiter for a different threadId even if sender matches', async () => {

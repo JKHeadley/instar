@@ -185,22 +185,34 @@ if (typeof v !== 'string') {
   process.exit(1);
 }
 
-// Helper: consume the submission (idempotent best-effort). Used only after a
-// verified-successful handoff in --run mode.
+// Helper: consume the submission. Returns true only when the server confirmed it. The server
+// removes the stored copy first and answers 503 (nothing consumed) if it cannot, so a
+// failure is retried once and then said out loud: the value stays until its cleanup.
 async function consumeSubmission() {
-  try {
-    await fetch(`http://localhost:${resolvedPort}/secrets/retrieve/${token}?consume=true`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authToken}`,
-        ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
-      },
-    });
-  } catch (e) {
-    // Non-fatal — the sliding/absolute-cap cleanup will reclaim it regardless. Said out loud, because
-    // --consume used to be one atomic call and a caller may rely on the value being gone.
-    process.stderr.write(`consume failed (${e.message}); the submission stays until its cleanup\n`);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(`http://localhost:${resolvedPort}/secrets/retrieve/${token}?consume=true`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
+        },
+      });
+      if (res.ok) return true;
+      if (attempt === 2) {
+        process.stderr.write(`consume refused (HTTP ${res.status}); the secret was NOT marked consumed and stays until its cleanup\n`);
+        return false;
+      }
+    } catch (e) {
+      // @silent-fallback-ok — retried once, then reported on stderr and returned as not consumed
+      if (attempt === 2) {
+        process.stderr.write(`consume failed (${e.message}); the secret was NOT marked consumed and stays until its cleanup\n`);
+        return false;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1500));
   }
+  return false;
 }
 
 if (browserMode) {
@@ -217,8 +229,10 @@ if (browserMode) {
   }
   const code = child.status ?? 1;
   if (code === 0) {
-    await consumeSubmission();
-    process.stderr.write('browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n');
+    const consumed = await consumeSubmission();
+    process.stderr.write(consumed
+      ? 'browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n'
+      : 'browser: typed. If the sign-in fails, ask for a new Secret Drop.\n');
   } else {
     process.stderr.write(`browser: exited ${code} — secret NOT consumed (read the page before retrying).\n`);
   }
@@ -242,8 +256,8 @@ if (runMode) {
   }
   const code = child.status ?? 1;
   if (code === 0) {
-    await consumeSubmission();
-    process.stderr.write('run: command succeeded — secret consumed.\n');
+    const consumed = await consumeSubmission();
+    process.stderr.write(consumed ? 'run: command succeeded — secret consumed.\n' : 'run: command succeeded.\n');
   } else {
     process.stderr.write(`run: command exited ${code} — secret NOT consumed (safe to retry).\n`);
   }
@@ -254,4 +268,4 @@ if (runMode) {
 // `gh secret set` or `bw unlock --raw`. process.stdout.write (not console.log)
 // — no extra newline, no trailing whitespace to confuse downstream consumers.
 process.stdout.write(v);
-if (consume) await consumeSubmission();
+if (consume && !(await consumeSubmission())) process.exitCode = 1;

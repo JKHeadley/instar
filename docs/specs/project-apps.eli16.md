@@ -34,3 +34,5 @@ On the agent's own server, through the same link the dashboard uses (or Tailscal
 3. The separate design for custom apps (the locked box and the narrow key), then a second example app for a project that is not about software.
 
 There is an on/off switch. Turning it off hides everything new and unpins the pinned links.
+
+**After the first test run (2026-11-17).** Three small checks failed on the first full run: a naming clash in the capability list, one tap that jumped the page instead of keeping your place, and a missing line in the list of stores that sync between machines. All three were fixed. The behavior is unchanged.

@@ -144,7 +144,7 @@ function appsDetail(p, ctx) {
   }
 
   if (!parts.length) return null;
-  return el('div', { class: 'project-apps-detail', id: `apps-${p.key.replace(/[^A-Za-z0-9_-]/g, '-')}` }, parts, status);
+  return el('div', { class: 'project-apps-detail', tabindex: '-1', id: `apps-${p.key.replace(/[^A-Za-z0-9_-]/g, '-')}` }, parts, status);
 }
 
 function projectRow(p, ctx) {
@@ -154,7 +154,9 @@ function projectRow(p, ctx) {
     ev.preventDefault(); ev.stopPropagation();
     details.open = true;
     const box = details.querySelector('.project-apps-detail');
-    if (box && box.scrollIntoView) box.scrollIntoView({ block: 'nearest' });
+    // An operator's tap, never a refresh: focus brings the apps box into view and moves keyboard focus
+    // there (F12: pages never call scrollIntoView themselves).
+    if (box && box.focus) box.focus();
   } }) : null;
   const summary = el('summary', { class: 'project-summary' },
     el('span', { class: DOT[p.tone] || 'dot', 'aria-hidden': 'true' }),

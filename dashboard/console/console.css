@@ -1229,6 +1229,10 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Preview address: say plainly that this is work in progress. */
 .preview-banner { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 16px; background: #3a2f0b; color: #f6d77a; font-size: 14px; line-height: 1.4; }
 .preview-banner a { color: inherit; text-decoration: underline; margin-left: auto; }
+/* A weak or missing connection (net-state.js): one plain line saying what is shown and how old it is. */
+.net-line { grid-column: 1 / -1; position: sticky; top: 0; z-index: 30; padding: 8px 16px; font-size: 14px; line-height: 1.4;
+  background: color-mix(in srgb, var(--surface-solid) 88%, var(--attn)); color: var(--attn); border-bottom: 1px solid var(--attn-line); }
+.net-line[hidden] { display: none; }
 
 /* Home headline as a link to the first thing that needs the operator. */
 .hero-link { all: unset; cursor: pointer; color: inherit; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.15em; }

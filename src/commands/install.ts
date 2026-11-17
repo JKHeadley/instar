@@ -8,6 +8,7 @@
 import { storageMachineName } from '../core/storageMachineName.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
+import { appTicketRefusal, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -389,6 +390,25 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         await askClaudeToken(env, claudeToken);
       }
       if (claudeToken.value && answers.door === 'claude-code') writeClaudeToken(file, claudeToken.value);
+      if (answers.orgBundle) {
+        // Applied before the server first starts; no server needed (org-pack-and-join §C, §D).
+        const { decodeBundle } = await import('../core/OrgPack.js');
+        const { OrgPackStore } = await import('../core/OrgPackStore.js');
+        const { AutonomyProfileManager } = await import('../core/AutonomyProfileManager.js');
+        const stateDir = path.dirname(file);
+        const d = decodeBundle(answers.orgBundle);
+        if (d.ok) {
+          const config = readAgentConfig(answers) as never;
+          const autonomy = new AutonomyProfileManager({ stateDir, config });
+          const r = new OrgPackStore(stateDir, 'single-machine').apply(d.bundle, {}, {
+            currentProfile: () => autonomy.getProfile(),
+            currentSettings: () => autonomy.authoritySettings(),
+            lowerProfile: (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName),
+            clampSettings: (cap) => autonomy.clampForOrgPolicy(cap),
+          });
+          if (!r.ok) return { kind: 'failed', message: `Your organization's policy couldn't be applied (${r.reason}).`, nextStep: resume };
+        }
+      }
       return { kind: 'done' };
     },
 
@@ -435,10 +455,22 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
       return { kind: 'done', note: `Your agent is running, but its automatic start didn't work, so it won't come back after a reboot. Details are in ${env.logFile}.` };
     },
 
-    'owner-slot': async (answers) => {
+    'owner-slot': async (answers, progress) => {
       // The config holds the agent's tokens (and any pasted Claude token). With a 002 umask
       // (Ubuntu's default) it was readable by every user on the machine (2026-11-03).
       restrictToOwner(agentConfigFile(answers));
+      if (!env.interactive && answers.forApp) {
+        // The Mac app enrolls itself with this one-time ticket (mac-app-creates-agent §B). The app's
+        // key never leaves the app, so the installer leaves the ticket and says where the agent is.
+        const agentDir = agentDirFor(answers.agentName!);
+        const port = Number(readAgentConfig(answers).port);
+        if (!Number.isInteger(port) || port <= 0) {
+          return { kind: 'failed', message: 'Your agent has no port set, so the app can\'t reach it.', nextStep: resume };
+        }
+        writeLocalOwnerTicket(path.join(agentDir, '.instar'));
+        progress.appEnroll = { agentDir, port };
+        return { kind: 'done', note: 'Ready for the Instar app to connect.' };
+      }
       if (!env.interactive) {
         return {
           kind: 'awaiting-person',
@@ -710,6 +742,12 @@ export interface InstallAnswersFile {
   purpose?: string;
   door?: string;
   autostart?: boolean;
+  /** An organization invitation's bundle (org-pack-and-join §C), applied only with orgAccepted. */
+  orgBundle?: string;
+  /** Written by the Mac app only after the person tapped Join on its join screen. */
+  orgAccepted?: boolean;
+  /** The Instar Mac app runs this install and enrolls itself (mac-app-creates-agent §B). */
+  forApp?: boolean;
 }
 
 /** Maps an answers file onto the flow's questions. `--yes` alone supplies consent (spec 4.1). */
@@ -728,6 +766,12 @@ export interface InstallCommandOptions {
   answers?: string;
   status?: boolean;
   restart?: boolean;
+  /** The Instar Mac app runs this install (mac-app-creates-agent §B). */
+  forApp?: boolean;
+  /** Write a fresh local ticket for the finished app install (§A "Fresh ticket"). */
+  appTicket?: boolean;
+  /** The app's device public key, with appTicket. */
+  key?: string;
 }
 
 export const INSTALL_EXIT_CODES: Record<InstallStatus, number> = {
@@ -747,6 +791,11 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
   }
   if (file.autostart !== undefined && typeof file.autostart !== 'boolean') {
     return 'In the answers file, autostart must be true or false.';
+  }
+  if (file.orgBundle !== undefined && typeof file.orgBundle !== 'string') return 'In the answers file, orgBundle must be text.';
+  if (file.orgAccepted !== undefined && typeof file.orgAccepted !== 'boolean') return 'In the answers file, orgAccepted must be true or false.';
+  if (file.forApp !== undefined && typeof file.forApp !== 'boolean') {
+    return 'In the answers file, forApp must be true or false.';
   }
   return null;
 }
@@ -777,10 +826,37 @@ export function reportedStatus(progress: InstallProgress, holder: number | null)
   return progress.status === 'running' && holder === null ? 'interrupted' : progress.status;
 }
 
+/**
+ * `instar install --app-ticket --key <publicKey>` (mac-app-creates-agent §A "Fresh ticket"): a fresh
+ * one-time ticket for the finished install the Mac app ran, so the app can finish (or recover) its
+ * enrollment with the same key. Changes nothing else.
+ */
+export function appTicketCommand(existing: InstallProgress | null, key: string | undefined): InstallStatus {
+  if (!existing || existing.status !== 'complete' || !existing.appEnroll) {
+    console.log('  There is no finished install for the Instar app here.');
+    return 'failed';
+  }
+  if (!key) {
+    console.log('  Pass the app\'s device key with --key.');
+    return 'needs-answers';
+  }
+  const stateDir = path.join(existing.appEnroll.agentDir, '.instar');
+  const refusal = appTicketRefusal(stateDir, key);
+  if (refusal) {
+    console.log(`  ${refusal}`);
+    return 'failed';
+  }
+  writeLocalOwnerTicket(stateDir);
+  console.log('  A fresh setup ticket is ready for the Instar app.');
+  return 'complete';
+}
+
 export async function runInstallCommand(options: InstallCommandOptions): Promise<InstallStatus> {
   const file = installProgressPath();
   const existing = readInstallProgress(file);
   const lock = installLockPath(file);
+
+  if (options.appTicket) return appTicketCommand(existing, options.key);
 
   if (options.status) {
     const holder = liveLockHolder(lock);
@@ -820,6 +896,24 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
     return 'needs-answers';
   }
   if (answersFile.autostart !== undefined) progress.answers.autostartConsent = answersFile.autostart;
+  // An organization invitation, checked before any step runs (org-pack-and-join §C "Joining before AI
+  // sign-in"); applied only when the person accepted it on the app's join screen.
+  if (answersFile.orgBundle !== undefined) {
+    if (answersFile.orgAccepted !== true) {
+      console.log('  The answers file has an organization invitation that was not accepted, so it is ignored.');
+    } else {
+      const { decodeBundle, validateBundle } = await import('../core/OrgPack.js');
+      const d = decodeBundle(answersFile.orgBundle);
+      const v = d.ok ? validateBundle(d.bundle, { pinnedKey: null, versionFloor: 0, joined: false, joinedVersion: null, joinedHash: null, joinedOrgId: null }) : d;
+      if (!v.ok) {
+        console.log(`  The organization invitation could not be used (${v.reason}).`);
+        return 'needs-answers';
+      }
+      progress.answers.orgBundle = answersFile.orgBundle;
+    }
+  }
+  // Kept in the ledger's answers, so a --resume (which has no answers file) still takes the app path.
+  if (answersFile.forApp === true || options.forApp === true) progress.answers.forApp = true;
 
   const context: InstallFlowContext = {
     detectedDoors: detectInstallDoors(),

@@ -287,6 +287,7 @@ export interface ResolvedGuardConfigSnapshot {
 
 function deepMergeInto(target: Record<string, unknown>, source: Record<string, unknown>, depth = 0): void {
   for (const key of Object.keys(source)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue; // never follow object machinery (SEC-071)
     if (
       depth < 64 &&
       typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
