@@ -3007,6 +3007,28 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
   'grokInteractiveSessions',
 ];
 
+/** Keys that name JavaScript's object machinery; never valid as config keys (SEC-071). */
+const RESERVED_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** The dotted path of the first reserved key anywhere in a JSON value, or null. */
+export function findReservedObjectKey(value: unknown, prefix = ''): string | null {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = findReservedObjectKey(value[i], `${prefix}[${i}]`);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  for (const key of Object.keys(value)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (RESERVED_OBJECT_KEYS.has(key)) return keyPath;
+    const hit = findReservedObjectKey((value as Record<string, unknown>)[key], keyPath);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
@@ -37433,6 +37455,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Deep-merges the request body into config.json and updates runtime ctx.config.
   router.patch('/config', (req, res) => {
     const patch = req.body;
+    // SEC-071: a key that names JavaScript's object machinery (`__proto__`, `prototype`,
+    // `constructor`) at ANY depth is refused before anything reads or merges the patch. A JSON
+    // body keeps an own `__proto__` key, and a merge that follows it writes into every object
+    // in the process (and past the PIN check on the flood-brake switch).
+    const reservedAt = findReservedObjectKey(patch);
+    if (reservedAt) {
+      res.status(400).json({ error: `"${reservedAt}" is not a valid config key` });
+      return;
+    }
     if (patch?.notifications && typeof patch.notifications === 'object' && 'selectivity' in patch.notifications) { res.status(403).json({ error: 'Use the confirmed notification preference surface' }); return; }
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
@@ -37571,7 +37602,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (sagPatch) {
         const deepMerge = (base: Record<string, any>, overlay: Record<string, unknown>): Record<string, any> => {
           for (const [k, v] of Object.entries(overlay)) {
-            if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+            if (RESERVED_OBJECT_KEYS.has(k)) continue; // already refused above; never followed here
+            const own = Object.prototype.hasOwnProperty.call(base, k);
+            if (v && typeof v === 'object' && !Array.isArray(v) && own && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
               deepMerge(base[k], v as Record<string, unknown>);
             } else {
               base[k] = v;
