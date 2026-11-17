@@ -22,5 +22,10 @@
   "tier": 2,
   "tierReasoning": "Router swap opt-out and the person's notices for block mode; block still unreachable.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one notice per held action and at most one budget notice a day; no loop"
+  }
 }
