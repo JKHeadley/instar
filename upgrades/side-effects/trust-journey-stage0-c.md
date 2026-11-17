@@ -122,3 +122,13 @@ The silent-fallback rule test counted two new silent catches:
 Trust-journey tests pass (105/105), and the rule tests pass (16/16).
 
 The write-domain ratchet found two new mutating routes without a declaration: `POST /trust/requests` and `POST /trust/acceptance/withdraw`. Both write TrustJourneyStore records, which replicate through the coherence journal, so both are classified `cluster-shared` in `buildWriteDomainRegistry`. The older `POST /trust/grant` keeps its baseline entry; it is not reclassified here.
+
+## Second-pass review
+
+An independent reviewer read the change on head f0d15898d (2026-11-17, before any later edit) and answered: **Concur with the review.**
+- Proofs are issued in one place, after a durable consumption.
+- Receipts come only from the adapters' own inbound paths, and the owner id comes from config that no route writes.
+- Approvals are single-use, bound to the hash, refused after expiry and after withdrawal.
+- No brittle blocking logic was added, and nothing fails open.
+
+One note: the feature-toggle path returned the full proposal result, approval code included. That granted nothing, since approving needs the owner's account to reply to the card. It contradicted part B's note that the agent never sees the code, so this commit strips the code there too, the same way `POST /trust/requests` does.

@@ -47492,7 +47492,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const change = parseTrustChange({ kind: 'config-patch', patch: action.body });
       if (change) {
         const opened = await ctx.trustAccountPath.propose(change).catch(() => null);
-        if (opened) (result as unknown as Record<string, unknown>).approvalRequest = opened;
+        // The approval code is for the person's card only; the agent never sees it (same rule as POST /trust/requests).
+        if (opened) { const { code: _code, ...shown } = opened as typeof opened & { code?: string }; (result as unknown as Record<string, unknown>).approvalRequest = shown; }
       }
     }
     return result;

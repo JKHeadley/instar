@@ -15,3 +15,5 @@ A safety test counts places where code quietly swallows an error. It found three
 All 105 trust journey tests and the 16 safety tests pass.
 
 A second safety test checks that every route which changes saved state says how that state is shared between an agent's machines. The two new routes for the trust journey's approval requests now say so: their records are copied to all of the agent's machines.
+
+An independent reviewer read the whole change and agreed with it. They noticed one place where the agent could see the approval code meant only for the person's card. Seeing it granted nothing, but that place now hides the code too.
