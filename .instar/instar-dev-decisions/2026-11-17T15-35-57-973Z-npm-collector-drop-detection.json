@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-17T15:35:57.973Z",
+  "slug": "npm-collector-drop-detection",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 1056,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/collect-metrics.py",
+      "scripts/tests/test_collect_metrics_changes.py"
+    ],
+    "addedLines": 1009,
+    "deletedLines": 47
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
