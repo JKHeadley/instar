@@ -76,6 +76,8 @@ Contained, reversible, and the older-CLI path is covered by version-boundary tes
 
 ## Second-pass review (if required)
 
+**Reviewer:** independent general-purpose review subagent (Claude Opus 5.5), two passes, final verdict: concur.
+
 Required (session launch and review checks). An independent reviewer subagent read the diff and this artifact and raised three concerns:
 
 1. Blocking: `FeedbackReadinessArbiter` asked for the `capable` tier and matched the approved family by substring, so an authority approved for gpt-6-astra would refuse every answer from gpt-6.2-astra and stall the readiness stage until re-approval. Fixed: a codex authority now runs on its exact approved id with a strict pin; tests cover both approved ids and a wrong-model refusal.
