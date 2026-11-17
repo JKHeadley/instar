@@ -24,7 +24,7 @@ const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/org-action-check.test.ts' }); });
 const tmp = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'org-act-')); dirs.push(d); return d; };
 
-const POLICY = '## Never\n- Share personal information about donors outside the organization\n- Spend organization money\n';
+const POLICY = '## Never\n- Share personal information about donors outside the organization\n- Spend organization money';
 
 function joined(dir: string): void {
   const k = newOrgKeyPair();

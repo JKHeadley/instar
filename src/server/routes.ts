@@ -38016,6 +38016,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       delete (patch as Record<string, unknown>).pin; // PIN is auth, never config
     }
 
+    // The action check's mode is set only from the app (org-never-actions §C): refused with its own
+    // plain reason, before the generic allowed-keys check.
+    if ('orgPolicy' in (patch as Record<string, unknown>)) {
+      res.status(403).json({ error: 'org-policy-cap', message: 'The organization policy check is set from the Instar app, not here.' });
+      return;
+    }
     const disallowed = Object.keys(patch).filter(k => !allowedKeys.has(k));
     if (disallowed.length > 0) {
       res.status(400).json({
@@ -38037,11 +38043,6 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // A bearer request carries no OperatorProof, so it is refused before anything is written;
       // changes toward more restriction still apply. Compared against the same file config and the
       // same one-level merge the write below uses.
-      // The action check's mode is set only from the app (org-never-actions §C).
-      if (patch && typeof patch === 'object' && 'orgPolicy' in (patch as Record<string, unknown>)) {
-        res.status(403).json({ error: 'org-policy-cap', message: 'The organization policy check is set from the Instar app, not here.' });
-        return;
-      }
       // An organization's cap holds before any other raise check (org-pack-and-join §D): of the
       // capped settings, only evolution.approvalMode can be patched.
       {

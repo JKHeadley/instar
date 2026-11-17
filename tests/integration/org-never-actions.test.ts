@@ -29,7 +29,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/org-never-actions.test.ts' });
 });
 
-const POLICY = '## Never\n- Share personal information about clients, participants, donors or staff outside the organization.\n- Spend organization money.\n';
+const POLICY = '## Never\n- Share personal information about clients, participants, donors or staff outside the organization.\n- Spend organization money.';
 
 async function boot(actions: Record<string, unknown>) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'org-act-int-'));

@@ -123,3 +123,7 @@ Merged origin/main (3ad059991): conflicts in the device allowlist, orgPackRoutes
 ## Local-verify fix 2 (merge line, 2026-11-17 18:00Z)
 
 llm-routing-nature-ratchet: a routing nature may only be cited for a bench-covered component, and OrgPolicyJudge's bench is pending (wave-3). Its LLM_ROUTING_NATURE entry is removed; it routes by default until the bench lands. All 22 tests/unit/*ratchet*.test.ts files are run before this push.
+
+## Main merge 2 (after #3270 and #3309, 2026-11-17)
+
+Merged origin/main (28681efc9): one import in AgentServer.ts kept on both sides. Two follow-on fixes: the test POLICY fixtures drop their trailing newline (main's #3309 accepts a published policy only in the standard form), and the PATCH /config orgPolicy guard now runs before the generic allowed-keys check, which main made answer 400 first, so the refusal keeps its plain reason (403 org-policy-cap). Independent review concurred. Org unit tests 117/117; integration org-never-actions 3/3.
