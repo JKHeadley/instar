@@ -143,3 +143,5 @@ The PR passed Local Verify at `9f18a8745` but was held `refused:needs-independen
 6. (nit) No rate limit on `POST /server/restart`. Fixed: 429 + `Retry-After` when a restart was consumed under 2 minutes ago (integration test).
 
 **Second pass, after the fixes: Concur.** Remaining nits accepted: an agent promoted to dev after both migrations ran keeps a stale `false` (owner can clear it); media/Slack holder proxies show a booting peer as their generic error (no worse than the old refused connection); the 2-minute window counts from consumption, so a boot slower than 2 minutes allows one restart per boot (bounded).
+
+**Follow-up (Local Verify on `0f9917953`, M5 19:13Z):** the e2e lifecycle test recorded its "previous restart" at the current time, so the new 2-minute rate limit answered its own restart call with 429. The test now records it 3 minutes back (inside the 10-minute `previousRestart` window, outside the rate limit). Test-only change; the reviewer's concurrence covers the code, unchanged.

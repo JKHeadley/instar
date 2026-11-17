@@ -51,7 +51,9 @@ describe('listen early: boot beacon → real server handoff (alive on the produc
     fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'listen-early-e2e' }));
     // The previous process was ended by a hand-written flag that named nobody.
-    recordRestartRequest(stateDir, { requestedAt: '2026-11-16T19:42:12Z', plannedRestart: true, reason: 'load operatorGhLogin' }, 'foreground-watcher');
+    // Consumed 3 minutes ago: inside previousRestart's 10-minute window, outside the route's
+    // 2-minute restart rate limit (the last case asks for a restart).
+    recordRestartRequest(stateDir, { requestedAt: '2026-11-16T19:42:12Z', plannedRestart: true, reason: 'load operatorGhLogin' }, 'foreground-watcher', new Date(Date.now() - 3 * 60_000));
     port = await freePort();
 
     // Production order (commands/server.ts startServer).
