@@ -32,7 +32,7 @@ export interface OrgPackUpdaterDeps {
   effects: () => ApplyEffects;
   /** Tell the person one plain line (an attention item the app shows). */
   notify: (title: string, body: string) => void;
-  fanOut?: (change: { membership: import('./OrgPackStore.js').Membership; bundle: OrgBundle | null; op?: 'hold' }) => void;
+  fanOut?: (change: { membership: import('./OrgPackStore.js').Membership; bundle: OrgBundle | null; op?: 'hold' | 'member-side'; memberSide?: import('./OrgMemberSide.js').MemberSideExport }) => void;
   fetchFn?: typeof fetch;
   lookup?: (host: string) => Promise<string[]>;
   now?: () => number;
@@ -114,6 +114,9 @@ export class OrgPackUpdater {
       try {
         await side.send(m.updateOrigin, { ...this.deps.identity(), appliedVersion: m.version ?? 0, state: 'joined' }, { fetchFn: this.deps.fetchFn, lookup: this.deps.lookup });
       } catch { /* @silent-fallback-ok — a failed check-in is retried tomorrow */ }
+      // Copy the check-in state (enrolled, rejoin, notices) to this agent's other machines.
+      const x = side.exportForPeer();
+      if (x) this.deps.fanOut?.({ membership: m, bundle: null, op: 'member-side', memberSide: x });
       const after = side.state()?.pendingRemoval;
       if (after && after.id !== before) {
         const rec = store.currentRecord();

@@ -19,6 +19,8 @@ interface SideState {
   seenRemovals: string[];
   pendingRemoval: { id: string; at: number } | null;
   lastAt: number;
+  /** Bumped on every change on any machine, so the newest change wins when machines copy to each other. */
+  changedAt?: number;
 }
 
 function writeAtomic(file: string, body: string): void {
@@ -26,6 +28,14 @@ function writeAtomic(file: string, body: string): void {
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   fs.writeFileSync(tmp, body, { mode: 0o600 });
   fs.renameSync(tmp, file);
+}
+
+/** A member's own check-in state as copied to the agent's other machines (org-members-and-keepers §Multi-machine). */
+export interface MemberSideExport {
+  orgId: string;
+  state: unknown;
+  memberKeyPem: string;
+  keeper: { pem: string; meta: unknown } | null;
 }
 
 export class OrgMemberSide {
@@ -38,7 +48,10 @@ export class OrgMemberSide {
   state(): SideState | null {
     try { return JSON.parse(fs.readFileSync(this.stateFile(), 'utf-8')) as SideState; } catch { return null; } // @silent-fallback-ok — no member state yet
   }
-  private save(s: SideState): void { writeAtomic(this.stateFile(), JSON.stringify(s)); }
+  private save(s: SideState, keepStamp = false): void {
+    if (!keepStamp) s.changedAt = Math.max(this.now(), (s.changedAt ?? 0) + 1);
+    writeAtomic(this.stateFile(), JSON.stringify(s));
+  }
 
   /** At every join (app, installer or a newer link): make or keep the key, store the token, note a rejoin. */
   onJoin(opts: { inviteToken?: string | null; afterLeave: boolean; consent: boolean }): SideState {
@@ -97,6 +110,42 @@ export class OrgMemberSide {
       s.pendingRemoval = null;
     }
     this.save(s);
+  }
+
+  /** For a peer machine of the same agent: the member key, token, consent, rejoin and notices (and a keeper key). */
+  exportForPeer(): MemberSideExport | null {
+    const st = this.state();
+    let pem: string;
+    try { pem = fs.readFileSync(this.keyFile(), 'utf-8'); } catch { return null; } // @silent-fallback-ok — nothing to copy yet
+    if (!st) return null;
+    let keeper: MemberSideExport['keeper'] = null;
+    try {
+      const kp = path.join(this.dir(), 'keeper-key');
+      keeper = { pem: fs.readFileSync(kp, 'utf-8'), meta: JSON.parse(fs.readFileSync(`${kp}.json`, 'utf-8')) };
+    } catch { keeper = null; } // @silent-fallback-ok — not a keeper here
+    return { orgId: this.orgId, state: st, memberKeyPem: pem, keeper };
+  }
+
+  /**
+   * Takes a peer's copy when this machine has none, or when the peer's is newer (a later `lastAt`, or the
+   * same key with a removal or rejoin this machine hasn't seen). The key never changes once set.
+   */
+  importFromPeer(x: MemberSideExport): boolean {
+    if (x.orgId !== this.orgId || typeof x.memberKeyPem !== 'string') return false;
+    const theirs = x.state as SideState;
+    if (!theirs || typeof theirs.publicKey !== 'string') return false;
+    const mine = this.state();
+    if (mine && mine.publicKey !== theirs.publicKey) return false;
+    // The newest change wins (consent, a dismissed notice, a check-in answer), whichever machine made it.
+    if (mine && (theirs.changedAt ?? 0) <= (mine.changedAt ?? 0)) return false;
+    if (!mine || !fs.existsSync(this.keyFile())) writeAtomic(this.keyFile(), x.memberKeyPem);
+    const merged: SideState = mine ? { ...theirs, seenRemovals: [...new Set([...(mine.seenRemovals ?? []), ...(theirs.seenRemovals ?? [])])].slice(-50) } : theirs;
+    this.save(merged, true);
+    if (x.keeper && typeof x.keeper.pem === 'string') {
+      const kp = path.join(this.dir(), 'keeper-key');
+      if (!fs.existsSync(kp)) { writeAtomic(kp, x.keeper.pem); writeAtomic(`${kp}.json`, JSON.stringify(x.keeper.meta)); }
+    }
+    return true;
   }
 
   dismissRemoval(): void {

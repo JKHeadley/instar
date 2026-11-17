@@ -27,34 +27,160 @@ import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPac
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { OrgMembers, newMemberKeyPair, plainName, signPayload } from '../core/OrgMembers.js';
 import { makeRecoveryCopy, newRecoveryPhrase, openRecoveryCopy } from '../core/OrgRecovery.js';
-import { OrgMemberSide } from '../core/OrgMemberSide.js';
+import { OrgMemberSide, type MemberSideExport } from '../core/OrgMemberSide.js';
 import { orgRequest } from '../core/OrgPackUpdater.js';
 import { OrgKeepers, encodeKeeperCode, withPublishLock } from '../core/OrgKeepers.js';
 
 export const ORG_DRAFT_TTL_MS = 24 * 60 * 60_000;
 
-type FanOutFn = (change: { membership: Membership; bundle: OrgBundle | null; op?: 'hold' }) => void;
+type FanOutFn = (change: { membership: Membership; bundle: OrgBundle | null; op?: 'hold' | 'member-side' | 'published-elsewhere'; memberSide?: MemberSideExport; publishedOrgId?: string; publishedOn?: string }) => void;
 let lateFanOut: FanOutFn | null = null;
 /** Set once the mesh is up (server.ts); the router and the updater send through it (§Multi-machine). */
 export function setOrgFanOut(fn: FanOutFn | null): void { lateFanOut = fn; }
-export function orgFanOut(change: { membership: Membership; bundle: OrgBundle | null; op?: 'hold' }): void {
+export function orgFanOut(change: { membership: Membership; bundle: OrgBundle | null; op?: 'hold' | 'member-side' | 'published-elsewhere'; memberSide?: MemberSideExport; publishedOrgId?: string; publishedOn?: string }): void {
   try { lateFanOut?.(change); } catch { /* @silent-fallback-ok — a peer that misses it catches up at its own start */ }
 }
 
 /** `org-state-pull`: this machine's membership and applied bundle, for a peer catching up at start. */
-export function orgStateForPeer(stateDir: string): { membership: Membership | null; bundle: OrgBundle | null } {
+export function orgStateForPeer(stateDir: string): { membership: Membership | null; bundle: OrgBundle | null; memberSide?: MemberSideExport | null; publishedOrgId?: string | null } {
   const store = new OrgPackStore(stateDir, '');
   const membership = store.membership();
   const rec = store.currentRecord();
-  if (!membership || membership.state !== 'joined' || !rec) return { membership, bundle: null };
+  const memberSide = membership ? new OrgMemberSide(stateDir, membership.orgId).exportForPeer() : null;
+  const publishedOrgId = holdsOrgKey(stateDir) ? readPublished(stateDir)!.bundle.record.orgId : null;
+  if (!membership || membership.state !== 'joined' || !rec) return { membership, bundle: null, memberSide, publishedOrgId };
   let policy: string | null = null;
   try { policy = fs.readFileSync(path.join(stateDir, 'org', rec.orgId, `v${rec.version}`, 'policy.md'), 'utf-8'); } catch { /* @silent-fallback-ok — answered without a bundle */ }
-  return { membership, bundle: policy === null ? null : { record: rec, policy } };
+  return { membership, bundle: policy === null ? null : { record: rec, policy }, memberSide, publishedOrgId };
+}
+
+// ── Forwarding to the machine that holds the organization key (members-and-keepers §Multi-machine) ──
+export type OrgForwardOp =
+  | { op: 'pack-current' }
+  | { op: 'checkin'; body: unknown }
+  | { op: 'propose'; body: unknown }
+  | { op: 'members'; full?: boolean }
+  | { op: 'member-remove' | 'member-restore'; memberKey: string }
+  | { op: 'invite-revoke'; inviteId: string }
+  | { op: 'keeper-add'; code: string }
+  | { op: 'keeper-remove'; publicKey: string }
+  | { op: 'invite-mint'; label: string | null };
+export interface OrgForwardAnswer { status: number; body: unknown }
+type ForwardFn = (op: OrgForwardOp) => Promise<OrgForwardAnswer | null>;
+let lateForward: ForwardFn | null = null;
+/** Set once the mesh is up (server.ts): asks the peer that holds the organization key. */
+export function setOrgForward(fn: ForwardFn | null): void { lateForward = fn; }
+/** Written on the agent's other machines when one of them publishes (so only an admin agent forwards). */
+function elsewherePath(stateDir: string): string { return path.join(publishedPaths(stateDir).root, 'published-elsewhere.json'); }
+export function publishesElsewhere(stateDir: string): boolean { return fs.existsSync(elsewherePath(stateDir)); }
+export function markPublishedElsewhere(stateDir: string, orgId: string, machineId: string): void {
+  writeAtomic(elsewherePath(stateDir), JSON.stringify({ orgId, machineId, at: Date.now() }));
+}
+// Limits applied on the key machine to forwarded calls (the same numbers as the direct routes).
+const fwdCheckinPerKey = new Map<string, number[]>();
+const fwdProposePerKey = new Map<string, number[]>();
+function takeHour(m: Map<string, number[]>, key: string, limit: number, t: number): boolean {
+  const arr = (m.get(key) ?? []).filter((x) => t - x < 3600_000);
+  if (arr.length >= limit) { m.set(key, arr); return false; }
+  arr.push(t); m.set(key, arr);
+  if (m.size > 20_000) m.delete(m.keys().next().value as string);
+  return true;
+}
+export function holdsOrgKey(stateDir: string): boolean {
+  const p = readPublished(stateDir);
+  return !!p && fs.existsSync(publishedPaths(stateDir).key(p.bundle.record.orgId));
+}
+
+/**
+ * Runs one forwarded organization operation on this machine (the key machine), with the same functions the
+ * routes use. Reached only through same-agent MeshRpc; the device or bearer check happened on the machine
+ * that received the request.
+ */
+export async function handleOrgForward(stateDir: string, op: OrgForwardOp, now: () => number = Date.now): Promise<OrgForwardAnswer> {
+  const p = readPublished(stateDir);
+  if (!p || !holdsOrgKey(stateDir)) return { status: 409, body: { error: 'org-key-elsewhere' } };
+  const orgId = p.bundle.record.orgId;
+  const reg = new OrgMembers(stateDir, orgId, now);
+  const keepers = new OrgKeepers(stateDir, orgId, now);
+  switch (op.op) {
+    case 'pack-current': return p.shareUpdates ? { status: 200, body: p.bundle } : { status: 404, body: { error: 'not-found' } };
+    case 'checkin': {
+      if (!p.shareUpdates) return { status: 404, body: { error: 'not-found' } };
+      if (Buffer.byteLength(JSON.stringify(op.body ?? {}), 'utf8') > 2048) return { status: 413, body: { error: 'too-large' } };
+      const key = String((op.body as { memberKey?: unknown })?.memberKey ?? '');
+      if (reg.members()[key] && !takeHour(fwdCheckinPerKey, key, 30, now())) return { status: 429, body: { error: 'too-many-requests' } };
+      const a = reg.checkin(op.body); return { status: a.status, body: a.body };
+    }
+    case 'propose': {
+      if (!p.shareUpdates) return { status: 404, body: { error: 'not-found' } };
+      if (readJson(markerPath(stateDir, orgId))) return { status: 409, body: { error: 'publish-after-recovery-first' } };
+      const kk = String((op.body as { keeperKey?: unknown })?.keeperKey ?? '');
+      if (!keepers.list().some((k) => k.publicKey === kk)) return { status: 403, body: { error: 'not-a-keeper' } };
+      if (!takeHour(fwdProposePerKey, kk, 10, now())) return { status: 429, body: { error: 'too-many-requests' } };
+      const keyPem = fs.readFileSync(publishedPaths(stateDir).key(orgId), 'utf-8');
+      return withPublishLock(stateDir, () => {
+        const cur = readPublished(stateDir)!;
+        const r = keepers.accept(op.body, cur.bundle, keyPem);
+        if (r.bundle) writeAtomic(publishedPaths(stateDir).current, JSON.stringify({ bundle: r.bundle, shareUpdates: cur.shareUpdates }));
+        return { status: r.answer.status, body: r.answer.body };
+      });
+    }
+    case 'members': {
+      const base = { note: 'Names are what each agent reports.', members: reg.list(p.bundle.record.version).map((m) => ({ ...m, namesAreReported: true })) };
+      if (!op.full) return { status: 200, body: base };
+      const inv = reg.invites();
+      return { status: 200, body: { ...base,
+        invitations: Object.entries(inv).map(([id, e]) => ({ id, createdAt: e.createdAt, uses: e.usedBy.length, maxUses: e.maxUses, revoked: !!e.revokedAt, active: e.active, restored: (e as { restored?: boolean }).restored === true })),
+        keepers: keepers.list().map((k) => ({ name: k.name, publicKey: k.publicKey, addedAt: k.addedAt, code: orgKeyCode(k.publicKey) })),
+        restoredKeepers: keepers.restored().map((k) => ({ name: k.name, publicKey: k.publicKey, code: orgKeyCode(k.publicKey) })),
+        recovery: readJson(markerPath(stateDir, orgId)) } };
+    }
+    case 'member-remove': { const r = reg.remove(op.memberKey); return { status: r.ok ? 200 : r.error === 'not-found' ? 404 : 409, body: r.ok ? r : { error: r.error } }; }
+    case 'member-restore': { const r = reg.restore(op.memberKey); return { status: r.ok ? 200 : r.error === 'not-found' ? 404 : 409, body: r.ok ? r : { error: r.error } }; }
+    case 'invite-revoke': { const ok = reg.revokeInvite(op.inviteId); return { status: ok ? 200 : 404, body: ok ? { ok: true } : { error: 'not-found' } }; }
+    case 'keeper-add': { const r = keepers.add(op.code); return { status: r.ok ? 200 : 400, body: r.ok ? r : { error: r.error } }; }
+    case 'keeper-remove': { const ok = keepers.remove(op.publicKey); return { status: ok ? 200 : 404, body: ok ? { ok: true } : { error: 'not-found' } }; }
+    case 'invite-mint': {
+      if (readJson(markerPath(stateDir, orgId))) return { status: 409, body: { error: 'publish-after-recovery-first' } };
+      const inv = reg.mintInvite();
+      return { status: 200, body: { link: `https://instar.sh/join#p=${encodeBundle(p.bundle)}&t=${inv.token}`, code: orgKeyCode(p.bundle.record.signerPublicKey), version: p.bundle.record.version, inviteId: inv.id } };
+    }
+  }
+}
+
+/** When this machine does not hold the key, asks the one that does; null means "handle here". */
+async function forwardIfElsewhere(stateDir: string, op: OrgForwardOp): Promise<OrgForwardAnswer | null> {
+  // Only an agent whose organization is published on another of its machines forwards (an agent with no
+  // organization, or a member, answers here as before).
+  if (holdsOrgKey(stateDir) || !lateForward || !publishesElsewhere(stateDir)) return null;
+  const a = await lateForward(op).catch(() => null);
+  return a ?? { status: 503, body: { error: 'org-key-machine-asleep', detail: "The computer that holds this organization's key isn't reachable right now." } };
+}
+
+/** Sends this machine's member-side state to the agent's other machines (members-and-keepers §Multi-machine). */
+export function fanOutMemberSide(stateDir: string, orgId: string): void {
+  const store = new OrgPackStore(stateDir, '');
+  const m = store.membership();
+  const x = new OrgMemberSide(stateDir, orgId).exportForPeer();
+  if (m && x) orgFanOut({ membership: m, bundle: null, op: 'member-side', memberSide: x });
 }
 
 /** The receiving side of `org-apply` (a peer of the same agent). */
-export function handleOrgApply(stateDir: string, machineId: string, cmd: { membership: Membership; bundle: OrgBundle | null; op?: 'hold' }, effects: ApplyEffects): { ok: boolean; reason?: string } {
+export function handleOrgApply(stateDir: string, machineId: string, cmd: { membership: Membership | null; bundle: OrgBundle | null; op?: 'hold' | 'member-side' | 'published-elsewhere'; memberSide?: MemberSideExport | null; publishedOrgId?: string; publishedOn?: string }, effects: ApplyEffects): { ok: boolean; reason?: string } {
   const store = new OrgPackStore(stateDir, machineId);
+  if (cmd.op === 'published-elsewhere') {
+    if (!cmd.publishedOrgId || holdsOrgKey(stateDir)) return { ok: false, reason: 'not-applicable' };
+    markPublishedElsewhere(stateDir, cmd.publishedOrgId, cmd.publishedOn ?? '');
+    return { ok: true };
+  }
+  if (cmd.op === 'member-side') {
+    const x = cmd.memberSide;
+    return x ? { ok: new OrgMemberSide(stateDir, x.orgId).importFromPeer(x) } : { ok: false, reason: 'no-member-side' };
+  }
+  if (cmd.publishedOrgId && !holdsOrgKey(stateDir)) markPublishedElsewhere(stateDir, cmd.publishedOrgId, cmd.publishedOn ?? '');
+  // Catch-up and join fan-outs carry the member side too.
+  if (cmd.memberSide) { try { new OrgMemberSide(stateDir, cmd.memberSide.orgId).importFromPeer(cmd.memberSide); } catch { /* @silent-fallback-ok — the next fan-out or catch-up copies it */ } }
+  if (!cmd.membership) return { ok: true };
   if (cmd.op === 'hold') {
     const m = store.membership();
     if (!m || m.state !== 'joined') return { ok: false, reason: 'not-member' };
@@ -187,14 +313,22 @@ export function mountPublicOrgPackRoutes(app: Application, stateDir: string, now
     return ok;
   };
 
-  app.get('/org/pack/current', (_req: Request, res: Response) => {
+  app.get('/org/pack/current', (_req: Request, res: Response) => { void (async () => {
     res.setHeader('Cache-Control', 'no-store');
+    const fw = await forwardIfElsewhere(stateDir, { op: 'pack-current' });
+    if (fw) { res.status(fw.status).json(fw.body); return; }
     const p = readPublished(stateDir);
     if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
     res.json(p.bundle);
-  });
+  })().catch((err) => failed(res, '/org/pack/current', err)); });
 
-  app.post('/org/checkin', (req: Request, res: Response) => {
+  app.post('/org/checkin', (req: Request, res: Response) => { void (async () => {
+    // Counted here (the address the request came from), then sent to the key machine if it's elsewhere.
+    if (!holdsOrgKey(stateDir) && lateForward && publishesElsewhere(stateDir)) {
+      if (!admit(req, res, undefined, () => false)) return;
+      const fw = await forwardIfElsewhere(stateDir, { op: 'checkin', body: req.body });
+      if (fw) { res.status(fw.status).json(fw.body); return; }
+    }
     const p = readPublished(stateDir);
     if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
     const reg = new OrgMembers(stateDir, p.bundle.record.orgId, now);
@@ -207,9 +341,14 @@ export function mountPublicOrgPackRoutes(app: Application, stateDir: string, now
       const a = reg.checkin(req.body);
       res.status(a.status).json(a.body);
     } catch (err) { failed(res, '/org/checkin', err); }
-  });
+  })().catch((err) => failed(res, '/org/checkin', err)); });
 
   app.post('/org/pack/propose', (req: Request, res: Response) => { void (async () => {
+    if (!holdsOrgKey(stateDir) && lateForward && publishesElsewhere(stateDir)) {
+      if (!admit(req, res, undefined, () => false)) return;
+      const fw = await forwardIfElsewhere(stateDir, { op: 'propose', body: req.body });
+      if (fw) { res.status(fw.status).json(fw.body); return; }
+    }
     const p = readPublished(stateDir);
     if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
     const orgId = p.bundle.record.orgId;
@@ -270,6 +409,29 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     res.status(403).json({ error: 'owner-device-required', detail: 'Open the Instar app to confirm.' });
     return false;
   };
+
+  // On a multi-machine admin agent, the admin's member and keeper routes run on the key machine
+  // (members-and-keepers §Multi-machine). The principal is checked here first, on the machine that got the request.
+  router.use((req: Request, res: Response, next) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const s2 = (v: unknown) => String(v ?? '');
+    const table: Record<string, { device: boolean; op: () => OrgForwardOp }> = {
+      'GET /org/members': { device: false, op: () => ({ op: 'members' }) },
+      'POST /org/invitations': { device: false, op: () => ({ op: 'invite-mint', label: typeof b.label === 'string' ? b.label.slice(0, 80) : null }) },
+      'GET /mobile/org/members': { device: true, op: () => ({ op: 'members', full: true }) },
+      'POST /mobile/org/members/remove': { device: true, op: () => ({ op: 'member-remove', memberKey: s2(b.memberKey) }) },
+      'POST /mobile/org/members/restore': { device: true, op: () => ({ op: 'member-restore', memberKey: s2(b.memberKey) }) },
+      'POST /mobile/org/invitations/revoke': { device: true, op: () => ({ op: 'invite-revoke', inviteId: s2(b.inviteId) }) },
+      'POST /mobile/org/keepers/add': { device: true, op: () => ({ op: 'keeper-add', code: s2(b.code) }) },
+      'POST /mobile/org/keepers/remove': { device: true, op: () => ({ op: 'keeper-remove', publicKey: s2(b.publicKey) }) },
+    };
+    const entry = table[`${req.method} ${req.path}`];
+    if (!entry || holdsOrgKey(deps.stateDir) || !lateForward || !publishesElsewhere(deps.stateDir)) { next(); return; }
+    if (entry.device && !deviceOnly(req, res)) return;
+    void forwardIfElsewhere(deps.stateDir, entry.op()).then((fw) => {
+      if (fw) res.status(fw.status).json(fw.body); else next();
+    }).catch((err) => failed(res, `forward ${req.path}`, err));
+  });
 
   router.post('/org/draft', (req: Request, res: Response) => { void (async () => {
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -578,6 +740,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     if (!side.state()) side.onJoin({ afterLeave: false, consent: false });
     if (b.dismissRemoval === true) side.dismissRemoval();
     if (typeof b.allow === 'boolean') side.setConsent(b.allow);
+    fanOutMemberSide(deps.stateDir, m.orgId);
     res.json({ ok: true });
   });
 
@@ -607,6 +770,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       publicKey = kp.publicKey;
     }
     writeAtomic(`${keyFile}.json`, JSON.stringify({ publicKey, origin }));
+    if (store().membership()?.orgId === orgId && new OrgMemberSide(deps.stateDir, orgId, now).state()) fanOutMemberSide(deps.stateDir, orgId);
     res.json({ code: encodeKeeperCode({ orgId, name, publicKey }), fingerprint: orgKeyCode(publicKey),
       say: 'Send this code to the person who publishes your organization\'s policy. They read the key code back to you to check it.' });
   })().catch((err) => failed(res, '/mobile/org/keeper-request', err)); });
@@ -688,6 +852,8 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     }
     writeAtomic(paths.current, JSON.stringify({ bundle, shareUpdates: share }));
     if (recovered) SafeFsExecutor.safeUnlinkSync(markerPath(deps.stateDir, orgId), { operation: 'org recovery: first publish done' });
+    // Tell this agent's other machines that the organization is published here (members-and-keepers §Multi-machine).
+    { const mm = store().membership(); if (mm) orgFanOut({ membership: mm, bundle: null, op: 'published-elsewhere', publishedOrgId: orgId, publishedOn: deps.machineId }); }
     // The publisher's own agent is a member without an invitation (members-and-keepers §A).
     const side = new OrgMemberSide(deps.stateDir, orgId, now).onJoin({ afterLeave: false, consent: true });
     new OrgMembers(deps.stateDir, orgId, now).registerSelf(side.publicKey, deps.agentName?.() ?? '', deps.ownerName(), record.version);
@@ -714,7 +880,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       afterLeave: before?.orgId === decoded.bundle.record.orgId && before.state === 'left', consent: true,
     });
     const m = s.membership();
-    if (m) (deps.fanOut ?? orgFanOut)({ membership: m, bundle: decoded.bundle });
+    if (m) (deps.fanOut ?? orgFanOut)({ membership: m, bundle: decoded.bundle, memberSide: new OrgMemberSide(deps.stateDir, decoded.bundle.record.orgId, now).exportForPeer() ?? undefined });
     res.json(r);
   });
 
