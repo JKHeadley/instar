@@ -176,6 +176,79 @@ describe('Hook installation for external operation safety', () => {
     expect(unknown.stderr).toContain('unknown action');
   });
 
+  describe('trust journey (stage 0 part C)', () => {
+    /** Runs the hook once against an optional fake server; returns its exit and what the server got. */
+    async function runHook(o: { toolName: string; toolInput?: unknown; response?: Record<string, unknown> | null; imported?: boolean; legacyKinds?: string[] | null }) {
+      const seen: Array<Record<string, unknown>> = [];
+      let server: Server | null = null;
+      let port = 1; // nothing listens: unreachable
+      if (o.response !== undefined && o.response !== null) {
+        port = await new Promise<number>((resolve) => {
+          server = createServer((req, res) => {
+            let body = '';
+            req.on('data', (c) => { body += c; });
+            req.on('end', () => { try { seen.push(JSON.parse(body)); } catch { /* ignore */ } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o.response)); });
+          });
+          server.listen(0, '127.0.0.1', () => resolve((server!.address() as { port: number }).port));
+        });
+      }
+      try {
+        const configPath = path.join(projectDir, '.instar', 'config.json');
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        fs.writeFileSync(configPath, JSON.stringify({ ...config, port, authToken: 'test-token', trustJourney: o.imported ? { legacyImportedAt: '2026-11-16T00:00:00Z' } : undefined }));
+        const fb = path.join(projectDir, '.instar', 'state', 'trust-legacy-kinds.json');
+        if (o.legacyKinds) { fs.mkdirSync(path.dirname(fb), { recursive: true }); fs.writeFileSync(fb, JSON.stringify({ generatedAt: 'x', legacyKinds: o.legacyKinds, readToolNames: [] })); }
+        else SafeFsExecutor.safeRmSync(fb, { force: true, operation: 'tests/unit/hook-installation.test.ts:fallback' });
+        const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'external-operation-gate.js');
+        // Async spawn: the fake server runs in this process and must keep answering meanwhile.
+        const r = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+          const child = spawn(process.execPath, [hookPath], { cwd: projectDir, env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir, INSTAR_AUTH_TOKEN: '' }, stdio: ['pipe', 'ignore', 'pipe'] });
+          let stderr = '';
+          const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('hook timed out')); }, 15000);
+          child.stderr.setEncoding('utf-8');
+          child.stderr.on('data', (c) => { stderr += c; });
+          child.on('error', (e) => { clearTimeout(timer); reject(e); });
+          child.on('exit', (status) => { clearTimeout(timer); resolve({ status, stderr }); });
+          child.stdin.end(JSON.stringify({ tool_name: o.toolName, tool_input: o.toolInput ?? {} }));
+        });
+        return { status: r.status, stderr: r.stderr, seen };
+      } finally {
+        if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+      }
+    }
+
+    it('sends tool_name and tool_input so the server derives the kind', async () => {
+      const r = await runHook({ toolName: 'mcp__mail__send_email', toolInput: { to: 'a@b.c' }, response: { action: 'proceed' } });
+      expect(r.status).toBe(0);
+      expect(r.seen[0].tool_name).toBe('mcp__mail__send_email');
+      expect(r.seen[0].tool_input).toEqual({ to: 'a@b.c' });
+    });
+
+    it('an ask refuses the call (exit 2) and says it waits for the person', async () => {
+      const r = await runHook({ toolName: 'mcp__mail__send_email', response: { action: 'ask', reason: 'Waiting for the person\'s approval: card sent.' } });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('WAITING FOR APPROVAL');
+    });
+
+    it('unreachable server: today\'s fail-open before the import; after it, a governed call is refused and a legacy kind passes', async () => {
+      expect((await runHook({ toolName: 'mcp__mail__send_email', response: null, imported: false })).status).toBe(0);
+      const governed = await runHook({ toolName: 'mcp__mail__send_email', response: null, imported: true, legacyKinds: ['other.write'] });
+      expect(governed.status).toBe(2);
+      expect(governed.stderr).toContain('could not be reached');
+      expect((await runHook({ toolName: 'mcp__mail__send_email', response: null, imported: true, legacyKinds: ['mail.write'] })).status).toBe(0);
+      // A missing fallback file after the import refuses every non-read call.
+      expect((await runHook({ toolName: 'mcp__mail__send_email', response: null, imported: true, legacyKinds: null })).status).toBe(2);
+    });
+
+    it('after the import, a read on a service whose kinds are not all legacy goes to the server', async () => {
+      const r = await runHook({ toolName: 'mcp__mail__list_threads', response: { action: 'proceed' }, imported: true, legacyKinds: ['mail.write'] });
+      expect(r.status).toBe(0);
+      expect(r.seen).toHaveLength(1);
+      const fast = await runHook({ toolName: 'mcp__mail__list_threads', response: { action: 'proceed' }, imported: true, legacyKinds: ['mail.write', 'mail.modify', 'mail.delete'] });
+      expect(fast.seen).toHaveLength(0);
+    });
+  });
+
   it('hook is executable', () => {
     const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'external-operation-gate.js');
     const stats = fs.statSync(hookPath);

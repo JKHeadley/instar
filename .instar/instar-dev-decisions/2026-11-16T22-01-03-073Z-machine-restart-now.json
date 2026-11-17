@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-16T22:01:03.073Z",
+  "slug": "machine-restart-now",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 382,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/data/awareness/machine-restart-now.md",
+      "src/monitoring/machineMaintenance/RestartNowController.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 379,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Restart now dispatches at most rung 1 then rung 2 per owner tap, each through claimRung under the brakes already modelled by the machineRestart Eternal Sentinel; the ladder ends in a terminal outcome-unknown"
+    }
+  },
+  "verdict": "blocked"
+}

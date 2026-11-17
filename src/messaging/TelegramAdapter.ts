@@ -7,6 +7,8 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
+/** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
+const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
 import { consolePageUrl } from '../server/dashboardPaths.js';
@@ -895,6 +897,8 @@ export class TelegramAdapter implements MessagingAdapter {
    * message routing. Carries reply_to_message_id so a confirmation can be
    * reply-anchored to the recorded server-authored enumeration (R38).
    */
+  /** Trust-journey account path: a private-chat receipt; resolves 'not-for-us' when it is not an approval message. */
+  public onTrustAccountPathReceipt: ((r: import('../core/trustJourney/accountPath.js').Receipt) => Promise<string>) | null = null;
   public onScopeAccretionInbound: ((evt: {
     topicId: number;
     text: string;
@@ -1135,12 +1139,17 @@ export class TelegramAdapter implements MessagingAdapter {
   async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
     try {
       // Telegram allows up to 8 buttons a row; one per row keeps the names readable on a phone.
-      const result = await this.apiCall('sendMessage', {
+      // An unstamped offer is an owner-tap flow (Chief of Staff note and pause ask, machine enrolment): a
+      // decision, never a report, so Quiet by Default delivers it (owner-decision, in-process only).
+      // A caller that stamped its own envelope (recommended services) keeps it. Do not call this from
+      // an inbound-message handler: it would inherit that handler's conversation category instead.
+      const send = () => this.apiCall('sendMessage', {
         chat_id: this.config.chatId,
         message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
         text,
         reply_markup: { inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.data }]) },
-      }) as { message_id: number };
+      });
+      const result = await (notificationContext.getStore() ? send() : withNotificationEnvelope(OWNER_DECISION_ENVELOPE, send)) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null means "not delivered", and the offer stays pending
@@ -2642,6 +2651,25 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Pin or unpin one message in a topic's chat in Telegram itself, quietly (conversation-pinned-messages). */
+  /**
+   * Edit a link message in place (docs/specs/project-apps.md §3.6), with the same rejection rules
+   * the dashboard-link broadcast uses: `not-modified` is success, `message-missing` means the message
+   * is gone (only that permits a replacement); any other failure throws and is recorded as failed.
+   */
+  async editTopicLinkMessage(messageId: number, text: string): Promise<'edited' | 'not-modified' | 'missing'> {
+    try {
+      await this.apiCall('editMessageText', { chat_id: this.config.chatId, message_id: messageId, text });
+      return 'edited';
+    } catch (err) {
+      const rejection = takeTelegramEditRejection(err, { method: 'editMessageText',
+        accountId: typeof this.config.token === 'string' ? this.config.token.split(':')[0] : '',
+        params: { chat_id: this.config.chatId, message_id: messageId } });
+      if (rejection === 'not-modified') return 'not-modified';
+      if (rejection === 'message-missing') return 'missing';
+      throw err;
+    }
+  }
+
   async setTopicMessagePin(topicId: number, messageId: number, pinned: boolean): Promise<void> {
     // The chat a topic lives in (issues-group topics live in the issues chat); the pin calls take no thread.
     const dest = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());
@@ -2650,7 +2678,16 @@ export class TelegramAdapter implements MessagingAdapter {
     await this.apiCall(pinned ? 'pinChatMessage' : 'unpinChatMessage', params);
   }
 
-  async sendToOwnerDM(text: string): Promise<SendResult | null> {
+  /**
+   * Trust-journey account path: a plain-text message into the owner's private chat, optionally as a
+   * threaded reply to one message there. Returns null on any failure, including a reply target the
+   * platform refuses, so a caller that needs the thread never falls back to an unthreaded send.
+   */
+  async sendOwnerDirect(text: string, replyToMessageId?: number): Promise<SendResult | null> {
+    return this.sendToOwnerDM(text, replyToMessageId);
+  }
+
+  async sendToOwnerDM(text: string, replyToMessageId?: number): Promise<SendResult | null> {
     const owner = this.getOwnerUserId();
     if (!owner) {
       console.warn('[telegram] sendToOwnerDM called but no ownerUserId is configured');
@@ -2661,6 +2698,8 @@ export class TelegramAdapter implements MessagingAdapter {
         chat_id: owner,
         text,
       };
+      // A threaded reply only: never falls back to an unthreaded send when the target is refused.
+      if (replyToMessageId !== undefined) params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: false };
       const result = await this.apiCall('sendMessage', params) as { message_id: number };
       return { messageId: result.message_id };
     } catch (err) {
@@ -6362,6 +6401,23 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+
+    // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
+    // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
+    // it does not claim continues below.
+    if (this.onTrustAccountPathReceipt && typeof msg.text === 'string' && msg.chat?.type === 'private' && msg.from
+      && String(msg.chat.id) === String(msg.from.id)) {
+      const raw = msg as unknown as Record<string, unknown>;
+      const outcome = await this.onTrustAccountPathReceipt({
+        receiptId: `tg-${update.update_id}`, adapter: 'telegram', senderId: String(msg.from.id), chatId: String(msg.chat.id),
+        chatType: 'private', messageId: String(msg.message_id),
+        ...(typeof msg.reply_to_message?.message_id === 'number' ? { replyToMessageId: String(msg.reply_to_message.message_id) } : {}),
+        text: msg.text, senderIsBot: (msg.from as { is_bot?: boolean }).is_bot === true,
+        forwarded: !!(raw.forward_origin || raw.forward_from || raw.forward_date),
+        uniqueKey: `tg-update:${update.update_id}`, receivedAt: new Date().toISOString(), receivedBy: 'self',
+      }).catch((err) => { console.error('[trust-journey] approval receipt could not be read; the message continues normally:', err instanceof Error ? err.message : err); return 'not-for-us' as const; }); // @silent-fallback-ok: logged; an unread receipt approves nothing
+      if (outcome !== 'not-for-us') return;
+    }
 
     // A pairing invite carries a one-time secret: it never reaches a session, the message log
     // or any classifier (docs/specs/a2a-pairing-invite-link.md §6.1). With a pairing handler

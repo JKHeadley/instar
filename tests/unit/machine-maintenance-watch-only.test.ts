@@ -144,6 +144,13 @@ describe('machine maintenance acts only through the restart actuator', () => {
     expect(rest).not.toMatch(/process\.kill|\.kill\(/);
     expect(rest).not.toMatch(/\.(kill\w*|stop\w*|cancel\w*|enqueue|pause|refresh\w*|restart\w*|sendInput|injectMessage|shutdown)\(/);
     expect(rest).not.toMatch(/setAdmissionGate|canRunJob/);
+    // The one restart path in the block: Restart now, started only by the owner's tap. One
+    // actuator, dispatched only through the controller's dispatch dep, and the only session
+    // notice is Restart now's own, labelled for the security log.
+    expect(block.match(/new RestartActuator\(/g)).toHaveLength(1);
+    expect(block.match(/\.dispatch\(/g)).toHaveLength(1);
+    expect(block).toContain('dispatch: async (input) => { holdsBeforeDispatch = await readHolds(); return actuator.dispatch(input); },');
+    expect([...block.matchAll(/injectInternalMessage\(([^)]*)\)/g)].map((m) => m[1])).toEqual(["s.tmuxSession, text, 'machine-restart-now'"]);
   });
 
   it('is consulted by no admission path', () => {

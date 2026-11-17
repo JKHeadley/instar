@@ -43,6 +43,8 @@ export interface WizardAnswers {
   orgBundle?: string;
   /** Install flow only: the Instar Mac app runs this install and enrolls itself (mac-app-creates-agent §B). */
   forApp?: boolean;
+  /** The invitation link's token (org-members-and-keepers §A). */
+  orgInviteToken?: string;
 }
 
 /** The doors the installer can carry today. Other doors arrive with their proofs (spec section 5). */

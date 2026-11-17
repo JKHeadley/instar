@@ -341,9 +341,13 @@ export class FrameworkParitySentinel extends EventEmitter {
     // Operators can downgrade to approve-* or block to flag-only without
     // touching the sentinel config.
     if (this.config.adaptiveTrust && rule.remediationPolicy === 'mirror-trust') {
+      // `parity-sentinel` is an Instar system service (trust-journey decision 9): it needs no person
+      // grant, so it remediates by default. Only a narrowing a person set (approve-* or block, from an
+      // explicit or revoked source) turns it to flag-only. The old seeded `log` entry reads the same.
       const entry = this.config.adaptiveTrust.getTrustLevel('parity-sentinel', 'modify');
+      const personSet = entry.source === 'user-explicit' || entry.source === 'revoked';
+      if (!personSet) return true;
       const autonomy = this.config.adaptiveTrust.trustToAutonomy(entry.level);
-      // 'proceed' (autonomous) and 'log' allow remediation; 'approve' and 'block' do not.
       return autonomy === 'proceed' || autonomy === 'log';
     }
     return true;
