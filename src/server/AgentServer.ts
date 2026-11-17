@@ -1995,6 +1995,8 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
+    this.app.use('/mobile/local-owner-device', express.json({ limit: '4kb' }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
@@ -2129,6 +2131,25 @@ export class AgentServer {
       });
     });
 
+    // SEC-070 local-guess budget: durable when the attempt store is available, else in memory.
+    const LOCAL_PIN_KEY = 'local-direct-unmarked';
+    const LOCAL_PIN_MAX_FAILURES = 10;
+    const LOCAL_PIN_WINDOW_MS = 5 * 60 * 1000;
+    let localPinMem = { count: 0, resetAt: 0 };
+    const localPinBlocked = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.blocked(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES);
+      return now <= localPinMem.resetAt && localPinMem.count >= LOCAL_PIN_MAX_FAILURES;
+    };
+    /** Records one local failure; true when this failure reached the cap (alert once). */
+    const recordLocalPinFailure = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.recordFailure(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES) <= 0;
+      if (now > localPinMem.resetAt) localPinMem = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS };
+      localPinMem.count++;
+      return localPinMem.count === LOCAL_PIN_MAX_FAILURES;
+    };
+    const LOCAL_PIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+    let lastLocalPinAlertAt = -Infinity;
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
       if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
@@ -2154,6 +2175,30 @@ export class AgentServer {
         : (req.ip || req.socket.remoteAddress || 'unknown');
       const markerId = readPinMarker(req);
       let entry: { count: number; resetAt: number } | undefined;
+
+      // SEC-070: a local caller without a prior-unlock marker gets its OWN small budget. Other
+      // processes on this machine (including confined sessions, which share the loopback) are
+      // local too, so local must not mean unlimited. A browser that unlocked before (signed
+      // marker) is never capped, and this budget is separate from the remote one, so a stranger
+      // elsewhere can never lock the owner out at the machine.
+      const localUnmarked = isLocalDirect && !markerId;
+      if (pinThrottle && localUnmarked && localPinBlocked(now)) {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
+        });
+        return;
+      }
+      // A local browser that unlocked before is judged on its own marker, exactly like a known
+      // remote browser: its gentle backoff and the marked abuse cap apply, so a copied marker
+      // cookie is not an unlimited pass from this machine.
+      if (pinThrottle && isLocalDirect && markerId) {
+        const decision = pinThrottle.consult(ip, markerId, now);
+        if (!decision.allow) {
+          res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
+          return;
+        }
+      }
 
       if (pinThrottle) {
         if (!isLocalDirect) {
@@ -2204,11 +2249,22 @@ export class AgentServer {
               DegradationReporter.getInstance().report({
                 feature: 'DashboardPin.bruteForce',
                 primary: 'An attack on the dashboard PIN is under way',
-                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the machine still works',
+                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
                 reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
-                impact: 'To unlock, use a browser you have unlocked before, or the machine itself (the local dashboard or the paired phone app).',
+                impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
               });
             }
+          }
+          if (isLocalDirect && markerId) pinThrottle.recordFailure(ip, markerId, now);
+          if (localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+            lastLocalPinAlertAt = now;
+            DegradationReporter.getInstance().report({
+              feature: 'DashboardPin.localGuessing',
+              primary: 'Repeated wrong PINs are being entered from this machine itself',
+              fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
+              reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
+              impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
+            });
           }
           res.status(403).json({ error: 'Incorrect PIN' });
           return;
@@ -2237,6 +2293,8 @@ export class AgentServer {
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
       if (pinThrottle) {
+        // The local count is NOT reset by a success: an owner's unlock must not hand a guessing
+        // program a fresh budget (the same choice as the remote global budget).
         pinThrottle.recordSuccess(ip, markerId);
         this.pinAttemptStore?.recordSuccess(ip);
         // Set the prior-unlock marker so this browser is a known browser next time (bypasses the

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-17T03:58:51.136Z",
+  "slug": "config-patch-reserved-keys",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SecretMigrator.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/config/LiveConfig.ts",
+      "src/core/DispatchExecutor.ts",
+      "src/core/SecretMigrator.ts",
+      "src/monitoring/guardPosture.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 46,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

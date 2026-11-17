@@ -2512,6 +2512,7 @@ const MIGRATION_OVERRIDES: Record<string, unknown> = {
  */
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const key of Object.keys(source)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue; // never follow object machinery (SEC-071)
     if (
       typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
       typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])
