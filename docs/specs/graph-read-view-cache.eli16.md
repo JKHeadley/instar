@@ -16,3 +16,5 @@
 **What stays the same.** Every record is still checked when the history is built. Saving a change still waits until every machine has it. Removing something still takes effect at once.
 
 **Decision needed.** None: a code change that a revert fully undoes.
+
+(A follow-up commit only labels an existing error check as reported, for the code audit; nothing you see changes.)

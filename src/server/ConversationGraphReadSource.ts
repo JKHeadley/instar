@@ -32,12 +32,13 @@ export class ConversationGraphRuntimeReadSource implements GraphReadSource {
   this.snapshot=null;this.inventorySnapshot=null;
   try{
    // One verified view, shared by every read until the graph changes (runtime.readView).
+   // E2E-PAIRING: EXEMPT — comment-only (silent-fallback annotation); readiness stays exercised end to end by tests/e2e/conversation-graph-surface-alive.test.ts.
    const view=this.runtime.readView();
    this.snapshot=view.retained;
    this.inventorySnapshot=view.inventory;
    this.headers.synchronize(view.retained.records);
    return{ready:true};
-  }catch{return{ready:false,reason:'verified-source-unavailable'};}
+  }catch{/* @silent-fallback-ok — an unverifiable view is reported to every caller as not ready (the routes answer 503 conversation-graph-off/pending); the runtime reports its own refusal codes. */return{ready:false,reason:'verified-source-unavailable'};}
  }
  /** Per view: its graph events by id, and each event's verification, worked out once. */
  private readonly perView=new WeakMap<object,{events:GraphEvent[];records:Map<string,ConversationGraphReplicationRecord>;creations:Map<string,ConversationGraphReplicationRecord>;verified:Map<string,boolean>}>();

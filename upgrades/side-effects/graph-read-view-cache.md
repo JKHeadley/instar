@@ -95,3 +95,5 @@ Checked and fine per the reviewer: erasure/forget (fence + pending targets in th
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable (a performance and coupling defect in the graph read path, closed by the tests above).
+
+Follow-up: the read source's existing not-ready catch moved lines and the silent-fallback baseline (tracked by location) counted it as new; annotated `@silent-fallback-ok` (it reports not-ready to every caller, 503). Baseline unchanged at 494.
