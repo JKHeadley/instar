@@ -13,10 +13,11 @@ import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { DynamicMcpService } from '../../src/core/DynamicMcpService.js';
+import { GLOBAL_PIN_KEY } from '../../src/core/PinAttemptStore.js';
 
 const MCP_JSON = { mcpServers: { playwright: { command: 'npx' }, threadline: { command: 'node' } } };
 
-function appWith(service: DynamicMcpService | null, stateDir: string) {
+function appWith(service: DynamicMcpService | null, stateDir: string, extra: Record<string, unknown> = {}) {
   const ctx = {
     config: { projectName: 'test', projectDir: '/tmp', stateDir, port: 0, dashboardPin: '424242', sessions: {} as unknown, scheduler: {} as unknown } as unknown,
     sessionManager: { listRunningSessions: () => [] } as unknown,
@@ -24,6 +25,7 @@ function appWith(service: DynamicMcpService | null, stateDir: string) {
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
     startTime: new Date(),
     dynamicMcpService: service,
+    ...extra,
   } as unknown as RouteContext;
   const app = express();
   app.use(express.json());
@@ -233,6 +235,76 @@ describe('/mcp/* routes', () => {
       expect(first.status).toBe(200);
       const second = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
       expect(second.status).toBe(404);
+    });
+
+    // The tap submit is reachable WITHOUT the bearer, so it holds the public PIN-route
+    // limits: the request must exist before any PIN is tested, failures are charged to the
+    // global bucket (every tunnel caller shares one address), and an insecure connection
+    // is refused.
+    function fakePinStore(blockedKeys: string[] = []) {
+      const failures: string[] = [];
+      return {
+        failures,
+        store: {
+          blocked: (key: string) => blockedKeys.includes(key),
+          recordFailure: (key: string) => { failures.push(key); return 4; },
+          recordSuccess: () => {},
+        },
+      };
+    }
+    async function pendingRequestId(app: express.Express, topicId: number): Promise<string> {
+      const need = await request(app).post('/mcp/load').send({ topicId, server: 'playwright' });
+      const link = await request(app).post('/mcp/approval-link').send({ topicId, kind: 'load', server: 'playwright', nonce: need.body.nonce });
+      return link.body.requestId as string;
+    }
+
+    it('a made-up requestId with a WRONG pin ⇒ 404, and no PIN attempt is tested or charged', async () => {
+      const pins = fakePinStore();
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinAttemptStore: pins.store });
+      const r = await request(app).post('/mcp/approve/made-up-id').send({ pin: '000000' });
+      expect(r.status).toBe(404);
+      expect(pins.failures).toEqual([]);
+    });
+
+    it('a real requestId with a WRONG pin ⇒ 403, charged to the global PIN bucket too', async () => {
+      const pins = fakePinStore();
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinAttemptStore: pins.store });
+      const requestId = await pendingRequestId(app, 21);
+      const r = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: '000000' });
+      expect(r.status).toBe(403);
+      expect(pins.failures).toContain(GLOBAL_PIN_KEY);
+      // a wrong PIN never uses up the request: the operator can still approve it
+      expect((await request(app).get(`/mcp/approve/${requestId}`)).status).toBe(200);
+    });
+
+    it('PIN entry on an insecure connection is refused even with the right PIN', async () => {
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinEntryRefusedHere: () => true });
+      const requestId = await pendingRequestId(app, 23);
+      const before = restarts;
+      const r = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
+      expect(r.status).toBe(403);
+      expect(r.body.error).toBe('insecure-connection');
+      expect(restarts).toBe(before);
+    });
+
+    it('the global PIN cap applies (429) even from a fresh address', async () => {
+      const pins = fakePinStore([GLOBAL_PIN_KEY]);
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinAttemptStore: pins.store });
+      const requestId = await pendingRequestId(app, 25);
+      const before = restarts;
+      const r = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
+      expect(r.status).toBe(429);
+      expect(restarts).toBe(before);
+      expect((await request(app).get(`/mcp/approve/${requestId}`)).status).toBe(200);
+    });
+
+    it('the approval page turns a refused PIN (JSON) into a plain message instead of raw JSON', async () => {
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'));
+      const requestId = await pendingRequestId(app, 27);
+      const page = await request(app).get(`/mcp/approve/${requestId}`);
+      expect(page.text).toContain('application/json');
+      expect(page.text).toContain('Too many PIN attempts');
+      expect(page.text).toContain('not allowed on this connection');
     });
 
     it('an unknown requestId ⇒ GET 404 and POST(valid PIN) 404', async () => {
