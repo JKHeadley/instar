@@ -9,6 +9,11 @@ import { enrollChosenAccount, newAccountFolder, signInEnvFor } from '../../src/i
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { afterAll } from 'vitest';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+const tmpDirs: string[] = [];
+afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/install-account-choice.test.ts' }); });
 
 const mkFolder = () => '/h/.instar/accounts/testy/claude-code-1';
 
@@ -64,6 +69,7 @@ describe('accountChoiceStep', () => {
 describe('the chosen account after the choice', () => {
   it('a new sign-in gets the next free folder, never reusing one', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'inst-acct-new-'));
+    tmpDirs.push(home);
     const a = newAccountFolder('testy', 'claude-code', home);
     const b = newAccountFolder('testy', 'claude-code', home);
     expect(path.basename(a)).toBe('claude-code-1');

@@ -48,7 +48,7 @@ Each item names its file and line.
    - The card is honest about it: "Shared with <agent>. The agents share this account's usage limit and sign-in. For an agent that runs on its own, sign in to a different account." When that account is borrowed, "Sign in to a different account" is shown first.
    - If the owning agent is deleted, the borrowed entry shows "signed out" with a sign-in button; nothing fails silently.
 4. **A new account.**
-   - A fresh folder is made under the new agent's home (`<agentHome>/.instar/accounts/<door>-<n>`, the next free n, so a re-run never reuses a folder).
+   - A fresh folder is made at `~/.instar/accounts/<agentName>/<door>-<n>` (mode 0700), with the next free n, so a re-run never reuses a folder. It sits outside the agent's home because sign-in happens before the agent is created, and agent creation sets aside a half-made agent folder.
    - Sign-in runs into it with `FrameworkLoginDriver` setting `CLAUDE_CONFIG_DIR` or `CODEX_HOME` (`src/core/FrameworkLoginDriver.ts:96-98`), with the same browser handoff as today.
    - The install's sign-in check (`doors.ts:83,156`) is given that folder.
 5. **Pool entries** are insert-if-absent, keyed by the account id, and carry the machine id, so another machine of a multi-machine agent never tries a path that exists only here.
