@@ -4253,6 +4253,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
      */
     permissionActions?: { enabled?: boolean };
+    /** Approving trust raises from a paired device (spec app-trust-approval). On for new installs; dark on the fleet until set. */
+    trustApproval?: { enabled?: boolean };
     /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent

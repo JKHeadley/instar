@@ -360,6 +360,9 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // withdrawals are TrustJourneyStore records replicated through the coherence journal to every machine.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/requests', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/acceptance/', domain: 'cluster-shared' });
+  // Approving from the Instar app (docs/specs/app-trust-approval.md): device acceptances, device approvals,
+  // consumptions and outcomes are the same TrustJourneyStore records, decided only on the serving-lease holder.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/mobile/trust/', domain: 'cluster-shared' });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
