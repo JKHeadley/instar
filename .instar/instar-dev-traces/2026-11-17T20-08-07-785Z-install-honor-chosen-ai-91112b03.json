@@ -14,5 +14,10 @@
   "eli16Path": "upgrades/side-effects/install-honor-chosen-ai.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/install-honor-chosen-ai.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "an installer answer was overridden by a detected default"
+  }
 }
