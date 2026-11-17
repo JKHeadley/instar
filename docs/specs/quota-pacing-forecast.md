@@ -4,8 +4,9 @@ slug: "quota-pacing-forecast"
 author: "echo"
 parent-principle: "Structure > Willpower; Signal vs Authority (a forecast is a measurement, never a gate)"
 eli16-overview: "quota-pacing-forecast.eli16.md"
-status: "draft"
-approved: false
+status: "converged"
+approved: true
+approved-by: "Echo under standing authority: Justin approves only constitution changes (Instar 1.x, 2026-10-22 08:58 PDT, memory only-constitution-changes-need-justin); this spec touches no constitution file. Request origin: Justin, topic 141385, 2026-11-17 10:19 PST."
 parent-spec: "POOL-AWARE-QUOTA-THROTTLE-SPEC.md (pool headroom); queue-pace.md (the pure-arithmetic + ledger pattern this copies); codex-live-quota-read (Codex windows)"
 lessons-engaged:
   - "P2 Signal vs Authority: the forecast is a measurement; nothing in this step reads it to decide"
@@ -14,6 +15,15 @@ lessons-engaged:
   - "P21 Multi-machine: unified, proxied on read; logins merged by identity"
   - "P24 Never Silently Cut the Data: retention derived, every cut disclosed in coverage"
 origin: "Justin, topic 141385, 2026-11-17 10:19 PST (token pacing controller) and 10:54 PST (pool-first: one account maxing early is fine, the provider's group must stay usable). Brainstorm: .instar/lanes/token-pacing-brainstorm/combined.md (doc 68f34063). Fable 5.2 and GPT-6 Astra both name this as the first slice."
+review-convergence: "2026-11-17T22:07:53.681Z"
+review-iterations: 3
+review-completed-at: "2026-11-17T22:07:53.681Z"
+review-report: "docs/specs/reports/quota-pacing-forecast-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 7
+cheap-to-change-tags: 1
+contested-then-cleared: 5
 ---
 
 # Quota pacing, step 1: reading history and forecast
