@@ -109,3 +109,14 @@ Pending the second-pass security review below.
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## Rebase and rule-test fixes (2026-11-16, adopted by topic 143810)
+
+Rebased onto main. Part A was skipped because main already has its later version (#3222). Parts B and C were resolved, keeping both sides in `src/commands/server.ts` (part B's trust-journey setup; main's newer server constructor plus part B's `trustAccountPath` argument) and an import in `src/server/routes.ts`.
+
+The silent-fallback rule test counted two new silent catches:
+- the failed-apply catch in `AccountPathService`, which already tells the person the change didn't take effect, now carries the `@silent-fallback-ok` note;
+- the hook script's config read in `PostUpdateMigrator` falls back to a file read just below, and now carries the note;
+- the approval-receipt intake catch in `TelegramAdapter` was genuinely silent: it now logs the error before treating the message as not an approval. An unread receipt approves nothing.
+
+Trust-journey tests pass (105/105), and the rule tests pass (16/16).

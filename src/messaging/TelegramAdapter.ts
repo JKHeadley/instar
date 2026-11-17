@@ -6389,7 +6389,7 @@ export class TelegramAdapter implements MessagingAdapter {
         text: msg.text, senderIsBot: (msg.from as { is_bot?: boolean }).is_bot === true,
         forwarded: !!(raw.forward_origin || raw.forward_from || raw.forward_date),
         uniqueKey: `tg-update:${update.update_id}`, receivedAt: new Date().toISOString(), receivedBy: 'self',
-      }).catch(() => 'not-for-us' as const);
+      }).catch((err) => { console.error('[trust-journey] approval receipt could not be read; the message continues normally:', err instanceof Error ? err.message : err); return 'not-for-us' as const; }); // @silent-fallback-ok: logged; an unread receipt approves nothing
       if (outcome !== 'not-for-us') return;
     }
 

@@ -24725,7 +24725,7 @@ process.stdin.on('end', async () => {
       const base = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/';
       const cfg = JSON.parse(nodeFs.readFileSync(base + 'config.json', 'utf-8'));
       journeyImported = !!(cfg.trustJourney && cfg.trustJourney.legacyImportedAt);
-    } catch { /* no config: decided by the fallback file below */ }
+    } catch { /* @silent-fallback-ok: no config, so the fallback file read just below decides */ }
     try {
       const nodeFs = await import('node:fs');
       const base = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/';

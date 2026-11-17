@@ -241,7 +241,7 @@ export class AccountPathService {
     const proof = issueOperatorProofFromConsumedReceipt({ proposalHash: req.proposalHash, receiptRef: consumptionId, acceptanceRef: acceptance.acceptanceId, principal: req.principal });
     let applied: { ok: boolean; detail?: string };
     try { applied = await this.d.apply(req.change, proof); }
-    catch (err) { applied = { ok: false, detail: err instanceof Error ? err.message : String(err) }; }
+    catch (err) { applied = { ok: false, detail: err instanceof Error ? err.message : String(err) }; } // @silent-fallback-ok: the failure is told to the person just below and the request stays unapplied
     if (!applied.ok) {
       await this.d.adapters[adapter]!.replyTo(r.chatId, r.messageId, `Your approval was recorded, but the change did not take effect (${applied.detail ?? 'unknown reason'}). Nothing else changed; the agent will need to ask again.`);
       return 'apply-failed';
