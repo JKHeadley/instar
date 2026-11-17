@@ -91,6 +91,8 @@ import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainR
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
 import { getActivePostRestartProof, noteLifelineProof } from '../monitoring/machineMaintenance/PostRestartProof.js';
+import { getActiveEnrolmentStatusReader } from '../monitoring/machineMaintenance/enrolmentReadiness.js';
+import { getActiveEnrolmentController, setEnrolmentTapsProvable } from '../monitoring/machineMaintenance/EnrolmentController.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import {
   fetchMaintenancePool,
@@ -4096,6 +4098,8 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     },
   });
+  // Machine care enrolment accepts a tap only when this guard can prove taps (Part C).
+  setEnrolmentTapsProvable(() => lifelineIngressGuard.tapsProvable());
 
   // Pairing by invite, Telegram surface (docs/specs/a2a-pairing-invite-link.md §6.1). Buttons
   // are offered only when the lifeline is this agent's Telegram ingress AND its guard enforces;
@@ -15878,12 +15882,28 @@ export function createRoutes(ctx: RouteContext): Router {
     return view;
   }
 
+  // Enrolment readiness (Part C, CMT-1200): a reading for the card; null where not wired.
+  async function readEnrolmentStatus(): Promise<unknown> {
+    const reader = getActiveEnrolmentStatusReader();
+    if (!reader) return null;
+    try { return await reader.read(); } catch { return { error: 'enrolment-read-failed' }; } // @silent-fallback-ok — named, never a guessed status
+  }
+
+  // Offer the owner's enrolment tap for THIS machine (Part C, CMT-1200). Sends at most one
+  // offer per machine and set of facts; the tap itself arrives as an owner-only Telegram button.
+  router.post('/machine-maintenance/enrol/offer', async (_req, res) => {
+    const c = getActiveEnrolmentController();
+    if (!c) { res.status(503).json({ error: 'machine maintenance enrolment not enabled on this agent' }); return; }
+    try { res.json({ outcome: await c.offer() }); }
+    catch (err) { res.status(500).json({ error: 'enrol-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
+
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
       res.json(await maintenancePoolView('status', async () => {
         const local = getActiveDrainRehearsal();
         return local
-          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null } as Record<string, unknown> }
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() } as Record<string, unknown> }
           : { reason: 'not-enabled' };
       }));
       return;
@@ -15895,7 +15915,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
     // Wedge detection (Part E) rides it too, dry-run: null where the sampler is not wired, never a guessed value.
-    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null });
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null, wedge: getActiveWedgeMonitor()?.status() ?? null, restartProof: getActivePostRestartProof()?.status() ?? null, enrolment: await readEnrolmentStatus() });
   });
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside

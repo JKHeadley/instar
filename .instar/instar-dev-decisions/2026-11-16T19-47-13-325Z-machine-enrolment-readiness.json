@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-16T19:47:13.325Z",
+  "slug": "machine-enrolment-readiness",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 291,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/machine-enrolment-readiness.md",
+      "src/monitoring/machineMaintenance/enrolmentReadiness.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 289,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
