@@ -168,6 +168,7 @@ export const NEED_EXEMPT = [
   { file: 'sessions-model.js', phrase: 'Waiting on you', why: 'A comment-like note that sessions do not report this; nothing waits.' },
   { file: 'projects.js', phrase: 'Your agent suggests', why: 'Project app offers are optional suggestions shown on the project\'s Work row, not needs (docs/specs/project-apps.md §3.5); an unanswered offer waits for nothing.' },
   { file: 'projects-model.js', phrase: 'Your agent suggests', why: 'As projects.js: the words of an optional project app suggestion, never a Needs-you row.' },
+  { file: 'projects-model.js', phrase: 'Waiting for your approval', why: 'A custom project app with no approved version mirrors its version card, which is already a Needs-you row through the Work board source (docs/specs/project-apps-sandbox.md §3.4); the project row only says why it has no Open button.' },
 ];
 
 const failedRead = (res) => sourceState(res) === 'failed';

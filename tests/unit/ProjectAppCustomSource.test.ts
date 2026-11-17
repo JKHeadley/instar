@@ -10,7 +10,8 @@ import { makeHarness, phoneApprove, PROJECT, CONVERGED_SPEC, DRAFT_SPEC, OWNER }
 import { checkAppVersion, checkSpecConverged, HMAC_SLOT_APP_ID, cardNoteText, isPhoneOnlyCard, CARD_NOTE_MAX } from '../../src/server/ProjectAppCustomSource.js';
 import { versionCardId, buildVersionCard, buildKeyRevoked } from '../../src/core/ProjectAppCustomFold.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { cardJson } from '../../src/core/workBoardViews.js';
+import { cardJson, APP_STOPPED_LINE } from '../../src/core/workBoardViews.js';
+import { ProjectAppKeyStore } from '../../src/core/ProjectAppKeys.js';
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/ProjectAppCustomSource.test.ts' }); });
@@ -197,6 +198,71 @@ describe('ProjectAppCustomSource — the version card closes once the phone\'s a
     expect(v.status).toBe('done');
     expect(v.card.needsConfirm).toBe(false);
     expect(json(h, cardId)).toMatchObject({ lane: 'done' });
+  });
+
+  it('"Stop this app": the card says it was stopped (no restart in this build), leaves Needs you, and the closer never writes "running"', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId);
+    expect(h.source.settleApprovedCards().closed).toEqual([cardId]);
+    expect(h.source.stoppedServeCard(cardId)).toBe(false);
+    expect(h.svc.isStoppedAppCard(cardId)).toBe(false);
+
+    h.svc.tap({ kind: 'person', personKey: OWNER, proof: 'pin', isOwner: true }, cardId, { action: 'withdraw-approval' });
+    h.source.invalidate();
+    expect(h.source.servedVersion(appId)).toEqual({ state: 'disabled' });
+    expect(h.source.stoppedServeCard(cardId)).toBe(true);
+    expect(h.svc.isStoppedAppCard(cardId)).toBe(true);
+    const v = h.svc.view(cardId)!;
+    expect(v.status).toBe('needs-approval'); // the Work Board's own fold is unchanged
+    expect(h.svc.lane(v, { isOwner: true, personKey: OWNER })).toBe('done');
+    expect(h.svc.waitingOnOwnerCount()).toBe(0);
+    expect(json(h, cardId)).toMatchObject({ lane: 'done', needLine: APP_STOPPED_LINE, appStopped: true });
+    expect(JSON.stringify(json(h, cardId))).not.toContain('Approve this version');
+    // Without the phone-only signal the card is an ordinary one (no app words).
+    expect(cardJson(h.svc, v, OWNER_VIEW, (k) => k)).not.toHaveProperty('appStopped');
+
+    // An approve recorded past the route (a stale phone): the card reads approved again, but the app is
+    // still off, so the closer finishes nothing and nothing says it is running.
+    phoneApprove(h, cardId);
+    expect(h.source.servedVersion(appId)).toEqual({ state: 'disabled' });
+    const n = h.board.length;
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect(h.board.length).toBe(n);
+    expect(json(h, cardId)).toMatchObject({ needLine: APP_STOPPED_LINE, lane: 'done' });
+  });
+
+  it('stoppedServeCard is false for an unknown card, a running app and a never-approved app', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    expect(h.source.stoppedServeCard('wc_0000000000000000')).toBe(false);
+    h.source.writeSource(appId, HTML1, 'v1');
+    expect(h.source.stoppedServeCard(cardId)).toBe(false);
+    expect(h.svc.lane(h.svc.view(cardId)!, { isOwner: true, personKey: OWNER })).toBe('waiting-on-you');
+  });
+
+  it('a failing stopped-app check leaves the card where the Work Board folds it, and is logged', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    h.svc.setStoppedAppCardCheck(() => { throw new Error('fold unreadable'); });
+    expect(h.svc.isStoppedAppCard(cardId)).toBe(false);
+    expect(h.svc.lane(h.svc.view(cardId)!, { isOwner: true, personKey: OWNER })).toBe('waiting-on-you');
+  });
+
+  it('the closer does not write "running" while the approved version cannot be opened on this machine (still copying)', () => {
+    const { h, appId } = created();
+    const cardId = versionCardId(appId, 'serve');
+    h.source.writeSource(appId, HTML1, 'v1');
+    phoneApprove(h, cardId);
+    // A machine without the app's key: the fold names the version, but it is not running here.
+    const elsewhere = h.rebuild({ keyStore: new ProjectAppKeyStore({ filePath: path.join(h.dir, 'no-keys.json') }) });
+    expect(elsewhere.servedVersion(appId)).toEqual({ state: 'copying' });
+    expect(elsewhere.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect(h.svc.view(cardId)!.card.done).toBe(false);
+    // Where it runs, the closer finishes it.
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [cardId], refused: [] });
   });
 
   it('scheduleSettle coalesces calls into one settle after the current commit', async () => {

@@ -557,8 +557,9 @@ class ChatsPage {
       if (!v.live || this.view !== v) return;
       const s = appStripFor(data, refString(v.ref));
       if (!s) { v.appStrip.hidden = true; return; }
-      const open = el('a', { class: 'btn-quiet btn-inline chat-appstrip-open', href: s.href, text: s.label, 'aria-label': `Open ${s.title}` });
-      open.addEventListener('click', (ev) => {
+      // A stopped or unapproved app has nothing to open: the strip says so with no Open button.
+      const open = s.href ? el('a', { class: 'btn-quiet btn-inline chat-appstrip-open', href: s.href, text: s.label, 'aria-label': `Open ${s.title}` }) : null;
+      if (open) open.addEventListener('click', (ev) => {
         ev.preventDefault();
         fetch(appPath(s.projectKey, s.appRef, 'opened'), { method: 'POST', headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' }, body: '{}', keepalive: true }).catch(() => {});
         const nav = appNavigation(s.href);
