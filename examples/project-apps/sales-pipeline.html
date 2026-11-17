@@ -98,6 +98,7 @@
   }
 
   // One save at a time; a change made while a save runs is saved right after it (never dropped).
+  let retryTimer = null; // at most one pending retry after a rate-limit answer
   async function save() {
     if (!loaded) return;
     if (saving) { pending = true; return; }
@@ -107,7 +108,7 @@
       const r = await call('PUT', 'data', { body: { deals: snapshot }, base: revision });
       if (r.status === 409 && r.data && r.data.error === 'conflict') { pending = false; loaded = false; setEditable(false); render(); say('Someone else changed this; reloading.'); await load(); return; }
       if (r.status === 429 && r.data && r.data.error === 'daily-budget') { pending = false; say('Saving is paused until tomorrow.'); return; }
-      if (r.status === 429) { pending = false; say('Busy; saving again in a moment…'); setTimeout(save, 2000); return; }
+      if (r.status === 429) { pending = false; say('Busy; saving again in a moment…'); if (!retryTimer) retryTimer = setTimeout(() => { retryTimer = null; save(); }, 2000); return; }
       if (r.status !== 200) { say("Can't save right now; your changes are still here."); return; }
       revision = r.data.revision || revision;
       const open = snapshot.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
