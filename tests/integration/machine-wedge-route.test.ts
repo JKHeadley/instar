@@ -173,6 +173,7 @@ describe('GET /machine-maintenance wedge block (integration)', () => {
   it('on macOS a canary left stopped runs the gentle rung, and the route shows what it resumed', async () => {
     const CANARY = '/x/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary';
     const resumed: number[] = [];
+    const bootAtGentle = clock - 2 * 24 * 60 * MIN;
     let canaryTable = '';
     const okOut = (stdout: string) => ({ ok: true, stdout, ms: 20, timedOut: false, code: null });
     const mac = new WedgeMonitor({
@@ -187,7 +188,7 @@ describe('GET /machine-maintenance wedge block (integration)', () => {
         if (name === 'stoppedLaunches') return okOut('  405   501     1 T      20:01:07 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n');
         return okOut('S\n');
       },
-      readBootAt: async () => clock - 2 * 24 * 60 * MIN,
+      readBootAt: async () => bootAtGentle,
       lockState: async () => 'unlocked',
       canaryAvailable: () => true,
       ownUser: 'me', ownUid: 501, home: '/Users/me',

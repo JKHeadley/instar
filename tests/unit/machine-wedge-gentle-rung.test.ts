@@ -95,6 +95,7 @@ describe('WedgeMonitor gentle rung (macOS)', () => {
   function make(o: { mode: GentleResumeMode; canaryTable: () => string; launches: () => ProbeResult; resumer?: boolean; resumeOk?: (pid: number) => boolean }) {
     const calls: ReadingName[] = [];
     const resumed: number[] = [];
+    const bootAt = clock - 3 * 24 * 60 * MIN;
     const m = new WedgeMonitor({
       agentName: 'echo', machineId: () => 'm_mac', platform: 'darwin',
       logPath: path.join(dir, 'logs', 'machine-maintenance.jsonl'),
@@ -108,7 +109,7 @@ describe('WedgeMonitor gentle rung (macOS)', () => {
         if (name === 'stoppedLaunches') return o.launches();
         return ok('S\n');
       },
-      readBootAt: async () => clock - 3 * 24 * 60 * MIN,
+      readBootAt: async () => bootAt,
       lockState: async () => 'unlocked',
       canaryAvailable: () => true,
       ownUser: 'me', ownUid: 501, home: '/Users/me',
