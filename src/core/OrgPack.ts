@@ -6,6 +6,7 @@
  */
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
+import { hiddenCharIn, readStandardPolicy } from './OrgPolicyGrammar.js';
 
 export const ORG_BUNDLE_MAX_BYTES = 64 * 1024;
 export const ORG_ITEMS_MAX = 25;
@@ -117,7 +118,9 @@ const NEGATED = /^(never|do not|don't|dont|must not|should not|shouldn't)\b/i;
 
 /** The rules file in the existing ORG-INTENT format, meaning preserved line by line (§A). */
 export function generateOrgIntent(orgName: string, version: number, policySha256: string, p: ParsedPolicy): string {
-  const esc = (l: string): string => l.replace(/^#/, '\\#');
+  // A leading # can't start a heading, and comment markers can't hide later lines (SEC-078 defence in depth;
+  // the standard form already refuses them).
+  const esc = (l: string): string => l.replace(/^#/, '\\#').replace(/<!--/g, '<\\!--').replace(/-->/g, '--\\>');
   const lines: string[] = [];
   lines.push(`# Organizational Intent: ${orgName}`);
   lines.push('');
@@ -128,15 +131,15 @@ export function generateOrgIntent(orgName: string, version: number, policySha256
   if (p.never.length) {
     lines.push('', '## Constraints', '');
     // An item already worded as a prohibition keeps its words; any other is prefixed, so meaning never flips.
-    for (const n of p.never) lines.push(NEGATED.test(n) ? `- ${n}` : `- Never: ${n}`);
+    for (const n of p.never) lines.push(NEGATED.test(n) ? `- ${esc(n)}` : `- Never: ${esc(n)}`);
   }
   if (p.askFirst.length) {
     lines.push('', '## Ask First', '');
-    for (const a of p.askFirst) lines.push(`- Ask your person first before: ${a}`);
+    for (const a of p.askFirst) lines.push(`- Ask your person first before: ${esc(a)}`);
   }
   if (p.normally.length) {
     lines.push('', '## Goals', '');
-    for (const g of p.normally) lines.push(`- By default: ${g}`);
+    for (const g of p.normally) lines.push(`- By default: ${esc(g)}`);
   }
   if (p.other.length || p.unplaced.length) {
     lines.push('', '## Also In This Policy', '');
@@ -192,7 +195,7 @@ export function encodeBundle(b: OrgBundle): string {
 
 export type BundleRefusal =
   | 'bundle-unreadable' | 'bundle-too-large' | 'bundle-shape' | 'policy-hash-mismatch' | 'bad-signature'
-  | 'policy-too-long' | 'org-key-changed' | 'older-version' | 'version-conflict' | 'already-member';
+  | 'policy-too-long' | 'policy-not-standard' | 'org-key-changed' | 'older-version' | 'version-conflict' | 'already-member';
 
 export function decodeBundle(encoded: string): { ok: true; bundle: OrgBundle } | { ok: false; reason: BundleRefusal } {
   if (typeof encoded !== 'string' || encoded.length > ORG_BUNDLE_MAX_BYTES * 2) return { ok: false, reason: 'bundle-too-large' };
@@ -220,7 +223,11 @@ function isBundle(b: unknown): b is OrgBundle {
     && typeof r.publishedAt === 'string' && typeof r.publishedBy === 'string' && /^[^\x00-\x1f\x7f]{0,120}$/.test(r.publishedBy)
     && Array.isArray(r.keepers) && r.keepers.length <= 10 && r.keepers.every((k) => typeof k === 'string' && /^[^\x00-\x1f\x7f]{1,120}$/.test(k))
     && (r.updateOrigin === null || typeof r.updateOrigin === 'string')
-    && typeof r.signerPublicKey === 'string' && typeof r.sig === 'string';
+    && typeof r.signerPublicKey === 'string' && typeof r.sig === 'string'
+    // Names are shown on the join screen and written into the rules file: nothing a person can't see (SEC-077).
+    && !hiddenCharIn(r.orgName) && !hiddenCharIn(r.publishedBy) && r.keepers.every((k) => !hiddenCharIn(k))
+    // The name goes into a comment line at the top of the rules file: a comment marker could leave it open.
+    && !/<!--|-->/.test(r.orgName);
 }
 
 export interface HeldMembership { pinnedKey: string | null; versionFloor: number; joined: boolean; joinedVersion: number | null; joinedHash: string | null; joinedOrgId: string | null }
@@ -237,7 +244,11 @@ export function validateBundle(input: unknown, held: HeldMembership, opts: { ski
   if (Buffer.byteLength(JSON.stringify(b), 'utf8') > ORG_BUNDLE_MAX_BYTES) return { ok: false, reason: 'bundle-too-large' };
   if (sha256Hex(b.policy) !== b.record.policySha256) return { ok: false, reason: 'policy-hash-mismatch' };
   if (!verifyRecordSignature(b.record)) return { ok: false, reason: 'bad-signature' };
-  const parsed = parsePolicy(b.policy);
+  // Only the standard form is accepted, the same check the join page and the Mac app make, so what a
+  // person approves is exactly what the agent applies (SEC-078), and no hidden characters (SEC-077).
+  const standard = readStandardPolicy(b.policy);
+  if (!standard.ok) return { ok: false, reason: 'policy-not-standard' };
+  const parsed = standard.parsed;
   if (policyTooLong(parsed)) return { ok: false, reason: 'policy-too-long' };
   if (Buffer.byteLength(generateOrgIntent(b.record.orgName, b.record.version, b.record.policySha256, parsed), 'utf8') > ORG_INTENT_MAX_BYTES) {
     return { ok: false, reason: 'policy-too-long' };
