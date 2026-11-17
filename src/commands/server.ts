@@ -27353,12 +27353,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (/esc to interrupt/i.test(tail)) return false;
           return IDLE_PROMPT_PATTERNS.some((p) => tail.includes(p));
         };
+        const mmControlStore = new HostMaintenanceStore();
         const rehearsal = new DrainRehearsal({
           agentName: config.projectName,
           version: startupVersion,
           stateDir: config.stateDir,
           logPath: path.join(config.stateDir, '..', 'logs', 'machine-drain.jsonl'),
-          store: new HostMaintenanceStore(),
+          store: mmControlStore,
+          controls: () => mmControlStore.readControls(),
           enabled: mmEnabled,
           settings: () => normalizeSettings(liveConfig.get<Record<string, never> | undefined>('machineMaintenance', undefined)),
           readSignals: () => readMachineSignals(makeReadOnlyRunner(config.sessions.tmuxPath)),

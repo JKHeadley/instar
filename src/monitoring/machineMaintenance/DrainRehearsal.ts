@@ -22,10 +22,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../../core/hostSemaphoreCore.js';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
-import type { HostMaintenanceStore, DrainRecord } from './HostMaintenanceStore.js';
+import type { HostMaintenanceStore, DrainRecord, OperatorControlAction, OperatorControls } from './HostMaintenanceStore.js';
 import {
-  DRAIN_PHASES, DELAYS, DELAY_STEP_MINUTES, currentPhase, isDue, isFinalNight, phaseTime, stepDelays, uptimeDays, windowFor,
-  type DelayId, type MachineMaintenanceSettings, type SafetyHoldId,
+  DRAIN_PHASES, DELAYS, DELAY_STEP_MINUTES, currentPhase, isDue, isFinalNight, isSkipped, phaseTime, SKIP_MS, stepDelays, uptimeDays, validWindow, windowFor, withControls,
+  type DelayId, type MachineMaintenanceSettings, type PlannerControls, type SafetyHoldId,
 } from './planner.js';
 import { WORK_YIELD_REGISTRY, discoverWork, yieldEntryFor, type WorkCensusInputs, type WorkItem } from './WorkYieldRegistry.js';
 import { foreignTmuxSessions, readOwnerPresent, readSafetyHolds, type HoldReading, type MachineSignals } from './readings.js';
@@ -67,6 +67,11 @@ export interface DrainRehearsalDeps {
    * due early. Read only; absent where the wedge sampler is not wired.
    */
   forcedDueAt?: () => number | null;
+  /**
+   * Part F: the owner's Skip once and Change window for this machine, from the host store.
+   * Absent where not wired, which plans from the config alone.
+   */
+  controls?: () => PlannerControls | null;
   ownUser: string;
   platform?: NodeJS.Platform;
   now?: () => number;
@@ -125,6 +130,10 @@ export interface NightSummary {
   /** On a final night, what the default would have ended. */
   wouldEndOnFinalNight: string[];
 }
+
+export type ControlResult =
+  | { ok: true; controls: OperatorControls; effectiveWindow: { start: string; end: string } }
+  | { ok: false; error: string; detail: string };
 
 export function percentile(sorted: number[], p: number): number | null {
   if (sorted.length === 0) return null;
@@ -188,10 +197,17 @@ export class DrainRehearsal {
     }
   }
 
+  /** The owner's controls, read each tick so a tap applies without a restart. */
+  private readControls(): PlannerControls | null {
+    try { return this.deps.controls?.() ?? null; } catch { return null; } // @silent-fallback-ok — unreadable controls plan from the config, which only ever restarts less
+  }
+
   private async step(): Promise<void> {
     if (!this.deps.enabled()) return;
     const now = this.now();
-    const cfg = this.deps.settings();
+    const controls = this.readControls();
+    // A new window applies from the next night; an open night keeps its T-0 (originalRestartAt).
+    const cfg = withControls(this.deps.settings(), controls);
     if (this.open && now >= this.open.windowEnd) {
       // Phases that never ran measured nothing, so a night that slept through them is not evidence.
       const open = this.open;
@@ -204,7 +220,8 @@ export class DrainRehearsal {
     const lastOpen = phaseTime(window.restartAt, LATEST_OPEN_MINUTES);
     const inOpenRange = now >= opensAt && now <= lastOpen;
 
-    if (!this.open && !inOpenRange) {
+    // Skip once: no new night opens until skipUntil. A night already open runs on.
+    if (!this.open && (!inOpenRange || isSkipped(now, controls))) {
       if (now - this.signalsAt >= IDLE_REFRESH_MS || !this.signals) await this.refresh(await this.deps.census({ readBoundaries: false }));
       return;
     }
@@ -495,6 +512,34 @@ export class DrainRehearsal {
     };
   }
 
+  /**
+   * Part F controls. Skip once moves the next try 72 h past this tap; Unskip clears it; a
+   * window must be at least 2 hours long and applies from the next night (null restores the
+   * config's). All are in the safe direction: none of them can start a restart.
+   */
+  skip(by: string): ControlResult {
+    const until = this.now() + SKIP_MS;
+    return this.change(by, 'skip', (c) => ({ ...c, skipUntil: until }));
+  }
+
+  unskip(by: string): ControlResult {
+    return this.change(by, 'unskip', (c) => ({ ...c, skipUntil: null }));
+  }
+
+  setWindow(by: string, window: unknown): ControlResult {
+    if (window === null) return this.change(by, 'window-reset', (c) => ({ ...c, window: null }));
+    const w = validWindow(window);
+    if (!w) return { ok: false, error: 'window-invalid', detail: 'start and end as HH:MM, at least 2 hours apart' };
+    return this.change(by, 'window', (c) => ({ ...c, window: w }));
+  }
+
+  private change(by: string, action: OperatorControlAction, fn: (c: OperatorControls) => OperatorControls): ControlResult {
+    const next = this.deps.store.changeControls(by, action, fn);
+    if (!next) return { ok: false, error: 'host-store-busy', detail: 'another agent on this machine holds the maintenance lock; try again' };
+    this.deps.log?.(`control ${action} by ${by}`);
+    return { ok: true, controls: next, effectiveWindow: withControls(this.deps.settings(), next).window };
+  }
+
   private forcedDue(now: number): boolean {
     const at = this.deps.forcedDueAt?.() ?? null;
     return at !== null && now >= at - 2 * 60 * MIN;
@@ -502,7 +547,8 @@ export class DrainRehearsal {
 
   status(): Record<string, unknown> {
     const now = this.now();
-    const cfg = this.deps.settings();
+    const controls = this.readControls();
+    const cfg = withControls(this.deps.settings(), controls);
     const window = windowFor(now, cfg.window);
     const lastBootAt = this.signals?.lastBootAt ?? null;
     const plan = this.deps.store.readPlan();
@@ -516,6 +562,7 @@ export class DrainRehearsal {
       uptimeDays: lastBootAt !== null ? Math.round(uptimeDays(now, lastBootAt) * 10) / 10 : null,
       due: lastBootAt !== null ? isDue(now, lastBootAt, cfg) || this.forcedDue(now) : this.forcedDue(now) ? true : null,
       forcedDueAt: this.deps.forcedDueAt?.() ?? null,
+      controls: { skipUntil: controls?.skipUntil ?? null, skipped: isSkipped(now, controls), window: controls?.window ?? null },
       finalNight: lastBootAt !== null ? isFinalNight(now, lastBootAt, cfg) : null,
       nextWindow: window,
       phase: plan ? currentPhase(now, plan.originalRestartAt) : null,

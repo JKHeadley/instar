@@ -67,6 +67,24 @@ describe('machine maintenance lifecycle', () => {
     expect(res.body.nextWindow.restartAt).toBeGreaterThan(res.body.nextWindow.start);
   });
 
+  it('operator controls are alive on the production wiring: routes answer (PIN-gated), a skip shows in the status', async () => {
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    const wired = new DrainRehearsal({ ...(rehearsal as unknown as { deps: ConstructorParameters<typeof DrainRehearsal>[0] }).deps, store, controls: () => store.readControls() });
+    setActiveDrainRehearsal(wired);
+    for (const route of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
+      const res = await request(server.getApp()).post(route).set(auth);
+      expect(res.status, route).toBe(401);
+      expect(res.body.error).toMatch(/PIN unlock/);
+    }
+    expect(wired.skip('dashboard')).toMatchObject({ ok: true });
+    const res = await request(server.getApp()).get('/machine-maintenance').set(auth);
+    expect(res.body.controls).toMatchObject({ skipped: true });
+    // server.ts hands the rehearsal the same host store's controls.
+    const src = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
+    expect(src).toContain('controls: () => mmControlStore.readControls(),');
+    expect(src).toContain('store: mmControlStore,');
+  });
+
   it('reaches a fresh agent and an updated one through one shared section', () => {
     const section = MACHINE_MAINTENANCE_CLAUDEMD_SECTION(4042);
     expect(section).toContain('/machine-maintenance');
