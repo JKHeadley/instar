@@ -25,6 +25,7 @@ import { encodeKeeperCode } from '../../src/core/OrgKeepers.js';
 import { newMemberKeyPair, signPayload } from '../../src/core/OrgMembers.js';
 import { readPublished } from '../../src/server/orgPackRoutes.js';
 import { validateBundle } from '../../src/core/OrgPack.js';
+import { OrgPackUpdater } from '../../src/core/OrgPackUpdater.js';
 
 const HOST = 'org-rc.example.dev';
 const servers: AgentServer[] = [];
@@ -111,6 +112,17 @@ describe('recovery copy', () => {
     await publish('- c\n'); await publish('- d\n');
     const v5 = readPublished(admin.stateDir)!.bundle;
     expect(v5.record.version).toBe(5);
+    // The member takes v5 through its update check (held for the person when a line changes, then accepted).
+    const memFile = path.join(member.stateDir, 'org', 'membership.json');
+    fs.writeFileSync(memFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(memFile, 'utf-8')), updateOrigin: 'https://admin.example.dev' }));
+    const updater = new OrgPackUpdater({
+      stateDir: member.stateDir, machineId: 'm', isLeaseHolder: () => true, effects: () => ({}), notify: () => {},
+      lookup: async () => ['203.0.113.10'],
+      fetchFn: (async () => new Response(JSON.stringify(v5))) as unknown as typeof fetch,
+    });
+    const took = await updater.tick(true);
+    expect(['held', 'applied']).toContain(took);
+    if (took === 'held') expect((await member.signed('POST', '/mobile/org/update-accept', { version: 5 })).status).toBe(200);
     await admin.signed('POST', '/mobile/org/members/remove', { memberKey: side.state()!.publicKey });
 
     // Refused without the retirement answer, and while the old address still answers.

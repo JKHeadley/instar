@@ -104,3 +104,7 @@ The first four are fixed; the fifth is stated in §2. Three minor notes are reco
 ## Rule-test fix (merge line, 2026-11-16)
 
 The forwarding catch in `orgPackRoutes.ts` answers with an error through `failed()`, but the silent-fallback test reads 20 lines past it into the next route, where `let base: DraftBase | null = null;` matches its "set to null" pattern. The catch now carries the `@silent-fallback-ok` note with that reason.
+
+## Local-verify fix (merge line, 2026-11-17)
+
+Local verify failed with 429 at `org-recovery-copy.test.ts:96`: the keeper/invitation/member recovery rule in `mobilePairingRoutes.ts` shared the `org-acts` device bucket (publish, 5/min) and the test's publishes plus recovery steps drained it. The rule now uses its own `org-admin` bucket (own limit 10/min unchanged). Behind the 429 the test also expected the member at v5 without running the member's update check; it now runs `OrgPackUpdater.tick` and accepts a held update, as `org-pack-and-join.test.ts` does. Result: 1/1 pass. Rollback: revert the bucket name.
