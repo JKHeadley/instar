@@ -425,6 +425,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'the session token map and the thread-to-session binding are this machine\'s; the send itself goes through relay-send',
   } });
 
+  // owner-approved-action-stdio-transport (SEC-018c): the internal apply-once route the stdio
+  // delete funnels through after the device-signed owner approval. It deletes a thread from THIS
+  // machine's ConversationStore + ThreadResumeMap; the deletion executes on the machine holding
+  // the thread and is not relay-hosted or git-synced.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/approved-delete', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'deletes a thread from this machine\'s ConversationStore ({stateDir}/threadline/conversations.json — git-sync-excluded per FileClassifier, not relay-hosted) and its ThreadResumeMap binding; the owner-approval gate is device-signed and the mutation is apply-once on the machine holding the thread',
+  } });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
   // POST /hooks/native-events (docs/specs/native-hook-events.md): a Claude Code

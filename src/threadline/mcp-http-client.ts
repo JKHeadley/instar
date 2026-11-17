@@ -19,6 +19,7 @@ import type {
 } from './ThreadlineMCPServer.js';
 import { Agent } from 'undici';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import type { ApprovedDeleteResult } from './performApprovedDelete.js';
 
 /**
  * The inner relay-send call holds its request open for up to the reply wait
@@ -317,6 +318,37 @@ export async function acknowledgeViaHttp(
   if (response.status >= 400 && typeof body.error === 'string') throw new Error(body.error);
   if (response.status >= 400) throw new Error(`The agent server answered ${response.status}`);
   return body;
+}
+
+/**
+ * SEC-018 companion: the stdio helper's gated delete. Calls the loopback
+ * `POST /threadline/approved-delete` (Bearer agent-token, like every sibling here) so the
+ * consume + the irreversible mutation happen at the authority in the server process. Returns
+ * the server's `ApprovedDeleteResult` on a clean 200. On a transport failure, a non-2xx, or an
+ * unparseable/ambiguous answer, THROWS — the handler maps that to OUTCOME-UNKNOWN and never
+ * falls back to a local delete (the server MAY have deleted before the answer was lost).
+ */
+export async function approvedDeleteViaHttp(
+  threadId: string,
+  serverPort: number,
+  agentToken: string,
+): Promise<ApprovedDeleteResult> {
+  let response: Response;
+  try {
+    response = await fetch(`http://localhost:${serverPort}/threadline/approved-delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ threadId }),
+    });
+  } catch {
+    throw new Error(OUTCOME_UNKNOWN_ERROR); // the request may or may not have reached/applied
+  }
+  if (!response.ok) {
+    throw new Error(OUTCOME_UNKNOWN_ERROR); // 5xx etc: the server may have deleted before erroring
+  }
+  const body = (await response.json().catch(() => null)) as ApprovedDeleteResult | null;
+  if (body && typeof body === 'object' && 'ok' in body) return body;
+  throw new Error(OUTCOME_UNKNOWN_ERROR); // unparseable/ambiguous → do not assume failure
 }
 
 /** a2a-required-acknowledgment D6: receipts on a thread. An unreadable answer is no receipts. */
