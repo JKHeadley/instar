@@ -442,6 +442,10 @@ export class ConversationGraphReplication {
   private readonly deliveryCompletionReceipts=new Map<string,Map<string,GraphDeliveryCompletionReceipt>>();
   private readonly deliveryReceipts = new Map<string, Map<string, GraphCommitProofDeliveryReceipt>>();
   private durableGeneration=0;
+  /** Every durable write, including outbox bookkeeping: what a cached read view is checked against (readViewMarker). */
+  private viewRevision=0;
+  /** Durable writes still running: a read view built meanwhile may see a record its caller has not updated yet, so none is reused. */
+  private viewWritesInFlight=0;
   private historicalAncestorsFlushed=false;
   private readonly heldSourceReaders=new Set<WeakRef<GraphHeldSourceReader>>();
   private readonly heldImports=new Map<string,{name:string;eventId:string;stageHash:string;priorCanonical:boolean;hash:string}>();
@@ -1517,6 +1521,16 @@ export class ConversationGraphReplication {
   /** Every peer value MUST come through the existing no-clobber reader. A local
    * source may fill an un-emitted OWN record, but cannot bypass dropped origins
    * or a reader conflict for the same event id. */
+  /**
+   * A cheap marker of the local state certifiedUnion reads: it changes on every durable write here, on a
+   * record added or dropped, and on any local or pending erasure. Null when it cannot be told (then a caller
+   * must not reuse an earlier view). Peer streams and dropped origins are the caller's to mark.
+   */
+  readViewMarker(): string | null {
+    if (this.viewWritesInFlight > 0) return null;
+    try { return `${this.viewRevision}|${this.durableGeneration}|${this.records.size}|${this.historicalImportActivationHash ?? '-'}|${this.localRetainedNegativeHash()}`; }
+    catch { /* @silent-fallback-ok: an unmarkable state is never reused; the caller computes the view fresh. */ return null; }
+  }
   certifiedUnion(reader: ReplicatedStoreReader, dropped: DroppedOriginRegistry, excludedPendingEventIds?: ReadonlySet<string>): { records: ConversationGraphReplicationRecord[]; partial: boolean; quarantined: string[];pendingEventIds:string[];missingEventIds:string[] } {
     const candidates = new Map<string, ConversationGraphReplicationRecord>();
     const blocked = new Set<string>();
@@ -1887,6 +1901,8 @@ export class ConversationGraphReplication {
     // Outbox publication bookkeeping cannot change any historical source,
     // certificate, body or authority fact. It remains durably written below,
     // but must not invalidate a concurrent proof of those unchanged facts.
+    this.viewRevision++;this.viewWritesInFlight++;
+    try{
     if(!/^[a-f0-9]{64}\.emitted\.json$/.test(name))this.durableGeneration++;
     const bytes = canonicalJson(value);
     if (Buffer.byteLength(bytes) > GRAPH_REPLICATION_MAX_RECORD_BYTES) throw new Error('graph-replication-oversize-source');
@@ -1903,13 +1919,18 @@ export class ConversationGraphReplication {
       }
     } else await fs.rename(temporary, target);
     await this.syncDirectory();
+    }finally{
+      // Callers change the in-memory record right after this resolves (certificate, receipts, cancellation...).
+      // setImmediate runs after that continuation, so the revision moves again only once the record has.
+      setImmediate(()=>{this.viewRevision++;this.viewWritesInFlight--;});
+    }
   }
   private async syncDirectory(): Promise<void> {
     const directory = await fs.open(this.options.directory, 'r');
     try { await directory.sync(); } finally { await directory.close(); }
   }
   private removeBundle(name: string): void {
-    this.durableGeneration++;
+    this.durableGeneration++;this.viewRevision++;
     try { SafeFsExecutor.safeUnlinkSync(path.join(this.options.directory, name), { operation: 'conversation-graph:erase-encrypted-bundle' }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
