@@ -115,3 +115,7 @@ Local verify ran three rule tests against a merge with main and failed them; all
 ## Local-verify fix (merge line, 2026-11-17 13:35Z)
 
 Local verify failed 7 unit tests in 6 ratchets because OrgPolicyJudge had no classification. Added: LLM_BENCH_COVERAGE pending wave-3, LLM_UNTRUSTED_INPUT true, LLM_JUDGES_CLAIMS false, LLM_PARSER_CONTRACT pending contract-wave-2, LLM_ROUTING_NATURE B/JUDGE, LLM_ROUTING_INJECTION_EXPOSURE exposed(all), and a provenance census entry pending decision-quality enrolment; the pinned pending baselines in the bench, parser-contract and provenance ratchets gain the one entry. No runtime behaviour changes. 98/98.
+
+## Main merge (2026-11-17, after #3294)
+
+Merged origin/main (3ad059991): conflicts in the device allowlist, orgPackRoutes imports and the pinned owner-only route list, all resolved by keeping both sides (#3294's org members/keepers routes beside this PR's pending-checks and allow-once/actions-mode rows). Typecheck clean; 176 org, terminal and ratchet unit tests pass; independent review concurred.
