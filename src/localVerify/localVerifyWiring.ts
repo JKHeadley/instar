@@ -100,6 +100,8 @@ export interface LocalVerifyWiringOpts {
   config: LocalVerifyConfigBlock | undefined;
   /** The green-PR block's `expectedGhLogin` (the agent's own GitHub login). */
   expectedGhLogin: string | undefined;
+  /** `monitoring.localVerify.operatorGhLogin`, read live (no restart to apply a change). */
+  liveOperatorGhLogin?: () => string | null;
   repo: string;
   /** The server's working directory (the instar source checkout). */
   repoPath: string;
@@ -173,6 +175,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       agentHome: opts.agentHome,
       expectedGhLogin: expected,
       operatorGhLogin: opts.config.operatorGhLogin?.trim() || null,
+      ...(opts.liveOperatorGhLogin ? { liveOperatorGhLogin: opts.liveOperatorGhLogin } : {}),
       // A content hash of the installed verifier code, not the package version: a release
       // that leaves the verifier untouched keeps every green record.
       verifierVersion: computeVerifierVersion(path.dirname(mainEntry), undefined, { protectedList: PROTECTED_PATH_PREFIXES }),
@@ -414,6 +417,8 @@ export interface StatusReconcilerWiringOpts {
   /** The agent's own GitHub login (green-PR `expectedGhLogin`). */
   expectedGhLogin: string | undefined;
   operatorGhLogin: string | null;
+  /** `monitoring.localVerify.operatorGhLogin`, read live (no restart to apply a change). */
+  liveOperatorGhLogin?: () => string | null;
   service: LocalVerifyService | null;
   /** Live config readers. */
   localVerifyEnabled(): boolean;
@@ -465,7 +470,7 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
     audit,
   };
   const reconciler = new StatusReconciler({
-    repo: opts.repo, agentLogin: login, operatorGhLogin: opts.operatorGhLogin, machineId: opts.machineId,
+    repo: opts.repo, agentLogin: login, operatorGhLogin: opts.operatorGhLogin, ...(opts.liveOperatorGhLogin ? { liveOperatorGhLogin: opts.liveOperatorGhLogin } : {}), machineId: opts.machineId,
     postStatuses: opts.postStatuses, localVerifyEnabled: opts.localVerifyEnabled,
     actionsFloor: floor.actionsFloor, evaluate: floor.evaluate,
   }, seams, floorGate, opts.service);

@@ -4,6 +4,8 @@
 
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
+import { bootReadiness } from './BootReadiness.js';
+import { readLastRestartRequest } from '../core/restartRequestAttribution.js';
 import { PAIRING_OUTCOME_PRODUCER } from '../core/PairingOutcomeText.js';
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
@@ -6496,6 +6498,11 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
     }
+    // Listen early: the real server answering IS the ready state (idempotent; the listen
+    // callback normally marks it first). The boot beacon answers "starting" before this.
+    // previousRestart names who asked for the restart that ended the last process.
+    bootReadiness().markReady();
+    base.bootReadiness = bootReadiness().snapshot({ includePreviousRestart: isAuthed });
     // Media (mobile-native-chat-media §4.7): `?scope=pool` adds every machine's appMedia,
     // proxied on read (peers are asked for their plain /health); an unreachable machine is `failed`.
     if (req.query?.scope === 'pool' && isAuthed && ctx.appConversations) {
@@ -6542,6 +6549,65 @@ export function createRoutes(ctx: RouteContext): Router {
       configVersion: ctx.config.version,
     })
   );
+
+  // POST /server/restart — the attributed way for a session (or script) to ask for a
+  // supervised restart of this server, e.g. after a config change that is read only at
+  // boot. Both fields are required: a restart must name who asked and why. A hand-written
+  // state/restart-requested.json still works but is logged as "unattributed"
+  // (2026-11-16: an unattributed restart took the M5 offline for 2m43s and nobody could
+  // tell from the machine who asked). Planned-restart holds (Local Verify) still apply.
+  // @write-domain:none — machine-local: writes this machine's own restart request flag, no replicated agent state.
+  const SERVER_RESTART_MIN_INTERVAL_MS = 2 * 60_000;
+  router.post('/server/restart', async (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : {};
+    const clean = (v: unknown, max: number): string | null =>
+      // eslint-disable-next-line no-control-regex
+      typeof v === 'string' && v.trim() && !/[\u0000-\u001f\u007f]/.test(v) && v.trim().length <= max ? v.trim() : null;
+    const requestedBy = clean(body.requestedBy, 100);
+    const reason = clean(body.reason, 300);
+    if (!requestedBy || !reason) {
+      res.status(400).json({
+        error: 'requestedBy and reason are required',
+        detail: 'requestedBy: who is asking (e.g. your session name), one line, up to 100 characters; reason: why, one line, up to 300 characters.',
+      });
+      return;
+    }
+    if (!ctx.requestSupervisedRestart) {
+      res.status(503).json({ error: 'restart-unavailable', detail: 'this server has no supervised restart wired' });
+      return;
+    }
+    // Rate limit: a looping caller must not restart the server over and over. A non-update
+    // restart has no loop guard of its own, so one consumed less than 2 minutes ago refuses.
+    const lastConsumed = readLastRestartRequest(ctx.config.stateDir);
+    const sinceLastMs = lastConsumed ? Date.now() - Date.parse(lastConsumed.at) : Infinity;
+    if (Number.isFinite(sinceLastMs) && sinceLastMs >= 0 && sinceLastMs < SERVER_RESTART_MIN_INTERVAL_MS) {
+      const retryAfterS = Math.ceil((SERVER_RESTART_MIN_INTERVAL_MS - sinceLastMs) / 1000);
+      res.setHeader('Retry-After', String(retryAfterS));
+      res.status(429).json({ error: 'restarted-recently', detail: `This server restarted ${Math.round(sinceLastMs / 1000)}s ago (asked by ${lastConsumed!.requestedBy ?? 'an unattributed writer'}). Wait ${retryAfterS}s and ask again if it is still needed.`, retryAfterSeconds: retryAfterS });
+      return;
+    }
+    // A pending UPDATE restart (one naming a targetVersion) already restarts the server, and
+    // overwriting it would drop the version and its restart-loop detection. Leave it in place.
+    try {
+      const pending = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'restart-requested.json'), 'utf8')) as { targetVersion?: unknown; expiresAt?: unknown };
+      const live = typeof pending.expiresAt !== 'string' || Date.parse(pending.expiresAt) > Date.now();
+      if (live && typeof pending.targetVersion === 'string' && pending.targetVersion) {
+        res.status(202).json({ requested: true, requestedBy, reason, alreadyPending: { kind: 'update', targetVersion: pending.targetVersion }, next: 'An update restart is already pending; it restarts the server and applies your change too.' });
+        return;
+      }
+    } catch { /* @silent-fallback-ok — no pending request (or unreadable): write ours */ }
+    const ok = await ctx.requestSupervisedRestart(reason, requestedBy);
+    if (ok !== true) {
+      res.status(503).json({ error: 'restart-request-not-written', detail: 'the restart request could not be written; nothing will restart' });
+      return;
+    }
+    res.status(202).json({
+      requested: true,
+      requestedBy,
+      reason,
+      next: 'The supervisor restarts the server within about 10 seconds (later if a Local Verify run holds it). While it boots, GET /health answers bootReadiness.state "starting"; "ready" when it serves again.',
+    });
+  });
 
   // POST /events/delivery-failed — fan-out for the script-side detector.
   //

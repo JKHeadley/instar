@@ -203,3 +203,120 @@ describe('ServerSupervisor — Supervisor Respawn Guarantee', () => {
     expect(alive).toHaveBeenCalled(); // Fix A's probe runs before the grace early-return
   });
 });
+
+// ── Listen early (2026-11-16): the boot beacon's typed "starting" answer ──
+describe('ServerSupervisor — a booting server answering "starting"', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function pastGrace(sup: any): void {
+    sup.spawnedAt = Date.now() - sup.startupGraceMs - 1000;
+    sup.firstSpawnedAt = 0;
+    vi.spyOn(sup, 'isServerSessionAlive').mockReturnValue(true);
+  }
+  function probeSays(sup: any, kind: 'healthy' | 'starting' | 'down'): void {
+    vi.spyOn(sup, 'probeHealth').mockResolvedValue(kind);
+  }
+
+  it('past the grace window, "starting" is alive: no failure counted, no restart, not marked up', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    probeSays(sup, 'starting');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    const up = vi.fn();
+    sup.on('serverUp', up);
+    sup.consecutiveFailures = 1;
+    for (let i = 0; i < 4; i++) await sup.runHealthTick();
+    // Not counted, and earlier failures are cleared: "starting" is progress evidence.
+    expect(sup.consecutiveFailures).toBe(0);
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(up).not.toHaveBeenCalled();
+    expect(sup.isRunning).toBe(false);
+    expect(sup.bootingSince).toBeGreaterThan(0);
+  });
+
+  it('a boot still "starting" past the ceiling (3× grace) is treated as a failure, like a down server', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    probeSays(sup, 'starting');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    sup.bootingSince = Date.now() - sup.startupGraceMs * sup.graceCeilingMultiplier - 1000;
+    await sup.runHealthTick();
+    await sup.runHealthTick();
+    expect(evaluate).toHaveBeenCalled();
+  });
+
+  it('a boot alternating "starting" and "down" (a sync step blocking the beacon) is not restarted inside the ceiling', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    const probe = vi.spyOn(sup, 'probeHealth');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    for (const kind of ['starting', 'down', 'starting', 'down', 'starting', 'down'] as const) {
+      probe.mockResolvedValueOnce(kind);
+      await sup.runHealthTick();
+    }
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(sup.bootingSince).toBeGreaterThan(0); // a "down" probe does not reset the boot clock
+  });
+
+  it('...but once the ceiling passes, the same alternation reaches the failure threshold', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    const probe = vi.spyOn(sup, 'probeHealth');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    probe.mockResolvedValueOnce('starting');
+    await sup.runHealthTick();
+    sup.bootingSince = Date.now() - sup.startupGraceMs * sup.graceCeilingMultiplier - 1000;
+    for (const kind of ['down', 'starting', 'down'] as const) {
+      probe.mockResolvedValueOnce(kind);
+      await sup.runHealthTick();
+    }
+    expect(evaluate).toHaveBeenCalled();
+  });
+
+  it('the bound runs from the episode\'s first spawn (Fix C ceiling), not from the first "starting" past grace', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    sup.firstSpawnedAt = Date.now() - sup.startupGraceMs * sup.graceCeilingMultiplier - 1000;
+    probeSays(sup, 'starting');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    await sup.runHealthTick();
+    await sup.runHealthTick();
+    expect(evaluate).toHaveBeenCalled();
+  });
+
+  it('a plain down server past grace still counts failures (no change)', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    probeSays(sup, 'down');
+    const evaluate = vi.spyOn(sup, 'evaluateUnhealthyServer').mockImplementation(() => {});
+    await sup.runHealthTick();
+    await sup.runHealthTick();
+    expect(evaluate).toHaveBeenCalled();
+    expect(sup.bootingSince).toBe(0);
+  });
+
+  it('the real server answering 200 after booting marks it up and clears the booting clock', async () => {
+    const sup = makeSup();
+    pastGrace(sup);
+    const probe = vi.spyOn(sup, 'probeHealth').mockResolvedValue('starting');
+    await sup.runHealthTick();
+    expect(sup.bootingSince).toBeGreaterThan(0);
+    probe.mockResolvedValue('healthy');
+    const up = vi.fn();
+    sup.on('serverUp', up);
+    await sup.runHealthTick();
+    expect(up).toHaveBeenCalledTimes(1);
+    expect(sup.bootingSince).toBe(0);
+  });
+
+  it('probeHealth reads the beacon header: a typed 503 is "starting", an untyped 503 is "down"', async () => {
+    const sup: any = makeSup();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(new Response('{}', { status: 503, headers: { 'x-instar-boot-state': 'starting' } }));
+    expect(await sup.probeHealth()).toBe('starting');
+    fetchSpy.mockResolvedValueOnce(new Response('{}', { status: 503 }));
+    expect(await sup.probeHealth()).toBe('down');
+    fetchSpy.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    expect(await sup.probeHealth()).toBe('healthy');
+  });
+});
