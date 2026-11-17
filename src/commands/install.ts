@@ -364,6 +364,15 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
 
     'door-install': async (answers) => doorInstallStep(env, answers.door!, INSTALL_RESUME_WORDS),
 
+    // Which account of that AI (create-agent-accounts-and-always-on §A.2); nothing to ask when none is signed in here.
+    'account-choice': async (answers, progress) => {
+      const { discoverAccounts } = await import('../install/accounts.js');
+      const { accountChoiceStep } = await import('../install/accountChoice.js');
+      const door = answers.door as 'claude-code' | 'codex-cli';
+      const found = door === 'claude-code' || door === 'codex-cli' ? discoverAccounts(door) : [];
+      return accountChoiceStep(answers, progress.awaiting, found);
+    },
+
     'door-sign-in': async (answers, progress) => doorSignInStep(env, answers.door!, {
       words: INSTALL_RESUME_WORDS,
       awaiting: progress.awaiting,
@@ -745,6 +754,8 @@ export interface InstallAnswersFile {
   purpose?: string;
   door?: string;
   autostart?: boolean;
+  /** The account picked at the account choice: an id from the progress file's list, or a new sign-in. */
+  account?: { use: string } | { new: true };
   /** An organization invitation's bundle (org-pack-and-join §C), applied only with orgAccepted. */
   orgBundle?: string;
   /** Written by the Mac app only after the person tapped Join on its join screen. */
@@ -793,6 +804,11 @@ export const INSTALL_EXIT_CODES: Record<InstallStatus, number> = {
 export function answersFileProblem(file: InstallAnswersFile): string | null {
   for (const key of ['name', 'purpose', 'door'] as const) {
     if (file[key] !== undefined && typeof file[key] !== 'string') return `In the answers file, ${key} must be text.`;
+  }
+  if (file.account !== undefined) {
+    const a = file.account as { use?: unknown; new?: unknown };
+    const ok = !!a && typeof a === 'object' && ((typeof a.use === 'string' && /^[0-9a-f]{16}$/.test(a.use) && a.new === undefined) || (a.new === true && a.use === undefined));
+    if (!ok) return 'In the answers file, account must be { "use": "<account id>" } or { "new": true }.';
   }
   if (file.autostart !== undefined && typeof file.autostart !== 'boolean') {
     return 'In the answers file, autostart must be true or false.';
@@ -902,6 +918,7 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
     return 'needs-answers';
   }
   if (answersFile.autostart !== undefined) progress.answers.autostartConsent = answersFile.autostart;
+  if (answersFile.account !== undefined) progress.answers.accountChoice = answersFile.account;
   // An organization invitation, checked before any step runs (org-pack-and-join §C "Joining before AI
   // sign-in"); applied only when the person accepted it on the app's join screen.
   if (answersFile.orgBundle !== undefined) {

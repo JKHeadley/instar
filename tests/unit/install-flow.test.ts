@@ -25,7 +25,7 @@ import {
 import { gitWorks, packageInstallCommand, INSTALLED_AGENT_MOBILE_PAIRING, pairingLinkOrigin, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
-  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
+  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'account-choice', 'door-sign-in', 'agent-init',
   'start-server', 'install-autostart', 'owner-slot',
 ];
 
