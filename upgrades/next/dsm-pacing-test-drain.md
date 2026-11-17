@@ -6,3 +6,7 @@ Test-only: `tests/unit/DesktopStreamManager.test.ts` "asks a faster video sessio
 ## What to Tell Your User
 
 Nothing changes for you. This removes a flaky test that was holding back unrelated fixes.
+
+## Summary of New Capabilities
+
+None. Test-only fix for a flaky remote-desktop pacing test.
