@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "org-recovery-copy",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T01:02:58.480Z",
+  "artifactPath": "upgrades/side-effects/org-recovery-copy.md",
+  "artifactSha256": "ac540ec71c6ac8ae9a42479e17305f0b809c062ff5727eb8642213f280c469e3",
+  "specPath": "docs/specs/org-recovery-copy.md",
+  "coveredFiles": [
+    "docs/specs/org-recovery-copy.eli16.md",
+    "docs/specs/org-recovery-copy.md",
+    "docs/specs/reports/org-recovery-copy-convergence.md",
+    "src/core/OrgKeepers.ts",
+    "src/core/OrgMembers.ts",
+    "src/core/OrgRecovery.ts",
+    "src/data/awareness/org-recovery-copy.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/orgPackRoutes.ts",
+    "tests/integration/org-recovery-copy.test.ts",
+    "tests/unit/org-recovery.test.ts",
+    "upgrades/next/org-recovery-copy.md",
+    "upgrades/side-effects/org-recovery-copy.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Moves the organization's signing key between agents.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: every action is one owner-device request; finishing a staged install at start runs once"
+  }
+}

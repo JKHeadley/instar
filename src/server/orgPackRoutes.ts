@@ -26,6 +26,7 @@ import {
 import { OrgPackStore, type ApplyEffects, type Membership } from '../core/OrgPackStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { OrgMembers, newMemberKeyPair, plainName, signPayload } from '../core/OrgMembers.js';
+import { makeRecoveryCopy, newRecoveryPhrase, openRecoveryCopy } from '../core/OrgRecovery.js';
 import { OrgMemberSide } from '../core/OrgMemberSide.js';
 import { orgRequest } from '../core/OrgPackUpdater.js';
 import { OrgKeepers, encodeKeeperCode, withPublishLock } from '../core/OrgKeepers.js';
@@ -212,6 +213,7 @@ export function mountPublicOrgPackRoutes(app: Application, stateDir: string, now
     const p = readPublished(stateDir);
     if (!p || !p.shareUpdates) { res.status(404).json({ error: 'not-found' }); return; }
     const orgId = p.bundle.record.orgId;
+    if (readJson(markerPath(stateDir, orgId))) { res.status(409).json({ error: 'publish-after-recovery-first' }); return; }
     const keepers = new OrgKeepers(stateDir, orgId, now);
     const body = (req.body ?? {}) as { keeperKey?: unknown };
     if (!admit(req, res, body.keeperKey, (k) => keepers.list().some((x) => x.publicKey === k))) return;
@@ -229,6 +231,28 @@ export function mountPublicOrgPackRoutes(app: Application, stateDir: string, now
     });
     res.status(answer.status).json(answer.body);
   })().catch((err) => failed(res, '/org/pack/propose', err)); });
+}
+
+// ── Recovery (docs/specs/org-recovery-copy.md) ──
+interface RecoveryMarker { copyVersion: number; at: number; stage: 'installing' | 'installed'; source: { kind: 'copy' | 'own' | 'colleague'; label?: string }; orgId: string }
+function markerPath(stateDir: string, orgId: string): string { return path.join(publishedPaths(stateDir).root, `${orgId}.recovered.json`); }
+export function recoveryMarker(stateDir: string): RecoveryMarker | null {
+  const p = readPublished(stateDir);
+  return p ? readJson<RecoveryMarker>(markerPath(stateDir, p.bundle.record.orgId)) : null;
+}
+/** At start, a recovery that stopped mid-install is finished (§B5): the staged files are moved into place. */
+export function finishRecoveryInstall(stateDir: string): void {
+  const root = publishedPaths(stateDir).root;
+  const staging = path.join(root, 'recovery-staging');
+  let names: string[] = [];
+  try { names = fs.readdirSync(staging); } catch { return; } // @silent-fallback-ok — nothing staged
+  const plan = readJson<{ orgId: string }>(path.join(staging, 'plan.json'));
+  if (!plan) return;
+  const m = readJson<RecoveryMarker>(markerPath(stateDir, plan.orgId));
+  if (!m || m.stage !== 'installing') return;
+  for (const n of names) if (n !== 'plan.json') fs.renameSync(path.join(staging, n), path.join(root, n));
+  writeAtomic(markerPath(stateDir, plan.orgId), JSON.stringify({ ...m, stage: 'installed' }));
+  SafeFsExecutor.safeRmSync(staging, { recursive: true, force: true, operation: 'org recovery: staging done' });
 }
 
 function failed(res: Response, where: string, err: unknown): void {
@@ -288,6 +312,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
   router.post('/org/invitations', (req: Request, res: Response) => {
     const p = readPublished(deps.stateDir);
     if (!p) { res.status(409).json({ error: 'nothing-published', detail: 'Publish the policy first.' }); return; }
+    if (recoveryMarker(deps.stateDir)) { res.status(409).json({ error: 'publish-after-recovery-first', detail: 'Publish the recovered policy once before making invitations.' }); return; }
     const label = typeof (req.body as { label?: unknown })?.label === 'string' ? String((req.body as { label: string }).label).slice(0, 80) : null;
     const inv = new OrgMembers(deps.stateDir, p.bundle.record.orgId, now).mintInvite();
     deps.journal?.('org-invitation-made', { orgId: p.bundle.record.orgId, version: p.bundle.record.version, label, invite: inv.id.slice(0, 12) });
@@ -325,8 +350,10 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const p = published(res); if (!p) return;
     const inv = new OrgMembers(deps.stateDir, p.orgId, now).invites();
     res.json({ ...membersView(p.orgId, p.version),
-      invitations: Object.entries(inv).map(([id, e]) => ({ id, createdAt: e.createdAt, uses: e.usedBy.length, maxUses: e.maxUses, revoked: !!e.revokedAt, active: e.active })),
-      keepers: new OrgKeepers(deps.stateDir, p.orgId, now).list().map((k) => ({ name: k.name, publicKey: k.publicKey, addedAt: k.addedAt, code: orgKeyCode(k.publicKey) })) });
+      invitations: Object.entries(inv).map(([id, e]) => ({ id, createdAt: e.createdAt, uses: e.usedBy.length, maxUses: e.maxUses, revoked: !!e.revokedAt, active: e.active, restored: (e as { restored?: boolean }).restored === true })),
+      keepers: new OrgKeepers(deps.stateDir, p.orgId, now).list().map((k) => ({ name: k.name, publicKey: k.publicKey, addedAt: k.addedAt, code: orgKeyCode(k.publicKey) })),
+      restoredKeepers: new OrgKeepers(deps.stateDir, p.orgId, now).restored().map((k) => ({ name: k.name, publicKey: k.publicKey, code: orgKeyCode(k.publicKey) })),
+      recovery: recoveryMarker(deps.stateDir) });
   });
   router.post('/mobile/org/members/remove', (req: Request, res: Response) => {
     if (!deviceOnly(req, res)) return;
@@ -402,6 +429,144 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
         };
       })(),
     });
+  });
+
+  // ── Recovery copy (org-recovery-copy §A–C) ──
+  try { finishRecoveryInstall(deps.stateDir); } catch (err) { console.error('[org] finishing a recovery install failed:', err instanceof Error ? err.message : String(err)); }
+  const phraseTries: number[] = [];
+
+  router.post('/mobile/org/recovery-copy', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = readPublished(deps.stateDir);
+    if (!p) { res.status(409).json({ error: 'nothing-published' }); return; }
+    const orgId = p.bundle.record.orgId;
+    let keyPem: string;
+    try { keyPem = fs.readFileSync(paths.key(orgId), 'utf-8'); } catch { res.status(409).json({ error: 'org-key-elsewhere', detail: 'Make the copy on the computer that publishes this policy.' }); return; }
+    const reg = new OrgMembers(deps.stateDir, orgId, now);
+    const self = new OrgMemberSide(deps.stateDir, orgId, now).state()?.publicKey ?? null;
+    const phrase = newRecoveryPhrase();
+    let file: unknown;
+    try {
+      file = makeRecoveryCopy({ orgId, orgName: p.bundle.record.orgName, fingerprint: orgKeyCode(p.bundle.record.signerPublicKey) },
+        { privateKeyPem: keyPem, bundle: p.bundle, selfMemberKey: self, registries: { members: reg.members(), invites: reg.invites(), keepers: new OrgKeepers(deps.stateDir, orgId, now).list() } }, phrase);
+    } catch {
+      res.status(413).json({ error: 'copy-too-large', detail: 'This organization is too large for a recovery copy.' });
+      return;
+    }
+    deps.journal?.('org-recovery-copy-made', { orgId, version: p.bundle.record.version });
+    res.json({ file, phrase, say: 'Write these six words down and keep them apart from the file.' });
+  });
+
+  router.post('/mobile/org/recover', (req: Request, res: Response) => { void (async () => {
+    if (!deviceOnly(req, res)) return;
+    const b = (req.body ?? {}) as { file?: unknown; phrase?: unknown; retired?: unknown };
+    if (b.retired !== true) { res.status(400).json({ error: 'retirement-required', detail: 'Is your old Mac gone, wiped, or never going to run Instar again? If it might come back, start a new organization instead.' }); return; }
+    if (readPublished(deps.stateDir)) { res.status(409).json({ error: 'already-publishes' }); return; }
+    const t = now();
+    while (phraseTries.length && t - phraseTries[0]! > 3600_000) phraseTries.shift();
+    if (phraseTries.length >= 5) { res.status(429).json({ error: 'too-many-tries' }); return; }
+    const opened = openRecoveryCopy(b.file, typeof b.phrase === 'string' ? b.phrase : '');
+    if (!opened.ok) {
+      if (opened.error === 'wrong-phrase') phraseTries.push(t);
+      res.status(opened.error === 'wrong-phrase' ? 403 : 400).json({ error: opened.error });
+      return;
+    }
+    const c = opened.contents;
+    const header = b.file as { orgId: string; fingerprint: string };
+    const bundle = c.bundle as OrgBundle;
+    let pub: string;
+    try { pub = (crypto.createPublicKey(c.privateKeyPem).export({ format: 'der', type: 'spki' }) as Buffer).toString('base64url'); } catch { res.status(400).json({ error: 'malformed' }); return; } // @silent-fallback-ok — reported as a refusal
+    if (orgKeyCode(pub) !== header.fingerprint || bundle?.record?.signerPublicKey !== pub || bundle.record.orgId !== header.orgId) { res.status(400).json({ error: 'copy-does-not-match' }); return; }
+    const fresh = { pinnedKey: pub, versionFloor: 0, joined: false, joinedVersion: null, joinedHash: null, joinedOrgId: null };
+    const check = validateBundle(bundle, fresh, { skipMembership: true });
+    if (!check.ok) { res.status(400).json({ error: check.reason }); return; }
+    const mine = store().membership();
+    if (mine?.state === 'joined' && mine.orgId !== header.orgId) { res.status(409).json({ error: 'member-of-another-organization' }); return; }
+    // The old address still serves a record signed by this key: refuse (§B3).
+    let note: string | null = null;
+    if (bundle.record.updateOrigin) {
+      const r = await orgRequest(bundle.record.updateOrigin, '/org/pack/current', undefined, deps.net ?? {});
+      const live = r.ok && r.status === 200 ? validateBundle(r.body, fresh, { skipMembership: true }) : null;
+      if (live?.ok) { res.status(409).json({ error: 'old-machine-answers', detail: `Your organization's main agent still answers at ${bundle.record.updateOrigin}. Recover only when it's gone; otherwise start a new organization.` }); return; }
+    } else {
+      note = "There's no address to check, so this relies on your answer that the old Mac is gone.";
+    }
+    // Start from the newest at hand: the copy, or this agent's own applied version (§B4).
+    let start = bundle; let source: RecoveryMarker['source'] = { kind: 'copy' };
+    const own = orgStateForPeer(deps.stateDir).bundle;
+    if (own && own.record.orgId === header.orgId && own.record.version > bundle.record.version) { start = own; source = { kind: 'own' }; }
+    // Staged install, everything at once: files (registries included), then the marker, then into place (§B5),
+    // under the publish lock so a first publish can't land in between.
+    const orgId = header.orgId;
+    const installed = await withPublishLock(deps.stateDir, () => {
+      if (readPublished(deps.stateDir)) return false;
+      const staging = path.join(paths.root, 'recovery-staging');
+      const scratch = path.join(staging, '.build');
+      writeAtomic(path.join(staging, `${orgId}.signing-key`), c.privateKeyPem);
+      writeAtomic(path.join(staging, 'current.json'), JSON.stringify({ bundle: start, shareUpdates: start.record.updateOrigin !== null }));
+      new OrgMembers(scratch, orgId, now).restoreFromCopy(c.registries?.members, c.registries?.invites, c.selfMemberKey);
+      new OrgKeepers(scratch, orgId, now).restoreFromCopy(c.registries?.keepers);
+      const built = path.join(scratch, 'org', 'published');
+      for (const n of fs.readdirSync(built)) fs.renameSync(path.join(built, n), path.join(staging, n));
+      SafeFsExecutor.safeRmSync(scratch, { recursive: true, force: true, operation: 'org recovery: scratch' });
+      writeAtomic(path.join(staging, 'plan.json'), JSON.stringify({ orgId }));
+      writeAtomic(markerPath(deps.stateDir, orgId), JSON.stringify({ copyVersion: bundle.record.version, at: now(), stage: 'installing', source, orgId } satisfies RecoveryMarker));
+      finishRecoveryInstall(deps.stateDir);
+      return true;
+    });
+    if (!installed) { res.status(409).json({ error: 'already-publishes' }); return; }
+    deps.journal?.('org-recovered', { orgId, copyVersion: bundle.record.version, startVersion: start.record.version, source: source.kind });
+    res.json({ ok: true, orgName: start.record.orgName, version: start.record.version, source, note,
+      say: 'Review the policy text, confirm your work agents, turn keepers and links back on, then publish once.' });
+  })().catch((err) => failed(res, '/mobile/org/recover', err)); });
+
+  router.post('/mobile/org/recover-latest', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    withPublishLock(deps.stateDir, () => {
+      const m = recoveryMarker(deps.stateDir);
+      const cur = readPublished(deps.stateDir);
+      if (!m || !cur) { res.status(409).json({ error: 'not-recovering' }); return; }
+      const b = (req.body ?? {}) as { bundle?: unknown; label?: unknown };
+      const v = validateBundle(b.bundle, { pinnedKey: cur.bundle.record.signerPublicKey, versionFloor: 0, joined: false, joinedVersion: null, joinedHash: null, joinedOrgId: null }, { skipMembership: true });
+      if (!v.ok) { res.status(400).json({ error: v.reason }); return; }
+      if (v.bundle.record.orgId !== cur.bundle.record.orgId) { res.status(400).json({ error: 'another-organization' }); return; }
+      if (v.bundle.record.version <= cur.bundle.record.version) { res.json({ ok: true, kept: cur.bundle.record.version }); return; }
+      writeAtomic(paths.current, JSON.stringify({ bundle: v.bundle, shareUpdates: cur.shareUpdates }));
+      const label = plainName(typeof b.label === 'string' && b.label.trim() ? b.label : "a colleague's agent") ?? "a colleague's agent";
+      writeAtomic(markerPath(deps.stateDir, m.orgId), JSON.stringify({ ...m, source: { kind: 'colleague', label } }));
+      res.json({ ok: true, kept: v.bundle.record.version, source: label });
+    }).catch((err) => failed(res, '/mobile/org/recover-latest', err));
+  });
+
+  router.get('/mobile/org/current-bundle', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const b = orgStateForPeer(deps.stateDir).bundle;
+    if (!b) { res.status(404).json({ error: 'not-a-member' }); return; }
+    res.json({ bundle: b });
+  });
+
+  router.post('/mobile/org/recovery/:what/:act', (req: Request, res: Response) => {
+    if (!deviceOnly(req, res)) return;
+    const p = published(res); if (!p) return;
+    const { what, act } = req.params as { what: string; act: string };
+    const body = (req.body ?? {}) as { publicKey?: unknown; inviteId?: unknown; memberKey?: unknown; all?: unknown };
+    if (what === 'keepers' && (act === 'reactivate' || act === 'discard')) {
+      const k = new OrgKeepers(deps.stateDir, p.orgId, now);
+      const key = String(body.publicKey ?? '');
+      const r = act === 'reactivate' ? k.reactivate(key) : (k.discardRestored(key) ? { ok: true as const } : { ok: false as const, error: 'not-found' });
+      res.status(r.ok ? 200 : 409).json(r); return;
+    }
+    if (what === 'invitations' && (act === 'reactivate' || act === 'discard')) {
+      const reg = new OrgMembers(deps.stateDir, p.orgId, now);
+      const id = String(body.inviteId ?? '');
+      const ok = act === 'reactivate' ? reg.reactivateInvite(id) : reg.revokeInvite(id);
+      res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: 'not-found' }); return;
+    }
+    if (what === 'members' && act === 'confirm') {
+      const n = new OrgMembers(deps.stateDir, p.orgId, now).confirm(body.all === true ? 'all' : String(body.memberKey ?? ''));
+      res.json({ ok: true, confirmed: n }); return;
+    }
+    res.status(404).json({ error: 'not-found' });
   });
 
   router.post('/mobile/org/checkin-consent', (req: Request, res: Response) => {
@@ -480,6 +645,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     const shareUpdates = b.shareUpdates !== false;
     if (b.readBackConfirmed !== true) { res.status(400).json({ error: 'read-back-required', detail: 'Read the policy back to the person before publishing.' }); return; }
     const prev = readPublished(deps.stateDir);
+    const recovered = recoveryMarker(deps.stateDir);
     // A draft with no base was made before anything was published (or before this check existed): once
     // something is published it is stale by definition, so it is shown again rather than overwriting.
     if (prev && (!draft.base || draft.base.version !== prev.bundle.record.version || draft.base.policySha256 !== prev.bundle.record.policySha256)) {
@@ -502,10 +668,15 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       keyPem = kp.privateKeyPem;
       publicKey = kp.publicKey;
     }
+    // After a recovery (org-recovery-copy §B7): +1000, and the found record's settings unless changed on screen.
+    const pr = prev?.bundle.record;
+    const share = recovered && b.shareUpdates === undefined && prev ? prev.shareUpdates : shareUpdates;
     const record: OrgRecord = signRecord({
-      v: 1, orgId, orgName: draft.orgName, version: (prev?.bundle.record.version ?? 0) + 1, policySha256: sha256Hex(draft.policy),
-      maxIndependence, publishedAt: new Date(now()).toISOString(), publishedBy: deps.ownerName(), keepers,
-      updateOrigin: shareUpdates ? deps.updateOrigin() : null, signerPublicKey: publicKey,
+      v: 1, orgId, orgName: draft.orgName, version: (pr?.version ?? 0) + (recovered ? 1000 : 1), policySha256: sha256Hex(draft.policy),
+      maxIndependence: recovered && typeof b.maxIndependence !== 'string' && pr ? pr.maxIndependence : maxIndependence,
+      publishedAt: new Date(now()).toISOString(), publishedBy: deps.ownerName(),
+      keepers: recovered && !Array.isArray(b.keepers) && pr ? pr.keepers : keepers,
+      updateOrigin: share ? deps.updateOrigin() : null, signerPublicKey: publicKey,
     }, keyPem);
     const bundle: OrgBundle = { record, policy: draft.policy };
     // The publisher follows its own policy first; only a pack that applies here is made public.
@@ -515,7 +686,8 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
       res.status(409).json({ error: applied.reason });
       return;
     }
-    writeAtomic(paths.current, JSON.stringify({ bundle, shareUpdates }));
+    writeAtomic(paths.current, JSON.stringify({ bundle, shareUpdates: share }));
+    if (recovered) SafeFsExecutor.safeUnlinkSync(markerPath(deps.stateDir, orgId), { operation: 'org recovery: first publish done' });
     // The publisher's own agent is a member without an invitation (members-and-keepers §A).
     const side = new OrgMemberSide(deps.stateDir, orgId, now).onJoin({ afterLeave: false, consent: true });
     new OrgMembers(deps.stateDir, orgId, now).registerSelf(side.publicKey, deps.agentName?.() ?? '', deps.ownerName(), record.version);

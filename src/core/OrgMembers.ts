@@ -47,12 +47,14 @@ export interface MemberEntry {
   checkins: number;
   leftAt?: number;
   removal?: { id: string; at: number };
+  /** Restored from a recovery copy and not yet confirmed (org-recovery-copy §B5): answers leave out `removal`. */
+  unconfirmed?: boolean;
 }
 
 export interface InviteEntry { createdAt: number; maxUses: number; usedBy: string[]; revokedAt?: number; active: boolean }
 
 export type CheckinAnswer =
-  | { status: 200; body: { ok: true; enrolled: boolean; state: MemberState | null; removal: { id: string; at: number } | null } }
+  | { status: 200; body: { ok: true; enrolled: boolean; state: MemberState | null; removal?: { id: string; at: number } | null } }
   | { status: 400 | 403 | 409; body: { error: string } };
 
 /** One plain line of at most 120 characters, no control characters (spec §A). */
@@ -163,8 +165,9 @@ export class OrgMembers {
     const m = this.members();
     const inv = this.invites();
     const e = m[b.memberKey];
+    // An unconfirmed restored entry's answers carry no `removal`, so they neither raise nor clear a notice.
     const answer = (entry: MemberEntry | null, enrolled: boolean): CheckinAnswer =>
-      ({ status: 200, body: { ok: true, enrolled, state: entry?.state ?? null, removal: entry?.removal ?? null } });
+      ({ status: 200, body: { ok: true, enrolled, state: entry?.state ?? null, ...(entry?.unconfirmed ? {} : { removal: entry?.removal ?? null }) } });
 
     if (!e) {
       if (b.state === 'left') return answer(null, false);
@@ -182,7 +185,7 @@ export class OrgMembers {
     if (b.at <= e.lastAt) return answer(e, true); // a replay changes nothing
     e.agentName = agentName; e.personName = personName; e.appliedVersion = b.appliedVersion;
     e.lastSeen = t; e.lastAt = b.at; e.checkins += 1;
-    if (e.state === 'joined' && b.state === 'left') { e.state = 'left'; e.leftAt = t; }
+    if (e.state === 'joined' && b.state === 'left') { e.state = 'left'; e.leftAt = t; delete e.unconfirmed; }
     else if (e.state === 'removed' && b.state === 'left') { e.leftAt = t; }
     else if (e.state === 'left' && b.rejoin === true) {
       const tokenId = this.tokenUsable(b.inviteToken, b.memberKey, inv);
@@ -206,6 +209,7 @@ export class OrgMembers {
     if (!e) return { ok: false, error: 'not-found' };
     if (e.state !== 'removed' && Object.values(m).filter((x) => x.state === 'removed').length >= REMOVED_KEEP_MAX) return { ok: false, error: 'too-many-removed' };
     e.state = 'removed';
+    delete e.unconfirmed;
     e.removal = { id: crypto.randomBytes(8).toString('hex'), at: this.now() };
     this.saveMembers(m);
     return { ok: true, removal: e.removal };
@@ -218,19 +222,48 @@ export class OrgMembers {
     if (e.state !== 'removed') return { ok: false, error: 'not-removed' };
     this.compact(m);
     if (this.joinedCount(m) >= MEMBERS_JOINED_MAX) return { ok: false, error: 'member-limit' };
-    e.state = 'joined'; delete e.removal; delete e.leftAt;
+    e.state = 'joined'; delete e.removal; delete e.leftAt; delete e.unconfirmed;
     this.saveMembers(m);
     return { ok: true };
   }
 
+  /** "Confirm" after a recovery: one member, or all (org-recovery-copy §B5). */
+  confirm(memberKey: string | 'all'): number {
+    const m = this.members();
+    let n = 0;
+    for (const [k, e] of Object.entries(m)) if (e.unconfirmed && (memberKey === 'all' || k === memberKey)) { delete e.unconfirmed; n++; }
+    if (n) this.saveMembers(m);
+    return n;
+  }
+
+  /** Recovery: restore the copy's registries (joined entries unconfirmed; links inactive) and retire the old publisher. */
+  restoreFromCopy(members: unknown, invites: unknown, oldSelfKey: string | null): void {
+    const m = (members && typeof members === 'object' ? members : {}) as Record<string, MemberEntry>;
+    for (const e of Object.values(m)) if (e && e.state === 'joined') e.unconfirmed = true;
+    if (oldSelfKey && m[oldSelfKey]) { m[oldSelfKey]!.state = 'left'; m[oldSelfKey]!.leftAt = this.now(); delete m[oldSelfKey]!.unconfirmed; }
+    const inv = (invites && typeof invites === 'object' ? invites : {}) as Record<string, InviteEntry & { restored?: boolean }>;
+    for (const e of Object.values(inv)) { e.active = false; e.restored = true; }
+    this.saveMembers(m);
+    this.saveInvites(inv);
+  }
+
+  reactivateInvite(id: string): boolean {
+    const inv = this.invites() as Record<string, InviteEntry & { restored?: boolean }>;
+    const e = inv[id];
+    if (!e || e.revokedAt || !e.restored) return false;
+    e.active = true; delete e.restored;
+    this.saveInvites(inv);
+    return true;
+  }
+
   /** The Work agents page (spec §B). Names are what each agent reports. */
-  list(currentVersion: number): Array<{ memberKey: string; agentName: string; personName: string; appliedVersion: number; behind: boolean; quiet: boolean; state: MemberState; hasLeft: boolean; lastSeen: number }> {
+  list(currentVersion: number): Array<{ memberKey: string; agentName: string; personName: string; appliedVersion: number; behind: boolean; quiet: boolean; state: MemberState; hasLeft: boolean; lastSeen: number; unconfirmed: boolean }> {
     const t = this.now();
     return Object.entries(this.members())
       .map(([memberKey, e]) => ({
         memberKey, agentName: e.agentName, personName: e.personName, appliedVersion: e.appliedVersion,
         behind: e.state === 'joined' && e.appliedVersion < currentVersion, quiet: e.state === 'joined' && t - e.lastSeen > QUIET_MS,
-        state: e.state, hasLeft: e.state === 'removed' && e.leftAt !== undefined, lastSeen: e.lastSeen,
+        state: e.state, hasLeft: e.state === 'removed' && e.leftAt !== undefined, lastSeen: e.lastSeen, unconfirmed: e.unconfirmed === true,
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }
