@@ -27,6 +27,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../../core/hostSemaphoreCore.js';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import type { EnrolmentRecord, EnrolmentStatus, ReadinessPlatform } from './enrolmentReadiness.js';
 import { sudoersLines } from './RestartActuator.js';
 
@@ -153,6 +154,37 @@ export class EnrolmentController {
     if (record.mode === 'proving') return 'Enrolled. The first restart is a proving one; I\'ll tell you before it happens and when it\'s back.';
     if (!rule.ok && rule.reason === 'needs-admin') return 'Enrolled, but I need an administrator step on this machine before I can restart it. I\'ll remind you to restart it instead for now.';
     return 'Enrolled. This machine can\'t come back by itself after a restart, so I\'ll remind you to restart it instead.';
+  }
+
+  /**
+   * Off (Part F, the card's Remove): this machine is no longer signed up. The record is kept
+   * aside as `enrolment.removed.json` (never deleted), the offers for this machine are cleared
+   * so the owner can sign it up again from the page, and the reboot rule is taken out where
+   * passwordless sudo works. Without the record every restart path refuses: Restart now at
+   * offer and tap, and a countdown already running at its in-lock check. Safe direction only.
+   */
+  async remove(by: string): Promise<{ ok: true; wasEnrolled: boolean; ruleRemoved: boolean; reason?: string }> {
+    const machineId = this.deps.machineId();
+    let record: unknown = null;
+    try { record = JSON.parse(fs.readFileSync(this.recordPath, 'utf-8')); } catch { record = null; } // @silent-fallback-ok — no record: not enrolled
+    if (record !== null) {
+      this.writeJson(path.join(this.deps.hostDir, 'enrolment.removed.json'), { record, removedAt: this.now(), by });
+      SafeFsExecutor.safeUnlinkSync(this.recordPath, { operation: 'EnrolmentController.remove' });
+    }
+    this.writeJson(this.offersPath, this.readOffers().filter((o) => o.machineId !== machineId));
+    const rule = await this.removeRule();
+    this.deps.log?.(`machine care turned off by ${by}: ${record !== null ? 'enrolment removed' : 'was not enrolled'}, rule ${rule.ok ? 'removed' : `left (${rule.reason})`}`);
+    return { ok: true, wasEnrolled: record !== null, ruleRemoved: rule.ok, ...(rule.ok ? {} : { reason: rule.reason }) };
+  }
+
+  /** Takes the reboot rule out in one root step where passwordless sudo works; nothing else. */
+  async removeRule(): Promise<{ ok: boolean; reason?: string }> {
+    if (this.deps.platform !== 'darwin' && this.deps.platform !== 'linux') return { ok: true };
+    const probe = await this.deps.run('sudo', ['-n', 'true']);
+    if (probe.code !== 0) return { ok: false, reason: 'needs-admin' };
+    const res = await this.deps.run('sudo', ['-n', 'rm', '-f', SUDOERS_RULE_PATH]);
+    await this.deps.run('sudo', ['-k']);
+    return res.code === 0 ? { ok: true } : { ok: false, reason: 'remove-failed' };
   }
 
   /**

@@ -16103,6 +16103,19 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/machine-maintenance/unskip', machineControl((r) => r.unskip('dashboard')));
   router.post('/machine-maintenance/window', machineControl((r, body) => r.setWindow('dashboard', body.reset === true ? null : body.window)));
 
+  // Off (Part F, the card's Remove): this machine is no longer signed up. Safe direction only:
+  // without the enrolment record every restart path refuses, a countdown included.
+  router.post('/machine-maintenance/remove', async (req, res) => {
+    if (!ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))) {
+      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+      return;
+    }
+    const c = getActiveEnrolmentController();
+    if (!c) { res.status(503).json({ error: 'machine maintenance enrolment not enabled on this agent' }); return; }
+    try { res.json(await c.remove('dashboard')); }
+    catch (err) { res.status(500).json({ error: 'remove-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
+
   router.get('/machine-maintenance', async (req, res) => {
     if (req.query.scope === 'pool') {
       res.json(await maintenancePoolView('status', async () => {
