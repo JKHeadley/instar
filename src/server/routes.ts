@@ -16299,6 +16299,18 @@ export function createRoutes(ctx: RouteContext): Router {
   function checkMandatePin(req: import('express').Request, res: import('express').Response, pinOverride?: string): boolean {
     return requireMandatePin(req, res, { pinOverride });
   }
+  // The operator-PIN check for a route reachable WITHOUT the bearer token. Such a route
+  // holds the unlock route's limits too: refusal on an insecure connection, and one cap
+  // across every source address (behind a tunnel every caller shares one IP bucket).
+  function checkPublicPin(req: import('express').Request, res: import('express').Response): boolean {
+    if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
+    if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) { res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return false; }
+    const ok = checkMandatePin(req, res);
+    // Only a wrong PIN counts. An empty one guesses nothing, and charging it would let one address lock out unlock.
+    const { pin } = (req.body ?? {}) as { pin?: unknown };
+    if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
+    return ok;
+  }
 
   // Evaluate an action against a mandate (the enforcement consumption point).
   // Every call — allow AND deny — lands in the hash-chained audit.
@@ -17103,6 +17115,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pin: document.getElementById('mcpPin').value })
     });
+    if ((r.headers.get('content-type') || '').indexOf('application/json') !== -1) {
+      // A refused PIN comes back as JSON: show it in plain words and let the operator retry.
+      var j = {}; try { j = await r.json(); } catch (_) { j = {}; }
+      var msg = j.error === 'insecure-connection' ? 'PIN entry is not allowed on this connection. Open the link through your agent\'s secure address and try again.'
+        : r.status === 429 ? 'Too many PIN attempts. Wait a few minutes and try again.'
+        : j.error === 'Incorrect PIN' ? 'That PIN is not right. Please try again.'
+        : (j.error || 'The approval did not go through. Please try again.');
+      btn.disabled = false; btn.textContent = 'Approve';
+      alert(msg);
+      return;
+    }
     var html = await r.text();
     document.open(); document.write(html); document.close();
   } catch (err) {
@@ -17118,8 +17141,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     void (async (): Promise<void> => {
       const svc = ctx.dynamicMcpService;
       if (!svc || !svc.enabled()) { res.status(503).type('html').send('<p>Not enabled.</p>'); return; }
-      if (!checkMandatePin(req, res)) return; // dashboard-PIN gate (rate-limited); response already sent on failure
-      const result = await svc.approveByRequestId(String(req.params.requestId));
+      const requestId = String(req.params.requestId);
+      // The request must exist BEFORE any PIN is checked: this route is reachable without
+      // the bearer, so a PIN is only ever tested against a live, operator-visible request.
+      if (!svc.peekApproval(requestId)) { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
+      if (!checkPublicPin(req, res)) return; // public-route PIN gate (insecure-connection refusal, global cap); response already sent on failure
+      const result = await svc.approveByRequestId(requestId);
       if (result.status === 'unknown-request') { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
       const ok = result.status === 'applied';
       res.status(ok ? 200 : 409).type('html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:system-ui,sans-serif;max-width:30rem;margin:2rem auto;padding:0 1rem}</style></head><body><h2>${ok ? '✅ Approved' : '⚠️ Not applied'}</h2><p>${ok ? 'The tool change was approved and is being applied — the session will restart briefly and continue.' : `The change was not applied (status: ${mcpHtmlEscape(result.status)}). You can close this page.`}</p></body></html>`);
@@ -17851,21 +17878,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     checkPin: (req, res) => checkMandatePin(req, res),
     // Reachable with no bearer token, so it holds the unlock route's limits too: the same refusal on
     // an insecure connection, and the same cap across every source address.
-    checkConfirmPin: (req, res) => {
-      if (ctx.pinEntryRefusedHere?.(req)) {
-        res.status(403).json({ error: 'insecure-connection' });
-        return false;
-      }
-      if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
-        return false;
-      }
-      const ok = checkMandatePin(req, res);
-      // Only a wrong PIN counts. An empty one guesses nothing, and charging it would let one address lock out unlock.
-      const { pin } = (req.body ?? {}) as { pin?: unknown };
-      if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
-      return ok;
-    },
+    checkConfirmPin: (req, res) => checkPublicPin(req, res),
     owner: () => { const uid = callbackApprover(); return uid === undefined ? null : String(uid); },
     recordApproval: (subject, evidenceRef) => {
       if (!ctx.approvalLedger) throw new Error('approval ledger unavailable');
@@ -17893,14 +17906,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // A one-off has one text, so anything but the owner's own conversation counts as other readers.
     topicHasOtherReaders: (topicId) => ['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? 'none'),
     hasGrant: () => { const l = ctx.recommendedServicesLedger; return !!l && l.activeGrant('email', l.machineId()) !== null; },
-    checkConfirmPin: (req, res) => {
-      if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
-      if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) { res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return false; }
-      const ok = checkMandatePin(req, res);
-      const { pin } = (req.body ?? {}) as { pin?: unknown };
-      if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
-      return ok;
-    },
+    checkConfirmPin: (req, res) => checkPublicPin(req, res),
     holdsLease: () => { try { return ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { return false; } }, // @silent-fallback-ok — an unreadable lease reads as not held: forward, never send twice
     forwardToHolder: (input) => (ctx.emailForwardToHolder ? ctx.emailForwardToHolder(input) : Promise.resolve({ ok: false as const, reason: 'holder-unreachable' })),
   });
