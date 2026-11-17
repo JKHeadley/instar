@@ -1444,6 +1444,15 @@ export class IntelligenceRouter implements IntelligenceProvider {
       }
     }
 
+    // PINNED framework (org-never-actions §B; EXO 3.0 re-audit): the caller's content may only reach this
+    // framework's provider. No routing, no degrade, no swap: unavailable is an error the caller fails closed on.
+    const pin = options?.attribution?.pinFramework;
+    if (pin) {
+      const pinned = this.resolveProvider(pin);
+      if (!pinned) throw new Error(`IntelligenceRouter: pinned framework '${pin}' is unavailable for '${component ?? '(none)'}'`);
+      return this.runAttempt(pinned, prompt, decision);
+    }
+
     // ENFORCE 'no-route': raise the ordinary non-gating error the caller already catches into
     // its heuristic (tracked never-silent). NEVER legacy category routing (harness-door re-open).
     if (enforcedNoRoute) {

@@ -44,6 +44,18 @@ process.stdin.on('end', async () => {
     return out({ additionalContext: "Your organization's policy check couldn't read this action. If it might break a rule, ask your person first." });
   }
   if (!cfgOk) note('config unreadable; asking the server on the default port');
+  // In block mode the agent may not change what the check reads: its organization files and config
+  // (EXO 3.0 re-audit). Only the person, through the app and the server, changes these.
+  if (block) {
+    const ti0 = input.tool_input || {};
+    const guarded = (p) => { if (typeof p !== 'string') return false; const abs = p.startsWith('/') ? p : (input.cwd || dir) + '/' + p; return abs.includes('/.instar/org/') || abs.endsWith('/.instar/org') || abs.endsWith('/.instar/config.json'); };
+    const writesGuarded = /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(input.tool_name || '') && (guarded(ti0.file_path) || guarded(ti0.notebook_path));
+    const bashTouches = input.tool_name === 'Bash' && typeof ti0.command === 'string' && (ti0.command.includes('.instar/org') || ti0.command.includes('.instar/config.json'));
+    if (writesGuarded || bashTouches) {
+      note('guarded org file write refused');
+      return out({ permissionDecision: 'deny', permissionDecisionReason: "Your organization's policy files can't be changed by me while its rules are enforced. Your person can manage the organization in the Instar app." });
+    }
+  }
   const ti = input.tool_input || {};
   const body = JSON.stringify({
     sessionId: input.session_id || '', toolName: input.tool_name || '', toolInput: ti,

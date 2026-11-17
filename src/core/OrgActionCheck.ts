@@ -348,6 +348,10 @@ export interface CheckDecision {
   allowedOnce?: boolean;
 }
 
+interface PendingCheck { checkId: string; createdAt: number; envelope: string | null; kind: string; operation: string; target: string; sample: string; complete: boolean; rule: string | null }
+/** Per state directory: pending checks and approvals held in the server process only. */
+const MEMORY = new Map<string, { pending: Map<string, PendingCheck>; allowed: Map<string, number> }>();
+
 export class OrgActionChecker {
   private readonly root: string;
   constructor(private readonly stateDir: string, private readonly now: () => number = Date.now) {
@@ -389,49 +393,54 @@ export class OrgActionChecker {
   }
 
   /** A held or blocked action, kept 30 minutes for the app's "Allow this once?" card (spec §C). */
+  // Pending checks and allow-once approvals live only in this server's memory (EXO 3.0 re-audit): no file the
+  // agent can write grants an approval or changes what the person's card shows. They last ten minutes and do
+  // not survive a restart (the agent simply asks again).
+  private mem(): { pending: Map<string, PendingCheck>; allowed: Map<string, number> } {
+    let m = MEMORY.get(this.stateDir);
+    if (!m) { m = { pending: new Map(), allowed: new Map() }; MEMORY.set(this.stateDir, m); }
+    return m;
+  }
+
   registerPending(e: Evidence, policyHash: string, rule: string | undefined): string {
     const checkId = crypto.randomUUID();
-    writeAtomic(path.join(this.root, 'pending-checks', `${checkId}.json`), JSON.stringify({
+    this.mem().pending.set(checkId, {
       checkId, createdAt: this.now(), envelope: OrgActionChecker.envelopeHash(e, policyHash),
       kind: e.kind, operation: e.operation, target: e.target, sample: e.sample, complete: e.complete, rule: rule ?? null,
-    }));
+    });
     return checkId;
   }
 
   listPending(): Array<Record<string, unknown>> {
-    const dir = path.join(this.root, 'pending-checks');
-    let names: string[] = [];
-    try { names = fs.readdirSync(dir).filter((n) => /^[0-9a-f-]{36}\.json$/.test(n)); } catch { return []; } // @silent-fallback-ok — none pending
+    const { pending } = this.mem();
     const out: Array<Record<string, unknown>> = [];
-    for (const n of names) {
-      const p = readJson<Record<string, unknown> & { createdAt: number }>(path.join(dir, n));
-      if (!p || this.now() - p.createdAt > PENDING_MS) { try { SafeFsExecutor.safeUnlinkSync(path.join(dir, n), { operation: 'org action check: expired pending check' }); } catch { /* @silent-fallback-ok — already gone */ } continue; }
-      out.push(p);
+    for (const [id, p] of pending) {
+      if (this.now() - p.createdAt > PENDING_MS) { pending.delete(id); continue; }
+      const { envelope: _e, ...shown } = p;
+      out.push(shown);
     }
     return out;
   }
 
   /** The person's tap: an allowed-once approval for one pending check (only complete evidence). */
   allowOnce(checkId: string): 'allowed' | 'not-found' | 'incomplete' {
-    if (!/^[0-9a-f-]{36}$/.test(checkId)) return 'not-found';
-    const file = path.join(this.root, 'pending-checks', `${checkId}.json`);
-    const p = readJson<{ envelope: string | null; createdAt: number; complete: boolean }>(file);
+    const { pending, allowed } = this.mem();
+    const p = pending.get(checkId);
     if (!p || this.now() - p.createdAt > PENDING_MS) return 'not-found';
     if (!p.complete || !p.envelope) return 'incomplete';
-    writeAtomic(path.join(this.root, 'allowed-once', `${p.envelope}.json`), JSON.stringify({ checkId, at: this.now() }));
-    try { SafeFsExecutor.safeUnlinkSync(file, { operation: 'org action check: pending check allowed once' }); } catch { /* @silent-fallback-ok — already gone */ }
+    allowed.set(p.envelope, this.now());
+    pending.delete(checkId);
     return 'allowed';
   }
 
-  /** Consumes an approval for exactly this envelope, atomically (rename, then delete). */
+  /** Consumes an approval for exactly this envelope, once. */
   consumeAllowOnce(envelope: string | null): boolean {
     if (!envelope) return false;
-    const file = path.join(this.root, 'allowed-once', `${envelope}.json`);
-    const used = `${file}.used-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    try { fs.renameSync(file, used); } catch { return false; } // @silent-fallback-ok — no approval for this envelope
-    const a = readJson<{ at: number }>(used);
-    try { SafeFsExecutor.safeUnlinkSync(used, { operation: 'org action check: approval consumed' }); } catch { /* @silent-fallback-ok — already gone */ }
-    return !!a && this.now() - a.at < PENDING_MS;
+    const { allowed } = this.mem();
+    const at = allowed.get(envelope);
+    if (at === undefined) return false;
+    allowed.delete(envelope);
+    return this.now() - at < PENDING_MS;
   }
 
   /**
@@ -440,7 +449,7 @@ export class OrgActionChecker {
    */
   async judge(args: {
     intent: ParsedOrgIntent; policyHash: string; evidence: Evidence; userRequest: string;
-    provider: IntelligenceProvider | null; providerIsOwn: boolean; dailyCents: number; remainingMs: number; mode?: 'observe' | 'block';
+    provider: IntelligenceProvider | null; providerIsOwn: boolean; dailyCents: number; remainingMs: number; mode?: 'observe' | 'block'; framework?: string;
   }): Promise<{ verdict: OrgActionVerdict; keywordSignal?: string; cached: boolean }> {
     const never = args.intent.constraints.map((c) => c.text);
     const e = args.evidence;
@@ -468,12 +477,15 @@ export class OrgActionChecker {
     const timeoutMs = Math.max(0, args.remainingMs - 500);
     if (timeoutMs < 500) return { verdict: { verdict: 'unknown', reason: 'out of time' }, cached: false };
     let usedCents: number | null = null;
+    let timedOut = false;
     const verdict = await Promise.race([
       judgeOrgAction({ never, kind: e.kind, target: `${e.operation} ${e.target}`, evidence: (keywordSignal ? `[keyword hint: "${keywordSignal}"]\n` : '') + e.sample, userRequest: args.userRequest }, args.provider, {
         timeoutMs,
-        onUsage: (u) => { usedCents = u.inputTokens * CENTS_PER_INPUT_TOKEN + u.outputTokens * CENTS_PER_OUTPUT_TOKEN; },
+        // Charged when it arrives, even after a timeout (the late call still cost something).
+        onUsage: (u) => { usedCents = u.inputTokens * CENTS_PER_INPUT_TOKEN + u.outputTokens * CENTS_PER_OUTPUT_TOKEN; if (timedOut) this.addSpend(usedCents); },
+        ...(args.framework ? { pinFramework: args.framework } : {}),
       }),
-      new Promise<OrgActionVerdict>((r) => setTimeout(() => r({ verdict: 'unknown', reason: 'judge timed out' }), timeoutMs).unref?.()),
+      new Promise<OrgActionVerdict>((r) => setTimeout(() => { timedOut = true; r({ verdict: 'unknown', reason: 'judge timed out' }); }, timeoutMs).unref?.()),
     ]);
     // The cost the provider reported, or the fixed estimate when it reported nothing.
     this.addSpend(usedCents ?? FALLBACK_CALL_CENTS);
@@ -544,7 +556,7 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
     const framework = ctx.config.sessions?.framework ?? CLAUDE_CODE_FRAMEWORK;
     const providerIsOwn = !!ctx.provider && (ctx.provider.frameworkId === undefined || ctx.provider.frameworkId === framework);
     const j = await c.judge({
-      intent, policyHash: rec.policySha256, evidence, userRequest: extra.userRequest, provider: ctx.provider, providerIsOwn,
+      intent, policyHash: rec.policySha256, evidence, userRequest: extra.userRequest, provider: ctx.provider, providerIsOwn, framework,
       dailyCents: ctx.config.orgPolicy?.actions?.judgeDailyCents ?? DEFAULT_DAILY_CENTS, remainingMs: extra.deadlineAt - now(), mode,
     });
     const v = j.verdict;

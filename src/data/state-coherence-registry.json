@@ -2861,7 +2861,7 @@
     },
     {
       "category": "org-action-checks",
-      "description": "Organization never-rules checks for a joined agent (org-never-actions): one record per judgment (masked samples only), hook failures, message notes for the next session start, the judge's daily spend, a ten-minute verdict cache, and pending allow-once checks. Per machine, since each machine checks its own sessions' actions.",
+      "description": "Organization never-rules checks for a joined agent (org-never-actions): one record per judgment (masked samples only), hook failures, message notes for the next session start, the judge's daily spend, a ten-minute verdict cache, (pending allow-once checks are held in server memory only). Per machine, since each machine checks its own sessions' actions.",
       "scope": "machine-local",
       "freshness": "real-time",
       "conflictShape": "append-only",
@@ -2871,7 +2871,6 @@
         "org/message-notes.jsonl",
         "org/judge-spend.json",
         "org/check-cache.json",
-        "org/pending-checks/*",
         "org/budget-notice-day"
       ],
       "grandfathered": false,

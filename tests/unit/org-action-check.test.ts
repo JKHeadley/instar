@@ -269,6 +269,16 @@ describe('the hook script', () => {
     silent.close();
   }, 40000);
 
+  it('block mode refuses agent writes to the organization files and config, before asking the server', async () => {
+    const project = tmp();
+    fs.mkdirSync(path.join(project, '.instar', 'org'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.instar', 'config.json'), JSON.stringify({ port: 1, orgPolicy: { actions: { mode: 'block', blockingApproved: true } } }));
+    const w = JSON.parse((await runHook(project, { port: 1 }, { tool_name: 'Write', tool_input: { file_path: path.join(project, '.instar', 'org', 'membership.json'), content: '{}' } })).stdout).hookSpecificOutput;
+    expect(w.permissionDecision).toBe('deny');
+    const b = JSON.parse((await runHook(project, { port: 1 }, { tool_name: 'Bash', tool_input: { command: 'echo {} > .instar/config.json' } })).stdout).hookSpecificOutput;
+    expect(b.permissionDecision).toBe('deny');
+  }, 20000);
+
   it('the wrapper exits without starting Node when the agent has not joined', () => {
     const project = tmp();
     const w = path.join(project, 'w.sh');

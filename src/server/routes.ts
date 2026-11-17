@@ -4761,6 +4761,18 @@ export function createRoutes(ctx: RouteContext): Router {
     // ── Fold hold (context-budget-layered-summaries §10) — first, on every channel ──
     const foldHeld = foldHoldRefusal(channel, channel === 'telegram' ? options.topicId : options.attributionConversation);
     if (foldHeld) return foldHeld;
+    // ── Organization never rules, block mode (org-never-actions §C; EXO 3.0 re-audit) ──
+    // Here, in the one evaluator every send path shares (direct, proxy-flagged, relayed, automated), so no
+    // caller flag can skip it. Observe mode runs after sending, in checkOutboundMessage.
+    {
+      const oc = await import('../core/OrgActionCheck.js');
+      if (oc.orgCheckMode(ctx.config as never) === 'block') {
+        const conv = options.attributionConversation ?? (options.topicId !== undefined ? `topic ${options.topicId}` : channel);
+        const r = await oc.runOrgCheck({ stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: oc.orgDecisionJournal(ctx.config.stateDir) },
+          oc.messageEvidence(text, channel, conv), { userRequest: '', deadlineAt: Date.now() + 6000 });
+        if (r.decision === 'deny') return { ok: false, status: 422, reason: 'org-policy', body: { error: 'org-policy', reason: r.reason, checkId: r.checkId } };
+      }
+    }
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
     // A clickable localhost/loopback link must never reach a user — the user
     // is almost never on the machine this server runs on. This is a
@@ -5517,14 +5529,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const orgCheck = await import('../core/OrgActionCheck.js');
     const orgConv = options.attributionConversation ?? (options.topicId !== undefined ? `topic ${options.topicId}` : channel);
     const orgCtx = { stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: orgCheck.orgDecisionJournal(ctx.config.stateDir) };
+    // Block mode is checked inside evaluateOutbound (every send path); here only observe, after sending.
     const orgBlock = orgCheck.orgCheckMode(ctx.config as never) === 'block';
-    if (orgBlock) {
-      const r = await orgCheck.runOrgCheck(orgCtx, orgCheck.messageEvidence(text, channel, orgConv), { userRequest: '', deadlineAt: Date.now() + 6000 });
-      if (r.decision === 'deny') {
-        res.status(422).json({ error: 'org-policy', reason: r.reason, checkId: r.checkId });
-        return true;
-      }
-    }
     void observeSelfViolation(text, options.topicId).catch(() => {
       /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
     });
@@ -21781,6 +21787,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // credential wall. (A willRelay hand-off is walled by the lease holder's
     // own receive path, which re-enters the full authority.)
     if ((isProxy || isSystemTemplate) && refuseIfCredential(text, res)) return;
+    // Nor the organization's never rules in block mode: a caller flag can't skip them (EXO 3.0 re-audit).
+    if (isProxy || isSystemTemplate) {
+      const oc = await import('../core/OrgActionCheck.js');
+      if (oc.orgCheckMode(ctx.config as never) === 'block') {
+        const r = await oc.runOrgCheck({ stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: oc.orgDecisionJournal(ctx.config.stateDir) },
+          oc.messageEvidence(text, 'telegram', `topic ${topicId}`), { userRequest: '', deadlineAt: Date.now() + 6000 });
+        if (r.decision === 'deny') { res.status(422).json({ error: 'org-policy', reason: r.reason, checkId: r.checkId }); return; }
+      }
+    }
     const gateLocally = async (): Promise<boolean> => {
       if (await checkOutboundMessage(text, 'telegram', res, {
         topicId,

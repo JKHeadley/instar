@@ -59,6 +59,6 @@ describe('org-never-actions is alive', () => {
     const pre = JSON.stringify(settings.hooks.PreToolUse);
     expect(pre).toContain('org-policy-gate');
     const entries = settings.hooks.PreToolUse.filter((e: { hooks?: unknown[] }) => JSON.stringify(e.hooks).includes('org-policy-gate'));
-    expect(entries.map((e: { matcher: string }) => e.matcher).sort()).toEqual(['Bash', 'mcp__.*']);
+    expect(entries.map((e: { matcher: string }) => e.matcher).sort()).toEqual(['Bash', 'Write|Edit|MultiEdit|NotebookEdit', 'mcp__.*']);
   });
 });

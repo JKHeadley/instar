@@ -47,6 +47,7 @@ describe('block-mode conditions', () => {
     } };
     await runOrgCheck({ stateDir: dir, config: {} as never, provider: p }, messageEvidence('Lunch at noon', 'app', 'c1'), { userRequest: '', deadlineAt: Date.now() + 5000 });
     expect((opts.attribution as { noFailureSwap?: boolean }).noFailureSwap).toBe(true);
+    expect((opts.attribution as { pinFramework?: string }).pinFramework).toBe('claude-code');
     expect(new OrgActionChecker(dir).spentToday()).toBeCloseTo(1000 * 0.0001 + 100 * 0.0005, 6);
   });
 

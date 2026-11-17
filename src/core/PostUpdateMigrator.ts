@@ -18384,7 +18384,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
 
     // Organization never rules check (org-never-actions §A): its own entries, found by command content,
     // not by matcher (the external-operation gate already owns an mcp__.* entry).
-    for (const matcher of ['Bash', 'mcp__.*']) {
+    for (const matcher of ['Bash', 'mcp__.*', 'Write|Edit|MultiEdit|NotebookEdit']) {
       const has = preToolUse.some(e => e.matcher === matcher && JSON.stringify(e.hooks ?? []).includes('org-policy-gate'));
       if (!has) {
         preToolUse.push({

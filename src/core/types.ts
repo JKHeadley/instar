@@ -1325,6 +1325,11 @@ export interface IntelligenceOptions {
      */
     noFailureSwap?: boolean;
     /**
+     * Run only on this framework's provider (no routing, degrade or swap); an error if it's unavailable.
+     * The organization policy judge pins the agent's own session framework (org-never-actions §B).
+     */
+    pinFramework?: import('./intelligenceProviderFactory.js').IntelligenceFramework;
+    /**
      * DEFERRABLE marker (Resilient Degradation Ladder, docs/specs/resilient-degradation-ladder.md).
      * When true, this is BACKGROUND work the caller is NOT synchronously awaiting (a sentinel /
      * reflector / sweep), so the degradation ladder may slow it down (backoff) and queue it on a

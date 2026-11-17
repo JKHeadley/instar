@@ -70,7 +70,15 @@ Revert: the judge may swap again, and the notices stop. No migration.
 
 Conditions 2, 5 and 6 are met. Conditions 8 (a live block-mode check) and 9 (a code re-audit) come before `blockingApproved` is set for the pilot.
 
-## Second-pass review (if required)
+## Re-audit fixes (EXO 3.0 condition 9)
+
+The independent code re-audit of the block path found nine defects. The general ones are fixed in PR #3275. The block-only ones are fixed here:
+- **A forgeable allow-once.** Pending checks and approvals now live only in the server's memory, so no file the agent can write grants or reshapes an approval. In block mode the hook also refuses agent writes (Write, Edit, MultiEdit, NotebookEdit or Bash) to `.instar/org/` and `.instar/config.json`. It is registered for those tools by the migration.
+- **Proxy-flagged and relayed messages.** The block-mode message check now lives in `evaluateOutbound`, the one evaluator every send path shares. The proxy and system-template path also checks it beside the credential wall.
+- **The judge's provider.** It is now pinned (`attribution.pinFramework`) to the agent's own session framework: no routing, degrade or swap, and an unavailable provider is an error that holds.
+- **Late cost.** A judge call that times out is charged its reported tokens when they arrive.
+
+
 
 **Reviewer:** second-pass subagent
 **Independent read of the artifact: concur**, with three small fixes, all applied:
