@@ -16,9 +16,9 @@ Separately, an agent only runs while you're logged in and the Mac is awake. For 
 
 Instar keeps a protected record of exactly what it changed, so switching it off puts everything back.
 
-**Starting before anyone logs in** depends on FileVault, the disk encryption that's on by default on new Macs. With FileVault on, a restarted Mac waits for someone to type the password before anything can run, so Instar doesn't promise more than that. With FileVault off, the agent can also start before anyone logs in. There's one more step in that case: before login, macOS keeps the usual Claude sign-in locked, so setup asks you to sign in to Claude once more and paste the code it shows. That code is kept just for this agent, readable only by you, and checked against the account you chose. ChatGPT normally doesn't need this.
+**Starting before anyone logs in** depends on FileVault, the disk encryption that's on by default on new Macs. With FileVault on, a restarted Mac waits for someone to type the password before anything can run, so Instar doesn't promise more than that. With FileVault off, the agent can also start before anyone logs in. There's one more step in that case: before login, macOS keeps the usual Claude sign-in locked, so setup asks you to sign in to Claude once more and paste the code it shows. That code becomes this agent's Claude sign-in while the switch is on. It's readable only by you, checked against the account you chose, and removed when you turn the switch off. ChatGPT normally doesn't need this.
 
-**Accounts used by other agents** are shared, not taken over: the agent that set the account up keeps looking after its sign-in, and the card tells you that the agents share that account's usage limit.
+**Accounts used by other agents** can be shared, the way agents on one Mac already share the usual account. The card says plainly that the agents then share that account's usage limit and sign-in. For an agent that should run on its own, it suggests signing in to a different account instead.
 
 ## What stays the same
 
