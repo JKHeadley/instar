@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T00:29:43.607Z",
+  "slug": "overdue-promise-follow-through",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/CheckInReminderReconciler.ts",
+      "src/monitoring/promiseHandoff.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

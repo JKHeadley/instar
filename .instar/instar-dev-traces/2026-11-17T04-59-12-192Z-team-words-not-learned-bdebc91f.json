@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "team-words-not-learned",
+  "sessionId": "490121e8-ac02-4bab-975b-0d6070e0df16",
+  "timestamp": "2026-11-17T04:59:12.192Z",
+  "artifactPath": "upgrades/side-effects/team-words-not-learned.md",
+  "artifactSha256": "ab7eed63135f32c361add1b77f47e10967c8390c2e97b6c1e43e3aac55dc2cc5",
+  "coveredFiles": [
+    "docs/specs/team-words-not-learned.eli16.md",
+    "src/commands/server.ts",
+    "src/core/JevCorrectionShadow.ts",
+    "src/core/ownerWords.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/e2e/jev-correction-shadow-lifecycle.test.ts",
+    "tests/integration/jev-correction-shadow-routes.test.ts",
+    "tests/unit/jev-correction-shadow.test.ts",
+    "tests/unit/team-words-not-learned.test.ts",
+    "upgrades/next/team-words-not-learned.md",
+    "upgrades/side-effects/team-words-not-learned.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Deterministic provenance allowlist at the learning seam (one rule module, three call sites); no stored-data change, revert undoes it; independent second pass's two high findings addressed (window marking, allowlist on the owner).",
+  "eli16Path": "docs/specs/team-words-not-learned.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/team-words-not-learned.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
