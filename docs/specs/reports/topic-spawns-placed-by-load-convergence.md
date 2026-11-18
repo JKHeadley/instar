@@ -44,10 +44,15 @@ Round 7 is one past the usual cap of 6. It was run because the round-5 cut repla
 ## Left behind (accepted, with reason)
 
 - **Judgment Within Floors.** The thresholds are reused unchanged from Step 1. They decide only where work starts, never whether it starts.
-- **The brief is kept on two machines, not replicated further.** This avoids spreading private task text. A loss of both machines costs one re-issued task.
+- **(Superseded at approval.)** The brief was kept on two machines; the Chief of Staff's fold-in 1 replicates it to every pool machine instead.
 - **`unknown` waits for a person.** An absent record cannot prove that a delayed delivery will not still land, so the work is never started automatically.
 - **Topics already owned are not released and re-placed.** That is a later step, if the shadow-log ownership data shows it matters.
 
 ## Approval
 
-Waiting for the Chief of Staff.
+Approved by the Chief of Staff on 2026-11-18 (message a8f9ad3f), as a maintainer decision rather than a constitution change, with three fold-ins. All three are applied:
+1. **The brief replicates to every pool machine.** It is a `topic-spawn-brief` record, sized by the replicated journal's own one-record limit. A refused emit keeps the spawn local, and the record is marked completed when the session ends; it is never deleted.
+2. **The size limit is the journal's own enforced record limit.** The busy test is now a floor (the verdict and memory, with no fixed load cutoff), with Step 1's `decide` judging load above it.
+3. **No topic-bound spawn starts blindly in a topic a peer owns.** With `topicBound` on, every such spawn gets the same 409 ownership check, with or without `placement: "auto"`.
+
+Standards-Conformance Gate after the fold-ins: ran twice (3 flags, then 3). The fixes are a size limit taken from the journal's own record limit, no fixed load cutoff, and briefs marked completed rather than tombstoned. Three flags are accepted, with reasons in the spec: emit is not all-member receipt (holders are reported); one-record size; and Archiving, closed by marking completed.

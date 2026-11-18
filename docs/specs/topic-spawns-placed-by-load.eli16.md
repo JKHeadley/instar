@@ -23,6 +23,8 @@ When the agent asks to start work for a conversation and says "place this where 
 - Only the computer that holds the pool's lead role hands work over, because only it is allowed to deliver a conversation's first message to another computer.
 - Only conversations nobody is running yet are moved. Many agent tasks go into conversations that already exist, so this may move fewer than the 18 sessions above. The agent now records which kind each one is, so the real effect is measured.
 - Heavy work, and requests that name a specific model or tool, stay where they are.
+- The task description is copied to every one of the agent's computers, so if two computers fail at once the task can still be restarted from a third. Task descriptions too long to copy in one piece (about 80 KB) are not moved.
+- Work the agent starts without asking for placement still never starts a second copy in a conversation another computer is running.
 - A computer moves work only to computers whose software says it understands the hand-over.
 
 ## Safeguards
@@ -34,4 +36,4 @@ When the agent asks to start work for a conversation and says "place this where 
 
 ## What needs deciding
 
-Nothing from the operator. The Chief of Staff approves the design.
+Nothing from the operator. The Chief of Staff approved the design with three changes, which are applied.

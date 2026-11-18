@@ -6,10 +6,12 @@ tier: 2
 parent-principle: "An Instar Agent Is Always a Multi-Machine Entity"
 parent-principle-fit: "Most of the load the agent puts on the Mac Studio is spawns it starts for a conversation (18 of 23 sessions measured on 2026-11-17). Step 1 placed only topicless helpers; until topic-bound spawns can start where there is room, one machine still carries most of the agent's own work while peers sit idle."
 eli16-overview: "docs/specs/topic-spawns-placed-by-load.eli16.md"
-review-convergence: "2026-11-18T21:32:43.473Z"
+review-convergence: "2026-11-18T21:47:44.177Z"
 review-iterations: 7
-review-completed-at: "2026-11-18T21:32:43.473Z"
+review-completed-at: "2026-11-18T21:47:44.177Z"
 review-report: "docs/specs/reports/topic-spawns-placed-by-load-convergence.md"
+approved: true
+approved-by: "echo-chief-of-staff (msg a8f9ad3f, 2026-11-18, with 3 fold-ins)"
 cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
 frontloaded-decisions: 4
@@ -37,13 +39,17 @@ A `/sessions/spawn` request is placed by this step when ALL of these hold:
 - it carries none of the fields that cannot travel: `jobSlug`, `ultracode`, `spawnRole`, `topicName`, `requireTopicBinding`, `targetMachineId`, the `x-instar-bind-token` header, or `workWeight: "heavy"` (heavy topic work keeps Step 1's heavy-route rules and is not placed by this step), or an explicit `model` or `framework` (a placed spawn starts with the topic's own profile on the target, so a request that names its own model or framework stays local, exactly as today, with `reason: "options-do-not-travel"`);
 - it does not carry `X-Instar-Placed: 1`;
 - the memory-audience refusal the local route applies passes on the origin (a refused spawn is refused here, before any claim, exactly as today);
-- its prompt is at most 200,000 characters (see "Size" below);
+- its brief fits one replicated record (see "Size" below);
 - this machine holds the pool lease. `deliverMessage` is router-only: `checkCommandRBAC` refuses it with `not-router` from any other sender (`MeshRpc.ts:563-568`), the same rule the graph path follows (`ConversationGraphDelegationRemoteRuntime.ts:69`). A machine without the lease starts locally with `reason: "not-router"`. The lease holder is the machine conversations arrive at, so this is where the load is;
-- this machine is busy by Step 1's test (fresh verdict `saturated`/`impaired`, own `memoryPressured`, or per-core load ≥ 1.0), and Step 1's peer filter leaves at least one peer, and that peer advertises the receiving change: its capacity heartbeat carries the flag `agent-brief@1` in `seamlessnessFlags`, the per-heartbeat flag set that travels with each beat (`MachinePoolRegistry.ts:147,327-341`), so a downgraded peer stops advertising it. A peer without the flag would frame the brief as a person's message, so it is not eligible. That filter is `heavyHeadroom`, not memory-short, quota not blocked, reservations counted.
+- this machine is busy, and Step 1's peer filter leaves at least one peer, and that peer advertises the receiving change: its capacity heartbeat carries the flag `agent-brief@1` in `seamlessnessFlags`, the per-heartbeat flag set that travels with each beat (`MachinePoolRegistry.ts:147,327-341`), so a downgraded peer stops advertising it. A peer without the flag would frame the brief as a person's message, so it is not eligible. That filter is `heavyHeadroom`, not memory-short, quota not blocked, reservations counted.
 
-**A topic owned by a peer gets one answer, whenever it is found** (only when `topicBound` resolves on; with it off, today's behaviour is unchanged on every agent). If the route's own check, or the protocol's check at claim time, finds any ownership record that is not `released` naming another machine, the route answers `409` with `placementOutcome: "topic-owned-elsewhere"` and the owner's machine, and starts nothing. Today's local route spawns into a topic owned elsewhere and only logs "possible duplicate copy" (`routes.ts:14006-14019`). For a request that asked for placement, that would put a second session in a topic whose messages go to the peer, so it is refused instead. The caller reaches the existing session by messaging it. If the owner machine is currently unreachable, the 409 says so (`ownerReachable: false`), and the caller does not wait on a session it cannot reach; failover moves the topic if that machine is gone. Requests without `placement: "auto"` keep today's behaviour unchanged.
+**When this machine counts as busy.** The busy test is a floor with judgment above it, not a single cliff:
+- **Floor (deterministic).** A fresh `saturated` or `impaired` verdict, or own `memoryPressured`, always counts as busy. A missing or stale verdict means placement is not considered: the spawn stays local, today's behaviour. No fixed load number blocks placement.
+- **Judgment (above the floor).** Otherwise Step 1's `PlacementExecutor.decide` weighs this machine's load against the eligible peers' heartbeats (load, headroom, reservations) and places only when a peer is less loaded by Step 1's margin, so a healthy machine at 0.6 can still hand work to an idle peer. Re-tuning comes from Step 1's shadow log.
 
-Every other request starts locally, exactly as today, through today's route. The "never duplicated" guarantee below is for the placed path. A local start keeps today's behaviour, which this step neither adds to nor changes. The reason is logged in Step 1's shadow log (`reason: "options-do-not-travel"`, `"not-busy"`, `"no-eligible-peer"`, `"router-not-wired"`, `"prompt-too-large"`).
+**A topic owned by a peer gets one answer, whenever it is found, on every topic-bound spawn** (only when `topicBound` resolves on; with it off, today's behaviour is unchanged on every agent). If the route's own check, or the protocol's check at claim time, finds any ownership record that is not `released` naming another machine, the route answers `409` with `placementOutcome: "topic-owned-elsewhere"` and the owner's machine, and starts nothing. Today's local route spawns into a topic owned elsewhere and only logs "possible duplicate copy" (`routes.ts:14006-14019`). That puts a second session in a topic whose messages go to the peer, so with `topicBound` on it is refused for every topic-bound `/sessions/spawn`, with or without `placement: "auto"`. The ownership check is the same read-only one the placed path makes, so this adds no new spawn path; it only stops the blind spawn. The caller reaches the existing session by messaging it. If the owner machine is currently unreachable, the 409 says so (`ownerReachable: false`), and the caller does not wait on a session it cannot reach; failover moves the topic if that machine is gone. A request without `placement: "auto"` into a topic with no live owner, or owned by this machine, keeps today's behaviour unchanged.
+
+Every other request starts locally, exactly as today, through today's route. The "never duplicated" guarantee below is for the placed path. A local start keeps today's behaviour, which this step neither adds to nor changes. The reason is logged in Step 1's shadow log (`reason: "options-do-not-travel"`, `"not-busy"`, `"no-eligible-peer"`, `"router-not-wired"`, `"prompt-too-large"`, `"brief-not-replicated"`).
 
 ### How it is placed: the existing path for a person's first message
 
@@ -70,7 +76,7 @@ A message claiming `agent` whose `originMachineId` does not match the signed sen
 
 **Older peers.** The receiving change (carried-brief framing, agent authorship, null media id) exists only on builds that advertise `agent-brief@1`. A capability flag is used rather than a version comparison, because version comparison breaks for development builds and rollbacks.
 
-**Size.** The brief travels only up to 200,000 characters, the `TopicSpawnBriefStore` cap (`TopicSpawnBriefStore.ts:33`), far below the 12 MB JSON body limit (`AgentServer.ts:2042`). A larger brief starts locally (`reason: "prompt-too-large"`). The size is checked before any claim.
+**Size.** There is no separate size number. The brief must fit in one replicated record, and the replicated journal already enforces that on the actual serialized record: `REPLICATED_RECORD_MAX_ENTRY_BYTES` = 80 KB including envelope and JSON escaping (`CoherenceJournal.ts:439`). The emit happens before any claim. If the journal refuses it as oversize, the spawn starts locally (`reason: "prompt-too-large"`), as today. Anything that fits one record is also under the `TopicSpawnBriefStore` cap (`TopicSpawnBriefStore.ts:33`) and the 12 MB JSON body limit (`AgentServer.ts:2042`).
 
 **Profile.** The target resolves the topic profile itself, as it does for any first message. The profile store is replicated, so this is the same profile the origin's local route would have resolved. Requests with an explicit `model` or `framework` never travel (see "What is placed"), so no caller override is lost.
 
@@ -91,7 +97,13 @@ The topic's ownership record names the target, so the existing router sends late
 
 ### The origin's copy of the brief
 
-Before the deliver, the origin records the brief with `spawnBriefs.record(topicId, name, prompt)`, plus a new optional `placedOn` field in the `TopicSpawnBriefStore` row (an optional string, which older readers ignore). If the target is lost, the brief survives on the origin for re-issue. The target's session transcript holds it there too.
+### The brief on every machine
+
+Before the deliver, the origin records the brief with `spawnBriefs.record(topicId, name, prompt)`, plus a new optional `placedOn` field in the `TopicSpawnBriefStore` row (an optional string, which older readers ignore). It also emits the brief as a replicated record of a new kind, `topic-spawn-brief`, registered through the existing `ReplicatedKindRegistry` (`ReplicatedRecordEnvelope.ts:470`) and sent by `ReplicatedRecordEmitter`, the same path that replicates commitments and preferences to every pool machine. The record key is the topic id. The fields are `topicId`, `name`, `prompt`, `placedOn`, `originMachineId` and `createdAt`; the prompt is credential-redacted before emit, as the preference pool does. When the placed session ends, whichever machine sees it complete emits an update to that record with `status: "completed"` and `completedAt`. Nothing is tombstoned or deleted by this step, so the task context stays readable on every machine; the record's retention follows the journal's existing policy.
+
+If the emit is refused (rate cap, lock-out, oversize), the placement does not happen and the spawn starts locally (`reason: "brief-not-replicated"` or `"prompt-too-large"`).
+
+What an accepted emit proves, and what it does not: the record is durable in the origin's journal, and the deliver carries the brief to the target, so at placement it is on two machines. Every other member receives it on its next replication sync; an emit is not proof that every member already holds it. Recovery therefore reads it from any machine that has synced since, and the reconciliation attention item reports which members' replication cursors have passed the record (`held by`, from the existing reconciler's per-peer applied position) and which have not (`not yet`, never assumed). A member that was unreachable gets the record when it returns. The replicated copy goes only to this agent's own pool machines, which already receive its commitments, preferences and topic history; it does not leave the agent.
 
 ### Gating and order
 
@@ -104,8 +116,8 @@ The live path is behind `multiMachine.placement.agentSessions.topicBound`, an om
 ## Decision points touched
 
 - **Whether a topic-bound `/sessions/spawn` with `placement: "auto"` starts on a peer.** — judgment-candidate. Floor: never duplicated (the fenced claim holds; an `unknown` outcome keeps the claim; the existing forwarded-message arm makes a racing message wait on an in-flight start; the local fallback is itself a checked claim; a spawn into a topic owned by a peer gets a 409). No silent failure (the inbound queue reports an undelivered or un-injected message; reconciliation plus Step 1's attention item cover an unconfirmed placement, where recovery may need a person to re-issue the work). A topic with a live owner is never re-placed. Arbiter: Step 1's `PlacementExecutor.decide` over Step 1's pre-filtered peers. No new threshold.
-- **Prompt size cap (200,000 characters).** — invariant. basis: external-constraint; evidence: `TopicSpawnBriefStore` truncates stored briefs at 200,000 characters (`TopicSpawnBriefStore.ts:33,51`), so a longer brief could not be kept whole on both machines. It is the existing `TopicSpawnBriefStore` cap, so both brief copies are complete, and it is far below the 12 MB body limit. It decides only where a spawn starts, never whether: a larger prompt starts locally, exactly as today.
-- **"This machine is busy" (per-core load ≥ 1.0, fresh verdict, own memory pressure) and the 10-minute reconciliation window.** — judgment-candidate, reused unchanged from Step 1, where they are classified and evidenced. The load floor is resource-aware placement's shipped `HEAVY_WORK_FLOOR`, re-tuned from Step 1's shadow log, which already records topic-bound rows. The window decides only when a person is told, never what is true. This step adds no threshold of its own.
+- **Brief size (fits one replicated record).** — invariant. basis: external-constraint; evidence: the replicated journal refuses a serialized record over `REPLICATED_RECORD_MAX_ENTRY_BYTES` = 80 KB (`CoherenceJournal.ts:439`), and the brief must be one record to reach every machine. It is the existing `TopicSpawnBriefStore` cap, so both brief copies are complete, and it is far below the 12 MB body limit. It decides only where a spawn starts, never whether: a larger prompt starts locally, exactly as today.
+- **"This machine is busy" and the 10-minute reconciliation window.** — judgment-candidate. Floor: a `saturated`/`impaired` verdict or own memory pressure is always busy; a missing or stale verdict stays local; no fixed load cutoff. Arbiter above the floor: Step 1's `PlacementExecutor.decide` over peer heartbeats. Re-tuned from Step 1's shadow log, which records topic-bound rows. The window decides only when a person is told, never what is true. This step adds no threshold of its own.
 - **Whose topic profile applies.** — invariant. basis: enumerable-domain; evidence: the target's forwarded-message spawn resolves the topic profile itself (`server.ts:~1818-1925`), and the profile store is replicated, so there is one profile per topic; the only other source, a request override, is excluded by keeping explicit `model`/`framework` requests local. So the target resolves the topic's replicated profile, which is the profile the origin would have used. Requests with an explicit `model` or `framework` stay local, so no override is lost.
 
 ## Frontloaded Decisions
@@ -130,7 +142,12 @@ The live path is behind `multiMachine.placement.agentSessions.topicBound`, an om
   - a topic owned by a peer answers `409 topic-owned-elsewhere`, including when the owner is unreachable;
   - a rejected deliver falls back to a checked local claim plus a direct spawn (`201` only on a running session), and a lost local claim answers `409` with nothing started;
   - a retried deliver is deduplicated by the receipt and starts nothing;
-  - a brief over 200,000 characters starts locally;
+  - a brief the journal refuses as oversize starts locally (`prompt-too-large`), including one whose JSON escaping pushes it over;
+  - a placed brief is readable from a third machine's replicated copy, and a refused emit keeps the spawn local (`brief-not-replicated`);
+  - the brief record is marked `completed` (not deleted) when the placed session ends;
+  - a topic-bound spawn WITHOUT `placement: "auto"` into a peer-owned topic gets 409 when `topicBound` is on, and is unchanged when it is off;
+  - load 0.6 with an idle peer can place; a `saturated` verdict at load 0.5 is busy; a stale verdict stays local; an equally loaded peer is not chosen;
+  - the attention item lists holders from replication cursors and marks the rest `not yet`;
   - a same-name retry is read-only.
 
   Recorded as a PASS/FAIL matrix in the PR.
@@ -154,7 +171,7 @@ The live path is behind `multiMachine.placement.agentSessions.topicBound`, an om
 
 **Single-machine survivability.** With one machine, or no pool, every spawn is local, exactly as today. If the target machine goes away after it has accepted the topic, the topic is an ordinary owned conversation there, and the existing session-pool failover re-places a topic whose owner machine is gone, the same way it does for a person's conversation.
 
-The work itself must survive that too, so the origin also records the spawn brief locally (`spawnBriefs.record` with `placedOn`) before it sends the deliver. If the target is lost, the brief, the topic id and the target machine are still on the origin. The attention item from Step 1's reconciliation names them, so the work can be issued again from the origin's copy. The topic's own message history carries the conversation, as for any failed-over topic. What is lost is only the target session's unsaved in-flight state, which is the same loss as when a machine running a person's conversation dies today. The brief therefore exists on two machines: the origin's `spawnBriefs` and the target's. Losing any single machine leaves one copy and the topic history, which is the any-single-machine survivability the standard asks for. Losing the origin and the target together is a two-machine loss. For that case the brief is not replicated further, because a brief can hold private working detail that this step does not spread to machines that never run it.
+The work itself must survive that too. The brief is replicated to every pool machine before the deliver (see "The brief on every machine"), so if the target is lost, any surviving machine holds the brief, the topic id and the target machine. The attention item from Step 1's reconciliation names them, so the work can be issued again from any machine's copy, even after the origin and the target are both lost. The topic's own message history carries the conversation, as for any failed-over topic. What is lost is only the target session's unsaved in-flight state, which is the same loss as when a machine running a person's conversation dies today.
 
 **unified decision.** The decision reads the pool's capacity heartbeats on whichever machine receives the request, and the claim is the shared topic-ownership record, so the decision is consistent across machines. The placed session is an ordinary topic session on the target. The audit rows are per machine by design, as in Step 1.
 
@@ -164,15 +181,10 @@ Step 4 (CMT-1938) stays as tracked in the parent spec. Nothing new is deferred b
 
 ## Accepted conformance flags
 
-- **Judgment Within Floors** (raised twice) asks why the reused boundaries are exactly 200,000 characters, a per-core load of 1.0 and 10 minutes. Accepted, with reasons:
-  - Each value is Step 1's (or the transport's) and is reused unchanged, so one placement path has one set of floors.
-  - None of them can lose work or start it twice: the size cap and the load floor decide only where a spawn starts, and the window decides only when a person is told.
-  - Re-tuning them belongs to Step 1's shadow-log review, which covers topic-bound rows. Splitting the floors per step would let two paths disagree.
+- **Judgment Within Floors**: resolved at approval (Chief of Staff fold-in 2) and re-check. The size is the journal's own enforced record limit on the serialized record, with no separate number. The busy floor is only verdict and memory, and Step 1's `decide` judges load above it, with no fixed load cutoff. The 10-minute window only decides when a person is told, never what is true.
 
-- **An Instar Agent Is Always a Multi-Machine Entity** (raised after the brief was stored on two machines): the check asks for the brief on every installed machine, so that losing the origin and the target together still leaves the work recoverable. Accepted for this step:
-  - The brief is the caller's working instructions and can hold private detail. Spreading it to machines that never run it widens who holds it.
-  - The topic itself (ownership, message history) is already unified, so the conversation survives on any machine.
-  - What a two-machine loss costs is re-issuing one agent-started task. Losing a user's conversation is a different case, and this step does not change it.
+- **An Instar Agent Is Always a Multi-Machine Entity**: resolved at approval (Chief of Staff fold-in 1). The brief is replicated to every pool machine as a `topic-spawn-brief` record. Accepted remainder from the re-check: an emit is not all-member receipt. At placement the brief is on the origin and the target; other members hold it after their next sync. The attention item reports actual holders from replication cursors, never assumes them. Blocking placement on all-member receipt would let one sleeping laptop stop all placement.
+- **Judgment Within Floors** (re-check, size): a brief larger than one replicated record could in principle travel as several records. Accepted: that needs a new multi-record assembly protocol with its own partial-receipt cases, and a larger brief loses nothing, because it starts locally exactly as today. Splitting is for Step 4's review if the shadow log shows large briefs being kept local often (the shadow row records `prompt-too-large`).
   - Reviewers may overrule this. A replicated brief store is the alternative, at the cost of that spread.
 
 ## Rollback
