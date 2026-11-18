@@ -541,6 +541,8 @@ export class AgentServer {
   private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
+  readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
   /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
@@ -6785,6 +6787,7 @@ export class AgentServer {
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      groupProjectConfirm: this.groupProjectConfirm,
       projectAppsRuntime: options.projectAppsRuntime,
       projectAppSandbox: options.projectAppSandbox,
       projectAppCustom: options.projectAppCustom,
@@ -8107,12 +8110,15 @@ export class AgentServer {
     // owner's Accept makes it an effort with its conversation as the front door (projects become efforts only
     // by the owner's accept). Members: the project conversation and its Chief of Staff tree children.
     projects:()=>options.chiefOfStaffLoop?projectSuggestionSources(options.chiefOfStaffLoop,graphTelegramChatId()):[]};
+    // "Make this group a project" (docs/specs/conversation-groups-phone.md §3): the draft route needs the bound keys.
+    const graphGroupProjects={chiefOfStaffOn:()=>Boolean(options.chiefOfStaffLoop),boundProjects:()=>options.chiefOfStaffLoop?options.chiefOfStaffLoop.boundProjectContents():null,
+      bindProject:(input:Parameters<NonNullable<typeof options.chiefOfStaffLoop>['bindProject']>[0])=>options.chiefOfStaffLoop?options.chiefOfStaffLoop.bindProject(input):{ok:false as const,reason:'write-refused' as const},confirmHolder:this.groupProjectConfirm};
     if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
       graphSurfaceMounted=true;
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -8123,7 +8129,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
@@ -8134,6 +8140,8 @@ export class AgentServer {
     // Mounted at the end of route setup, just before the error handler, so it
     // only ever answers a graph request nothing else handled.
     const graphOff=!graphSurfaceMounted;
+    // No graph surface here: a phone project confirm answers a lasting refusal, never "try again" forever.
+    if(graphOff)this.groupProjectConfirm.off=true;
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });

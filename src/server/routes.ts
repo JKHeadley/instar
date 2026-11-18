@@ -2109,6 +2109,8 @@ export interface RouteContext {
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  /** "Make this group a project" phone confirm (conversation-groups-phone §3), filled once the conversation graph opens. */
+  groupProjectConfirm?: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder;
   /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
   projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
   /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound sandbox. */
@@ -42046,6 +42048,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (!owner) return { status: 409, body: { error: 'no-team-owner' } };
         return performOwnerTap(workBoardRouteDeps, svc, cardId, tap as unknown as Record<string, unknown>, { kind: 'person', personKey: owner, proof: 'presence', isOwner: true });
       },
+      // "Make this group a project" (docs/specs/conversation-groups-phone.md §3): the write gate proved the owner's
+      // phone and Face ID over the draft's exact hash; the binding write is POST /chief-of-staff/projects's own.
+      ...(ctx.chiefOfStaffLoop ? { groupProjectRefusal: () => {
+        // One machine decides: the lease holder (as approve-widening), so two machines cannot bind one conversation from stale copies.
+        let holder = true;
+        try { holder = ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { holder = false; } // @silent-fallback-ok — an unreadable lease reads as not held: refuse, never bind twice
+        if (!holder) return { status: 409, body: { error: 'not-holder', detail: 'This machine is not the one deciding right now. Try again in a moment.' } };
+        if (ctx.groupProjectConfirm?.off) return { status: 503, body: { error: 'conversation-changes-off', detail: 'Changing conversations is turned off for this agent, so a group cannot become a project here.' } };
+        return null;
+      }, confirmGroupProject: (draftId: string, draftHash: string, _deviceId: string, req: import('express').Request, carried: unknown) => {
+        const confirm = ctx.groupProjectConfirm?.confirm;
+        return confirm ? confirm(req, draftId, draftHash, carried)
+          : { status: 503, body: { error: 'conversation-graph-pending', detail: 'Your conversations are still opening on this machine. Try again in a moment.' } };
+      } } : {}),
       // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
       startAccountSignIn: async (accountId, machineId, req) => {
         const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool/matrix/start-cell');
