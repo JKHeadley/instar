@@ -788,7 +788,7 @@ describe('locked-proof runner and verdict', () => {
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: false } }).pass).toBe(true);
     const c1212 = CASES.find((x: { id: string }) => x.id === '12.12');
     const closed = { ...base, final: { ...base.final, markers: { k: { state: 'closed-not-applicable' } } } };
-    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (no observable source yet)');
+    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (isolated A+B population not established)');
   });
 
   it('the runner measures the relock time after a transport drop from its own samples', async () => {

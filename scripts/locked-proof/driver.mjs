@@ -19,6 +19,7 @@
  *   --playwright DIR     a playwright-core install to drive the real viewer page with system Chrome
  *   --out DIR            results + calibration folder (default ./locked-proof-results)
  *   --notify-topic N     also send person steps to this Telegram topic through the agent's relay script
+ *   --isolated-guard-population  assert owner-established clean A+B proof scope (required for 12.12/12.13)
  *   --headed             show the viewer browser
  *
  * Without --execute nothing touches the Mac: `calibrate` and `run` print what they would do.
@@ -28,10 +29,13 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, calibrationProblem, launchdServePlist, renderExpected, runCase, selectCases } from './lib.mjs';
+
+import { baselineProblem, measureNativeCalls } from './native-observation.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The viewer is ready when it offers a request or has already opened the stream. */
@@ -179,7 +183,7 @@ export class RealTarget {
       body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(5_000) });
     const text = await r.text();
     let json = null; try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { status: r.status, ...(json ?? {}) };
+    return { status: r.status, ...(json ?? {}), httpStatus: r.status };
   }
 
   async operatorSession(agent) {
@@ -211,6 +215,39 @@ export class RealTarget {
     return parseProcessList(sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,stat=,lstart=,command='], { allowFail: true })).live;
   }
 
+  async guardPopulation() {
+    const result = { storeId: createHash('sha256').update(this.store).digest('hex'), isolated: this.o.isolatedGuardPopulation === true, complete: false, servers: [], actors: [] };
+    try {
+      for (const agent of [this.a, this.b]) {
+        const readStartedAt = this.now();
+        const raw = sudo(['lsof', '-nP', '-t', `-iTCP:${agent.port}`, '-sTCP:LISTEN']).trim();
+        if (!/^\d+$/.test(raw)) throw new Error('ambiguous listener');
+        const pid = Number(raw);
+        if (ownerOf(pid) !== PROOF_USER) throw new Error('foreign listener');
+        const start = sh('ps', ['-p', String(pid), '-o', 'lstart=']).trim();
+        if (!start) throw new Error('unknown listener identity');
+        const status = await this.api(agent, 'GET', '/desktop/locked/status');
+        if (status.httpStatus !== 200) throw new Error('status unavailable');
+        result.servers.push({ readStartedAt, listener: { pid, start }, ledger: status.guardObservation,
+          loginSession: status.observedLoginSession ?? null });
+      }
+      const raw = sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,stat=,lstart=,command=']);
+      const parsed = parseProcessList(raw);
+      if (raw.trim().split('\n').length !== parsed.live.length + parsed.zombies.length) throw new Error('unreadable process row');
+      result.actors = parsed.live.filter(p => p.command.split(/\s+/).includes('relock-guard'));
+      result.complete = true;
+    } catch { result.reason = 'population observation failed'; }
+    return result;
+  }
+
+  async beginGuardObservation() {
+    const baseline = await this.guardPopulation();
+    const problem = baselineProblem(baseline);
+    if (problem) throw new Error(`native observation: ${problem}; require clean isolated A+B proof setup`);
+    this.observeGuards = true;
+    return baseline;
+  }
+
   async snapshot() {
     const state = this.readStore();
     const markers = this.caseMarkers(state);
@@ -232,7 +269,8 @@ export class RealTarget {
     const consoleOwner = this.consoleOwner();
     if (consoleOwner === PROOF_USER) this.events.add('proof-user-console');
     else this.events.delete('proof-user-console');
-    return { now, consoleOwner, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
+    const guardPopulation = this.observeGuards ? await this.guardPopulation() : undefined;
+    return { guardPopulation, now, consoleOwner, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
       // Judged only once a duty exists and has closed, and only against the processes that duty
       // recorded. An input helper that refused the password before reserving belongs to no duty:
       // with its server frozen it stays up, holds no password, and is not a leftover typist.
@@ -293,6 +331,7 @@ export class RealTarget {
   wakeDisplay(seconds = 1) { return this.asProof(['caffeinate', '-u', '-t', String(seconds)]); }
 
   async prepare(c) {
+    this.observeGuards = false;
     await this.closeViewers();
     this.events.clear();
     this.pids = {};
@@ -322,7 +361,7 @@ export class RealTarget {
       } else if (url.includes('/desktop/')) {
         // The server states when this grant ends. The deadline cases aim from that, because the
         // moment the driver sees the grant open trails the server's start by about half a second.
-        try { const j = await r.json(); if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt; } catch { /* not JSON */ }
+        try { const j = await r.json(); if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt; if (typeof j?.requestId === 'string') v.requestId = j.requestId; } catch { /* not JSON */ }
       }
     });
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
@@ -346,6 +385,11 @@ export class RealTarget {
     const v = await this.viewer(this.a);
     await this.requestGrant(v);
     await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
+    if (c.noLockCall) {
+      const until = this.now() + 5_000;
+      while (!v.requestId && this.now() < until) await this.sleep(25);
+      if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v.requestId ?? '')) throw new Error('native proof request identity missing');
+    }
     this.main = v;
     this.mainOpenedAt = this.now();
     return v;
@@ -748,6 +792,12 @@ export class RealTarget {
       out.securityItemRaised = !!item;
       if (item && failedAt) out.securityItemMs = Date.parse(item.createdAt) - failedAt;
     } catch { out.securityItemRaised = false; }
+    if (c.noLockCall) {
+      const finalPopulation = await this.guardPopulation();
+      out.guardFinalPopulation = finalPopulation;
+      out.nativeLockObservation = measureNativeCalls(ev, finalPopulation);
+      if (out.nativeLockObservation.complete) out.lockCalls = out.nativeLockObservation.lockCalls;
+    }
     return out;
   }
 
@@ -797,6 +847,7 @@ async function main() {
     proofDirB: opt('proof-dir-b', `/Users/${PROOF_USER}/.instar/agents/locked-proof-b`),
     proofInstall: opt('proof-install', `/Users/${PROOF_USER}/.instar/proof-install`),
     port: Number(opt('port', '4098')), portB: Number(opt('port-b', '4097')), playwright: opt('playwright'),
+    isolatedGuardPopulation: flag('isolated-guard-population'),
     out: path.resolve(opt('out', 'locked-proof-results')), notifyTopic: opt('notify-topic'), headed: flag('headed'),
   };
   const cases = command === 'calibrate' ? [] : selectCases(opt('cases')?.split(',').map(s => s.trim()).filter(Boolean));

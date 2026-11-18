@@ -1,3 +1,4 @@
+import { nativeWatch, measureNativeCalls, watchPopulationProblem } from './native-observation.mjs';
 /**
  * Locked-Mac proof run (docs/specs/desktop-locked-screen.md, proof rows P12 and P15):
  * the case table, the expected-results record, the runner and the verdict.
@@ -182,7 +183,11 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
   const evidence = { id: c.id, runId: crypto.randomUUID(), gate: c.gate, startedAt: target.now(), samples: [], fired: [], person: null, notes: [] };
   const sample = async () => {
     const snap = await target.snapshot();
-    evidence.samples.push({ t: snap.now, lockState: snap.lockState, serverLockState: snap.serverLockState, markers: snap.markers, dirty: snap.dirty, consoleOwner: snap.consoleOwner, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
+    evidence.samples.push({ t: snap.now, lockState: snap.lockState, serverLockState: snap.serverLockState, markers: snap.markers, guardPopulation: snap.guardPopulation, dirty: snap.dirty, consoleOwner: snap.consoleOwner, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
+    if (c.noLockCall && !evidence.guardCheckpoint) {
+      const witness = nativeWatch(snap);
+      if (witness && !watchPopulationProblem(evidence.guardBaseline, snap.guardPopulation, witness)) evidence.guardCheckpoint = { t: snap.now, witness };
+    }
     return snap;
   };
   const pending = [...c.inject];
@@ -191,7 +196,12 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     for (const step of c.before ?? []) evidence.fired.push({ action: step, at: 'before', t: target.now(), result: (await target.act(step, { case: c })) ?? null });
     const ctx = { sent: false, beforeEnterDue: undefined };
     const aimsBeforeEnter = c.timing !== 'deadline' && pending.some(s => s.at === 'before-enter');
+    if (c.noLockCall) {
+      if (!target.beginGuardObservation) throw new Error('native observation baseline unavailable');
+      evidence.guardBaseline = await target.beginGuardObservation();
+    }
     const grant = await target.openGrant(c);
+    evidence.grantRequestId = grant?.requestId ?? null;
     evidence.grantOpenedAt = target.now();
     evidence.grantExpiresAt = grant?.expiresAt ?? null; // the server's own end time for the grant, when the page was told it
     if (c.password) {
@@ -221,6 +231,11 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
       }
       for (const step of [...pending]) {
         if (!matchAt(step.at, snap, ctx)) continue;
+        if (c.noLockCall && step.action === c.person?.departureAction) {
+          const watch = nativeWatch(snap);
+          if (!evidence.guardCheckpoint || !watch || watch.attemptId !== evidence.guardCheckpoint.witness.attemptId
+              || watchPopulationProblem(evidence.guardBaseline, snap.guardPopulation, watch)) continue;
+        }
         if (step.delayMs) await target.sleep(step.delayMs);
         pending.splice(pending.indexOf(step), 1);
         const startedAt = target.now();
@@ -228,9 +243,14 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
         evidence.fired.push({ action: step.action, at: step.at, startedAt, t: target.now(), result: result ?? null });
         log(`[${c.id}] ${step.action} (${step.at})`);
       }
-      if (c.person && !personCued && pending.length === 0) {
+      if (c.person && !personCued && pending.length === 0 && (!c.noLockCall || evidence.guardCheckpoint)) {
         // The injection can log out or revoke the grant: never reuse its earlier snapshot.
         snap = await sample();
+        if (c.noLockCall) {
+          const problem = watchPopulationProblem(evidence.guardBaseline, snap.guardPopulation, evidence.guardCheckpoint.witness);
+          if (problem) throw new Error(`native observation before cue: ${problem}`);
+          if (!c.person.departureAction && !nativeWatch(snap)) { await target.sleep(pollMs); continue; }
+        }
         let watchStart;
         if (c.person.requireWatching) {
           const watching = Object.values(snap.markers ?? {}).filter(m => m.state === 'watching' && Number.isFinite(m.watchStart));
@@ -460,8 +480,9 @@ export function judge(c, ev) {
   if (c.secretRefused && ev.secretResult?.refused !== c.secretRefused) reasons.push(`expected refusal ${c.secretRefused}, got ${JSON.stringify(ev.secretResult ?? null)}`);
   // An expectation with no measurement fails loudly: an unmeasured check is never a pass.
   if (c.noLockCall) {
-    if (typeof x.lockCalls !== 'number') reasons.push('not measured: lock calls against another session (no observable source yet)');
-    else if (x.lockCalls > 0) reasons.push(`${x.lockCalls} lock call(s) against another session`);
+    const measured = measureNativeCalls(ev, x.guardFinalPopulation);
+    if (!measured.complete) reasons.push(`not measured: lock calls against another session (${measured.reason})`);
+    else if (measured.lockCalls > 0) reasons.push(`${measured.lockCalls} lock call(s) during the watched interval`);
   }
   if (c.relockAfterResumeWindow) {
     if (typeof x.relockAfterDropMs !== 'number') reasons.push('not measured: relock time after the transport drop');

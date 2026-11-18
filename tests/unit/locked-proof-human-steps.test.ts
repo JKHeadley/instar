@@ -7,7 +7,16 @@ import { CASES, runCase, judge } from '../../scripts/locked-proof/lib.mjs';
 import { RealTarget } from '../../scripts/locked-proof/driver.mjs';
 
 const byId = (id: string) => CASES.find((c: { id: string }) => c.id === id);
-const KEY = 'request.0';
+const KEY = '12345678-1234-1234-1234-123456789abc.0';
+const INSTANCE = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const START = 'Tue Nov 17 16:00:00 2026';
+function population(active = false) {
+  return { storeId: 'c'.repeat(64), isolated: true, complete: true, servers: [INSTANCE, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'].map((id, i) => ({
+    listener: { pid: i + 1, start: START }, ledger: { schema: 1, available: true, complete: true, reason: null,
+      nodePid: i + 1, instanceId: id, sequence: active && i === 0 ? 1 : 0,
+      entries: active && i === 0 ? [{ sequence: 1, attemptId: `${INSTANCE}:1`, key: KEY, storeId: 'c'.repeat(64), pid: 42, spawn: 'spawned', exit: 'pending' }] : [] } })),
+    actors: active ? [{ pid: 42, start: START, command: `helper relock-guard store ${KEY}` }] : [] };
+}
 const BASE = 1_000_000;
 function world(id: string, options: { away?: number; back?: number; unknown?: [number, number]; transit?: [number, number]; watchDelay?: number; preCueUnlock?: boolean; noWatch?: boolean; lateUnlock?: number; repeatFirstUnlock?: number; neverWatching?: boolean } = {}) {
   let now = BASE;
@@ -21,6 +30,7 @@ function world(id: string, options: { away?: number; back?: number; unknown?: [n
   const watchStart = () => (stopAt ?? BASE) + (options.watchDelay ?? 0);
   const target = {
     now: () => now, sleep: async (ms: number) => { now += ms; }, prepare: async () => {}, openGrant: async () => ({}),
+    beginGuardObservation: async () => population(),
     typePassword: async () => ({ sent: true }), calibration: () => null,
     act: async (action: string) => {
       actions.push({ action, t: now });
@@ -56,8 +66,11 @@ function world(id: string, options: { away?: number; back?: number; unknown?: [n
       if (options.preCueUnlock && cueAt === undefined && now >= watchStart() + 30_000) lockState = 'unlocked';
       if (id.startsWith('15.') && cueAt !== undefined && elapsed >= (options.lateUnlock ?? 500)
           && (id === '15.11' || elapsed < (options.lateUnlock ?? 500) + 1_500)) lockState = 'unlocked';
-      const marker = { state, enterPendingAt: BASE - 100, ...(stopAt !== undefined && !options.noWatch && now >= watchStart() ? { watchStart: watchStart() } : {}) };
-      const snap = { now, consoleOwner: owner, lockState, dirty: false, markers: { [KEY]: marker },
+      const nativeStart = `${Date.parse(START) / 1000}.123`;
+      const marker = { state, guardPid: 42, guardStart: nativeStart,
+        guardWatchObservation: { schema: 1, complete: true, attemptId: `${INSTANCE}:1`, key: KEY, pid: 42,
+          start: nativeStart, phase: 'watch', count: 1, checkpointCount: 1 }, enterPendingAt: BASE - 100, ...(stopAt !== undefined && !options.noWatch && now >= watchStart() ? { watchStart: watchStart() } : {}) };
+      const snap = { now, guardPopulation: population(true), consoleOwner: owner, lockState, dirty: false, markers: { [KEY]: marker },
         events: owner === 'instarproof' ? ['proof-user-console'] : [], processesGone: true };
       samples.push(snap);
       return snap;
@@ -76,7 +89,7 @@ describe('human proof timelines', () => {
     expect(ev.person.returnedAt - ev.person.awayAt).toBeGreaterThanOrEqual(30_000);
     expect(ev.person.doneAt).toBeGreaterThanOrEqual(w.cues[0].t + 40_000);
     expect(ev.verdict.pass).toBe(false);
-    expect(ev.verdict.reasons).toContain('not measured: lock calls against another session (no observable source yet)');
+    expect(ev.verdict.reasons).toContain('not measured: lock calls against another session (isolated A+B population not established)');
   });
   it('cannot finish at a closed marker while the person is still away', async () => {
     const ev = await world('12.12', { back: Infinity }).run();
@@ -120,7 +133,7 @@ describe('human proof timelines', () => {
     expect(ev.person.awayAt).toBeLessThan(ev.person.validUntil);
     expect(ev.person.dwellCompletedAt - ev.person.awayAt).toBeGreaterThanOrEqual(30_000);
     expect(ev.person.doneAt).toBe(ev.person.returnedAt);
-    expect(ev.verdict.reasons).toEqual(['not measured: lock calls against another session (no observable source yet)']);
+    expect(ev.verdict.reasons).toEqual(['not measured: lock calls against another session (isolated A+B population not established)']);
     const altered = structuredClone(ev);
     altered.person.awayAt = altered.person.validUntil + 1;
     altered.person.actionAt = ev.person.cuedAt + 1_000;

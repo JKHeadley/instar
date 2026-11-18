@@ -193,6 +193,45 @@ private final class DesktopH264Encoder {
     }
 }
 
+// BEGIN GUARD OBSERVATION — compiled verbatim with inert dispatch doubles in tests.
+// Only the guard's main thread uses this value. No I/O occurs during dispatch.
+struct GuardDispatchObservation {
+    let attemptId: String
+    let key: String
+    let pid: Int
+    let start: String
+    fileprivate(set) var count: Int64 = 0
+    private(set) var complete: Bool
+    private(set) var checkpointCount: Int64? = nil
+    static let limit: Int64 = 9_007_199_254_740_991 // exactly representable in JSON consumers
+
+    init(attemptId: String, key: String, pid: Int, start: String) {
+        self.attemptId = attemptId; self.key = key; self.pid = pid; self.start = start
+        self.complete = attemptId.range(of: "^[a-f0-9-]{36}:[1-9][0-9]*$", options: .regularExpression) != nil
+            && key.range(of: "^[a-f0-9-]{36}\\.[0-9]+$", options: .regularExpression) != nil
+            && pid > 0 && !start.isEmpty
+    }
+    mutating func dispatch(direct: (() -> Void)?, fallback: (() -> Void)?) -> Bool {
+        guard let call = direct ?? fallback else { return false }
+        if count >= Self.limit { complete = false } else { count += 1 }
+        call() // observation failure never blocks the lock
+        return true
+    }
+    mutating func checkpoint() -> [String: Any] {
+        if checkpointCount != nil { complete = false }
+        checkpointCount = count
+        return witness(phase: "watch", terminal: nil)
+    }
+    func witness(phase: String, terminal: String?) -> [String: Any] {
+        var value: [String: Any] = ["schema": 1, "attemptId": attemptId, "key": key,
+            "pid": pid, "start": start, "count": count, "complete": complete, "phase": phase]
+        if let baseline = checkpointCount { value["checkpointCount"] = baseline }
+        if let terminal = terminal { value["terminal"] = terminal }
+        return value
+    }
+}
+// END GUARD OBSERVATION
+
 @available(macOS 14.0, *)
 @main
 struct InstarDesktopHost {
@@ -1460,18 +1499,20 @@ extension InstarDesktopHost {
         return onConsole ? true : nil
     }
 
+    private static var guardObservation = GuardDispatchObservation(attemptId: "", key: "", pid: 0, start: "")
+
     private static func lockNow() -> Bool {
         typealias Immediate = @convention(c) () -> Void
         if let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login", RTLD_NOW),
            let symbol = dlsym(handle, "SACLockScreenImmediate") {
-            unsafeBitCast(symbol, to: Immediate.self)()
-            return true
+            return guardObservation.dispatch(direct: { unsafeBitCast(symbol, to: Immediate.self)() }, fallback: nil)
         }
         guard let (code, _) = buildLayoutKeys()[Unicode.Scalar("q")] else { return false }
         let flags: CGEventFlags = [.maskCommand, .maskControl]
-        postKey(code, flags: flags, down: true)
-        postKey(code, flags: flags, down: false)
-        return true
+        return guardObservation.dispatch(direct: nil, fallback: {
+            postKey(code, flags: flags, down: true)
+            postKey(code, flags: flags, down: false)
+        })
     }
 
     private static func transition(root: String, key: String, from: Set<String>, to: String,
@@ -1482,6 +1523,10 @@ extension InstarDesktopHost {
             entry["state"] = to
             entry["guardAt"] = Int64(Date().timeIntervalSince1970 * 1000)
             for (name, value) in extra { entry[name] = value }
+            if to == "watching" { entry["guardWatchObservation"] = guardObservation.checkpoint() }
+            if LockedStore.isTerminal(to) {
+                entry["guardFinalObservation"] = guardObservation.witness(phase: "final", terminal: to)
+            }
             LockedStore.setMarker(&state, key, entry)
             return true
         }) else { emergencyLock(root: root, key: key) }
@@ -1526,10 +1571,14 @@ extension InstarDesktopHost {
     /// it. It holds no authority except to lock this Mac for this one duty.
     fileprivate static func runRelockGuard(root: String, key: String) -> Never {
         let me = Int(getpid())
+        let start = LockedStore.processInfo(getpid())?.start ?? ""
+        guardObservation = GuardDispatchObservation(
+            attemptId: ProcessInfo.processInfo.environment["INSTAR_GUARD_OBSERVATION"] ?? "",
+            key: key, pid: me, start: start)
         _ = LockedStore.withLock(root: root) { state in
             guard var entry = LockedStore.marker(state, key) else { return }
             entry["guardPid"] = me
-            entry["guardStart"] = LockedStore.processInfo(getpid())?.start ?? ""
+            entry["guardStart"] = start
             LockedStore.setMarker(&state, key, entry)
         }
         DispatchQueue.global().async {
