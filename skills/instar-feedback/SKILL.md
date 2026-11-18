@@ -283,3 +283,14 @@ curl -s -X POST http://localhost:4040/feedback \
     "description": "User said: \"I wish I could see what my agent did last week, not just today.\" The /events endpoint currently caps at 720 hours but the default query window in status outputs is 24h. User expected a week of history to be visible in status."
   }'
 ```
+
+## Report observations before remedies
+
+<!-- INSTAR:PROBLEM-FIRST-BUG-REPORTS -->
+A bug report gives the observed failure, expected behavior, exact reproduction, source message
+and evidence, relevant environment, and what remains unknown. Do not prescribe an implementation
+while reporting the problem. Any suspected cause or remedy is an explicitly unreviewed hypothesis
+for the builder to evaluate independently, never an established diagnosis or instruction. Preserve
+and attribute outcomes the user explicitly requested; this rule must not erase a user's request.
+Constitutional assessment belongs in the existing independent design/landing review for every
+fix, including small changes. No phrase matcher decides whether a semantic fix is acceptable.

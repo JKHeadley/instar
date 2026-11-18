@@ -109,6 +109,9 @@ function ensureRegistryAsset(): void {
   // ships). A `dist` clean therefore leaves `src/data` present and the mirror's source
   // gone — and probing only `src/data` would return early over exactly that state.
   const needed = [
+    path.join(ROOT, 'dist/data/constitution/purpose.md'),
+    path.join(ROOT, 'dist/data/constitution/rules.md'),
+    path.join(ROOT, 'dist/data/constitution/sources.json'),
     path.join(ROOT, 'src', 'data', 'standards-registry.md'),
     path.join(ROOT, 'src', 'data', 'standards-registry.meta.json'),
     path.join(ROOT, 'src', 'data', 'standards-guard-index.json'),

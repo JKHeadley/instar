@@ -19,6 +19,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 export const INSTAR = 'JKHeadley/instar';
@@ -40,6 +43,38 @@ export const BASELINES = {
 export const WINDOW_MS = 48 * 60 * 60 * 1000;
 
 export const OTHER_REPO = { [INSTAR]: INSTAR_2, [INSTAR_2]: INSTAR };
+
+/** Exact source verification, not a judgment of what the text means. Snapshot
+ * hashes alone cannot establish upstream provenance or protected-main standing.
+ * Called by snapshot landing review and Echo's existing bug-overseer cadence. */
+export function checkGoverningSources(directory, { ghFn = gh, current = false, refresh = false } = {}) {
+  try {
+    const documentPaths = ['docs/00-the-purpose.md', 'docs/01-the-rules.md'];
+    const files = ['purpose.md', 'rules.md'];
+    const digest = (b) => crypto.createHash('sha256').update(b).digest('hex');
+    let source = refresh ? { schema: 1, repo: INSTAR_2, commit: JSON.parse(ghFn(['api', `repos/${INSTAR_2}/commits/main`])).sha } : JSON.parse(fs.readFileSync(path.join(directory, 'sources.json'), 'utf8'));
+    if (source.schema !== 1 || source.repo !== INSTAR_2 || !/^[a-f0-9]{40}$/.test(source.commit ?? '')) return { state: 'unknown', reason: 'invalid-source' };
+    const comparison = JSON.parse(ghFn(['api', `repos/${INSTAR_2}/compare/${source.commit}...main`]));
+    if (!['ahead', 'identical'].includes(comparison.status) || comparison.merge_base_commit?.sha !== source.commit) return { state: 'unknown', reason: 'source-not-on-protected-main' };
+    const docs = documentPaths.map((remote) => Buffer.from(JSON.parse(ghFn(['api', `repos/${INSTAR_2}/contents/${remote}?ref=${source.commit}`])).content, 'base64'));
+    if (refresh) {
+      source = { ...source, documents: documentPaths.map((remote, i) => ({ key: i === 0 ? 'purpose' : 'rules', path: remote, file: files[i], sha256: digest(docs[i]) })) };
+      fs.mkdirSync(directory, { recursive: true });
+      docs.forEach((bytes, i) => fs.writeFileSync(path.join(directory, files[i]), bytes));
+      fs.writeFileSync(path.join(directory, 'sources.json'), JSON.stringify(source, null, 2) + '\n');
+    } else if (!Array.isArray(source.documents) || source.documents.length !== 2 || !docs.every((bytes, i) => source.documents[i]?.path === documentPaths[i] && source.documents[i]?.file === files[i] && source.documents[i]?.sha256 === digest(bytes) && fs.readFileSync(path.join(directory, files[i])).equals(bytes))) {
+      return { state: 'unknown', reason: 'upstream-bytes-mismatch' };
+    }
+    const stale = current && documentPaths.some((remote, i) => {
+      const latest = Buffer.from(JSON.parse(ghFn(['api', `repos/${INSTAR_2}/contents/${remote}?ref=main`])).content, 'base64');
+      return !latest.equals(docs[i]);
+    });
+    return { state: stale ? 'stale' : current ? 'current' : 'verified-pinned-source', commit: source.commit, checkedAt: new Date().toISOString(), provenance: 'exact-upstream-bytes-on-protected-main' };
+  } catch {
+    // Never print source content, credential-shaped stderr or a fabricated clean result.
+    return { state: 'unknown', reason: 'source-read-failed', checkedAt: new Date().toISOString() };
+  }
+}
 
 export function touchesBook(repo, files) {
   const book = BOOKS[repo] ?? [];
@@ -223,6 +258,13 @@ function arg(argv, name) {
 
 function main(argv) {
   const [mode] = argv;
+  if (mode === 'sources') {
+    const directory = arg(argv, '--directory');
+    if (!directory) { console.error('usage: check-constitution-pairing.mjs sources --directory <constitution-source-directory> [--current|--refresh]'); return 2; }
+    const result = checkGoverningSources(directory, { current: argv.includes('--current'), refresh: argv.includes('--refresh') });
+    console.log(JSON.stringify(result));
+    return result.state === 'unknown' ? 2 : result.state === 'stale' ? 1 : 0;
+  }
   if (mode === 'pr') {
     const repo = arg(argv, '--repo');
     const number = Number(arg(argv, '--number'));

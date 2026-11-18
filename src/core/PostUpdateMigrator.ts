@@ -3380,6 +3380,7 @@ export class PostUpdateMigrator {
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateFractalEightyTwentyTriage(result);
+    this.migrateBugFixConstitutionalReview(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
@@ -3830,6 +3831,59 @@ export class PostUpdateMigrator {
   // Dimension: marker-sniffed, fingerprint-guarded, customized files untouched,
   // idempotent. Runs AFTER the posture migration so an agent that takes both in
   // one update converges on the current bundled file either way.
+  /** Deliver allowlisted clauses and support files to canonical and both
+   * renderings. Append to known built-ins; never replace unrelated custom text.
+   * Spec: docs/specs/bug-fix-constitutional-review.md. */
+  private migrateBugFixConstitutionalReview(result: MigrationResult): void {
+    const bundledRoot = path.resolve(__dirname, '..', '..');
+    const roots = ['.instar', '.claude', '.agents'];
+    const skills = [
+      { name: 'instar-dev', marker: 'INSTAR:ALL-TIER-CONSTITUTION-REVIEW', heading: '## Constitutional assessment for every development tier', fingerprint: '# /instar-dev' },
+      { name: 'instar-feedback', marker: 'INSTAR:PROBLEM-FIRST-BUG-REPORTS', heading: '## Report observations before remedies', fingerprint: '# instar-feedback' },
+    ];
+    for (const skill of skills) {
+      const bundled = path.join(bundledRoot, 'skills', skill.name, 'SKILL.md');
+      try {
+        if (!fs.existsSync(bundled)) { result.errors.push(`constitutional review: bundled ${skill.name} missing`); continue; }
+        const full = fs.readFileSync(bundled, 'utf8');
+        const start = full.indexOf(skill.heading);
+        if (start < 0) { result.errors.push(`constitutional review: bundled ${skill.name} clause missing`); continue; }
+        const clause = full.slice(start).trim();
+        for (const root of roots) {
+          const directory = path.join(this.config.projectDir, root, 'skills', skill.name);
+          const target = path.join(directory, 'SKILL.md');
+          if (!fs.existsSync(target)) continue;
+          const current = fs.readFileSync(target, 'utf8');
+          if (!current.includes(skill.fingerprint)) { result.skipped.push(`constitutional review: custom ${root}/skills/${skill.name} preserved`); continue; }
+          if (!current.includes(skill.marker)) {
+            let next = current.trimEnd() + '\n\n' + clause + '\n';
+            const bodyHash = skillBodyHash(next);
+            if (bodyHash && root !== '.instar') next = stampSkillRendering(next.replace(/^x-instar-stamp:[^\n]*\n/gm, ''), bodyHash) ?? next;
+            fs.writeFileSync(target, next);
+            result.upgraded.push(`constitutional review: ${root}/skills/${skill.name} guidance`);
+          }
+          if (skill.name !== 'instar-dev') continue;
+          for (const name of ['constitutional-review.mjs', 'write-trace.mjs']) {
+            const source = path.join(bundledRoot, 'skills/instar-dev/scripts', name);
+            const destination = path.join(directory, 'scripts', name);
+            const incoming = fs.readFileSync(source);
+            if (fs.existsSync(destination)) {
+              const existing = fs.readFileSync(destination);
+              if (existing.equals(incoming)) continue;
+              const sha = crypto.createHash('sha256').update(existing).digest('hex');
+              if (name !== 'write-trace.mjs' || sha !== '7b7357a5dbd6c85f211fc03fd0d89b14ee42be5c4679a4aeee151cb0cc8f62dd') {
+                result.skipped.push(`constitutional review: customized ${destination} preserved`); continue;
+              }
+            }
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.writeFileSync(destination, incoming);
+            result.upgraded.push(`constitutional review: ${root}/skills/instar-dev/scripts/${name}`);
+          }
+        }
+      } catch (err) { result.errors.push(`constitutional review migration ${skill.name}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+  }
+
   private migrateConformanceGateAutoInvoke(result: MigrationResult): void {
     const MARKER = 'Standards-Conformance Gate auto-invocation';
     try {

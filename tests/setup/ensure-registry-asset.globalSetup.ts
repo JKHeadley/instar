@@ -16,6 +16,7 @@ import {
 } from '../../src/core/StandardsRegistryParser.js';
 import { buildGuardTreeIndex } from '../../src/core/StandardsEnforcementAuditor.js';
 import { registryAssetIsStale } from './registryAssetFreshness.js';
+import { resolveGoverningConstitution } from '../../src/core/standardsRegistryPath.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -26,16 +27,19 @@ export default function setup(): void {
 /** Exported so the production-generator parity ratchet can use an isolated root. */
 export function ensureRegistryAsset(root: string): void {
   const outputDirs = [path.join(root, 'src', 'data'), path.join(root, 'dist', 'data')];
-  const outputs = outputDirs.flatMap(dir => [
+  const outputs = [...outputDirs.flatMap(dir => [
     path.join(dir, 'standards-registry.md'),
     path.join(dir, 'standards-registry.meta.json'),
     path.join(dir, 'standards-guard-index.json'),
     path.join(dir, 'standards-guard-index.meta.json'),
-  ]);
+  ]), ...['purpose.md', 'rules.md', 'sources.json'].map(file => path.join(root, 'dist/data/constitution', file))];
   // PRESENCE IS NOT FRESHNESS — same defect as the sibling setup, same fix. An
   // asset that exists but was generated from an older source is the case a
   // presence check is structurally unable to see.
   if (!registryAssetIsStale(root, outputs)) return;
+  const governingDirectory = path.join(root, 'src/data/constitution');
+  const governing = resolveGoverningConstitution(governingDirectory);
+  if (!governing.usable) throw new Error(`refusing to generate governing E2E context: ${governing.reason}`);
 
   const sourceRelative = 'docs/STANDARDS-REGISTRY.md';
   const bytes = fs.readFileSync(path.join(root, sourceRelative));
@@ -87,4 +91,5 @@ export function ensureRegistryAsset(root: string): void {
     fs.writeFileSync(path.join(dir, 'standards-guard-index.json'), guardIndexBytes);
     fs.writeFileSync(path.join(dir, 'standards-guard-index.meta.json'), guardIndexMeta);
   }
+  fs.cpSync(governingDirectory, path.join(root, 'dist/data/constitution'), { recursive: true });
 }

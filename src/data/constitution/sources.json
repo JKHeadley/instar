@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "repo": "JKHeadley/instar-2",
+  "commit": "e575f8232881dbb8f22cb65321413f154203ec91",
+  "documents": [
+    {
+      "key": "purpose",
+      "path": "docs/00-the-purpose.md",
+      "file": "purpose.md",
+      "sha256": "414b9c901f1f8eb7183823ea3dffc6194ddc0018be2a285d41efda6e10ec4052"
+    },
+    {
+      "key": "rules",
+      "path": "docs/01-the-rules.md",
+      "file": "rules.md",
+      "sha256": "e08da0c4e66f521aa00d4ae24e1362644d54d81f70782f2872496334f0e33df0"
+    }
+  ]
+}

@@ -274,15 +274,20 @@ describe('test 5 — adversarial timing: the new patterns stay linear', () => {
     }
   });
 
-  it('a 64 KB unbroken run WITH interior word boundaries stays within every pattern budget', () => {
+  it('a 64 KB unbroken run WITH interior word boundaries stays within every pattern CPU budget', () => {
     // The input class is part of the contract: a pure alphanumeric run is
     // vacuous (interior \b never fires); hyphens ignite quadratic patterns.
     const run = ('a'.repeat(20) + '-').repeat(Math.ceil(65_536 / 21)).slice(0, 65_536);
     // This fixture found two pre-existing quadratic patterns (jwt and
     // url-embedded-credential); both are now capped, so NO pattern is exempt.
     for (const p of DURABLE_SECRET_PATTERNS) {
-      const ms = byKind(new RegExp(p.regex.source, 'gd'), run);
-      expect(ms, `${p.kind} took ${ms.toFixed(0)}ms`).toBeLessThan(250);
+      // Backtracking consumes CPU. Host descheduling under the full suite must
+      // not masquerade as regex work; retain wall time to diagnose contention.
+      const started = process.cpuUsage();
+      const wallMs = byKind(new RegExp(p.regex.source, 'gd'), run);
+      const used = process.cpuUsage(started);
+      const cpuMs = (used.user + used.system) / 1000;
+      expect(cpuMs, `${p.kind} took ${cpuMs.toFixed(0)}ms CPU (${wallMs.toFixed(0)}ms wall)`).toBeLessThan(250);
     }
   });
 
