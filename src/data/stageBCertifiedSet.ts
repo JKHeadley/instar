@@ -24,6 +24,14 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/boundedInput.ts",
+      "reason": "Pure string helpers (boundedHead/boundedTail) with no imports, I/O or state; reached through the excluded MessagingToneGate to bound prompt context, outside the Stage-B canaried delivery path, certified by tests/unit/bounded-judgment-input.test.ts."
+    },
+    {
+      "file": "src/core/standing-authorization.ts",
+      "reason": "Deterministic resolver for the tone gate's B17 standing-grant context (reads injected operator history, no I/O of its own, no delivery logic); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/standing-authorization.test.ts."
+    },
+    {
       "file": "src/core/GraphDurableFileMemo.ts",
       "reason": "Process-local memo of files already flushed, reached through SecretStore. It only skips a repeat fsync of unchanged content and holds no inbound-delivery or lifecycle logic."
     },

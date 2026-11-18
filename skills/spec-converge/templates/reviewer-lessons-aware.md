@@ -20,7 +20,7 @@ Your job: load the canonical Instar lessons catalog, then check this spec agains
 4. **The project's CLAUDE.md** (if reviewing an instar-source spec, this is `CLAUDE.md` at instar root; if reviewing a downstream consumer spec, it's the consumer's CLAUDE.md). For the "Standards" + "Anti-Patterns" + "Key Patterns from Dawn" sections.
 5. **Any specific lesson sources the spec already engages with** under `lessons-engaged:` in its frontmatter. Verify the engagement is real, not just citation.
 
-## Your perspective — four structural questions
+## Your perspective — five structural questions
 
 ### Q1. Contradictions (CRITICAL severity)
 
@@ -118,6 +118,18 @@ conservative default, fallback ladder ending deterministically), with the arbite
 named. Do not invent replacement caps. Preserve evidenced safety/protocol/type
 constraints; measurements, examples and advisory defaults are not caps unless
 they actually gate behavior. Explicitly report `fixed-limits: none` when absent.
+
+### Q5. EXPERIENCE FIT — the intended outcome, not only absence of rule conflicts
+
+Load the person's attributable request and the current applicable articles in `docs/STANDARDS-REGISTRY.md`: *The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred*, *Trust Is Earned by Work and Granted Only by the Person*, and *Intelligence Infers, Keywords Only Guard*. Read their current text; do not infer their requirements from titles or the author's summary. If a source is missing, say what cannot be established rather than inventing the person's goal.
+
+Independently walk the ordinary journey from the person's need through the proposed result. Where must the person notice, decide, approve, repeat information or recover? Does the journey deliver the stated outcome, including the person's chosen level of involvement? A design can conflict with no enumerated rule and still fail that outcome. Distinguish a missing constitutional obligation from a failure to apply an existing one; propose any genuinely new obligation for ratification, never silently add it as a review rule.
+
+For an approval or trust surface, test BOTH **needless repeat asks** and **coverage the record does not support**. Include contrasting examples: the same task in different words, different tasks with the same service/operation label, and a changed audience, limit or consequence. The fixed action/account/audience tuple is an authority floor, not a semantic task classifier. The current trust article requires an evidence-sized offer; a particular spec may additionally require the narrowest supported category. Cite which source requires which property rather than making that spec's strategy a universal rule. An offer grants nothing, and existing sign-off conditions still apply.
+
+Distinguish measured ask burden from a hypothesis or proposed measurement. Identify what evidence would reveal repeated asks, changed/declined approvals, unsupported coverage and whether the user reached their goal. Do not invent an acceptable ask-count target, a universal category size, or a new approval requirement. Missing measurements are unknown, not zero; an unmeasured improvement is not a proven improvement.
+
+Record an **Experience fit** assessment: attributable goal/source; ordinary journey and contrasting cases; evidence and limits; finding/disposition. When this lens or its trust portion is **not applicable**, give the reason grounded in the change's surface. Classify material findings through the existing DESIGN/PRECISION process; do not create an automatic blocker based on a keyword, count or missing quota.
 
 ## Output format
 

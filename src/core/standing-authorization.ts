@@ -23,6 +23,17 @@
  * Spec: docs/specs/BIAS-TO-ACTION-SPEC.md (D3/D4/D6/D9/D10).
  */
 
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from './boundedInput.js';
+
+/**
+ * How much of the operator's grant message the tone gate sees. Derived: a
+ * Telegram message cannot exceed 4096 characters, so every Telegram grant is
+ * passed WHOLE, and the disclosure room on top keeps that true even when the
+ * helper has to cut a longer (Slack or app) message. Cost: at most ~4.3k
+ * characters in one gate prompt, only when a verified grant exists.
+ */
+export const STANDING_GRANT_QUOTE_CHARS = 4096 + BOUNDED_INPUT_MIN_CHARS;
+
 /** One inbound message row the resolver inspects (from the verified-operator history). */
 export interface OperatorHistoryRow {
   /** Authenticated Telegram user id of the sender. Missing/blank ⇒ non-attributable. */
@@ -170,7 +181,12 @@ export function resolveStandingAuthorization(
   }
 
   // Bound the evidence quote (the gate renders it as untrusted DATA + scrubs it).
-  const evidenceQuote = best.text.slice(0, 280);
+  // The tone gate's B17 judges from this quote whether the grant COVERS the
+  // action being asked about, so a cut is load-bearing: the old 280-char head
+  // could drop the very grant phrase `findGrantPhrase` matched, and the gate
+  // then judged coverage from a quote with no grant in it. See
+  // STANDING_GRANT_QUOTE_CHARS for the bound; a longer message says it is cut.
+  const evidenceQuote = boundedHead(best.text, STANDING_GRANT_QUOTE_CHARS);
   return {
     present: true,
     source: 'verified-operator-directive',

@@ -195,6 +195,10 @@ const DEFAULT_GENERATED_PATTERNS = [
   // and results describe THIS machine's disk (hardware-bound); another machine
   // reading them would watch the wrong disk or recover the wrong process group.
   '.instar/state/disk-steward/',
+  // Quota pacing (docs/specs/quota-pacing-forecast.md §4): each machine's own quota-reading
+  // history. Merged live on read through GET /quota-pacing, so syncing it would only create
+  // conflicts; it is derived telemetry and rebuilds after a restore.
+  '.instar/state/quota-history/',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
