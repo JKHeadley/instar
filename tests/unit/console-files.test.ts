@@ -13,7 +13,7 @@ import { JSDOM } from 'jsdom';
 import { marked } from 'marked';
 import {
   normPath, joinPath, parentOf, baseName, crumbs, folderWords, fileHash, pathFromHash, sizeWords, fileKind,
-  refusalWords, buildListing, buildFile, readOnly, saveBody, saveResult, conflictWords, stashFor, readStash,
+  refusalWords, downloadTooLargeWords, buildListing, buildFile, readOnly, saveBody, saveResult, conflictWords, stashFor, readStash,
   parseRecent, pushRecent, pinnedFrom, searchLoaded, buildConfig, folderInput, configPatch, configResultWords,
   filesHeadline, NEVER_EDITABLE, RECENT_MAX,
 } from '../../dashboard/console/files-model.js';
@@ -63,7 +63,8 @@ describe('refusals are said, never hidden', () => {
     expect(refusalWords(403, { error: 'Path traversal not allowed' }).kind).toBe('not-allowed');
     expect(refusalWords(404, { error: 'Path not found' }).kind).toBe('missing');
     expect(refusalWords(404, { error: 'file viewer is disabled' }).kind).toBe('off');
-    expect(refusalWords(413, { size: 3 * 1_048_576, maxSize: 1_048_576 }).text).toBe('This file is 3.0 MB, more than the 1.0 MB this page can open or download.');
+    expect(refusalWords(413, { size: 3 * 1_048_576, maxSize: 1_048_576 }).text).toBe('This file is 3.0 MB, more than the 1.0 MB this page can show. You can still download it.');
+    expect(downloadTooLargeWords({ size: 3 * 1_073_741_824, maxSize: 1_073_741_824 })).toMatch(/limit for downloads\.$/);
     expect(refusalWords(401, {}).kind).toBe('signin');
     expect(refusalWords(0, {}).kind).toBe('unreachable');
     expect(refusalWords(500, { error: 'Failed to read file' }).text).toBe('The server answered 500: Failed to read file.');

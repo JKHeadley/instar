@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "dashboard-work-history-folds",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T01:19:41.532Z",
+  "artifactPath": "upgrades/side-effects/dashboard-work-history-folds.md",
+  "artifactSha256": "c726dd8af17ca9fcf4bb062ddec0dbd159a8aec13e411c7ca0266c9be755a0c0",
+  "coveredFiles": [
+    "dashboard/console/work.js",
+    "tests/unit/console-work-model.test.ts",
+    "upgrades/eli16/dashboard-work-history-folds.md",
+    "upgrades/next/dashboard-work-history-folds.md",
+    "upgrades/side-effects/dashboard-work-history-folds.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible presentation correction to existing history lanes; no API or state changes.",
+  "eli16Path": "upgrades/eli16/dashboard-work-history-folds.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-work-history-folds.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
