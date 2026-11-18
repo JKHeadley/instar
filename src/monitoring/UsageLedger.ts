@@ -25,6 +25,7 @@ import crypto from 'node:crypto';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 
 export type UsageSource =
   | 'claude-transcript' | 'codex-rollout' | 'intelligence-call'
@@ -67,6 +68,8 @@ export interface UsageLedgerOptions {
   agentHomes: string[];
   /** Other registered agents' homes on this machine (a nested home is not ours). */
   otherAgentHomes?: string[];
+  /** Locally registered transcript homes. Account eligibility is irrelevant to historical usage. */
+  poolHomes?: () => ReadonlyArray<{ framework: string; configHome: string }>;
   /** Max directory depth under `<root>/projects` (spec default 3). */
   maxDepth?: number;
   /** Shared per-tick file budget across all roots (spec default 500). */
@@ -95,6 +98,7 @@ export interface ScanReport {
 }
 
 export interface CoverageRoot {
+  listing: 'unscanned' | 'scanning' | 'listed' | 'partial' | 'unavailable';
   root: string;
   origin: string;
   filesScanned: number;
@@ -435,7 +439,12 @@ export type SnapshotImport = {
   detail?: string;
 };
 
-type ScanQueue = { r: { root: string; origin: string }; kind: 'claude' | 'codex'; files: string[] };
+function pathIsMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+type ScanQueue = { r: CoverageRoot; kind: 'claude' | 'codex'; files: string[] };
 
 /** How many stats one directory's files may have in flight at once in the non-blocking walk. */
 const ASYNC_STAT_BATCH = 32;
@@ -451,15 +460,23 @@ async function mapInBatches<T, R>(items: readonly T[], fn: (item: T) => Promise<
 
 export class UsageLedger {
   private readonly db: BetterSqliteDatabase;
-  private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes'>> & { otherAgentHomes: string[] };
-  private readonly roots: { root: string; origin: string }[] = [];
+  private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes' | 'poolHomes'>> & { otherAgentHomes: string[] };
+  private readonly roots = new Map<string, CoverageRoot>();
+  private readonly codexRoots = new Map<string, CoverageRoot>();
+  private readonly poolHomes: UsageLedgerOptions['poolHomes'];
+  private poolDiscoveryState: 'unconfigured' | 'available' | 'unavailable' = 'unconfigured';
+  get poolDiscovery() { return this.poolDiscoveryState; }
   private rootCursor = 0;
+  /** Resume after an unreadable file next tick so it cannot starve later files within the same root. */
+  private readonly retryAfter = new WeakMap<CoverageRoot, string>();
   private scanInFlight: Promise<ScanReport> | null = null;
-  private readonly coverage = new Map<string, CoverageRoot>();
+  private readonly promoteCopiedRow: Database.Statement;
   private readonly upsertStmts: Record<'hour' | 'day' | 'sessionDay', Database.Statement>;
   private closed = false;
 
   constructor(opts: UsageLedgerOptions) {
+    this.poolHomes = opts.poolHomes;
+    this.refreshPoolRoots();
     this.opts = {
       maxDepth: 3,
       filesPerTick: 500,
@@ -487,6 +504,16 @@ export class UsageLedger {
     const cpCols = (this.db.prepare('PRAGMA table_info(checkpoints)').all() as { name: string }[]).map(c => c.name);
     if (!cpCols.includes('extra')) this.db.exec('ALTER TABLE checkpoints ADD COLUMN extra TEXT');
     this.initMeta();
+    // Stable observation IDs are shared across homes. An uncopied source can arrive
+    // after a backup; replace only the uncounted copy's detail from the original.
+    this.promoteCopiedRow = this.db.prepare(`UPDATE usage_events SET
+      correlation_key = @correlation_key, ts = @ts, model = @model, machine_id = @machine_id,
+      account_id = @account_id, session_id = @session_id, session_kind = @session_kind,
+      parent_session_id = @parent_session_id, scope_basis = @scope_basis, topic_id = @topic_id,
+      job_slug = @job_slug, run_id = @run_id, tok_input = @tok_input, tok_cache_read = @tok_cache_read,
+      tok_cache_write = @tok_cache_write, tok_output = @tok_output, tok_reasoning = @tok_reasoning,
+      status = 'counted', source_path = @source_path, source_pos = @source_pos
+      WHERE observation_id = @observation_id AND status = 'copied-history'`);
     this.upsertStmts = {
       hour: this.prepareUpsert('rollup_hour', HOUR_KEY),
       day: this.prepareUpsert('rollup_day', DAY_KEY),
@@ -529,13 +556,47 @@ export class UsageLedger {
 
   /** Register a framework root (a Claude config dir). Idempotent. `origin` says where it came from. */
   addClaudeRoot(configDir: string, origin: string): void {
-    const root = path.resolve(configDir);
-    if (this.roots.some(r => r.root === root)) return;
-    this.roots.push({ root, origin });
-    this.coverage.set(root, { root, origin, filesScanned: 0, filesSkippedDirs: 0, filesOutOfWindow: 0, filesTooDeep: 0, filesPending: 0 });
+    this.registerRoot(this.roots, configDir, origin);
   }
 
-  listRoots(): CoverageRoot[] { return [...this.coverage.values()].map(c => ({ ...c })); }
+  /** Keep an explicitly registered root when its pool registration later disappears. */
+  private registerRoot(roots: Map<string, CoverageRoot>, home: string, origin: string): void {
+    const root = path.resolve(home);
+    const existing = roots.get(root);
+    if (existing) {
+      if (existing.origin === 'subscription-pool' || existing.origin === 'codex:subscription-pool') existing.origin = origin;
+      return;
+    }
+    roots.set(root, { root, origin, listing: 'unscanned', filesScanned: 0, filesSkippedDirs: 0, filesOutOfWindow: 0, filesTooDeep: 0, filesPending: 0 });
+  }
+
+  private refreshPoolRoots(): void {
+    if (!this.poolHomes) return;
+    let homes: ReturnType<NonNullable<UsageLedgerOptions['poolHomes']>>;
+    try {
+      homes = this.poolHomes();
+      this.poolDiscoveryState = 'available';
+    } catch {
+      // The local registry cannot vouch for a pool home this tick. The ambient roots
+      // still work, and coverage exposes the incomplete read until the pool recovers.
+      this.poolDiscoveryState = 'unavailable';
+      homes = [];
+    }
+    const claude = new Set<string>(), codex = new Set<string>();
+    for (const { framework, configHome } of homes) {
+      // Peer projections have no local config home. Never resolve a blank/relative
+      // label against the server cwd or infer account attribution from this path.
+      if (!configHome || !path.isAbsolute(configHome)) continue;
+      if (framework === CLAUDE_CODE_FRAMEWORK) claude.add(path.resolve(configHome));
+      if (framework === CODEX_CLI_FRAMEWORK) codex.add(path.resolve(configHome));
+    }
+    for (const [map, wanted, origin] of [[this.roots, claude, 'subscription-pool'], [this.codexRoots, codex, 'codex:subscription-pool']] as const) {
+      for (const [home, registered] of map) if (registered.origin === origin && !wanted.has(home)) map.delete(home);
+      for (const home of wanted) this.registerRoot(map, home, origin);
+    }
+  }
+
+  listRoots(): CoverageRoot[] { return [...this.roots.values(), ...this.codexRoots.values()].map(c => ({ ...c })); }
 
   // ── bindings (spawn records) ────────────────────────────────────────
 
@@ -608,14 +669,22 @@ export class UsageLedger {
     return best?.ours ? 'cwd' : null;
   }
 
+  private startListing(cov: CoverageRoot): void {
+    cov.listing = 'scanning';
+    cov.filesPending = 0;
+    cov.filesSkippedDirs = 0;
+    cov.filesTooDeep = 0;
+    cov.filesOutOfWindow = 0;
+  }
+
   /** May a project directory (by its encoded name) hold members? Rules a directory IN only. */
-  private dirMayHoldMembers(dirName: string, dirPath: string): boolean {
+  private dirMayHoldMembers(dirName: string, dirPath: string, cov: CoverageRoot): boolean {
     for (const h of this.opts.agentHomes) {
       if (dirName.startsWith(encodeClaudeProjectDir(path.resolve(h)))) return true;
     }
     // A spawn-record session file anywhere rules the directory in, wherever its cwd is.
     let entries: string[];
-    try { entries = fs.readdirSync(dirPath); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return false; }
+    try { entries = fs.readdirSync(dirPath); } catch { cov.listing = 'partial'; return false; }
     const stmt = this.db.prepare('SELECT 1 FROM session_bindings WHERE session_id = ? LIMIT 1');
     return entries.some(e => e.endsWith('.jsonl') && stmt.get(e.slice(0, -'.jsonl'.length)) !== undefined);
   }
@@ -624,16 +693,20 @@ export class UsageLedger {
 
   /** Enumerate candidate transcript files under one root, honoring depth, symlink and window limits. */
   private listRootFiles(root: string): string[] {
-    const cov = this.coverage.get(root)!;
+    const cov = this.roots.get(root)!;
     const projects = path.join(root, 'projects');
     const out: string[] = [];
+    this.startListing(cov);
     let dirs: fs.Dirent[];
-    try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return out; }
+    try {
+      if (!(fs.lstatSync(root)).isDirectory() || !(fs.lstatSync(projects)).isDirectory()) { cov.listing = 'unavailable'; return out; }
+      dirs = fs.readdirSync(projects, { withFileTypes: true });
+    } catch { cov.listing = 'unavailable'; return out; }
     const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
     let skippedDirs = 0, outOfWindow = 0, tooDeep = 0;
     const walk = (dir: string, depth: number): void => {
       let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { cov.listing = 'partial'; return; }
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
         const p = path.join(dir, e.name);
@@ -641,7 +714,7 @@ export class UsageLedger {
           if (depth + 1 > this.opts.maxDepth) { tooDeep++; continue; }
           walk(p, depth + 1);
         } else if (e.isFile() && e.name.endsWith('.jsonl')) {
-          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ continue; }
+          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { cov.listing = 'partial'; continue; }
           out.push(p);
         }
       }
@@ -649,7 +722,7 @@ export class UsageLedger {
     for (const d of dirs) {
       if (!d.isDirectory() || d.isSymbolicLink()) continue;
       const dp = path.join(projects, d.name);
-      if (!this.dirMayHoldMembers(d.name, dp)) { skippedDirs++; continue; }
+      if (!this.dirMayHoldMembers(d.name, dp, cov)) { skippedDirs++; continue; }
       walk(dp, 1);
     }
     cov.filesSkippedDirs = skippedDirs;
@@ -659,12 +732,12 @@ export class UsageLedger {
   }
 
   /** dirMayHoldMembers() with the directory read off the event loop. Same rule. */
-  private async dirMayHoldMembersAsync(dirName: string, dirPath: string): Promise<boolean> {
+  private async dirMayHoldMembersAsync(dirName: string, dirPath: string, cov: CoverageRoot): Promise<boolean> {
     for (const h of this.opts.agentHomes) {
       if (dirName.startsWith(encodeClaudeProjectDir(path.resolve(h)))) return true;
     }
     let entries: string[];
-    try { entries = await fs.promises.readdir(dirPath); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return false; }
+    try { entries = await fs.promises.readdir(dirPath); } catch { cov.listing = 'partial'; return false; }
     if (this.closed) return false;
     const stmt = this.db.prepare('SELECT 1 FROM session_bindings WHERE session_id = ? LIMIT 1');
     return entries.some(e => e.endsWith('.jsonl') && stmt.get(e.slice(0, -'.jsonl'.length)) !== undefined);
@@ -676,16 +749,20 @@ export class UsageLedger {
    * directories are in), and a parity test holds the two to the same answer.
    */
   private async listRootFilesAsync(root: string): Promise<string[]> {
-    const cov = this.coverage.get(root)!;
+    const cov = this.roots.get(root)!;
     const projects = path.join(root, 'projects');
     const out: string[] = [];
+    this.startListing(cov);
     let dirs: fs.Dirent[];
-    try { dirs = await fs.promises.readdir(projects, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return out; }
+    try {
+      if (!(await fs.promises.lstat(root)).isDirectory() || !(await fs.promises.lstat(projects)).isDirectory()) { cov.listing = 'unavailable'; return out; }
+      dirs = await fs.promises.readdir(projects, { withFileTypes: true });
+    } catch { cov.listing = 'unavailable'; return out; }
     const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
     let skippedDirs = 0, outOfWindow = 0, tooDeep = 0;
     const walk = async (dir: string, depth: number): Promise<void> => {
       let entries: fs.Dirent[];
-      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { cov.listing = 'partial'; return; }
       const files: string[] = [];
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
@@ -698,7 +775,7 @@ export class UsageLedger {
         }
       }
       const mtimes = await mapInBatches(files, async (p) => {
-        try { return (await fs.promises.stat(p)).mtimeMs; } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ return null; }
+        try { return (await fs.promises.stat(p)).mtimeMs; } catch { cov.listing = 'partial'; return null; }
       });
       files.forEach((p, i) => {
         const mtime = mtimes[i];
@@ -711,7 +788,7 @@ export class UsageLedger {
       if (this.closed) return [];
       if (!d.isDirectory() || d.isSymbolicLink()) continue;
       const dp = path.join(projects, d.name);
-      if (!await this.dirMayHoldMembersAsync(d.name, dp)) { skippedDirs++; continue; }
+      if (!await this.dirMayHoldMembersAsync(d.name, dp, cov)) { skippedDirs++; continue; }
       await walk(dp, 1);
     }
     cov.filesSkippedDirs = skippedDirs;
@@ -721,7 +798,7 @@ export class UsageLedger {
   }
 
   /** fileChanged() over a list, with the stats off the event loop. Same rule. */
-  private async filterChangedAsync(files: string[]): Promise<string[]> {
+  private async filterChangedAsync(files: string[], cov: CoverageRoot): Promise<string[]> {
     const keep = await mapInBatches(files, async (file) => {
       if (this.closed) return false;
       const cp = this.db.prepare('SELECT inode, offset FROM checkpoints WHERE path = ?').get(file) as { inode: number; offset: number } | undefined;
@@ -729,9 +806,18 @@ export class UsageLedger {
       try {
         const st = await fs.promises.stat(file);
         return st.ino !== cp.inode || st.size !== cp.offset;
-      } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return false; }
+      } catch (error) {
+        if (!pathIsMissing(error)) { cov.listing = 'partial'; cov.filesPending++; }
+        return false;
+      }
     });
     return files.filter((_, i) => keep[i]);
+  }
+
+  private finishListing(r: CoverageRoot, kind: ScanQueue['kind'], files: string[]): ScanQueue {
+    r.filesPending += files.length;
+    if (r.listing === 'scanning') r.listing = 'listed';
+    return { r, kind, files };
   }
 
   /**
@@ -741,10 +827,12 @@ export class UsageLedger {
   scanTick(): ScanReport {
     const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
     if (!this.beginScanTick()) return report;
-    return this.consumeScanQueues([
-      ...this.roots.map(r => ({ r, kind: 'claude' as const, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) })),
-      ...this.codexRoots.map(r => ({ r, kind: 'codex' as const, files: this.listCodexFiles(r.root).filter(f => this.fileChanged(f)) })),
+    const steps = this.consumeScanQueues([
+      ...[...this.roots.values()].map(r => this.finishListing(r, 'claude', this.listRootFiles(r.root).filter(f => this.fileChanged(f, r)))),
+      ...[...this.codexRoots.values()].map(r => this.finishListing(r, 'codex', this.listCodexFiles(r.root).filter(f => this.fileChanged(f, r)))),
     ], report);
+    while (!steps.next().done) { /* The explicit synchronous API drains this tick in one turn. */ }
+    return report;
   }
 
   /**
@@ -755,9 +843,9 @@ export class UsageLedger {
    * contended disk it held the server's main thread for over a minute and the
    * supervisor killed the server (2026-11-13 02:36 PST). Here every directory
    * read and stat goes through fs.promises, so the loop keeps turning between
-   * them. Only the listing moved: ingesting the changed files (up to
-   * `filesPerTick`), the one-off detail rescan after a snapshot import, and the
-   * hourly prune and snapshot are still synchronous, as before.
+   * them. The cold backfill also yields between files; each individual file and
+   * its checkpoint are still one synchronous transaction. The one-off detail
+   * rescan after a snapshot import and hourly prune and snapshot are unchanged.
    *
    * One scan at a time: a call while one is running returns that run's promise.
    */
@@ -768,16 +856,24 @@ export class UsageLedger {
       if (!this.beginScanTick()) return report;
       const queues: ScanQueue[] = [];
       // Roots one after another: the walk inside a root already overlaps its stats.
-      for (const r of [...this.roots]) {
-        queues.push({ r, kind: 'claude', files: await this.filterChangedAsync(await this.listRootFilesAsync(r.root)) });
+      for (const r of [...this.roots.values()]) {
+        queues.push(this.finishListing(r, 'claude', await this.filterChangedAsync(await this.listRootFilesAsync(r.root), r)));
       }
-      for (const r of [...this.codexRoots]) {
-        queues.push({ r, kind: 'codex', files: await this.filterChangedAsync(await this.listCodexFilesAsync(r.root)) });
+      for (const r of [...this.codexRoots.values()]) {
+        queues.push(this.finishListing(r, 'codex', await this.filterChangedAsync(await this.listCodexFilesAsync(r.root), r)));
       }
       if (this.closed) return report;
       // The listing took time: a one-shot that finished meanwhile needs its binding before its transcript is read.
       try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
-      return this.consumeScanQueues(queues, report);
+      const steps = this.consumeScanQueues(queues, report);
+      while (!steps.next().done) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        if (this.closed) {
+          report.pending = queues.reduce((sum, q) => sum + q.r.filesPending, 0);
+          break;
+        }
+      }
+      return report;
     })();
     this.scanInFlight = run;
     const clear = (): void => { if (this.scanInFlight === run) this.scanInFlight = null; };
@@ -787,6 +883,7 @@ export class UsageLedger {
 
   /** Work every tick does before listing. False when there is nothing to scan. */
   private beginScanTick(): boolean {
+    this.refreshPoolRoots();
     // Bindings from queued one-shots must exist before their transcripts are scanned.
     try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
     if (this.pendingDetailRescan) {
@@ -796,12 +893,19 @@ export class UsageLedger {
         try { this.ingestClaudeFile(root, p, { rescanForDetail: true }); } catch { /* @silent-fallback-ok: a detail rescan miss leaves totals intact; only per-request detail is absent */ }
       }
     }
-    return this.roots.length > 0 || this.codexRoots.length > 0;
+    return this.roots.size > 0 || this.codexRoots.size > 0;
   }
 
   /** Ingest from the listed queues under the shared file budget, round-robin across roots. */
-  private consumeScanQueues(queues: ScanQueue[], report: ScanReport): ScanReport {
-    if (queues.length === 0) return report;
+  private *consumeScanQueues(queues: ScanQueue[], report: ScanReport): Generator<void> {
+    if (queues.length === 0) return;
+    for (const q of queues) {
+      const last = this.retryAfter.get(q.r);
+      if (last === undefined) continue;
+      const next = q.files.findIndex(file => file > last);
+      if (next > 0) q.files = q.files.slice(next).concat(q.files.slice(0, next));
+      this.retryAfter.delete(q.r);
+    }
     let budget = this.opts.filesPerTick;
     let progressed = true;
     while (budget > 0 && progressed) {
@@ -810,31 +914,50 @@ export class UsageLedger {
         const q = queues[(this.rootCursor + i) % queues.length];
         const f = q.files.shift();
         if (!f) continue;
-        const r = q.kind === 'codex' ? this.ingestCodexFile(q.r.root, f) : this.ingestClaudeFile(q.r.root, f);
-        report.filesRead++;
-        report.rowsInserted += r.inserted;
-        report.rowsCounted += r.counted;
-        this.coverage.get(q.r.root)!.filesScanned++;
+        q.r.filesPending--;
         budget--;
         progressed = true;
+        try {
+          const r = q.kind === 'codex' ? this.ingestCodexFile(q.r.root, f) : this.ingestClaudeFile(q.r.root, f);
+          if (r.unavailable) {
+            q.r.listing = 'partial';
+            q.r.filesPending++;
+            this.retryAfter.set(q.r, f);
+          } else {
+            report.filesRead++;
+            report.rowsInserted += r.inserted;
+            report.rowsCounted += r.counted;
+            q.r.filesScanned++;
+          }
+        } catch (error) {
+          // One enrolled home may be inaccessible. Keep scanning other homes and
+          // retry the uncheckpointed file next tick. Database/logic failures propagate.
+          const code = (error as NodeJS.ErrnoException).code;
+          if (!code || !['EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ELOOP', 'ESTALE', 'EIO'].includes(code)) throw error;
+          q.r.listing = 'partial';
+          q.r.filesPending++;
+          this.retryAfter.set(q.r, f);
+        }
+        yield;
       }
       this.rootCursor = (this.rootCursor + 1) % queues.length;
     }
     for (const q of queues) {
-      this.coverage.get(q.r.root)!.filesPending = q.files.length;
-      report.pending += q.files.length;
+      report.pending += q.r.filesPending;
     }
     try { this.settlePairs(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] pair settlement failed:', err); }
-    return report;
   }
 
-  private fileChanged(file: string): boolean {
+  private fileChanged(file: string, cov?: CoverageRoot): boolean {
     const cp = this.db.prepare('SELECT inode, offset FROM checkpoints WHERE path = ?').get(file) as { inode: number; offset: number } | undefined;
     if (!cp) return true;
     try {
       const st = fs.statSync(file);
       return st.ino !== cp.inode || st.size !== cp.offset;
-    } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return false; }
+    } catch (error) {
+      if (cov && !pathIsMissing(error)) { cov.listing = 'partial'; cov.filesPending++; }
+      return false;
+    }
   }
 
   /**
@@ -843,13 +966,13 @@ export class UsageLedger {
    * `rescanForDetail` re-reads from 0 and stores missing rows before the checkpoint as
    * `replay` (detail only, never counted) — used after a snapshot import.
    */
-  ingestClaudeFile(root: string, file: string, opts: { rescanForDetail?: boolean } = {}): { inserted: number; counted: number } {
+  ingestClaudeFile(root: string, file: string, opts: { rescanForDetail?: boolean } = {}): { inserted: number; counted: number; unavailable?: boolean } {
     let st: fs.Stats;
     try {
       const lst = fs.lstatSync(file);
       if (lst.isSymbolicLink()) return { inserted: 0, counted: 0 };
       st = lst;
-    } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return { inserted: 0, counted: 0 }; }
+    } catch { /* Re-stat next tick and report this file in partial coverage. */ return { inserted: 0, counted: 0, unavailable: true }; }
     const head = UsageLedger.readHead(file);
     const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
       { inode: number; head_hash: string; birth_ms: number; offset: number } | undefined;
@@ -873,7 +996,6 @@ export class UsageLedger {
       VALUES (@observation_id, @correlation_key, 'request', @ts, 'claude-transcript', 'claude-code', @model, @machine_id,
        @account_id, @session_id, @session_kind, @parent_session_id, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
        @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, NULL, @status, NULL, NULL, @source_path, @source_pos)`);
-    const exists = this.db.prepare('SELECT 1 FROM usage_events WHERE observation_id = ?');
 
     const memberCache = new Map<string, ScopeBasis | null>();
     const batch = new DeltaBatch();
@@ -901,8 +1023,6 @@ export class UsageLedger {
         }
         if (!scope) continue;
         const observationId = UsageLedger.observationId('claude-transcript', String(obj.requestId));
-        const already = exists.get(observationId) !== undefined;
-        if (already) continue;
         let status: RowStatus = 'counted';
         if (linePos < checkpointOffset) status = 'replay';
         else if (birthMs > 0 && ts < birthMs) status = 'copied-history';
@@ -910,7 +1030,7 @@ export class UsageLedger {
         const sessionKind: SessionKind = isSubagent ? 'subagent' : binding?.sessionKind ?? 'interactive';
         const parts = claudeUsageToParts(obj.message.usage);
         const model = clip(obj.message.model);
-        const res = insert.run({
+        const event = {
           observation_id: observationId,
           correlation_key: `claude-code:${sessionId}`,
           ts, model, machine_id: this.opts.machineId,
@@ -919,10 +1039,10 @@ export class UsageLedger {
           scope_basis: scope, topic_id: binding?.topicId ?? null, job_slug: binding?.jobSlug ?? null,
           run_id: binding?.runId ?? null,
           tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_cache_write: parts.cacheWrite, tok_output: parts.output,
-          status, source_path: file, source_pos: linePos,
-        });
-        if (res.changes !== 1) continue;
-        inserted++;
+          tok_reasoning: null, status, source_path: file, source_pos: linePos,
+        };
+        if (insert.run(event).changes === 1) inserted++;
+        else if (status !== 'counted' || this.promoteCopiedRow.run(event).changes !== 1) continue;
         if (status !== 'counted') continue;
         const row: RowForRollup = {
           ts, machine: this.opts.machineId, framework: 'claude-code', model, sessionKind,
@@ -1219,35 +1339,35 @@ export class UsageLedger {
 
   // ── Slice 2: Codex rollouts ─────────────────────────────────────────
 
-  private readonly codexRoots: { root: string; origin: string }[] = [];
-
   /** Register a Codex home (`$CODEX_HOME`, default `~/.codex`). Rollouts live under `sessions/`. */
   addCodexRoot(codexHome: string, origin: string): void {
-    const root = path.resolve(codexHome);
-    if (this.codexRoots.some(r => r.root === root)) return;
-    this.codexRoots.push({ root, origin });
-    this.coverage.set(root, { root, origin: `codex:${origin}`, filesScanned: 0, filesSkippedDirs: 0, filesOutOfWindow: 0, filesTooDeep: 0, filesPending: 0 });
+    this.registerRoot(this.codexRoots, codexHome, `codex:${origin}`);
   }
 
   private listCodexFiles(root: string): string[] {
-    const cov = this.coverage.get(root)!;
+    const cov = this.codexRoots.get(root)!;
     const base = path.join(root, 'sessions');
     const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
     const out: string[] = [];
+    this.startListing(cov);
     let outOfWindow = 0;
     const walk = (dir: string, depth: number): void => {
       let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { cov.listing = depth === 0 ? 'unavailable' : 'partial'; return; }
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
         const p = path.join(dir, e.name);
         if (e.isDirectory() && depth < 3) walk(p, depth + 1);
+        else if (e.isDirectory()) cov.filesTooDeep++;
         else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
-          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ continue; }
+          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { cov.listing = 'partial'; continue; }
           out.push(p);
         }
       }
     };
+    try {
+      if (!(fs.lstatSync(root)).isDirectory() || !(fs.lstatSync(base)).isDirectory()) { cov.listing = 'unavailable'; return out; }
+    } catch { cov.listing = 'unavailable'; return out; }
     walk(base, 0);
     cov.filesOutOfWindow = outOfWindow;
     return out.sort();
@@ -1255,24 +1375,26 @@ export class UsageLedger {
 
   /** listCodexFiles() with every directory read and stat off the event loop. Same rules. */
   private async listCodexFilesAsync(root: string): Promise<string[]> {
-    const cov = this.coverage.get(root)!;
+    const cov = this.codexRoots.get(root)!;
     const base = path.join(root, 'sessions');
     const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
     const out: string[] = [];
+    this.startListing(cov);
     let outOfWindow = 0;
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (this.closed) return;
       let entries: fs.Dirent[];
-      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { cov.listing = depth === 0 ? 'unavailable' : 'partial'; return; }
       const files: string[] = [];
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
         const p = path.join(dir, e.name);
         if (e.isDirectory() && depth < 3) await walk(p, depth + 1);
+        else if (e.isDirectory()) cov.filesTooDeep++;
         else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) files.push(p);
       }
       const mtimes = await mapInBatches(files, async (p) => {
-        try { return (await fs.promises.stat(p)).mtimeMs; } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ return null; }
+        try { return (await fs.promises.stat(p)).mtimeMs; } catch { cov.listing = 'partial'; return null; }
       });
       files.forEach((p, i) => {
         const mtime = mtimes[i];
@@ -1281,6 +1403,9 @@ export class UsageLedger {
         out.push(p);
       });
     };
+    try {
+      if (!(await fs.promises.lstat(root)).isDirectory() || !(await fs.promises.lstat(base)).isDirectory()) { cov.listing = 'unavailable'; return out; }
+    } catch { cov.listing = 'unavailable'; return out; }
     await walk(base, 0);
     cov.filesOutOfWindow = outOfWindow;
     return out.sort();
@@ -1291,12 +1416,12 @@ export class UsageLedger {
    * the deltas of the cumulative `total_token_usage` between consecutive `token_count`
    * events, skipping events whose total did not change. Input excludes cached input.
    */
-  ingestCodexFile(root: string, file: string): { inserted: number; counted: number } {
+  ingestCodexFile(root: string, file: string): { inserted: number; counted: number; unavailable?: boolean } {
     let st: fs.Stats;
     try {
       st = fs.lstatSync(file);
       if (st.isSymbolicLink()) return { inserted: 0, counted: 0 };
-    } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return { inserted: 0, counted: 0 }; }
+    } catch { /* Re-stat next tick and report this file in partial coverage. */ return { inserted: 0, counted: 0, unavailable: true }; }
     const head = UsageLedger.readHead(file);
     const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
       { inode: number; head_hash: string; birth_ms: number; offset: number; extra: string | null } | undefined;
@@ -1315,7 +1440,7 @@ export class UsageLedger {
        tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
       VALUES (@observation_id, @correlation_key, 'request', @ts, 'codex-rollout', 'codex-cli', @model, @machine_id,
        @account_id, @session_id, @session_kind, NULL, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
-       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, 'counted', NULL, NULL, @source_path, @source_pos)`);
+       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, @status, NULL, NULL, @source_path, @source_pos)`);
     let inserted = 0, counted = 0;
     const batch = new DeltaBatch();
     let scope: ScopeBasis | null | undefined;
@@ -1359,19 +1484,17 @@ export class UsageLedger {
         const parts: TokenParts = { input: Math.max(0, delta.input - delta.cached), cacheRead: delta.cached, cacheWrite: null, output: delta.output, reasoning: delta.reasoning };
         const obs = UsageLedger.observationId('codex-rollout', `${state.sessionId}:${linePos}`);
         const sessionKind: SessionKind = binding?.sessionKind ?? 'interactive';
-        const res = insert.run({
-          observation_id: obs, correlation_key: `codex-cli:${state.sessionId}`, ts, model: state.model,
+        const status = birthMs > 0 && ts < birthMs - 1000 ? 'copied-history' : 'counted';
+        const event = {
+          status, observation_id: obs, correlation_key: `codex-cli:${state.sessionId}`, ts, model: state.model,
           machine_id: this.opts.machineId, account_id: binding?.accountId ?? null, session_id: state.sessionId,
           session_kind: sessionKind, scope_basis: scope, topic_id: binding?.topicId ?? null, job_slug: binding?.jobSlug ?? null,
           run_id: binding?.runId ?? null, tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_output: parts.output,
-          tok_reasoning: parts.reasoning, source_path: file, source_pos: linePos,
-        });
-        if (res.changes !== 1) continue;
-        inserted++;
-        if (birthMs > 0 && ts < birthMs - 1000) {
-          this.db.prepare(`UPDATE usage_events SET status = 'copied-history' WHERE observation_id = ?`).run(obs);
-          continue;
-        }
+          parent_session_id: null, tok_cache_write: null, tok_reasoning: parts.reasoning, source_path: file, source_pos: linePos,
+        };
+        if (insert.run(event).changes === 1) inserted++;
+        else if (status !== 'counted' || this.promoteCopiedRow.run(event).changes !== 1) continue;
+        if (status !== 'counted') continue;
         const row: RowForRollup = {
           ts, machine: this.opts.machineId, framework: 'codex-cli', model: state.model, sessionKind,
           topic: binding?.topicId ?? null, job: binding?.jobSlug ?? null, run: binding?.runId ?? null, feature: null,
@@ -1761,7 +1884,11 @@ export class UsageLedger {
     const rows = this.db.prepare('SELECT path FROM checkpoints').all() as { path: string }[];
     const del = this.db.prepare('DELETE FROM checkpoints WHERE path = ?');
     let n = 0;
-    for (const { path: p } of rows) if (!fs.existsSync(p)) { del.run(p); n++; }
+    for (const { path: p } of rows) {
+      try { fs.statSync(p); } catch (error) {
+        if (pathIsMissing(error)) { del.run(p); n++; }
+      }
+    }
     return n;
   }
 
@@ -1774,7 +1901,10 @@ export class UsageLedger {
     if (this.closed) return 0;
     const rows = this.db.prepare('SELECT path FROM checkpoints').all() as { path: string }[];
     const present = await mapInBatches(rows, async ({ path: p }) => {
-      try { await fs.promises.stat(p); return true; } catch { /* @silent-fallback-ok: unreachable means there is no file to resume from, the same reading existsSync gives */ return false; }
+      try { await fs.promises.stat(p); return true; } catch (error) {
+        // Losing read permission on an enrolled home is no evidence its file was removed.
+        return !pathIsMissing(error);
+      }
     });
     if (this.closed) return 0;
     const del = this.db.prepare('DELETE FROM checkpoints WHERE path = ?');
