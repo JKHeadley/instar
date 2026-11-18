@@ -168,6 +168,7 @@ const NAMED: Array<[RegExp, string]> = [
   [/sessions\\\/move/, '/mobile/sessions/move/50'],
   [/secrets\\\/requests.*cancel/, '/mobile/secrets/requests/abcdef0123456789/cancel'],
   [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
+  [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef'],
   [/trust\\\/requests\\\/tr-/, '/mobile/trust/requests/tr-0123456789ab-abc123/approve'],
 ];
 const pathFor = (re: RegExp) => {

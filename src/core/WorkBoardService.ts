@@ -316,14 +316,20 @@ export class WorkBoardService {
   }
 
   /** Emit one record and fold it into the index at once (the commit observer's later apply is a no-op). */
-  private write(recordType: WorkRecordType, cardId: string | null, fields: Record<string, unknown>, recordKey?: string): Result<{ recordId: string; data: Record<string, unknown> }> {
-    const key = recordKey ?? mintRecordKey(recordType, cardId, { for: fields.for as string | undefined, attempt: fields.attempt as number | undefined, outcome: fields.outcome as string | undefined });
-    // Shape check BEFORE the emit, with the store's own schema: a malformed write is the caller's
-    // mistake (400, with the kind named), never "the store is unavailable" (which invites a blind retry).
+  /** The store's own schema check for one record, with nothing emitted (the write and the create's dry run share it). */
+  private shapeRefusal(recordType: WorkRecordType, cardId: string | null, fields: Record<string, unknown>, key: string): Refusal | null {
     const probe = buildRecord(recordType, cardId, fields, key)({ physical: 0, logical: 0, node: this.deps.machineId }, this.deps.machineId);
     if (!probe || !workCardRecordStoreSchema.validate(probe, { countDroppedField: () => { /* counted by the envelope layer at the real write */ } } as never)) {
       return refuse(400, 'invalid-record', { recordType, message: 'The record is not in the shape the work board accepts. Check the field types: a need and a title are text, each done item needs an id and text, links are https, a due date is YYYY-MM-DD.' });
     }
+    return null;
+  }
+
+  private write(recordType: WorkRecordType, cardId: string | null, fields: Record<string, unknown>, recordKey?: string): Result<{ recordId: string; data: Record<string, unknown> }> {
+    const key = recordKey ?? mintRecordKey(recordType, cardId, { for: fields.for as string | undefined, attempt: fields.attempt as number | undefined, outcome: fields.outcome as string | undefined });
+    // Shape check BEFORE the emit, with the store's own schema: a malformed write is the caller's
+    // mistake (400, with the kind named), never "the store is unavailable" (which invites a blind retry).
+    const shape = this.shapeRefusal(recordType, cardId, fields, key); if (shape) return shape;
     let built: Record<string, unknown> | null = null;
     const inner = buildRecord(recordType, cardId, fields, key);
     const r = this.deps.emit(key, (hlc, origin, observed) => { built = inner(hlc, origin, observed); return built; });
@@ -350,9 +356,11 @@ export class WorkBoardService {
   /**
    * `serverCard`: a card the server writes on the agent's behalf with a deterministic id (project apps'
    * version cards, docs/specs/project-apps-sandbox.md §3.4): the caller names the id, and it is not
-   * counted against the agent's daily ceiling (each app has at most one open card per purpose).
+   * counted against the agent's daily ceiling (each app has at most one open card per purpose). The owner's
+   * phone create names its id the same way (derived from the owner and the request id), so a retry finds one card.
+   * `dryRun`: run every check (including the store's record shape) and write nothing.
    */
-  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
+  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string }, opts?: { dryRun?: boolean }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
     if (p.kind === 'session') return refuse(403, 'scoped-session-cannot-create');
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const fields: Record<string, unknown> = {};
@@ -369,7 +377,8 @@ export class WorkBoardService {
     if (fields.carrier === undefined) fields.carrier = 'agent';
     const t = this.checkText(fields); if (t) return t;
     const linkErr = this.checkAttachmentLinks(undefined, fields.links); if (linkErr) return linkErr;
-    if (serverCard && (p.kind !== 'agent' || !isCardId(serverCard.cardId))) return refuse(400, 'bad-server-card');
+    // A named id: the server's own cards (agent), or the owner's idempotent phone create (docs/specs/phone-work-cards.md).
+    if (serverCard && (!(p.kind === 'agent' || (p.kind === 'person' && p.isOwner)) || !isCardId(serverCard.cardId))) return refuse(400, 'bad-server-card');
     if (serverCard && this.view(serverCard.cardId)?.card.created) return refuse(409, 'card-exists');
     if (p.kind === 'agent' && !serverCard) {
       const s = this.deps.settings();
@@ -379,7 +388,14 @@ export class WorkBoardService {
       }
     }
     const cardId = serverCard?.cardId ?? newCardId();
-    const w = this.write('created', cardId, { ...fields, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() });
+    const record = { ...fields, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() };
+    if (opts?.dryRun) {
+      // Every check above plus the store's own record shape, with nothing emitted (the phone's preflight,
+      // docs/specs/phone-work-cards.md: a refusal known before Face ID is shown before Face ID).
+      const shape = this.shapeRefusal('created', cardId, record, mintRecordKey('created', cardId)); if (shape) return shape;
+      return { ok: true, cardId, conversationKey: cardConversationKey(cardId) };
+    }
+    const w = this.write('created', cardId, record);
     if (!w.ok) return w;
     return { ok: true, cardId, conversationKey: cardConversationKey(cardId), ...this.softBudget() };
   }

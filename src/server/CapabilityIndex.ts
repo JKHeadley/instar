@@ -95,7 +95,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       if (!rt) return { enabled: false };
       return {
         enabled: true, cards: rt.svc.cardIds().length, waitingOnOwner: rt.svc.waitingOnOwnerCount(), policy: rt.svc.policy(), pickups: rt.controller.status(),
-        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /mobile/work-board', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
+        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /mobile/work-board', 'GET /mobile/work-board/cards/:id (owner phone)', 'POST /mobile/work-board/cards (owner phone, Face ID: make a card from a message)', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
       };
     },
   },
