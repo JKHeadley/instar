@@ -33,7 +33,7 @@ const BOOTSTRAP_BREAKER_MS = 24 * 60 * 60 * 1000;
 
 export type OwnerRecordPushCmd = { type: 'owner-record-push'; entries: unknown[] };
 /** `build` and `guards` are the puller's own signed statement (piece 2c §2); an older build sends neither. */
-export type OwnerRecordPullCmd = { type: 'owner-record-pull'; have: string[]; after: string | null; build?: string; guards?: string[] };
+export type OwnerRecordPullCmd = { type: 'owner-record-pull'; have: string[]; after: string | null; build?: string; guards?: string[]; /** Piece 3d §4: this machine's decision facts, signed with the request. */ facts?: unknown };
 export interface OwnerRecordPullReply {
   entries: OwnerRecordEntry[];
   next: string | null;
@@ -90,6 +90,10 @@ export interface OwnerRecordSyncDeps {
   approverFacts?: () => { unvouched: number; migratedAt?: string | null; retired?: string[] };
   /** Piece 3a §6: approval keys another machine retired (the owner removed their device). */
   onPeerRetired?: (hashes: string[]) => void;
+  /** Piece 3d §4: this machine's decision facts, carried in every signed pull request. */
+  signedFacts?: () => unknown;
+  /** Piece 3d §4: a peer's signed facts arrived with its pull request (verified by the mesh). */
+  onPeerSignedFacts?: (peer: string, facts: unknown, at: number) => void;
   /** Piece 3a §5 (mobile-approver-mark §3.6): the earliest approver migration any machine reports, and whether every machine has answered. */
   onPeerMigrations?: (earliest: string | null, allAnswered: boolean) => void;
 }
@@ -170,6 +174,12 @@ export class OwnerRecordSync {
   handlePull(from: string, cmd: OwnerRecordPullCmd, at?: number): OwnerRecordPullReply {
     this.heardVerified(from);
     this.recordStatement(from, cmd.build ?? null, cmd.guards, at ?? this.now()); // recorded before judged (2c §2)
+    // Piece 3d §4: the peer's decision facts arrived signed with its request.
+    if (cmd.facts !== undefined) {
+      try { this.d.onPeerSignedFacts?.(from, cmd.facts, this.now()); } catch { /* @silent-fallback-ok: kept from the next signed pull */ }
+      const retired = (cmd.facts as { retired?: unknown } | null)?.retired;
+      if (Array.isArray(retired) && retired.length) { try { this.d.onPeerRetired?.(retired.slice(0, 500).filter((h): h is string => typeof h === 'string')); } catch { /* @silent-fallback-ok: merged on the next pull */ } }
+    }
     const have = new Set(Array.isArray(cmd.have) ? cmd.have.filter((x) => typeof x === 'string').slice(0, 4 * OWNER_RECORD_PUSH_MAX_ENTRIES) : []);
     const page = this.d.store.page(have, typeof cmd.after === 'string' ? cmd.after : null, OWNER_RECORD_PUSH_MAX_ENTRIES);
     const st = this.d.store.state();
@@ -184,6 +194,11 @@ export class OwnerRecordSync {
     };
   }
 
+  /** Piece 3d: registered peers whose fresh signed build statement does not name this guard (they can't take part). */
+  peersMissingGuard(guard: string): string[] {
+    return this.d.peers().filter((p) => !this.d.ledger || !this.d.peerKey || this.d.ledger.stateOf(p, this.d.peerKey(p), null) !== 'confirmed' || !this.d.ledger.guardsOf(p, this.d.peerKey(p)).includes(guard));
+  }
+
   /**
    * Piece 3a §3: ask every registered machine now, each within `timeoutMs`. A machine that is silent, on an older
    * build, holds an owner key or an enrolled marker, or has an unvouched owner device is named; any name closes a claim.
@@ -194,7 +209,7 @@ export class OwnerRecordSync {
     await Promise.all(this.d.peers().map(async (peer) => {
       let timer: NodeJS.Timeout | undefined;
       const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); });
-      const r = await Promise.race([this.d.send(peer, { type: 'owner-record-pull', have, after: null, build: this.d.selfBuild?.(), guards: this.d.selfGuards?.() }).catch(() => null), timeout]);
+      const r = await Promise.race([this.d.send(peer, { type: 'owner-record-pull', have, after: null, build: this.d.selfBuild?.(), guards: this.d.selfGuards?.(), ...(this.d.signedFacts ? { facts: this.d.signedFacts() } : {}) }).catch(() => null), timeout]);
       if (timer) clearTimeout(timer);
       const reply = r && r.ok ? (r.result as Partial<OwnerRecordPullReply> | undefined) : undefined;
       if (!reply || typeof reply !== 'object') { out.silent.push(peer); return; }
@@ -342,7 +357,7 @@ export class OwnerRecordSync {
       if (!info.answered && (this.breakerOpen || this.now() < info.nextTryAt)) continue;
       let after: string | null = null;
       for (let i = 0; i < OWNER_RECORD_PAGES_PER_CYCLE; i++) {
-        const pull: OwnerRecordPullCmd = { type: 'owner-record-pull', have: this.d.store.ids(), after, ...(this.d.selfBuild ? { build: this.d.selfBuild(), guards: this.d.selfGuards?.() ?? [] } : {}) };
+        const pull: OwnerRecordPullCmd = { type: 'owner-record-pull', have: this.d.store.ids(), after, ...(this.d.selfBuild ? { build: this.d.selfBuild(), guards: this.d.selfGuards?.() ?? [] } : {}), ...(this.d.signedFacts ? { facts: this.d.signedFacts() } : {}) };
         const res: { ok: boolean; result?: unknown } = await this.d.send(peer, pull).catch(() => ({ ok: false }));
         const reply: OwnerRecordPullReply | null = res.ok ? parseReply(res.result) : null;
         if (!reply) { // unreachable, refused, or an older build: not an answer
@@ -358,7 +373,10 @@ export class OwnerRecordSync {
         info.replyBuild = reply.build ?? null;
         if (reply.approver && reply.approver.v === 1) {
           info.approverMigratedAt = typeof reply.approver.migratedAt === 'string' ? reply.approver.migratedAt : null;
-          if (Array.isArray(reply.approver.retired) && reply.approver.retired.length) { try { this.d.onPeerRetired?.(reply.approver.retired.slice(0, 500).filter((h): h is string => typeof h === 'string')); } catch { /* @silent-fallback-ok: merged on the next pull */ } }
+          // Piece 3d §4: retired keys come from signed facts. A reply (unsigned) still counts only from a machine whose
+          // signed build statement lacks the 'approver-recovery' guard: a mixed rollout, where retiring only removes rights.
+          const legacyPeer = !this.d.ledger || !this.d.peerKey || !this.d.ledger.guardsOf(peer, this.d.peerKey(peer)).includes('approver-recovery');
+          if (legacyPeer && Array.isArray(reply.approver.retired) && reply.approver.retired.length) { try { this.d.onPeerRetired?.(reply.approver.retired.slice(0, 500).filter((h): h is string => typeof h === 'string')); } catch { /* @silent-fallback-ok: merged on the next pull */ } }
         }
         Object.assign(info, { answered: true, hasRecord: reply.hasRecord, head: reply.head, status: reply.status, genesis: reply.genesis, everEnrolled: reply.everEnrolled, marker: reply.marker, ids: info.ids + reply.entries.length });
         if (reply.entries.length > 0 && this.peerMayGiveRecord(peer)) { this.queue.push(...reply.entries); await this.flush(true); }
@@ -366,6 +384,8 @@ export class OwnerRecordSync {
         after = reply.next;
       }
     }
+    // Piece 3d §2: entries held at arrival are offered again (a wait that has now passed, a key that has settled).
+    try { const again = this.d.store.retryHeld(); if (again.length) void this.pushToPeers(again); } catch { /* @silent-fallback-ok: retried next tick */ }
     this.maybeBootstrap();
     // Piece 3a §2: at Basic, each machine puts its own key in the record, and the lease holder merges forks.
     if (this.d.isLeaseHolder() && !this.d.splitBrain()) {

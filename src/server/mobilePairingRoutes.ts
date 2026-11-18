@@ -2,6 +2,7 @@ import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { approverClaimDeviceId, dropApproverClaimFor, mountApproverClaimRoutes } from './mobileApproverClaim.js';
 import { askOwnerToRevokeApprover, isLastOwnerKey } from './mobileApproverRevoke.js';
 import { mountApproverGrantRoutes } from './mobileApproverGrant.js';
+import { mountApproverRecoveryRoutes } from './mobileApproverRecovery.js';
 import { mayApprove } from './mobileApprover.js';
 import { PairingOutcomeWatches, type SendResult as OutcomeSendResult, type OperationResult as OutcomeOperationResult } from '../core/PairingOutcomeWatches.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
@@ -1803,6 +1804,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   mountApproverClaimRoutes(router, svc);
   // §4: giving the right to another device, signed by an approving device.
   mountApproverGrantRoutes(router, svc);
+  // identity-security piece 3d: recovery when every approving device is lost.
+  mountApproverRecoveryRoutes(router, svc);
 
   // Approve a waiting phone from an owner phone, with Face ID (mobile-pairing-approve §3.4).
   mountPairingApprovalDeviceRoutes(router, svc);
@@ -2654,6 +2657,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'DELETE', re: /^\/mobile\/approver\/request$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 12, bucket: 'approver-grant' },
     { method: 'GET', re: /^\/mobile\/approver\/requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'approver-grant-read' },
     { method: 'GET', re: /^\/mobile\/approvers$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'approver-grant-read' },
+    { method: 'POST', re: /^\/mobile\/approver\/recovery\/(stop|seen|finish|finish\/confirm|finish\/sign)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'approver-recovery' },
     // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The
     // introducer routes re-check owner, local TLS and the switch; the waiting phone hands in its own.
     { method: 'GET', re: /^\/mobile\/introducer$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'introducer-read' },

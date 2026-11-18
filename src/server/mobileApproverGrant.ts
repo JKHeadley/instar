@@ -26,6 +26,7 @@ import { approverClaimEnv, ownerRecordGate } from '../core/ownerRecordWiring.js'
 import { activeOwnerPhone, presenceEnrollMessage, samePublicKey, signedHost } from './mobileConsoleTicket.js';
 import { heldPresenceKeys, liveOwnerKeys, mayApprove, ownerKeyApproverKey, proveCandidatePresenceKey, retireApprovalKey, retiredKeyHashes, APPROVER_REQUIRED } from './mobileApprover.js';
 import { dropApproverClaimFor } from './mobileApproverClaim.js';
+import { recoveryStatusFor } from './mobileApproverRecovery.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 
 const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
@@ -38,6 +39,18 @@ const askedAt = new Map<string, number[]>();
 const declinedUntil = new Map<string, number>();
 const revokeDrafts = new Map<string, { by: string; entry: Omit<OwnerRecordEntry, 'sig'>; id: string }>();
 function prune(now: number): void { for (const [id, a] of asks) if (now - a.at >= REQUEST_TTL_MS) asks.delete(id); }
+/** Piece 3d: the waiting request showing this match code (for the private-chat recovery start). */
+export function findWaitingRequest(matchCode: string): { requestId: string; deviceId: string; presenceKey: string } | null {
+  prune(Date.now());
+  for (const [requestId, a] of asks) if (a.matchCode === matchCode) return { requestId, deviceId: a.deviceId, presenceKey: a.presenceKey };
+  return null;
+}
+/** Piece 3d: a recovery started for this request consumes it (the recovery froze the device and key). */
+export function consumeWaitingRequest(requestId: string): void { asks.delete(requestId); }
+export function waitingRequestById(requestId: string): { deviceId: string; presenceKey: string } | null {
+  const a = asks.get(requestId);
+  return a ? { deviceId: a.deviceId, presenceKey: a.presenceKey } : null;
+}
 export function resetApproverGrantForTests(): void { asks.clear(); askedAt.clear(); declinedUntil.clear(); revokeDrafts.clear(); }
 function newMatchCode(): string {
   for (;;) { const c = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0'); if (![...asks.values()].some((a) => a.matchCode === c)) return c; }
@@ -270,7 +283,7 @@ export function mountApproverGrantRoutes(router: Router, svc: MobilePairingServi
       holders, holdersElsewhere: elsewhere,
       waiting: [...asks.values()].filter((a) => activeOwnerPhone(svc, a.deviceId)).length,
       opening,
-      recovery: null,
+      recovery: recoveryStatusFor(svc, deviceId),
     });
   });
 }

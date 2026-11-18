@@ -30,6 +30,16 @@ export interface OwnerRecordStoreDeps {
   /** A registered machine's signing public key, used only for unpinned (Basic) genesis candidates. */
   registeredKey: (machineId: string) => string | null;
   verifyFirstOwnerProof?: EvaluateOptions['verifyFirstOwnerProof'];
+  /** Piece 3d: the recovered owner key's proof. */
+  verifyRecoveryProof?: EvaluateOptions['verifyRecoveryProof'];
+  /** Piece 3d §2: this machine's own arrival decision for a recovered entry. Absent → held (never accepted). */
+  recoveredArrival?: (e: OwnerRecordEntry) => 'accept' | 'hold' | 'retire' | 'refuse';
+  /** Piece 3d §2: a recovered entry this machine accepted and actually stored (recorded only after 2a judged it). */
+  onRecoveredAccepted?: (e: OwnerRecordEntry) => void;
+  /** Piece 3d §2: a recovered entry this machine took in but must retire at once (a stop or approval during the wait). */
+  onRecoveredRetire?: (e: OwnerRecordEntry) => void;
+  /** Piece 3d §2: true while a recovered key hasn't settled: entries it signs are held. */
+  signerUnsettled?: (keyId: string) => boolean;
   now?: () => number;
 }
 
@@ -72,6 +82,8 @@ const MAX_CANDIDATES = 4;
 
 export class OwnerRecordStore {
   private entries = new Map<string, OwnerRecordEntry>();
+  /** Piece 3d §2: entries held at arrival, offered again each tick (memory only: peers re-send them anyway). */
+  private held = new Map<string, OwnerRecordEntry>();
   private excluded = new Set<string>();
   private current: OwnerRecordState | null = null;
 
@@ -127,7 +139,30 @@ export class OwnerRecordStore {
   ingest(rawIncoming: unknown[]): { added: string[]; state: OwnerRecordState; refused?: 'input-too-large' | 'no-genesis' } {
     // Only entries whose signature verifies against a key this record has ever held (or one added, verified,
     // in the same batch) go further: junk never counts toward the bound or the work.
-    const incoming = this.verifiedOnly(rawIncoming);
+    const verified = this.verifiedOnly(rawIncoming);
+    // Piece 3d §2: a recovered owner key is judged by this machine's own facts before it is taken in, and anything
+    // its key signs waits until it settles. Held entries are kept aside and offered again each tick.
+    const retire: OwnerRecordEntry[] = [];
+    const accepted: OwnerRecordEntry[] = [];
+    const batchRecovered = new Set(verified.map((x) => x as OwnerRecordEntry).filter((x) => x.kind === 'add-owner-key' && (x.body as Record<string, unknown> | undefined)?.via === 'recovered').map((x) => String((x.body as Record<string, unknown>).keyId)));
+    const incoming = verified.filter((raw) => {
+      const e = raw as OwnerRecordEntry;
+      let id: string;
+      try { id = ownerRecordEntryId(e); } catch { return true; /* @silent-fallback-ok: malformed; the evaluator rejects it */ }
+      if (this.entries.has(id)) return true;
+      if (e.kind === 'add-owner-key' && (e.body as Record<string, unknown> | undefined)?.via === 'recovered') {
+        const d = this.deps.recoveredArrival ? this.deps.recoveredArrival(e) : 'hold';
+        if (d === 'hold') { this.held.set(id, e); return false; }
+        if (d === 'refuse') { this.held.delete(id); return false; } // a forged or conflicting entry: never kept
+        if (d === 'retire') retire.push(e); else accepted.push(e);
+        this.held.delete(id);
+        return true;
+      }
+      // Entries signed by an unsettled recovered key wait, including one introduced in this same batch (review R2-L1).
+      if (e.signer?.type === 'owner-key' && (this.deps.signerUnsettled?.(e.signer.keyId) || batchRecovered.has(e.signer.keyId))) { this.held.set(id, e); return false; }
+      this.held.delete(id);
+      return true;
+    });
     const pool = new Map<string, unknown[]>();
     for (const e of this.entries.values()) pool.set(ownerRecordEntryId(e), [e]);
     for (const raw of incoming) {
@@ -190,7 +225,33 @@ export class OwnerRecordStore {
     }
     this.current = this.entries.size > 0 ? finalState : null;
     this.afterEvaluate();
+    // Piece 3d §2: a recovered key whose wait saw a stop or an approval here is taken in (the record stays whole on
+    // every machine) and retired at once.
+    for (const e of retire) { try { if (added.includes(ownerRecordEntryId(e))) this.deps.onRecoveredRetire?.(e); } catch { /* @silent-fallback-ok: retired on the next tick's re-check; the key is provisional until then */ } }
+    // Recorded only for entries 2a judged and this store kept (review H2): a junk entry never counts as accepted.
+    for (const e of accepted) { try { if (added.includes(ownerRecordEntryId(e))) this.deps.onRecoveredAccepted?.(e); } catch { /* @silent-fallback-ok: recorded on the next arrival; the key stays provisional until then */ } }
     return { added, state: finalState };
+  }
+
+  /** Piece 3d §2: entries held at arrival (a recovered key not yet accepted here, or entries it signed). */
+  heldIds(): string[] { return [...this.held.keys()].sort(); }
+
+  /** Piece 3d §2: offer the held entries again (each tick). Returns the ids newly stored. */
+  retryHeld(): string[] {
+    if (this.held.size === 0) return [];
+    return this.ingest([...this.held.values()]).added;
+  }
+
+  /** Piece 3d: the recovered entry that added this owner key, if it was added by a recovery. */
+  recoveryOfKey(keyId: string): { recoveryId: string; deviceId: string; entryId: string } | null {
+    for (const [id, e] of this.entries) {
+      const b = e.body as Record<string, unknown> | undefined;
+      if (e.kind === 'add-owner-key' && b?.via === 'recovered' && b.keyId === keyId) {
+        const r = b.recovery as Record<string, unknown> | undefined;
+        if (typeof r?.recoveryId === 'string' && typeof b.deviceId === 'string') return { recoveryId: r.recoveryId, deviceId: b.deviceId, entryId: id };
+      }
+    }
+    return null;
   }
 
   /**
@@ -279,7 +340,7 @@ export class OwnerRecordStore {
   private now(): number { return (this.deps.now ?? Date.now)(); }
 
   private evaluate(all: unknown[]): OwnerRecordState {
-    const opts: EvaluateOptions = { agentId: this.deps.agentId, verifyFirstOwnerProof: this.deps.verifyFirstOwnerProof };
+    const opts: EvaluateOptions = { agentId: this.deps.agentId, verifyFirstOwnerProof: this.deps.verifyFirstOwnerProof, verifyRecoveryProof: this.deps.verifyRecoveryProof };
     const usable = all.filter((raw) => {
       const e = raw as Partial<OwnerRecordEntry>;
       if (e?.kind !== 'genesis') return true;
@@ -328,6 +389,8 @@ export class OwnerRecordStore {
       if (e.kind === 'add-machine-key' && introduces === e.signer?.keyId && !recordHasOwnerKey) {
         return typeof introduces === 'string' && this.deps.registeredKey(introduces) === e.body?.publicKey;
       }
+      // Piece 3d: a recovered owner key is self-signed after enrolment too; 2a admits it only with its recovery proof.
+      if (e.kind === 'add-owner-key' && introduces === e.signer?.keyId && (e.body as Record<string, unknown> | undefined)?.via === 'recovered') return true;
       return e.kind === 'add-owner-key' && introduces === e.signer?.keyId && !recordHasOwnerKey;
     };
     // Keys introduced within this batch, by the entry that introduces them (not yet verified). Every one is

@@ -13,9 +13,10 @@ import type { OwnerRecordRouteDeps } from '../server/ownerRecordRoutes.js';
 import { PeerBuildLedger, fenceInForce, keyFingerprint } from './identityBuildFence.js';
 import { MESH_VERB_FENCE_CLASS, setBelowFencePredicate, setMeshFencePolicy } from './meshVerbFenceClass.js';
 import { getInstarVersion } from './Config.js';
-import { makeFirstOwnerProofVerifier } from './ownerApprover.js';
+import { makeFirstOwnerProofVerifier, makeRecoveryProofVerifier } from './ownerApprover.js';
 import { readLocalRecordKey } from './ownerRecordLocalKey.js';
 import type { GateVerdict } from './ownerRecordStore.js';
+import type { OwnerRecordEntry } from './ownerRecord.js';
 
 const PULL_INTERVAL_MS = 15 * 60 * 1000;
 const FIRST_PULL_DELAY_MS = 30 * 1000;
@@ -29,6 +30,18 @@ let approverFactsFn: (() => { unvouched: number; migratedAt?: string | null; ret
 let peerRetiredFn: ((hashes: string[]) => void) | null = null;
 let peerMigrationsFn: ((earliest: string | null, allAnswered: boolean) => void) | null = null;
 let claimLiveFn: (() => boolean) | null = null;
+
+/** Piece 3d: the server's recovery decisions, reached by the store and the sync through these hooks. */
+interface RecoveryHooks {
+  arrival: (e: OwnerRecordEntry) => 'accept' | 'hold' | 'retire' | 'refuse';
+  retire: (e: OwnerRecordEntry) => void;
+  accepted: (e: OwnerRecordEntry) => void;
+  unsettled: (keyId: string) => boolean;
+  signedFacts: () => unknown;
+  peerFacts: (peer: string, facts: unknown, at: number) => void;
+}
+let recoveryHooks: RecoveryHooks | null = null;
+export function setOwnerRecordRecoveryHooks(h: RecoveryHooks | null): void { recoveryHooks = h; }
 
 /** Piece 3a §3: the server tells the sync how many unvouched owner devices this machine has, and whether a claim is live. */
 export function setOwnerRecordApproverHooks(h: { approverFacts: () => { unvouched: number; migratedAt?: string | null; retired?: string[] }; claimLive: () => boolean; peerMigrations?: (earliest: string | null, allAnswered: boolean) => void; peerRetired?: (hashes: string[]) => void } | null): void {
@@ -109,6 +122,12 @@ export function wireOwnerRecordStore(config: OwnerRecordConfigView, identity: Ma
     },
     // Piece 3a §3: the first owner key's proof is checked against the record itself.
     verifyFirstOwnerProof: makeFirstOwnerProofVerifier(config.projectName ?? 'agent'),
+    // Piece 3d: a recovered owner key's machine-attested proof, and this machine's own decision when it arrives.
+    verifyRecoveryProof: makeRecoveryProofVerifier(config.projectName ?? 'agent'),
+    recoveredArrival: (e) => recoveryHooks ? recoveryHooks.arrival(e) : 'hold',
+    onRecoveredRetire: (e) => recoveryHooks?.retire(e),
+    onRecoveredAccepted: (e) => recoveryHooks?.accepted(e),
+    signerUnsettled: (keyId) => recoveryHooks?.unsettled(keyId) ?? false,
   });
   claimBase = { stateDir: config.stateDir, agentId: config.projectName ?? 'agent', identity, selfMachineId: identity.hasIdentity() ? identity.loadIdentity().machineId : null, leaseHolder: null, splitBrain: null };
   const { corruptLines } = store.load();
@@ -192,7 +211,8 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
     // Piece 2d: this build refuses a below machine the lease and routing whenever the fence is in force.
     // Piece 3a: 'approver-record' (devices approve only through the owner record); the first-approver claim reads
     // it from each peer's signed build statement.
-    selfGuards: () => ['fence-lease', 'fence-routing', 'approver-record'],
+    // Piece 3d: 'approver-recovery' (recovery by the private chat, with facts in signed requests).
+    selfGuards: () => ['fence-lease', 'fence-routing', 'approver-record', 'approver-recovery'],
     peerKey: (machineId) => keyFingerprint(w.identity.getSigningPublicKeyPem(machineId)),
     ledger: PeerBuildLedger.at(w.config.stateDir),
     notify: w.notify,
@@ -202,6 +222,8 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
     approverFacts: () => approverFactsFn?.() ?? { unvouched: 0 },
     onPeerMigrations: (earliest, allAnswered) => peerMigrationsFn?.(earliest, allAnswered),
     onPeerRetired: (hashes) => peerRetiredFn?.(hashes),
+    signedFacts: () => recoveryHooks?.signedFacts(),
+    onPeerSignedFacts: (peer, facts, at) => recoveryHooks?.peerFacts(peer, facts, at),
     peerSince: (machineId) => { const t = Date.parse(String(w.identity.loadRegistry().machines?.[machineId]?.pairedAt ?? '')); return Number.isFinite(t) ? t : null; },
   });
   live.sync = sync;
@@ -229,6 +251,7 @@ export function resetOwnerRecordWiringForTests(): void {
   claimLiveFn = null;
   peerMigrationsFn = null;
   peerRetiredFn = null;
+  recoveryHooks = null;
 }
 
 /**
@@ -288,3 +311,6 @@ export function ownerRecordClaimLive(): boolean { return claimLiveFn?.() ?? fals
 
 /** Piece 3a §2: the genesis this machine pins, for the join answer. */
 export function ownerRecordPinnedGenesis(): string | null { return live ? live.store.pinned() : null; }
+
+/** Piece 3d: registered peers that can't take part in a recovery (no fresh signed statement with the guard). */
+export function ownerRecordPeersMissingGuard(guard: string): string[] { return live?.sync ? live.sync.peersMissingGuard(guard) : []; }

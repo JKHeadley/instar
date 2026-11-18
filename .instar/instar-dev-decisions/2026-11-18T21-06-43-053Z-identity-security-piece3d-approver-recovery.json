@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-18T21:06:43.053Z",
+  "slug": "identity-security-piece3d-approver-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 1066,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobilePush.ts",
+      "src/core/approverRecovery.ts",
+      "src/core/ownerApprover.ts",
+      "src/core/ownerRecord.ts",
+      "src/core/ownerRecordStore.ts",
+      "src/core/ownerRecordSync.ts",
+      "src/core/ownerRecordWiring.ts",
+      "src/data/awareness/owner-record.md",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileApprover.ts",
+      "src/server/mobileApproverGrant.ts",
+      "src/server/mobileApproverRecovery.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 1054,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The recovery tick is bounded by monotone state: at most three notices per recovery, each once (an accepted notice is recorded); one owner message per milestone, deduplicated on disk; one tick at a time every 5 minutes; a recovery ends by itself 7 days after its wait."
+  },
+  "verdict": "pass"
+}

@@ -2,7 +2,8 @@
 //   *Live-User-Channel Proof Before Done*
 
 import { isApproverRevokeNonce, takeApproverRevokeTap } from './mobileApproverRevoke.js';
-import { setOwnerRecordApproverHooks } from '../core/ownerRecordWiring.js';
+import { setOwnerRecordApproverHooks, setOwnerRecordRecoveryHooks } from '../core/ownerRecordWiring.js';
+import { approverRecoveryTap, approverResetCommand, recoveryHooksFor, recoveryTick, setRecoveryChat } from './mobileApproverRecovery.js';
 import { approverClaimLive, unvouchedOwnerDevices } from './mobileApproverClaim.js';
 import { approverPresenceKey, ensureApproverMigration, setKeptDevicesNotice, mayApprove, mergeRetiredKeys, readApproverState, retiredKeyHashes, tightenApproverCutoff, verifyApproverPresence } from './mobileApprover.js';
 import { bootReadiness } from './BootReadiness.js';
@@ -2552,6 +2553,11 @@ export class AgentServer {
       } catch (err) {
         DegradationReporter.getInstance().report({ feature: 'MobileApprover.migration', primary: 'keep the devices that approved before this update', fallback: 'no kept devices on this computer until the next start', reason: err instanceof Error ? err.message : String(err), impact: 'A device that approved before may be refused until the next restart.' });
       }
+      // identity-security piece 3d: recovery decisions for the store and sync, and its tick (notices, ready, ends).
+      setOwnerRecordRecoveryHooks(recoveryHooksFor(mp));
+      // Recovery messages carry their own button labels ("Start", "Never mind", "Stop it"); null = not accepted.
+      if (options.telegram) { const tg = options.telegram; setRecoveryChat(async (text, buttons) => { const id = await tg.sendOwnerDMWithButton(text, buttons.length ? buttons : null); return typeof id === 'number' && id > 0 ? id : null; }); }
+      if (!process.env.VITEST) { const recoveryTimer = setInterval(() => { void recoveryTick(mp).catch(() => undefined); }, 5 * 60_000); recoveryTimer.unref?.(); }
       setOwnerRecordApproverHooks({
         approverFacts: () => ({ unvouched: unvouchedOwnerDevices(mp).length, migratedAt: readApproverState(mp.deps.stateDir).migration?.at ?? null, retired: retiredKeyHashes(mp.deps.stateDir) }),
         peerRetired: (hashes) => { try { mergeRetiredKeys(mp.deps.stateDir, hashes); } catch (err) { DegradationReporter.getInstance().report({ feature: 'MobileApprover.retired', primary: 'stop accepting approval keys another computer retired', fallback: 'this computer keeps its own retired list', reason: err instanceof Error ? err.message : String(err), impact: 'A device removed on another computer may still approve here.' }); } },
@@ -2636,10 +2642,14 @@ export class AgentServer {
         options.telegram.mobileDeclineHandler = (nonce) => {
           // identity-security piece 3a §6: Decline on "remove an approving device" keeps it.
           if (isApproverRevokeNonce(nonce)) { const t = takeApproverRevokeTap(mp, nonce, false, () => false); return { result: 'declined' as const, text: t.text }; }
+          // identity-security piece 3d: Never mind on a recovery Start card, or a notice's decline.
+          { const t = approverRecoveryTap(mp, nonce, false); if (t.handled) return { result: 'declined' as const, text: t.text }; }
           const client = mp.nonceClient(nonce);
           return { result: mp.declineByNonce(nonce), client };
         };
         options.telegram.mobileApproveHandler = (nonce) => {
+          // identity-security piece 3d: Start on a recovery card, or Stop it on a notice.
+          { const t = approverRecoveryTap(mp, nonce, true); if (t.handled) return { outcome: 'other' as const, text: t.text }; }
           // identity-security piece 3a §6: Approve on "remove an approving device" removes it (ledger row first).
           if (isApproverRevokeNonce(nonce)) {
             const t = takeApproverRevokeTap(mp, nonce, true, (id) => {
@@ -2656,6 +2666,8 @@ export class AgentServer {
             : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? (client === 'browser' ? 'This browser setup has already ended.' : 'This pairing has already ended.') : APPROVE_REFUSAL[outcome].detail, client };
         };
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+        // identity-security piece 3d: recovery when every approving device is lost, started from the private chat.
+        options.telegram.approverResetHandler = (args) => approverResetCommand(mp, args);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
     }
