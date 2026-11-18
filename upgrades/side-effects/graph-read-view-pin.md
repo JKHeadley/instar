@@ -68,3 +68,7 @@ Ship as Tier 1.
 
 - Rig profile after PR 3341 (`after-2.cpuprofile`, 2026-11-18 01:36Z run): 27.9 s stretch, 87% under `readView` via `effortTitle`.
 - Tests: `tests/unit/conversation-graph-read.test.ts` (every entry point, readiness and titles included, runs inside the source scope; 24 passed); `tests/integration/conversation-graph-read-view-cache.test.ts` new case (with the view key forced null, three lookups inside one pinned call build one union; the pin ends with the call, also on throw) — runs in Local Verify.
+
+## Local Verify correction (2026-11-18)
+
+The first Local Verify run (M5, 08:47Z, head b16699caf) failed in the integration lane on this PR's own test, `tests/integration/conversation-graph-read-view-cache.test.ts`. The fault was in the test, not the code. The page-read case spied on `runtime.readView` and expected exactly 3 calls for 3 page reads. With the pin, each read calls `readView()` once to build the pin and its own lookups call it again (answered from the pin), so the count is above 3 by design. Commit 865c46e51 replaced the call count with what the test meant: every call returned the same view object, `certifiedUnion` ran once, and no event was verified twice. The code is unchanged. Current main merged in (graph verify-verdict memo, single-pass revalidate); `readView` is untouched there, and the two graph unit files plus `tsc` pass.
