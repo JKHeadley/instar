@@ -10,6 +10,12 @@ import * as m from '../../dashboard/console/chats-model.js';
 const UUID = '3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b';
 
 describe('conversation refs and the hash', () => {
+  it('round-trips opaque source message identities without accepting control characters or truncation', () => {
+    expect(m.messageFromQuery('m=event%3Aone%26two')).toBe('event:one&two');
+    expect(m.messageFromQuery('m=144556')).toBe('144556');
+    for (const value of ['', 'x'.repeat(201), 'line\nfeed', '\u0000']) expect(m.messageFromQuery(`m=${encodeURIComponent(value)}`)).toBeNull();
+    expect(m.messageFromQuery('c=telegram%3A7')).toBeNull();
+  });
   it('parses and formats each kind, refusing anything else', () => {
     expect(m.parseConversationRef(`app:${UUID}`)).toEqual({ kind: 'app', id: UUID });
     expect(m.parseConversationRef('telegram:134088')).toEqual({ kind: 'telegram', id: '134088' });

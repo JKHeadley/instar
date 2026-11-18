@@ -58,7 +58,7 @@ function make(over: Partial<JevCorrectionShadowDeps> = {}, p: Record<string, num
   return { shadow, fetchImpl: (over.fetchImpl as unknown as typeof fetchImpl) ?? fetchImpl, metrics, logPath, rows };
 }
 
-const USER = { topicId: 7, messageId: 101, fromUser: true, provenance: 'user' };
+const USER = { topicId: 7, messageId: 101, fromUser: true, provenance: 'user', telegramUserId: 111 }; // a verified sender (SEC-069)
 const AGENT = { topicId: 7, fromUser: false, provenance: 'agent' };
 
 describe('renderCorrectionState — what leaves the machine', () => {
@@ -240,7 +240,7 @@ describe('observe — rows', () => {
   it('remembers at most MAX_TOPICS agent messages (least recently active dropped)', async () => {
     const m = make();
     for (let t = 0; t <= MAX_TOPICS; t++) m.shadow.observe({ topicId: t, fromUser: false, provenance: 'agent', text: `ctx-${t}` });
-    m.shadow.observe({ topicId: 0, messageId: 1, fromUser: true, text: 'no' });
+    m.shadow.observe({ topicId: 0, messageId: 1, fromUser: true, telegramUserId: 111, text: 'no' });
     await m.shadow.lastCheck;
     expect(JSON.parse(String((m.fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body)).state).toContain('(none)');
   });
@@ -557,5 +557,41 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
     expect(mk({}, false).deps.getConfig()?.feedSentinel).toBe(false);
     expect(mk({ feedSentinel: false }, true).deps.getConfig()?.feedSentinel).toBe(false);
     expect(mk({ feedSentinel: true }, false).deps.getConfig()?.feedSentinel).toBe(true);
+  });
+});
+
+// SEC-069: only the owner's own words feed correction learning.
+describe('JevCorrectionShadow — only the owner\'s own words', () => {
+  it('a team member\'s message is never sent for classification', async () => {
+    for (const who of [{ teamPhone: true }, { senderRole: 'team' }]) {
+      const m = make();
+      m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+      m.shadow.observe({ ...USER, ...who, text: 'You removed the wrong one, put it back.' });
+      await m.shadow.lastCheck;
+      expect(m.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+  it('forwarded text is never sent for classification', async () => {
+    const m = make();
+    m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+    m.shadow.observe({ ...USER, forwarded: true, text: 'You removed the wrong one, put it back.' });
+    await m.shadow.lastCheck;
+    expect(m.fetchImpl).not.toHaveBeenCalled();
+  });
+  it('another person in a shared topic, or an unverified sender, is not', async () => {
+    for (const [entry, owner] of [[{ ...USER, telegramUserId: 222 }, 111], [{ ...USER, telegramUserId: undefined }, undefined]] as const) {
+      const m = make();
+      m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+      m.shadow.observe({ ...entry, text: 'You removed the wrong one, put it back.' }, owner);
+      await m.shadow.lastCheck;
+      expect(m.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+  it('the owner\'s own message still is', async () => {
+    const m = make();
+    m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+    m.shadow.observe({ ...USER, senderRole: 'owner', forwarded: false, text: 'You removed the wrong one, put it back.' });
+    await m.shadow.lastCheck;
+    expect(m.fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
