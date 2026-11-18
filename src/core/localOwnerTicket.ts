@@ -90,6 +90,18 @@ export function appTicketRefusal(stateDir: string, publicKey: string): string | 
 export const REPLACE_HINT = "If that was this Mac's Instar app and it no longer has its key, run this again with --replace-app-key.";
 
 /**
+ * This machine's id, from the agent's own machine identity file. The install command and the local-owner
+ * route both use it, so a ticket planned here and the server that redeems it agree on the machine even
+ * when multi-machine coordination is off (a single-Mac agent, the Mac app's normal case).
+ */
+export function ownMachineId(stateDir: string): string | null {
+  try {
+    const id = JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8')) as { machineId?: unknown };
+    return typeof id.machineId === 'string' && id.machineId ? id.machineId : null;
+  } catch { return null; } // @silent-fallback-ok — no identity means a replace is refused in plain words
+}
+
+/**
  * appTicketRefusal, plus the replace path: with `replace`, earlier keys this Mac's own app enrolled
  * (a `local-install` owner bound to `machineId`) may be replaced. Anything else still refuses: a key
  * enrolled from another computer, an owner the app did not create, or an unknown machine id.

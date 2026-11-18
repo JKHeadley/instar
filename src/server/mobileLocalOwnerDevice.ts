@@ -14,7 +14,7 @@ import type { Application, Request, Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { DeviceRegistry, parseDevicePublicKey, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
-import { noteLocalOwnerTicketFailure, readLocalOwnerTicket, removeLocalOwnerTicket, sameLocalOwnerTicket } from '../core/localOwnerTicket.js';
+import { noteLocalOwnerTicketFailure, ownMachineId, readLocalOwnerTicket, removeLocalOwnerTicket, sameLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { hasForwardingHeaders, isLoopbackHost, verifyP256 } from './mobileBrowserDevices.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
@@ -113,7 +113,9 @@ export function mountLocalOwnerDeviceRoute(app: Application, svc: MobilePairingS
       refuse(400, 'proof-invalid', 'The app\'s request could not be checked. Check this Mac\'s clock and try again.');
       return;
     }
-    const selfMachineId = svc.deps.selfMachineId ?? null;
+    // The coordinator's id when multi-machine is on; otherwise this agent's own identity file, the same
+    // source the install command plans a replace from (a single-Mac agent has no coordinator).
+    const selfMachineId = svc.deps.selfMachineId ?? ownMachineId(stateDir);
     const replaced: string[] = [];
     const answer = (d: Pick<DeviceRecord, 'id' | 'host'>): void => {
       removeLocalOwnerTicket(stateDir);

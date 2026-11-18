@@ -14,7 +14,7 @@ import { canonicalString, DeviceRegistry } from '../../src/core/MobileDeviceKeys
 import { deviceKeyHashOf as signerKeyHashOfDevice, signerKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
 import { LOCAL_OWNER_PATH, localOwnerProofMessage, mountLocalOwnerDeviceRoute } from '../../src/server/mobileLocalOwnerDevice.js';
-import { appTicketPlan, appTicketRefusal, localOwnerTicketPath, readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
+import { appTicketPlan, appTicketRefusal, localOwnerTicketPath, ownMachineId, readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
 import { appTicketCommand } from '../../src/commands/install.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -214,6 +214,23 @@ describe('POST /mobile/local-owner-device — enrolling', () => {
     const r = e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir, Date.now(), [String(first.json.deviceId)])));
     expect(r.json.error).toBe('machine-identity-missing');
     expect(new DeviceRegistry(e.dir).get(String(first.json.deviceId))!.status).toBe('active');
+  });
+
+  it('a single-Mac agent (no multi-machine coordinator) binds and replaces using its own machine identity file', () => {
+    const e = setup({ selfMachineId: null });
+    fs.mkdirSync(path.join(e.dir, 'machine'), { recursive: true });
+    fs.writeFileSync(path.join(e.dir, 'machine', 'identity.json'), JSON.stringify({ machineId: 'm_disk' }));
+    const old = makeDevice();
+    const first = e.call(enrollBody(old, writeLocalOwnerTicket(e.dir)));
+    const oldId = String(first.json.deviceId);
+    expect(new DeviceRegistry(e.dir).get(oldId)).toMatchObject({ localBinding: { machineId: 'm_disk' } });
+    // The install command plans from the same file, so its plan and the server agree.
+    const fresh = makeDevice();
+    expect(appTicketPlan(e.dir, fresh.publicKey, { replace: true, machineId: ownMachineId(e.dir) })).toEqual({ replaces: [oldId] });
+    const r = e.call(enrollBody(fresh, writeLocalOwnerTicket(e.dir, Date.now(), [oldId])));
+    expect(r.status).toBe(200);
+    expect(r.json.replaced).toEqual([oldId]);
+    expect(new DeviceRegistry(e.dir).get(oldId)!.status).toBe('revoked');
   });
 
   it('a replace whose enrollment failed after the revoke recovers with a fresh ticket and the same key', () => {

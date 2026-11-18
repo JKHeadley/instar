@@ -8,7 +8,7 @@
 import { storageMachineName } from '../core/storageMachineName.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
-import { appTicketPlan, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
+import { appTicketPlan, ownMachineId, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -852,7 +852,7 @@ export function appTicketCommand(existing: InstallProgress | null, key: string |
     return 'needs-answers';
   }
   const stateDir = path.join(existing.appEnroll.agentDir, '.instar');
-  const plan = appTicketPlan(stateDir, key, { replace, machineId: replace ? thisMachineId(stateDir) : null });
+  const plan = appTicketPlan(stateDir, key, { replace, machineId: replace ? ownMachineId(stateDir) : null });
   if ('refusal' in plan) {
     console.log(`  ${plan.refusal}`);
     return 'failed';
@@ -862,14 +862,6 @@ export function appTicketCommand(existing: InstallProgress | null, key: string |
     ? "  A fresh setup ticket is ready for the Instar app. It replaces this Mac's earlier app connection."
     : '  A fresh setup ticket is ready for the Instar app.');
   return 'complete';
-}
-
-/** This machine's id, from the agent's own machine identity (the id its server binds local owners to). */
-function thisMachineId(stateDir: string): string | null {
-  try {
-    const id = JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8')) as { machineId?: unknown };
-    return typeof id.machineId === 'string' && id.machineId ? id.machineId : null;
-  } catch { return null; } // @silent-fallback-ok — no identity means the replace is refused in plain words
 }
 
 export async function runInstallCommand(options: InstallCommandOptions): Promise<InstallStatus> {
