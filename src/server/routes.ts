@@ -431,6 +431,9 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, canonicalDecisionPoint, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
+import { buildDateMissingHint } from '../monitoring/lateNoticeCore.js';
+import { detectPromisedTime } from '../monitoring/promisedUpdateDetector.js';
+import { makeHandOffPromise, makeLateEpochStore } from '../monitoring/promiseHandoff.js';
 import { CheckInReminderTicker, resolveCheckInTickIntervalMs } from '../monitoring/CheckInReminderTicker.js';
 import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
@@ -38916,7 +38919,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * counter is the rollout hard-stop signal. MUST be registered before
    * `/commitments/:id` or Express routes the literal here to the :id handler.
    */
-  type CheckInReminderConfig = { enabled?: boolean; dryRun?: boolean; maxPerPass?: number; tickEnabled?: boolean; tickIntervalMs?: number };
+  type CheckInReminderConfig = { enabled?: boolean; dryRun?: boolean; maxPerPass?: number; tickEnabled?: boolean; tickIntervalMs?: number; maxLateTopicsPerPass?: number; maxLateTopicsPerHour?: number; lateNoticeTopicCooldownMs?: number };
   // Live, so tickEnabled and dryRun take effect without a restart: ctx.config is the boot snapshot.
   const checkInReminderConfig = () => ctx.liveConfig?.get?.<CheckInReminderConfig | undefined>('commitments.checkInReminder', undefined)
     ?? ((ctx.config as Record<string, any>).commitments?.checkInReminder as CheckInReminderConfig | undefined);
@@ -38933,6 +38936,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       {
         tracker,
         ...(quiet ? { log: () => {} } : {}),
+        // Overdue-promise follow-through (docs/specs/overdue-promise-follow-through.md):
+        // the backlog epoch, the agent's zone for the late text, and a handoff that
+        // only ever injects into a RUNNING session as a system notice.
+        lateEpoch: makeLateEpochStore(ctx.config.stateDir),
+        timeZone: ctx.liveConfig?.get?.<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) ?? null,
+        ...(telegram && ctx.sessionManager ? {
+          handOffPromise: makeHandOffPromise({
+            getSessionForTopic: (topicId) => telegram.getSessionForTopic(topicId),
+            isSessionAlive: (session) => ctx.sessionManager!.isSessionAlive(session),
+            injectObserved: (session, text) => ctx.sessionManager!.injectPasteNotificationObserved(session, text),
+          }),
+        } : {}),
         // Promised update overdue (docs/specs/promised-update-capture.md): after
         // the honest line is out, hand the promise to the topic's session the
         // same way a dashboard decision is handed over — the inbound path
@@ -39013,6 +39028,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         dryRun,
         selfMachineId: ctx.meshSelfId ?? null,
         ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
+        ...(typeof cfg?.maxLateTopicsPerPass === 'number' ? { maxLateTopicsPerPass: cfg.maxLateTopicsPerPass } : {}),
+        ...(typeof cfg?.maxLateTopicsPerHour === 'number' ? { maxLateTopicsPerHour: cfg.maxLateTopicsPerHour } : {}),
+        ...(typeof cfg?.lateNoticeTopicCooldownMs === 'number' ? { lateTopicCooldownMs: cfg.lateNoticeTopicCooldownMs } : {}),
       },
     );
     return reconciler.runPass();
@@ -39433,9 +39451,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         } catch { /* attention is observability */ }
       }
+      // overdue-promise-follow-through §3.5: ask once when the words name a time
+      // but no promised time was recorded. Advisory only — never writes a date.
+      let dateMissing: ReturnType<typeof buildDateMissingHint> = null;
+      try {
+        dateMissing = buildDateMissingHint(commitment, Date.now(), detectPromisedTime,
+          ctx.liveConfig?.get?.<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) ?? null);
+      } catch { /* @silent-fallback-ok — an advisory hint must never fail the record */ }
       res.status(201).json({ ...commitment, classReviewAdmission: {
         wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
-      } });
+      }, ...(dateMissing ? { dateMissing } : {}) });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -39994,6 +40019,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...prev,
         ...(nextUpdateDueAt !== undefined ? { nextUpdateDueAt } : {}),
         ...(softDeadlineAt !== undefined ? { softDeadlineAt } : {}),
+        // A promised time IS follow-through: the opt-out no longer describes the row.
+        ...(softDeadlineAt ? { followThroughOptOutReason: undefined } : {}),
         ...(hardDeadlineAt !== undefined ? { hardDeadlineAt } : {}),
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
         ...(beaconEnabled !== undefined ? { beaconEnabled } : {}),
