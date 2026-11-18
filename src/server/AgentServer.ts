@@ -1898,6 +1898,8 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** identity-security piece 2b: the owner record on this machine (GET /owner-record). */
+    ownerRecord?: () => import('./ownerRecordRoutes.js').OwnerRecordRouteDeps | null;
     /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
     workBoard?: () => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null;
     workBoardLate?: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null };
@@ -6777,6 +6779,7 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      ownerRecord: options.ownerRecord ?? null,
       workBoard: options.workBoard ?? null,
       workBoardLate: options.workBoardLate ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
