@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T13:10:47.991Z",
+  "slug": "body-budget-before-auth",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 235,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/bodyBudget.ts",
+      "src/server/middleware.ts"
+    ],
+    "addedLines": 232,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
