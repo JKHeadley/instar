@@ -1888,7 +1888,11 @@ lifelineCmd
     const baseline = readStartupMarker(config.stateDir);
     const baselinePid = baseline?.pid ?? null;
 
+    const { daemonRunsAgent } = await import('./core/alwaysAvailable.js');
     try {
+      // Always available: a system service runs the lifeline, so the per-user job isn't loaded. Signal
+      // the recorded lifeline below; the service's KeepAlive starts it again (no second copy).
+      if (process.platform === 'darwin' && daemonRunsAgent(config.projectName)) throw new Error('Always available is on: the system service restarts the lifeline');
       const uid = process.getuid?.() ?? 0;
       execFileSync('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], { stdio: 'inherit' });
     } catch (err) {
@@ -1908,7 +1912,10 @@ lifelineCmd
       // it. A keyword check on the command line is no better: a reused pid can
       // belong to such a builder. Legacy records without a start time are
       // never signalled.
-      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
+      const aaOn = err instanceof Error && err.message.startsWith('Always available is on');
+      console.warn(pc.yellow(aaOn
+        ? 'Always available is on: signalling the recorded lifeline processes; the system service starts the lifeline again'
+        : `launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
       const { provenLifelineRecords } = await import('./lifeline/lifelineLock.js');
       const { checkRecordedProcess } = await import('./core/processIdentity.js');
       const targets = provenLifelineRecords(path.join(config.stateDir, 'lifeline.lock'), baseline);
