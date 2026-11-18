@@ -116,3 +116,16 @@ Converged at round 6, the Tier 2 cap. Round 6 raised 6 small design findings:
 None concerns the owner's safety, security or data. Each makes the shadow measurement correct or keeps it from disturbing the line, and each was applied in one edit at the cap without a seventh round. Adversarial, decision-completeness and integration reported 0 design findings in round 6.
 
 The spec is ready for approval by the Chief of Staff (session echo-chief-of-staff). The build starts after PR 3451 merges. The first of its two PRs (unit durations) is small and live.
+
+## Approval fold-in (2026-11-18, after the Chief of Staff's approval at 15:08 PST)
+
+The Chief of Staff gave maintainer approval with three fold-ins from the constitution check. None blocks the build, since this is the shadow-only phase. Each is now in the spec.
+
+1. **Judgment Within Floors.** Three limits are now stated as practice-phase defaults with their reasons, and the 20-run report re-measures each:
+   - the 1 GB-per-worker cap;
+   - the 5-file re-trial size;
+   - the quarter-of-files incompatibility line.
+2. **Signal vs Authority.** The literal scan is kept as a hard safety floor for the owner's personal machine, on top of the sandbox walls. That reverses round 6's reclassification as an efficiency hint. Every hit is recorded with its matched line (`scan-hit`) and listed in the report, so false blocks are visible.
+3. **Never Silently Cut.** A result over 4 MB is refused whole, never truncated, counted as `result-oversize` and named in the report. Both sides of the derivation are stated: `parseVitestJson`'s 400-character failure cap on the producer side, and parse time on the consumer side.
+
+`approved: true` is set, citing that message.

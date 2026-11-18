@@ -13,6 +13,8 @@ review-convergence: "2026-11-18T22:57:52.355Z"
 review-iterations: 6
 review-completed-at: "2026-11-18T22:57:52.355Z"
 review-report: "docs/specs/reports/local-verify-borrowed-unit-slices-convergence.md"
+approved: true
+approved-by: "Chief of Staff (echo-chief-of-staff), maintainer approval 2026-11-18 15:08 PST (agent message 4853dd64), with three fold-ins: reasons or practice-phase marking for limits, scan as a hard floor with counted hits, visible 4 MB refusal with derivation"
 cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
 frontloaded-decisions: 8
@@ -187,7 +189,7 @@ Any failed check answers with its refusal reason, and nothing runs. What remains
 A file may go to a helper only if it passes all three checks:
 
 - **Not on the fixed exclude list** `BORROWED_EXCLUDE`, in code: the Mac desktop helper, Chrome/CDP, Codex CLI, launchd, and tmux-driving tests.
-- **No scan hit in the test file or its direct imports** (an efficiency hint, like the fixed list: it only keeps a file local). The scan matches call sites and string literals only, not identifiers or comments: a spawn or exec whose command literal is `launchctl`, `osascript`, `tmux`, `open` or `security`; literal paths under `/Library/` or `~/`; `homedir()` calls; `process.env.HOME` reads.
+- **No scan hit in the test file or its direct imports.** This is a hard safety floor for the owner's personal machine, on top of the sandbox walls, which are also a floor, not a judgment. Every hit is recorded as a counted signal (`scan-hit { file, matchedFile, line, pattern }`) and listed in the shadow report, so false blocks are visible and the patterns can be corrected by a code change. The scan matches call sites and string literals only, not identifiers or comments: a spawn or exec whose command literal is `launchctl`, `osascript`, `tmux`, `open` or `security`; literal paths under `/Library/` or `~/`; `homedir()` calls; `process.env.HOME` reads.
   - Hits deeper in the import closure are recorded (`scanDeepHits`) but do not exclude. The sandbox has no access to the owner's desktop or system services; a test that needs `launchctl` or `osascript` fails on Linux and enters the learned list.
   - The time-weighted `scanIneligibleShare` is audited every run. Before the narrowing, a plain-text closure scan made 80% of unit files ineligible, about 85% of unit time.
 
@@ -226,7 +228,12 @@ A file may go to a helper only if it passes all three checks:
 
 - **Working space.** Each slice gets its own overlay on the read-only tree: a fresh writable upper folder for whatever tests write. The overlay is discarded after the slice, so nothing a slice writes reaches another slice.
 - **Environment.** `HOME` and `TMPDIR` point inside the overlay.
-- **Results.** The runner collects results as root, from a pipe it opened (never from files in the overlay), and prints them on a separate pipe. The owner service reads at most 4 MB, then refuses. That is 40x the largest per-slice result in the trials, and it parses in well under 100 ms.
+- **Results.** The runner collects results as root, from a pipe it opened (never from files in the overlay), and prints them on a separate pipe. The owner service reads at most 4 MB, then refuses the whole result. It never truncates.
+  - **Visible refusal:** a refusal is counted as `result-oversize { attemptId, bytesSeen }` and named in the shadow report.
+  - **Derivation:**
+    - **Producer side:** a slice's result is built by `parseVitestJson`, which caps each failure message at 400 characters. A full 10 s slice of about 50 files, each with its counts and up to its first failures, stays under about 100 KB. The trials' largest was about 100 KB.
+    - **Consumer side:** 4 MB parses in well under 100 ms in the owner service.
+    - So 4 MB is 40x the expected maximum. An oversize result signals something wrong, not a legitimately large slice.
 - **Clean-up after every slice:** the runner kills every `tester` process (`pkill -KILL -u tester`, repeated at most 3 times, 1 s apart). If any survive, the sandbox is restarted.
 - **Fresh sandbox:** it is recreated from its base image once a day while idle, and at once after any failed check.
 
@@ -311,7 +318,7 @@ With `monitoring.localVerify.borrowed = { mode: 'off' | 'shadow', helpers: [{ ma
 |---|---|---|
 | Whether a helper accepts a request (C) | invariant; basis: irreversible-consequence; evidence: running code on a personal machine cannot be undone. So the checks are exact: pinned requester and repo, unexpired single-use request, a commit reachable from `main` on GitHub, and the file rules. Any unknown value means refuse. | |
 | Whether the sandbox's walls allow the helper to run (B2) | invariant; basis: irreversible-consequence; evidence: a sandbox with a host mount or a route to the host gateway exposes the owner's files and services. Each check is a pass or fail fact; a failed or unrunnable check means refuse. | |
-| Whether a file may go (D) | judgment-candidate; floor: unit test files that exist in the merged commit; arbiter: the fixed list, the scan and the learned list, which are now efficiency hints, since the sandbox, not the file list, protects the owner; conservative default: a file that any hint flags runs locally only, as every file does anyway. | |
+| Whether a file may go (D) | invariant for the fixed list and the scan; basis: irreversible-consequence; evidence: they are a hard safety floor for the owner's personal machine, layered on the sandbox walls (Chief of Staff approval, 2026-11-18 15:08 PST). Every scan hit is recorded with its matched line, so false blocks are visible. The learned list is judgment within that floor (efficiency only). | |
 | When the helper stops for its owner (E) | judgment-candidate; floor: the sandbox's fixed CPU and memory size as a hard ceiling; `reserveCores` as the sampled target; host memory pressure, deadline, cancel and pause always stop; battery stops unless the owner turns that off; Windows without a fresh owner signal never runs. Arbiter: the measured owner load. Conservative default: stop. | |
 | Which files a run machine sends (F) | judgment-candidate; floor: eligible files only; arbiter: recorded durations and the helper's measured throughput (seeded from the trials until measured); conservative default: send only the seeded amount. | |
 | Using helper results | invariant; basis: enumerable-domain; evidence: shadow mode has exactly one use for a result, comparison. No code path feeds a helper result into `evaluateRun`, and a test asserts it. | |
@@ -326,14 +333,14 @@ With `monitoring.localVerify.borrowed = { mode: 'off' | 'shadow', helpers: [{ ma
 | Governor period | 2 s | The trials' sampling interval. Memory no longer depends on sampling: the sandbox's memory size is a hard ceiling. |
 | Windows signal staleness | 10 s | Five governor periods: one missed write is tolerated, a stopped sampler is not. |
 | Request expiry | at most 60 s, plus 30 s clock tolerance | A request is acted on at once. The expiry and a single-use id kept 10 min across restarts stop replay of a sniffed request. |
-| Sandbox size on the laptop | 8 CPUs, min(8 GB, RAM/4) memory, 30 GB disk to start; workers at most 1 per GB | Half the cores, above the trials' 5 workers with 4 kept free. Memory for 5 vitest workers plus the build. Disk for two trees, `node_modules` and the base image. Set by the operator and revised from `ownerCoresMax`, peak memory and Justin's word. |
+| Sandbox size on the laptop | 8 CPUs, min(8 GB, RAM/4) memory, 30 GB disk to start; workers at most 1 per GB (practice-phase default) | Half the cores, above the trials' 5 workers with 4 kept free. Memory for 5 vitest workers plus the build. Disk for two trees, `node_modules` and the base image. Set by the operator and revised from `ownerCoresMax`, peak memory and Justin's word. The 1 GB per worker is a practice-phase default: a vitest unit worker on this suite is usually a few hundred MB, so 1 GB leaves headroom for the heaviest files. The 20-run report re-measures it from `sandboxPeakMemMb` and the workers used. |
 | Result size read | 4 MB | 40x the largest per-slice result in the trials; more is refused, never cut. |
 | Clean-up retries | kill up to 3 times, 1 s apart, then restart the sandbox | Bounded: a process that survives a kill ends the sandbox instead of looping. |
 | Idle stop | 15 min without work (and at once on memory pressure or pause) | A stopped sandbox returns all its memory; a restart is one boot, audited. |
 | Host disk margin | the sandbox disk's remaining growth + 5 GB | The sandbox's disk file grows on the owner's disk; the margin keeps his disk from filling even when the sandbox reaches its cap. |
 | Prepared trees | 2 | The second covers a newer `main` head arriving while the previous tree is still in use; evicted least recently used and deleted on cancel. |
 | Sandbox disk floor | measured peak preparation size | A preparation never starts without room inside the sandbox; the owner's disk is protected by the host-disk margin. |
-| Learned list | 2 same-run differences in (1 in the dry run); re-tried on version or content change or every 10th run; capped at the eligible-file count | Environment failures repeat every run (trial 2), so two separates them from one flaky event; the dry run is a deliberate full comparison on a green tree. The re-trials give every entry a way back. |
+| Learned list | 2 same-run differences in (1 in the dry run); re-tried on version or content change or every 10th run, at most 5 files per re-trial request; capped at the eligible-file count; a helper with more than a quarter of eligible files on it is reported incompatible | Environment failures repeat every run (trial 2), so two separates them from one flaky event; the dry run is a deliberate full comparison on a green tree. The re-trials give every entry a way back. The 5-file re-trial size and the quarter-of-files incompatibility line are practice-phase defaults. Five keeps a re-trial to one ordinary slice, so a mostly broken list does not crowd out real slices. A quarter means the helper cannot run a large share of the suite, which would make it useless for counting whatever the agreement. The 20-run report re-measures both from the observed list sizes and re-trial outcomes. |
 | Memory-pressure hold-off | 5 min, doubling per repeat within an hour, cap 1 h | It breaks a stop-boot-stop loop while the owner works; a stopped sandbox already gave its memory back. |
 | Unreachable helper | skipped after 3 runs; wait doubles from 30 min to 8 h; reset on success | It follows the existing peer breaker, with growing backoff added so a long outage is probed rarely. |
 | Shadow sample sizes | report at 20 runs per helper; Windows after the laptop's 20th run, unless the throughput session starts it earlier | 20 runs give a per-file agreement rate and a hand-back distribution worth reporting. The Windows owner-signal dry run runs no tests, so it may start in parallel. |
