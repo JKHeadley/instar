@@ -134,7 +134,10 @@ describe('machine wedge detection lifecycle', () => {
     expect(w.candidate).toBeNull();
     expect(notices).toBe(0);
     const rows = fs.readFileSync(path.join(dir, 'logs', 'machine-maintenance.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(rows[0]).toMatchObject({ type: 'wedge-sample', feature: 'wedge', dryRun: true });
+    // When the gentle rung ran (in dry-run), its row is written before the sample row.
+    expect(rows.find((r) => r.type === 'wedge-sample')).toMatchObject({ type: 'wedge-sample', feature: 'wedge', dryRun: true });
+    if (w.lastGentle !== null) expect(rows.find((r) => r.type === 'wedge-gentle')).toMatchObject({ mode: 'dry-run' });
+    expect(rows.every((r) => r.dryRun === true)).toBe(true);
     // The host maintainer heartbeat and published state are on disk for co-resident agents.
     expect(fs.existsSync(path.join(dir, 'host', 'wedge-maintainer.json'))).toBe(true);
     expect(fs.existsSync(path.join(dir, 'host', 'wedge-state.json'))).toBe(true);
