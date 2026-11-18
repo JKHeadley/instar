@@ -45,6 +45,7 @@ export interface DuePost {
   cleared: Array<{ category: string; bytes: number }>;
   cacheReclaimableBytes: number;
   worktrees?: WorktreePlan;
+  topicWorktrees?: import('./topicWorktreeMeasure.js').TopicWorktreePlan;
   reaperArmed: boolean | null;
   biggest?: Array<{ name: string; bytes: number }>;
   sizesAt?: number;
@@ -106,6 +107,7 @@ interface PersistedState {
   lastPost: { at: number; postId: string; level: Level; critical: boolean } | null;
   sizes?: { at: number; partial: boolean; folders: Array<{ name: string; bytes: number }> };
   worktrees?: WorktreePlan;
+  topicWorktrees?: import('./topicWorktreeMeasure.js').TopicWorktreePlan;
   wholeDisk?: WholeDiskResult;
   lastMeasureFailedAt?: number | null;
   /** When this episode's last cycle healed the disk without a post. */
@@ -147,6 +149,7 @@ export interface DiskStewardStatus {
   prune: { enabled: boolean; dryRun: boolean; lastRun: PruneSummary | null; running: RunRecord | null; breaker: number };
   sizes: PersistedState['sizes'] | null;
   worktrees: WorktreePlan | null;
+  topicWorktrees: import('./topicWorktreeMeasure.js').TopicWorktreePlan | null;
   wholeDisk: WholeDiskResult | null;
 }
 
@@ -387,6 +390,7 @@ export class DiskSteward {
     }
     if (r.sizes) this.state.sizes = r.sizes;
     if (r.worktrees) this.state.worktrees = r.worktrees;
+    if (r.topicWorktrees) this.state.topicWorktrees = r.topicWorktrees;
     if (r.wholeDisk) this.state.wholeDisk = r.wholeDisk;
     if (r.categories.some((c) => c.error)) this.deps.evidence?.('error', 'a cleanup category failed');
   }
@@ -406,6 +410,7 @@ export class DiskSteward {
       free, total, change24h: this.change24h(now, free), daysToFloor: this.lastForecast?.daysToFloor ?? null,
       cleared, cacheReclaimableBytes,
       ...(this.state.worktrees ? { worktrees: this.state.worktrees } : {}),
+      ...(this.state.topicWorktrees ? { topicWorktrees: this.state.topicWorktrees } : {}),
       reaperArmed: this.deps.reaperArmed(),
       ...(this.state.sizes ? { biggest: this.state.sizes.folders.slice(0, 3), sizesAt: this.state.sizes.at, sizesPartial: this.state.sizes.partial } : {}),
       ...(this.state.wholeDisk ? { wholeDisk: this.state.wholeDisk } : {}),
@@ -526,6 +531,7 @@ export class DiskSteward {
       sizes: this.state.sizes ?? null,
       wholeDisk: this.state.wholeDisk ?? null,
       worktrees: this.state.worktrees ?? null,
+      topicWorktrees: this.state.topicWorktrees ?? null,
     };
   }
 

@@ -196,13 +196,16 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
   return true;
 }
 
-export async function buildInboundLinkIndex(agentHome: string, worktreesDir: string, opts?: { timeoutMs?: number }): Promise<InboundLinkIndex | null> {
+export async function buildInboundLinkIndex(agentHome: string, worktreesDir: string, opts?: { timeoutMs?: number; extraWorktreesDirs?: string[] }): Promise<InboundLinkIndex | null> {
   const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
-  const worktreesReal = (() => { try { return fs.realpathSync(worktreesDir); } catch { return worktreesDir; } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal path
+  // Every checkout folder in one index (topic-worktree-reclaim B): checkouts in
+  // `<home>/.worktrees` link into `.instar/worktrees` and back.
+  const checkoutDirs = [worktreesDir, ...(opts?.extraWorktreesDirs ?? []).filter((d) => d !== worktreesDir)];
+  const realOf = (d: string): string => { try { return fs.realpathSync(d); } catch { return d; } }; // @silent-fallback-ok — unresolvable ⇒ compare the literal path
   const links: string[] = [];
   const skippedForeign: string[] = [];
   const walks: Array<[string, number, string | null]> = [
-    [worktreesDir, 3, 'node_modules'],
+    ...checkoutDirs.map((d): [string, number, string | null] => [d, 3, 'node_modules']),
     [agentHome, 0, null],
     [path.join(agentHome, '.worktrees-deps'), Number.MAX_SAFE_INTEGER, null],
     [path.join(agentHome, '.instar', 'lanes'), Number.MAX_SAFE_INTEGER, null],
@@ -210,11 +213,15 @@ export async function buildInboundLinkIndex(agentHome: string, worktreesDir: str
   for (const [root, depth, prune] of walks) {
     if (!(await walkLinks(root, depth, prune, links, skippedForeign, deadline))) return null;
   }
+  const dirs = checkoutDirs.map((d) => ({ lit: d, real: realOf(d) }));
   const owner = (p: string): string | null => {
-    const norm = p === worktreesDir || p.startsWith(worktreesDir + path.sep) ? worktreesReal + p.slice(worktreesDir.length) : p;
-    if (!norm.startsWith(worktreesReal + path.sep)) return null;
-    const slug = norm.slice(worktreesReal.length + 1).split(path.sep)[0];
-    return slug ? path.join(worktreesReal, slug) : null;
+    for (const { lit, real } of dirs) {
+      const norm = p === lit || p.startsWith(lit + path.sep) ? real + p.slice(lit.length) : p;
+      if (!norm.startsWith(real + path.sep)) continue;
+      const slug = norm.slice(real.length + 1).split(path.sep)[0];
+      return slug ? path.join(real, slug) : null;
+    }
+    return null;
   };
   const linked = new Set<string>();
   for (const link of links) {
@@ -362,7 +369,17 @@ export function isBranchMerged(readGit: ReadGit, repo: string, baseRef: string, 
  *  not a GitHub repo, timeout). Null is the conservative signal → caller keeps. */
 export type RunGh = (args: string[], cwd: string) => string | null;
 
-const defaultRunGh: RunGh = (args, cwd) => {
+/** A gh runner whose per-call timeout is the smaller of 30 s and `leftMs()` (topic-worktree-reclaim D). */
+export function makeCappedRunGh(leftMs: () => number): RunGh {
+  return (args, cwd) => {
+    const t = Math.min(30_000, Math.floor(leftMs()));
+    if (t < 1_000) return null; // no time left: no PR signal (KEEP)
+    try { return withSyncOp(() => execFileSync('gh', args, { cwd, encoding: 'utf-8', timeout: t, maxBuffer: 16 * 1024 * 1024 })); }
+    catch { return null; } // @silent-fallback-ok — gh unavailable or out of time ⇒ no PR signal ⇒ KEEP
+  };
+}
+
+export const defaultRunGh: RunGh = (args, cwd) => {
   try {
     // Funnel through withSyncOp so the in-flight marker sees this blocking spawn
     // (event-loop-resilience spec): the reaper runs in-process on a timer, and a
@@ -385,11 +402,14 @@ const defaultRunGh: RunGh = (args, cwd) => {
  * ONE `gh` call per sweep (bounded `--limit`); fail-safe to an EMPTY map on any
  * error so the reaper degrades to exactly today's cherry-only behavior (KEEP).
  */
-export function fetchMergedPrHeadOids(repo: string, opts?: { runGh?: RunGh; limit?: number }): Map<string, string> {
+export function fetchMergedPrHeadOids(repo: string, opts?: { runGh?: RunGh; limit?: number; baseBranch?: string }): Map<string, string> {
   const runGh = opts?.runGh ?? defaultRunGh;
   const limit = opts?.limit ?? 500;
   const map = new Map<string, string>();
-  const out = runGh(['pr', 'list', '--state', 'merged', '--json', 'headRefName,headRefOid', '--limit', String(limit)], repo);
+  // Only PRs merged INTO the base branch count: a PR merged into a release or feature branch
+  // does not put its content on main (topic-worktree-reclaim B). A row with no baseRefName is dropped (KEEP).
+  const baseBranch = opts?.baseBranch ?? 'main';
+  const out = runGh(['pr', 'list', '--state', 'merged', '--base', baseBranch, '--json', 'headRefName,headRefOid,baseRefName', '--limit', String(limit)], repo);
   if (!out) return map; // conservative: no signal
   let arr: unknown;
   try { arr = JSON.parse(out); } catch { return map; }
@@ -398,6 +418,7 @@ export function fetchMergedPrHeadOids(repo: string, opts?: { runGh?: RunGh; limi
     if (!row || typeof row !== 'object') continue;
     const name = (row as { headRefName?: unknown }).headRefName;
     const oid = (row as { headRefOid?: unknown }).headRefOid;
+    if ((row as { baseRefName?: unknown }).baseRefName !== baseBranch) continue;
     if (typeof name === 'string' && typeof oid === 'string' && name && oid) {
       // Latest merged PR for a (reused) branch name wins — gh returns newest first.
       if (!map.has(name)) map.set(name, oid);
@@ -430,13 +451,23 @@ export function makeAgentWorktreeReaperDeps(opts: {
   githubMergeCheck?: boolean;
   /** Override the merged-PR map source (testing). Returns headRefName→headRefOid. */
   mergedPrMap?: () => Map<string, string>;
+  /** The agent home, passed in explicitly. Default `path.dirname(worktreesDir)`, which is wrong for `<stateDir>/worktrees`. */
+  agentHome?: string;
+  /** Other checkout folders whose links count (topic-worktree-reclaim B), e.g. `<stateDir>/worktrees`. */
+  linkedWorktreeDirs?: string[];
+  /** Ignore `.session.lock` in isInUse (topic-worktree-reclaim D: old lock files say nothing about use). */
+  ignoreSessionLockFile?: boolean;
+  /** Link-walk time budget (default 300 s); topic-worktree-reclaim D passes the time it has left. */
+  linkIndexTimeoutMs?: number;
+  /** gh runner override (D passes one capped by its deadline). */
+  runGh?: RunGh;
   /** Where gate records go before a checkout is removed. Default: `<agent home>/.instar/instar-dev-decisions-archive`. */
   gateRecordArchiveDir?: string;
   now?: () => number;
 }): AgentWorktreeReaperDeps {
   const readGit = opts.readGit ?? defaultReadGit;
   const gateRecordArchiveDir = opts.gateRecordArchiveDir
-    ?? path.join(path.dirname(opts.worktreesDir), '.instar', 'instar-dev-decisions-archive');
+    ?? path.join(opts.agentHome ?? path.dirname(opts.worktreesDir), '.instar', 'instar-dev-decisions-archive');
   const repo = opts.instarRepo;
   const githubMergeCheck = opts.githubMergeCheck ?? true;
   const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })();
@@ -505,7 +536,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
   let prepareSeq = 0;
   let appliedSeq = 0;
   const inboundLinksFn = opts.inboundLinks ?? (async (): Promise<Set<string> | null> => {
-    const idx = await buildInboundLinkIndex(path.dirname(opts.worktreesDir), opts.worktreesDir);
+    const idx = await buildInboundLinkIndex(opts.agentHome ?? path.dirname(opts.worktreesDir), opts.worktreesDir, { extraWorktreesDirs: opts.linkedWorktreeDirs ?? [], ...(opts.linkIndexTimeoutMs !== undefined ? { timeoutMs: opts.linkIndexTimeoutMs } : {}) });
     skippedForeignDirs = idx?.skippedForeign ?? [];
     if (skippedForeignDirs.length) console.warn(`[agent-worktree-reaper] link scan skipped ${skippedForeignDirs.length} folder(s) owned by another account: ${skippedForeignDirs.slice(0, 3).join(', ')}`);
     return idx ? idx.linked : null;
@@ -515,7 +546,13 @@ export function makeAgentWorktreeReaperDeps(opts: {
   // reap pass makes ONE `gh` call, not one per worktree. The map only fixes the
   // multi-commit-squash blind spot in `git cherry`; it is consulted lazily (only
   // when cherry says unmerged) so a fully cherry-detectable repo never calls gh.
-  const mergedPrMapFn = opts.mergedPrMap ?? (() => fetchMergedPrHeadOids(repo));
+  // Only PRs merged INTO the base branch count; its name comes from the resolved base ref
+  // (`origin/main` -> `main`), never a hard-coded `main` (topic-worktree-reclaim B).
+  const mergedPrMapFn = opts.mergedPrMap ?? (() => {
+    const base = resolveBaseRef(readGit, repo);
+    if (!base) return new Map<string, string>(); // no base: no merged-PR signal (KEEP)
+    return fetchMergedPrHeadOids(repo, { baseBranch: base.includes('/') ? base.slice(base.indexOf('/') + 1) : base, ...(opts.runGh ? { runGh: opts.runGh } : {}) });
+  });
   let prMapCache: Map<string, string> | null = null;
   let prMapCacheAt = 0;
   const mergedPrMapCached = (): Map<string, string> => {
@@ -616,9 +653,20 @@ export function makeAgentWorktreeReaperDeps(opts: {
 
     isInUse: (p: string): boolean => {
       // A live session lock or a git index lock means in-flight work — KEEP.
-      for (const lock of ['.session.lock', path.join('.git', 'index.lock')]) {
+      for (const lock of opts.ignoreSessionLockFile ? [path.join('.git', 'index.lock')] : ['.session.lock', path.join('.git', 'index.lock')]) {
         try { if (fs.existsSync(path.join(p, lock))) return true; } catch { /* ignore */ }
       }
+      // In a linked worktree `.git` is a file ("gitdir: <dir>"), so the index lock
+      // lives in that directory (topic-worktree-reclaim B). Unreadable ⇒ keep.
+      try {
+        const dotGit = path.join(p, '.git');
+        if (fs.statSync(dotGit).isFile()) {
+          const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+          if (!m) return true;
+          const gitDir = path.resolve(p, m[1].trim());
+          if (fs.existsSync(path.join(gitDir, 'index.lock'))) return true;
+        }
+      } catch { /* @silent-fallback-ok — no .git entry: nothing to check here; the other signals still apply */ }
       // A running process whose cwd is inside the worktree — KEEP.
       let real: string;
       try {
@@ -642,7 +690,9 @@ export function makeAgentWorktreeReaperDeps(opts: {
       // spelling of the home), at boundaries: more matches only keep more.
       const slug = path.basename(real);
       const rel = new RegExp(`(^|[\\s'"=/:~.])\\.worktrees/${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
-      const patterns = [names(real), names(p), rel];
+      // topic-worktree-reclaim B: also `.instar/worktrees/<slug>` (topic worktrees).
+      const relTopic = new RegExp(`(^|[\\s'"=/:~.])\\.instar/worktrees/${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
+      const patterns = [names(real), names(p), rel, relTopic];
       return commands.some((c) => patterns.some((re) => re.test(c)));
     },
 

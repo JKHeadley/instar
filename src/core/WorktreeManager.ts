@@ -99,6 +99,8 @@ const SCHEMA_LOCK = 'v2';
 const DEFAULT_MAX_PUSH_DELAY_S = 7 * 24 * 3600;
 const TRAILER_NONCE_BYTES = 16;
 const HEARTBEAT_STALE_MS = 60_000;
+/** Written inside a node_modules copied by fastCopyDeps (topic-worktree-reclaim C). */
+export const DEPS_COPY_MARKER = '.instar-deps-copy';
 const FORCE_TAKE_TIMEOUT_MS = 10_000;
 const MAX_ACTIVE_BINDINGS = 30;
 /**
@@ -442,6 +444,63 @@ export class WorktreeManager extends EventEmitter {
       mode: args.mode,
       binding,
     };
+  }
+
+  /** This machine's id as WorktreeManager writes it into bindings and history. */
+  get machineId(): string { return this.opts.machineId; }
+
+  /**
+   * Release every lock this machine holds for an ended session (topic-worktree-reclaim A).
+   * Called on sessionComplete AND sessionKilled; nothing called release() before, so every
+   * lock file stayed on disk forever. Returns how many were released.
+   */
+  releaseForSession(sessionId: string): number {
+    let released = 0;
+    for (const [worktreePath, lock] of [...this.locks]) {
+      if (lock.sessionId !== sessionId || lock.machineId !== this.opts.machineId) continue;
+      try {
+        SafeFsExecutor.safeUnlinkSync(path.join(worktreePath, '.session.lock'), { operation: 'src/core/WorktreeManager.ts:releaseForSession' });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          // Not released: keep it in the map so the next start's orphan release retries it.
+          console.warn(`[worktrees] could not release lock ${worktreePath}: ${(err as NodeJS.ErrnoException)?.code ?? String(err)}`);
+          continue;
+        }
+      }
+      this.locks.delete(worktreePath);
+      this.emit('lock:released', { worktreePath, sessionId });
+      released++;
+    }
+    return released;
+  }
+
+  /**
+   * At start: release this machine's locks whose session has no running record. A session
+   * that survives a server restart still signs through its loaded lock (signTrailer reads
+   * the map without a liveness check), so liveness cannot decide; the session record can.
+   * `isRunning` returns null when the records cannot be read, and then nothing is released.
+   * `paneCwds` lists every live tmux pane's working directory; a lock whose worktree has a
+   * pane inside it is kept whatever the record says (Verify the State, not the record alone).
+   * null pane state releases nothing.
+   */
+  releaseOrphanedLocks(isRunning: (sessionId: string) => boolean | null, paneCwds: string[] | null): number {
+    if (paneCwds === null) return 0; // live state unknown: release nothing
+    const real = (p: string): string => { try { return fs.realpathSync(p); } catch { return p; } }; // @silent-fallback-ok — unresolvable ⇒ compare the literal path
+    // Compare both spellings of each side: a pane folder that no longer exists cannot be resolved.
+    const panes = paneCwds.flatMap((c) => [c, real(c)]);
+    const active = (worktreePath: string): boolean => [worktreePath, real(worktreePath)].some((w) => panes.some((c) => c === w || c.startsWith(w + path.sep)));
+    const verdicts = new Map<string, boolean>();
+    for (const [worktreePath, lock] of this.locks) {
+      if (lock.machineId !== this.opts.machineId) continue;
+      if (active(worktreePath)) { verdicts.set(lock.sessionId, true); continue; }
+      if (verdicts.has(lock.sessionId)) continue;
+      const running = isRunning(lock.sessionId);
+      if (running === null) return 0; // records unreadable: release nothing
+      verdicts.set(lock.sessionId, running);
+    }
+    let released = 0;
+    for (const [sessionId, running] of verdicts) if (!running) released += this.releaseForSession(sessionId);
+    return released;
   }
 
   /**
@@ -1034,6 +1093,11 @@ export class WorktreeManager extends EventEmitter {
         // ext4, HFS+, NTFS, tmpfs, unknown — full copy. NEVER `cp -al` (inode aliasing breaks isolation).
         await execFileAsync('cp', ['-R', mainNodeModules, wtNodeModules], { timeout: 600_000 });
       }
+      // topic-worktree-reclaim C: mark the copy as WorktreeManager-made and rebuildable,
+      // so a later measurement can tell it from a hand-patched dependency tree.
+      try {
+        fs.writeFileSync(path.join(wtNodeModules, DEPS_COPY_MARKER), JSON.stringify({ source: mainNodeModules, copiedAt: new Date().toISOString(), fsType }) + '\n');
+      } catch { /* @silent-fallback-ok — no marker means the copy is treated as work (kept), the safe reading */ }
     } catch (err) {
       this.emit('warn', `node_modules copy failed (${(err as Error).message}); will need fresh install`);
     }
