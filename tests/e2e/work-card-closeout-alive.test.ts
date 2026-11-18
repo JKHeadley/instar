@@ -111,7 +111,7 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
     const app = server.getApp();
     let first = ''; let second = '';
     try {
-      const a = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false });
+      const a = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false, recommendation: 'Book Hall A: it fits 40 and is near the station.', whyYou: 'Only you can choose where the launch is held.' });
       expect(a.status, JSON.stringify(a.body)).toBe(201);
       first = a.body.cardId;
       expect(a.body.card).toMatchObject({ turn: 'you', started: false, conversation: { kind: 'app', key: a.body.conversationKey } });
@@ -129,7 +129,7 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
       expect(lessons.status).toBe(200);
       expect(lessons.body.lessons.map((l: { reason: string; cardId: string }) => [l.reason, l.cardId])).toEqual([['We already chose last week', first]]);
 
-      const b = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Book catering', need: 'Order food', doneWhen: [{ id: 'd1', text: 'Ordered' }], outward: false });
+      const b = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Book catering', need: 'Order food', doneWhen: [{ id: 'd1', text: 'Ordered' }], outward: false, recommendation: 'Order from the usual caterer.', whyYou: 'You approve the catering budget.' });
       expect(b.status).toBe(201);
       second = b.body.cardId;
       expect(b.body.lessons.map((l: { reason: string }) => l.reason)).toEqual(['We already chose last week']);
