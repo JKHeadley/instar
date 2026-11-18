@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/importedHistoryPaths.ts",
+      "reason": "Three string constants naming the imported-history folder (no I/O, no state, no delivery logic), reached through FileClassifier and the gitignore lists; outside the Stage-B canaried delivery path."
+    },
+    {
       "file": "src/core/GraphDurableFileMemo.ts",
       "reason": "Process-local memo of files already flushed, reached through SecretStore. It only skips a repeat fsync of unchanged content and holds no inbound-delivery or lifecycle logic."
     },
