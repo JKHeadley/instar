@@ -217,6 +217,7 @@ import { SignedReadCapability, signedThenBearer, BearerReadRefused } from '../co
 import { TOPIC_HISTORY_POOL_MAX_MESSAGES, TOPIC_HISTORY_POOL_TIMEOUT_MS, poolRowId } from '../core/topicHistoryPull.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import { boundedHead } from '../core/boundedInput.js';
+import { SESSION_HISTORY_MESSAGE_CHARS } from '../memory/TopicMemory.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -30707,7 +30708,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               for (const m of history) {
                 const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-                const histText = (m.text || '').slice(0, 2000);
+                // Same per-message bound as TopicMemory.formatContextForSession.
+                const histText = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
               historyLines.push(``);
@@ -31771,7 +31773,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               for (const m of history) {
                 const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-                const histText = (m.text || '').slice(0, 2000);
+                // Same per-message bound as TopicMemory.formatContextForSession.
+                const histText = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
               historyLines.push(``);
