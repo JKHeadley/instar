@@ -120,6 +120,7 @@ describe('private import preview copies', () => {
     storage.discard(job);
     await expect(stage).rejects.toThrow();
     expect(storage.hasArchive(job)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'history-acquisition-archives', job))).toBe(false);
     const after = new AcquisitionArchives(dir, 8);
     after.recover(() => false);
     expect(fs.readdirSync(path.join(dir, 'history-acquisition-archives'))).toEqual([]);

@@ -196,6 +196,7 @@ export class AcquisitionArchives {
       try { await output?.close(); } finally {
         activeWrites.delete(dir);
         if (output) this.removeOwnedFile(partial);
+        if (controller.signal.aborted) this.removeEmptyDirectory(dir);
       }
     }
   }
@@ -211,7 +212,8 @@ export class AcquisitionArchives {
   /** Removes recognized regular files only. A foreign entry keeps its directory intact. */
   discard(jobId: string): void {
     const dir = this.jobDirectory(jobId);
-    activeWrites.get(dir)?.abort();
+    const writer = activeWrites.get(dir);
+    writer?.abort();
     try { this.existingDirectory(jobId); }
     catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; throw err; }
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -219,7 +221,16 @@ export class AcquisitionArchives {
         this.removeOwnedFile(path.join(dir, entry.name));
       }
     }
-    if (!fs.readdirSync(dir).length) SafeFsExecutor.safeRmdirSync(dir, { operation: 'completed import acquisition cleanup' });
+    // A pending open may still create its partial. The writer removes it after closing.
+    if (!writer) this.removeEmptyDirectory(dir);
+  }
+
+  private removeEmptyDirectory(dir: string): void {
+    try {
+      if (!fs.readdirSync(dir).length) SafeFsExecutor.safeRmdirSync(dir, { operation: 'completed import acquisition cleanup' });
+    } catch (error) {
+      if (!['ENOTEMPTY', 'ENOENT', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    }
   }
 
   /** Ask the durable job store which archives survive a restart. An unknown DB state must throw. */

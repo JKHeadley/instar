@@ -37,3 +37,5 @@ Automatic delivery observations stop at the original eight-day deadline. Each no
 ## Class-Closure Declaration
 
 The defect class is `unbounded-self-action`. The guard is the production-backed ratchet in `tests/unit/self-action-convergence.test.ts`. The history-acquisition-notice-retry controller stops after five reserved attempts per stable notice. The history-acquisition-delivery-poll controller stops at its original eight-day deadline. Both limits survive restarting the worker. The tests also verify that one failing conversation leaves others eligible.
+
+A native-receipt fixture exposed a cancellation race in the shared archive sink. The aborting writer can still be opening a temporary file when cancellation starts. That writer now closes and removes the file and finishes directory cleanup. The cleanup tolerates another writer winning the directory race and preserves unrecognized files.
