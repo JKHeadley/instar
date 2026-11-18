@@ -1,6 +1,8 @@
 // Projects on the Work door (docs/specs/work-front-doors.md stage 2a): pure model for GET /work/projects.
 // The server owns the state words; this only shapes rows and links. No DOM here (tested in node).
 
+import { verifiedDisplayName } from './display-identity.js';
+
 /** Tone per state: what needs the person stands out, finished and paused are quiet. */
 const TONE = { 'waiting-on-you': 'attn', 'stopped-retrying': 'bad', stalled: 'bad', drifting: 'attn', 'claims-done': 'attn', moving: 'ok', unknown: 'unknown', paused: 'quiet', done: 'quiet' };
 
@@ -35,7 +37,7 @@ export function projectsView(data, now = Date.now()) {
     const state = String(p.state || 'unknown');
     const done = p.done && Number.isFinite(p.done.total) ? p.done : { items: [], met: 0, total: 0 };
     const row = {
-      key: String(p.key), title: String(p.title || p.key), goal: String(p.goal || ''), state, stateWords: String(p.stateWords || ''), tone: TONE[state] || 'unknown',
+      key: String(p.key), title: verifiedDisplayName(p.title, p.key) || 'Project name unavailable', goal: String(p.goal || ''), state, stateWords: String(p.stateWords || ''), tone: TONE[state] || 'unknown',
       // Items nobody has checked yet are not "not done": say so instead of "0 of 3 done".
       doneLine: !done.total ? null : (done.items || []).every((i) => i.state !== 'pass' && i.state !== 'fail') ? `${done.total} to finish, not checked yet` : `${done.met} of ${done.total} done`,
       doneItems: (done.items || []).map((i) => ({ text: String(i.text), state: i.state === 'pass' ? 'pass' : i.state === 'fail' ? 'fail' : 'unknown' })),

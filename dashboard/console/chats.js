@@ -15,7 +15,7 @@ import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
 } from './browser-device.js';
 import {
-  parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
+  parseConversationRef, refString, refFromQuery, messageFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
@@ -515,11 +515,19 @@ class ChatsPage {
     if (!this.pageEl) return;
     const ref = refFromQuery(query);
     const cur = this.view ? refString(this.view.ref) : '';
-    if (ref && refString(ref) === cur) return;
+    const target = messageFromQuery(query);
+    if (ref && refString(ref) === cur) {
+      if (this.view.sourceTarget !== target) {
+        this.view.sourceTarget = target;
+        this.view.sourceGeneration++;
+        if (this.view.historyReady) this.findSource(this.view);
+      }
+      return;
+    }
     if (this.view) this.closeView();
     this.pageEl.classList.toggle('has-open', Boolean(ref));
     if (!ref) { setKids(this.viewEl, el('p', { class: 'chat-pick', text: 'Pick a conversation.' })); this.paintList(); this.announce(); return; }
-    this.openView(ref);
+    this.openView(ref, target);
   }
 
   closeView() {
@@ -532,11 +540,11 @@ class ChatsPage {
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
   }
 
-  openView(ref) {
+  openView(ref, sourceTarget = null) {
     const row = this.rows.find((r) => r.key === refString(ref));
-    const v = { ref, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
+    const v = { ref, sourceTarget, sourceGeneration: 0, historyReady: false, earlierLoadSeq: 0, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
     this.view = v;
-    const title = el('h2', { class: 'chat-title', text: row ? row.title : (ref.kind === 'telegram' ? `Topic ${ref.id}` : 'Conversation') });
+    const title = el('h2', { class: 'chat-title', text: row ? row.title : 'Conversation' });
     // Opened from a link before the list arrived: the real title is filled in when the list paints.
     v.titleEl = row ? null : title;
     const back = el('a', { class: 'btn-quiet chat-back', href: '#/work/chats', 'aria-label': 'Back to conversations', text: '‹' });
@@ -550,15 +558,19 @@ class ChatsPage {
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
-    v.earlier.addEventListener('click', () => this.loadEarlier(v));
+    v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
     v.statusLine = el('p', { class: 'card-line chat-muted', role: 'status' });
+    v.sourceText = el('span', { text: 'Opening the original conversation…' });
+    v.sourceMore = el('button', { class: 'btn-quiet', type: 'button', text: 'Keep looking', hidden: true });
+    v.sourceMore.addEventListener('click', () => this.findSource(v));
+    v.sourceNotice = el('div', { class: 'card-line chat-source-target', role: 'status', hidden: !sourceTarget }, v.sourceText, v.sourceMore);
     v.nodes = new Map();
     v.pinBar = this.pinBar(v);
     v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.appStrip, v.pinBar, v.paused, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v);
@@ -612,11 +624,13 @@ class ChatsPage {
     this.spent();
     const r = await this.call('GET', this.historyPath(v, { pool: true }));
     if (!v.live || r.gone) return;
-    if (r.status === 404) { v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
+    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
+    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
     this.applyHistory(v, r.data, { replace: true });
     this.resumeUnfinished(v);
     this.scrollToEnd(v, true);
+    v.historyReady = true;
+    this.findSource(v);
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
@@ -772,6 +786,7 @@ class ChatsPage {
   }
   /** Scroll to a message and flash it, loading up to 5 earlier pages to find it. */
   async jumpTo(v, messageId) {
+    this.pauseSource(v);
     for (let i = 0; i <= 5 && v.live; i++) {
       const b = v.list.find((x) => x.messageId === messageId);
       const n = b ? v.nodes.get(b.id) : null;
@@ -836,16 +851,73 @@ class ChatsPage {
       rows.length ? el('ul', { class: 'chat-pin-list' }, rows) : el('p', { class: 'confirm-text', text: 'Nothing is pinned here.' }));
   }
 
-  async loadEarlier(v) {
+  async loadEarlier(v, current = () => v.live) {
+    const seq = ++v.earlierLoadSeq;
     v.earlier.disabled = true;
     const before = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
     this.spent();
     const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack', before }));
-    v.earlier.disabled = false;
-    if (!v.live || r.gone || !r.ok) return;
+    if (seq === v.earlierLoadSeq) v.earlier.disabled = false;
+    if (!v.live || !current() || seq !== v.earlierLoadSeq) return 'stale';
+    if (r.gone || !r.ok) return 'failed';
     this.applyHistory(v, r.data, { earlier: true });
     v.msgs.scrollTop = v.msgs.scrollHeight - keep;
+    const after = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
+    return !v.earlier.hidden && after === before ? 'stalled' : 'loaded';
+  }
+
+  pauseSource(v) {
+    if (!v.sourceTarget) return;
+    v.sourceGeneration++;
+    v.sourceText.textContent = 'Original message navigation paused. ';
+    v.sourceMore.textContent = 'Return to original message';
+    v.sourceMore.hidden = false;
+  }
+
+  /** Same five-page search batch as pin navigation; further history stays explicitly reachable. */
+  async findSource(v) {
+    const target = v.sourceTarget;
+    const generation = ++v.sourceGeneration;
+    const current = () => v.live && v.sourceGeneration === generation;
+    v.sourceNotice.hidden = !target;
+    v.sourceMore.hidden = true;
+    if (!target) return;
+    v.sourceText.textContent = 'Looking for the original message…';
+    for (let page = 0; page <= 5 && current(); page++) {
+      const row = v.list.find(b => b.messageId === target || b.id === target);
+      const node = row ? v.nodes.get(row.id) : null;
+      if (node) {
+        node.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        node.classList.add('chat-flash');
+        this.later(() => node.classList.remove('chat-flash'), 1600);
+        v.sourceText.textContent = 'Original message';
+        return;
+      }
+      if (v.earlier.hidden) {
+        v.sourceText.textContent = 'The original message is not in the available history.';
+        return;
+      }
+      if (page === 5) {
+        v.sourceText.textContent = 'The original message has not been found. More history is available. ';
+        v.sourceMore.textContent = 'Keep looking'; v.sourceMore.hidden = false;
+        return;
+      }
+      const result = await this.loadEarlier(v, current);
+      if (!current()) return;
+      // A response can contain the target even when its continuation cursor is stuck.
+      if (result === 'stalled' && v.list.some(b => b.messageId === target || b.id === target)) continue;
+      if (result === 'stale') {
+        v.sourceText.textContent = 'The original message has not been located yet. ';
+        v.sourceMore.textContent = 'Keep looking'; v.sourceMore.hidden = false;
+        return;
+      }
+      if (result !== 'loaded') {
+        v.sourceText.textContent = 'Could not read earlier messages. ';
+        v.sourceMore.textContent = 'Try again'; v.sourceMore.hidden = false;
+        return;
+      }
+    }
   }
 
   async rename(v, titleEl) {
