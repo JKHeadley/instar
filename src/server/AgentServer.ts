@@ -236,6 +236,9 @@ import { DocumentService } from '../documents/service.js';
 import { standingCheck, teamStateAt, teamView, type TeamDeps } from '../documents/teamAdapter.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createQuotaPacingRoutes } from './quotaPacingRoutes.js';
+import { QuotaHistoryLedger, buildLocalSummaries, isQuotaPacingEnabled } from '../monitoring/QuotaHistoryLedger.js';
+import { mergeLogins as mergeQuotaLogins, assembleProviders as assembleQuotaProviders } from '../monitoring/quotaPacing.js';
 import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
@@ -1032,6 +1035,9 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Quota pacing (docs/specs/quota-pacing-forecast.md): the reading history, attached to the poller. */
+  private quotaPacingLedger: QuotaHistoryLedger | null = null;
+  private quotaPacingPoller: import('../core/QuotaPoller.js').QuotaPoller | null = null;
   /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
   private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
@@ -7656,6 +7662,10 @@ export class AgentServer {
     // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
     // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
     this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
+    // Quota pacing (docs/specs/quota-pacing-forecast.md): reading history + read-only forecast
+    // (dev-gated through subscriptionPool.pacing.enabled; 503 quota-pacing-off when it resolves off).
+    this.startQuotaPacing(options);
+    this.app.use(createQuotaPacingRoutes({ ...routeCtx, quotaPacing: () => this.quotaPacingLedger }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -10282,6 +10292,11 @@ export class AgentServer {
     }
     for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
     this.queuePaceTimers = [];
+    if (this.quotaPacingLedger) {
+      try { this.quotaPacingPoller?.setHistoryLedger(null); } catch { /* @silent-fallback-ok: detaching a sink at shutdown */ }
+      try { await this.quotaPacingLedger.stop(); } catch { /* @silent-fallback-ok: shutdown flush of observational history; a lost tail row is one 5-minute reading */ }
+      this.quotaPacingLedger = null;
+    }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
@@ -11186,9 +11201,48 @@ export class AgentServer {
       });
       // A pass can be up to six hours away; the numbers should not read empty until then.
       setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: logged; the ladder stays null and its route reports it unavailable
       console.warn('[maturation-ladder] init failed (non-fatal):', err);
       this.maturationLadder = null;
+    }
+  }
+
+  /**
+   * Build the quota-history ledger (docs/specs/quota-pacing-forecast.md) when the switch resolves
+   * on and this machine has a subscription pool, attach it to the quota poller, and start its
+   * unref'd maintenance timer (bucket flush, hourly compaction + tick row, daily retire sweep).
+   */
+  private startQuotaPacing(options: { config: InstarConfig; subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool; quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller }): void {
+    const config = options.config;
+    if (!config.stateDir || !options.subscriptionPool || !isQuotaPacingEnabled(config)) return;
+    try {
+      const pool = options.subscriptionPool;
+      const machineId = this.meshSelfId ?? 'local';
+      const ledger = new QuotaHistoryLedger({
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        machineId,
+        pool,
+        enabled: () => isQuotaPacingEnabled(config),
+      });
+      ledger.setTickSource(async () => {
+        const now = Date.now();
+        const { summaries } = await buildLocalSummaries(ledger, pool, { machineId, pollIntervalMs: 15 * 60_000, now });
+        const stale: Record<string, number> = {};
+        const verdicts: Record<string, number> = {};
+        for (const s of summaries) if (!s.fresh && s.staleReason) stale[s.staleReason] = (stale[s.staleReason] ?? 0) + 1;
+        for (const p of assembleQuotaProviders(mergeQuotaLogins(summaries, now).logins, now, { localOnly: false })) {
+          for (const a of p.accounts) if (a.weekly) verdicts[a.weekly.verdict] = (verdicts[a.weekly.verdict] ?? 0) + 1;
+        }
+        return { accounts: summaries.length, withHistory: summaries.filter((s) => s.newestPolledAt !== null).length, stale, verdicts };
+      });
+      options.quotaPoller?.setHistoryLedger(ledger);
+      ledger.start();
+      this.quotaPacingLedger = ledger;
+      this.quotaPacingPoller = options.quotaPoller ?? null;
+    } catch (error) { // @silent-fallback-ok: logged; the ledger stays null so GET /quota-pacing answers 503 and the poller is untouched
+      console.warn('[quota-pacing] init failed (non-fatal):', error instanceof Error ? error.message : error);
+      this.quotaPacingLedger = null;
     }
   }
 

@@ -25,8 +25,22 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { deriveRowKey } from './topicRowWriter.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
+
+/**
+ * Per-message bound when a topic's history is rendered into a session's
+ * context (here and in the JSONL fallback in commands/server.ts). A fresh
+ * session continues the conversation FROM this text, and the bootstrap's own
+ * rule is "inject the FULL context inline — no truncation".
+ * Derived: a Telegram message cannot exceed 4096 characters, so every Telegram
+ * message (operator instructions included) now arrives whole; the old 2000 cut
+ * a long instruction in half with no sign. Disclosure room on top keeps that
+ * true when a longer Slack or app message is cut, and the cut says so.
+ * Cost: worst case 50 messages x ~4.3k, only when every message is maximal.
+ */
+export const SESSION_HISTORY_MESSAGE_CHARS = 4096 + BOUNDED_INPUT_MIN_CHARS;
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -1699,7 +1713,7 @@ export class TopicMemory {
           ? (m.senderName || 'User')
           : 'Agent';
         const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-        const text = (m.text || '').slice(0, 2000);
+        const text = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }
     }
@@ -1762,7 +1776,7 @@ export class TopicMemory {
           ? (m.senderName || 'User')
           : 'Agent';
         const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-        const text = (m.text || '').slice(0, 2000);
+        const text = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }
     }
