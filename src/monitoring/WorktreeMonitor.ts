@@ -58,9 +58,18 @@ export interface WorktreeWithDiff {
   worktree: Worktree;
   /** Number of commits ahead of default branch */
   commitsAhead: number;
-  /** Files changed vs default branch */
+  /**
+   * Files changed vs default branch: the first FILES_CHANGED_KEPT names only.
+   * A long-lived branch far behind main can list tens of thousands of files;
+   * keeping them all made last-report.json 314 MB, rewritten every scan.
+   */
   filesChanged: string[];
+  /** Total number of files changed vs default branch (filesChanged may be truncated). */
+  filesChangedCount: number;
 }
+
+/** How many changed-file names a report keeps per worktree. The notice shows 5. */
+export const FILES_CHANGED_KEPT = 50;
 
 export interface WorktreeMonitorConfig {
   /** Project directory (git repo root) */
@@ -408,9 +417,10 @@ export class WorktreeMonitor extends EventEmitter {
     const diffOutput = await this.gitCommand(
       `diff --name-only ${defaultBranch}...${wt.branch}`
     );
-    const filesChanged = diffOutput.trim().split('\n').filter(f => f.trim());
+    const allFiles = diffOutput.trim().split('\n').filter(f => f.trim());
+    const filesChanged = allFiles.slice(0, FILES_CHANGED_KEPT);
 
-    return { worktree: wt, commitsAhead, filesChanged };
+    return { worktree: wt, commitsAhead, filesChanged, filesChangedCount: allFiles.length };
   }
 
   /**
@@ -474,7 +484,8 @@ export class WorktreeMonitor extends EventEmitter {
       for (const diff of report.withUnmergedWork) {
         lines.push(`  Branch: ${diff.worktree.branch}`);
         lines.push(`  Commits ahead: ${diff.commitsAhead}`);
-        lines.push(`  Files: ${diff.filesChanged.slice(0, 5).join(', ')}${diff.filesChanged.length > 5 ? ` (+${diff.filesChanged.length - 5} more)` : ''}`);
+        const total = diff.filesChangedCount ?? diff.filesChanged.length;
+        lines.push(`  Files: ${diff.filesChanged.slice(0, 5).join(', ')}${total > 5 ? ` (+${total - 5} more)` : ''}`);
         lines.push('');
       }
     }

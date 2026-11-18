@@ -20,6 +20,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
   WorktreeMonitor,
+  FILES_CHANGED_KEPT,
   type Worktree,
   type WorktreeMonitorConfig,
 } from '../../src/monitoring/WorktreeMonitor.js';
@@ -210,6 +211,31 @@ describe('WorktreeMonitor', () => {
       expect(result!.filesChanged).toContain('auth.ts');
       expect(result!.filesChanged).toContain('config.ts');
       expect(result!.filesChanged).toContain('test.ts');
+    });
+
+    it('keeps only the first FILES_CHANGED_KEPT names but counts every changed file', async () => {
+      const wtPath = createWorktree(repoDir, 'many-files');
+      const total = FILES_CHANGED_KEPT + 15;
+      for (let i = 0; i < total; i++) fs.writeFileSync(path.join(wtPath, `f-${String(i).padStart(3, '0')}.txt`), `x${i}\n`);
+      shell('git add -A', wtPath);
+      shell('git commit -m "many files"', wtPath);
+
+      const wts = await monitor.listWorktrees();
+      const wt = wts.find(w => w.branch === 'worktree-many-files')!;
+      const result = await monitor.checkUnmergedWork(wt, 'main');
+
+      expect(result).not.toBeNull();
+      expect(result!.filesChangedCount).toBe(total);
+      expect(result!.filesChanged).toHaveLength(FILES_CHANGED_KEPT);
+    });
+
+    it('keeps every name when under the cap', async () => {
+      createWorktree(repoDir, 'few-files', { addCommits: 2, files: ['a.ts', 'b.ts'] });
+      const wts = await monitor.listWorktrees();
+      const wt = wts.find(w => w.branch === 'worktree-few-files')!;
+      const result = await monitor.checkUnmergedWork(wt, 'main');
+      expect(result!.filesChangedCount).toBe(2);
+      expect(result!.filesChanged.sort()).toEqual(['a.ts', 'b.ts']);
     });
 
     it('returns null for worktree with no branch', async () => {
