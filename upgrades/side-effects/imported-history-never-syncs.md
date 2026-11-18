@@ -99,3 +99,7 @@ Round 1 verdict was concur-with-nits. It confirmed that the classifier path cove
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## Merge with main (2026-11-18 09:0x PST)
+
+Main moved when #3424 merged; both sides had added an entry to the Stage-B exclusion list in `src/data/stageBCertifiedSet.ts`. Resolution keeps all three entries (this PR's `importedHistoryPaths.ts`, main's `boundedInput.ts` and `standing-authorization.ts`). No behaviour change. Typecheck clean; imported-history-never-syncs + stage-b-evidence-code-binding 27/27.
