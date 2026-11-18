@@ -2823,6 +2823,40 @@
         "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
         "note": "Retain unresolved operation scope and monotonic revocation evidence through verified recovery, never expire them into permission. Encrypted action records contain no PIN/session token/private key; their reserved local vault key is excluded from generic secret sync. They are recovery evidence, not a substitute for fresh owner authentication. Backup copies and full authority rollback remain explicit privacy limits."
       }
+    },
+    {
+      "category": "design-review-ledger",
+      "description": "Append-only record of each recorded design review run: the reviewed file's real path and fingerprint, each reviewer's status, model and verdict, and the writes found for the file (frontier-design-review-standard). The server is the only writer; peers read this machine's rows through GET /design/review/runs and merge them as a union keyed by machine and run id.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "design-review-runs.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "streamed",
+        "complianceHold": true,
+        "note": "The review record an approval request cites; no retention cut in this version (a row is a few hundred bytes; the maturation review reads the file size, and a retention rule is added only on that evidence)."
+      }
+    },
+    {
+      "category": "design-review-spool",
+      "description": "Review reports the driver could not deliver (connection failure or a 5xx). The server takes them in at its next start and empties the file; the driver's next run posts any that remain first.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "design-review-spool.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Emptied at every server start and after every successful driver drain; holds only undelivered reports."
+      }
     }
   ]
 }

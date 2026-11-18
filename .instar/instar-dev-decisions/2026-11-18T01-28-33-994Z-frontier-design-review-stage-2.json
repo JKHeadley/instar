@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-18T01:28:33.994Z",
+  "slug": "frontier-design-review-stage-2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 1378,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/design-review/SKILL.md",
+      "skills/spec-converge/scripts/cross-model-review.mjs",
+      "src/commands/init.ts",
+      "src/core/BackupManager.ts",
+      "src/core/SessionManager.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/core/designReviewLedger.ts",
+      "src/core/designReviewRecord.ts",
+      "src/core/designReviewRun.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/monitoring/TokenLedger.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/designReviewRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1347,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: spooled review reports are re-delivered exactly once per server start and once per driver run started by a session; a refused report is dropped, never retried"
+  },
+  "verdict": "pass"
+}

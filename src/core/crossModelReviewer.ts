@@ -1257,7 +1257,18 @@ export function resolveClaudeReviewerModel(
  */
 let _claudeHardeningPreflightCache: boolean | null = null;
 export function claudeSupportsReviewerHardening(claudePath?: string): boolean {
-  if (_claudeHardeningPreflightCache !== null) return _claudeHardeningPreflightCache;
+  return claudeHardeningPreflight(claudePath) === 'supported';
+}
+
+/**
+ * The hardening preflight with its third answer (frontier-design-review-standard
+ * §3): `supported` / `unsupported` (the CLI's flags are known to be missing — a
+ * durable condition) / `inconclusive` (the probe itself failed or timed out — one
+ * call's failure). Neither non-supported answer runs the review; only a
+ * conclusive answer is cached, so an inconclusive probe is tried again next time.
+ */
+export function claudeHardeningPreflight(claudePath?: string): 'supported' | 'unsupported' | 'inconclusive' {
+  if (_claudeHardeningPreflightCache !== null) return _claudeHardeningPreflightCache ? 'supported' : 'unsupported';
   let supported = false;
   try {
     const bin = claudePath ?? detectClaudePath();
@@ -1274,13 +1285,13 @@ export function claudeSupportsReviewerHardening(claudePath?: string): boolean {
       supported = help.includes('--allowedTools') && help.includes('--strict-mcp-config');
     }
   } catch {
-    // @silent-fallback-ok — fail-CLOSED: an inconclusive preflight is treated as
-    // UNSUPPORTED so the reviewer degrades (`hardening-unsupported`) rather than
-    // running the untrusted-text review without the security boundary.
-    supported = false;
+    // @silent-fallback-ok — fail-CLOSED: an inconclusive preflight never runs the
+    // untrusted-text review without the security boundary; it degrades as
+    // `hardening-inconclusive` (transient) and is NOT cached, so it is retried.
+    return 'inconclusive';
   }
   _claudeHardeningPreflightCache = supported;
-  return supported;
+  return supported ? 'supported' : 'unsupported';
 }
 
 /** Test helper — clear the per-process hardening-preflight cache. */
@@ -1657,17 +1668,18 @@ const claudeReviewer: SupportedReviewerFramework = {
     // Runtime hardening preflight (§1.4) — fail-CLOSED on THIS machine's CLI, not
     // just CI. If the installed CLI does not accept the hardening flags, the
     // reviewer is NEVER run unhardened.
-    const hardeningSupported =
+    const hardening =
       args.hardeningSupportedOverride !== undefined
-        ? args.hardeningSupportedOverride
-        : claudeSupportsReviewerHardening();
-    if (!hardeningSupported) {
+        ? (args.hardeningSupportedOverride ? 'supported' : 'unsupported')
+        : claudeHardeningPreflight();
+    if (hardening !== 'supported') {
+      const reason = hardening === 'unsupported' ? 'hardening-unsupported' : 'hardening-inconclusive';
       return {
         status: 'degraded',
         framework: 'claude-code',
         model,
-        reason: 'hardening-unsupported',
-        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: hardening-unsupported)`,
+        reason,
+        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: ${reason})`,
         crossFamily: false,
       };
     }
@@ -2185,6 +2197,11 @@ export function classifyReviewFailure(err: unknown): string {
   }
   if (/timed out|timeout|etimedout|killed/.test(lower)) {
     return 'timeout';
+  }
+  // A model the login's plan does not include (frontier-design-review-standard §3):
+  // the provider's own refusal of the requested model, a durable condition.
+  if (/may not exist or you may not have access|not have access to (the )?model|not supported when using codex|modelnotfound|model[^.\n]{0,60}(not found|does not exist|not available|is not supported)|not (available )?on your (plan|subscription)/.test(lower)) {
+    return 'model-not-on-plan';
   }
   return 'error';
 }

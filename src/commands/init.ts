@@ -3172,6 +3172,9 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
  */
 export const BUNDLED_DEV_SKILLS = [
   'spec-converge',
+  // frontier-design-review-standard §3: the general review loop for any design,
+  // over spec-converge's driver and templates.
+  'design-review',
   'instar-dev',
   'systematic-debugging',
   'smart-web-fetch',

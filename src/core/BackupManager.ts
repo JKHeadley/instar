@@ -286,6 +286,9 @@ const DEFAULT_CONFIG: BackupConfig = {
     // database (with the WAL set) joins the backup with the layer store.
     // Same gate.
     'topic-memory.db*',
+    // The design review record an approval request cites
+    // (frontier-design-review-standard §3); its spool file is transient and not kept.
+    'design-review-runs.jsonl',
   ],
 };
 

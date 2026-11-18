@@ -208,6 +208,8 @@ import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitEx
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
+import { createDesignReviewRoutes, ingestDesignReviewSpool, type DesignReviewRouteDeps } from './designReviewRoutes.js';
+import { designReviewMachineId } from '../core/designReviewLedger.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
@@ -8281,6 +8283,31 @@ export class AgentServer {
       }));
     } catch (err) {
       console.warn('[agent-server] failed to register spec-review routes:', err);
+    }
+
+    // Design review ledger (frontier-design-review-standard §3, §4): the driver's
+    // recorded runs, the provenance line, and this machine's rows for peers.
+    // Live on every agent; spooled reports are taken in at start.
+    try {
+      const designDeps: DesignReviewRouteDeps = {
+        stateDir: options.config.stateDir,
+        projectDir: options.config.projectDir,
+        machineId: () => designReviewMachineId(this.meshSelfId),
+        sessionRecord: (id) => {
+          const s = options.sessionManager.getSessionById?.(id);
+          return s ? { cwd: s.cwd, subscriptionAccountId: s.subscriptionAccountId } : null;
+        },
+        hookEvents: this.hookEventReceiver
+          ? { listSessions: () => this.hookEventReceiver!.listSessions(), getSessionEvents: (id) => this.hookEventReceiver!.getSessionEvents(id) as unknown as Array<{ receivedAt: string; payload: Record<string, unknown> }> }
+          : null,
+        tokenLedger: { modelsAround: (sid, at) => this.tokenLedger?.modelsAround(sid, at) ?? { before: null, after: null } },
+        claudeTurnedOff: () => (options.config as { specConverge?: { reviewers?: { anthropic?: { enabled?: boolean } } } }).specConverge?.reviewers?.anthropic?.enabled === false,
+      };
+      this.app.use(createDesignReviewRoutes(designDeps));
+      const spool = ingestDesignReviewSpool(designDeps);
+      if (spool.recorded || spool.dropped) console.log(`[design-review] spooled reports: ${spool.recorded} recorded, ${spool.dropped} dropped`);
+    } catch (err) {
+      console.warn('[agent-server] failed to register design-review routes:', err);
     }
 
     // Usher (rung 4) — read-only pull surface for mid-task re-surface signals.

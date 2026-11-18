@@ -1774,6 +1774,22 @@ export class TokenLedger {
    * reliable but absence does NOT prove idleness. Keyed on the Claude Code
    * session_id; callers pass `claudeSessionId` (absent ⇒ they must KEEP).
    */
+  /**
+   * The model on this Claude session's usage rows immediately before and after
+   * `atMs` (frontier-design-review-standard §3 "Which sessions wrote it"): the
+   * write record names a model only when both agree. Read-only; a side with no
+   * row is null.
+   */
+  modelsAround(sessionId: string, atMs: number): { before: string | null; after: string | null } {
+    const before = this.db
+      .prepare('SELECT model FROM token_events WHERE session_id = ? AND ts <= ? ORDER BY ts DESC LIMIT 1')
+      .get(sessionId, atMs) as { model?: string | null } | undefined;
+    const after = this.db
+      .prepare('SELECT model FROM token_events WHERE session_id = ? AND ts >= ? ORDER BY ts ASC LIMIT 1')
+      .get(sessionId, atMs) as { model?: string | null } | undefined;
+    return { before: before?.model ?? null, after: after?.model ?? null };
+  }
+
   sessionActivitySince(sessionId: string, sinceMs: number): { eventCount: number; tokens: number; lastTs: number } {
     const row = this.db
       .prepare(

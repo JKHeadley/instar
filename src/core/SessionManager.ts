@@ -4569,7 +4569,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * Design routing (frontier-design-review-standard §2): the work kind and the
      * routing outcome the spawn route resolved, recorded on the session as-is.
      */
-    designRouting?: Pick<import('./types.js').Session, 'workKind' | 'workKindSource' | 'designRouting'>;
+    designRouting?: Pick<import('./types.js').Session, 'workKind' | 'workKindSource' | 'designRouting' | 'reviewHandoff'>;
     /**
      * Feedback executor (docs/specs/feedback-triage-and-execution.md §4 step 4): run the session in
      * this directory instead of the project directory. Limited to paths under

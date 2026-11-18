@@ -138,6 +138,8 @@ export interface Session {
   workKind?: 'design' | 'build' | 'other' | 'unknown';
   /** How the work kind was known: declared by the caller, classified from the brief, or unknown. */
   workKindSource?: 'declared' | 'classified' | 'unknown';
+  /** Started by /design-review's one hand-off (frontier-design-review-standard §3): runs the review loop in place. */
+  reviewHandoff?: true;
   /** What design routing decided at spawn, and why (absent when the standard was off). */
   designRouting?: {
     decision: 'explicit-model' | 'remote-not-routed' | 'suppressed' | 'not-design' | 'lane-refused' | 'design-lane';

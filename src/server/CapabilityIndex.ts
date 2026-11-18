@@ -65,6 +65,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({ configured: true, endpoints: ['GET /channels'] }),
   },
   {
+    key: 'designReview',
+    prefixes: ['/design'],
+    description: 'Design review records (docs/specs/frontier-design-review-standard.md): which models wrote and reviewed a plan, what each reviewer concluded, and the provenance line an approval request must carry. GET /design/lane says which design model a new design session would launch on.',
+    build: () => ({ configured: true, endpoints: ['GET /design/review?path=', 'POST /design/review/runs', 'GET /design/review/runs?since=', 'GET /design/lane'] }),
+  },
+  {
     key: 'memoryPrivacy',
     prefixes: ['/memory-privacy'],
     description: 'Whether memory is kept per person and per place on this agent, who the owner is, and whether the sandbox runs here.',

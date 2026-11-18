@@ -422,6 +422,8 @@ import { TeamConfinement } from '../users/TeamConfinement.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile, designLaneTopicLaunch } from './sessionSpawnTopicBinding.js';
 import { WORK_KINDS as DESIGN_WORK_KINDS, resolveDesignRouting, classifyDesignWork, chooseLaneAccount, designStandardEnabled, type DesignRoutingOutcome } from '../core/designRouting.js';
 import { readDesignReviewLedger, planEvidenceByAccount, designReviewMachineId } from '../core/designReviewLedger.js';
+import { resolveDesignModel } from '../core/designLane.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
@@ -13710,6 +13712,43 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  /** Plan evidence plus room for the design model on this machine (frontier-design-review-standard §2). */
+  const designLaneChoice = (framework: string, laneModel: string) => {
+    const ledger = readDesignReviewLedger(ctx.config.stateDir);
+    const evidence = planEvidenceByAccount(ledger.runs, {
+      machineId: designReviewMachineId(ctx.meshSelfId),
+      door: framework,
+      model: laneModel,
+    });
+    return chooseLaneAccount({
+      framework,
+      model: laneModel,
+      evidence,
+      accounts: ctx.subscriptionPool ? ctx.subscriptionPool.list() : null,
+    });
+  };
+
+  // GET /design/lane — what /design-review reads before handing a review to a
+  // design session: the design model for a framework, whether a session started
+  // now would launch on it, and (with X-Instar-Session-Id) the caller's own state.
+  router.get('/design/lane', (req, res) => {
+    const sid = req.get('X-Instar-Session-Id');
+    const self = sid ? ctx.sessionManager.getSessionById?.(String(sid).slice(0, 200)) : undefined; // bounded-input-reviewed: a session-id header clamped for a map lookup, never prompt input
+    const framework = (typeof req.query.framework === 'string' && req.query.framework)
+      || self?.framework || ctx.config.sessions?.framework || ctx.config.enabledFrameworks?.[0] || CLAUDE_CODE_FRAMEWORK;
+    const enabled = designStandardEnabled(ctx.config);
+    const model = resolveDesignModel(framework);
+    const choice = enabled && model ? designLaneChoice(framework, model) : null;
+    res.json({
+      enabled,
+      framework,
+      model,
+      wouldRoute: choice?.ok === true,
+      ...(choice && !choice.ok ? { reason: choice.reason } : !enabled ? { reason: 'standard-off' } : !model ? { reason: 'no-lane' } : {}),
+      self: self ? { onDesignModel: model !== null && self.model === model, reviewHandoff: self.reviewHandoff === true, model: self.model ?? null } : null,
+    });
+  });
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
     const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight, workKind, reviewHandoff } = req.body;
     // frontier-design-review-standard §2: the caller may declare the work kind.
@@ -13864,20 +13903,7 @@ export function createRoutes(ctx: RouteContext): Router {
         escalationOverride,
         declaredKind: workKind,
         classify: () => classifyDesignWork(ctx.intelligence ?? null, prompt),
-        chooseAccount: (laneModel) => {
-          const ledger = readDesignReviewLedger(ctx.config.stateDir);
-          const evidence = planEvidenceByAccount(ledger.runs, {
-            machineId: designReviewMachineId(ctx.meshSelfId),
-            door: effectiveSpawnFramework,
-            model: laneModel,
-          });
-          return chooseLaneAccount({
-            framework: effectiveSpawnFramework,
-            model: laneModel,
-            evidence,
-            accounts: ctx.subscriptionPool ? ctx.subscriptionPool.list() : null,
-          });
-        },
+        chooseAccount: (laneModel) => designLaneChoice(effectiveSpawnFramework, laneModel),
       });
     } catch (err) {
       // @silent-fallback-ok: routing is advisory to the launch; on an internal fault the
@@ -13903,7 +13929,8 @@ export function createRoutes(ctx: RouteContext): Router {
       ...(designOutcome.workKind ? { workKind: designOutcome.workKind } : {}),
       ...(designOutcome.workKindSource ? { workKindSource: designOutcome.workKindSource } : {}),
       designRouting: designOutcome.record,
-    } : undefined;
+      ...(reviewHandoff === true ? { reviewHandoff: true as const } : {}),
+    } : (reviewHandoff === true ? { reviewHandoff: true as const } : undefined);
     const laneLaunch = designOutcome.launchModel
       ? designLaneTopicLaunch({
           resolver: parsedTopicId !== undefined ? ctx.topicProfile?.resolver : undefined,
@@ -13926,11 +13953,11 @@ export function createRoutes(ctx: RouteContext): Router {
 
     if(targetMachineId!==undefined){
       if(jobSlug!==undefined||ultracode===true||spawnRole!==undefined){res.status(409).json({error:'remote-spawn-options-unsupported'});return;}
-      if(typeof targetMachineId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(targetMachineId)||parsedTopicId===undefined||!remoteGraphDelegation){res.status(409).json({error:'verified-remote-spawn-unavailable',...(designRoutingFields?{designRouting:designRoutingFields.designRouting}:{})});return;}
+      if(typeof targetMachineId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(targetMachineId)||parsedTopicId===undefined||!remoteGraphDelegation){res.status(409).json({error:'verified-remote-spawn-unavailable',...(designOutcome.record?{designRouting:designOutcome.record}:{})});return;}
       try{
         const outcome=await remoteGraphDelegation.dispatch({parentBindToken:req.headers['x-instar-bind-token'],topicId:parsedTopicId,targetMachineId,
           launch:{name,prompt,model:topicSpawnProfile.model,framework:topicSpawnProfile.framework}});
-        res.status(outcome.ok?202:409).json({status:outcome.ok?'remote-launch-accepted':'remote-launch-checking',transport:outcome,graph:{state:'checking-save'},...(designRoutingFields?{designRouting:designRoutingFields.designRouting}:{})});
+        res.status(outcome.ok?202:409).json({status:outcome.ok?'remote-launch-accepted':'remote-launch-checking',transport:outcome,graph:{state:'checking-save'},...(designOutcome.record?{designRouting:designOutcome.record}:{})});
       }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
     }
 

@@ -40,6 +40,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/routes.ts',
   'src/server/topicIntentRoutes.ts',
   'src/server/specReviewRoutes.ts',
+  'src/server/designReviewRoutes.ts',
   'src/server/usherRoutes.ts',
   'src/server/queuePaceRoutes.ts',
   'src/server/maturationLadderRoutes.ts',

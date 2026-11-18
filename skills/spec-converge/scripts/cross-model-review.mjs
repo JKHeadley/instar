@@ -89,6 +89,8 @@ function parseArgs() {
     stateDir: null,
     timeoutMs: null,
     config: null,
+    all: false,
+    record: false,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -100,8 +102,15 @@ function parseArgs() {
     else if (a === '--state-dir') out.stateDir = args[++i];
     else if (a === '--timeout-ms') out.timeoutMs = parseInt(args[++i], 10);
     else if (a === '--config') out.config = args[++i];
+    else if (a === '--all') out.all = true;
+    else if (a === '--record') out.record = true;
     else fail(`Unknown arg: ${a}`);
   }
+  // frontier-design-review-standard §3: only the mode that attempts every
+  // reviewer can make a record; a single hand-picked --family pass cannot.
+  if (out.record && !out.all) fail('--record is accepted only together with --all');
+  if (out.all && out.family) fail('--all runs every family; do not combine it with --family');
+  if (out.all && !out.spec) fail('--all requires --spec PATH (the design document)');
   if (!out.detectOnly && !out.spec) {
     fail(
       'Usage: cross-model-review.mjs --spec PATH [--context PATH ...] ' +
@@ -316,6 +325,9 @@ function loadReviewerConfig(explicitPath) {
     // enabledFrameworks opt-in must reach detection through THIS loader —
     // without it the gate is a dead switch that refuses forever.
     if (Array.isArray(cfg.enabledFrameworks)) out.enabledFrameworks = cfg.enabledFrameworks;
+    if (cfg.sessions && typeof cfg.sessions.frameworkDefaultModels === 'object' && cfg.sessions.frameworkDefaultModels) {
+      out.sessions = { frameworkDefaultModels: cfg.sessions.frameworkDefaultModels };
+    }
     // §2.1 rung 2 must reach the LIVE lane too (round-12): the persisted
     // `sessions.frameworkBinaryPaths['grok-build']` relocates every other lane,
     // and the reviewer used to resolve independently — so a configured install
@@ -329,11 +341,172 @@ function loadReviewerConfig(explicitPath) {
   }
 }
 
+// ── --all [--record] (frontier-design-review-standard §3) ───────────────
+
+const SPOOL_FILE = 'design-review-spool.jsonl';
+
+/** The agent's state dir: --state-dir, else the .instar folder holding the resolved config. */
+function resolveStateDir(explicit, resolvedConfigPath) {
+  if (explicit) return path.resolve(explicit);
+  if (resolvedConfigPath) return path.dirname(path.resolve(resolvedConfigPath));
+  return null;
+}
+
+/**
+ * The token to report with: the session's own INSTAR_AUTH_TOKEN. Only when the
+ * variable is not set at all is the agent's token read through secret-get.mjs.
+ * A variable that is set but empty marks a session started without authority:
+ * the run fails loudly with nothing read, recorded or spooled.
+ */
+function resolveReportToken(stateDir) {
+  if (Object.prototype.hasOwnProperty.call(process.env, 'INSTAR_AUTH_TOKEN')) {
+    const t = process.env.INSTAR_AUTH_TOKEN ?? '';
+    if (!t) fail("This session was started without the agent's authority (INSTAR_AUTH_TOKEN is empty), so it cannot record a review. Hand the review to an ordinary session.");
+    return t;
+  }
+  const getter = path.join(stateDir, 'scripts', 'secret-get.mjs');
+  let out = '';
+  try {
+    out = execFileSync(process.execPath, [getter, 'authToken'], { encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], cwd: path.dirname(stateDir) }).trim();
+  } catch {
+    out = '';
+  }
+  // The agent's documented lookup (CLAUDE.md "API Authentication"): secret-get
+  // first, then a plain token in .instar/config.json (a placeholder object once
+  // secrets moved to the vault is not a token).
+  if (!out) {
+    try {
+      const v = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')).authToken;
+      if (typeof v === 'string') out = v.trim();
+    } catch { /* reported below */ }
+  }
+  if (!out) fail('Could not read the agent token (secret-get and the agent config gave nothing).');
+  return out;
+}
+
+function serverUrl(stateDir) {
+  if (process.env.INSTAR_SERVER_URL) return process.env.INSTAR_SERVER_URL.replace(/\/$/, '');
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
+    if (Number.isFinite(cfg.port)) return `http://localhost:${cfg.port}`;
+  } catch { /* fall through to the error below */ }
+  fail('No server address: INSTAR_SERVER_URL is not set and the agent config has no port.');
+}
+
+/** POST one report. Connection failure or a 5xx is `unreachable` (spooled); anything else is the answer. */
+async function postReport(url, token, report) {
+  try {
+    const res = await fetch(`${url}/design/review/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...(report.sessionId ? { 'X-Instar-Session-Id': report.sessionId } : {}),
+      },
+      body: JSON.stringify(report),
+      signal: AbortSignal.timeout(30_000),
+    });
+    let body = null;
+    try { body = await res.json(); } catch { body = null; }
+    if (res.status >= 500) return { kind: 'unreachable', status: res.status, body };
+    return { kind: 'answered', status: res.status, body };
+  } catch {
+    return { kind: 'unreachable' };
+  }
+}
+
+const spoolPath = (stateDir) => path.join(stateDir, SPOOL_FILE);
+
+/** Post any spooled reports first; keep only those the server still could not take. */
+async function drainSpool(url, token, stateDir) {
+  const file = spoolPath(stateDir);
+  if (!fs.existsSync(file)) return { posted: 0, kept: 0, dropped: 0 };
+  const raw0 = fs.readFileSync(file, 'utf-8');
+  const lines = raw0.split('\n').filter((l) => l.trim());
+  const keep = [];
+  let posted = 0;
+  let dropped = 0;
+  for (const line of lines) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { dropped++; continue; }
+    const r = await postReport(url, token, entry.report);
+    if (r.kind === 'unreachable') keep.push(line);
+    else if (r.status === 201 || r.status === 200) posted++;
+    else dropped++; // a refused spooled report is dropped and counted, never retried
+  }
+  // Keep anything appended while this ran (another run's report), after the kept lines.
+  const raw = fs.readFileSync(file, 'utf-8');
+  const tail = raw.length > raw0.length ? raw.slice(raw0.length) : '';
+  fs.writeFileSync(file, (keep.length ? keep.join('\n') + '\n' : '') + tail, { mode: 0o600 });
+  return { posted, kept: keep.length, dropped };
+}
+
+async function runAllMode({ mod, resolvedModulePath, resolvedConfigPath, reviewerConfig, spec, context, timeoutMs, record, stateDir }) {
+  const coreDir = path.dirname(resolvedModulePath);
+  const runMod = await import(pathToFileURL(path.join(coreDir, 'designReviewRun.js')).href);
+  const recMod = await import(pathToFileURL(path.join(coreDir, 'designReviewRecord.js')).href);
+  const specAbs = resolveRepoFile(spec);
+  if (!specAbs) fail(`File not found: ${spec}`);
+  const realSpec = fs.realpathSync(specAbs);
+  const specMarkdown = fs.readFileSync(realSpec, 'utf-8');
+  const agentStateDir = resolveStateDir(stateDir, resolvedConfigPath);
+
+  // Authority is settled before anything is sent anywhere.
+  let token = null;
+  let url = null;
+  if (record) {
+    if (!agentStateDir) fail('No agent state folder found; run from the agent home or pass --state-dir.');
+    token = resolveReportToken(agentStateDir);
+    url = serverUrl(agentStateDir);
+  }
+
+  const reviewerTemplate = fs.readFileSync(REVIEWER_TEMPLATE_PATH, 'utf-8');
+  const contextDocs = context.map((rel) => ({ path: rel, content: readRepoFile(rel) }));
+  const assembled = mod.assembleReviewerPrompt({ reviewerTemplate, specMarkdown, specPath: spec, context: contextDocs });
+  const outcome = await runMod.runRecordedDesignReview({
+    text: [specMarkdown, ...contextDocs.map((d) => d.content)].join('\n\n'),
+    assembled,
+    config: reviewerConfig,
+    ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
+  });
+  if (!outcome.ok) {
+    console.error(`A live secret (${outcome.kind}) is in the design text, so nothing was sent to any reviewer and nothing was recorded. Remove the secret from the document, then run the review again.`);
+    process.stdout.write(JSON.stringify({ status: 'refused', reason: 'live-secret', kind: outcome.kind }) + '\n');
+    process.exit(1);
+  }
+  const fingerprint = recMod.designFingerprint(specMarkdown);
+  const report = { runId: outcome.runId, path: realSpec, fingerprint, sessionId: process.env.INSTAR_SESSION_ID || null, passes: outcome.passes };
+  const summary = outcome.passes.map((p) => ({ family: p.family, status: p.status, model: p.model, verdict: p.verdict, reason: p.reason, attempts: p.attempts }));
+  if (!record) {
+    process.stdout.write(JSON.stringify({ recorded: false, passes: summary, unmappedReasons: outcome.unmappedReasons }) + '\n');
+    process.exit(0);
+  }
+  const drained = await drainSpool(url, token, agentStateDir);
+  const r = await postReport(url, token, report);
+  if (r.kind === 'unreachable') {
+    fs.appendFileSync(spoolPath(agentStateDir), JSON.stringify({ at: new Date().toISOString(), report }) + '\n', { mode: 0o600 });
+    process.stdout.write(JSON.stringify({ recorded: false, spooled: true, passes: summary, drained }) + '\n');
+    process.exit(0);
+  }
+  if (r.status !== 201 && r.status !== 200) {
+    console.error(`The server refused the review record (${r.status}): ${r.body?.message ?? r.body?.error ?? 'no reason given'}`);
+    process.stdout.write(JSON.stringify({ recorded: false, status: r.status, error: r.body?.error ?? null, passes: summary }) + '\n');
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify({ ...r.body, passes: summary, drained, unmappedReasons: outcome.unmappedReasons }) + '\n');
+  process.exit(0);
+}
+
 async function main() {
-  const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs, config } = parseArgs();
+  const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs, config, all, record } = parseArgs();
   const { mod, resolvedModulePath } = await loadModule();
   // Config-gate the Anthropic clean-door family (§1.5). Absent config ⇒ fleet-dark.
   const { config: reviewerConfig, resolvedConfigPath } = loadReviewerConfig(config);
+
+  if (all) {
+    await runAllMode({ mod, resolvedModulePath, resolvedConfigPath, reviewerConfig, spec, context, timeoutMs, record, stateDir });
+    return;
+  }
 
   // ── --hash-only: the delta-gating hash of the spec's reviewable body ──
   if (hashOnly) {

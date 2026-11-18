@@ -53,6 +53,15 @@ export interface DesignReviewRun {
   /** The pool's internal account id the reporting session ran under; null = the default login. Never rendered. */
   account: string | null;
   passes: ReviewPass[];
+  /** Writes to the file found in stored hook events at this run (§3 "Which sessions wrote it"). */
+  writes?: DesignWriteEntry[];
+}
+
+/** One stored `Write`/`Edit` to the reviewed file: who, when, and the model on record either side of it. */
+export interface DesignWriteEntry {
+  sessionId: string;
+  at: string;
+  model: string | null;
 }
 
 export interface LedgerRead {
