@@ -12,6 +12,8 @@ review-convergence: "2026-11-18T21:52:46.959Z"
 review-iterations: 3
 review-completed-at: "2026-11-18T21:52:46.959Z"
 review-report: "docs/specs/reports/local-verify-peer-works-through-restart-convergence.md"
+approved: true
+approved-by: "Chief of Staff (echo-chief-of-staff), maintainer approval 2026-11-18 14:06 PST, with the limits/progress fold-in (section E, Fixed limits)"
 cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
 frontloaded-decisions: 4
@@ -88,7 +90,7 @@ C builds on PR 3451's persisted holding record (`peer-trust.json`, `holding`, de
    - **Guard test:** a unit test fails on any read of a `RemoteMarker`'s `leaseEpoch` or `adoptedEpoch` in `src/localVerify/` outside `markerCurrent`, `importRefusal` and the marker builder in `dispatchOnce`. The peer accept path (`peerRun`), `diagnosisPeerAccept` and 3451's arbitration code compare other epochs and are not covered.
 3. **Decision when `markerCurrent` is false**, for each result of the tick's holding read:
    - **The lease read names another machine as holder (readable):** abandon with `lease-changed:holding-broken` and cancel, at once, as today. The peer is not left running a result nobody can import. One read is enough here, unlike 3451's two-read rule for deleting state: this only cancels a run, and a stale read costs at most that run. Builders should not align the two.
-   - **The read is unreadable (`skip`), no one holds the lease, or this machine holds it but `holding.epoch !== lease.epoch` (not caught up):** wait. Keep the marker, do not cancel, do not import, and audit `peer-attempt-adoption-waiting` once per attempt and epoch. The wait checks the attempt's existing `maxRunMs` bound itself (60 min from dispatch; adoption never resets `sentAt`) and abandons when it passes. That bound is the same one at which the peer cancels its own attempt (`checkPeerAttempt`), so a longer coordinator wait could never import anything.
+   - **The read is unreadable (`skip`), no one holds the lease, or this machine holds it but `holding.epoch !== lease.epoch` (not caught up):** wait. Keep the marker, do not cancel, do not import, and audit `peer-attempt-adoption-waiting` once per attempt and epoch. The wait applies E's judgment itself (from 60 min after dispatch; adoption never resets `sentAt`), the same judgment the peer applies to its own attempt.
    - **This machine holds the lease, holding is `keep` and caught up, and all of these hold:** adopt.
      - `Number.isSafeInteger(holding.since)` and `Number.isSafeInteger(m.leaseEpoch)`, and `holding.since <= m.leaseEpoch`;
      - the setting is on;
@@ -103,11 +105,25 @@ C builds on PR 3451's persisted holding record (`peer-trust.json`, `holding`, de
    - The audit carries `refunds` per entry, and the existing starved signal covers an entry that never finishes.
 5. **Import after adoption.** If the epoch moves again between adoption and import, the import is not counted as a peer failure. The attempt goes back to step 3.
 
-### D. Peer side: no change
+### E. Progress, not the clock alone, ends a peer attempt (Chief of Staff fold-in, 2026-11-18)
 
-The code settles this:
+Today `PEER_LIMITS.maxRunMs` (60 min from accept) ends a peer attempt on both sides whatever the run is doing. A slow but healthy run can be killed by it. Justin's rule is to judge hung from slow on progress evidence, with hard caps only as a backstop: topic 130715, message #142464 ("lean on intelligent assessment, not fixed limits like a hard timer; tell hung from slow", as quoted in the scaling brief `.instar/state/scaling-session-brief-1118.md`), restated in the Chief of Staff's approval of this spec (`.instar/state/cos-approval-pr3460.md`, 2026-11-18 14:06 PST). With the setting on:
 
-- The peer cancels its own attempt only at its run bound (`maxRunMs`), when its peer role is switched off, or when it becomes the lease holder (`checkPeerAttempt`).
+- **The peer reports progress.** `peerResult` gains `progress: { finishedFiles, lastFinishedAt, running: [{ file, seconds }] } | null`. It is read from the run's existing per-lane `*.progress.json` files with the existing `readProgress` and `PROGRESS_MAX_BYTES` bound. It is `null` when unreadable.
+- **At 60 min the attempt is judged, not killed.** The peer (`checkPeerAttempt`) and the coordinator (`pollPeers`, including C.3's waiting branch) both end the attempt only when one of these holds:
+  - the run child is gone;
+  - no file finished within `stallMs`;
+  - progress is `null`, which is unmeasurable, so today's behaviour applies.
+- **`stallMs`** is twice the longest recorded duration, in that machine's `file-durations.json`, among the files still running, multiplied by this run's own measured slowdown. The slowdown is the median, over files this run has already finished, of actual duration divided by recorded duration, never below 1. A run slowed by contention therefore gets a proportionally longer window, from its own evidence. A running file with no history uses its lane's hang deadline. This is the same "about twice the measured normal" rule the lane deadlines use (`LOCAL_VERIFY_DEADLINES`, 2026-11-12). Each machine judges with its own durations; the coordinator uses the durations the peer reports with `running`.
+- **Hard backstop.** The run child already ends itself at its lane deadlines (unit 40, integration 45, e2e 60 min) and `totalActiveMs` (120 min). The attempt's absolute backstop is that child's own longest possible life: fetch, `npm ci` and build/lint deadlines plus `totalActiveMs`, which is 150 min. Past it, the attempt ends whatever progress says.
+- **Audit.** Each judgment at or after 60 min logs `peer-attempt-judged { attemptId, verdict: 'progressing' | 'stalled' | 'unknown' | 'backstop', finishedFiles, lastFinishedAgoMs, stallMs }`, so the hung-versus-slow split is visible.
+- **Restart holds keep their bound.** Restart holds for pre-pause attempts keep `PEER_RESTART_HOLD_MS` (61 min). A restart is never held past it by a progressing attempt; the attempt then rides through the restart under C.
+
+### D. Peer side
+
+Apart from E, the peer is unchanged. The code settles this:
+
+- The peer cancels its own attempt only at its run bound (`maxRunMs`, judged by progress under E), when its peer role is switched off, or when it becomes the lease holder (`checkPeerAttempt`).
 - `peerResult` answers whatever the coordinator's epoch is.
 - An unreachable coordinator never cancels a peer run.
 
@@ -130,7 +146,19 @@ If the M5 itself takes the lease while the Studio is down, its own attempt is ca
 
 ## Fixed limits
 
-Fixed limits introduced: none in behaviour. Existing bounds are named and unchanged: `maxRunMs` 60 min (also the peer's own cancel point), `MERGE_HANDOFF_RESTART_HOLD_MS` 10 min, and `maxAttemptsPerEntry` 2. The 10-window count in the Maturation plan triggers a review; it does not limit what the agent does (derivation given there).
+Each limit this spec uses or adds, with its reason:
+
+| Limit | Value | Kind | Reason |
+|---|---|---|---|
+| Attempt review point (`PEER_LIMITS.maxRunMs`) | 60 min | judgment point, not a kill (E) | M5 runs measured 23.4 min median, 24.5 p90 (11-16..11-18). 60 min is about 2.5x the p90, the point where looking at progress is worth it. Ending the attempt is decided by progress evidence. |
+| Stall window (`stallMs`) | 2x the longest recorded duration of a running file, times this run's measured slowdown | judgment, per run | The same "about twice the measured normal" rule as the lane hang deadlines. It scales with the files actually running (the slowest integration file took 12.3 min on the Studio) and with how slow this run is going overall, so neither a slow file nor a contended machine is mistaken for a hang. Each `peer-attempt-judged` row records the inputs, so the rule can be checked against later runs. |
+| Attempt backstop | 150 min | hard cap, backstop only | It is the longest a run child can live under its own existing deadlines (fetch 5 + `npm ci` 10 + build/lint 15 + `totalActiveMs` 120). Past it, the child has already ended itself, so nothing more can come back. Those child deadlines belong to the run orchestration (lv-deadline-forensics, and the 2026-11-12 "twice measured normal" revision) and are not changed here. |
+| Merge hand-off restart hold (`MERGE_HANDOFF_RESTART_HOLD_MS`) | 10 min | existing, unchanged | Measured hand-off `heldMs` median 0.5 min, p90 0.7 (n=149). 10 min is a hang bound for a merge, not a speed target, and it protects a green run's merge from being lost to a restart. |
+| Peer attempts per entry (`maxAttemptsPerEntry`) | 2 | existing, unchanged | After two peer losses on the same head, the cause is more likely the peer or the change than chance. The local run, which always exists, is the cheaper next step. It bounds dispatch-and-lose loops (No Unbounded Self-Action). |
+| Refund on a verifier-change abandon | at most 1 per entry per head | new | About 5 verifier-changing restarts in two days, against a 23-minute M5 run, makes two of them in one entry's wait rare. One refund covers the realistic case; a second means something is repeating, and the entry falls back to a local run as today. |
+| Restart hold for pre-pause attempts (`PEER_RESTART_HOLD_MS`) | 61 min | existing, unchanged | Just over one review point. A restart is never held hostage by a long run; C keeps the run's result through the restart instead. |
+
+The 10-window count in the Maturation plan triggers a review; it does not limit what the agent does (derivation given there).
 
 ## Multi-machine posture
 
@@ -169,7 +197,8 @@ Fixed limits introduced: none in behaviour. Existing bounds are named and unchan
   - a refund only on `lease-changed:verifier`;
   - a malformed marker field dropped alone;
   - the raw-`leaseEpoch` guard test;
-  - a waiting attempt still blocks dispatch to its peer and does not hold restarts.
+  - a waiting attempt still blocks dispatch to its peer and does not hold restarts;
+  - E: at 60 min each verdict (progressing keeps the attempt; stalled, unknown and child-gone end it; the backstop ends it at 150 min), on both peer and coordinator, with `stallMs` from durations and the lane-deadline fallback.
 - **Integration:** `GET /local-verify` shows the new fields; the live setter changes behaviour without a restart; the `migrateClaudeMd` step is idempotent.
 - **E2E lifecycle:** a coordinator built on the production path (as in `server.ts`) with a fake peer, where a restart mid-attempt ends in import, and the first tick after boot (lease not yet held) does not cancel. A wiring test checks that the setting setter and the holding record are wired, not no-ops.
 
@@ -180,7 +209,7 @@ Fixed limits introduced: none in behaviour. Existing bounds are named and unchan
 - **Version change in the update:** the attempt is abandoned with `lease-changed:verifier` and refunded. That is no worse than leaving the peer idle.
 - **Two restarts close together** (4 seen within 81 to 97 s, 11-15 to 11-18): if no tick ran in between, holding resets and the adoption is lost. That is safe, and it is counted under `holding-broken`.
 - **Rollback:** older code reading an adopted marker abandons it with `lease-changed`, which is safe. Turning the setting off stops A and C.
-- **Hung versus slow:** not addressed. An adopted run still ends at the fixed 60 min counted from dispatch, as every peer run does today.
+- **Hung versus slow:** addressed for peer attempts by E. A progressing run is judged and kept past 60 min, up to the 150-min backstop. Unreadable progress keeps today's 60-min end (unmeasurable means conservative).
 - **Ordering:** the build starts only after PR 3451 is merged, pinned to 3451's holding rules as merged. It is rebased onto PR 3141 (adopting a live local run after restart) if 3141 merges first. The first-tick-after-boot test runs against whichever boot order is on main.
 
 ## Parent spec change

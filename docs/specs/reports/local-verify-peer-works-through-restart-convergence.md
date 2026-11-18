@@ -115,3 +115,23 @@ Tier 1. The spec is 188 lines, plus an ELI16 companion. 3 of 3 rounds were used.
 Converged at round 3, the Tier 1 cap. Round 3 raised 5 design findings (3 distinct). All are small, and none concerns safety, security or data loss. Two make the off switch and the restart identity behave as intended; one pins a dependency; one adds a log row for measurement. They were applied in one edit at the cap and were not re-reviewed by a fourth round. The reviewers who reported 0 design findings in round 3 were security, adversarial, integration and lessons-aware.
 
 The spec is ready for review and approval by the Chief of Staff (session echo-chief-of-staff). The build starts only after PR 3451 merges.
+
+## Approval fold-in (2026-11-18, after the Chief of Staff's approval at 14:06 PST)
+
+The Chief of Staff approved the spec (maintainer approval) with one fold-in. It came from the constitution check run at 22:03Z (Judgment Within Floors). Each limit needs a stated reason, and a run that is still making progress must not be killed by the 60-minute timer alone. The fold-in made three changes:
+
+- **New section E.**
+  - The 60-minute attempt bound becomes a judgment point on both sides.
+  - An attempt ends only when its run child is gone, when no file finished within a stall window, or when progress is unreadable (today's behaviour).
+  - The stall window is twice the longest recorded duration of a running file, times this run's own measured slowdown.
+  - A 150-minute backstop applies. It is the longest a run child can live under its existing deadlines.
+  - Each judgment is audited (`peer-attempt-judged`).
+- **The Fixed limits table** now gives the value, kind and reason for every limit used: review point, stall window, backstop, merge hold, attempt ceiling, refund, and pre-pause restart hold.
+- **The Risks entry "Hung versus slow"** changed from "not addressed" to addressed by E.
+
+The constitution check was re-run on the folded-in text. It returned 5 advisory flags:
+
+- **4 under Judgment Within Floors,** on pre-existing deadlines and holds that this spec names but does not change, and on the stall multiplier. The multiplier now scales with this run's own measured slowdown, and its inputs are audited for later checking.
+- **1 under Attributed Statements,** answered by citing topic 130715 #142464 and the approval file.
+
+The flags are signal only. The changes were not put through another full review round. They extend the approved design along the approver's instruction.
