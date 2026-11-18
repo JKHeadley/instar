@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "always-available-token",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-18T02:52:42.943Z",
+  "artifactPath": "upgrades/side-effects/always-available-token.md",
+  "artifactSha256": "eaba8ac922a7eae5a03651b58b668356351276f12a744ef56668ba96911263ac",
+  "specPath": "docs/specs/create-agent-accounts-and-always-on.md",
+  "coveredFiles": [
+    "src/cli.ts",
+    "src/commands/alwaysAvailable.ts",
+    "src/core/CredentialIdentityOracle.ts",
+    "src/core/SessionManager.ts",
+    "src/core/alwaysAvailableToken.ts",
+    "src/core/keyMaterialPaths.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
