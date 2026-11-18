@@ -29,6 +29,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { ResolveResult } from './sessionAddressResolver.js';
 import type {
   IMessageRouter,
   AgentMessage,
@@ -75,6 +76,15 @@ export interface MessageRouterConfig {
    * (tests and embedders without a SessionManager).
    */
   isOwnSession?: (tmuxSession: string) => boolean;
+  /**
+   * messages-reach-renamed-sessions §A: who holds the role a same-agent message
+   * names, as of `asOf` (ms). Absent ⇒ today's exact-name behaviour.
+   */
+  resolveSession?: (target: string, asOf: number) => ResolveResult;
+  /** §C: a same-agent message reached a terminal failure on this machine. Never throws. */
+  onDeliveryFailure?: (envelope: MessageEnvelope, reason: string) => void;
+  /** §C: failures with no session to tell, by `target|reason`, for GET /messages/stats. */
+  undeliveredCounts?: () => Record<string, number>;
 }
 
 /** What the target's server said to a same-machine relay POST. */
@@ -473,8 +483,24 @@ export class MessageRouter implements IMessageRouter {
     await this.store.saveThread(thread);
   }
 
-  async getStats(): Promise<MessagingStats> {
-    return this.store.getStats();
+  async getStats(): Promise<MessagingStats & { undelivered?: Record<string, number> }> {
+    const stats = await this.store.getStats();
+    const undelivered = this.config.undeliveredCounts?.();
+    return undelivered ? { ...stats, undelivered } : stats;
+  }
+
+  /**
+   * messages-reach-renamed-sessions §C: an HTTP caller's `from` is its own text.
+   * `from.agent` and `from.machine` are forced to this agent and machine; any other
+   * values are kept in `from.requested` for the record. `from.session` is kept.
+   */
+  forceLocalSender(from: AgentMessage['from']): AgentMessage['from'] {
+    const agent = this.config.localAgent;
+    const machine = this.config.localMachine;
+    const sameAgent = from?.agent === agent;
+    const sameMachine = !from?.machine || from.machine === machine || from.machine === 'local';
+    if (sameAgent && sameMachine) return { ...from, agent, machine };
+    return { ...from, agent, machine, requested: { agent: from?.agent, machine: from?.machine } };
   }
 
   // ── Routing: Cross-Agent Same-Machine ───────────────────────────
@@ -498,20 +524,54 @@ export class MessageRouter implements IMessageRouter {
    * then dead-letters. Never throws: the message is already saved.
    */
   private async deliverSameAgentLocal(envelope: MessageEnvelope): Promise<void> {
-    const target = envelope.message.to.session;
+    const requested = envelope.message.to.session;
+    let target = requested;
     let success = false;
     let reason = '';
     let owned = true;
-    try {
-      owned = this.config.isOwnSession ? this.config.isOwnSession(target) : true;
-    } catch (err) {
-      owned = false;
-      reason = `ownership check failed: ${err instanceof Error ? err.message : String(err)}`;
+    let resolvedNote = '';
+    if (this.config.resolveSession) {
+      let res: ResolveResult;
+      try {
+        const asOf = Date.parse(envelope.message.createdAt);
+        res = this.config.resolveSession(requested, Number.isFinite(asOf) ? asOf : Date.now());
+      } catch (err) {
+        res = { kind: 'none', reason: 'no-session-holds-this-role' };
+        reason = `resolver failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      if (res.kind === 'exact' || res.kind === 'redirected') {
+        target = res.session.tmuxSession;
+        // Pin BEFORE typing: retries and recovery are held to this exact session.
+        envelope.delivery = {
+          ...envelope.delivery,
+          resolvedSession: target,
+          resolvedSessionId: res.session.id,
+          resolvedVia: res.via,
+          typingStartedAt: new Date().toISOString(),
+        };
+        try { await this.store.updateDelivery(envelope.message.id, envelope.delivery); } catch (err) {
+          // @silent-fallback-ok: the pin write failed; deliver anyway, the retry manager falls back to to.session
+          console.warn(`[message-router] pin write failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
+        }
+        if (res.kind === 'redirected') resolvedNote = ` (redirected from ${requested} via ${res.via})`;
+      } else {
+        owned = false;
+        const refused = res as Exclude<ResolveResult, { kind: 'exact' | 'redirected' }>;
+        reason = reason || (refused.kind === 'ambiguous'
+          ? `ambiguous: ${refused.reason} (${refused.candidates.join(', ')})`
+          : refused.reason === 'topic-held-on' ? `topic-held-on ${refused.heldOn}` : refused.reason);
+      }
     }
-    if (!owned) {
-      // Terminal: never typed, never retried (the retry loop skips 'failed').
-      reason = reason || `"${target}" is not a running session of this agent`;
-    } else {
+    if (owned) {
+      try {
+        owned = this.config.isOwnSession ? this.config.isOwnSession(target) : true;
+      } catch (err) {
+        owned = false;
+        reason = `ownership check failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      if (!owned) reason = reason || `"${target}" is not a running session of this agent`;
+    }
+    if (owned) {
       try {
         const result = await this.delivery.deliverToSession(target, envelope);
         success = result.success;
@@ -527,17 +587,22 @@ export class MessageRouter implements IMessageRouter {
       phase: to,
       transitions: [
         ...envelope.delivery.transitions,
-        { from: envelope.delivery.phase, to, at: now, reason: success ? `injected into session ${target}` : `same-agent delivery deferred: ${reason}` },
+        { from: envelope.delivery.phase, to, at: now, reason: success ? `injected into session ${target}${resolvedNote}` : `same-agent delivery deferred: ${reason}` },
       ],
       attempts: envelope.delivery.attempts + 1,
       ...(success ? {} : { failureReason: reason }),
     };
+    // A failed attempt typed nothing (deliverToSession reports success only after the paste).
+    if (!success) delete envelope.delivery.typingStartedAt;
     try {
       await this.store.updateDelivery(envelope.message.id, envelope.delivery);
     } catch (err) {
       // @silent-fallback-ok: the envelope is already saved; a failed phase write
       // leaves it at 'sent' (today's behaviour) and is logged, never thrown.
       console.warn(`[message-router] same-agent delivery phase write failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
+    }
+    if (to === 'failed') {
+      try { this.config.onDeliveryFailure?.(envelope, reason); } catch { /* @silent-fallback-ok: notice is best-effort; the failure is recorded on the envelope */ }
     }
   }
 

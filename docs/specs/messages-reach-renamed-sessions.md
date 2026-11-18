@@ -13,6 +13,9 @@ single-run-completable: true
 frontloaded-decisions: 9
 cheap-to-change-tags: 0
 contested-then-cleared: 6
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
+approved: true
+approved-by: "echo-chief-of-staff (maintainer approval, msg 251e0733, 2026-11-18 06:20 PT; not a constitution change)"
 ---
 
 # Agent messages reach the session that holds the role now
@@ -53,7 +56,7 @@ New pure module `src/messaging/sessionAddressResolver.ts`:
 1. **exact**: `tmuxSession === target`.
 2. **topic identity**: the topic the target names. That is either the alias `<prefix>-topic-N`, or the `telegramTopicId` of the target's newest historical record (`pickSessionByTmux` semantics: a running record first, then the newest `startedAt`). The holder is the session the topic registry names. Only when the registry has no running binding does a candidate whose `telegramTopicId` is that topic count.
 3. **same name, topic-less roles only**: when the target's newest record has neither a topic nor a `jobSlug`, a candidate whose stored `name` equals that record's `name`.
-4. **prefix-equivalent**: collapse one repeated leading `<prefix>-` on both tmux names, so `echo-echo-x` and `echo-x` compare equal. This applies only when exactly one session record (any status) claims the normalized form. The tmux names `echo-chamber` (role `chamber`) and `echo-echo-chamber` (role `echo-chamber`) normalize alike, so they are `ambiguous`, never merged. Session records are kept for the life of the state directory today; if they are ever pruned, the prune keeps one record per distinct tmux name, so this check stays sound.
+4. **prefix-equivalent**: collapse one repeated leading `<prefix>-` on both tmux names, so `echo-echo-x` and `echo-x` compare equal. This applies only when all session records (any status) that claim the normalized form belong to one role: the stored name with one leading `<prefix>-` removed, plus its topic or job. The old and new records of one role (`echo-x` and `echo-echo-x`) therefore count once. Two roles that share a name only by prefix (`chamber` and `echo-chamber`) are indistinguishable by name, which is why E refuses to let them share a tmux name at all. Session records are kept for the life of the state directory today; if they are ever pruned, the prune keeps one record per distinct tmux name, so this check stays sound.
 
 **Refusal reasons:**
 - **`topic-not-held-here`**: the newest record has a topic but no candidate holds it. When the placement record names another machine, the reason is `topic-held-on <machine>` (D.7); nothing is forwarded.
@@ -94,7 +97,7 @@ New pure module `src/messaging/sessionAddressResolver.ts`:
 - `/messages/send` refuses a caller-supplied type `delivery-notice`. Only the router creates one, as a new `MessageType` with entries in `ACK_TIMEOUT`, `DEFAULT_TTL` and `DEFAULT_RETENTION_DAYS`. `/messages/send` validates no type today, so this refusal is a new check.
 
 **Volume.**
-- The first failure for a sender is noticed at once. Further failures for that sender within 60s, to any target, are grouped into one follow-up listing each target and reason. So one sender gets at most one notice per minute, however many messages failed.
+- The first failure for a sender is noticed at once. Further failures for that sender within 60s, to any target, are grouped into one second notice listing each target and reason. So one sender gets at most one notice per minute, however many messages failed.
 - The failed envelope records `noticePending`, then `noticeSentAt`, as single-file updates (no store scan). At boot, pending notices are flushed. One timer serves all groups.
 - A notice never triggers a notice. A local notice that can't be typed is recorded and dropped (the failure itself stays on the failed envelope). A remote notice gets one pass like any message (D.6), and D.6 never sends a notice about a `delivery-notice`.
 
@@ -175,7 +178,7 @@ This phase makes cross-machine session messages work end to end, with one delive
 A single helper, `tmuxNameFor(name)`, replaces the three prefixing sites. It doesn't add `<prefix>-` when `name` already starts with it.
 - Running sessions keep their names, and rule 4 makes the old and new forms equivalent.
 - A collision with a running session still throws "already exists", so it is never silent.
-- A spawn is also refused when any session record, running or not, already holds the new tmux name for a different role name. So `chamber` and `echo-chamber` can never take turns under one tmux name, where rule 1 could deliver one role's message to the other.
+- When any session record, running or not, of a different role (its topic, else its job, else its stored name) already holds the plain form, the spawn keeps today's double-prefixed name instead. The same check runs for a bare name (`bugs` → `echo-bugs`): if another role holds that name, and every natural form is taken by other roles, the spawn takes the first free numbered form (`echo-bugs-2`). So `chamber` and `echo-chamber` can never take turns under one tmux name, where rule 1 could deliver one role's message to the other. While the double-prefixed form of a name is still running, new spawns of that name keep it too, so one role never runs under two names during the change-over.
 - Renames to `echo-topic-N` are handled by rule 2, not E.
 
 ### F. Agent awareness

@@ -381,6 +381,8 @@ import { MessageFormatter } from '../messaging/MessageFormatter.js';
 import { MessageDelivery } from '../messaging/MessageDelivery.js';
 import type { TmuxOperations } from '../messaging/MessageDelivery.js';
 import { MessageRouter } from '../messaging/MessageRouter.js';
+import { resolveSessionTarget } from '../messaging/sessionAddressResolver.js';
+import { SenderNotifier } from '../messaging/SenderNotifier.js';
 import { generateAgentToken } from '../messaging/AgentTokenManager.js';
 import { pickupDroppedMessages } from '../messaging/DropPickup.js';
 import { createAgentLocalEnvelopeSigner, resolveLocalRouteSignatureMode } from '../threadline/localEnvelopeSignature.js';
@@ -21382,6 +21384,38 @@ export async function startServer(options: StartOptions): Promise<void> {
           securityLog: coordinator.managers.securityLog,
         }
       : undefined;
+    // messages-reach-renamed-sessions §C: sender notices (one per sender per minute).
+    const senderNotifier = new SenderNotifier({
+      localMachine: machineId,
+      localAgent: config.projectName,
+      isRunningExact: (name) => sessionManager.listRunningSessions().some((s) => s.tmuxSession === name),
+      typeInto: async (session, text) => {
+        try {
+          const now = new Date().toISOString();
+          const notice = {
+            schemaVersion: 1,
+            message: {
+              id: `notice-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+              from: { agent: config.projectName, session: 'instar-server', machine: machineId },
+              to: { agent: config.projectName, session, machine: machineId },
+              type: 'delivery-notice', priority: 'low', subject: 'Delivery notice', body: text,
+              createdAt: now, ttlMinutes: 480,
+            },
+            transport: { relayChain: [], originServer: `http://localhost:${config.port}`, nonce: `notice-${now}`, timestamp: now },
+            delivery: { phase: 'sent', transitions: [], attempts: 0 },
+          } as unknown as import('../messaging/types.js').MessageEnvelope;
+          const r = await messageDelivery.deliverToSession(session, notice);
+          return r.success;
+        } catch { return false; } // @silent-fallback-ok: a notice that cannot be typed is recorded and dropped (§C)
+      },
+      markNotice: async (messageId, patch) => {
+        try {
+          const env = await messageStore.get(messageId);
+          if (env) await messageStore.updateDelivery(messageId, { ...env.delivery, ...patch });
+        } catch { /* @silent-fallback-ok: the marker is advisory; the failure itself is on the envelope */ }
+      },
+      log: (line) => console.log(line),
+    });
     const messageRouter = new MessageRouter(messageStore, messageDelivery, {
       localAgent: config.projectName,
       localMachine: machineId,
@@ -21394,6 +21428,23 @@ export async function startServer(options: StartOptions): Promise<void> {
       // owns (never another agent's or the operator's tmux session).
       isOwnSession: (tmuxSession: string) =>
         sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession),
+      // messages-reach-renamed-sessions §A: who holds the named role now.
+      resolveSession: (target: string, asOf: number) => resolveSessionTarget(target, {
+        sessions: state.listSessions().map((s) => ({
+          id: s.id, name: s.name, tmuxSession: s.tmuxSession, status: s.status,
+          startedAt: s.startedAt, jobSlug: s.jobSlug, telegramTopicId: s.telegramTopicId,
+        })),
+        sessionNameForTopic: (topicId) => sessionManager.sessionNameForTopic(topicId),
+        isStandingDown: (topicId) => {
+          const reg = _standDownRegistryRef();
+          return reg ? reg.isEnforcing(reg.getByTopic(topicId)) : false;
+        },
+        prefix: path.basename(config.projectDir),
+        asOf,
+      }),
+      // §C: a terminal failure tells the proven sender session once.
+      onDeliveryFailure: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
+      undeliveredCounts: () => Object.fromEntries(senderNotifier.undelivered),
     }, crossMachineDeps);
     // Generate/persist agent token for cross-agent auth (idempotent — reuses existing token)
     const agentToken = generateAgentToken(config.projectName);
@@ -21466,11 +21517,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Start delivery retry manager for automatic retries, watchdog, and TTL expiry
     const retryManager = new DeliveryRetryManager(messageStore, messageDelivery, {
       agentName: config.projectName,
+      // messages-reach-renamed-sessions §B/§C.
+      isLocalEnvelope: (envelope) => {
+        const m = envelope.message.to.machine;
+        return !m || m === 'local' || m === machineId;
+      },
+      isPinnedSessionLive: (tmuxSession, sessionId) =>
+        sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
+      onDeadLetter: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
       onEscalate: (envelope, reason) => {
         notify('IMMEDIATE', 'messaging', `Message escalation: ${reason}\n  From: ${envelope.message.from.agent}\n  Subject: ${envelope.message.subject}`);
       },
     });
     retryManager.start();
+    // §C: notices a restart left pending inside their 60s group are sent now.
+    void messageStore.queryInbox(config.projectName)
+      .then((envs) => senderNotifier.recover(envs.filter((e) => e.delivery.noticePending && !e.delivery.noticeSentAt)))
+      .catch(() => { /* @silent-fallback-ok: pending notices are advisory; failures stay on their envelopes */ });
 
     // Durable-Output Hygiene Standard §2 (Layer B) — the config-gated scrubber
     // that redacts credential SPANS from LLM-derived summary fields BEFORE they
