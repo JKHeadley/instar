@@ -7004,6 +7004,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
   }
 
+  /**
+   * Every live tmux pane's working directory, in one read (topic-worktree-reclaim A:
+   * a worktree with a live pane inside it is in use, whatever the records say).
+   * null when tmux cannot be read: the caller must then treat everything as in use.
+   */
+  listAllPaneCwds(): string[] | null {
+    try {
+      const out = withSyncOp(() => execFileSync(
+        this.config.tmuxPath,
+        ['list-panes', '-a', '-F', '#{pane_current_path}'],
+        { encoding: 'utf-8', timeout: 5000 },
+      ));
+      return out.split('\n').map((l) => l.trim()).filter(Boolean);
+    } catch (err) {
+      // No tmux server at all means no live panes; anything else is unknown.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/no server running|error connecting to/i.test(msg)) return [];
+      return null; // @silent-fallback-ok — unknown pane state: the caller keeps every lock
+    }
+  }
+
   private currentPaneCwd(tmuxSession: string): string | null {
     try {
       const out = withSyncOp(() => execFileSync(

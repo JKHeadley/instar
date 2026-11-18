@@ -193,7 +193,8 @@ Each pass writes its counts into the plan row. **False-eligibility cases** are a
   - every `falseEligibility` case is explained, or filed as a bug.
   A week without a measuring run is not a pass; the window extends.
 - **dark-window:** none; live on release. If the criterion is not met within 14 days, the reason and a new date are recorded on CMT-1958.
-- **ladder:** `monitoring.diskSteward.topicWorktreeMeasure`: dev-agent live, then fleet dark-to-on when the graduation criterion holds on the development agent. A, B and C have no flag; revert is their rollback.
+- **ladder:** monitoring.diskSteward.topicWorktreeMeasure
+- **ladder path:** dev-agent live, then fleet dark-to-on when the graduation criterion holds on the development agent. A, B and C have no flag; revert is their rollback.
 
 ## Maturation path
 
@@ -223,7 +224,7 @@ Each pass writes its counts into the plan row. **False-eligibility cases** are a
 
 ## Alternatives considered
 
-- **A lease with a heartbeat instead of A.** A lease that expires, renewed on the session's own tick, would fix both the stale files and the broken "exclusive" promise, and would make the lock a valid in-use signal again. It is deferred because it changes lock enforcement for every running session. That needs its own test of signing, takeover and restart (filed as fb-863304b6-8ae). A is a strict subset that only removes files that no longer serve a session.
+- **A lease with a heartbeat instead of A.** A lease that expires, renewed on the session's own tick, would fix both the stale files and the broken "exclusive" promise, and would make the lock a valid in-use signal again. This phase does not take it, because it changes lock enforcement for every running session. That needs its own test of signing, takeover and restart (filed as fb-863304b6-8ae). A is a strict subset that only removes files that no longer serve a session.
 
 
 - **Build removal now.** Rejected. The round-1 review found six independent ways removal could misjudge or race. Measuring first costs one release and shows whether the yield is worth that machinery.

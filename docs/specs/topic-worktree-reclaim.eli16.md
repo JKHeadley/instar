@@ -37,6 +37,10 @@ Actually removing copies is a second step with its own design, built on these me
 - **The measuring runs off the server's main thread,** in the disk report's existing background process. (The existing cleaner's freeze is being fixed separately and first.)
 - **Anything the measurement can't read counts as "keep".**
 
+## How the measurement grows up
+
+The measurement has its own entry on the maturation ladder (`monitoring.diskSteward.topicWorktreeMeasure`). It runs first on the development agent only. It moves to every agent only after its runs show no errors, and after 30 days in which the second check never contradicts a "safe to reclaim" verdict.
+
 ## What needs deciding
 
 The Chief of Staff approves the design. No operator action is needed.

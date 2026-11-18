@@ -35,6 +35,8 @@ export interface PruneChildInput {
   measure: boolean;
   /** Measure the whole home folder by owner (§3.7a); at most daily. Absent ⇒ false. */
   wholeDisk?: boolean;
+  /** topic-worktree-reclaim D: measure the topic worktrees (dark on the fleet; dev-agent gate). */
+  topicWorktrees?: { stateDir: string; projectDir: string; worktreeMachineId: string | null; githubMergeCheck: boolean } | null;
   /** The server's kill deadline for this run (epoch ms); the whole-disk walk stops 2 min before it. */
   runDeadlineAt?: number;
   resultPath: string;
@@ -50,6 +52,8 @@ export interface WorktreePlan {
 
 export interface PruneChildResult {
   runId: string;
+  /** topic-worktree-reclaim D (read-only measurement). */
+  topicWorktrees?: import('./topicWorktreeMeasure.js').TopicWorktreePlan;
   startedAt: number;
   finishedAt: number;
   trigger: 'auto' | 'manual';
@@ -146,7 +150,7 @@ async function measureWorktrees(seams: PruneSeams, agentHome: string, budgetMs: 
     const { makeAgentWorktreeReaperDeps } = await import('./agentWorktreeGit.js');
     // Read-only view: the child has no path to removing a worktree.
     const deps = {
-      ...makeAgentWorktreeReaperDeps({ instarRepo: agentHome, worktreesDir: path.join(agentHome, '.worktrees') }),
+      ...makeAgentWorktreeReaperDeps({ instarRepo: agentHome, worktreesDir: path.join(agentHome, '.worktrees'), agentHome, linkedWorktreeDirs: [path.join(agentHome, '.instar', 'worktrees')] }),
       removeWorktree: (): void => { throw new Error('disk-steward child: worktree removal is not available here'); },
     };
     // Read-only: dryRun, and evaluate() never removes.
@@ -228,6 +232,23 @@ export async function runPruneChild(input: PruneChildInput, seams: PruneSeams = 
       });
     } catch {
       /* @silent-fallback-ok — no whole-disk line in the post; the next daily run tries again */
+    }
+  }
+  // topic-worktree-reclaim D: after the whole-disk walk, so that walk keeps its budget.
+  // Deadline: the run's kill time minus a 60 s reserve (D's longest bounded step is one
+  // 30 s git/gh call, plus the result write and exit).
+  if (input.measure && input.topicWorktrees) {
+    try {
+      const { measureTopicWorktrees } = await import('./topicWorktreeMeasure.js');
+      const killAt = input.runDeadlineAt ?? (startedAt + 2 * input.categoryBudgetMs + 15 * 60_000);
+      result.topicWorktrees = await measureTopicWorktrees({
+        agentHome: input.agentHome, stateDir: input.topicWorktrees.stateDir, projectDir: input.topicWorktrees.projectDir,
+        worktreeMachineId: input.topicWorktrees.worktreeMachineId, githubMergeCheck: input.topicWorktrees.githubMergeCheck,
+        deadlineAt: killAt - 60_000, sizeOf: (p, b) => seams.sizeOf(p, b),
+        // No runGh here: D builds its own gh runner capped by this deadline (makeCappedRunGh).
+      });
+    } catch {
+      /* @silent-fallback-ok — no topic-worktree row this run; the per-entry plan file keeps what was measured */
     }
   }
   result.finishedAt = Date.now();

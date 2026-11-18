@@ -77,6 +77,13 @@ export function renderPost(post: DuePost, now: number = Date.now()): string {
     if (dirty) parts.push(`${dirty} with work or leftovers I can't prove are safe (tracked)`);
     if (parts.length) lines.push(`Worktrees kept on purpose: ${parts.join(', ')}.`);
   }
+  const tw = post.topicWorktrees;
+  if (tw) {
+    // topic-worktree-reclaim D: measured, never removed in this phase.
+    const g = (b: { count: number; bytes: number | null }) => `${b.count}${b.bytes !== null && b.count ? ` (${gib(b.bytes)})` : ''}`;
+    lines.push(`Conversation worktrees provably safe to remove: ${g(tw.eligible)}; more if library copies are accepted: ${g(tw.eligibleIfMarkedDepsAccepted)} marked, ${g(tw.eligibleIfUnmarkedDepsAccepted)} unmarked${tw.partial ? ' (partial count)' : ''}. Nothing is removed yet.`);
+    if (tw.falseEligibility.count) lines.push(`${tw.falseEligibility.count} safe-to-remove verdict(s) failed their second check; I am looking into them.`);
+  }
   const big = (post.biggest ?? []).map((f) => ({ n: cleanName(f.name), b: f.bytes })).filter((f) => f.n).slice(0, 3);
   if (big.length) {
     const when = post.sizesAt ? ` (sized ${ago(now - post.sizesAt)}${post.sizesPartial ? ', partial: at least these' : ''})` : '';

@@ -313,12 +313,14 @@ export class AgentWorktreeReaper extends EventEmitter {
           this.emit('reaped', info);
         } catch (err) {
           // @silent-fallback-ok: NOT silent — the removal failure is surfaced via
-          // emit('error') AND recorded for the per-path breaker (which itself
+          // emit('reclaim-failed') AND recorded for the per-path breaker (which itself
           // emit('reclaim-breaker')s once on trip). The worktree is simply kept and
           // retried (bounded by the breaker), the safe direction for a deletion op.
           featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'error', reason: 'worktree removal failed', context: { worktree: info.path.split('/').pop() ?? '', branch: info.branch ?? null, failuresBefore: this.reclaimFailures.get(info.path) ?? 0 } });
           this.recordReclaimFailure(info.path);
-          this.emit('error', err);
+          // A named, non-special event: Node's 'error' with no listener THROWS (see the
+          // enumeration-failure note above), which would escape reap() as an unhandled rejection.
+          this.emit('reclaim-failed', err);
         }
       }
       this.lastPassAt = this.now();

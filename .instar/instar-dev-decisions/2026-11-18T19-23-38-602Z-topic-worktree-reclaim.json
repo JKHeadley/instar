@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-18T19:23:38.602Z",
+  "slug": "topic-worktree-reclaim",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 560,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/WorktreeManager.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/DiskSteward.ts",
+      "src/monitoring/DiskStewardPoster.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/diskSteward/pruneRunner.ts",
+      "src/monitoring/diskSteward/wiring.ts",
+      "src/monitoring/diskStewardMain.ts",
+      "src/monitoring/topicWorktreeMeasure.ts"
+    ],
+    "addedLines": 541,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

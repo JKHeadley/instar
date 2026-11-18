@@ -1044,6 +1044,8 @@ let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdenti
 let _interruptedMoveResumeReceiver: InterruptedMoveResumeReceiver | null = null;
 /** The autonomy manager, late-bound for the org-apply mesh handler (org-pack-and-join §Multi-machine). */
 let _orgAutonomy: import('../core/AutonomyProfileManager.js').AutonomyProfileManager | null = null;
+/** topic-worktree-reclaim D: WorktreeManager's machine id, for the disk-steward child's provenance match. */
+let _worktreeMachineIdForDisk: string | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
 // session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
@@ -4478,6 +4480,8 @@ async function wireDiskSteward(h: {
       agentHome: path.dirname(config.stateDir),
       agentName: path.basename(path.dirname(config.stateDir)),
       machineId: _dsMachineId,
+      // topic-worktree-reclaim D: inputs read at each run (the WorktreeManager is wired later in boot).
+      topicWorktreeInputs: () => ({ projectDir: config.projectDir, worktreeMachineId: _worktreeMachineIdForDisk, githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true }),
       machineName: () => {
         let nick: string | undefined;
         try { nick = _dsIdMgr.getActiveMachines().find((m) => m.machineId === _dsMachineId)?.entry.nickname; } catch { nick = undefined; } // @silent-fallback-ok — fall back to the identity name
@@ -24158,6 +24162,38 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (wired) {
         worktreeManager = wired.worktreeManager;
         sessionManager.setWorktreeManager(worktreeManager, wired.shimRoot);
+        _worktreeMachineIdForDisk = worktreeManager.machineId;
+        // topic-worktree-reclaim A: a session's worktree lock goes when the session ends
+        // (completed or killed), and locks of sessions with no running record go at start.
+        {
+          const wm = worktreeManager;
+          // An end event is not proof the session stopped (a failed kill still fires
+          // sessionComplete), so the lock goes only when its tmux session is gone too.
+          const releaseIfGone = (s: { id: string; tmuxSession?: string }): void => {
+            try {
+              if (s.tmuxSession && sessionManager.isSessionAlive(s.tmuxSession)) return;
+              wm.releaseForSession(s.id);
+            } catch { /* @silent-fallback-ok — a lock left behind is today's behaviour; the next start releases it */ }
+          };
+          sessionManager.on('sessionComplete', releaseIfGone);
+          sessionManager.on('sessionKilled', releaseIfGone);
+          try {
+            const sessionsDir = path.join(config.stateDir, 'state', 'sessions');
+            const readable = (() => { try { fs.readdirSync(sessionsDir); return true; } catch { /* @silent-fallback-ok — unreadable records: release nothing */ return false; } })();
+            // A record that exists but will not parse keeps its lock (counts as running), like D's rule.
+            const isRunning = (id: string): boolean | null => {
+              if (!readable) return null;
+              let rec: ReturnType<typeof state.getSession>;
+              try { rec = state.getSession(id); } catch { /* @silent-fallback-ok — an id that cannot be read keeps its lock */ return true; }
+              if (rec) return rec.status === 'running' || rec.status === 'starting';
+              try { return fs.existsSync(path.join(sessionsDir, `${id}.json`)) ? true : false; } catch { /* @silent-fallback-ok — unreadable: keep */ return true; }
+            };
+            const released = wm.releaseOrphanedLocks(isRunning, sessionManager.listAllPaneCwds());
+            if (released > 0) console.log(pc.dim(`  [worktrees] released ${released} lock(s) of sessions that are no longer running`));
+          } catch (err) {
+            console.warn(`[worktrees] orphaned-lock release skipped: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         console.log(
           pc.green(`  Parallel-dev isolation: ${parallelDevConfig.phase} (WorktreeManager wired)`)
         );
@@ -25893,6 +25929,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         ...makeAgentWorktreeReaperDeps({
           instarRepo: config.projectDir,
           worktreesDir: _agentWorktreesDir,
+          agentHome: path.dirname(config.stateDir),
+          // topic-worktree-reclaim B: links from and into the topic worktrees count too.
+          linkedWorktreeDirs: [path.join(config.stateDir, 'worktrees')],
           // Multi-commit squash-merge detection via GitHub merged-PR state (default
           // on; fail-safe to cherry-only). Off only if explicitly disabled in config.
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,

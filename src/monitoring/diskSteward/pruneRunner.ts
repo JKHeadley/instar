@@ -54,7 +54,7 @@ export class PruneRunner {
   private current: { record: RunRecord; done: Promise<PruneChildResult | null>; resolve: (r: PruneChildResult | null) => void; timers: Array<{ cancel(): void }> } | null = null;
 
   constructor(
-    private readonly cfg: { stateDir: string; agent: string; agentHome: string; mainScript: string; nodePath: string; npmCacheMaxGiB: () => number; auditPath: string; categoryBudgetMs?: number; runBudgetMs?: number },
+    private readonly cfg: { stateDir: string; agent: string; agentHome: string; mainScript: string; nodePath: string; npmCacheMaxGiB: () => number; auditPath: string; categoryBudgetMs?: number; runBudgetMs?: number; topicWorktrees?: () => PruneChildInput['topicWorktrees'] },
     private readonly seams: RunnerSeams = realRunnerSeams(),
   ) {}
 
@@ -76,6 +76,7 @@ export class PruneRunner {
       runId, agent: this.cfg.agent, agentHome: this.cfg.agentHome, trigger: req.trigger, requestedBy: req.requestedBy ?? null,
       dryRun: req.dryRun, npmCacheMaxGiB: this.cfg.npmCacheMaxGiB(), categoryBudgetMs: this.cfg.categoryBudgetMs ?? 10 * 60_000,
       measure: req.measure, wholeDisk: req.wholeDisk ?? false, runDeadlineAt: record.deadline, resultPath: record.resultPath, auditPath: this.cfg.auditPath,
+      topicWorktrees: (() => { try { return this.cfg.topicWorktrees?.() ?? null; } catch { return null; } })(), // @silent-fallback-ok — no gate reading ⇒ D does not run
     };
     // Intent first: a crash between here and the spawn is resolvable at boot by the run id.
     this.seams.writeFile(this.runFile, JSON.stringify(record));

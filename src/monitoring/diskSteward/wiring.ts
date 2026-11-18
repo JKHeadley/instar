@@ -4,6 +4,7 @@
  * few live handles it owns (state, telegram, peer resolver, identity) and gets
  * back a started steward plus its runner.
  */
+import { resolveDevAgentGate } from '../../core/devAgentGate.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,8 @@ export interface DiskStewardConfig {
   enabled?: boolean;
   sampleIntervalMs?: number;
   topicId?: number | null;
+  /** topic-worktree-reclaim D: measure topic worktrees in the child (dev-agent gate; dark on the fleet). */
+  topicWorktreeMeasure?: boolean;
   warnPercent?: number; warnMinGiB?: number; escalatePercent?: number; escalateMinGiB?: number; forecastEscalateDays?: number;
   prune?: { enabled?: boolean; dryRun?: boolean; minIntervalMs?: number; npmCacheMaxGiB?: number };
 }
@@ -43,6 +46,8 @@ export interface DiskStewardWiringInput {
   canCreateTopic: () => boolean;
   findTopicIdByName?: (name: string) => number | undefined;
   findOrCreateTopic?: (name: string) => Promise<number>;
+  /** topic-worktree-reclaim D inputs, read at each run; null leaves D off. */
+  topicWorktreeInputs?: () => { projectDir: string; worktreeMachineId: string | null; githubMergeCheck: boolean } | null;
   sendToTopic?: (topicId: number, text: string) => Promise<unknown>;
 }
 
@@ -60,6 +65,11 @@ export function createDiskSteward(input: DiskStewardWiringInput): { steward: Dis
   const runner = new PruneRunner({
     stateDir: stewardDir, agent: input.agentName, agentHome: input.agentHome, mainScript, nodePath: process.execPath,
     npmCacheMaxGiB: () => num(dsCfg().prune?.npmCacheMaxGiB, 5), auditPath,
+    topicWorktrees: () => {
+      if (!resolveDevAgentGate(dsCfg().topicWorktreeMeasure, { developmentAgent: input.readConfig().developmentAgent })) return null;
+      const t = input.topicWorktreeInputs?.();
+      return t ? { stateDir: input.stateDir, ...t } : null;
+    },
   });
 
   let topicIdCache: number | null = null;
