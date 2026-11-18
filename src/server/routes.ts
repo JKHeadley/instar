@@ -213,7 +213,7 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 import fs from 'node:fs';
 import { findSessionTranscriptFile, sessionConversations, readTranscriptAnswer, parseTranscriptQuery, SESSION_TRANSCRIPT_PULL_MAX_BYTES, SESSION_TRANSCRIPT_PULL_TIMEOUT_MS } from '../core/sessionTranscriptPull.js';
 import { resolveTranscriptAudience, TRANSCRIPT_AUDIENCE_SENTENCES, type TranscriptAudienceVerdict } from '../core/transcriptAudience.js';
-import { SignedReadCapability, signedThenBearer, BearerReadRefused } from '../core/poolSignedReads.js';
+import { SignedReadCapability, signedThenBearer, BearerReadRefused, PeerVersionFloor } from '../core/poolSignedReads.js';
 import { TOPIC_HISTORY_POOL_MAX_MESSAGES, TOPIC_HISTORY_POOL_TIMEOUT_MS, poolRowId } from '../core/topicHistoryPull.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
@@ -3136,6 +3136,30 @@ export function createRoutes(ctx: RouteContext): Router {
   const peerVersionOf = (machineId: string): string | null => {
     const cap = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
     return cap?.coherenceAdvert?.instarVersion ?? cap?.hardware?.instarVersion ?? null;
+  };
+  /** SEC-114 (interim): the highest version ever seen for a peer, from every source, never lowered. */
+  const peerVersionFloor = new PeerVersionFloor(
+    ctx.config.stateDir ? path.join(ctx.config.stateDir, 'state', 'peer-version-floor.json') : null,
+    (file, data) => SafeFsExecutor.atomicWriteJsonSync(file, data, { operation: 'routes.peerVersionFloor' }),
+  );
+  const versionFloorOf = (machineId: string): string | null => {
+    const cap = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
+    return peerVersionFloor.observe(machineId, cap?.coherenceAdvert?.instarVersion, cap?.hardware?.instarVersion);
+  };
+  /** SEC-114: a refused bearer fallback is loud, at most once per machine and kind of read per 15 minutes. */
+  const fallbackRefusedReportedAt = new Map<string, number>();
+  const onSignedReadFallbackRefused = (machineId: string, kind: string) => (why: string): void => {
+    const key = `${machineId}\u0000${kind}`;
+    const now = Date.now();
+    if (now - (fallbackRefusedReportedAt.get(key) ?? 0) < 15 * 60_000) return;
+    fallbackRefusedReportedAt.set(key, now);
+    DegradationReporter.getInstance().report({
+      feature: 'poolSignedReads.bearerFallbackRefused',
+      primary: 'Read another machine over the signed mesh, sending the agent token only to a machine too old for it',
+      fallback: 'The read failed instead of sending the agent token, because that machine has been seen at a version that serves this read',
+      reason: why,
+      impact: 'That machine is missing from this pool view until the read succeeds; the agent token was not sent. A forged answer on the network path, or a real fault on that machine, causes this.',
+    });
   };
   /** A machine that did not answer, named plainly with its last-seen time (§3d item 5). */
   const asleepEntry = (machineId: string, error: string, unreachable: boolean): Record<string, unknown> => {
@@ -12788,7 +12812,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // first; the bearer hop only on a definite "cannot serve", never after a timeout.
           const listCommand = { type: 'session-transcript-pull' as const, mode: 'list' as const, ...(includeAll ? { include: 'all' as const } : explicitStatus ? { status: explicitStatus } : {}) };
           const outcome = await signedThenBearer<Record<string, unknown>[] | { httpStatus: number }>({
-            machineId: p.machineId, kind: 'list', peerVersion: peerVersionOf(p.machineId), capability: signedReads,
+            machineId: p.machineId, kind: 'list', peerVersion: peerVersionOf(p.machineId), capability: signedReads, versionFloor: versionFloorOf(p.machineId), onFallbackRefused: onSignedReadFallbackRefused(p.machineId, 'list'),
             signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, listCommand, 5000) : null,
             accept: (result) => {
               const b = result as { ok?: unknown; sessions?: unknown; reason?: unknown } | null;
@@ -13217,7 +13241,7 @@ export function createRoutes(ctx: RouteContext): Router {
         limit: q.limit, ...(q.full ? { full: true } : {}), ...(q.row ? { row: q.row, byteFrom: q.byteFrom ?? 0 } : {}),
       };
       const outcome = await signedThenBearer<Remote>({
-        machineId, kind: 'transcript', peerVersion: peerVersionOf(machineId), capability: signedReads,
+        machineId, kind: 'transcript', peerVersion: peerVersionOf(machineId), capability: signedReads, versionFloor: versionFloorOf(machineId), onFallbackRefused: onSignedReadFallbackRefused(machineId, 'transcript'),
         signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(machineId, command, SESSION_TRANSCRIPT_PULL_TIMEOUT_MS) : null,
         accept: (result) => {
           const b = result as Record<string, unknown> | null;
@@ -22976,7 +23000,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(beforeMs === null ? {} : { before: beforeMs }), ...(beforeMessageId === null ? {} : { beforeMessageId }),
       };
       const outcome = await signedThenBearer<{ messages: unknown; truncated?: unknown; oldest?: unknown; rowTruncated?: unknown }>({
-        machineId: p.machineId, kind: 'historyPool', peerVersion: peerVersionOf(p.machineId), capability: signedReads,
+        machineId: p.machineId, kind: 'historyPool', peerVersion: peerVersionOf(p.machineId), capability: signedReads, versionFloor: versionFloorOf(p.machineId), onFallbackRefused: onSignedReadFallbackRefused(p.machineId, 'historyPool'),
         signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, command, TOPIC_HISTORY_POOL_TIMEOUT_MS) : null,
         accept: (result) => {
           const b = result as Record<string, unknown> | null;
