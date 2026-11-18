@@ -2697,6 +2697,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // names to the owner only and an empty answer to anyone else (spec §4.4). Team tier in TEAM_ROUTE_TIERS (guest).
     { method: 'GET', re: /^\/mobile\/work\/projects$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'projects-reads' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
+    // Work cards from the owner's phone (docs/specs/phone-work-cards.md): one card (the board read's bucket), and
+    // "Make a card" from a message (Face ID over `work-card-create`, the taps' bucket). Not in TEAM_ROUTE_TIERS: owner only.
+    { method: 'GET', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
+    { method: 'POST', re: /^\/mobile\/work-board\/cards$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
     { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },

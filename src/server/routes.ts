@@ -69,6 +69,8 @@ import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from '.
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { answerPhoneCardCreate, phoneCardPrecheck } from './phoneWorkCards.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
@@ -42018,6 +42020,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const owner = workBoardOwnerKey();
         if (!owner) return { status: 409, body: { error: 'no-team-owner' } };
         return performOwnerTap(workBoardRouteDeps, svc, cardId, tap as unknown as Record<string, unknown>, { kind: 'person', personKey: owner, proof: 'presence', isOwner: true });
+      },
+      // Make a card from a message (docs/specs/phone-work-cards.md): the write gate proved the owner's phone and Face ID over this draft.
+      workCardCreate: {
+        precheck: (requestId, draft, req) => phoneCardPrecheck(workBoardRouteDeps, requestId, draft, () => {
+          // The rule every phone write path into a conversation uses (telegramTopicKnown; a live app conversation),
+          // then the shared conversation check for this phone's person.
+          const key = draft.source.conversationKey;
+          const known = key.startsWith('telegram:')
+            ? !!ctx.telegram && telegramTopicKnown(ctx.telegram, Number(key.slice('telegram:'.length)))
+            : !!ctx.appConversations?.liveConversation(key.slice('app:'.length));
+          const pairing = ctx.mobilePairingService;
+          return known && !!pairing && deviceMayUse(pairing, req, key, 'read');
+        }),
+        create: (requestId, draft, draftHash) => answerPhoneCardCreate(workBoardRouteDeps, requestId, draft, draftHash),
       },
       // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
       startAccountSignIn: async (accountId, machineId, req) => {
