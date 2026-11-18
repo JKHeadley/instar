@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T01:26:16.837Z",
+  "slug": "graph-revalidate-single-pass",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphReplication.ts",
+      "src/core/ConversationGraphSourceObservationRecovery.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   readBoard, headline, cardActions, phoneOnlyLine, pinExplain, tapBody, tapCovers, cardRow, workBoardNeedRows, settingsPatch, donePaging, donePageFrom,
-  cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords,
+  cardSourceLink, cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords,
 } from '../../dashboard/console/work-model.js';
 import { NEED_SOURCES } from '../../dashboard/console/needs-model.js';
 import { NATIVE_PAGES, CONSOLE_ONLY_TABS, GROUPS, PHONE_PAGE_ALIASES, tabHref } from '../../dashboard/console/nav-model.js';
@@ -49,6 +49,22 @@ function board(waiting = [card()], over = {}) {
   };
 }
 const acts = (c, o) => cardActions(c, o).map((a) => a.action);
+
+describe('card source links', () => {
+  it('keeps the exact source identity in a safe internal link, never its label', () => {
+    expect(cardSourceLink(card({ source: { conversationKey: 'telegram:142440', messageId: '144556' } }))).toEqual({ href: '#/work/chats?c=telegram%3A142440&m=144556', label: 'Original message' });
+    const id = '0b0c0d0e-0f10-5111-8213-141516171819';
+    const link = cardSourceLink(card({ source: { conversationKey: `app:${id}`, messageId: 'event:one&two' } }));
+    expect(new URLSearchParams(link.href.split('?')[1]).get('m')).toBe('event:one&two');
+    expect(link.label).not.toContain(id);
+  });
+  it('does not infer a source and names unsupported sources without a bad link', () => {
+    expect(cardSourceLink(card())).toBeNull();
+    expect(cardSourceLink(card({ source: { conversationKey: 'javascript:alert(1)', messageId: 'x' } }))).toEqual({ href: null, label: 'The original message cannot be opened here.' });
+    expect(cardSourceLink(card({ source: { conversationKey: 'telegram:12', messageId: '' } }))).toEqual({ href: '#/work/chats?c=telegram%3A12', label: 'Original conversation', note: 'The exact message is unavailable.' });
+    expect(cardSourceLink(card({ removed: {}, source: { conversationKey: 'telegram:12', messageId: '7' } }))).toBeNull();
+  });
+});
 
 describe('readBoard', () => {
   it('reads the five lanes, the counts and the policy', () => {
@@ -106,6 +122,17 @@ describe('which buttons each status offers', () => {
     expect(pinExplain(running, 'withdraw-approval')).toMatch(/^Stop this app: /);
     expect(phoneOnlyLine(card())).toBeNull(); // an ordinary card keeps its Approve
     expect(acts(card())).toContain('approve');
+  });
+  it('a stopped app\'s card (appStopped): no buttons, no "Approve this on your phone", and Stop says turning it back on comes later', () => {
+    const stopped = card({ phoneOnly: true, appStopped: true, status: 'needs-approval', approved: false, needLine: 'Stopped by you. Turning it back on comes in a later update.' });
+    expect(cardActions(stopped, { inSheet: true })).toEqual([]);
+    expect(phoneOnlyLine(stopped)).toBeNull();
+    // Even if the card reads approved again (a stale phone tap), there is nothing to stop.
+    expect(cardActions(card({ phoneOnly: true, appStopped: true, status: 'done', approved: true }), { inSheet: true })).toEqual([]);
+    const running = card({ phoneOnly: true, status: 'with-agent', approved: true });
+    const words = tapCovers(running, 'withdraw-approval').find((l) => l.label === 'Stopping this app');
+    expect(words?.text).toContain('Turning it back on comes in a later update');
+    expect(words?.text).not.toContain('approval on your phone');
   });
   it('a question open on a held card can still be answered', () => {
     expect(acts(card({ status: 'held', holds: ['rh1'], question: { id: 'rq1', text: 'Which?' } }))).toEqual(['unhold', 'answer', 'archive']);
@@ -279,6 +306,49 @@ describe('the page', () => {
   beforeEach(() => { installDom(); reads = {}; posts = []; postAnswer = { status: 200, data: { recordId: 'rt1' } }; });
   const ctx = () => ({ get: vi.fn(async (p: string) => (p in reads ? reads[p] : { ok: false, reason: 'the server answered 500' })), post: vi.fn() });
 
+  it('folds finished history, keeps active work visible, and preserves an opened history section on refresh', async () => {
+    reads['/work-board'] = ok(board([card()], { done: [card({ id: 'wc_finished', status: 'done', title: 'Finished renewal' })], doneTotal: 21 }));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode();
+    await renderWork(main, ctx());
+    for (const id of ['done', 'archived']) {
+      const section = main.querySelector(`#sec-${id}`);
+      expect(section.querySelector('button.list-head')?.getAttribute('aria-expanded')).toBe('false');
+      expect(section.querySelector('.work-lane-body')?.hidden).toBe(true);
+    }
+    expect(main.querySelector('#sec-waiting-on-you .work-lane-body').hidden).toBe(false);
+    const done = main.querySelector('#sec-done');
+    expect(done.querySelector('.list-count').textContent).toBe('21');
+    expect(done.querySelector('.work-lane-body a')).toBeTruthy();
+    done.querySelector('button.list-head').click();
+    expect(done.querySelector('.work-lane-body').hidden).toBe(false);
+    await renderWork(main, ctx());
+    expect(main.querySelector('#sec-done button.list-head').getAttribute('aria-expanded')).toBe('true');
+    expect(main.querySelector('#sec-done .work-lane-body').hidden).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
+
+  it('opens Done when following its paging link and keeps the pager with the cards', async () => {
+    location.hash = '#/work/board?donePage=1';
+    reads['/work-board?donePage=1'] = ok(board([], { done: [card({ id: 'wc_page', status: 'done' })], doneTotal: 75 }));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode();
+    await renderWork(main, ctx());
+    expect(main.querySelector('#sec-done button.list-head').getAttribute('aria-expanded')).toBe('true');
+    expect(main.querySelector('#sec-done .work-lane-body').hidden).toBe(false);
+    expect(main.querySelector('#sec-done .work-lane-body a[href*="donePage"]')).toBeTruthy();
+  });
+
+  it('a direct link opens a finished card even while its lane is folded', async () => {
+    const id = 'wc_1234567890abcdef';
+    location.hash = `#/work/board?card=${id}`;
+    reads['/work-board'] = ok(board([], { done: [card({ id, status: 'done', title: 'Finished direct link' })] }));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    await renderWork(mainNode(), ctx());
+    expect(document.querySelector('.sheet').getAttribute('aria-label')).toBe('Finished direct link');
+    expect(document.querySelector('#sec-done .work-lane-body').hidden).toBe(true);
+  });
+
   it('leads with Waiting on you, marked, with the card, its need line and an enabled Approve', async () => {
     reads['/work-board'] = ok(board([card({ repliedAfterQuestion: true })], { more: 2 }));
     const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
@@ -295,6 +365,17 @@ describe('the page', () => {
     expect(approve && !approve.disabled).toBe(true);
     for (const t of ['With the agent', 'Waiting on others', 'Done', 'Archived', 'Settings']) expect(main.textContent).toContain(t);
     expect(main.textContent).not.toMatch(/wc_[0-9a-f]{16}/); // no internal ids on screen
+  });
+
+  it('shows the source link in the card sheet without changing its own conversation link', async () => {
+    reads['/work-board'] = ok(board([card({ source: { conversationKey: 'telegram:142440', messageId: '144556' } })]));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode(); await renderWork(main, ctx());
+    main.querySelector('.work-open').click();
+    const links = [...document.querySelectorAll('.sheet a')];
+    expect(links.find(a => a.textContent === 'Original message')?.getAttribute('href')).toBe('#/work/chats?c=telegram%3A142440&m=144556');
+    expect(links.find(a => a.textContent === 'Open its conversation')).toBeTruthy();
+    expect(document.querySelector('.sheet').textContent).not.toContain('144556');
   });
 
   it('Approve shows what it covers, then the PIN, then sends the bound body with the PIN', async () => {

@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "graph-verify-verdict-memo",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T02:57:22.439Z",
+  "artifactPath": "upgrades/side-effects/graph-verify-verdict-memo.md",
+  "artifactSha256": "6f2cf4150597e6de7c4b76e82bcda42556f44f0c293abab009e22124937bd00e",
+  "specPath": "docs/specs/graph-verify-verdict-memo.md",
+  "coveredFiles": [
+    "docs/specs/graph-verify-verdict-memo.eli16.md",
+    "docs/specs/graph-verify-verdict-memo.md",
+    "docs/specs/reports/graph-verify-verdict-memo-convergence.md",
+    "src/core/ConversationGraphLocalErasure.ts",
+    "src/core/ConversationGraphReplication.ts",
+    "tests/unit/conversation-graph-verdict-memo.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/graph-verify-verdict-memo.md",
+    "upgrades/side-effects/graph-verify-verdict-memo.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Decides when a verification verdict may be reused; a wrong reuse would admit a refused record",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/graph-verify-verdict-memo-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  }
+}

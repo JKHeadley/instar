@@ -486,6 +486,13 @@ export class ConversationGraphReplicationRuntime {
   }catch{/* DegradationReporter internalOnly via reportUnavailable; invalid or unavailable enrollment cannot accept local private custody. */this.reportUnavailable('graph-local-enrollment-unavailable');return false;}
  }
  private alive():boolean{return !this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();}
+ /**
+  * May this machine serve the owner's private reads right now: alive, and the private-serving custody
+  * check the owner's read view (readView) already requires. Unlike isReady() it does not need a write
+  * readiness proof from the last 60 s; that proof is re-earned by the background pass (zeroed while it
+  * runs), so gating owner reads on it refused most history reads on a busy lease holder.
+  */
+ privateReadsServable():boolean{return this.alive()&&this.privateCustodyAllowed();}
  isReady():boolean{return this.alive()&&this.positiveCustodyAllowed()&&this.options.leaseCoordinator.currentEpoch()<=GRAPH_REPLICATION_MAX_LEASE_EPOCH&&this.readyAt>0&&this.readyLeaseEpoch===this.options.leaseCoordinator.currentEpoch()&&Date.now()-this.readyAt<60000;}
  projection(){if(!this.isReady())throw new Error('graph-runtime-not-ready');return this.source.certifiedUnion(this.reader,this.options.droppedOrigins);}
  /** A cold offline view requires physical all-member ACK proof and no known

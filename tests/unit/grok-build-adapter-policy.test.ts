@@ -1060,9 +1060,15 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
+      const failed = () => warns.filter((w) => w.includes('VERSION PROBE FAILED')).length;
       for (let i = 0; i < 5; i++) {
+        const before = failed();
         checkGrokVersionDrift(failing);
-        await new Promise((r) => setTimeout(r, 400));
+        // Wait for THIS probe's outcome instead of a fixed 400 ms: on a loaded host the spawned
+        // stub had not exited yet, so only 2 of the 3 capped failures were seen (2026-11-18,
+        // PR 3275: expected 2 to be 3). Past the cap no probe runs, so those rounds wait briefly.
+        const deadline = Date.now() + (before < 3 ? 5000 : 400);
+        while (failed() === before && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
       }
     } finally {
       console.warn = orig;
