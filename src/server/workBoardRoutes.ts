@@ -242,6 +242,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const svc = gate(res); if (!svc) return;
     const p = writerOf(req, res, 'Enter your dashboard PIN to add this card'); if (!p) return;
     const { pin: _pin, ...body } = (req.body ?? {}) as Record<string, unknown>;
+    const ask = svc.askFieldsRefusal(p, body, null); if (ask) { send(res, ask); return; }
     if (!(await specApprovalAllows(p, body, res))) return;
     const r = svc.createCard(p, body);
     if (!r.ok) { send(res, r); return; }
@@ -274,6 +275,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const wasApproved = !!before?.card.approvalValid;
     switch (kind) {
       case 'edited': {
+        const ask = svc.askFieldsRefusal(p, fields, id); if (ask) { send(res, ask); return; }
         const r = svc.edit(p, id, fields);
         if (r.ok && r.recordId) {
           const after = svc.view(id)!;

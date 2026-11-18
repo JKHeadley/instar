@@ -48,7 +48,7 @@ export type WorkRecordType = typeof WORK_RECORD_TYPES[number];
 
 export const MATERIAL_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links'] as const;
 export type MaterialField = typeof MATERIAL_FIELDS[number];
-const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey'] as const;
+const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror'] as const;
 export type EditableField = typeof EDITABLE_FIELDS[number];
 
 export const PERMITTING_TAPS = ['approve', 'answer', 'confirm-done', 'unhold', 'retry', 'unarchive'] as const;
@@ -65,7 +65,7 @@ export type DispatchOutcome = typeof DISPATCH_OUTCOMES[number];
 
 /** Absolute schema ceilings (every machine must accept what any owner-raised limit allows).
  *  The owner-set per-field limits (`workBoard.limits`) are enforced at the write route. */
-export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000 } as const;
+export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, whyYou: 32000, coverKeys: 256, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000 } as const;
 
 // ── identity ────────────────────────────────────────────────────────────────
 
@@ -80,6 +80,11 @@ const RECORD_ID_RE = /^(wc:wc_[0-9a-f]{16}:[A-Za-z0-9_.:-]{1,200}|wb-policy:[A-Z
 const ATTACHMENT_ID_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 const CONVERSATION_KEY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PROJECT_KEY_RE = /^(telegram|app|slack|imessage|whatsapp):[A-Za-z0-9_.:-]{1,128}$/;
+/** A Needs-you item key a card says it is about (docs/specs/work-board-cards-appear.md §3). Which ones a writer may use is the service's rule. */
+export const NEED_REF_RE = /^[a-z][a-z0-9-]*:[A-Za-z0-9_.:#@-]{1,200}$/;
+const MIRROR_REF_MAX = 300;
+/** The opening check's note a wait card keeps (the Chief of Staff store records at most 500 characters). */
+const MIRROR_NOTE_MAX = 2000;
 
 export function isCardId(v: unknown): v is string { return typeof v === 'string' && CARD_ID_RE.test(v); }
 export function isRecordId(v: unknown): v is string { return typeof v === 'string' && RECORD_ID_RE.test(v); }
@@ -102,6 +107,7 @@ export type CardLink = { label: string; url: string } | { label: string; attachm
 export type Carrier = 'agent' | { personKey: string };
 export type Principal = 'agent' | 'none' | { personKey: string };
 export type By = { kind: 'person'; personKey: string; proof: 'pin' | 'presence' } | { kind: 'agent' } | { kind: 'system' };
+export interface CardMirror { ref: string; hlc: HlcTimestamp; waitSince?: string; note?: string; waitRef?: string; cleared?: boolean }
 
 const isStr = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
 const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_RE.test(v);
@@ -193,6 +199,28 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
   }
   if (has('due')) { if (raw.due !== null && !(typeof raw.due === 'string' && DATE_RE.test(raw.due))) return null; out.due = raw.due; }
   if (has('projectKey')) { if (raw.projectKey !== null && !(typeof raw.projectKey === 'string' && PROJECT_KEY_RE.test(raw.projectKey))) return null; out.projectKey = raw.projectKey; }
+  if (has('whyYou')) {
+    if (raw.whyYou !== null && !isStr(raw.whyYou, SCHEMA_MAX.whyYou)) return null;
+    out.whyYou = raw.whyYou;
+  }
+  if (has('covers')) {
+    const c = raw.covers;
+    if (!Array.isArray(c) || c.length > SCHEMA_MAX.coverKeys || !c.every((k) => typeof k === 'string' && NEED_REF_RE.test(k))) return null;
+    out.covers = [...new Set(c as string[])];
+  }
+  if (has('mirror')) {
+    // The source record a server-owned card mirrors (work-board-cards-appear §1 Fencing). Null clears it.
+    const m = raw.mirror as Record<string, unknown> | null;
+    if (m !== null) {
+      if (!m || typeof m !== 'object' || !isStr(m.ref, MIRROR_REF_MAX) || !isHlc(m.hlc)) return null;
+      if (m.waitSince !== undefined && !isIso(m.waitSince)) return null;
+      if (m.note !== undefined && !(typeof m.note === 'string' && m.note.length <= MIRROR_NOTE_MAX)) return null;
+      if (m.waitRef !== undefined && !isStr(m.waitRef, MIRROR_REF_MAX)) return null;
+      if (m.cleared !== undefined && typeof m.cleared !== 'boolean') return null;
+      const h = m.hlc as HlcTimestamp;
+      out.mirror = { ref: m.ref, hlc: { physical: h.physical, logical: h.logical, node: h.node }, ...(m.waitSince !== undefined ? { waitSince: m.waitSince } : {}), ...(m.note !== undefined ? { note: m.note } : {}), ...(m.waitRef !== undefined ? { waitRef: m.waitRef } : {}), ...(m.cleared === true ? { cleared: true } : {}) };
+    } else out.mirror = null;
+  }
   return out;
 }
 
@@ -201,6 +229,7 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
 const KNOWN_FIELDS = [
   'recordType', 'cardId', 'by', 'at',
   'title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'conversationKey',
+  'whyYou', 'covers', 'mirror',
   'principal', 'question', 'supersedes', 'reason',
   'action', 'materialHash', 'questionId', 'answer', 'claimId', 'retryOf', 'names', 'titleHash', 'policy',
   'itemId', 'text', 'attachmentIds', 'reopens', 'evidenceIds',
@@ -415,6 +444,12 @@ export interface CardFold {
   // fields
   title: string; need: string; doneWhen: DoneWhenItem[]; carrier: Carrier; outward: boolean; links: CardLink[];
   recommendation: string | null; due: string | null; projectKey: string | null; source: { conversationKey: string; messageId: string } | null;
+  /** Why this needs the person (required on agent-written cards, work-board-cards-appear §2). */
+  whyYou: string | null;
+  /** The Needs-you item keys this card is about (§3). */
+  covers: string[];
+  /** The source record a server-owned card mirrors (§1 Fencing); null on every other card. */
+  mirror: CardMirror | null;
   waitingOn: Principal;
   materialHash: string;
   lastWriter: Record<MaterialField, 'person' | 'agent'>;
@@ -488,6 +523,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const f: CardFold = {
     cardId, conversationKey: cardConversationKey(cardId), created: false, createdBy: null, createdAt: null,
     title: '', need: '', doneWhen: [], carrier: 'agent', outward: true, links: [], recommendation: null, due: null, projectKey: null, source: null,
+    whyYou: null, covers: [], mirror: null,
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
     evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
@@ -502,7 +538,12 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const evidenceIdx = new Map<string, number>(); const claimIdx = new Map<string, number>();
   const confirms: Array<{ tap: TapState; idx: number; reopens: string[] }> = [];
   let idx = -1;
-  for (const rec of records) {
+  // A card's `created` record is folded first whatever its clock: a fixed-id card's `created` written
+  // again in a lease race (before the first replicated) takes the newer clock under its one key, and must
+  // not make the card's earlier records read as written before the card existed (work-board-cards-appear §1).
+  const createdAt = records.findIndex((r) => r.d.cardId === cardId && r.d.recordType === 'created');
+  const ordered = createdAt > 0 ? [records[createdAt], ...records.slice(0, createdAt), ...records.slice(createdAt + 1)] : records;
+  for (const rec of ordered) {
     idx++;
     if (rec.d.cardId !== cardId) continue;
     const v = validate(rec.d, ctx);
@@ -617,6 +658,11 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const allPerson = MATERIAL_FIELDS.every((k) => f.lastWriter[k] === 'person');
   if (f.withdrawn) f.approvalRequired = true;
   else if (f.outward) f.approvalRequired = true; // an outward card always needs its own approve tap
+  // A card a person carries that sends nothing outward has no agent work for an approval to cover
+  // (workable needs carrier: agent), so it needs no approve tap (work-board-cards-appear §2, the
+  // narrowest part of the approved rule C). Moving the carrier to the agent is a material edit and
+  // brings the rule below back before any agent work.
+  else if (typeof f.carrier === 'object') f.approvalRequired = false;
   else if (f.policy === 'outward-only') f.approvalRequired = false;
   else f.approvalRequired = !allPerson;
   f.approvalValid = !f.withdrawn && approveIdx >= 0 && approveIdx > f.lastMaterialIdx && approveRec !== null;
@@ -638,7 +684,12 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   }
   f.currentClaim = [...f.claims].reverse().find((c) => c.counts) ?? null;
   if (f.currentClaim) {
-    f.needsConfirm = f.doneWhen.some((it) => it.certify === 'owner-confirms') || f.reopens.length > 0;
+    // A card a person carries and that sends nothing outward needs no approve tap (above), so the agent's
+    // claim on it is finished only by that person's Confirm done, whatever its items say: the agent never
+    // opens and closes an ask the person never saw. The one exception is a server-owned card (it covers a
+    // `cos:` key), whose single item rests on a recorded source verdict (work-board-cards-appear §2).
+    const personCarriedInward = typeof f.carrier === 'object' && !f.outward && !f.covers.some((k) => k.startsWith('cos:'));
+    f.needsConfirm = f.doneWhen.some((it) => it.certify === 'owner-confirms') || f.reopens.length > 0 || personCarriedInward;
     const claim = f.currentClaim;
     const cIdx = claimIdx.get(claim.id) ?? -1;
     const confirm = confirms.find((x) => x.tap.claimId === claim.id && x.tap.materialHash === f.materialHash && currentGen(x.reopens) && x.idx > f.lastMaterialIdx && x.idx > cIdx);
@@ -704,6 +755,11 @@ export interface PickupCause { id: string; cardId: string; kind: CauseKind; agen
 export function derivePickupCauses(cardId: string, records: FoldRecord[], policies: FoldRecord[]): PickupCause[] {
   const card = records.filter((r) => r.d.cardId === cardId);
   const timeline = [...card, ...policies].sort(foldOrder);
+  // The card's `created` record first, as foldCard folds it (work-board-cards-appear §1 Create).
+  // Only among the card's own records: policy records keep their place in the walk.
+  const ci = timeline.findIndex((r) => r.d.recordType === 'created' && r.d.cardId === cardId);
+  const first = timeline.findIndex((r) => r.d.cardId === cardId);
+  if (ci > first && first >= 0) timeline.splice(first, 0, ...timeline.splice(ci, 1));
   const causes: PickupCause[] = [];
   let prevWorkable = false; let prevDone = false;
   let last: CardFold | null = null;
@@ -828,7 +884,7 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
 export function redactedView(f: CardFold, name: string): Partial<CardFold> & { removedBy: string } {
   return {
     cardId: f.cardId, conversationKey: f.conversationKey, redacted: f.redacted, removedBy: name,
-    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, questions: [], openQuestion: null, evidence: [], claims: [],
+    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, questions: [], openQuestion: null, evidence: [], claims: [],
   };
 }
 

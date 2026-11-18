@@ -85,7 +85,8 @@ export function validateSettingsPatch(patch: unknown): { ok: true } | { ok: fals
 }
 
 export type WorkPrincipal =
-  | { kind: 'agent' }
+  /** `server`: the server's own in-process writer of server-owned cards (Chief of Staff wait cards). No route builds it. */
+  | { kind: 'agent'; server?: true }
   | { kind: 'session'; conversationKey: string }
   | { kind: 'person'; personKey: string; proof: 'pin' | 'presence'; isOwner: boolean };
 
@@ -131,8 +132,21 @@ export function lineIdFor(recordId: string): string {
 
 export function newCardId(): string { return `wc_${randomBytes(8).toString('hex')}`; }
 
-const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source'] as const;
-const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey'] as const;
+const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror'] as const;
+const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror'] as const;
+
+/**
+ * The Needs-you item keys a card may say it is about (work-board-cards-appear §3): sources whose keys are
+ * stable item ids and whose rows carry no credential, money or security state. `cos:` is reserved to the
+ * server's own Chief of Staff wait cards. Every other key is refused.
+ */
+export const COVERABLE_PREFIXES: ReadonlyArray<string> = ['plan:', 'pr:'];
+export const SERVER_COVERABLE_PREFIXES: ReadonlyArray<string> = ['cos:waiting:'];
+/** A card is server-owned when it covers a `cos:` key: only the in-process server writer writes its records. */
+export function isServerOwnedCard(card: { covers?: string[] | null }): boolean {
+  return Array.isArray(card.covers) && card.covers.some((k) => k.startsWith('cos:'));
+}
+const nonEmpty = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
 
 export class WorkBoardService {
   private records: FoldRecord[] = [];
@@ -283,7 +297,8 @@ export class WorkBoardService {
   private textFields(fields: Record<string, unknown>): Array<[string, string]> {
     const out: Array<[string, string]> = [];
     const push = (k: string, v: unknown) => { if (typeof v === 'string') out.push([k, v]); };
-    for (const k of ['title', 'need', 'recommendation', 'reason', 'text', 'answer'] as const) push(k, fields[k]);
+    for (const k of ['title', 'need', 'recommendation', 'whyYou', 'reason', 'text', 'answer'] as const) push(k, fields[k]);
+    if (Array.isArray(fields.covers)) (fields.covers as unknown[]).forEach((c, i) => push(`covers[${i}]`, c));
     if (Array.isArray(fields.doneWhen)) (fields.doneWhen as Array<Record<string, unknown>>).forEach((d, i) => push(`doneWhen[${i}].text`, d?.text));
     if (Array.isArray(fields.links)) (fields.links as Array<Record<string, unknown>>).forEach((l, i) => { push(`links[${i}].label`, l?.label); push(`links[${i}].url`, l?.url); });
     const q = fields.question as Record<string, unknown> | undefined;
@@ -304,7 +319,7 @@ export class WorkBoardService {
     }
     const L = this.deps.settings().limits;
     const over = (field: string, v: unknown, limit: number) => (typeof v === 'string' && v.length > limit ? refuse(413, 'over-limit', { field, limit, length: v.length }) : null);
-    const checks: Array<Refusal | null> = [over('title', fields.title, L.title), over('need', fields.need, L.need), over('recommendation', fields.recommendation, L.recommendation)];
+    const checks: Array<Refusal | null> = [over('title', fields.title, L.title), over('need', fields.need, L.need), over('recommendation', fields.recommendation, L.recommendation), over('whyYou', fields.whyYou, L.recommendation)];
     if (Array.isArray(fields.doneWhen)) (fields.doneWhen as Array<Record<string, unknown>>).forEach((d, i) => checks.push(over(`doneWhen[${i}].text`, d?.text, L.doneItemText)));
     const q = fields.question as Record<string, unknown> | undefined;
     if (q && Array.isArray(q.options)) (q.options as unknown[]).forEach((o, i) => checks.push(over(`question.options[${i}]`, o, L.optionText)));
@@ -352,11 +367,12 @@ export class WorkBoardService {
    * version cards, docs/specs/project-apps-sandbox.md §3.4): the caller names the id, and it is not
    * counted against the agent's daily ceiling (each app has at most one open card per purpose).
    */
-  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
+  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string; counted?: boolean }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
     if (p.kind === 'session') return refuse(403, 'scoped-session-cannot-create');
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const fields: Record<string, unknown> = {};
     for (const k of CREATE_FIELDS) if (input[k] !== undefined) fields[k] = input[k];
+    const own = this.ownershipRefusal(p, fields, null); if (own) return own;
     if (fields.carrier !== undefined) fields.carrier = this.resolveOwnerAlias(fields.carrier);
     if (Array.isArray(fields.doneWhen) && fields.doneWhen.length === 0) return refuse(400, 'done-item-required');
     if (!Array.isArray(fields.doneWhen)) return refuse(400, 'done-item-required');
@@ -371,7 +387,7 @@ export class WorkBoardService {
     const linkErr = this.checkAttachmentLinks(undefined, fields.links); if (linkErr) return linkErr;
     if (serverCard && (p.kind !== 'agent' || !isCardId(serverCard.cardId))) return refuse(400, 'bad-server-card');
     if (serverCard && this.view(serverCard.cardId)?.card.created) return refuse(409, 'card-exists');
-    if (p.kind === 'agent' && !serverCard) {
+    if (p.kind === 'agent' && (!serverCard || serverCard.counted)) {
       const s = this.deps.settings();
       const { day, resetsAt } = this.deps.dayOf(this.deps.now());
       if (this.agentCardsCreatedOn(day) >= s.maxAgentCardsPerDay) {
@@ -383,6 +399,12 @@ export class WorkBoardService {
     if (!w.ok) return w;
     return { ok: true, cardId, conversationKey: cardConversationKey(cardId), ...this.softBudget() };
   }
+
+  /** The owner-set field limits now in force (a server writer composes within them). */
+  limits(): WorkBoardLimits { return this.deps.settings().limits; }
+
+  /** True when the owner's "Waiting on you" lane already holds `softOpenCards` cards (a server writer opens no more). */
+  atSoftBudget(): boolean { return this.waitingOnOwnerCount() >= this.deps.settings().softOpenCards; }
 
   private softBudget(): { overSoftBudget?: { waiting: number; softOpenCards: number } } {
     const s = this.deps.settings();
@@ -405,6 +427,57 @@ export class WorkBoardService {
     return null;
   }
 
+  /**
+   * Who may write what on a server-owned card, and which Needs-you keys a writer may cover (work-board-cards-appear
+   * §1 Server-owned, §3). Only the in-process server writer writes a server-owned card's records or sets `mirror`
+   * and `cos:` covers; a person's taps still work (taps do not come through here), a person's edits do not.
+   */
+  private ownershipRefusal(p: WorkPrincipal, fields: Record<string, unknown>, card: CardFold | null): Refusal | null {
+    const server = p.kind === 'agent' && p.server === true;
+    if (card && isServerOwnedCard(card) && !server) return refuse(409, 'server-owned-card', { message: 'The Chief of Staff writes this card itself. Act on the project in its own conversation; the card follows.' });
+    if (fields.mirror !== undefined && !server) return refuse(400, 'mirror-not-allowed');
+    if (fields.covers !== undefined) {
+      if (!Array.isArray(fields.covers)) return refuse(400, 'covers-not-allowed');
+      const allowed = server ? [...COVERABLE_PREFIXES, ...SERVER_COVERABLE_PREFIXES] : COVERABLE_PREFIXES;
+      const bad = (fields.covers as unknown[]).find((k) => typeof k !== 'string' || !allowed.some((pre) => k.startsWith(pre)));
+      if (bad !== undefined) return refuse(400, 'covers-not-allowed', { key: String(bad), allowed, message: 'A card may say it is about a plan (plan:<id>) or a pull request (pr:<n>) in Needs-you; other items keep their own row and action.' });
+    }
+    return null;
+  }
+
+  /**
+   * work-board-cards-appear §2: a card the agent (or a session) writes through the route says what it recommends
+   * and why it needs the person, and an edit never clears either on an agent-written card. The route calls this;
+   * in-process server cards are not route writes (the wait cards always carry both; a project app's version card
+   * is exempt, its recommendation would only restate the approve button). A person's own card is unaffected.
+   */
+  askFieldsRefusal(p: WorkPrincipal, fields: Record<string, unknown>, cardId: string | null): Refusal | null {
+    if (p.kind === 'person') return null;
+    const why = { recommendation: 'A card the agent writes says what it recommends. Add a recommendation.', whyYou: 'A card the agent writes says why it needs the person and not the agent. Add whyYou.' };
+    if (cardId === null) {
+      if (!nonEmpty(fields.recommendation)) return refuse(400, 'recommendation-required', { message: why.recommendation });
+      if (!nonEmpty(fields.whyYou)) return refuse(400, 'why-you-required', { message: why.whyYou });
+      return null;
+    }
+    const card = this.view(cardId)?.card;
+    if (!card || card.createdBy?.kind !== 'agent') return null;
+    if (fields.recommendation !== undefined && !nonEmpty(fields.recommendation)) return refuse(400, 'recommendation-required', { message: why.recommendation });
+    if (fields.whyYou !== undefined && !nonEmpty(fields.whyYou)) return refuse(400, 'why-you-required', { message: why.whyYou });
+    return null;
+  }
+
+  private serverOwnedBlocks(p: WorkPrincipal, card: CardFold): boolean {
+    return isServerOwnedCard(card) && !(p.kind === 'agent' && p.server === true);
+  }
+
+  /** A deterministic record key is the server writer's only; it must name this card. */
+  private serverKey(p: WorkPrincipal, cardId: string, recordKey: string | undefined): string | Refusal | null {
+    if (recordKey === undefined) return null;
+    if (!(p.kind === 'agent' && p.server === true)) return refuse(400, 'record-key-not-allowed');
+    if (!isRecordId(recordKey) || !recordKey.startsWith(`wc:${cardId}:`)) return refuse(400, 'bad-record-key');
+    return recordKey;
+  }
+
   private guardCard(p: WorkPrincipal, cardId: string): Refusal | { v: CardView } {
     if (!isCardId(cardId)) return refuse(404, 'not-found');
     const v = this.view(cardId);
@@ -425,6 +498,7 @@ export class WorkBoardService {
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
+    const own = this.ownershipRefusal(p, input, card); if (own) return own;
     const changed: Record<string, unknown> = {};
     for (const k of EDIT_FIELDS) {
       if (input[k] === undefined) continue;
@@ -452,6 +526,7 @@ export class WorkBoardService {
     if (p.kind === 'person') return refuse(403, 'agent-only');
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
+    if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
     const principal = this.resolveOwnerAlias(input.principal) as Principal | undefined;
     if (!principal) return refuse(400, 'principal-required');
     if (typeof principal === 'object') {
@@ -470,10 +545,13 @@ export class WorkBoardService {
     return { ok: true, questionId: w.recordId, ...this.softBudget() };
   }
 
-  addEvidence(p: WorkPrincipal, cardId: string, input: { itemId?: unknown; text?: unknown; attachmentIds?: unknown }): Result<{ evidenceId: string }> {
+  /** `recordKey`: the server's own writer names a deterministic key so a retried close is one record (work-board-cards-appear §1). */
+  addEvidence(p: WorkPrincipal, cardId: string, input: { itemId?: unknown; text?: unknown; attachmentIds?: unknown }, opts: { recordKey?: string } = {}): Result<{ evidenceId: string }> {
     if (p.kind === 'person') return refuse(403, 'agent-only');
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
+    if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
+    const key = this.serverKey(p, cardId, opts.recordKey); if (key && typeof key !== 'string') return key;
     if (typeof input.itemId !== 'string' || !card.doneWhen.some((d) => d.id === input.itemId)) return refuse(400, 'unknown-item');
     if (typeof input.text !== 'string' || !input.text.trim()) return refuse(400, 'evidence-text-required');
     if (Array.isArray(input.attachmentIds)) {
@@ -484,15 +562,17 @@ export class WorkBoardService {
     }
     const fields: Record<string, unknown> = { itemId: input.itemId, text: input.text, materialHash: card.materialHash, reopens: card.reopens, ...(Array.isArray(input.attachmentIds) ? { attachmentIds: input.attachmentIds } : {}) };
     const t = this.checkText(fields); if (t) return t;
-    const w = this.write('evidence', cardId, { ...fields, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() });
+    const w = this.write('evidence', cardId, { ...fields, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() }, key || undefined);
     if (!w.ok) return w;
     return { ok: true, evidenceId: w.recordId };
   }
 
-  claimDone(p: WorkPrincipal, cardId: string): Result<{ claimId: string; needsConfirm: boolean }> {
+  claimDone(p: WorkPrincipal, cardId: string, opts: { recordKey?: string } = {}): Result<{ claimId: string; needsConfirm: boolean }> {
     if (p.kind === 'person') return refuse(403, 'agent-only');
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
+    if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
+    const key = this.serverKey(p, cardId, opts.recordKey); if (key && typeof key !== 'string') return key;
     if (card.holds.length) return refuse(409, 'held');
     if (card.unknown.length) return refuse(409, 'card-unreadable');
     if (card.approvalRequired && !card.approvalValid) return refuse(409, 'not-approved');
@@ -504,7 +584,7 @@ export class WorkBoardService {
       return refuse(409, stale ? 'reopened-since' : 'evidence-missing', { items: missing });
     }
     const evidenceIds = [...latestPerItem.values()];
-    const w = this.write('claimed-done', cardId, { materialHash: card.materialHash, reopens: card.reopens, evidenceIds, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() });
+    const w = this.write('claimed-done', cardId, { materialHash: card.materialHash, reopens: card.reopens, evidenceIds, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() }, key || undefined);
     if (!w.ok) return w;
     const after = this.view(cardId);
     return { ok: true, claimId: w.recordId, needsConfirm: !!after?.card.needsConfirm };
@@ -597,7 +677,8 @@ export class WorkBoardService {
   /** When the pilot began (the first card), the day-7 / day-14 records written so far, and which are due. */
   graduationState(): { pilotStartedAt: string | null; records: Array<Record<string, unknown>>; due: number[] } {
     let first: number | null = null;
-    for (const [, v] of this.views) { const t = v.card.createdAt ? Date.parse(v.card.createdAt) : NaN; if (Number.isFinite(t) && (first === null || t < first)) first = t; }
+    // Server-owned cards (Chief of Staff wait cards) are a mechanical mirror: they neither start the pilot nor count in it (work-board-cards-appear §1 Measurement).
+    for (const [, v] of this.views) { if (isServerOwnedCard(v.card)) continue; const t = v.card.createdAt ? Date.parse(v.card.createdAt) : NaN; if (Number.isFinite(t) && (first === null || t < first)) first = t; }
     const records = this.records.filter((r) => r.d.recordType === 'graduation').map((r) => ({ day: r.d.day, decision: r.d.decision, metrics: r.d.metrics, at: r.d.at }));
     const have = new Set(records.map((r) => r.day));
     const due: number[] = [];
@@ -616,8 +697,10 @@ export class WorkBoardService {
     let cards = 0; let causes = 0; let closed = 0; let agentAttested = 0; let agentAttestedReopened = 0;
     const parks: Array<{ cardId: string; reason: string; ended: string }> = [];
     const askToTap: number[] = [];
+    let serverOwnedCards = 0;
     for (const [id, v] of this.views) {
       if (!v.card.createdAt || Date.parse(v.card.createdAt) < since) continue;
+      if (isServerOwnedCard(v.card)) { serverOwnedCards++; continue; }
       cards++;
       for (const p of v.pickups) {
         causes++;
@@ -638,7 +721,7 @@ export class WorkBoardService {
     const median = askToTap.length ? askToTap[Math.floor((askToTap.length - 1) / 2)] : null;
     const metrics = {
       windowDays: days, cards, pickupCauses: causes, pickupCausesClosed: closed, everyCauseClosed: causes > 0 && causes === closed + parks.filter((p) => p.ended === 'still parked').length,
-      parks: parks.slice(0, 50), medianAskToTapMs: median, agentAttestedFinishes: agentAttested, agentAttestedReopened,
+      parks: parks.slice(0, 50), medianAskToTapMs: median, agentAttestedFinishes: agentAttested, agentAttestedReopened, serverOwnedCards,
       needsAPersonsReading: 'whether evidence was true (up to ten agent-attested finishes), who saw a card, and defects found on the first screen',
     };
     return { decision: cards === 0 || causes === 0 ? 'incomplete' : 'measured', metrics };
