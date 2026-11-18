@@ -412,6 +412,14 @@ export class NativeBackend extends EventEmitter {
 
         // Attachments: fetch from DB, hardlink each file into attachmentsDir so
         // the daemon can read them without FDA on ~/Library/Messages/Attachments.
+        /*
+         * CONTRACT-EVIDENCE: EXEMPT — identity-security-piece1eb (iMessage SMS provenance). No request or
+         * response shape crosses the Messages boundary differently: the only database change selects
+         * `message.service`, a column the backend already reads in its new-message and history queries.
+         * The change decides locally what to do with a row it already read. No iMessage contract suite
+         * exists to run (the contract runner covers Slack only), and a live run could not falsify a local
+         * routing decision; the unit suite drives the real reader on a chat.db-schema database.
+         */
         // identity-security-piece1eb: a row that can't prove its sender is set aside by the adapter, so
         // its attachments are never copied into the agent's folder, where a session could read them.
         if (this.includeAttachments && this.stmtAttachments && serviceProvesSender(row.service)) {

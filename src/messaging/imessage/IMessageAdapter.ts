@@ -812,6 +812,14 @@ export class IMessageAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * CONTRACT-EVIDENCE: EXEMPT — identity-security-piece1eb (iMessage SMS provenance). No request or
+   * response shape crosses the Messages boundary differently: the only database change selects
+   * `message.service`, a column the backend already reads in its new-message and history queries.
+   * The change decides locally what to do with a row it already read. No iMessage contract suite
+   * exists to run (the contract runner covers Slack only), and a live run could not falsify a local
+   * routing decision; the unit suite drives the real reader on a chat.db-schema database.
+   */
   private unprovenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   /** identity-security-piece1eb: one trailing refresh after the 10-minute limit, so the count stays exact. */
   private _scheduleUnprovenRefresh(): void {

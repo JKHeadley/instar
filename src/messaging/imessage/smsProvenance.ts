@@ -7,6 +7,13 @@
  * sending network and can be spoofed. (Replies always go out as iMessage, so an SMS-only contact
  * cannot hold a conversation with the agent today either; an owner-controlled per-number list is
  * piece 4, with the owner's own device surface.)
+ *
+ * CONTRACT-EVIDENCE: EXEMPT — identity-security-piece1eb (iMessage SMS provenance). No request or
+ * response shape crosses the Messages boundary differently: the only database change selects
+ * `message.service`, a column the backend already reads in its new-message and history queries.
+ * The change decides locally what to do with a row it already read. No iMessage contract suite
+ * exists to run (the contract runner covers Slack only), and a live run could not falsify a local
+ * routing decision; the unit suite drives the real reader on a chat.db-schema database.
  */
 
 /** Whether a Messages row's service proves its sender. */

@@ -76,6 +76,8 @@ Revert the change. There is no flag; it ships on per the approved umbrella's pie
 
 ## 7. Evidence
 
+- **Contract gate:** the changed adapter files carry a `CONTRACT-EVIDENCE: EXEMPT` marker. No Messages request or response shape changes; the one database change selects `message.service`, which the backend already reads. No iMessage contract suite exists to run.
+
 - **Unit:** `tests/unit/identity-piece1eb-imessage-sms.test.ts`, which runs the real `NativeBackend` on a chat.db-schema database, plus the iMessage adapter, backend, session-injection and user-channel suites.
 - **Fixtures updated:** the e2e and unit fixtures.
 
