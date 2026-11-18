@@ -5289,6 +5289,13 @@ export interface InstarConfig {
      *  failure falls back to the rollout-tail reader, so `false` only forces
      *  the old rollout-only behaviour. */
     codexLiveQuota?: boolean;
+    /**
+     * Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable history of every
+     * quota reading and a read-only forecast (GET /quota-pacing). `enabled` is OMITTED from the
+     * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
+     * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
+     */
+    pacing?: { enabled?: boolean };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */

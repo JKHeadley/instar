@@ -358,6 +358,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'quotaPacing',
+    prefixes: ['/quota-pacing'],
+    description: 'Quota pacing (docs/specs/quota-pacing-forecast.md) — a forecast, not an instruction: where each subscription account\'s weekly (and Claude Fable) window lands at its reset (central forecast plus a range from the slowest to the fastest recent pace) and whether each provider\'s group of accounts keeps weekly room for the next 7 days (runs-dry / tight / sustainable / cannot-tell, with account verdicts used-up / will-hit-limit / will-leave-unused / on-track / unknown). GET /quota-pacing merges every machine (?scope=local is this machine only; ?account=ID&history=1 returns this machine\'s rows). Lead with the pool ("9 of 14 accounts have room"), never one account\'s number; never hold, shed or add work because of it. Dev-gated (subscriptionPool.pacing.enabled); 503 quota-pacing-off when off. When asked "will an account\'s quota expire unused?" or "will Claude or Codex run out this week?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /quota-pacing'],
+    }),
+  },
+  {
     key: 'recommendedServices',
     prefixes: ['/recommended-services'],
     description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Tailscale, Jev, Bitwarden and GitHub private backup are available on every agent: a yes is given on the dashboard confirm page (`/dashboard/service-yes?service=<id>`, PIN), which starts a setup session that owns the whole job; a no can also switch a working service off here (`shutdown: authorized`). The first list (the agent offering first) is behind `recommendedServices.offers.enabled`: one Telegram message, once per service, after a delivered first result, with a No button per row and a Yes button only for an address service when there is no address; the route reports `offersLive`, what offers wait for (`migrationComplete`, `firstResult`) and `offered` / `inUse` per row. An agent created before the offer shipped stays out of the first list until `recommendedServices.offers.existingAgents` is on (rollout step 5); then its owner is admitted at the next tick, once, for good. A no needs the dashboard PIN or the No button under the list.',
