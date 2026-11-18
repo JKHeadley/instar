@@ -11062,7 +11062,7 @@ export class AgentServer {
       });
       // A pass can be up to six hours away; the numbers should not read empty until then.
       setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: logged; the ladder stays null and its route reports it unavailable
       console.warn('[maturation-ladder] init failed (non-fatal):', err);
       this.maturationLadder = null;
     }

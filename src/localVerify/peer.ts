@@ -11,7 +11,8 @@
  * dispatched under. Everything else is refused and the entry stays in the coordinator's queue.
  */
 
-import { ATTEMPT_ID_RE, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
+import { ATTEMPT_ID_RE, MAIN_VERIFY_PR, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
+import type { FailureDetail } from './orchestrator.js';
 
 /** The coordinator's durable reservation of one queue entry for one peer attempt. */
 export interface RemoteMarker {
@@ -31,6 +32,8 @@ export interface DispatchedInputs {
   baseRefName: string;
   verifierVersion: string;
   policyHash: string;
+  /** Present when the dispatched entry is a `main` verify (pr 0, head == base, base ref `main`). */
+  kind?: 'main';
 }
 
 /** The body of `POST /local-verify/peer-run`. */
@@ -54,7 +57,40 @@ export type PeerRunAnswer = { ok: true; attemptId: string } | { ok: false; reaso
 export type PeerResult =
   | { state: 'unknown' }
   | { state: 'running' }
-  | { state: 'done'; record: LocalVerifyRecord };
+  | { state: 'done'; record: LocalVerifyRecord; run?: PeerMainRun };
+
+/**
+ * Why a peer-run `main` verify went red. A main record carries no failed files, and the
+ * coordinator's main-red hold needs them to tell a repair from a doomed run.
+ */
+export interface PeerMainRun {
+  reasons: string[];
+  failures: FailureDetail[];
+}
+
+const PEER_MAIN_RUN_LIMITS = Object.freeze({ reasons: 50, reasonChars: 500, failures: 30, fileChars: 300, messageChars: 2000 });
+
+/** Bound and shape-check a peer's `run` detail; anything malformed is dropped, never trusted. Pure. */
+export function parsePeerMainRun(v: unknown): PeerMainRun | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const x = v as { reasons?: unknown; failures?: unknown };
+  const L = PEER_MAIN_RUN_LIMITS;
+  const reasons = (Array.isArray(x.reasons) ? x.reasons : [])
+    .filter((r): r is string => typeof r === 'string' && r.length > 0).slice(0, L.reasons).map((r) => r.slice(0, L.reasonChars));
+  const failures: FailureDetail[] = [];
+  for (const f of Array.isArray(x.failures) ? x.failures : []) {
+    if (failures.length >= L.failures) break;
+    const r = f as Partial<FailureDetail> | null;
+    if (!r || typeof r.file !== 'string' || r.file.length === 0 || r.file.length > L.fileChars) continue;
+    failures.push({
+      file: r.file, lane: typeof r.lane === 'string' ? r.lane.slice(0, 100) : '',
+      failed: typeof r.failed === 'number' && Number.isSafeInteger(r.failed) && r.failed >= 0 ? r.failed : 0,
+      message: typeof r.message === 'string' ? r.message.slice(0, L.messageChars) : '',
+      ...(typeof r.rerunMessage === 'string' ? { rerunMessage: r.rerunMessage.slice(0, L.messageChars) } : {}),
+    });
+  }
+  return reasons.length === 0 && failures.length === 0 ? undefined : { reasons, failures };
+}
 
 /** What the coordinator knows about one peer from `GET /local-verify/peer-status`. */
 export interface PeerStatus {
@@ -86,6 +122,15 @@ export const PEER_LIMITS = Object.freeze({
   maxAttemptsPerEntry: 2,
   /** A remote attempt not done within this is abandoned on both sides; this, not a lane deadline, is what ends a stuck peer run. */
   maxRunMs: 60 * 60_000,
+  /**
+   * A `main` verify on a peer that has not answered a poll for this long is taken back (and
+   * cancelled there): while it is reserved no other `main` verify may start, and a suspect or
+   * red main cannot wait out the run bound for a peer that went away.
+   */
+  mainSilentMs: 5 * 60_000,
+  /** Consecutive `main` requests a peer could not confirm before it is offered none, and for how long. */
+  mainUnconfirmedLimit: 3,
+  mainUnconfirmedPauseMs: 30 * 60_000,
   /** `unknown` for an attempt older than this means the peer has no such attempt. */
   unknownGraceMs: 2 * 60_000,
   /** Result polls at most this often per attempt. */
@@ -107,7 +152,8 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   const b = body as Record<string, unknown>;
   const keys = ['attemptId', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'coordinatorMachineId', 'leaseEpoch'];
   const extra = Object.keys(b).filter((k) => !keys.includes(k));
-  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable')) return null;
+  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind')) return null;
+  if (b.kind !== undefined && b.kind !== 'main') return null;
   if (b.preflightRediscoverable !== undefined && typeof b.preflightRediscoverable !== 'boolean') return null;
   if (b.isolation !== undefined) {
     const iso = b.isolation as { allowed?: unknown; notCleanOnGreenMain?: unknown } | null;
@@ -115,7 +161,10 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
       || iso.notCleanOnGreenMain.length > 200 || !iso.notCleanOnGreenMain.every((f) => typeof f === 'string' && f.length > 0 && f.length <= 300)) return null;
   }
   if (typeof b.attemptId !== 'string' || !ATTEMPT_ID_RE.test(b.attemptId)) return null;
-  if (typeof b.pr !== 'number' || !Number.isSafeInteger(b.pr) || b.pr <= 0) return null;
+  if (b.kind === 'main') {
+    // A `main` verify: no PR, the head is its own base, and nothing PR-shaped rides along.
+    if (b.pr !== MAIN_VERIFY_PR || b.headSha !== b.baseSha || b.baseRefName !== 'main' || b.preflightRediscoverable !== undefined || b.isolation !== undefined) return null;
+  } else if (typeof b.pr !== 'number' || !Number.isSafeInteger(b.pr) || b.pr <= 0) return null;
   if (!SHA_LIKE(b.headSha) || !SHA_LIKE(b.baseSha)) return null;
   if (typeof b.baseRefName !== 'string' || !/^[A-Za-z0-9._/-]{1,200}$/.test(b.baseRefName)) return null;
   if (typeof b.verifierVersion !== 'string' || !b.verifierVersion || b.verifierVersion.length > 200) return null;
@@ -136,6 +185,7 @@ export function importRefusal(
   const r = v.record;
   const d = marker.dispatched;
   if (!r.attempt) return 'no-attempt';
+  if ((r.kind === 'main') !== (d.kind === 'main')) return 'wrong-kind';
   if (r.attempt.id !== marker.attemptId) return 'wrong-attempt';
   if (r.attempt.coordinatorMachineId !== ctx.coordinatorMachineId) return 'wrong-coordinator';
   if (r.machineId !== marker.machineId) return 'wrong-peer';

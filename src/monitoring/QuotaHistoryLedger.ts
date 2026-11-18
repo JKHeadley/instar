@@ -319,7 +319,7 @@ export class QuotaHistoryLedger implements QuotaHistorySink {
       try {
         const v = JSON.parse(line) as unknown;
         if (isHistoryRow(v)) rows.push(v); else st.malformedRows++;
-      } catch { st.malformedRows++; }
+      } catch { st.malformedRows++; /* @silent-fallback-ok: a malformed history line is counted and shown in coverage, never fatal */ }
     }
     this.counters.malformedRows += st.malformedRows;
     if (rows.length > QUOTA_HISTORY.MAX_ROWS) {
@@ -464,7 +464,7 @@ export class QuotaHistoryLedger implements QuotaHistorySink {
           await SafeFsExecutor.safeUnlink(full, { operation: 'QuotaHistoryLedger.sweepRetired:expired' });
           deleted.push(name);
         }
-      } catch { this.counters.ledgerWriteFailures++; }
+      } catch { this.counters.ledgerWriteFailures++; /* @silent-fallback-ok: a failed retire/sweep is counted as ledgerWriteFailures and shown in coverage */ }
     }
     return { retired, deleted };
   }

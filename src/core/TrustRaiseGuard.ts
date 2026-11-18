@@ -17,12 +17,17 @@ import type { TrustLevel } from './ExternalOperationGate.js';
 
 // ── The proof ─────────────────────────────────────────────────────────
 
-/** Evidence that a person approved one exact change through the account path. */
+/**
+ * Evidence that a person approved one exact change: through the account path (`accepted-account`,
+ * a reply from their own chat) or from a paired device under a recorded device acceptance
+ * (`accepted-device`, a presence signature; docs/specs/app-trust-approval.md).
+ */
+export type OperatorProofKind = 'accepted-account' | 'accepted-device';
 export interface OperatorProof {
-  readonly kind: 'accepted-account';
+  readonly kind: OperatorProofKind;
   /** The proposal hash of the exact change approved. */
   readonly proposalHash: string;
-  /** The consumed receipt record id. */
+  /** The consumption record id (a chat receipt's, or a device approval's). */
   readonly receiptRef: string;
   /** The acceptance record in force when the receipt was consumed. */
   readonly acceptanceRef: string;
@@ -38,15 +43,19 @@ const issuedProofs = new WeakSet<object>();
 
 /**
  * The only production issuer. Called by the account-path service (trustJourney/AccountPathService)
- * after it has durably recorded the consumption of a verified platform receipt for this exact
- * proposal hash under a current acceptance. Never reachable from a request body: routes only ever
- * hand the service a receipt from the adapter's own inbound path.
+ * after it has durably recorded the consumption of a verified approval for this exact proposal hash
+ * under a current acceptance: a platform receipt from the adapter's own inbound path
+ * (`accepted-account`, the default), or a presence-verified device approval under a current device
+ * acceptance (`accepted-device`). Never reachable from a request body: routes only ever hand the
+ * service a receipt or a verified device authorization, never a proof.
  * @internal
  */
 export function issueOperatorProofFromConsumedReceipt(p: {
-  proposalHash: string; receiptRef: string; acceptanceRef: string; principal: string;
+  proposalHash: string; receiptRef: string; acceptanceRef: string; principal: string; kind?: OperatorProofKind;
 }): OperatorProof {
-  const proof: OperatorProof = Object.freeze({ kind: 'accepted-account' as const, ...p });
+  const { kind = 'accepted-account', ...rest } = p;
+  if (kind !== 'accepted-account' && kind !== 'accepted-device') throw new Error('unknown proof kind');
+  const proof: OperatorProof = Object.freeze({ kind, ...rest });
   issuedProofs.add(proof);
   return proof;
 }
@@ -86,7 +95,8 @@ export function proposalHashOf(change: unknown): string {
 
 /** True only for a proof the approval check issued, for exactly this proposal. */
 export function proofCovers(proof: OperatorProof | null | undefined, proposalHash: string): boolean {
-  return !!proof && typeof proof === 'object' && issuedProofs.has(proof) && proof.proposalHash === proposalHash;
+  return !!proof && typeof proof === 'object' && issuedProofs.has(proof)
+    && (proof.kind === 'accepted-account' || proof.kind === 'accepted-device') && proof.proposalHash === proposalHash;
 }
 
 /** The person-facing refusal: what was refused and the approval it needs. */
