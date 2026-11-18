@@ -12,7 +12,7 @@ import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, m
 import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
-  LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
+  LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf, coversWords, chiefOfStaffCard, CHIEF_OF_STAFF_WORDS,
@@ -65,9 +65,23 @@ export async function renderWork(main, ctx) {
   if (!board.ok) { setKids(main, cantTell('The work board answered, but not in a shape this page can read, so it cannot say what is waiting on you.')); return; }
 
   const waiting = board.lanes['waiting-on-you'];
-  const lead = laneSection(LANES[0], waiting.cards, refresh, { lead: true, count: waiting.cards.length + waiting.more });
-  if (waiting.cards.length) markNeed(lead, 'workBoard');
-  if (waiting.more) lead.append(el('p', { class: 'need-sub', text: `${waiting.more} more waiting` }));
+  // My board (work-board-my-board): the cards that need the reader, each once under its most pressing reason, then
+  // the lanes for every other card. An agent that sends no My board gets the lanes as before.
+  const mine = readMyBoard(r.data, board.lanes);
+  const notMine = (cards) => (mine ? cards.filter((c) => !mine.ids.has(c.id)) : cards);
+  let lead;
+  if (mine && mine.sections.length) {
+    lead = mine.sections.map((s) => myBoardSection(s, refresh));
+    markNeed(lead[0], 'workBoard');
+    // Every card waiting on the reader has a reason, so this lane is normally empty here; a card the agent left
+    // off My board is still shown rather than lost.
+    const rest = notMine(waiting.cards);
+    if (rest.length) lead.push(laneSection(LANES[0], rest, refresh, { lead: true }));
+  } else {
+    lead = laneSection(LANES[0], waiting.cards, refresh, { lead: true, count: waiting.cards.length + waiting.more });
+    if (waiting.cards.length) markNeed(lead, 'workBoard');
+    if (waiting.more) lead.append(el('p', { class: 'need-sub', text: `${waiting.more} more waiting` }));
+  }
 
   // Each waiting card opens on a click and carries its own buttons.
   // warning-path: row
@@ -88,8 +102,8 @@ export async function renderWork(main, ctx) {
     notes,
     // Projects come right after what is waiting on you (a page leads with the need), before the other lanes.
     projects,
-    laneSection(LANES[1], board.lanes['with-agent'].cards, refresh),
-    laneSection(LANES[2], board.lanes['waiting-on-others'].cards, refresh),
+    laneSection(LANES[1], notMine(board.lanes['with-agent'].cards), refresh),
+    laneSection(LANES[2], notMine(board.lanes['waiting-on-others'].cards), refresh),
     doneSec,
     laneSection(LANES[4], board.lanes.archived.cards, refresh, { count: board.lanes.archived.total, folded: true }),
     board.settings ? settingsPanel(board, refresh) : null,
@@ -126,7 +140,16 @@ function laneSection(lane, cards, refresh, { lead = false, count, folded = false
   return wrap;
 }
 
-function cardRowNode(card, refresh, lead) {
+/** One My board section: its words and count, its cards (untouched first, as the agent ordered them), and "And N more". */
+function myBoardSection(s, refresh) {
+  const body = el('div', { class: 'work-lane-body', id: `work-mine-${s.reason}` });
+  for (const c of s.cards) body.append(cardRowNode(c, refresh, s.lead, { tagNotStarted: true }));
+  if (s.more) body.append(el('p', { class: 'need-sub work-more', text: `And ${s.more} more` }));
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: s.words }), el('span', { class: 'list-count', text: String(s.cards.length + s.more) }));
+  return el('section', { class: 'list-section work-lane work-mine', id: `sec-mine-${s.reason}`, 'data-reason': s.reason }, head, body);
+}
+
+function cardRowNode(card, refresh, lead, { tagNotStarted = false } = {}) {
   const r = cardRow(card);
   const status = el('p', { class: 'need-sub', role: 'status' });
   const title = el('button', { class: 'link-btn need-title work-open', type: 'button', text: r.main, 'aria-label': `Open the card: ${r.main}` });
@@ -135,6 +158,7 @@ function cardRowNode(card, refresh, lead) {
   return el('div', { class: `${lead ? 'need-card work-card' : 'need-card muted-card work-card'}${turn ? ` turn-${turn}` : ''}`, 'data-card': card.id, ...(turn ? { 'data-turn': turn } : {}) },
     title,
     r.sub ? el('p', { class: 'need-sub', text: r.sub }) : null,
+    tagNotStarted && notStartedTag(card) ? el('p', { class: 'need-sub work-tag work-not-started', text: notStartedTag(card) }) : null,
     chiefOfStaffCard(card) ? el('p', { class: 'need-sub work-tag', text: CHIEF_OF_STAFF_WORDS }) : null,
     r.outward ? el('p', { class: 'need-sub', text: card.outwardWords || OUTWARD_WORDS }) : null,
     r.notes.map((t) => el('p', { class: 'need-sub work-note', text: t })),

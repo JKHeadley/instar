@@ -55,6 +55,48 @@ export function readBoard(body) {
   };
 }
 
+// ── My board (docs/specs/work-board-my-board.md): the cards that need the reader, each once under its most pressing reason ──
+export const MY_BOARD_WORDS = {
+  approval: 'Waiting for your approval',
+  reply: 'Waiting for your reply',
+  own: 'Your cards',
+  added: 'Cards you were added to',
+  held: 'Held for later',
+};
+/** The sections that ask something of the reader lead the page; added and held cards are shown quieter. */
+export const MY_BOARD_LEAD = new Set(['approval', 'reply', 'own']);
+export const NOT_STARTED_WORDS = 'Not started';
+
+/**
+ * The read's `myBoard`, with each section's cards drawn from the same read's lanes (a card id the read does not
+ * carry is skipped, a card named twice is shown once). Empty sections are left out. Null when the agent sends no
+ * `myBoard` (an older agent) or one this page cannot read: the page then draws the lanes as before.
+ * `ids` names every card shown on My board, so the lanes below can leave them out.
+ */
+export function readMyBoard(body, lanes) {
+  if (!isObj(body) || !isObj(body.myBoard) || !Array.isArray(body.myBoard.sections) || !isObj(lanes)) return null;
+  const byId = new Map();
+  for (const l of LANES) for (const c of (lanes[l.id]?.cards || [])) byId.set(c.id, c);
+  const ids = new Set();
+  const sections = [];
+  for (const s of body.myBoard.sections) {
+    if (!isObj(s) || !Object.hasOwn(MY_BOARD_WORDS, s.reason) || !Array.isArray(s.cardIds)) return null;
+    const cards = [];
+    for (const id of s.cardIds) {
+      const c = typeof id === 'string' ? byId.get(id) : undefined;
+      if (c && !ids.has(id)) { ids.add(id); cards.push(c); }
+    }
+    const more = Number.isInteger(s.more) && s.more > 0 ? s.more : 0;
+    if (!cards.length && !more) continue;
+    const words = typeof s.words === 'string' && s.words.trim() ? s.words.trim() : MY_BOARD_WORDS[s.reason];
+    sections.push({ reason: s.reason, words, cards, more, lead: MY_BOARD_LEAD.has(s.reason) });
+  }
+  return { sections, ids };
+}
+
+/** "Not started" beside a card nobody has touched yet; nothing when the agent does not say. */
+export function notStartedTag(card) { return isObj(card) && card.started === false ? NOT_STARTED_WORDS : null; }
+
 export function headline(board) {
   const n = board.waitingOnYou;
   // With no card waiting, a neutral title: the Needs-you strip above may still list things that need the
