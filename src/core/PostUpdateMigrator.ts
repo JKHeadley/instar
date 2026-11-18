@@ -3392,12 +3392,143 @@ export class PostUpdateMigrator {
     this.migrateFixtureIdentityQuarantine(result);
     this.migrateStallGateInstallProvenance(result);
     this.migrateFeatureMaturationGate(result);
+    this.migrateSpecExperienceReview(result);
     this.migrateRetireStaleReleaseReadinessEvalFailureAttention(result);
     // LAST: every step above that patches CLAUDE.md has run, so the legacy
     // file is complete before it is split (docs/specs/claude-md-reference-layout.md).
     this.migrateClaudeMdReferenceLayout(result);
 
     return result;
+  }
+
+  /** Deliver the promised experience-fit lens without replacing surrounding skill prose. */
+  private migrateSpecExperienceReview(result: MigrationResult): void {
+    const marker = '<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->';
+    let block: string;
+    try {
+      const bundled = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md'), 'utf8');
+      const blocks = bundled.match(/<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->[\s\S]*?<!-- \/INSTAR:SPEC_EXPERIENCE_REVIEW -->/g);
+      if (blocks?.length !== 1 || !blocks[0].includes('templates/reviewer-lessons-aware.md') || !blocks[0].includes('needless repeat asks')) {
+        result.errors.push('spec-converge experience review: bundled lens is missing or incomplete');
+        return;
+      }
+      block = blocks[0];
+    } catch (err) {
+      // @silent-fallback-ok: migration failure is returned explicitly in result.errors; no fallback lens is installed.
+      result.errors.push(`spec-converge experience review: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const root = fs.realpathSync(this.config.projectDir);
+    const canonical = path.join(root, '.instar', 'skills', 'spec-converge', 'SKILL.md');
+    let canonicalHash: string | null = null;
+    const previousCanonicalHashes = new Set<string>();
+    try {
+      if (fs.existsSync(canonical)) {
+        if (fs.lstatSync(canonical).isSymbolicLink() || !fs.realpathSync(canonical).startsWith(`${root}${path.sep}`)) {
+          result.skipped.push('spec-converge experience review: external canonical target — left untouched');
+          return;
+        }
+        const raw = fs.readFileSync(canonical, 'utf8');
+        canonicalHash = skillBodyHash(raw);
+        if (canonicalHash) previousCanonicalHashes.add(canonicalHash);
+        // Also recognize a retry after canonical was written but a rendering was not.
+        const beforeLens = skillBodyHash(raw.replace(`${block}\n\n`, ''));
+        if (beforeLens) previousCanonicalHashes.add(beforeLens);
+      }
+    } catch (err) {
+      result.errors.push(`spec-converge experience review: canonical read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Hold this skill's body migration when a rendering has local edits against
+    // the current canonical version. Advancing canonical first would turn that
+    // protected conflict into ordinary stale drift if the rendering later fails.
+    if (canonicalHash) {
+      for (const skillRoot of ['.claude', '.agents']) {
+        const file = path.join(root, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+        try {
+          if (!fs.existsSync(file)) continue;
+          if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
+            result.skipped.push(`spec-converge experience review: ${skillRoot} external rendering — migration held`);
+            return;
+          }
+          const raw = fs.readFileSync(file, 'utf8');
+          const stamp = raw.match(SKILL_FRONTMATTER_RE)?.[1].match(SKILL_STAMP_LINE_RE)?.[1];
+          if (stamp === canonicalHash && skillBodyHash(raw) !== canonicalHash) {
+            result.skipped.push(`spec-converge experience review: ${skillRoot} user-edit conflict — body migration held`);
+            return;
+          }
+        } catch (err) {
+          result.errors.push(`spec-converge experience review: rendering preflight failed: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
+    }
+    for (const skillRoot of ['.instar', '.claude', '.agents']) {
+      const file = path.join(this.config.projectDir, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+      const label = `spec-converge experience review (${skillRoot})`;
+      try {
+        if (!fs.existsSync(file)) continue; // the fresh-install path ships the bundled lens
+        if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
+          result.skipped.push(`${label}: symlink or external target — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
+        const current = fs.readFileSync(file, 'utf8');
+        if (!current.includes('# /spec-converge') || !current.includes('**Internal reviewers (Claude subagents):**') || current.includes('instar-learned-origin')) {
+          result.skipped.push(`${label}: custom or learned skill — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
+        const markers = current.split(marker).length - 1;
+        let next = current;
+        if (!(markers === 1 && current.includes(block))) {
+          if (markers > 0 || current.includes('<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->')) {
+            result.skipped.push(`${label}: existing lens differs or is incomplete — left untouched`);
+            if (skillRoot === '.instar') return;
+            continue;
+          }
+          const anchors = [...current.matchAll(/^\*\*External reviewers[^\n]*$/gm)];
+          if (anchors.length !== 1) {
+            result.skipped.push(`${label}: missing or ambiguous anchor — left untouched`);
+            if (skillRoot === '.instar') return;
+            continue;
+          }
+          const at = anchors[0].index!;
+          next = `${current.slice(0, at)}${block}\n\n${current.slice(at)}`; // bounded-input-reviewed: insertion joins both complete halves; no source content is truncated or withheld.
+        }
+        const oldBodyHash = skillBodyHash(current);
+        const stamp = current.match(SKILL_FRONTMATTER_RE)?.[1].match(SKILL_STAMP_LINE_RE)?.[1];
+        const knownPrior = (hash: string) => previousCanonicalHashes.has(hash) || (!canonicalHash && hash === oldBodyHash);
+        const newStamp = canonicalHash ?? skillBodyHash(next);
+        // Advance provenance to the new canonical version, not to a customized
+        // rendering's own hash: its body difference must remain a user-edit conflict.
+        if (stamp && newStamp && knownPrior(stamp)) next = next.replace(SKILL_STAMP_LINE_RE, `${SKILL_STAMP_KEY}: ${newStamp}`);
+        if (next !== current) {
+          SafeFsExecutor.atomicWriteFileSync(file, next, { operation: 'PostUpdateMigrator.specExperienceReview', mode: fs.statSync(file).mode & 0o777 });
+          result.upgraded.push(label);
+        }
+        // Publish canonical provenance only after the canonical write succeeds.
+        if (skillRoot === '.instar') canonicalHash = skillBodyHash(next);
+        if (skillRoot === '.agents' && newStamp) {
+          const sibling = path.join(path.dirname(file), 'agents', 'openai.yaml');
+          if (fs.existsSync(sibling)) {
+            if (fs.lstatSync(sibling).isSymbolicLink() || !fs.realpathSync(sibling).startsWith(`${root}${path.sep}`)) {
+              result.skipped.push(`${label}: external metadata target — left untouched`);
+              continue;
+            }
+            const yaml = fs.readFileSync(sibling, 'utf8');
+            const oldStamp = yaml.match(SKILL_STAMP_LINE_RE)?.[1];
+            if (oldStamp && knownPrior(oldStamp) && oldStamp !== newStamp) {
+              SafeFsExecutor.atomicWriteFileSync(sibling, yaml.replace(/^x-instar-stamp:[ \t]*[a-f0-9]{64}[ \t]*$/m, `${SKILL_STAMP_KEY}: ${newStamp}`), { operation: 'PostUpdateMigrator.specExperienceReview.metadata', mode: fs.statSync(sibling).mode & 0o777 });
+              result.upgraded.push(`${label}: Codex metadata stamp`);
+            }
+          }
+        }
+      } catch (err) {
+        result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+        if (skillRoot === '.instar') return;
+      }
+    }
   }
 
   /** Deliver the v1 maturation WARN detector without overwriting customized files. */
@@ -3407,6 +3538,27 @@ export class PostUpdateMigrator {
     ]);
     const root = path.resolve(this.config.projectDir);
     const bundledRoot = path.resolve(__dirname, '..', '..');
+    // Reviewer templates remain shipped-owned files. Also refresh installed
+    // canonical/Codex copies, so those readers do not keep the old review lens.
+    // Never create template-only skill directories or touch another skill name.
+    const templateRoots = ['.claude'];
+    for (const skillRoot of ['.instar', '.agents']) {
+      const skill = path.join(root, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+      try {
+        if (!fs.existsSync(skill)) continue;
+        const realRoot = fs.realpathSync(root);
+        const templates = path.join(path.dirname(skill), 'templates');
+        if (fs.lstatSync(skill).isSymbolicLink() || !fs.realpathSync(skill).startsWith(`${realRoot}${path.sep}`) || (fs.existsSync(templates) && !fs.realpathSync(templates).startsWith(`${realRoot}${path.sep}`))) {
+          result.skipped.push(`spec-converge experience templates (${skillRoot}): symlink or external target — left untouched`);
+          continue;
+        }
+        const text = fs.readFileSync(skill, 'utf8');
+        if (!text.includes('# /spec-converge') || !text.includes('**Internal reviewers (Claude subagents):**') || text.includes('instar-learned-origin')) continue;
+        templateRoots.push(skillRoot);
+      } catch (err) {
+        result.errors.push(`spec-converge experience templates (${skillRoot}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const files = [
       {
         label: 'feature maturation plan detector',
@@ -3506,13 +3658,13 @@ export class PostUpdateMigrator {
         'reviewer-scalability.md',
         'reviewer-security.md',
         'report.md',
-      ].map((name) => ({
-        label: `spec-converge reviewer template ${name}`,
+      ].flatMap((name) => templateRoots.map((skillRoot) => ({
+        label: `spec-converge reviewer template ${name}${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'templates', name),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'templates', name),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'templates', name),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      })),
+      }))),
       {
         // RESTORED 2026-07-28, repointed and un-gated. The previous entry read
         // `<bundledRoot>/docs/STANDARDS-REGISTRY.md` — a path present in NO published
