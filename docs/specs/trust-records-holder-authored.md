@@ -94,14 +94,20 @@ approval flow asks the owner again the next time the action is attempted.
    attacker; under this design that attacker can still only narrow (denial), never grant.
 4. **Trust levels and the autonomy profile are this machine's own.** `AdaptiveTrust`
    (`state/trust-profile.json`) and `AutonomyProfileManager` (`state/autonomy-profile.json`) are
-   machine-local files; a `change` record describes the level of the machine that wrote it. So
+   machine-local today, and this spec keeps them so (it does not create that locality). The reason it
+   is kept, not just inherited: a raised level may only be honoured where a grant that machine can
+   verify backs it, and a grant one machine can verify on another needs the owner-signed record of
+   identity piece 2. Unifying levels is tracked as its own item, blocked on piece 2, and is approver
+   item 14c. A `change` record describes the level of the machine that wrote it. So
    `provenLevel(kind)`, `changeLog`, `lastChange` and the load-time proof check read only own `change`
    records, and a peer's `change` never affects this machine's levels in either direction. A kind with
    no own `change` keeps today's rule ("no recorded grant means Ask me first"). There is no peer-driven
    "ask-first" state (round 2: it was order-dependent and honest standbys triggered it).
 5. **Legacy grants are own-only and end on any change except a machine's own automatic narrowing.**
    - `legacyUnchanged(kind, self)` holds only if this machine's own legacy grant exists AND no `change`
-     record for that kind exists other than the exact own record named by `afterChange`, counting own
+     record for that kind exists other than the record(s) whose `changeId` equals `afterChange` (from
+     any writer: today's `afterChange` may name a peer's change, so existing legacy grants keep their
+     anchor at upgrade; a peer reusing that id adds nothing, because the rule can only end), counting own
      changes of any source and peer changes of any source EXCEPT the closed list of sources only a
      machine's own automatic process writes: `revoked` (the load-time restore and the automatic
      incident drop, `AdaptiveTrust.ts` ~192 and ~282) and `default`. So `user-explicit`, `earned`,
@@ -125,7 +131,10 @@ approval flow asks the owner again the next time the action is attempted.
    - a machine that joined after the legacy import has no legacy grants, so if it becomes holder its
      formerly legacy kinds are gated until approved there;
    - a backup restored onto a machine with a new machine id is a handover in this sense: its own
-     stream becomes foreign (decision 2), and because levels are only checked against own changes,
+     stream becomes foreign (decision 2: at load, `checkAtLoad` scans the journal directory for
+     `*.trust-grant-record*.jsonl` own-stream files named with another machine id, and own-file
+     entries whose `origin` is not this machine; such entries are read as unattributed, id-keyed
+     narrowing only), and because levels are only checked against own changes,
      any trust level or autonomy profile wider than the default for which this machine has no own
      change and no own legacy grant is narrowed to the default at load, with the restore owner line
      (this applies only when a foreign own-stream was detected, so single-machine agents and ordinary
@@ -137,42 +146,52 @@ approval flow asks the owner again the next time the action is attempted.
    earlier holder issued is not answerable on the new holder: the owner's reply to it gets "That
    request was made on <old>; I will ask again here when it next comes up", and nothing changes.
 7. **One-time grants and requests are valid only in the term that wrote them.** A *term* is this
-   machine's run of lease epochs with no other holder in between. The trust runtime keeps one own
-   local value, `lastForeignEpoch`: the highest lease epoch it has seen held by another machine,
-   updated from the coordinator's effective view on each poll and from the lease being replaced at
-   each acquisition, stored in `state/trust-term.json` (included in `trustJourneyBackupFiles`). The
-   record key carries the epoch it was written in: `tj:action-approval:e<epoch>:<id>`,
-   `tj:device-approval:e<epoch>:<id>`, and every request key form (the base request is written with
-   an explicit `tj:request:e<epoch>:<id>` key instead of today's random key, and its `:card` record
-   takes the base record's epoch; when they differ the earlier epoch governs). Keys are free-form
-   strings and nothing parses `tj:` keys today, so no field or type changes. An own record keyed
-   `e<N>` counts if and only if N > `lastForeignEpoch`. A same-machine lapse re-acquire (sleep, a
-   restart past the 60 s lease limit, a contested tie-break win) raises the epoch but not
-   `lastForeignEpoch`, so pending approvals survive it. An own request from an earlier term is
-   answered like decision 6's "made earlier" case.
-   - Fail closed: if the coordinator exists but its epoch is unknown (not yet loaded at boot, or
-     failed), no own one-time grant counts and `admit()` asks; nothing is written in that state. If
-     `state/trust-term.json` is missing or unreadable, only records keyed with the current epoch
-     count until the value is rebuilt from the effective view. With no lease coordinator at
-     all (single machine) the epoch is the constant 0 and the term never changes, so single-machine
-     agents see no change.
+   machine's run of lease epochs with no other holder in between. The trust runtime keeps two own
+   local values in `state/trust-term.json`: `lastForeignEpoch` (the highest epoch known or presumed
+   held by another machine) and `lastSeenEpoch` (the last epoch this machine observed). Rules:
+   - On every observation of the coordinator's current lease (each poll via `currentLease()` and each
+     `onEpochAdvance`): if another machine holds epoch E, `lastForeignEpoch = max(lastForeignEpoch,
+     E)`; if this machine holds epoch E and `E > lastSeenEpoch + 1`, an epoch passed that this
+     machine did not see, so `lastForeignEpoch = max(lastForeignEpoch, E - 1)`. A same-machine lapse
+     re-acquire is exactly +1 (acquisition always writes the current epoch + 1, `FencedLease.ts`), so
+     it never moves the boundary and pending approvals survive sleep or a restart past the lease time
+     limit (`seamlessness.leaseTtlMs`). Then `lastSeenEpoch = max(lastSeenEpoch, E)`.
+   - Neither value is ever lowered. The file is not in the backup set; when it is missing or
+     unreadable, `lastForeignEpoch` starts at `currentEpoch - 1` (only current-epoch records count).
+     A stale copy restored by other means is caught by the gap rule, because its `lastSeenEpoch` is
+     old.
+   - The record key carries the epoch it was written in: `tj:action-approval:e<epoch>:<id>`,
+     `tj:device-approval:e<epoch>:<id>`, and every request key form (the base request is written with
+     an explicit `tj:request:e<epoch>:<id>` key instead of today's random or `tj:request:<id>` key; the
+     own index keeps each request's epoch so its `:card` record is written as
+     `tj:request:e<epoch>:<id>:card`; when they differ the earlier epoch governs). Keys are free-form
+     strings and nothing parses `tj:` keys today, so no field or type changes.
+   - An own record keyed `e<N>` counts if and only if N > `lastForeignEpoch`. An own request from an
+     earlier term is answered like decision 6's "made earlier" case.
+   - Single machine is decided by the machine registry (the pool lists only this machine), never by
+     whether a coordinator exists. Single machine: epoch 0, the term never changes, nothing changes
+     for the owner. More than one machine and the coordinator missing, failed or its epoch unknown
+     (not yet loaded at boot): fail closed, no own one-time grant counts and `admit()` asks; nothing
+     is written in that state.
    - Records written before this build carry no epoch in the key. On a multi-machine agent they do
      not count as one-time grants (one re-ask at upgrade, listed in decision 6); on a single machine
      they count as today.
    - Admission recheck: after the `dispatch` write and before returning proceed-once, `admit()`
      re-reads `holdsLease()` and the current term; if either changed during the write, it returns
      "ask" (the approval is then used up, which is the safe side).
-   - A peer can end a term only by actually holding the lease at a higher epoch, which is the
-     residual "a compromised machine can take the lease"; a self-signed lease view that the
-     coordinator does not accept never reaches the effective view.
+   - A peer can end a term only by actually holding the lease at a higher epoch (or by making this
+     machine miss epochs, which fails closed), which is the residual "a compromised machine can take
+     the lease"; a lease view the coordinator does not accept never reaches it.
 8. **Denial by a peer is told honestly.** When the owner's real reply hits a request a peer closed or
    marked used (a non-own `consumption` or `request-status`), the reply is "Another of my machines
    closed that request, so nothing was approved; I will ask again when it next comes up", never
    "already approved". `applyOutcome` is read only for own consumptions.
 9. **Visibility, counts only.** Peer grant records kept but not counted are counted by (type, writer),
    de-duplicated by (writer, recordKey) so a boot refold does not re-count, and returned by
-   `GET /trust/summary` in a new `trustJourney` block (`peerGrantsIgnored`, and the kinds whose legacy
-   grant a peer `person` change ended), returned even when adaptive trust is absent (today that route
+   `GET /trust/summary` in a new `trustJourney` block (`peerGrantsIgnored`; each kind whose legacy grant
+   a peer change ended, with writer and source; and `peerNarrowingOfCurrentTerm`, peer records that
+   closed or used an own id from the current term, which an honest peer never does because only the
+   holder consumes and dispatches), returned even when adaptive trust is absent (today that route
    404s without it). No forgery alarm: whether a peer was in charge when it wrote cannot be
    established, so the design does not judge it; a real forgery is therefore only a count nobody is
    pushed to read, which the approver should know.
@@ -211,11 +230,13 @@ approval flow asks the owner again the next time the action is attempted.
 
 14. **Two items the approver decides, named in the approval request:** (a) decision 10's exception to
     *Trust Is Earned by Work* (re-ask after a handover until identity piece 2 lands); (b) decision
-    11's fleet window. The approver is the operator (Justin), not the Chief of Staff, because (a) is an
-    exception to a constitutional standard and (b) is a dark-window acceptance. Both answers to (b)
+    11's fleet window; (c) decision 4's per-machine trust levels, an operator-ratified exception to
+    *An Instar Agent Is Always a Multi-Machine Entity* until identity piece 2. The approver is the
+    operator (Justin), not the Chief of Staff, because (a) and (c) are exceptions to constitutional
+    standards and (b) is a dark-window acceptance. Both answers to (b)
     are buildable without further review: accepting the window builds decision 11 as written;
     choosing "ignore" fleet-wide makes the fallback resolve to `"ignore"` everywhere and the fleet rung
-    collapses into merge. Refusing (a) sends the spec back to review. Neither is an open question for
+    collapses into merge. Refusing (a) or (c) sends the spec back to review. Neither is an open question for
     the build.
 ### Record-type table (closed: every value of `TRUST_RECORD_TYPES`)
 
@@ -226,14 +247,14 @@ approval flow asks the owner again the next time the action is attempted.
 | `receipt` | first-hand receipt (part 1) | none |
 | `acceptance-sent` | precondition for an acceptance | none |
 | `acceptance` | account path accepted | none |
-| `acceptance-withdrawn` | removes an acceptance | removes the named acceptance id |
+| `acceptance-withdrawn` | removes an acceptance | removes the named acceptance id and every own acceptance for the same `principal|adapter` (by subject, so a withdrawal on one holder reaches the other holder's acceptance after a hand-back) |
 | `consumption` | records an approve; backs a raise at load | marks the request id and receipt id used |
 | `change` | proven level, load check, legacy validity | ends this machine's legacy grant for the kind unless its source is `revoked` or `default` (decision 5); nothing else |
 | `legacy-grant` | own legacy behaviour (`machine` = this machine) | none; never imported |
 | `action-approval` | proceed-once (current term only) | none |
 | `dispatch` | marks approval used | marks the named approval id used |
 | `device-acceptance` | device may approve | marks its `approvalId` used |
-| `device-acceptance-withdrawn` | removes a device | removes the named acceptance id |
+| `device-acceptance-withdrawn` | removes a device | removes the named acceptance id and every own acceptance for the same `deviceId` + `keyFingerprint` (by subject) |
 | `device-approval` | approves a new device (current term only) | none |
 | `apply-outcome` | outcome of an own consumption | none |
 | any type, unreadable (unknown field or `minReader`) | today's unreadable handling for own records | only the id-keyed narrowing of its type (used, closed, withdrawn); never `unreadableKeys` |
@@ -261,7 +282,7 @@ approval flow asks the owner again the next time the action is attempted.
 | A replicated record grants on this machine | invariant; basis: irreversible-consequence; evidence: a proceed-once runs a governed action and a device acceptance lets a device approve raises, neither undone before it takes effect | Grants only from own writes |
 | A peer record narrows on this machine | invariant; basis: enumerable-domain; evidence: the closed narrowing column of the record-type table | Refusing a narrowing would leave authority in place |
 | Legacy grant validity | invariant; basis: enumerable-domain; evidence: the grant's own `afterChange`, own changes, and peer changes outside the closed automatic-source list (`revoked`, `default`) from `TrustSource` | No ordering; honest standby restores do not end it |
-| Levels read only from own changes | invariant; basis: external-constraint; evidence: trust and autonomy levels live in machine-local state files | A peer change describes the peer's level |
+| Levels read only from own changes | invariant; basis: external-constraint; evidence: no grant one machine can verify on another exists before identity piece 2 | A peer change describes the peer's level; approver item 14c |
 | One-time grants and requests limited to the current term | invariant; basis: irreversible-consequence; evidence: a proceed-once used twice runs an action the owner approved once | Counts iff epoch > lastForeignEpoch; unknown epoch fails closed |
 | Narrowing raised levels after a new-id restore | invariant; basis: irreversible-consequence; evidence: a restored raised level with no own record behind it would run actions unproven here | Only when a foreign own-stream is detected |
 | Pre-build one-time records on a multi-machine agent | invariant; basis: irreversible-consequence; evidence: their term cannot be known, and a hand-back before the upgrade would let one yes run twice | One re-ask at upgrade |
@@ -314,10 +335,13 @@ read is added because only the lease holder acts on approvals.
   needs the owner's device signature on every grant: identity piece 2 (topic 144636). Dependency, not
   closed here.
 - **Denial**: a peer can close a request, mark an approval used, withdraw an acceptance by id, or end
-  a legacy grant with a forged `person` change (permanent for that kind until the owner approves it
-  here). It never grants, it is counted, and the owner is told honestly (decision 8).
-- **Single-machine restore**: on a single machine (epoch 0) restoring a backup brings back approvals
-  dispatched after the backup was taken. That is today's behaviour, unchanged.
+  a legacy grant with a forged change of any non-automatic source (permanent for that kind until the
+  owner approves it here). It never grants, it is counted, and the owner is told honestly (decision 8).
+- **Same-id restore**: restoring a backup onto the same machine id brings back approvals dispatched
+  after the backup was taken (single machine, and multi-machine because the applier refuses replicas
+  claiming its own id). That is today's behaviour, unchanged.
+- **Split brain**: during a partition two machines can briefly both believe they hold the lease; if
+  A never learns of B's term, A's earlier approvals stay current. Part of the lease-medium residual.
 - **Own journal rotation**: `trust-grant-record` keeps no rotated files (`rotateKeep: 0`); records
   lost to rotation are lost today too. Unchanged by this spec; filed through the feedback system as its own item when the build starts.
 - **Unsigned or stripped responses** let a network impersonator of a peer inject narrowing (denial
@@ -357,7 +381,12 @@ approval as an ordinary approval (today's behaviour). A mixed-version pool repli
   decision 6 line; the owner's reply to A's request on B gets the "made on <old>" line; A -> B -> A
   leaves A's earlier-term approvals and requests dead; a restart of the same holder keeps them; a
   lapse re-acquire past the lease limit (sleep) with no other holder keeps them; an unknown epoch at
-  boot asks; a handover during the dispatch write returns ask; a restored stream from another machine
+  boot asks; a lost `trust-term.json` counts only current-epoch records; a missed foreign term (A down
+  while B held, A re-acquires two epochs later) is caught by the gap rule; `lastForeignEpoch` never
+  decreases; a multi-machine agent with no coordinator asks; a withdrawal on B removes A's acceptance
+  for the same subject after a hand-back; an existing legacy grant whose `afterChange` names a peer
+  change survives the upgrade; a new-id restore narrows raised levels with no own record; a handover
+  during the dispatch write returns ask; a restored stream from another machine
   id is foreign; an unreadable peer `change` never puts a kind into unreadable history; a
   single-machine agent (epoch 0) is unchanged; a standby's boot after a handover changes nothing on
   the holder.
