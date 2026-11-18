@@ -380,6 +380,24 @@ export class UserManager {
     // Merge initial users (config takes precedence for initial setup)
     if (initialUsers) {
       for (const user of initialUsers) {
+        // Legacy config.users entries (e.g. { name, role, slackUserId }) carry no
+        // id. Merging one would throw from validateProfile inside the constructor
+        // and crash-loop boot. Skip it with an actionable diagnostic instead;
+        // nothing is merged, so a persisted profile is never overwritten.
+        // Only the missing-id case is handled here — every other merge failure
+        // keeps its existing behaviour.
+        const rawId: unknown = (user as { id?: unknown } | null | undefined)?.id;
+        if (typeof rawId !== 'string' || !rawId.trim()) {
+          const label = user && typeof (user as { name?: unknown }).name === 'string'
+            ? `"${(user as { name: string }).name}"`
+            : '(unnamed)';
+          console.warn(
+            `[UserManager] Skipping config.users entry ${label}: missing required "id" field. ` +
+            `This entry was not merged into the user registry. To fix, add "id" (and "channels"/"permissions" arrays) ` +
+            `to the entry in config.json, or remove it if the user is already registered in users.json.`,
+          );
+          continue;
+        }
         if (!this.users.has(user.id)) {
           // upsertUser → validateProfile refuses a fixture initialUsers entry
           // (typed throw). Guard so a fixture in config.users can't fail boot;
