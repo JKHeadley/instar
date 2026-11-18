@@ -33,10 +33,11 @@ import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
+const stampPromiseNotice = notificationStamper('src/server/routes.ts', 'promise-notice');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { jobReportChoice } from '../messaging/notificationCategories.js';
-import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
+import { verifiedReplyEnvelope, requireTelegramDelivery, isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
 import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
@@ -39077,7 +39078,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return { ok: true, suppressedDuplicate: true } as unknown;
           }
           try {
-            const send = () => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
+            // A promise-notice envelope, not this module's 'uncategorized' one: under that, the
+            // notification policy filed every reminder in the Notifications feed (CMT-1951).
+            const send = () => withNotificationEnvelope(stampPromiseNotice(), async () => (telegram)!.sendToTopic(topicId, text));
             let r;
             if (ctx.telegramOrigin) {
               const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
@@ -39089,7 +39092,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
               r = await service.runWithAutomationReply(token, topicId, body, send);
             } else r = await send();
-            if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+            // A held (quiet) send is not delivered: release, so the retry is not taken for a duplicate.
+            if (!originOwnsContent) { if (isQuietReceipt(r)) outboundContentDedup.releaseReservation(topicId, text); else outboundContentDedup.record(topicId, text); }
             return r;
           } catch (err) {
             // Release so a genuine transport failure is retried rather than
