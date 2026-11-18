@@ -62,3 +62,11 @@ One attention item per unconfirmed placement and one for a full placement record
 ## 7. Multi-machine posture
 
 **unified decision** on whichever machine receives the request, from the pool's capacity heartbeats. The audit log and the placement record are per machine by design.
+
+## Addendum (2026-11-18 06:40 PT): feature-ladder entry
+
+`src/data/feature-ladders.json` gains the `multiMachine.placement.agentSessions` entry that the spec's Maturation plan names (`ladder:` line). The coverage test requires every switched-off feature to have one. Its metrics read this feature's own log, `logs/agent-session-placement.jsonl`:
+- **ran:** live placements whose outcome was `peer`;
+- **harm:** the share of live placements that fell back to local because the target was unreachable, at most 20%.
+
+Data only: no runtime behaviour changes, no blocking authority. Rollback is to delete the line.
