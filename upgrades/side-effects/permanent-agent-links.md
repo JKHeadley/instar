@@ -102,4 +102,5 @@ Not required. See the header.
 - Unit: `tests/unit/agent-links.test.ts` (grammar vectors shared with `site/public/a.js` in `tests/fixtures/agent-link-vectors.json`, builder, strict identity read with each refusal, nonce, transcript, proof verify and refuse).
 - E2E: `tests/e2e/agent-links-alive.test.ts` (production `AgentServer`, a real paired phone, the proof verifies over the phone's own transcript, a wrong host fails, Bearer gets 403, the builder works, off gives `agent-links-off`, one evidence row per outcome).
 - Ladder registry tests: `feature-ladders-coverage`, `MaturationLadder`, `FeatureMaturationPlanGate-ladder`.
+- Identity single-writer guard: `tests/unit/threadline/identity-single-writer.test.ts` names `core/AgentLinks.ts` as a read-only importer of the key-file module and asserts it reads with `repair: false` and has no write call (Local Verify fix 2026-11-18: the guard's fixed importer list had not been updated for the new reader).
 - `tsc --noEmit` clean.
