@@ -165,7 +165,14 @@ export class ConversationGraphReplicationRuntime {
     const request=req.body as PeerRequest;this.authenticate(request);if(['observe','delegate','owner-intent'].includes(request.action))await this.prepareNativeTailClosure();const work=['repair','context','erase-forward','erase-purge','custody','custody-transition','owner-current','tail-close','tail-page','tail-record'].includes(request.action)?this.execute(request.action,request.body,request.sender):this.withMutation(token=>this.execute(request.action,request.body,request.sender,token));this.pending.add(work);let result:unknown;try{result=await work;}finally{this.pending.delete(work);}
     const value={v:1 as const,agentId:this.config.agentId,sender:this.machineId,target:request.sender,requestHash:canonicalHash(request),body:result};
     res.json({...value,signature:signGraphRecord(RESPONSE_DOMAIN,value,this.signingKey)});
-   }catch{res.status(409).json({code:'graph-peer-refused'});}
+   }catch(error){
+    // The peer only ever sees "refused"; the reason stays here, logged once per distinct action+code so a held
+    // handshake (a tail-close refused after a restart) can be explained from this machine's log.
+    const raw=(req.body as {action?:unknown})?.action,action=typeof raw==='string'&&/^[a-z-]{1,32}$/.test(raw)?raw:'unknown';
+    const code=error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown';
+    const note=`${action}:${code}`;if(note!==this.lastRefusedPeerRequest){this.lastRefusedPeerRequest=note;console.warn(`[conversation-graph] refused a peer ${action} request: ${code}`);}
+    res.status(409).json({code:'graph-peer-refused'});
+   }
   });
  }
  admissionGuard():RequestHandler{return (req,res,next)=>{
@@ -233,7 +240,8 @@ export class ConversationGraphReplicationRuntime {
  setQueuedOwnerIntentPromoter(execute:(intent:GraphLocalOwnerIntent,token:symbol)=>Promise<GraphCommitOutcome|{refused:GraphQueuedRefusal}>):void{if(this.queuedOwnerPromoter)throw new Error('graph-queued-promoter-already-configured');this.queuedOwnerPromoter=execute;}
  async retryLocalOwnerIntents():Promise<void>{
   
-  if(!this.queuedOwnerPromoter||!this.alive()||!this.isReady())return;
+  if(!this.queuedOwnerPromoter||!this.alive())return;
+  if(!this.isReady()){this.noteQueuedWait('not-ready');return;}
   const page=await this.intake.ownerQueue.pendingPage(this.queuedOwnerCursor);this.queuedOwnerCursor=page.nextCursor;
   
   for(const intent of page.intents){if(!this.alive()||!this.isReady())return;await this.promoteQueuedOwnerIntent(intent.idempotencyKey,intent.principalKey,this.queuedOwnerPromoter);}
@@ -262,7 +270,7 @@ export class ConversationGraphReplicationRuntime {
   * The executor calls submitPrepared directly; it must not reacquire the lock. */
  async promoteQueuedOwnerIntent(key:string,principalKey:string,execute:(intent:GraphLocalOwnerIntent,token:symbol)=>Promise<GraphCommitOutcome|{refused:GraphQueuedRefusal}>):Promise<GraphCommitOutcome|GraphQueuedIntentView>{
   if(!this.options.leaseCoordinator.holdsLease())return this.forwardQueuedOwnerIntent(key,principalKey);
-  const view=await this.intake.ownerQueue.status(key,principalKey);if(!view)throw new Error('graph-queued-owner-unavailable');if(!view.mayServeDetails())return view;
+  const view=await this.intake.ownerQueue.status(key,principalKey);if(!view)throw new Error('graph-queued-owner-unavailable');if(!view.mayServeDetails()){this.noteQueuedWait('details-unavailable');return view;}
   try{await this.prepareNativeTailClosure();}catch(error){/* DegradationReporter internalOnly via reportUnavailable; no global slot is allocated while any old installed tail is unknown. */this.noteTailClosure(error);this.reportUnavailable('graph-native-tail-closure-unavailable');return view;}
   return this.withMutation(token=>this.promoteQueuedOwnerIntentCore(key,principalKey,execute,token));
  }
@@ -270,10 +278,11 @@ export class ConversationGraphReplicationRuntime {
   const view=await this.intake.ownerQueue.status(key,principalKey),intent=await this.intake.ownerQueue.readIntent(key,principalKey);
   if(!view||!intent)throw new Error('graph-queued-owner-unavailable');
   if(view.state==='canceled-local'||view.state==='refused-local')return view;
-  if(intent.recordedMachineId===this.machineId?!view.mayServeDetails():await this.recordedOwnerIntentCurrent(intent)!==true)return view;
+  if(intent.recordedMachineId===this.machineId?!view.mayServeDetails():await this.recordedOwnerIntentCurrent(intent)!==true){this.noteQueuedWait('recorder-not-current');return view;}
   const alreadyAdmitted=this.source.lookupByIdempotencyKey(key)||(await this.intake.frozenReservations()).find(record=>record.packet.idempotencyKey===key);
-  if(!this.options.leaseCoordinator.holdsLease()||(!alreadyAdmitted&&!await this.refreshReadinessCore()))return view;
-  if(!alreadyAdmitted&&!this.isReady())return view;
+  if(!this.options.leaseCoordinator.holdsLease()){this.noteQueuedWait('lease-not-held');return view;}
+  if(!alreadyAdmitted&&!await this.refreshReadinessCore()){this.noteQueuedWait('readiness:'+(this.lastReadinessFailure??'unknown'));return view;}
+  if(!alreadyAdmitted&&!this.isReady()){this.noteQueuedWait('not-ready');return view;}
   if(!await this.intake.ownerQueue.recorderIsCurrent(key))return this.intake.ownerQueue.finish(key,principalKey,{state:'refused-local',refusalCode:'profile-changed'});
   const result=await execute(intent,token);
   const actual=this.source.lookupByIdempotencyKey(key);
@@ -390,10 +399,24 @@ export class ConversationGraphReplicationRuntime {
  }
  private liveAdmission(){const native=this.options.leaseCoordinator.currentLease();return {admitted:this.alive()&&this.positiveCustodyAllowed()&&this.nativeTailAdmissionAllowed(native)&&this.options.leaseCoordinator.holdsLease()&&this.nativeTailFloor.allows(native),writerId:native?.holder??null,
   leaseEpoch:native?.epoch??0,membershipEpoch:this.config.membership.epoch,fencedLeaseHash:native?canonicalHash(native):null};}
+ /** Finished delivery is final, so it is verified once per process and remembered; every later pass skips the record without re-checking its receipts. */
+ private readonly finishedDeliveries=new Set<string>();
+ private readonly deliveryRetry=new Map<string,{fails:number;next:number}>();private deliveryPass=0;
+ private deliveryFinished(eventId:string):boolean{if(this.finishedDeliveries.has(eventId))return true;if(!this.source.allDeliveryCompletionPersisted(eventId))return false;this.finishedDeliveries.add(eventId);return true;}
  async reconcilePending():Promise<Array<{eventId:string;state:string}>>{if(this.options.leaseCoordinator.holdsLease()&&this.isReady()){try{await this.prepareNativeTailClosure();}catch(error){/* DegradationReporter internalOnly via reportUnavailable; missing closed tails keep recovery held without blocking local queue custody. */this.noteTailClosure(error);this.reportUnavailable('graph-native-tail-closure-unavailable');return [];}}return this.withMutation(async()=>{
   const results:Array<{eventId:string;state:string}>=[];if(!this.options.leaseCoordinator.holdsLease()||!await this.refreshReadinessCore())return results;
-  const records=this.source.recordsForRepair().filter(record=>!record.certificate&&!record.cancellationCertificate).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
+  // Also a certified change whose commit proof never reached every member (the attempt that certified it
+  // stopped there): without this nothing finished it, and the owner's change stayed "saved, pending" for good.
+  const records=this.source.recordsForRepair().filter(record=>!record.cancellationCertificate&&(!record.certificate||!record.materialization&&!record.erasure&&!this.deliveryFinished(record.packet.eventId))).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
+  // Resumed deliveries are bounded: after one does not finish, no other is tried in this pass (a silent member costs one
+  // record's timeouts, not one per parked record), and a record that keeps failing is retried less and less often.
+  const pass=++this.deliveryPass;let deliveryStalled=false;
   for(const record of records){if(!this.alive())break;
+   if(record.certificate){const held=this.deliveryRetry.get(record.packet.eventId);if(deliveryStalled||held&&held.next>pass)continue;
+    const outcome=await this.coordinator.submit(record);results.push({eventId:record.packet.eventId,state:outcome.state});
+    if(outcome.state==='committed'||this.deliveryFinished(record.packet.eventId))this.deliveryRetry.delete(record.packet.eventId);
+    else{const fails=(held?.fails??0)+1;this.deliveryRetry.set(record.packet.eventId,{fails,next:pass+Math.min(2**(fails-1),40)});deliveryStalled=true;}
+    continue;}
    const pending=await this.validatedContinuation(record);if(!pending){results.push({eventId:record.packet.eventId,state:'held'});continue;}
    if(pending.erasure||pending.cancellation||pending.adoption?.disposition==='refused'){
     const outcome=await this.coordinator.cancel(pending,lease=>signGraphRecord('graph-witness-action-v1',witnessActionPayload('cancel',{idempotencyKey:pending.packet.idempotencyKey},lease),this.signingKey));results.push({eventId:record.packet.eventId,state:outcome.state});
@@ -468,13 +491,13 @@ export class ConversationGraphReplicationRuntime {
  /** A cold offline view requires physical all-member ACK proof and no known
   * peer-negative debt; it never grants current readiness or allocation. */
  async confirmLocalAcknowledgedSource(){if(!this.peerFrontier)throw new Error('graph-runtime-peer-frontier-unconfirmed');return this.peerFrontier.confirmLocalAcknowledgedSource(this.source,this.reader,this.options.droppedOrigins);}
- retainedProjection(){if(!this.alive()||!this.privateCustodyAllowed())throw new Error('graph-runtime-retained-unavailable');
+ retainedProjection(precomputed?:ReturnType<ConversationGraphReplication['certifiedUnion']>){if(!this.alive()||!this.privateCustodyAllowed())throw new Error('graph-runtime-retained-unavailable');
   const retained=this.peerFrontier?.retainedSnapshotFor(this.source,this.config.membership)??null;if(this.lastVerifiedAt===0&&!retained)throw new Error('graph-runtime-retained-unavailable');
-  const union=this.source.certifiedUnion(this.reader,this.options.droppedOrigins),current=this.isReady();
+  const union=precomputed??this.source.certifiedUnion(this.reader,this.options.droppedOrigins),current=this.isReady();
   const records=!current&&retained?union.records.filter(record=>record.packet.sourceSequence<=retained.highestAcknowledgedSequence):union.records;
   return {...union,records,partial:union.partial||!current,olderRevision:!current,verifiedAt:!current&&retained?retained.acknowledgedAt:new Date(this.lastVerifiedAt).toISOString()};}
  setOwnedControlFrameCache(cache:GraphOwnedControlFrameCache):void{if(!(cache instanceof GraphOwnedControlFrameCache)||cache.stateRoot!==realpathSync(this.options.stateDir)||cache.agentId!==this.config.agentId||this.stopped)throw new Error('graph-control-frame-scope-invalid');if(this.ownedControlFrames!==cache)this.ownedControlFrames?.close();this.ownedControlFrames=cache;}
- private async denyLocalErasure(target:GraphErasureIdentity):Promise<void>{try{await this.localErasure.deny(target);}finally{this.ownedControlFrames?.purge(target);this.source.purgeMemberLossSnapshots(target);this.transfer.purgePrivateStageViews(target);}}
+ private async denyLocalErasure(target:GraphErasureIdentity):Promise<void>{this.readViewCache=null;try{await this.localErasure.deny(target);}finally{this.ownedControlFrames?.purge(target);this.source.purgeMemberLossSnapshots(target);this.transfer.purgePrivateStageViews(target);}}
  /** Priority local suppression is outside the ordinary mutation queue. */
  async eraseLocal(target:GraphErasureIdentity):Promise<void>{
   await this.denyLocalErasure(target);
@@ -482,6 +505,7 @@ export class ConversationGraphReplicationRuntime {
   await Promise.all([this.source.eraseLocal(target),this.intake.eraseLocal(target),this.transfer.eraseLocal(target)]);
  }
  async localFleetPurge(target:GraphErasureIdentity,proof?:import('../core/GraphWitnessTypes.js').GraphWitnessErasure,ingress?:GraphErasureIngress):Promise<{purgeInventoryHash:string}>{
+  this.readViewCache=null;
   if(proof){if(canonicalHash(proof.target)!==canonicalHash(target))throw new Error('graph-erasure-target-mismatch');await this.source.applyErasure(proof,this.source.erasureAuthorities.has(proof)?undefined:await this.config.witness.erasureAuthority(proof));}
   await this.eraseLocal(target);
   if(proof)await Promise.all([this.intake.applyErasure(proof,this.config.agentId),this.transfer.applyErasure(proof,this.config.agentId)]);
@@ -497,10 +521,44 @@ export class ConversationGraphReplicationRuntime {
  }
  /** Newest activity seen on this machine. Ordering only: it adds no conversation and no authority. */
  private readonly localActivity=new Map<string,string>();
- noteLocalActivity(ref:ConversationRef,lastActivity:string|null):void{if(lastActivity)this.localActivity.set(nodeKey(ref),lastActivity);}
- inventory(){const retained=this.retainedProjection();const inventory=materializeGraphSourceInventory({source:this.source,reader:this.reader,dropped:this.options.droppedOrigins,membership:this.config.membership});
+ noteLocalActivity(ref:ConversationRef,lastActivity:string|null):void{if(lastActivity&&this.localActivity.get(nodeKey(ref))!==lastActivity){this.localActivity.set(nodeKey(ref),lastActivity);this.localActivityRevision++;}}
+ private localActivityRevision=0;
+ inventory(retainedView?:ReturnType<ConversationGraphReplicationRuntime['retainedProjection']>,union?:ReturnType<ConversationGraphReplication['certifiedUnion']>){const retained=retainedView??this.retainedProjection(union);const inventory=materializeGraphSourceInventory({source:this.source,reader:this.reader,dropped:this.options.droppedOrigins,membership:this.config.membership,...(union?{union}:{})});
   const conversations=inventory.conversations.map(row=>{const live=this.localActivity.get(nodeKey(row.ref));return live&&live>(row.lastActivity??'')?{...row,lastActivity:live}:row;});
   return {...inventory,conversations,partial:inventory.partial||retained.partial,olderRevision:retained.olderRevision,verifiedAt:retained.verifiedAt};}
+ private readViewCache:{key:string;at:number;view:{retained:ReturnType<ConversationGraphReplicationRuntime['retainedProjection']>;inventory:ReturnType<ConversationGraphReplicationRuntime['inventory']>}}|null=null;
+ /**
+  * The owner's read view (Conversations pages): the retained projection and the inventory, built from ONE
+  * verified union and reused until anything they are built from changes: a durable write or erasure here
+  * (readViewMarker), any own or peer stream file, a dropped origin, the readiness, lease or verification
+  * time, the membership, local activity, or 15 s (coverage staleness is judged against the clock).
+  * Every page read used to rebuild and re-verify the whole graph four times, holding the server for seconds
+  * per read. Reads only: writers and proofs still call retainedProjection/inventory, which never cache.
+  * The returned view is shared between reads and must not be changed.
+  */
+ readView(){
+  if(!this.alive()||!this.privateCustodyAllowed()){this.readViewCache=null;throw new Error('graph-runtime-retained-unavailable');}
+  const key=this.readViewKey(),now=Date.now(),cached=this.readViewCache;
+  if(key&&cached&&cached.key===key&&now-cached.at>=0&&now-cached.at<15_000)return cached.view;
+  this.readViewCache=null;
+  const union=this.source.certifiedUnion(this.reader,this.options.droppedOrigins);
+  const retained=this.retainedProjection(union),inventory=this.inventory(retained,union),view={retained,inventory};
+  // Remembered only when the state did not move while it was being built.
+  if(key&&this.readViewKey()===key)this.readViewCache={key,at:now,view};
+  return view;
+ }
+ /** The retained projection for a READ-side lookup: the shared view, or a fresh build when the view cannot be
+  * built (its inventory half failed). Write-path checks call retainedProjection() directly. */
+ retainedForRead(){try{return this.readView().retained;}catch{/* @silent-fallback-ok: the fresh build applies the same verification and throws its own refusal. */return this.retainedProjection();}}
+ private readViewKey():string|null{try{
+  const local=this.source.readViewMarker(),streams=this.options.peerStreams.foldSignature(CONVERSATION_GRAPH_STORE);
+  if(local===null||streams===null)return null;
+  const retained=this.peerFrontier?.retainedSnapshotFor(this.source,this.config.membership)??null;
+  return canonicalHash({local,streams,dropped:[...this.options.droppedOrigins.droppedOrigins(CONVERSATION_GRAPH_STORE)].sort(),
+   current:this.isReady(),lease:this.options.leaseCoordinator.currentEpoch(),verifiedAt:this.lastVerifiedAt,
+   retained:retained?{sequence:retained.highestAcknowledgedSequence,at:retained.acknowledgedAt}:null,
+   membership:canonicalHash(this.config.membership),activity:this.localActivityRevision});
+ }catch{/* @silent-fallback-ok: state that cannot be marked is never reused; readView builds it fresh and retainedProjection reports any refusal. */return null;}}
  /** Negative-only lookup: historical certified opaque creator identity may
   * select a forget target before restored serving readiness is established. */
  erasureHeaderId(rawEffort:unknown):string|null{
@@ -549,12 +607,15 @@ export class ConversationGraphReplicationRuntime {
  private nativeTailAdmissionAllowed(native:import('../core/types.js').LeaseRecord|null):boolean{return !!native&&this.closedNativeTail===canonicalHash({membership:canonicalHash(this.config.membership),writerId:native.holder,epoch:native.epoch});}
  private nativeTailKey(lease:GraphWitnessLease):string{return canonicalHash({membership:canonicalHash(this.config.membership),writerId:lease.writerId,epoch:lease.leaseEpoch});}
  private async snapshotNativeTail(lease:GraphWitnessLease,originalLease:import('../core/types.js').LeaseRecord):Promise<GraphNativeTailClosure>{
-  this.source.assertNativeTailReadable();const records=[...await this.source.nativeTailRecords(),...await this.intake.nativeTailReservations()];for(const record of records)if(!this.source.verifyHistoricalRecord(record))throw new Error('graph-native-tail-untrusted-source');
+  this.source.assertNativeTailReadable();
+  await this.retireSupersededReservations();
+  const records=[...await this.source.nativeTailRecords(),...await this.intake.nativeTailReservations()];for(const record of records)if(!this.source.verifyHistoricalRecord(record))throw new Error('graph-native-tail-untrusted-source');
   const entries=graphNativeTailEntries(records),value={v:1 as const,agentId:this.config.agentId,membershipHash:canonicalHash(this.config.membership),writerId:lease.writerId,leaseEpoch:lease.leaseEpoch,nativeLeaseHash:canonicalHash(originalLease),machineId:this.machineId,tailHash:canonicalHash(entries),entryCount:entries.length,highestSourceSequence:entries.at(-1)?.sourceSequence??0,recordedAt:new Date().toISOString()};
   const closure={receipt:{...value,signature:signGraphRecord(GRAPH_NATIVE_TAIL_DOMAIN,value,this.signingKey)},observedLease:lease,originalObservedLease:originalLease,entries};this.tailSnapshot=closure;return closure;
  }
  private async collectNativeTailClosure():Promise<void>{
   const current=this.actuation(),key=this.nativeTailKey(current.lease);
+  await this.retireSupersededReservations();
   await this.nativeTailFloor.observe(this.config.membership,current.lease,current.originalLease);const closures:GraphNativeTailClosure[]=[];
    for(const member of this.config.membership.members){let closure:GraphNativeTailClosure;
     if(member.machineId===this.machineId)closure=await this.withMutation(()=>this.snapshotNativeTail(current.lease,current.originalLease));
@@ -718,9 +779,32 @@ export class ConversationGraphReplicationRuntime {
    await this.intake.applyErasure(proof,this.config.agentId);await this.transfer.applyErasure(proof,this.config.agentId);this.appliedErasureHashes.add(id);
   }
  }
- private lastLoggedReadiness:string|null=null;
+ // undefined until the first pass, so the first "ready" after a restart is logged too (null meant ready, so it never was).
+ private lastLoggedReadiness:string|null|undefined=undefined;
  private lastBackgroundFailure:string|null=null;
  private lastTailClosureFailure:string|null=null;
+ private lastRefusedPeerRequest:string|null=null;
+ private lastQueuedWait:string|null=null;
+ private supersededReservationNoted=false;
+ /**
+  * A reservation whose idempotency key already resolves to a DIFFERENT saved, certified record is superseded: this
+  * machine reserved its own copy of an operation another writer had recorded (it held the lease for a moment, e.g.
+  * while the other machine was frozen). Restore never admits it, but every native-tail reader counted it, so each
+  * tail-close refused (graph-native-tail-conflict) and all owner writes were held indefinitely. Retire it durably.
+  * A saved record that is only pending could still be canceled, so then the reservation is left alone.
+  */
+ private async retireSupersededReservations():Promise<void>{
+  for(const record of await this.intake.reservations()){
+   const saved=this.source.lookupByIdempotencyKey(record.packet.idempotencyKey);
+   // An erased saved record (its erasure was proven before it was applied) still supersedes: its body is gone, so it may no longer verify.
+   if(!saved||canonicalHash(saved.packet)===canonicalHash(record.packet)||!saved.certificate||!(saved.erasure||this.source.verifyHistoricalRecord(saved)))continue;
+   if(await this.intake.retireSuperseded(record.packet.idempotencyKey,canonicalHash(record.packet)))this.noteSupersededReservation();
+  }
+ }
+ private noteSupersededReservation():void{if(!this.supersededReservationNoted){this.supersededReservationNoted=true;console.warn('[conversation-graph] retired a superseded reservation: another writer had already recorded the same operation');}}
+ /** Why a saved owner change is still waiting, logged once per distinct reason (a held change used to be silent). */
+ noteQueuedPromotionFailure(error:unknown):void{this.noteQueuedWait('promotion-failed:'+(error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown'));}
+ private noteQueuedWait(reason:string):void{if(reason!==this.lastQueuedWait){this.lastQueuedWait=reason;console.warn(`[conversation-graph] a saved change is still waiting: ${reason}`);}}
  private noteTailClosure(error:unknown):void{const code=error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown';if(code!==this.lastTailClosureFailure){this.lastTailClosureFailure=code;console.warn(`[conversation-graph] cannot close the previous writer's tail yet: ${code}`);}}
  // A historical (materialized) record never enters the certificate-acknowledgment loop, which is the only other place a record
  // becomes settled. After a removal every retained record is historical, so without this each readiness pass re-read the removal

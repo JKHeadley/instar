@@ -315,6 +315,27 @@ export interface Commitment {
    * rather than a "sent" stamp that quietly lies.
    */
   checkInReminderFailedAt?: string;
+  /**
+   * Late notice (docs/specs/overdue-promise-follow-through.md). Each stamp
+   * names the promised time (`softDeadlineAt`) it belongs to, so moving the
+   * time re-arms exactly one new notice and a fresh retry budget.
+   */
+  /** The promised time the person was told had passed (set only after a successful send). */
+  lateNoticeFor?: string;
+  /** When the last late notice was sent (ISO) — also drives the per-topic cooldown. */
+  lateNoticeSentAt?: string;
+  /** Late notices sent for this promise across all its times (capped). */
+  lateNoticeCount?: number;
+  /** The promised time `lateAttempts` counts against. */
+  lateAttemptsFor?: string;
+  /** Send attempts for `lateAttemptsFor` (counted before each send). */
+  lateAttempts?: number;
+  /** Set when every attempt for a time failed: the late notice is UNDELIVERED. */
+  lateNoticeFailedAt?: string;
+  /** The promised time whose session handoff was accepted by a running session. */
+  lateHandoffFor?: string;
+  /** The promised time whose due-soon session nudge was attempted. */
+  dueSoonNudgeFor?: string;
   /** Soft deadline — past it, cadence doubles (no terminal transition). */
   softDeadlineAt?: string;
   /** Hard deadline — past it, commitment transitions to `expired`. */
@@ -2385,6 +2406,11 @@ export class CommitmentTracker extends EventEmitter {
     if (commitment.hardDeadlineAt) {
       const hardDeadlineMs = Date.parse(commitment.hardDeadlineAt);
       if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return null;
+    }
+    // overdue-promise-follow-through §3.5: a future promised time holds expiry too.
+    if (commitment.softDeadlineAt) {
+      const softMs = Date.parse(commitment.softDeadlineAt);
+      if (Number.isFinite(softMs) && softMs > now.getTime()) return null;
     }
     const waitedDays = Math.floor(ageMs / 86_400_000);
     const optOut = typeof commitment.followThroughOptOutReason === 'string' ? commitment.followThroughOptOutReason.trim() : '';

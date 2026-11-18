@@ -123,7 +123,7 @@ export interface TrustElevationSuggestion {
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Default trust for operations when no explicit config exists */
-const DEFAULT_TRUST: Record<OperationMutability, TrustLevel> = {
+export const DEFAULT_TRUST: Record<OperationMutability, TrustLevel> = {
   read: 'autonomous',
   write: 'log',
   modify: 'approve-always',
@@ -143,6 +143,27 @@ export class AdaptiveTrust {
   private profilePath: string;
   private profile: TrustProfile;
   private changeLog: TrustChangeEvent[] = [];
+  /** True when the stored profile existed but could not be read (trust-journey 6a, corrupt state). */
+  corruptAtLoad = false;
+
+  /**
+   * Corrupt-state recovery (trust-journey 6a): sets one operation to the level the committed change
+   * log establishes. Used only by the holder's rebuild after `corruptAtLoad`, from records whose
+   * proofs it has checked; never from a request.
+   * @internal
+   */
+  applyCommittedLevel(service: string, operation: OperationMutability, level: TrustLevel, reason: string): void {
+    this.ensureServiceTrust(service);
+    // Not re-logged: the level comes from the log itself (a re-log of a proven raise without its
+    // consumption would read as unproven at the next load).
+    this.suppressObserver = true;
+    try { this.setTrustLevel(service, operation, level, 'revoked', reason); } finally { this.suppressObserver = false; }
+    this.save();
+  }
+  private suppressObserver = false;
+
+  /** Durable change-log hook (trust-journey 6a): told of every change, with the proof for a raise. */
+  private changeObserver: ((event: TrustChangeEvent, proof: OperatorProof | null) => void) | null = null;
   private trustRecovery: TrustRecovery | null = null;
 
   constructor(config: AdaptiveTrustConfig) {
@@ -156,6 +177,23 @@ export class AdaptiveTrust {
    * When set, incidents are forwarded for recovery tracking, and
    * successful operations increment recovery counters.
    */
+  /** Registers the durable change-log writer. */
+  setChangeObserver(fn: ((event: TrustChangeEvent, proof: OperatorProof | null) => void) | null): void {
+    this.changeObserver = fn;
+  }
+
+  /**
+   * The proof check at load (trust-journey section 6): restores one operation to a stricter level
+   * from the committed change log. Only ever narrows; a request for a wider level is ignored.
+   */
+  restoreFromCommittedLog(service: string, operation: OperationMutability, level: TrustLevel, reason: string): TrustChangeEvent | null {
+    const current = this.getTrustLevel(service, operation).level;
+    if (isTrustLevelRaise(current, level) || current === level) return null;
+    const event = this.setTrustLevel(service, operation, level, 'revoked', reason);
+    this.save();
+    return event;
+  }
+
   setTrustRecovery(recovery: TrustRecovery): void {
     this.trustRecovery = recovery;
   }
@@ -272,7 +310,7 @@ export class AdaptiveTrust {
       throw new TrustRaiseRefusedError(raiseRefusal([`${service} ${operation}: ${current} → ${level}`]));
     }
     this.ensureServiceTrust(service);
-    const event = this.setTrustLevel(service, operation, level, 'user-explicit', userStatement);
+    const event = this.setTrustLevel(service, operation, level, 'user-explicit', userStatement, proof ?? null);
     this.save();
     return event;
   }
@@ -409,7 +447,8 @@ export class AdaptiveTrust {
     operation: OperationMutability,
     level: TrustLevel,
     source: TrustSource,
-    reason: string
+    reason: string,
+    proof: OperatorProof | null = null,
   ): TrustChangeEvent {
     const serviceTrust = this.ensureServiceTrust(service);
     const current = serviceTrust.operations[operation];
@@ -437,6 +476,7 @@ export class AdaptiveTrust {
     this.profile.global.lastEventAt = now;
 
     this.changeLog.push(event);
+    try { if (!this.suppressObserver) this.changeObserver?.(event, proof); } catch { /* @silent-fallback-ok: the writer reports its own failures; a narrowing still applies */ }
     return event;
   }
 
@@ -494,9 +534,13 @@ export class AdaptiveTrust {
   private loadOrCreateProfile(): TrustProfile {
     if (fs.existsSync(this.profilePath)) {
       try {
-        return JSON.parse(fs.readFileSync(this.profilePath, 'utf-8'));
+        const parsed = JSON.parse(fs.readFileSync(this.profilePath, 'utf-8'));
+        if (parsed && typeof parsed === 'object' && parsed.services && typeof parsed.services === 'object') return parsed;
+        this.corruptAtLoad = true;
       } catch {
-        // Corrupt file — start fresh
+        // Corrupt file (trust-journey 6a): starts empty, flagged, so the holder rebuilds every setting
+        // and restriction from the committed change log before any governed effect is admitted.
+        this.corruptAtLoad = true;
       }
     }
 

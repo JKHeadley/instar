@@ -529,7 +529,10 @@ function renderBlocks(article, page) {
   const ranges = M.highlightRanges(page);
   const numbers = M.itemNumbers(blocks);
   if (!blocks.length) { article.appendChild(el('p', { cls: 'empty', text: 'This document is empty.' })); return; }
+  let table = null; // the table the previous row went into: { body, quote }
   blocks.forEach((b, i) => {
+    if (b.kind === 'row' && Array.isArray(b.align)) { table = renderRow(article, b, ranges, table); return; }
+    table = null;
     let node;
     if (b.kind === 'heading') node = el(`h${Math.min(6, Math.max(1, (b.level || 1) + 1))}`, { cls: 'blk heading' });
     else if (b.kind === 'code') node = el('pre', { cls: 'blk code' });
@@ -559,6 +562,56 @@ function renderBlocks(article, page) {
     }
     article.appendChild(node);
   });
+}
+
+/**
+ * A table row as a real table row. A header row starts a new table; a body row joins the table the
+ * previous row went into. Each run lands in the cell its `cell` index names (so an empty cell stays
+ * empty and the columns line up); the " | " joiner runs are part of the projection text but are not
+ * shown, and a selection or quote across cells still maps to exact offsets through the text nodes.
+ */
+function renderRow(article, b, ranges, table) {
+  const quote = b.quote || 0;
+  if (b.header || !table || table.quote !== quote) {
+    const wrap = el('div', { cls: 'blk table-wrap', attrs: { role: 'region', tabindex: '0', 'aria-label': 'Table' } });
+    if (quote) { wrap.classList.add('quoted'); wrap.style.borderInlineStartWidth = `${Math.min(4, quote) * 3}px`; }
+    const tbl = el('table', { cls: 'doc-table' });
+    const head = el('thead'); const body = el('tbody');
+    tbl.appendChild(head); tbl.appendChild(body); wrap.appendChild(tbl);
+    article.appendChild(wrap);
+    table = { head, body, quote };
+  }
+  const tr = el('tr', { attrs: { 'data-start': String(b.start) } });
+  const cols = Math.max(b.align.length, 1 + b.runs.reduce((m, r) => (Number.isInteger(r.cell) ? Math.max(m, r.cell) : m), -1));
+  const cells = [];
+  for (let c = 0; c < cols; c++) {
+    const cell = el(b.header ? 'th' : 'td');
+    if (b.header) cell.setAttribute('scope', 'col');
+    const a = b.align[c];
+    if (a === 'left' || a === 'center' || a === 'right') cell.style.textAlign = a;
+    cells.push(cell); tr.appendChild(cell);
+  }
+  const pieces = M.segmentBlock(b, ranges);
+  let runIndex = -1; let runEl = null;
+  for (const piece of pieces) {
+    const run = b.runs[piece.runIndex];
+    if (run.sep) continue;
+    if (piece.runIndex !== runIndex) {
+      runIndex = piece.runIndex; runEl = runElement(run, false);
+      cells[Number.isInteger(run.cell) && run.cell < cols ? run.cell : cols - 1].appendChild(runEl.outer);
+    }
+    const t = document.createTextNode(piece.text);
+    textStart.set(t, piece.start);
+    state.textNodes.push(t);
+    if (piece.keys.length) {
+      const mark = el('mark', { cls: 'hl', attrs: { 'data-keys': piece.keys.join(' ') } });
+      if (piece.keys.length > 1) mark.classList.add('multi');
+      mark.appendChild(t);
+      runEl.inner.appendChild(mark);
+    } else runEl.inner.appendChild(t);
+  }
+  (b.header ? table.head : table.body).appendChild(tr);
+  return table;
 }
 
 /** Nested inline elements for a run's marks; text goes into `inner`. */

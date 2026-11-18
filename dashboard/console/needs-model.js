@@ -55,6 +55,8 @@ export function chiefOfStaffNeedRows(cos, now) {
     : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : String(p.conversationKey || 'a project'));
   for (const p of d.projects) {
     if (!p || typeof p !== 'object') continue;
+    // The owner paused it (spec cos-owner-pause-record §3.3): they already decided, so it asks nothing of them.
+    if (p.pausedBy) continue;
     if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', projectHref(p)));
     else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', projectHref(p)));
     else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', projectHref(p)));
@@ -164,6 +166,8 @@ export const NEED_EXEMPT = [
   { file: 'allowed-model.js', phrase: 'will wait for your approval', why: 'Describes what a safety profile means, not something waiting now.' },
   { file: 'pace-model.js', phrase: 'waiting on you', why: 'A verdict on queue pace; the items themselves appear in their own sources.' },
   { file: 'sessions-model.js', phrase: 'Waiting on you', why: 'A comment-like note that sessions do not report this; nothing waits.' },
+  { file: 'projects.js', phrase: 'Your agent suggests', why: 'Project app offers are optional suggestions shown on the project\'s Work row, not needs (docs/specs/project-apps.md §3.5); an unanswered offer waits for nothing.' },
+  { file: 'projects-model.js', phrase: 'Your agent suggests', why: 'As projects.js: the words of an optional project app suggestion, never a Needs-you row.' },
 ];
 
 const failedRead = (res) => sourceState(res) === 'failed';

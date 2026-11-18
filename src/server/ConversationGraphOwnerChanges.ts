@@ -170,7 +170,7 @@ export class ConversationGraphOwnerChanges {
   if(record.coreType!=='header-op')return null;
   try{
    const subjects=new Map<string,NodeRef>();
-   for(const candidate of this.options.runtime.retainedProjection().records){
+   for(const candidate of this.options.runtime.retainedForRead().records){
     if(candidate.coreType!=='graph-event'||candidate.core.op!=='create-effort'||candidate.core.headerId!==record.core.headerId)continue;
     const ref=validateNodeRef(candidate.core.subject);if(ref)subjects.set(nodeKey(ref),ref);
    }
@@ -247,7 +247,7 @@ export class ConversationGraphOwnerChanges {
     if(!current||current.principalKey!==viewer.principalKey||current.grantVersion!==viewer.grantVersion)return failure(403,'hierarchy-owner-only');
     if(await this.options.runtime.refreshReadiness()){
      try{await this.options.runtime.promoteQueuedOwnerIntent(key,viewer.principalKey,(intent,token)=>this.promoteLocal(intent,token));}
-     catch{/* @silent-fallback-ok: a durably recorded local intent stays pending when shared promotion is unavailable; its exact status is returned below */}
+     catch(error){/* @silent-fallback-ok: a durably recorded local intent stays pending when shared promotion is unavailable; its exact status is returned below */this.options.runtime.noteQueuedPromotionFailure(error);}
      queued=await this.options.runtime.localOwnerIntent(key,viewer.principalKey)??queued;
     }
     current=this.options.resolveViewer(req,surface);

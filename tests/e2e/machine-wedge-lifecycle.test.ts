@@ -21,7 +21,7 @@ import { WEDGE_CANARY_APP, makeProbeRunner, makeReadOnlyRunner, parseBootTime, r
 import { WedgeMonitor, normalizeWedgeSettings, setActiveWedgeMonitor } from '../../src/monitoring/machineMaintenance/WedgeMonitor.js';
 import { makeMachineWedgeJudge } from '../../src/monitoring/MachineWedgeJudge.js';
 import { makeWedgeNoticeSender } from '../../src/monitoring/MachineWedgeNotice.js';
-import { MACHINE_WEDGE_CLAUDEMD_SECTION, MACHINE_WEDGE_CURRENT_F1_TEXT, MACHINE_WEDGE_STALE_F1_TEXT, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MACHINE_WEDGE_CLAUDEMD_SECTION, MACHINE_WEDGE_CURRENT_F1_TEXT, MACHINE_WEDGE_GENTLE_TEXT, MACHINE_WEDGE_STALE_F1_TEXT, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { isWslHost } from '../../src/core/wslPlatform.js';
 
@@ -63,6 +63,9 @@ describe('machine wedge detection lifecycle', () => {
       // As commands/server.ts wires it: this user's leftover canaries are read and ended.
       ownUid: typeof process.getuid === 'function' ? process.getuid() : undefined,
       endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } },
+      // As server.ts wires the gentle rung; the default setting (dry-run) never calls it.
+      resumeStopped: (pid) => { try { process.kill(pid, 'SIGCONT'); return true; } catch { return false; } },
+      home: os.homedir(),
       loadReading: () => null,
       spawnSystemFailures30m: () => null,
       sessionsCount: () => 0,
@@ -100,6 +103,9 @@ describe('machine wedge detection lifecycle', () => {
     const w = res.body.wedge;
     expect(w).toMatchObject({ enabled: true, dryRun: true, actuation: 'not-built', canRestart: false, canStopWork: false, noticeEnabled: false, role: 'maintainer', lastError: null });
     expect(w.lastSampleAt).toEqual(expect.any(Number));
+    // The gentle rung ships in dry-run, and a healthy machine never runs it.
+    expect(w.gentleResume).toBe('dry-run');
+    if (w.families.F1.reason !== 'canary-left-stopped') expect(w.lastGentle).toBeNull();
     // The real process table answered (a healthy test machine); the result is a reading, not a default.
     expect(['negative', 'positive']).toContain(w.families.F2.result);
     // No load report wired here: F4 is unknown, never "healthy".
@@ -165,5 +171,24 @@ describe('machine wedge detection lifecycle', () => {
     const md = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
     expect(md).not.toContain(MACHINE_WEDGE_STALE_F1_TEXT);
     expect(md.split(MACHINE_WEDGE_CURRENT_F1_TEXT).length - 1).toBe(1);
+  });
+
+  it('an existing agent without the gentle rung line gets it once, before the when-to-use line', () => {
+    const projectDir = path.join(dir, 'proj-gentle');
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    const old = MACHINE_WEDGE_CLAUDEMD_SECTION(4321).replace(MACHINE_WEDGE_GENTLE_TEXT, '');
+    expect(old).not.toContain('Gentle rung');
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# Agent\n${old}`);
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4321, hasTelegram: false, projectName: 'mig' });
+    type R = { upgraded: string[]; skipped: string[]; errors: string[] };
+    const r1: R = { upgraded: [], skipped: [], errors: [] };
+    (m as unknown as { migrateClaudeMd(r: R): void }).migrateClaudeMd(r1);
+    const r2: R = { upgraded: [], skipped: [], errors: [] };
+    (m as unknown as { migrateClaudeMd(r: R): void }).migrateClaudeMd(r2);
+    expect(r1.upgraded).toContain('CLAUDE.md: added the machine wedge gentle rung line');
+    expect(r2.upgraded).not.toContain('CLAUDE.md: added the machine wedge gentle rung line');
+    const md = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+    expect(md.split(MACHINE_WEDGE_GENTLE_TEXT).length - 1).toBe(1);
+    expect(md.indexOf(MACHINE_WEDGE_GENTLE_TEXT)).toBeLessThan(md.indexOf('- **When to use** (PROACTIVE): the operator says a machine is frozen'));
   });
 });

@@ -117,6 +117,13 @@ describe('validateRecord', () => {
     expect(validateRecord(rec({ kind: 'main', pr: 0, headSha: B, outcome: 'failure', failedFiles: [files[0]] })).ok).toBe(false);
   });
 
+  it('a main record may carry the peer attempt it answers (a peer ran it for the coordinator); a malformed one is still refused', () => {
+    const attempt = { id: 'a'.repeat(32), coordinatorMachineId: 'coord', leaseEpoch: 7 };
+    expect(validateRecord(rec({ kind: 'main', pr: 0, headSha: B, attempt })).ok).toBe(true);
+    const bad = validateRecord(rec({ kind: 'main', pr: 0, headSha: B, attempt: { ...attempt, id: 'nope' } }));
+    expect(!bad.ok && bad.errors).toContain('attempt');
+  });
+
   it('rejects non-objects', () => {
     expect(validateRecord(null)).toEqual({ ok: false, errors: ['not-an-object'] });
   });

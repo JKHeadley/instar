@@ -293,6 +293,18 @@ export function mediaRefFor(ref, slackConversationKey) {
   if (ref.kind === 'telegram') return `telegram:${ref.id}`;
   return typeof slackConversationKey === 'string' ? slackConversationKey : null;
 }
+/**
+ * The time shown on a message bubble and a pin line. Today → the time only; any other day → day,
+ * month, year and time ("Nov 16, 2026, 9:01 PM"), matching the iPhone and Android apps
+ * (InstarApp/MessageTime.swift). The conversation list row keeps its compact form.
+ */
+export function messageTime(isoText, nowMs = Date.now(), locale = []) {
+  const t = Date.parse(isoText);
+  if (!Number.isFinite(t)) return '';
+  const d = new Date(t);
+  if (new Date(nowMs).toDateString() === d.toDateString()) return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString(locale, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 export function humanSize(n) {
   if (!Number.isFinite(n)) return '';
   if (n < 1024) return `${n} B`;
@@ -604,4 +616,88 @@ export function pinOutcomeWords(r) {
     return d.detail || 'That did not work. Try again.';
   }
   return r.data && r.data.mirror === 'failed' && typeof r.data.mirrorDetail === 'string' ? r.data.mirrorDetail : '';
+}
+
+// ── inline markdown in a message (docs/specs/console-chat-markdown.eli16.md) ──
+const MD_LINK = /\[([^\]\n]+)\]\((\S+?)\)/y;
+const isSpace = (ch) => ch != null && /\s/.test(ch);
+const isWordChar = (ch) => ch != null && /[\p{L}\p{N}]/u.test(ch);
+/** Only web links become links; javascript:, data: and the rest stay as the text that was typed. */
+export function safeMessageUrl(url) {
+  return /^https?:\/\/[^\s]+$/i.test(String(url || '')) ? url : null;
+}
+/** A marker opens emphasis only before a non-space, and an underscore only at a word start. */
+function mdOpens(text, at, marker) {
+  const next = text[at + marker.length];
+  if (next == null || isSpace(next)) return false;
+  if (marker[0] === '_' && isWordChar(text[at - 1])) return false;
+  return true;
+}
+function mdClosing(text, from, marker) {
+  let j = from;
+  for (;;) {
+    let k = text.indexOf(marker, j);
+    if (k < 0) return -1;
+    // In a run like "***", close on its last marker so "***both***" is bold and italic.
+    if (marker.length > 1) while (text[k + marker.length] === marker[0]) k++;
+    if (text.slice(from, k).includes('\n\n')) return -1;
+    const before = text[k - 1];
+    const after = text[k + marker.length];
+    const okBefore = k > from && before != null && !isSpace(before);
+    const okAfter = marker[0] !== '_' || after == null || !isWordChar(after);
+    // "*" must not close on the first star of a "**".
+    const single = marker.length === 1 && (after === marker[0] || before === marker[0]);
+    if (okBefore && okAfter && !single) return k;
+    j = k + 1;
+  }
+}
+/**
+ * A message's inline markdown split into styled pieces, so an agent's `**Build things.**` reads as bold
+ * instead of showing the asterisks: bold, italic, `code`, ~~strike~~ and [text](url). Line breaks, list
+ * dashes and anything unmatched stay exactly as typed; `my_file_name` is not italic. Same rules as the
+ * iPhone and Android apps (MessageMarkdown). Pure: the page builds text nodes from it, never HTML.
+ */
+export function messagePieces(text) {
+  const s = String(text ?? '');
+  const out = [];
+  let plain = '';
+  const flush = () => { if (plain) { out.push({ text: plain, bold: false, italic: false, code: false, strike: false, url: null }); plain = ''; } };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '`') {
+      const end = s.indexOf('`', i + 1);
+      if (end > i + 1 && !s.slice(i + 1, end).includes('\n')) {
+        flush(); out.push({ text: s.slice(i + 1, end), bold: false, italic: false, code: true, strike: false, url: null }); i = end + 1; continue;
+      }
+    }
+    if (c === '[') {
+      MD_LINK.lastIndex = i;
+      const m = MD_LINK.exec(s);
+      if (m) {
+        const url = safeMessageUrl(m[2]);
+        if (url) { flush(); out.push({ text: m[1], bold: false, italic: false, code: false, strike: false, url }); }
+        else plain += m[0];
+        i += m[0].length; continue;
+      }
+    }
+    const marker = s.startsWith('**', i) ? '**' : s.startsWith('__', i) ? '__' : s.startsWith('~~', i) ? '~~'
+      : (c === '*' || c === '_') ? c : null;
+    if (marker && mdOpens(s, i, marker)) {
+      const end = mdClosing(s, i + marker.length, marker);
+      if (end > 0) {
+        flush();
+        const bold = marker === '**' || marker === '__';
+        const italic = marker === '*' || marker === '_';
+        const strike = marker === '~~';
+        for (const p of messagePieces(s.slice(i + marker.length, end))) {
+          out.push({ ...p, bold: p.bold || bold, italic: p.italic || italic, strike: p.strike || strike });
+        }
+        i = end + marker.length; continue;
+      }
+    }
+    plain += c; i++;
+  }
+  flush();
+  return out;
 }

@@ -371,3 +371,61 @@ describe('conversations pinned to the top of the list (conversation-list-pins)',
     expect(m.listPinOutcomeWords({ ok: false, data: { error: 'list-pins-off' } })).toContain('turned off');
   });
 });
+
+describe('message time (bubble and pin line)', () => {
+  // Local-time constructors keep these independent of the machine's time zone.
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo, d, h, mi).toISOString();
+  const nowMs = new Date(2026, 10, 17, 0, 1).getTime(); // Nov 17, 2026, 00:01
+
+  it('shows only the time for a message sent today', () => {
+    const text = m.messageTime(at(2026, 10, 17, 0, 0), nowMs, 'en-US');
+    expect(text).toMatch(/^12:00\sAM$/);
+    expect(text).not.toMatch(/2026|Nov/);
+  });
+
+  it('shows day, month, year and time for yesterday at 23:59 when it is now 00:01', () => {
+    expect(m.messageTime(at(2026, 10, 16, 23, 59), nowMs, 'en-US')).toMatch(/^Nov 16, 2026,? 11:59\sPM$/);
+  });
+
+  it('shows the other year for a message from a previous year', () => {
+    expect(m.messageTime(at(2025, 0, 3, 9, 5), nowMs, 'en-US')).toMatch(/^Jan 3, 2025,? 9:05\sAM$/);
+  });
+
+  it('returns nothing for a missing or unreadable time', () => {
+    expect(m.messageTime('', nowMs)).toBe('');
+    expect(m.messageTime('not a date', nowMs)).toBe('');
+    expect(m.messageTime(undefined as unknown as string, nowMs)).toBe('');
+  });
+});
+
+describe('messagePieces: inline markdown in a message (console-chat-markdown)', () => {
+  const plain = (text: string) => ({ text, bold: false, italic: false, code: false, strike: false, url: null });
+  it('text with no markers comes back unchanged, line breaks and list dashes as typed', () => {
+    expect(m.messagePieces('hello there')).toEqual([plain('hello there')]);
+    expect(m.messagePieces('Plan:\n- one\n- two')).toEqual([plain('Plan:\n- one\n- two')]);
+    expect(m.messagePieces('')).toEqual([]);
+  });
+  it('bold, italic, code and strike', () => {
+    expect(m.messagePieces('**Build things.** now')).toEqual([{ ...plain('Build things.'), bold: true }, plain(' now')]);
+    expect(m.messagePieces('__b__')).toEqual([{ ...plain('b'), bold: true }]);
+    expect(m.messagePieces('an *idea* and _another_')).toEqual([plain('an '), { ...plain('idea'), italic: true }, plain(' and '), { ...plain('another'), italic: true }]);
+    expect(m.messagePieces('run `npm **test**`')).toEqual([plain('run '), { ...plain('npm **test**'), code: true }]);
+    expect(m.messagePieces('~~gone~~')).toEqual([{ ...plain('gone'), strike: true }]);
+  });
+  it('***x*** is bold and italic', () => {
+    expect(m.messagePieces('***both***')).toEqual([{ ...plain('both'), bold: true, italic: true }]);
+  });
+  it('my_file_name is not italic; an unmatched marker stays literal', () => {
+    expect(m.messagePieces('open my_file_name.txt')).toEqual([plain('open my_file_name.txt')]);
+    expect(m.messagePieces('2 * 3 = 6')).toEqual([plain('2 * 3 = 6')]);
+    expect(m.messagePieces('**not closed')).toEqual([plain('**not closed')]);
+    expect(m.messagePieces('a `tick')).toEqual([plain('a `tick')]);
+  });
+  it('web links become links; javascript: and data: stay as the typed text', () => {
+    expect(m.messagePieces('see [docs](https://example.com/x)')).toEqual([plain('see '), { ...plain('docs'), url: 'https://example.com/x' }]);
+    expect(m.messagePieces('[x](javascript:alert(1))')).toEqual([plain('[x](javascript:alert(1))')]);
+    expect(m.messagePieces('[x](data:text/html,hi)')).toEqual([plain('[x](data:text/html,hi)')]);
+    expect(m.safeMessageUrl('http://a.b')).toBe('http://a.b');
+    expect(m.safeMessageUrl('JavaScript:alert(1)')).toBeNull();
+  });
+});

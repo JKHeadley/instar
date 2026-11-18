@@ -52,6 +52,44 @@ describe('zero external configuration owned-machine production default manager',
   const forgotten=await request('/conversation-graph/forget-header',{requestId:'forget-owned-effort',effort:created.body.effort});expect([200,202],JSON.stringify(forgotten.body)).toContain(forgotten.status);
   expect(JSON.stringify((await request('/conversation-graph/roots?view=all')).body)).not.toContain('private-owned-title-canary');
  });
+ it('answers an owner read from the open graph while the one-at-a-time owner step is busy; a write still waits for it',async()=>{
+  // Accept-all round 3: after a restart the owner step stayed busy (peer checks, a full readiness pass) and every
+  // Conversations read queued behind it past the page's 20 s limit for half an hour.
+  const f=await fixture(),scope=new ScopeVerifier({projectName:'instar',projectDir:f.stateDir,topicProjects:{'42':{projectName:'instar',projectDir:f.stateDir}}});
+  await f.manager.close();managers.splice(managers.indexOf(f.manager),1);const manager=new ConversationGraphDefault({...f.options,scopeVerifier:scope,telegramChatId:'-1001'});managers.push(manager);
+  const app=express();app.use(express.json({limit:'64kb'}));app.use(createConversationGraphDefaultSurface({manager,stateDir:f.stateDir,readEnabled:true,correctionsEnabled:true,scope,telegramChatId:'-1001',pairing:null,verifyDashboardOwner:token=>token==='fixture-unlocked-owner',dashboardPolicy:()=>({pin:'fixture-current-pin-policy',generation:'11111111-1111-4111-8111-111111111111'}),forceFileKey:true,readOwnerWaitMs:300}));
+  const server=app.listen(0,'127.0.0.1');servers.push(server);await new Promise<void>(resolve=>server.once('listening',resolve));const base=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+  const request=async(route:string,body?:unknown)=>{const response=await fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'X-Instar-Operator-Session':'fixture-unlocked-owner',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:response.status,body:await response.json()};};
+  // Before the graph is open, a read waits for the owner step as it always did (nothing to answer from).
+  expect((await request('/conversation-graph/roots')).status).toBe(200);
+  // Hold the owner step the way slow upkeep does after a restart.
+  let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+  const busy=(manager as unknown as {serialized(work:()=>Promise<void>):Promise<void>;ownerStepValue:string});
+  const upkeep=busy.serialized(async()=>{busy.ownerStepValue='the readiness check';await held;});
+  const warn=vi.spyOn(console,'warn');
+  try{
+   const started=Date.now(),read=await request('/conversation-graph/roots');
+   expect(read.status,JSON.stringify(read.body)).toBe(200);expect(Date.now()-started).toBeLessThan(5000);
+   expect(warn.mock.calls.some(call=>String(call[0])==='[conversation-graph] answered a read without waiting: the owner step is busy with the readiness check')).toBe(true);
+   // A write is not answered from the open graph: it is still waiting for the owner step.
+   let wrote=false;const write=request('/conversation-graph/changes',{requestId:'write-behind-busy-owner',change:{kind:'create-effort',projectScope:['instar']}}).then(result=>{wrote=true;return result;});
+   await new Promise(resolve=>setTimeout(resolve,800));expect(wrote).toBe(false);
+   release();await upkeep;
+   const written=await write;expect(written.status,JSON.stringify(written.body)).toBe(200);expect(written.body.state).toBe('committed');
+  }finally{release();}
+  // Idle again: the label resets so a later log never names finished work.
+  expect(manager.ownerStep).toBe('nothing (idle)');
+  // If the owner queue replaces the runtime while a read waits, the read is NOT answered from the old one: it waits.
+  let releaseSwap!:()=>void;const swapHeld=new Promise<void>(resolve=>{releaseSwap=resolve;});
+  const realRuntime=manager.runtime,internals=manager as unknown as {runtimeValue:unknown};
+  const swapJob=busy.serialized(async()=>{await swapHeld;});
+  let swappedDone=false;const swappedRead=request('/conversation-graph/roots').then(result=>{swappedDone=true;return result;});
+  try{
+   await new Promise(resolve=>setTimeout(resolve,100));internals.runtimeValue={replaced:true};
+   await new Promise(resolve=>setTimeout(resolve,800));expect(swappedDone).toBe(false);
+  }finally{internals.runtimeValue=realRuntime;releaseSwap();}
+  await swapJob;expect((await swappedRead).status).toBe(200);
+ });
  it('refuses renamed agent roots and missing acknowledged storage instead of creating another genesis',async()=>{
   const f=await fixture();await f.manager.ensureOwner({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard',requestId:'first-visit',isCurrent:()=>true});await f.manager.close();managers.splice(managers.indexOf(f.manager),1);
   const renamed=new ConversationGraphDefault({...f.options,agentId:'renamed-agent'});managers.push(renamed);await expect(renamed.restore()).rejects.toThrow('rename-requires-migration');

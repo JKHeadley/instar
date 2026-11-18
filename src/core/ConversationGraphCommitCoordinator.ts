@@ -198,6 +198,14 @@ export class ConversationGraphCommitCoordinator {
     if (actuator !== this.options.machineId || !record.encryptedSourceBundle) {
       return outcome('checking-save', 'local', [], 'recovery-required');
     }
+    // A certificate is final: the witness decided, and no writer transfer or outage can undo it.
+    // When an earlier attempt stopped between the certificate and the commit-proof delivery (a slow
+    // member, a restart), finish that delivery. Never prepare or certify the same operation again.
+    if (known?.certificate && !known.cancellationCertificate && !known.materialization
+        && ['certified', 'committed'].includes(this.options.source.status(packet.eventId).state)
+        && !this.options.source.isErased(packet.erasureIdentity)) {
+      return this.deliver(known, known.certificate, outcome);
+    }
     let localReceipt: GraphMemberReceipt;
     let actuation: ReturnType<ConversationGraphCommitOptions['actuation']>;
     try {
@@ -260,12 +268,30 @@ export class ConversationGraphCommitCoordinator {
       }
       certificate = await this.options.witness.commit(request, record.authorizationProof.membership, [...sourceReceipts.values()]);
     } catch { return outcome('saved-pending', 'witnessed', [], 'witness-unavailable'); }
+    return this.deliver(record, certificate, outcome);
+  }
+  /** Everything after the witness certificate: every member persists the certificate, then the commit
+   * proof, then the delivery completion. Each step is idempotent, so a resumed delivery repeats safely. */
+  private async deliver(record: ConversationGraphReplicationRecord, certificate: GraphCommitCertificate,
+    outcome: (state: GraphCommitOutcome['state'], phase: GraphCommitOutcome['phase'], waitingMachineIds?: string[],
+      reason?: GraphCommitOutcome['reason']) => GraphCommitOutcome): Promise<GraphCommitOutcome> {
+    const packet = record.packet;
+    const membership = this.options.source.effectiveContext(packet.eventId).membership;
+    const waiting = new Set<string>();
     try {
       const localFinal = await this.options.source.attachCertificate(packet.eventId, certificate);
       await this.options.source.recordCertificateReceipt(packet.eventId, localFinal);
       await this.options.witness.acknowledgeCertificate(packet.idempotencyKey, localFinal);
     } catch { return outcome('saved-pending', 'certified', [this.options.machineId], 'waiting-members'); }
+    // A member whose certificate receipt is already recorded (an earlier attempt, or readiness repair) is not asked again.
+    // The witness is still told (idempotent): the earlier attempt may have stored the receipt and then failed there.
+    const acknowledged = new Map((this.options.source.repairRecord(packet.eventId)?.certificatePersistenceReceipts ?? []).map((r) => [r.machineId, r]));
     await Promise.all(membership.members.filter((m) => m.machineId !== this.options.machineId).map(async (m) => {
+      const stored = acknowledged.get(m.machineId);
+      if (stored) {
+        try { await this.options.witness.acknowledgeCertificate(packet.idempotencyKey, stored); } catch { waiting.add(m.machineId); }
+        return;
+      }
       const member = this.options.member(m.machineId);
       if (!member || member.machineId !== m.machineId) { waiting.add(m.machineId); return; }
       try {

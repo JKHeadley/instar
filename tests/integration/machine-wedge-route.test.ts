@@ -170,6 +170,48 @@ describe('GET /machine-maintenance wedge block (integration)', () => {
     expect(w.limits.join(' ')).toMatch(/not notarized/);
   });
 
+  it('on macOS a canary left stopped runs the gentle rung, and the route shows what it resumed', async () => {
+    const CANARY = '/x/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary';
+    const resumed: number[] = [];
+    const bootAtGentle = clock - 2 * 24 * 60 * MIN;
+    let canaryTable = '';
+    const okOut = (stdout: string) => ({ ok: true, stdout, ms: 20, timedOut: false, code: null });
+    const mac = new WedgeMonitor({
+      agentName: 'echo', machineId: () => 'm_route_gentle', platform: 'darwin',
+      logPath: path.join(dir, 'logs', 'machine-maintenance-gentle.jsonl'),
+      store: new HostMaintenanceStore({ dir: path.join(dir, 'host-gentle'), now: () => clock }),
+      enabled: () => true, settings: () => ({ dryRun: true, dryRunNotice: false, gentleResume: 'on' }),
+      probe: async (name) => {
+        if (name === 'guiCanary') return okOut('');
+        if (name === 'consoleOwner') return okOut('me\n');
+        if (name === 'canaryProcesses') return okOut(canaryTable);
+        if (name === 'stoppedLaunches') return okOut('  405   501     1 T      20:01:07 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n');
+        return okOut('S\n');
+      },
+      readBootAt: async () => bootAtGentle,
+      lockState: async () => 'unlocked',
+      canaryAvailable: () => true,
+      ownUser: 'me', ownUid: 501, home: '/Users/me',
+      endCanary: () => true, resumeStopped: (pid) => { resumed.push(pid); return true; }, settle: async () => {},
+      loadReading: () => null, spawnSystemFailures30m: () => null, sessionsCount: () => 0,
+      nextWindowRestartAt: (now) => now + 14 * 60 * MIN, judge: null, raiseNotice: null, now: () => clock,
+    });
+    setActiveWedgeMonitor(mac);
+    await mac.tick();
+    let res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.body.wedge).toMatchObject({ gentleResume: 'on', lastGentle: null });
+    expect(resumed).toEqual([]);
+    canaryTable = `51709   501 T    ${CANARY}\n`;
+    clock += 10 * MIN;
+    await mac.tick();
+    res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(resumed).toEqual([405]);
+    expect(res.body.wedge.families.F1).toMatchObject({ result: 'positive', reason: 'canary-left-stopped' });
+    expect(res.body.wedge.lastGentle).toMatchObject({ mode: 'on', result: 'resumed', resumed: [{ pid: 405, app: 'Google Chrome' }] });
+    // Still no restart and no work stopped.
+    expect(res.body.wedge).toMatchObject({ canRestart: false, canStopWork: false });
+  });
+
   it('the pool view self row carries the same wedge block', async () => {
     setActiveWedgeMonitor(monitor);
     await monitor.tick();

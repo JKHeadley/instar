@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-17T16:25:36.401Z",
+  "slug": "project-apps-custom",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ProjectAppKeys.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: a local file-write helper."
+  },
+  "verdict": "pass"
+}

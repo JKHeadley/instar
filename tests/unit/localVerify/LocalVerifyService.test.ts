@@ -46,7 +46,7 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; token: string; resolve: (x: { status: number | null; signal: string | null }) => void; intentAtSpawn: InFlightIntent | null }
 
-function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number } = {}) {
+function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number; liveOperatorGhLogin?: () => string | null } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
@@ -107,6 +107,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   };
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
+    ...(opts.liveOperatorGhLogin ? { liveOperatorGhLogin: opts.liveOperatorGhLogin } : {}),
     verifierVersion: opts.verifierVersion ?? '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
     remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'm1', nodeVersion: 'v24',
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' },
@@ -470,6 +471,16 @@ describe('request + queue', () => {
     (s.svc as unknown as { seams: { baseHead?: (b: string) => Promise<string | null> } }).seams.baseHead = async () => null;
     expect(await s.svc.request(1)).toEqual({ ok: false, code: 'pr-unreadable' });
     expect(s.spawned).toHaveLength(0);
+  });
+
+  it('reads the trusted operator login live: a config change applies without a restart (2026-11-16)', async () => {
+    // Boot-time login is JKHeadley; the live reader says nobody is trusted yet, then JKHeadley.
+    let live: string | null = null;
+    const s = setup({ views: { 1: view({ author: { login: 'JKHeadley' } }) }, liveOperatorGhLogin: () => live });
+    expect(await s.svc.request(1)).toEqual({ ok: false, code: 'untrusted-head' });
+    live = 'JKHeadley';
+    const accepted = await s.svc.request(1);
+    expect(accepted.ok).toBe(true);
   });
 
   it('refuses an untrusted head, an unreadable PR and an invalid number', async () => {

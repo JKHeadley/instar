@@ -356,6 +356,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/pool/bring-back', domain: 'cluster-shared' });
   // Instar Documents (instar-document-viewer §5.1): machine-signed rows replicated by version-vector pull.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/docs', domain: 'cluster-shared' });
+  // The trust journey's account path (docs/specs/trust-journey.md decision 5): requests, acceptances and
+  // withdrawals are TrustJourneyStore records replicated through the coherence journal to every machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/requests', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/acceptance/', domain: 'cluster-shared' });
+  // Approving from the Instar app (docs/specs/app-trust-approval.md): device acceptances, device approvals,
+  // consumptions and outcomes are the same TrustJourneyStore records, decided only on the serving-lease holder.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/mobile/trust/', domain: 'cluster-shared' });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
@@ -368,6 +375,44 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
   // Linux browser install: sets this machine's own flag and installs on this machine.
+  // Machine self-maintenance enrolment offer (CMT-1200): the offer and the enrolment record
+  // live in ~/.instar/host-maintenance on THIS machine; a peer offers for its own machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/enrol/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/enrol-offers.json for this physical machine; outside the agent home, never git-synced',
+  } });
+  // Restart now offer (CMT-1199): the card's nonce lives in ~/.instar/host-maintenance on THIS machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/restart-now/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/restart-now.<agent>.json for this physical machine; outside the agent home, never git-synced',
+  } });
+  // Off (Part F, CMT-1203): removes this machine's enrolment record and its reboot rule.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/remove', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'moves ~/.instar/host-maintenance/enrolment.json aside and removes /etc/sudoers.d/instar-reboot on this physical machine; outside the agent home, never git-synced',
+  } });
+  // Machine care from the owner's phone (Part F, CMT-1203): Skip, Undo, window for THIS machine; restart only sends a card.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/mobile/machine-care/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine (refuses any other machine id); outside the agent home, never git-synced',
+  } });
+  // Operator controls (Part F, CMT-1203): Skip once and Change window for THIS machine.
+  for (const control of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix: control, domain: 'machine-local', story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine; outside the agent home, never git-synced',
+    } });
+  }
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
@@ -574,6 +619,39 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
         logical: 'ws2x-replicated',
         onSharedGitSyncedPath: false,
         note: 'per-origin coherence-journal stream (work-card-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+      },
+    });
+  }
+
+  // Project apps (docs/specs/project-apps.md §5): offers, owner answers and pin acts are journal
+  // records of the `project-app-record` kind, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (project-app-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
+
+  // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.2, §5): creating a custom app, its source
+  // revisions, its data and summary writes are journal records (`project-app-record` and the encrypted
+  // `project-app-blob` kind), written on the lease holder only and folded from the union on every machine.
+  // The per-machine key file and the ciphertext disk store under state/ are caches of what the kinds hold
+  // (keys are fetched from the holder, never synced); the frame ticket is in-memory physical-credential-locality.
+  for (const method of ['POST', 'PUT'] as const) {
+    reg.add({
+      kind: 'route',
+      method,
+      pathPrefix: '/project-apps',
+      domain: 'machine-local',
+      story: {
+        logical: 'ws2x-replicated',
+        onSharedGitSyncedPath: false,
+        note: 'per-origin coherence-journal streams (project-app-record + project-app-blob kinds), lease-holder-only writes, replicated by journal sync; dev-gated, dark on the fleet',
       },
     });
   }

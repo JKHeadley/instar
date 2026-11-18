@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "machine-care-controls",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-17T13:20:02.101Z",
+  "artifactPath": "upgrades/side-effects/machine-care-controls.md",
+  "artifactSha256": "3baf89dbe71c4262da20d57cf70b1c8d202d57497a762e15cc7f9c40480a9c4a",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/monitoring/machineMaintenance/DrainRehearsal.ts",
+    "src/monitoring/machineMaintenance/HostMaintenanceStore.ts",
+    "src/monitoring/machineMaintenance/planner.ts",
+    "src/server/routes.ts",
+    "tests/e2e/machine-maintenance-lifecycle.test.ts",
+    "tests/integration/machine-maintenance-route.test.ts",
+    "tests/unit/machine-maintenance-controls.test.ts",
+    "upgrades/next/machine-care-controls.md",
+    "upgrades/side-effects/machine-care-controls.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Operator controls only withhold or move the scheduled restart; the restart itself stays under the machine-restart Eternal Sentinel in the convergence ratchet"
+    }
+  }
+}

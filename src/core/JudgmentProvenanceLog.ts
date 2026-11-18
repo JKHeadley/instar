@@ -156,9 +156,14 @@ export interface DecisionRowInput {
   producerCorrelationId?: string;
 }
 
-/** A well-formed router/breaker correlation id, or undefined. */
+/**
+ * A well-formed router/breaker correlation id, or undefined. Accepts every id
+ * mintRouterCorrelationId / mintBreakerCorrelationId can produce: the machine
+ * segment is a pool machine id prefix such as `m_03b30f`, so `_` is allowed
+ * (CMT-1677: the old pattern rejected every real multi-machine id).
+ */
 export function validProducerCorrelationId(v: unknown): string | undefined {
-  return typeof v === 'string' && /^[db]-[A-Za-z0-9-]{1,100}$/.test(v) ? v : undefined;
+  return typeof v === 'string' && /^[db]-[A-Za-z0-9_-]{1,100}$/.test(v) ? v : undefined;
 }
 
 export interface ProvenanceRow {

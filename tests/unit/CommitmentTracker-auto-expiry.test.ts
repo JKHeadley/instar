@@ -129,6 +129,31 @@ describe('CommitmentTracker auto-expiry sweep', () => {
     expect(t.get(c.id)?.status).toBe('pending');
   });
 
+  it('does not expire old agent commitments with a future promised time (overdue-promise-follow-through §3.5)', async () => {
+    const t = tracker(stateDir);
+    const c = t.record({
+      type: 'one-time-action',
+      userRequest: 'the scaling plan',
+      agentResponse: 'the result by noon tomorrow',
+      softDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    });
+    await ageCommitment(t, c.id, daysBefore(now, 30));
+    expect(t.sweepAutoExpiry(now).eligible).toBe(0);
+    expect(t.get(c.id)?.status).toBe('pending');
+  });
+
+  it('a PASSED promised time no longer holds expiry', async () => {
+    const t = tracker(stateDir);
+    const c = t.record({
+      type: 'one-time-action',
+      userRequest: 'the scaling plan',
+      agentResponse: 'the result by noon',
+      softDeadlineAt: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    await ageCommitment(t, c.id, daysBefore(now, 30));
+    expect(t.sweepAutoExpiry(now).eligible).toBe(1);
+  });
+
   it('dry-runs by logging eligibility without mutating', async () => {
     const t = tracker(stateDir, true);
     const c = t.record({ type: 'one-time-action', userRequest: 'old dry-run', agentResponse: 'will do it' });

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "app-trust-approval",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T10:40:37.076Z",
+  "artifactPath": "upgrades/side-effects/app-trust-approval.md",
+  "artifactSha256": "94b2decfb251a5b59b1a6305a08da9c068136a0d051cd49a28e014d62d6ead5a",
+  "specPath": "docs/specs/app-trust-approval.md",
+  "coveredFiles": [
+    "docs/specs/app-trust-approval.eli16.md",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/app-trust-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Pins the trust routes in the owner-only rule test; no behaviour change.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "test pin"
+  }
+}

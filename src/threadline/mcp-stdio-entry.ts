@@ -164,9 +164,9 @@ async function main(): Promise<void> {
       // a2a-required-acknowledgment D4/D6: this subprocess has no tracker; the server does.
       acknowledge: (params) => acknowledgeViaHttp(params, serverPort, agentToken),
       getThreadReceipts: (threadId) => getThreadReceiptsViaHttp(threadId, serverPort, agentToken),
-      // Sealed-handoff keystone: self-mint over the loopback route (no bearer —
-      // the on-disk authToken is vault-externalized).
-      requestSecret: (params) => requestSecretViaHttp(params, serverPort),
+      // Sealed-handoff keystone: mint with the agent's key (key-gated route) so the
+      // receipt message can reach this conversation; falls back to the keyless route.
+      requestSecret: (params) => requestSecretViaHttp(params, serverPort, agentToken),
       // Verified pairing v2: start a pending static-key pairing on the server (spec §3.2).
       startPairing: (peerFp) => startPairingViaHttp(peerFp, serverPort, agentToken),
       // Pairing by invite: make an invite on the server (a2a-pairing-invite-link).
