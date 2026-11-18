@@ -1531,10 +1531,17 @@ export class ConversationGraphReplication {
     try { return `${this.viewRevision}|${this.durableGeneration}|${this.records.size}|${this.historicalImportActivationHash ?? '-'}|${this.localRetainedNegativeHash()}`; }
     catch { /* @silent-fallback-ok: an unmarkable state is never reused; the caller computes the view fresh. */ return null; }
   }
-  certifiedUnion(reader: ReplicatedStoreReader, dropped: DroppedOriginRegistry, excludedPendingEventIds?: ReadonlySet<string>): { records: ConversationGraphReplicationRecord[]; partial: boolean; quarantined: string[];pendingEventIds:string[];missingEventIds:string[] } {
+  /** `verifiedEventIds` names the accepted rows this same synchronous pass verified
+   * against their own writer (origin === packet.writerId) and returned unchanged,
+   * so a caller that would run `verifyHistoricalRecord` on them with no await in
+   * between may rely on that check, made moments earlier in the same pass. Only
+   * look ids up in `records` (a caller that filters records keeps this set as is).
+   * Re-verifying every row of a 500-row union three times per revalidation held
+   * the event loop for seconds. */
+  certifiedUnion(reader: ReplicatedStoreReader, dropped: DroppedOriginRegistry, excludedPendingEventIds?: ReadonlySet<string>): { records: ConversationGraphReplicationRecord[]; partial: boolean; quarantined: string[];pendingEventIds:string[];missingEventIds:string[];verifiedEventIds:ReadonlySet<string> } {
     const candidates = new Map<string, ConversationGraphReplicationRecord>();
     const blocked = new Set<string>();
-    const pending=new Set<string>();const missing=new Set<string>();
+    const pending=new Set<string>();const missing=new Set<string>();const writerVerified=new Set<string>();
     const peerErasures = new Map<string, GraphWitnessErasure>();
     const droppedOrigins = dropped.droppedOrigins(CONVERSATION_GRAPH_STORE);
     let partial = false;
@@ -1544,6 +1551,7 @@ export class ConversationGraphReplication {
       const stored=this.records.get(key);const record=stored?.record;
       if(!descriptor||!record||!union.value||stored?.quarantine||!this.verify(record,union.value.origin)
         ||canonicalHash(descriptor)!==canonicalHash(this.descriptorFor(record))){partial=true;blocked.add(key);continue;}
+      if(union.value.origin===record.packet.writerId)writerVerified.add(key);
       if(record.erasure)peerErasures.set(key,record.erasure);
       if(this.terminal(record))candidates.set(key,record);
       if(!this.fullyPersisted(record)){pending.add(key);if(!(excludedPendingEventIds?.has(key)&&!this.terminal(record)&&!record.erasure&&!record.cancellation))partial=true;}
@@ -1557,6 +1565,8 @@ export class ConversationGraphReplication {
       if (peer && canonicalHash(this.immutable(peer)) !== canonicalHash(this.immutable(stored.record))) { blocked.add(key); partial = true; continue; }
       const ownTerminal = this.terminal(stored.record); const peerTerminal = peer ? this.terminal(peer) : undefined;
       if (ownTerminal && peerTerminal && canonicalHash(ownTerminal) !== canonicalHash(peerTerminal)) { blocked.add(key); partial = true; continue; }
+      // The row accepted below is built here, not the one verified above.
+      writerVerified.delete(key);
       // A validated peer tombstone cannot be overridden by an older local
       // source copy while its asynchronous source-side apply is catching up.
       const chosen = cloneGraphRecord(peer ?? stored.record);
@@ -1590,7 +1600,8 @@ export class ConversationGraphReplication {
       if (record.certificate&&this.fullyPersisted(record)&&(record.coreType==='graph-event'||!this.options.localErasure?.isDenied(record.packet.erasureIdentity))) accepted.push(cloneGraphRecord(record));
       previous = record.packet;
     }
-    return { records: accepted, partial, quarantined: [...blocked].sort(),pendingEventIds:[...pending].sort(),missingEventIds:[...new Set([...missing,...blocked])].sort() };
+    const verifiedEventIds=new Set(accepted.map(record=>record.packet.eventId).filter(id=>writerVerified.has(id)));
+    return { records: accepted, partial, quarantined: [...blocked].sort(),pendingEventIds:[...pending].sort(),missingEventIds:[...new Set([...missing,...blocked])].sort(),verifiedEventIds };
   }
 
   envelope(record: ConversationGraphReplicationRecord, hlc: HlcTimestamp, observed?: HlcTimestamp): Record<string, unknown> {

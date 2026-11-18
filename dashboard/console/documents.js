@@ -20,7 +20,7 @@ export function rowWords(d) {
 }
 
 export async function renderDocuments(main, api) {
-  const r = await api.get('/docs', 12_000);
+  const [r, w] = await Promise.all([api.get('/docs', 12_000), api.get('/docs/decisions/waiting', 12_000)]);
   if (!r.ok) {
     setKids(main, r.reason === 'switched off on this agent'
       ? el('section', {}, el('div', { class: 'eyebrow', text: 'Documents' }), el('h1', { text: 'Documents are not switched on for this agent.' }))
@@ -40,5 +40,10 @@ export async function renderDocuments(main, api) {
       el('span', { class: 'need-title', text: w.title }),
       el('p', { class: 'need-sub', text: w.sub }));
   }));
-  setKids(main, head, list);
+  // Documents that ask the owner to decide (document-decisions.md §3.7) lead the page, each opening its own page.
+  const waiting = w && w.ok && Array.isArray(w.data?.documents) ? w.data.documents.filter((d) => d && typeof d.id === 'string') : [];
+  const asks = waiting.map((d) => el('a', { class: 'need-card', 'data-operator-need': 'document-decisions', href: `/docs/${encodeURIComponent(d.id)}`, target: '_blank', rel: 'noopener noreferrer' },
+    el('span', { class: 'need-title', text: `Decide: ${d.title || 'a document'}` }),
+    el('p', { class: 'need-sub', text: d.question || 'Open it to approve or decline.' })));
+  setKids(main, ...asks, head, list);
 }

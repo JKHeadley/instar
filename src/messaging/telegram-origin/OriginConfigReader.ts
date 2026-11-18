@@ -19,10 +19,14 @@ import { OriginSourcePoller } from './OriginSourcePoller.js';
 export interface OriginConfigObservation {
   config: Record<string, any>; observedAt: number; version: string; revision: number;
 }
-// Nothing waits on a read: sends consult the last snapshot and its 30 s bound.
+// Nothing waits on a read: sends consult the last snapshot and its 30 s bound,
+// which counts from before the bytes were read, so a slower read is never staler.
 // 2 s was too short for a saturated host, where 46 reads timed out in 3 hours on
-// the Studio (2026-11-05) and each one refused every send for about 6 s.
-const CONFIG_READ_BUDGET_MS = 10_000;
+// the Studio (2026-11-05) and each one refused every send for about 6 s. 10 s was
+// too short too (2026-11-18): the read is ~6 event-loop hops, and with the loop
+// running back-to-back 2-5 s tasks each hop waits behind one, so two reads in a
+// row ran out of time, the snapshot passed its 30 s bound and replies were held.
+const CONFIG_READ_BUDGET_MS = 25_000;
 /** The read ran out of time. It says nothing about what the config now holds. */
 export function isOriginConfigReadTimeout(error: unknown): boolean {
   return error instanceof Error && error.message === 'origin-config-reader-timeout';
