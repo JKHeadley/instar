@@ -6,6 +6,16 @@ status: draft
 parent-principle: "The Person Decides; the Agent Does the Rest"
 eli16-overview: windows-one-file-extender.eli16.md
 constitution-exceptions: "The Person Decides (app required to connect a PC: the app's Face ID approval is the only human-presence proof Instar has); needs Justin's yes"
+review-convergence: "2026-11-18T23:47:09.785Z"
+review-iterations: 6
+review-completed-at: "2026-11-18T23:47:09.785Z"
+review-report: "docs/specs/reports/windows-one-file-extender-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+clean-door-anthropic-review: "claude-code:claude-fable-5-2"
+single-run-completable: true
+frontloaded-decisions: 15
+cheap-to-change-tags: 11
+contested-then-cleared: 13
 ---
 
 # One file on a Windows PC extends the agent to that PC
@@ -158,12 +168,12 @@ The most likely abuse is a scammer talking a stranger into connecting the scamme
 
 ## Maturation plan
 
-- test-agent-live: a throwaway agent with a named-tunnel origin, the fake PC client (Node, same protocol) in unit, integration and E2E tests, then a side-loaded local unsigned build on the Mama PC against the throwaway.
-- dev-agent-live: Echo, computers.enabled on by Echo's config override; the same side-loaded build on the Mama PC, connected from Justin's iPhone.
-- fleet: default stays off until the graduation criterion is met; then the default changes in a release.
-- graduation criterion: the live proof matrix passes on the Mama PC against Echo; the signed build passes the release gate; the full-wipe test passes on Justin's third machine; no operator-found defect in the following two weeks; the pairing funnel (QR shown, scanned, Connect, approved) is measured on the live proofs; and the recurring model review of the feature ladder reads it ready.
-- ladder: test agent (throwaway), dev agent (Echo), fleet (default on)
-- dark-window: from the first merge until the graduation criterion is met; entered in feature-ladders.json with owner easy setup (topic 143810) and a review date per rung.
+- **test-agent-live:** a throwaway agent with a named-tunnel origin, the fake PC client (Node, same protocol) in unit, integration and E2E tests, then a side-loaded local unsigned build on the Mama PC against the throwaway.
+- **dev-agent-live:** Echo, computers.enabled on by Echo's config override; the same side-loaded build on the Mama PC, connected from Justin's iPhone.
+- **fleet:** default stays off until the graduation criterion is met; then the default changes in a release.
+- **graduation criterion:** the live proof matrix passes on the Mama PC against Echo; the signed build passes the release gate; the full-wipe test passes on Justin's third machine; no operator-found defect in the following two weeks; the pairing funnel (QR shown, scanned, Connect, approved) is measured on the live proofs; and the recurring model review of the feature ladder reads it ready.
+- **ladder:** test agent (throwaway), dev agent (Echo), fleet (default on)
+- **dark-window:** from the first merge until the graduation criterion is met; entered in feature-ladders.json with owner easy setup (topic 143810) and a review date per rung.
 
 ### Tests
 
