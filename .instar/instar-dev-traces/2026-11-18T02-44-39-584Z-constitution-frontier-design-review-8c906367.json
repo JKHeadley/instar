@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "constitution-frontier-design-review",
+  "sessionId": "fb9f8276-4dab-40e5-8807-ab593543dac6",
+  "timestamp": "2026-11-18T02:44:39.584Z",
+  "artifactPath": "upgrades/side-effects/constitution-frontier-design-review.md",
+  "artifactSha256": "52afc1a25bf629181a50150b33f7d39c683f1670184697050d36e4ed51942861",
+  "specPath": "docs/specs/frontier-design-review-standard.md",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/frontier-design-review-building-family-2026-11-17.json",
+    "docs/audits/frontier-design-review-root-family-2026-11-17.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/frontier-design-review-standard.eli16.md",
+    "docs/specs/frontier-design-review-standard.md",
+    "docs/specs/reports/frontier-design-review-family-review-2026-11-17.md",
+    "docs/specs/reports/frontier-design-review-standard-convergence.md",
+    "docs/standards-registry-area-audits.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/constitution-frontier-design-review.md",
+    "upgrades/side-effects/constitution-frontier-design-review.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "constitution article approved with the spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
