@@ -1,0 +1,21 @@
+{
+  "sourceRevision": "9276eeb778b20ca0bf41cc0c836eeec6968f106f",
+  "archiveSha256": "5f7b988d58185495677a296bac5cf9be09a4cbf2a7aafd933079dc2eaa61c610",
+  "promptHashes": {
+    "fix": "0bf8e7c9038b06c2da226e2e3569ab654b921fa8e7e9e229931db41b0efa8263",
+    "spec": "2233061fe86508987655f2310a714b67b001271866a7f11050a2db63afa5d904"
+  },
+  "combinedBase": "ab82ee92f",
+  "resolution": "Use shared reviewRuleLines; move exact constitutional rule7 into the existing shared source.",
+  "independentConcurrence": [
+    "security-adversarial",
+    "integration-performance",
+    "decisions-lessons"
+  ],
+  "focusedTests": {
+    "files": 4,
+    "passed": 28,
+    "failed": 0
+  },
+  "proof": "Both rendered full prompts match the immutable reviewed pre-merge package; all six original safety rules remain byte-identical to main."
+}

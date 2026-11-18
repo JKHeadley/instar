@@ -198,3 +198,15 @@ installed default bytes. The earlier bounded-test-spawn negative declaration rem
 The repaired implementation preserves authority and adds complete, inspectable inputs. Independent
 implementation review concurs; full validation remains pending before release clearance; live overseer body and prompt
 adoption are verified separately from package deployment.
+
+## Integration with the current main branch
+
+Main moved the independent review rules into one shared source used by builders and reviewers (PR3315). The merge retains that source and moves the exact constitutional rule into it as rule7. Both fix and spec reviewer prompts remain byte-identical to the previously reviewed9276eeb77 package; the worker sees the same criteria without gaining review authority or a claim that it received the reviewer's trusted context. The shared-rule regression test was first observed failing without rule7, then passed with it. The six existing safety rules remain unchanged. All three independent reviewers concurred. The full combined-tree build, lint and regression run is pending; the earlier81835 passing tests apply to9276eeb77, not this combined tree. Provenance: docs/specs/reports/bug-fix-constitutional-review-shared-rule-proof.json.
+
+## Blocking test-fixture repair
+
+The combined integration run exposed a corruption fixture that could leave valid ciphertext unchanged when its first character was already A. A controlled valid A-prefixed fixture reproduced the same HTTP rejection-assertion failure. The repair guarantees a different character and asserts nonidentity before the original rejection check. Controlled A and B cases and the ordinary seven-test file pass. Temporary generation loops are removed. No production cryptographic code, assertion, test selection or timeout is weakened. Security and performance reviewers independently concur. The completed70120 unit tests remain valid on unchanged production/unit code; complete integration and E2E reruns are still required.
+
+### Fresh second-pass concurrence
+
+The independent security reviewer reread all eight assessments, both integration appendices, and both proof records. Verdict: "Fresh artifact-level concurrence. No concern raised." The reviewed material had SHA-25613134ab7515a4b1e84f7f9ebf512b650686e108892bfdcbfc6a0d82f141ad4ac before appending this receipt. The reviewer confirmed the six safety rules, trusted-context boundary and rejection assertion remain intact, and that historical validation is distinguished from the pending integration/E2E runs. This is artifact concurrence, not release clearance.
