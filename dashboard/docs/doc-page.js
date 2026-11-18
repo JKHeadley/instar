@@ -61,6 +61,8 @@ const state = {
   reopenTried: false,
   sheet: null,
   compareOpen: false,
+  appOps: null, // what the app said it can do (document-decisions §3.3); null until it says
+  decisionPoll: 0,
 };
 
 // ── small DOM helpers (text only) ──────────────────────────────────────────────────────────────
@@ -486,6 +488,8 @@ function render() {
     renderHeader(page),
     el('p', { cls: 'notice', attrs: { id: 'doc-notice', role: 'status', 'aria-live': 'polite', hidden: true } }),
   ];
+  const decision = renderDecision(page);
+  if (decision) children.push(decision);
   if (state.compareOpen) children.push(renderCompare(page));
   if (page.version && !page.version.latest) {
     children.push(el('p', { cls: 'note older' }, [
@@ -855,6 +859,77 @@ function renderCompare(page) {
   return panel;
 }
 
+// ── Decisions (document-decisions §3.3): made on the owner's phone, never by this page ────────────
+
+function renderDecision(page) {
+  const v = M.decisionPanel(page, { inApp: IN_APP, appOps: state.appOps });
+  if (!v) return null;
+  const kids = [el('p', { cls: 'decision-headline', text: v.headline })];
+  if (v.question) kids.push(el('p', { cls: 'decision-question', text: v.question }));
+  for (const line of v.lines) kids.push(el('p', { cls: 'decision-line', text: line }));
+  const actions = el('div', { cls: 'decision-actions' });
+  if (v.controls === 'app-buttons' && (v.waiting || v.changeAnswer || !page.decision.decision)) {
+    const current = page.decision.decision && v.changeAnswer && !v.waiting ? page.decision.decision.verdict : null;
+    if (current) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
+    if (current !== 'approve') actions.appendChild(button('Approve', () => askApp('approve'), 'btn primary'));
+    if (current !== 'decline') actions.appendChild(button('Decline', () => askApp('decline'), current ? 'btn primary' : 'btn'));
+  } else if (v.controls === 'update-app') {
+    actions.appendChild(el('p', { cls: 'decision-line', text: 'Update the Instar app to decide here.' }));
+  } else if (v.controls === 'phone-buttons' && (v.waiting || v.changeAnswer)) {
+    // On a computer: the buttons stay on the document; one tap sends it to the phone for Face ID.
+    // After an answer, only the other answer is offered (the current one is already recorded).
+    const current = page.decision.decision && v.changeAnswer && !v.waiting ? page.decision.decision.verdict : null;
+    if (current) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
+    if (current !== 'approve') actions.appendChild(button('Approve', (e) => askPhone(e.currentTarget, 'approve'), 'btn primary'));
+    if (current !== 'decline') actions.appendChild(button('Decline', (e) => askPhone(e.currentTarget, 'decline'), current ? 'btn' : 'btn'));
+    actions.appendChild(el('span', { cls: 'decision-line', text: 'You confirm on your phone with Face ID.' }));
+  } else if (v.controls === 'open-in-app' && v.waiting) {
+    const link = M.appDocLink(location.origin, DOC_ID);
+    if (link) actions.appendChild(el('a', { cls: 'btn primary', text: 'Open in the Instar app to decide', attrs: { href: link } }));
+    else actions.appendChild(el('p', { cls: 'decision-line', text: 'Open this document in the Instar app on your phone to decide.' }));
+  } else if (v.controls === 'open-latest') {
+    actions.appendChild(button('Open the latest version to decide', () => load(null), 'btn'));
+  }
+  if (actions.childNodes.length) kids.push(actions);
+  return el('section', { cls: `decision ${v.tone}`, attrs: { id: 'doc-decision', role: 'region', 'aria-label': 'Decision' } }, kids);
+}
+
+/** In the app: hand the answer to the app's own sheet (it fetches the ask itself and asks for Face ID). */
+function askApp(verdict) {
+  const page = state.page;
+  if (!IN_APP || !page || !page.version) return;
+  try { bridge.postMessage({ type: 'decide', docId: DOC_ID, verdict, versionId: page.version.id }); } catch { notice('The app did not answer. Open the document again.'); }
+}
+
+/** In a browser: ask the owner's phone, then re-read until the answer arrives. */
+async function askPhone(btn, verdict) {
+  const page = state.page;
+  const ask = page && page.decision && page.decision.ask;
+  if (!ask || !state.device) return;
+  btn.disabled = true;
+  const r = await writeSigned('decide-on-phone', { askId: ask.askId, verdict });
+  btn.disabled = false;
+  const outcome = r.ok && r.data ? r.data.outcome : 'unavailable';
+  const bad = outcome === 'unavailable' || outcome === 'no-phone';
+  notice(M.phoneAskWords(outcome, verdict), bad ? 'bad' : 'info');
+  if (bad) return;
+  clearTimeout(state.decisionPoll);
+  const delays = M.decisionPollDelays();
+  const before = JSON.stringify(page.decision.decision || null);
+  let failures = 0;
+  const tick = async (i) => {
+    if (i >= delays.length) { notice('Reload to see your answer.', 'info'); return; }
+    const fresh = await fetchJson(`/docs/${DOC_ID}/page-data`);
+    if (!fresh.ok) { failures++; if (failures >= 3) { notice('Reload to see your answer.', 'info'); return; } }
+    else {
+      failures = 0;
+      if (JSON.stringify((fresh.data && fresh.data.decision && fresh.data.decision.decision) || null) !== before) { await load(null); return; }
+    }
+    state.decisionPoll = setTimeout(() => tick(i + 1), delays[i + 1] ?? 0);
+  };
+  state.decisionPoll = setTimeout(() => tick(0), delays[0]);
+}
+
 // ── Send (computer browser) ────────────────────────────────────────────────────────────────────
 
 function renderBar(page) {
@@ -1114,6 +1189,9 @@ function installGlobalHandlers() {
         load(state.versionId);
       } else if (ev.type === 'focus-comment') {
         if (state.page) focusThread(ev.commentKey); else state.focusKey = ev.commentKey;
+      } else if (ev.type === 'hello') {
+        state.appOps = ev.ops;
+        if (state.page) render();
       }
     });
   }

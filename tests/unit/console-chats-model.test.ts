@@ -10,6 +10,12 @@ import * as m from '../../dashboard/console/chats-model.js';
 const UUID = '3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b';
 
 describe('conversation refs and the hash', () => {
+  it('round-trips opaque source message identities without accepting control characters or truncation', () => {
+    expect(m.messageFromQuery('m=event%3Aone%26two')).toBe('event:one&two');
+    expect(m.messageFromQuery('m=144556')).toBe('144556');
+    for (const value of ['', 'x'.repeat(201), 'line\nfeed', '\u0000']) expect(m.messageFromQuery(`m=${encodeURIComponent(value)}`)).toBeNull();
+    expect(m.messageFromQuery('c=telegram%3A7')).toBeNull();
+  });
   it('parses and formats each kind, refusing anything else', () => {
     expect(m.parseConversationRef(`app:${UUID}`)).toEqual({ kind: 'app', id: UUID });
     expect(m.parseConversationRef('telegram:134088')).toEqual({ kind: 'telegram', id: '134088' });
@@ -395,6 +401,113 @@ describe('message time (bubble and pin line)', () => {
     expect(m.messageTime('', nowMs)).toBe('');
     expect(m.messageTime('not a date', nowMs)).toBe('');
     expect(m.messageTime(undefined as unknown as string, nowMs)).toBe('');
+  });
+});
+
+describe('the list grouped by the conversation hierarchy (console-chats-grouped)', () => {
+  const effortA = { kind: 'effort', id: 'eff-a' };
+  const effortB = { kind: 'effort', id: 'eff-b' };
+  const sub = { kind: 'effort', id: 'eff-a-sub' };
+  const tg = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-100', topicId });
+  const conv = (topicId: number, path: Array<{ ref: unknown; title: string }>) => ({
+    ref: tg(topicId), title: `T${topicId}`, kind: 'conversation', role: path.length ? 'worker' : 'unassigned', primaryPath: path,
+    visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` },
+  });
+  const page = (items: unknown[], nextCursor: string | null = null) => ({ items, partial: false, nextCursor });
+  const body = { conversations: [
+    { id: 1, platform: 'telegram', title: 'Chief of Staff', lastActivity: '2026-11-17T12:00:00Z', unreadCount: 1 },
+    { id: 2, platform: 'telegram', title: 'Build', lastActivity: '2026-11-17T11:00:00Z', unreadCount: 2 },
+    { id: 3, platform: 'telegram', title: 'Loose', lastActivity: '2026-11-17T10:00:00Z' },
+    { id: 4, platform: 'telegram', title: 'Deep', lastActivity: '2026-11-17T09:00:00Z', unreadCount: 3 },
+    { id: 5, platform: 'telegram', title: 'Other', lastActivity: '2026-11-17T08:00:00Z' },
+  ] };
+
+  it('indexes each conversation under its TOP-LEVEL effort, across pages; nested efforts roll up', () => {
+    const index = m.hierarchyIndex([
+      page([conv(2, [{ ref: effortA, title: 'App work' }]), { ref: effortA, title: 'App work', kind: 'effort', role: 'effort', primaryPath: [], visibleChildCount: 2 }], 'next'),
+      page([conv(4, [{ ref: effortA, title: 'App work' }, { ref: sub, title: 'Sub' }]), conv(5, [{ ref: effortB, title: '  ' }]), conv(3, [])]),
+    ])!;
+    expect(index.get('telegram:2')?.title).toBe('App work');
+    expect(index.get('telegram:4')).toEqual(index.get('telegram:2'));
+    expect(index.get('telegram:5')?.title).toBe('Untitled group');
+    expect(index.has('telegram:3')).toBe(false);
+  });
+
+  it('a malformed or missing hierarchy reads as none (the list stays flat)', () => {
+    expect(m.hierarchyIndex([])).toBeNull();
+    expect(m.hierarchyIndex([{ items: 'x', partial: false }])).toBeNull();
+    expect(m.hierarchyIndex([page([{ ref: { kind: 'bogus' }, title: 'x' }])])).toBeNull();
+  });
+
+  it('groupRows: Chief of Staff leads alone, one group per effort with count and unread, the rest "Not in a group yet"', () => {
+    const index = m.hierarchyIndex([page([conv(2, [{ ref: effortA, title: 'App work' }]), conv(4, [{ ref: effortA, title: 'App work' }]), conv(5, [{ ref: effortB, title: 'Windows' }])])]);
+    const g = m.groupRows(m.listRows(body), index, 'telegram:1');
+    expect(g.lead?.key).toBe('telegram:1');
+    expect(g.groups.map((x: { title: string; count: number; unread: number }) => [x.title, x.count, x.unread])).toEqual([['App work', 2, 5], ['Windows', 1, 0]]);
+    expect(g.groups[0].rows.map((r: { key: string; depth: number }) => [r.key, r.depth])).toEqual([['telegram:2', 1], ['telegram:4', 1]]);
+    expect(g.groups[0].lastActivity).toBe('2026-11-17T11:00:00Z');
+    expect(g.ungrouped.map((r: { key: string }) => r.key)).toEqual(['telegram:3']);
+    expect(m.groupCountWords(1)).toBe('1 conversation');
+    expect(m.groupCountWords(2)).toBe('2 conversations');
+  });
+
+  it('the remembered view: only "all" means all; anything else is grouped', () => {
+    expect(m.listViewFrom('all')).toBe('all');
+    for (const v of ['grouped', null, '', 'x']) expect(m.listViewFrom(v)).toBe('grouped');
+  });
+});
+
+describe('which groups are tracked projects (console-chats-grouped)', () => {
+  const effA = { kind: 'effort', id: 'eff-a' };
+  const effB = { kind: 'effort', id: 'eff-b' };
+  const tgRef = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-100', topicId });
+  const conv = (topicId: number, path: Array<{ ref: unknown; title: string }>) => ({
+    ref: tgRef(topicId), title: `T${topicId}`, kind: 'conversation', role: 'worker', primaryPath: path, visibleChildCount: 0,
+    source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` },
+  });
+  const effort = (ref: unknown, title: string, frontDoor?: unknown) => ({ ref, title, kind: 'effort', role: 'effort', primaryPath: [], visibleChildCount: 1, metadata: frontDoor ? { frontDoor } : {} });
+  const pages = [{ partial: false, nextCursor: null, items: [
+    conv(20, [{ ref: effA, title: 'Apps' }]), conv(21, [{ ref: effA, title: 'Apps' }, { ref: { kind: 'effort', id: 'sub' }, title: 'Sub' }]),
+    effort(effA, 'Apps', tgRef(21)), conv(30, [{ ref: effB, title: 'Misc' }]), effort(effB, 'Misc'),
+  ] }];
+
+  it('effortMembers lists every conversation under each top-level effort, front door first, nested ones included', () => {
+    const members = m.effortMembers(pages)!;
+    const keyA = [...members.keys()].find((k) => members.get(k)!.includes('telegram:20'))!;
+    expect(members.get(keyA)).toEqual(['telegram:21', 'telegram:20']);
+    expect([...members.values()]).toContainEqual(['telegram:30']);
+    expect(m.effortMembers([{ items: 'x', partial: false }])).toBeNull();
+  });
+
+  it('the status chip mapping is shared with the phone apps: route states and raw verdicts; pausedBy wins; anything else no chip', () => {
+    const chip = (p: object) => m.projectStatusOf(p)?.label ?? null;
+    for (const w of ['moving', 'moving-under-existing-owner']) expect(chip({ state: w })).toBe('Moving');
+    for (const w of ['stalled', 'stopped-retrying', 'stuck']) expect(chip({ state: w })).toBe('Stuck');
+    for (const w of ['waiting-on-you', 'waiting-on-user']) expect(chip({ lastVerdict: w })).toBe('Needs you');
+    for (const w of ['done', 'done-verified']) expect(chip({ state: w })).toBe('Done');
+    expect(chip({ state: 'drifting' })).toBe('Drifting');
+    expect(chip({ state: 'paused' })).toBe('Paused');
+    expect(chip({ state: 'moving', pausedBy: 'owner' })).toBe('Paused');
+    for (const w of ['claims-done', 'unknown', 'toString', '']) expect(chip({ state: w })).toBeNull();
+  });
+
+  it('projectsForGroups: a group is a project when ANY conversation under it is tracked (front door first); a failed read leaves all plain', () => {
+    const members = m.effortMembers(pages)!;
+    const tracked = m.trackedProjects({ projects: [
+      { key: 'telegram:20', conversationKey: 'telegram:20', title: 'Worker project', state: 'stalled' },
+      { key: 'telegram:21', title: 'Front door project', state: 'waiting-on-you' },
+    ] })!;
+    const byGroup = m.projectsForGroups(members, tracked);
+    expect(byGroup.size).toBe(1);
+    const p = [...byGroup.values()][0];
+    expect(p.title).toBe('Front door project');
+    expect(p.status.label).toBe('Needs you');
+    expect(p.href).toBe('#/work/board?project=telegram%3A21');
+    expect(m.projectsForGroups(members, m.trackedProjects(null)).size).toBe(0);
+    expect(m.projectsForGroups(null, tracked).size).toBe(0);
+    // A bare app id is an app conversation key.
+    const app = '3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+    expect(m.trackedProjects({ projects: [{ key: app, state: 'moving' }] })!.has(`app:${app}`)).toBe(true);
   });
 });
 

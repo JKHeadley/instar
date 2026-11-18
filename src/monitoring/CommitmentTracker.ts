@@ -2054,8 +2054,32 @@ export class CommitmentTracker extends EventEmitter {
 
   // ── Auto-correction ────────────────────────────────────────────
 
+  /**
+   * SEC-075: auto-correction writes config on a bearer caller's behalf (anyone with the API key
+   * can create a commitment), so it may write only what PATCH /config would accept from that
+   * caller. The guard returns null when the write is allowed, else a plain reason. Until it is
+   * wired, nothing is auto-corrected (fail closed); the drift is still reported as a violation.
+   */
+  private configWriteGuard: ((configPath: string, value: unknown) => string | null) | null = null;
+  setConfigWriteGuard(guard: (configPath: string, value: unknown) => string | null): void {
+    this.configWriteGuard = guard;
+  }
+
   private attemptAutoCorrection(commitment: Commitment): boolean {
     if (!commitment.configPath || commitment.configExpectedValue === undefined) return false;
+    let refusal: string | null;
+    try {
+      refusal = this.configWriteGuard
+        ? this.configWriteGuard(commitment.configPath, commitment.configExpectedValue)
+        : 'the config write check is not ready yet';
+    } catch (err) {
+      // @silent-fallback-ok — a check that cannot decide is a refusal: nothing is written, the drift is reported
+      refusal = `the config write check failed (${err instanceof Error ? err.message : String(err)})`;
+    }
+    if (refusal !== null) {
+      console.warn(`[commitments] not auto-correcting ${commitment.id}: ${refusal}`);
+      return false;
+    }
 
     try {
       this.config.liveConfig.set(commitment.configPath, commitment.configExpectedValue);

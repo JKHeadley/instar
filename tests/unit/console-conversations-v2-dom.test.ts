@@ -35,7 +35,7 @@ describe('owned-custody v2 mounted dashboard',()=>{
  });
  it('offers local create only for the explicit authorized preprofile envelope and never fabricates an empty canonical tree',async()=>{
   const f=await boot(path=>path.includes('/pending')?{data:{items:[],total:0,nextOffset:null}}:{status:503,data:{code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal:true,canonical:false}}});
-  await f.render();expect(f.button('Create effort')).toBeDefined();expect(f.main.textContent).toContain('agreed view is unavailable');expect(f.main.textContent).not.toContain('No efforts');expect(f.main.querySelector('.conversation-rows')).toBeNull();
+  await f.render();expect(f.button('Create group')).toBeDefined();expect(f.main.textContent).toContain('agreed view is unavailable');expect(f.main.textContent).not.toContain('No efforts');expect(f.main.querySelector('.conversation-rows')).toBeNull();
  });
  it('keeps the way to finish a stopped removal when the agreed view is unavailable',async()=>{
   const member=(machineId:string,name:string,self:boolean)=>({machineId,name,self});
@@ -45,7 +45,7 @@ describe('owned-custody v2 mounted dashboard',()=>{
  it('records here without offering a retry and uses operationKey-only cancellation',async()=>{
   const f=await boot((path,body)=>path.includes('/pending')?{data:{items:[],total:0,nextOffset:null}}:path.includes('/nodes/')?{data:node()}:path.endsWith('/changes')?{status:202,data:{...pending(),requestId:body.requestId}}:path.endsWith('/cancel')?{data:{state:'canceled-local'}}:path.includes('/changes/')?{status:404,data:{}}:{data:{partial:false,items:[],nextCursor:null,capabilities:{ownerCorrections:true}}});
   const {effortActionControls}=await import('../../dashboard/console/conversation-effort-actions.js');const {encodeNodeRef}=await import('../../dashboard/console/conversations-model.js');const controls=effortActionControls({canCorrect:true,node:{kind:'effort',key:encodeNodeRef(effort),ref:effort},correction:node().correction,send:async(path:string,body?:any)=>{const raw=await (globalThis.fetch as any)(path,{...(body?{body:JSON.stringify(body)}:{})});return{ok:raw.ok,status:raw.status,data:await raw.json()};},current:()=>true,unlock:()=>{},refresh:()=>{}});f.main.append(controls!);
-  f.button('Rename effort').click();await settle();const input=document.querySelector('[role=dialog] input') as HTMLInputElement;expect(input,document.body.textContent||'').not.toBeNull();input.value='DRAFT-PRIVATE';document.querySelector('form')!.dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await settle();expect(document.querySelector('[role=dialog]')?.textContent).toContain('Recorded here on Studio');
+  f.button('Rename group').click();await settle();const input=document.querySelector('[role=dialog] input') as HTMLInputElement;expect(input,document.body.textContent||'').not.toBeNull();input.value='DRAFT-PRIVATE';document.querySelector('form')!.dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await settle();expect(document.querySelector('[role=dialog]')?.textContent).toContain('Recorded here on Studio');
   f.button('Check status').click();await settle();expect(f.button('Retry same request')).toBeUndefined();expect(document.querySelector('[role=dialog]')?.textContent).toContain('Recorded here');expect(JSON.stringify({...sessionStorage})).not.toContain('DRAFT-PRIVATE');
  });
  it('dismisses only presentation, reads fresh canonical heads and retains the old UUID alongside an explicit new edit',async()=>{
@@ -54,8 +54,8 @@ describe('owned-custody v2 mounted dashboard',()=>{
   const {effortActionControls}=await import('../../dashboard/console/conversation-effort-actions.js');const {encodeNodeRef}=await import('../../dashboard/console/conversations-model.js');const continuity=await import('../../dashboard/console/conversation-write-continuity.js');
   const scope=encodeNodeRef(effort)+':rename';continuity.track(scope,{body:{requestId:'old-unknown-request-01'}});
   const controls=effortActionControls({canCorrect:true,node:{kind:'effort',key:encodeNodeRef(effort),ref:effort},correction:node().correction,current:()=>true,unlock:()=>{},refresh:()=>{},send:async(path:string,body?:any)=>{if(body)writes++;const raw=await (globalThis.fetch as any)(path,{...(body?{body:JSON.stringify(body)}:{})});return{ok:raw.ok,status:raw.status,data:await raw.json()};}});f.main.append(controls!);
-  f.button('Rename effort').click();await settle();expect(writes).toBe(0);f.button('Dismiss notice and refresh').click();await settle();expect(continuity.ledger()).toMatchObject([{requestId:'old-unknown-request-01',dismissed:true}]);
-  const start=f.calls.length;f.button('Rename effort').click();await settle();expect(f.calls.slice(start).some(c=>c.path.includes('/nodes/'))).toBe(true);expect(document.querySelector('[role=dialog]')?.textContent).toContain('An earlier request is unresolved');
+  f.button('Rename group').click();await settle();expect(writes).toBe(0);f.button('Dismiss notice and refresh').click();await settle();expect(continuity.ledger()).toMatchObject([{requestId:'old-unknown-request-01',dismissed:true}]);
+  const start=f.calls.length;f.button('Rename group').click();await settle();expect(f.calls.slice(start).some(c=>c.path.includes('/nodes/'))).toBe(true);expect(document.querySelector('[role=dialog]')?.textContent).toContain('An earlier request is unresolved');
   const input=document.querySelector('[role=dialog] input') as HTMLInputElement;input.value='NEW-PRIVATE-NAME';document.querySelector('form')!.dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await settle();
   expect(writes).toBe(1);expect(continuity.ledger()).toHaveLength(2);expect(continuity.ledger()[0].requestId).toBe('old-unknown-request-01');expect(JSON.stringify(continuity.ledger())).not.toContain('NEW-PRIVATE');
  });
@@ -69,7 +69,7 @@ describe('owned-custody v2 mounted dashboard',()=>{
   const continuity=await import('../../dashboard/console/conversation-write-continuity.js');const {encodeNodeRef}=await import('../../dashboard/console/conversations-model.js');const {effortActionControls}=await import('../../dashboard/console/conversation-effort-actions.js');
   const key=encodeNodeRef(effort);continuity.track(key+':rename',{body:{requestId:'still-unknown-request-01'}});
   const control=effortActionControls({canCorrect:true,node:{kind:'effort',key,ref:effort},correction:node().correction,current:()=>true,unlock:()=>{},refresh:()=>{},send:async(path:string)=>{const raw=await (globalThis.fetch as any)(path);return{ok:raw.ok,status:raw.status,data:await raw.json()};}});f.main.append(control!);
-  f.button('Rename effort').click();await settle();expect(continuity.ledger()).toHaveLength(1);expect(f.calls.some(c=>c.body)).toBe(false);expect(f.button('Dismiss notice and refresh')).toBeDefined();
+  f.button('Rename group').click();await settle();expect(continuity.ledger()).toHaveLength(1);expect(f.calls.some(c=>c.body)).toBe(false);expect(f.button('Dismiss notice and refresh')).toBeDefined();
  });
 
  it('reconciles a promoted operation by request identity across live pending pages',async()=>{

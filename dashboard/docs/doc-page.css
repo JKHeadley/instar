@@ -243,3 +243,14 @@ del { background: var(--del-bg); color: var(--del-text); }
 #doc.in-app .hint { display: none; }
 
 @media (prefers-reduced-motion: reduce) { .thread { transition: none; } }
+
+/* Document decisions (docs/specs/document-decisions.md §3.3): near the top, visible on arrival. */
+.decision { margin: 12px 0 16px; padding: 12px 14px; border: 1px solid var(--hairline); border-left: 4px solid var(--attn); border-radius: 10px; background: var(--surface); }
+.decision.ok { border-left-color: var(--ok); }
+.decision.bad { border-left-color: var(--bad); }
+.decision-headline { margin: 0 0 4px; font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+.decision-question { margin: 4px 0 8px; font-size: 1.02rem; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.decision-line { margin: 2px 0; font-size: 0.9rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.decision-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.decision-change { font-size: 0.9rem; color: var(--text-muted); }
+@media (max-width: 640px) { .decision-actions .btn { flex: 1 1 100%; } }

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T20:08:27.810Z",
+  "slug": "install-honor-chosen-ai",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/install.ts",
+      "src/commands/setup-wizard/state-machine.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "an installer answer was overridden by a detected default"
+  },
+  "verdict": "pass"
+}

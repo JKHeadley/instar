@@ -401,7 +401,12 @@ export class ConversationGraphReplicationRuntime {
   leaseEpoch:native?.epoch??0,membershipEpoch:this.config.membership.epoch,fencedLeaseHash:native?canonicalHash(native):null};}
  /** Finished delivery is final, so it is verified once per process and remembered; every later pass skips the record without re-checking its receipts. */
  private readonly finishedDeliveries=new Set<string>();
- private readonly deliveryRetry=new Map<string,{fails:number;next:number}>();private deliveryPass=0;
+ private readonly deliveryRetry=new Map<string,{fails:number;next:number;tried?:number}>();private deliveryPass=0;
+ /** Uncertified continuations, bounded the same way as resumed deliveries. Each one re-validates the record and
+  * submits it while the mutation lane is held, and peer observe calls wait behind the lane; with a backlog of
+  * uncertified records that never confirm (accept-all rig, 2026-11-18: 50 records, every M5 observe timing out),
+  * an unbounded pass starved the very observations that would certify them. */
+ private readonly continuationRetry=new Map<string,{fails:number;next:number;tried?:number}>();
  private deliveryFinished(eventId:string):boolean{if(this.finishedDeliveries.has(eventId))return true;if(!this.source.allDeliveryCompletionPersisted(eventId))return false;this.finishedDeliveries.add(eventId);return true;}
  async reconcilePending():Promise<Array<{eventId:string;state:string}>>{if(this.options.leaseCoordinator.holdsLease()&&this.isReady()){try{await this.prepareNativeTailClosure();}catch(error){/* DegradationReporter internalOnly via reportUnavailable; missing closed tails keep recovery held without blocking local queue custody. */this.noteTailClosure(error);this.reportUnavailable('graph-native-tail-closure-unavailable');return [];}}return this.withMutation(async()=>{
   const results:Array<{eventId:string;state:string}>=[];if(!this.options.leaseCoordinator.holdsLease()||!await this.refreshReadinessCore())return results;
@@ -410,17 +415,30 @@ export class ConversationGraphReplicationRuntime {
   const records=this.source.recordsForRepair().filter(record=>!record.cancellationCertificate&&(!record.certificate||!record.materialization&&!record.erasure&&!this.deliveryFinished(record.packet.eventId))).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
   // Resumed deliveries are bounded: after one does not finish, no other is tried in this pass (a silent member costs one
   // record's timeouts, not one per parked record), and a record that keeps failing is retried less and less often.
-  const pass=++this.deliveryPass;let deliveryStalled=false;
+  const pass=++this.deliveryPass;let deliveryStalled=false,continuationStalled=false;
+  // Least recently tried first (never tried first, then source order), so a skipped record keeps moving up:
+  // with a bound of one non-finishing attempt per pass, a fixed order let the first ~40 failing records
+  // hold every later one back for good.
+  const lastTried=(record:ConversationGraphReplicationRecord)=>(record.certificate?this.deliveryRetry:this.continuationRetry).get(record.packet.eventId)?.tried??0;
+  records.sort((a,b)=>lastTried(a)-lastTried(b)||a.packet.sourceSequence-b.packet.sourceSequence);
+  // Forget backoff for records no longer pending here (finished elsewhere, quarantined, erased).
+  {const present=new Set(records.map(record=>record.packet.eventId));for(const retry of [this.deliveryRetry,this.continuationRetry])for(const id of [...retry.keys()])if(!present.has(id))retry.delete(id);}
   for(const record of records){if(!this.alive())break;
    if(record.certificate){const held=this.deliveryRetry.get(record.packet.eventId);if(deliveryStalled||held&&held.next>pass)continue;
     const outcome=await this.coordinator.submit(record);results.push({eventId:record.packet.eventId,state:outcome.state});
     if(outcome.state==='committed'||this.deliveryFinished(record.packet.eventId))this.deliveryRetry.delete(record.packet.eventId);
-    else{const fails=(held?.fails??0)+1;this.deliveryRetry.set(record.packet.eventId,{fails,next:pass+Math.min(2**(fails-1),40)});deliveryStalled=true;}
+    else{const fails=(held?.fails??0)+1;this.deliveryRetry.set(record.packet.eventId,{fails,next:pass+Math.min(2**(fails-1),40),tried:pass});deliveryStalled=true;}
     continue;}
-   const pending=await this.validatedContinuation(record);if(!pending){results.push({eventId:record.packet.eventId,state:'held'});continue;}
+   // Same bound as deliveries: after one continuation does not finish, no other is tried in this pass, and a
+   // record that keeps not finishing is tried less and less often (it is still tried again, never dropped).
+   const retry=this.continuationRetry.get(record.packet.eventId);if(continuationStalled||retry&&retry.next>pass)continue;
+   const stalled=()=>{const fails=(retry?.fails??0)+1;this.continuationRetry.set(record.packet.eventId,{fails,next:pass+Math.min(2**(fails-1),40),tried:pass});continuationStalled=true;};
+   const pending=await this.validatedContinuation(record);if(!pending){results.push({eventId:record.packet.eventId,state:'held'});stalled();continue;}
+   let state:string;
    if(pending.erasure||pending.cancellation||pending.adoption?.disposition==='refused'){
-    const outcome=await this.coordinator.cancel(pending,lease=>signGraphRecord('graph-witness-action-v1',witnessActionPayload('cancel',{idempotencyKey:pending.packet.idempotencyKey},lease),this.signingKey));results.push({eventId:record.packet.eventId,state:outcome.state});
-   }else{const outcome=await this.coordinator.submit(pending);results.push({eventId:record.packet.eventId,state:outcome.state});}
+    const outcome=await this.coordinator.cancel(pending,lease=>signGraphRecord('graph-witness-action-v1',witnessActionPayload('cancel',{idempotencyKey:pending.packet.idempotencyKey},lease),this.signingKey));state=outcome.state;results.push({eventId:record.packet.eventId,state});
+   }else{const outcome=await this.coordinator.submit(pending);state=outcome.state;results.push({eventId:record.packet.eventId,state});}
+   if(state==='committed'||state==='canceled'||state==='commit-won')this.continuationRetry.delete(record.packet.eventId);else stalled();
   }return results;
  }).then(async results=>{await this.retryLocalOwnerIntents();return results;});}
  private async erasedCustodyAuthority(packet:GraphOperationPacket,proof:GraphWitnessErasedControlProof):Promise<{custodyMembership:GraphMembershipEpoch;custodyActivations:GraphMembershipActivationCertificate[]}>{
@@ -486,6 +504,13 @@ export class ConversationGraphReplicationRuntime {
   }catch{/* DegradationReporter internalOnly via reportUnavailable; invalid or unavailable enrollment cannot accept local private custody. */this.reportUnavailable('graph-local-enrollment-unavailable');return false;}
  }
  private alive():boolean{return !this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();}
+ /**
+  * May this machine serve the owner's private reads right now: alive, and the private-serving custody
+  * check the owner's read view (readView) already requires. Unlike isReady() it does not need a write
+  * readiness proof from the last 60 s; that proof is re-earned by the background pass (zeroed while it
+  * runs), so gating owner reads on it refused most history reads on a busy lease holder.
+  */
+ privateReadsServable():boolean{return this.alive()&&this.privateCustodyAllowed();}
  isReady():boolean{return this.alive()&&this.positiveCustodyAllowed()&&this.options.leaseCoordinator.currentEpoch()<=GRAPH_REPLICATION_MAX_LEASE_EPOCH&&this.readyAt>0&&this.readyLeaseEpoch===this.options.leaseCoordinator.currentEpoch()&&Date.now()-this.readyAt<60000;}
  projection(){if(!this.isReady())throw new Error('graph-runtime-not-ready');return this.source.certifiedUnion(this.reader,this.options.droppedOrigins);}
  /** A cold offline view requires physical all-member ACK proof and no known
@@ -536,7 +561,23 @@ export class ConversationGraphReplicationRuntime {
   * per read. Reads only: writers and proofs still call retainedProjection/inventory, which never cache.
   * The returned view is shared between reads and must not be changed.
   */
+ /** The view one synchronous read is pinned to (withPinnedReadView), or undefined. */
+ private pinnedReadView:NonNullable<ConversationGraphReplicationRuntime['readViewCache']>['view']|undefined;
+ /** Runs `fn` with every readView() inside it answering the one view built at its start.
+  * While writes are in flight the view key is null and nothing is cached, so a page that
+  * looked up N effort titles rebuilt the whole verified view N+1 times in one synchronous
+  * call (accept-all rig, 2026-11-18: 20-28 s stalls). The pin lives only for this
+  * synchronous call (cleared in finally); no write can interleave with it. If the view
+  * cannot be built, `fn` runs unpinned and meets the same refusal itself. */
+ withPinnedReadView<T>(fn:()=>T):T{
+  if(this.pinnedReadView)return fn();
+  let view:NonNullable<ConversationGraphReplicationRuntime['readViewCache']>['view'];
+  try{view=this.readView();}catch{/* @silent-fallback-ok: unpinned, fn's own readView() call reports the refusal exactly as before. */return fn();}
+  this.pinnedReadView=view;
+  try{return fn();}finally{this.pinnedReadView=undefined;}
+ }
  readView(){
+  if(this.pinnedReadView)return this.pinnedReadView;
   if(!this.alive()||!this.privateCustodyAllowed()){this.readViewCache=null;throw new Error('graph-runtime-retained-unavailable');}
   const key=this.readViewKey(),now=Date.now(),cached=this.readViewCache;
   if(key&&cached&&cached.key===key&&now-cached.at>=0&&now-cached.at<15_000)return cached.view;
@@ -826,7 +867,13 @@ export class ConversationGraphReplicationRuntime {
    // The removal history is verified once and reused only across records that
    // reach the check with no await since it was read; any awaited step drops it.
    // E2E-PAIRING: EXEMPT — no route or wiring change, only how often the readiness pass reads the removal history; readiness stays exercised end to end by tests/e2e/conversation-graph-surface-alive.test.ts, the reuse by tests/integration/conversation-graph-replication-runtime.test.ts.
-   this.lastReadinessFailure='source-repair';let repairLineage:ReturnType<typeof this.source.repairLineage>=null;for(const entry of checkpoint.manifest.entries){if(!this.alive())return false;let record=this.source.repairRecord(entry.eventId);
+   this.lastReadinessFailure='source-repair';let repairLineage:ReturnType<typeof this.source.repairLineage>=null;
+   // alive() reads the registry and identity files and re-verifies the signed membership (~565 entries per pass,
+   // 8% of the long event-loop stretches on the accept-all rig, 2026-11-18). An entry that ends at the settled
+   // `continue` below awaited nothing since its own check, and the loop's synchronous code changes none of
+   // alive()'s inputs, so the next entry's check would read exactly the same state; it is skipped only then.
+   let aliveStillChecked=false;
+   for(const entry of checkpoint.manifest.entries){if(!aliveStillChecked&&!this.alive())return false;aliveStillChecked=false;let record=this.source.repairRecord(entry.eventId);const foundWithoutAwait=!!record;
     if(!record){repairLineage=null;for(const member of this.config.membership.members){if(member.machineId===this.machineId)continue;if(!this.alive())return false;try{const result=await this.request(member.machineId,'repair',{eventId:entry.eventId}) as {record:ConversationGraphReplicationRecord|null};if(result.record){result.record=await this.hydratePeerRecord(result.record,member.machineId);if(result.record.erasure)await this.applyInventoryErasures([result.record.erasure]);if(result.record.materialization)await this.source.receiveHistorical(result.record);else await this.source.receive(result.record,result.record.packet.writerId);record=this.source.repairRecord(entry.eventId);if(record)break;}}catch{/* @silent-fallback-ok: a sleeping member cannot grant readiness; try other installed members. */}}}
     if(!record){
      try{const recovered=await this.config.witness.recover(entry.idempotencyKey);const operation=recovered.operation;if(operation.erasure)await this.applyInventoryErasures([operation.erasure]);
@@ -838,7 +885,7 @@ export class ConversationGraphReplicationRuntime {
     }
     if(!record||canonicalHash(record.packet)!==entry.operationHash)return false;
     // A record every member has acknowledged cannot change without its signed manifest entry changing, so it needs no witness round trip per pass.
-    repairLineage??=this.source.repairLineage();this.source.assertRepairStillAllowed(record,repairLineage);if(this.settledRecords.get(entry.eventId)===canonicalHash({entry,descriptor:this.source.descriptorFor(record)}))continue;
+    repairLineage??=this.source.repairLineage();this.source.assertRepairStillAllowed(record,repairLineage);if(this.settledRecords.get(entry.eventId)===canonicalHash({entry,descriptor:this.source.descriptorFor(record)})){aliveStillChecked=foundWithoutAwait;continue;}
     repairLineage=null;
     const operation=await this.config.witness.operation(record.packet.idempotencyKey),{stateProof:_freshProof,...reconciled}=operation,operationHash=canonicalHash({reconciled,descriptor:this.source.descriptorFor(record)});
     // A record already reconciled against this exact witness state needs no second write. The lock is held for the whole pass, so per-record work here blocks peer writes.
