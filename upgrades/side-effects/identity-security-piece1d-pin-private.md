@@ -114,3 +114,9 @@ I re-checked both blocking defects after the fixes. `migrate()` now runs `rewrit
   - Existing suites that pass: dashboard pin-leak and edit-rejection, notification selectivity and the owner-decision category, the tunnel suites, and the seed migration.
 - **Guards:** no-silent-fallbacks, feature-ladders, awareness, html-site, the 21 ratchet files and the notification-selectivity lint all pass.
 - **Throwaway:** agent home `.instar/state/identity-build-144636/p1d-throwaway-proof.md`. It covered the route before a private chat existed, the owner's first message delivering, no repeat, "fix dashboard" private, the rate cap, and no digits in state. Telegram's API was answered by a shim.
+
+## Local Verify fix (2026-11-18 13:50 PST)
+
+Local Verify on e400fb869 failed 16 tests in 5 unit files:
+- **Three tests expected the PIN in the announce prompt.** Two unit tests (UpgradeNotifyManager, upgrade-notify-manager) and the upgrade-guide e2e still expected the dashboard PIN there. This piece removes it on purpose, so they now assert it is absent and name where it goes.
+- **Test stand-ins without the new methods.** AgentServer called `setDashboardPinPrivacy` and `refreshDashboardMessagePinLine` on hand-made Telegram adapter stand-ins that lack them (build-heartbeat-route, correction-learning and self-violation wiring tests). It now checks the method exists before calling it. The real TelegramAdapter always has both, so production behaviour is unchanged.

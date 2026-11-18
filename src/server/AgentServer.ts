@@ -2005,11 +2005,12 @@ export class AgentServer {
         return typeof g === 'string' && g ? g : 'legacy-1';
       },
       sendSecret: this.telegramAdapter ? (text) => this.telegramAdapter!.sendOwnerSecret(text) : null,
-      onDelivered: () => { void this.telegramAdapter?.refreshDashboardMessagePinLine().catch(() => {}); },
+      onDelivered: () => { if (typeof this.telegramAdapter?.refreshDashboardMessagePinLine === 'function') void this.telegramAdapter.refreshDashboardMessagePinLine().catch(() => {}); },
       ownerHasOtherWayIn: () => { try { return this.mobilePairing?.ownerPhoneCanApprove() ?? false; } catch { return false; /* @silent-fallback-ok: unknown reads as no phone, the reading that keeps the owner's way in */ } },
       isStandby: () => (options.config as { multiMachine?: { telegramPolling?: boolean } }).multiMachine?.telegramPolling === false,
     });
-    this.telegramAdapter?.setDashboardPinPrivacy(this.dashboardPinPrivate);
+    // A hand-made adapter stand-in (tests) may lack the method; the real TelegramAdapter always has it.
+    if (typeof this.telegramAdapter?.setDashboardPinPrivacy === 'function') this.telegramAdapter.setDashboardPinPrivacy(this.dashboardPinPrivate);
     this.skillLearningSentinel = options.skillLearningSentinel ?? null;
     this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
