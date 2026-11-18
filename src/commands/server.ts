@@ -30,6 +30,8 @@ import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.j
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
+import { bearerConfigWriteRefusal } from '../config/bearerConfigWrite.js';
+import { PATCHABLE_CONFIG_KEYS, OPERATOR_ONLY_SESSION_KEYS } from '../server/routes.js';
 import { isOwnersOwnWords } from '../core/ownerWords.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
@@ -21077,6 +21079,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
       orgUpdater.start();
     }
+    // SEC-075: commitment auto-correction writes config only where PATCH /config would let a
+    // bearer caller write (same allowlist, PIN-gated values, executable fence, raise refusal).
+    commitmentTracker.setConfigWriteGuard((configPath, value) => {
+      let fileConfig: Record<string, unknown> = {};
+      try { fileConfig = JSON.parse(fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf-8')); } catch { return 'the config file could not be read'; } // @silent-fallback-ok — a refusal, not a fallback: nothing is written
+      return bearerConfigWriteRefusal(configPath, value, {
+        fileConfig,
+        profile: autonomyManager.getProfile(),
+        patchableKeys: PATCHABLE_CONFIG_KEYS,
+        operatorOnlySessionKeys: OPERATOR_ONLY_SESSION_KEYS,
+      });
+    });
 
     // Trust Elevation Tracker — monitors acceptance rates and surfaces upgrade opportunities
     const trustElevationTracker = new TrustElevationTracker({
