@@ -1,4 +1,5 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
 import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
 import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
@@ -29,6 +30,8 @@ import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.j
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
+import { bearerConfigWriteRefusal } from '../config/bearerConfigWrite.js';
+import { PATCHABLE_CONFIG_KEYS, OPERATOR_ONLY_SESSION_KEYS } from '../server/routes.js';
 import { isOwnersOwnWords } from '../core/ownerWords.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
@@ -21083,6 +21086,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
       orgUpdater.start();
     }
+    // SEC-075: commitment auto-correction writes config only where PATCH /config would let a
+    // bearer caller write (same allowlist, PIN-gated values, executable fence, raise refusal).
+    commitmentTracker.setConfigWriteGuard((configPath, value) => {
+      let fileConfig: Record<string, unknown> = {};
+      try { fileConfig = JSON.parse(fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf-8')); } catch { return 'the config file could not be read'; } // @silent-fallback-ok — a refusal, not a fallback: nothing is written
+      return bearerConfigWriteRefusal(configPath, value, {
+        fileConfig,
+        profile: autonomyManager.getProfile(),
+        patchableKeys: PATCHABLE_CONFIG_KEYS,
+        operatorOnlySessionKeys: OPERATOR_ONLY_SESSION_KEYS,
+      });
+    });
 
     // Trust Elevation Tracker — monitors acceptance rates and surfaces upgrade opportunities
     const trustElevationTracker = new TrustElevationTracker({
@@ -37435,6 +37450,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       }
 
+      // Always available: the per-user start item is off on purpose while a system service runs this agent.
+      if (needsReinstall && process.platform === 'darwin' && daemonRunsAgent(config.projectName)) needsReinstall = false;
       if (needsReinstall) {
         const { installAutoStart } = await import('./setup.js');
         const installed = installAutoStart(config.projectName, config.projectDir, !!telegram || hasTelegramForInstall);
@@ -37840,6 +37857,14 @@ async function stopServerSessionIfPresent(options: { dir?: string }): Promise<vo
 
 export async function restartServer(options: { dir?: string }): Promise<void> {
   const config = loadConfig(options.dir);
+
+  // Always available (§B.5): a system service runs this agent. Restarting it here would start a
+  // second copy beside the service's; the service restarts on its own after a stop.
+  if (process.platform === 'darwin' && daemonRunsAgent(config.projectName)) {
+    console.log(pc.yellow(`  ${ALWAYS_AVAILABLE_REFUSAL}`));
+    console.log('  To restart it, turn Always available off and on in the Instar app, or restart the Mac.');
+    process.exit(2);
+  }
 
   if (process.platform === 'darwin') {
     const label = `ai.instar.${config.projectName}`;

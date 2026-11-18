@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T02:36:44.304Z",
+  "slug": "always-available-guards",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 135,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/cli.ts",
+      "src/commands/server.ts",
+      "src/commands/setup.ts",
+      "src/core/alwaysAvailable.ts",
+      "src/recovery/RecoveryEngine.ts",
+      "src/templates/scripts/instar-watchdog.sh"
+    ],
+    "addedLines": 131,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "guards for a new mode; no defect closed"
+  },
+  "verdict": "pass"
+}
