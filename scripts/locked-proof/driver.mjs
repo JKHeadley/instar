@@ -405,10 +405,14 @@ export class RealTarget {
         // The server states when this grant ends. The deadline cases aim from that, because the
         // moment the driver sees the grant open trails the server's start by about half a second.
         try {
+          const pathname = new URL(url).pathname;
+          const request = /^\/desktop\/requests\/([^/]+)$/.exec(pathname);
           const j = await r.json();
-          if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt;
-          if (typeof j?.requestId === 'string') v.requestId = j.requestId;
-        } catch { /* not JSON */ }
+          if (request && r.request().method() === 'GET' && r.ok() && j?.status === 'approved' && Number.isSafeInteger(j.expiresAt)) {
+            v.requestId = decodeURIComponent(request[1]);
+            v.expiresAt = j.expiresAt;
+          }
+        } catch { /* No approved request evidence: timing remains unmeasured. */ }
       }
     });
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);

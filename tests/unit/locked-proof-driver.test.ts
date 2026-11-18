@@ -778,15 +778,15 @@ describe('locked-proof runner and verdict', () => {
     expect(ev.verdict.reasons.join(' ')).not.toMatch(/after Enter/);
   });
 
-  it('a before-enter step that started after Enter fails the case, and the gap is recorded', () => {
+  it('a before-enter step that completed after Enter fails the case, and the gap is recorded', () => {
     const c = CASES.find((x: { id: string }) => x.id === '15.7');
-    const ev = { unfired: [], fired: [{ action: 'kill-server', at: 'before-enter', startedAt: 5_891, t: 5_900 }],
-      samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed', enterPendingAt: 5_000 } } }],
-      final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked', enterPendingAt: 5_000 } }, processesGone: true } };
+    const ev = { grantRequestId: 'r1', grantOpenedAt: 4_000, unfired: [], fired: [{ action: 'kill-server', at: 'before-enter', startedAt: 5_891, t: 5_900 }],
+      samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
+      final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } }, processesGone: true } };
     const extra = measured(ev);
-    expect(extra.injectMinusEnterMs).toBe(891);
-    expect(judge(c, { ...ev, extra: { ...extra, submissions: 1, submissionsAfterClose: 0 } }).reasons).toContain('before-enter step landed 891 ms after Enter');
-    const before = { ...ev, fired: [{ ...ev.fired[0], startedAt: 4_830 }] };
+    expect(extra.injectMinusEnterMs).toBe(900);
+    expect(judge(c, { ...ev, extra: { ...extra, submissions: 1, submissionsAfterClose: 0 } }).reasons).toContain('before-enter step completed 900 ms after Enter');
+    const before = { ...ev, fired: [{ ...ev.fired[0], startedAt: 4_830, t: 4_830 }] };
     expect(measured(before).injectMinusEnterMs).toBe(-170);
     expect(judge(c, { ...before, extra: measured(before) }).reasons.join(' ')).not.toMatch(/after Enter/);
     // The deadline case compares the grant's own limit with Enter.
@@ -826,7 +826,11 @@ describe('locked-proof runner and verdict', () => {
     const c155 = CASES.find((x: { id: string }) => x.id === '15.5');
     expect(judge(c155, { ...base, extra: {} }).reasons).toContain('not measured: relock time after the transport drop');
     expect(judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } }).reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
-    expect(judge(c155, { ...base, extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500 } }).pass).toBe(true);
+    const timed = { ...base, grantRequestId: 'r1', grantOpenedAt: 4_000,
+      fired: [{ action: 'drop-transport', at: 'before-enter', startedAt: 4_830, t: 4_830 }],
+      samples: [{ dirty: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
+      final: { ...base.final, markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } } };
+    expect(judge(c155, { ...timed, extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500 } }).pass).toBe(true);
     const c159 = CASES.find((x: { id: string }) => x.id === '15.9');
     expect(judge(c159, { ...base, extra: { typistGone: true } }).reasons).toContain('not measured: password field state at the end');
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: true } }).reasons).toContain('password field left dirty at the end');
