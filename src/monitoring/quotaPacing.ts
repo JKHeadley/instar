@@ -348,7 +348,8 @@ export interface FreshnessInput {
   /** Effective read interval: the poll interval, or the backed-off interval while benched. */
   readIntervalMs: number;
   benched: boolean;
-  drifted: boolean;
+  /** Omit during replay to use the drift flag recorded by the last poll at that time. */
+  drifted?: boolean;
 }
 
 /** Live read sources; a usage-file read (codex-rollout) is not live. */
@@ -376,7 +377,7 @@ export function freshness(rows: readonly HistoryRow[], input: FreshnessInput): F
     source: newestValid?.source ?? null,
   };
   const stale = (reason: StaleReason): Freshness => ({ fresh: false, reason, ...base });
-  if (input.drifted) return stale('identity-drifted');
+  if (input.drifted ?? last?.drifted) return stale('identity-drifted');
   const freshRow = newestValid !== null
     && input.now - parseMs(newestValid.polledAt) <= limit
     && !newestValid.measuredAtSynthesized
@@ -471,9 +472,9 @@ export const emptyCalibration = (): CalibrationSummary => ({ outcomes: [], score
 
 /**
  * Replay the forecast as it stood CALIBRATION_LEAD_H before each completed reset, using only
- * rows with polledAt at or before that moment, and compare with the cycle-end reading. An
- * outcome counts only when the last reading is within FRESH_INTERVALS × the read interval of
- * the reset; otherwise it is censored. `historyStartMs` (set when rows were cut) marks cycles
+ * rows with polledAt at or before that moment, and compare with the cycle-end reading. A stale
+ * account at replay time yields no forecast. An outcome whose last reading is more than
+ * FRESH_INTERVALS × the read interval before the reset is censored. `historyCutAtMs` marks cycles
  * whose replay window is missing as unavailable rather than computed from partial data.
  */
 export function calibrate(rows: readonly HistoryRow[], window: ForecastWindowKey, opts: { now: number; readIntervalMs: number; historyCutAtMs?: number | null }): CalibrationSummary {
@@ -495,6 +496,10 @@ export function calibrate(rows: readonly HistoryRow[], window: ForecastWindowKey
       continue;
     }
     const known = rows.filter((r) => parseMs(r.polledAt) <= at);
+    // A rate can still be calculated from old readings after the account verdict has become unknown.
+    // Benching only labels a stale read; the poll's historical drift flag comes from the known rows.
+    const asOf = freshness(known, { now: at, readIntervalMs: opts.readIntervalMs, benched: false });
+    if (!asOf.fresh) { outcomes.push({ ...blank, actual: c.last.pct, status: 'no-forecast' }); continue; }
     const f = forecastWindow(known, window, { now: at });
     if (f.central === null || !sameReset(parseMs(f.resetsAt), c.resetsAt)) { outcomes.push({ ...blank, actual: c.last.pct, status: 'no-forecast' }); continue; }
     const actual = c.last.pct;

@@ -509,6 +509,31 @@ describe('calibration replay', () => {
     expect(c.scored).toBe(1);
   });
 
+  it.each([
+    { interval: 15, measurementAge: 45, pollAge: 0, drifted: false, expected: 'scored' },
+    { interval: 15, measurementAge: 46, pollAge: 0, drifted: false, expected: 'no-forecast' },
+    { interval: 15, measurementAge: 46, pollAge: 46, drifted: false, expected: 'no-forecast' },
+    { interval: 30, measurementAge: 46, pollAge: 46, drifted: false, expected: 'scored' },
+    { interval: 15, measurementAge: 5, pollAge: 0, drifted: true, expected: 'no-forecast' },
+  ])('for a $interval-min interval, ages $measurementAge/$pollAge min and drifted=$drifted yield $expected', ({ interval, measurementAge, pollAge, drifted, expected }) => {
+    const reset = NOW - HOUR_MS;
+    const cutoff = reset - 24 * HOUR_MS;
+    const prior = [-30, -20, -10].map((h, i) => row({ at: cutoff + h * HOUR_MS, pct: 10 + 5 * i, reset }));
+    const latestKnown = row({ at: cutoff - pollAge * 60_000, measuredAt: cutoff - measurementAge * 60_000, pct: 25, reset, drifted });
+    const actual = row({ at: reset - 60_000, pct: 60, reset });
+    const history = [...prior, latestKnown, actual];
+    const calibration = calibrate(history, 'sevenDay', { now: NOW, readIntervalMs: interval * 60_000 });
+    expect(calibration.outcomes[0]).toMatchObject({ actual: 60, status: expected });
+    if (expected === 'no-forecast') {
+      expect(calibration.scored).toBe(0);
+      expect(calibration.meanAbsError).toBeNull();
+      expect(calibration.outcomes[0].central).toBeNull();
+    } else {
+      expect(calibration.scored).toBe(1);
+      expect(calibration.outcomes[0].central).toBeGreaterThan(25);
+    }
+  });
+
   it('honours the knowledge cutoff: a row read after the replay moment is not used', () => {
     const prevReset = NOW - 2 * HOUR_MS;
     const start = prevReset - WEEK + HOUR_MS;
