@@ -10,7 +10,7 @@ This spec describes one small program, "Instar Connect". It is the same file for
 
 First, the PC is a new, restricted kind of device. The agent can drive it, but the PC has no power over the agent: it cannot approve anything, read conversations or add devices.
 
-Second, each PC belongs to the one agent machine that paired it. Sessions on the agent's other computers reach the PC by asking that machine. This removed a whole family of problems the earlier drafts had with several machines talking to one PC. The cost: when that machine is off, the PC is unreachable, and if that machine is retired the person runs the same file again and scans once.
+Second, each PC belongs to the one agent machine that paired it. Sessions on the agent's other computers reach the PC by asking that machine. This removed a whole family of problems the earlier drafts had with several machines talking to one PC. If that machine is off or retired, the owner moves the PC to another of the agent's machines with one Face ID tap in the app; the agent cannot move it alone. It works with the free addresses every agent already has, so nothing has to be bought.
 
 ## The safeguards, plainly
 
