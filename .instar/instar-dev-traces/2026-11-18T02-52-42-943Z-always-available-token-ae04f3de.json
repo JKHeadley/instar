@@ -17,5 +17,10 @@
   "phase": "complete",
   "tier": 2,
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "new opt-in sign-in path; no defect closed"
+  }
 }
