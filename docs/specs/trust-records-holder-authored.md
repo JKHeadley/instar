@@ -33,8 +33,16 @@ receipt of the owner's reply. The folded state still creates authority from any 
 An earlier design (trust-journey-record-provenance) tried to prove that a peer's record was written
 while that peer really held the lease. Six review rounds showed that this cannot be proven cheaply
 here (self-asserted timestamps, self-signable lease records, rewritable history), and it was stopped
-at the round cap. Its report recommended this simpler design, which the Chief of Staff approved on
-2026-11-18 01:45 PST with its cost accepted.
+at the round cap. Its report recommended this simpler design. Source of the go-ahead: the Chief of Staff's brief to
+the security session (session `echo-chief-of-staff`, Mac Studio, delivered into session
+`echo-echo-instar-security` on the Mac M5 Pro, topic 143781, 2026-11-18 01:45 PST), decision 2, in its
+own words: "SEC-088 part 2: APPROVED to proceed with your simpler design (holder trusts only grants
+it wrote; earlier holders' grants treated as absent after a handover and re-asked on next attempt;
+narrowing and used-markers count from any authenticated machine; keep signed delta responses, origin
+binding, per-writer keys). Write it up, converge it with your normal process, then build. Cost
+accepted: owner re-approves pending items after a rare lease handover." (The attribution trace is
+off on this agent, so the brief is quoted from the delivered message itself.) That approval covers
+proceeding; the exceptions in decision 14 still need the operator.
 
 ## The rule
 
