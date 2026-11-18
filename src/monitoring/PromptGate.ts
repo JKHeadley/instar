@@ -275,6 +275,7 @@ function detectExecutionApprovalSafeReject(lines: string[], fullWindow?: string[
   if (!rejectKey) return null;
 
   const commandMatch = haystack.match(/Allow execution of:\s*([\s\S]*?)(?:\n\s*[●○◉]?\s*1[.)]\s+Allow once|\n\s*1[.)]\s+Allow once|$)/i);
+  // bounded-input-reviewed: the reject is UNCONDITIONAL (safe-reject disposition); this text only reaches a log line and a degradation report.
   const rejectedCommand = (commandMatch?.[1] ?? '')
     .replace(/\s+/g, ' ')
     .trim()
