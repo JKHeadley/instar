@@ -1,5 +1,6 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
+import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
 import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
 import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
@@ -235,7 +236,7 @@ import { TunnelManager } from '../tunnel/TunnelManager.js';
 import { PostUpdateMigrator, SLACK_MENTIONS_SESSION_LINE } from '../core/PostUpdateMigrator.js';
 import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
-import { TopicMemory } from '../memory/TopicMemory.js';
+import { TopicMemory, SESSION_HISTORY_MESSAGE_CHARS } from '../memory/TopicMemory.js';
 import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../memory/topicRowWriter.js';
 import { TopicRowCarrier, TopicRowPullCoordinator, rowCarrierEnabled, slackSyntheticTopicId, ROW_PULL_TIMEOUT_MS } from '../memory/topicRowCarrier.js';
 import { TopicRowWatermarkStore } from '../memory/topicRowWatermark.js';
@@ -441,6 +442,9 @@ import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
 import { isConfigureOnlyMandate } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+
+/** Helper-death alert: the tail of the helper's last message (see the helper-failed wiring). */
+export const HELPER_DEATH_SNIPPET_CHARS = 160 + BOUNDED_INPUT_MIN_CHARS;
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -1708,7 +1712,8 @@ export async function spawnSessionForTopic(
             ? (m.senderName || 'User')
             : 'Agent';
           const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-          const text = (m.text || '').slice(0, 2000);
+          // Same bound as the primary path (TopicMemory.formatContextForSession).
+          const text = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
           lines.push(`[${ts}] ${sender}: ${text}`);
         }
         lines.push(``);
@@ -17027,7 +17032,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         record: { agentId: string; agentType: string; sessionId: string; lastMessage: string | null };
         reason: string;
       }) => {
-        const snippet = (e.record.lastMessage ?? '').slice(0, 160);
+        // The parent session decides whether to retry from this alert, and a
+        // dying helper's last message usually ENDS with the error, so keep the
+        // tail. Derived: the 160 characters it always showed plus disclosure
+        // room, so a cut says it is a cut.
+        const snippet = boundedTail(e.record.lastMessage ?? '', HELPER_DEATH_SNIPPET_CHARS);
         deliverHelperAlert(
           findTmuxForClaudeSession(e.record.sessionId),
           `[helper-watchdog] Your ${e.record.agentType} helper (agent ${e.record.agentId}) died with reason=${e.reason}. Last message: ${snippet}`,
@@ -19930,7 +19939,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const cutoff = Date.now() - escIdemWindowMs;
                   for (const [k, v] of escRecentAttempts) if (v < cutoff) escRecentAttempts.delete(k);
                 }
-                const cap = (s: string) => (s || '').slice(0, 2000).replace(/`/g, "'");
+                // Promise fields for the revived session. Stored userRequest has no
+                // upstream bound, so this cut can fire. Derived: the revived session is
+                // told (step 1 below) to re-establish the promise from the conversation
+                // history, so these fields only IDENTIFY it; the 2000 characters of
+                // content each always carried does that, and the disclosure room on
+                // top tells the session when it holds a fragment.
+                // Backticks are swapped first so the count covers what is shown.
+                const PROMISE_REVIVAL_FIELD_CHARS = 2000 + BOUNDED_INPUT_MIN_CHARS;
+                const cap = (s: string) => boundedHead((s || '').replace(/`/g, "'"), PROMISE_REVIVAL_FIELD_CHARS);
                 const dataBlock = JSON.stringify({
                   commitmentId: req.commitmentId,
                   userRequest: cap(req.userRequest),
@@ -24978,6 +24995,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (resumeInfo) slackRef.removeChannelResume(routingKey);
               // routingKey = `<channelId>[:<thread_ts>]`.
               const sep = routingKey.indexOf(':');
+              // bounded-input-reviewed: a routing-key PARSE (`<channelId>[:<thread_ts>]`), not a bound; the thread part is kept on the next line.
               const slackChannelId = sep === -1 ? routingKey : routingKey.slice(0, sep);
               const slackThreadTs = sep === -1 ? undefined : routingKey.slice(sep + 1);
               // durable-conversation-identity §7 (slack-respawn-bind-token fix): a
@@ -25930,6 +25948,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // disabled. Observability at GET /worktrees/agent-reaper.
     const { AgentWorktreeReaper } = await import('../monitoring/AgentWorktreeReaper.js');
     const { makeAgentWorktreeReaperDeps } = await import('../monitoring/agentWorktreeGit.js');
+    const { evaluateAgentWorktreesInWorker } = await import('../monitoring/agentWorktreeEvaluationJob.js');
     const { WorktreeEnumerationFailureStore } = await import('../monitoring/WorktreeEnumerationFailureStore.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
     const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
@@ -25945,6 +25964,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
         }),
         failureHistory: _worktreeEnumerationFailureStore.forGuard('agent-worktree-reaper'),
+        // A pass that removes nothing runs in a worker thread: evaluating every checkout
+        // here blocked the event loop about 45 s per pass on the Studio (fb-91e824f4-920).
+        evaluateAllOffThread: () => evaluateAgentWorktreesInWorker({
+          instarRepo: config.projectDir,
+          worktreesDir: _agentWorktreesDir,
+          githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+        }),
       },
       config.monitoring?.agentWorktreeReaper,
     );
@@ -27631,13 +27657,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // written once to the host ledger, attributed or `unattributed`, and each agent proves its
         // own parts came back against a baseline taken before the restart. Restarts nothing.
         {
-          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
+          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt, serverHealthFromResponse } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
           const self = `http://127.0.0.1:${config.port}`;
           const authed = { Authorization: `Bearer ${config.authToken ?? ''}` };
-          const getJson = async (p: string, auth = true): Promise<{ status: number; body: any } | null> => {
+          const getJson = async (p: string, auth = true): Promise<{ status: number; headers: Headers; body: any } | null> => {
             try {
               const r = await fetch(`${self}${p}`, { headers: auth ? authed : {}, signal: AbortSignal.timeout(8_000) });
-              return { status: r.status, body: await r.json().catch(() => null) };
+              return { status: r.status, headers: r.headers, body: await r.json().catch(() => null) };
             } catch { return null; } // @silent-fallback-ok — an unreachable read is unknown in the proof, never a pass
           };
           const proofDir = path.join(config.stateDir, 'state', 'machine-maintenance');
@@ -27656,10 +27682,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             logPath: path.join(config.stateDir, '..', 'logs', 'machine-maintenance.jsonl'),
             log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
             readers: {
-              serverHealth: async () => {
-                const r = await getJson('/health', false);
-                return r && r.status === 200 ? { state: 'pass', reason: 'health-200' } : { state: 'fail', reason: r ? `health-${r.status}` : 'health-unreachable' };
-              },
+              // Back only when /health answers 200 and says it finished starting; still starting reads again next attempt.
+              serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),
               lifelineProofAt,
               relay: async () => {
                 const r = await getJson('/threadline/health');
@@ -33335,6 +33359,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               probeLiveCopy: async (machineId, key) => {
                 try {
                   const sep = key.indexOf(':');
+                  // bounded-input-reviewed: a key PARSE (`<platform>:<id>` split at the colon), not a bound; nothing is dropped.
                   const platform = key.slice(0, sep);
                   const pid = key.slice(sep + 1);
                   const onSelf = machineId === _meshSelfId;

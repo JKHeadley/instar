@@ -5559,6 +5559,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const creation = (async (): Promise<number | null> => {
       const label = bucket === '*' ? 'multiple sources' : bucket;
+      // bounded-input-reviewed: Telegram forum-topic names are limited to 128 characters by the platform; a fixed label, not a judgment's input.
       const title = `🔁 ${label}: notices coalesced (flood guard)`.slice(0, 128);
       // 'system' + bounded: the coalesce surface itself must never be refused by
       // the budget it exists to absorb (one topic per bucket, create-once-reuse).
@@ -7746,7 +7747,10 @@ export function attentionBodyBlocks(
   const s = (summary ?? '').trim();
   const d = (description ?? '').trim();
   if (!d) return s ? [s] : [];
-  const dSliced = d.slice(0, descriptionSlice);
+  // bounded-input-reviewed: a display cap (callers pass 500 / 1000) on the hub post, which also lands in the topic history a later session reads; the cut is now marked in-band with a pointer to the full attention item, in words a person and a model both read as "partial".
+  const dSliced = d.length > descriptionSlice
+    ? `${d.slice(0, descriptionSlice)}… [description cut at ${descriptionSlice} of ${d.length} characters; the full text is in the attention item]`
+    : d;
   if (s && d.startsWith(s)) return [dSliced];
   // Leading \n preserves the original blank-line separation when joined by '\n'.
   return s ? [s, `\n${dSliced}`] : [dSliced];

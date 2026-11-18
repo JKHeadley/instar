@@ -114,6 +114,14 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/controls'],
       ['GET', '/mobile/sessions/new-options'],
       ['GET', '/mobile/sessions/history'],
+      // The owner's signed app device can preview and import personal history and confirm facts.
+      ['GET', '/mobile/imported-history/conversations'],
+      ['GET', '/mobile/imported-history/projects'],
+      ['GET', '/mobile/imported-history/conversations/imported:claude:chat-123'],
+      ['GET', '/mobile/imported-history/search'],
+      ['POST', '/mobile/imported-history/preview'],
+      ['POST', '/mobile/imported-history/apply'],
+      ['POST', '/mobile/imported-history/facts'],
       ['POST', '/mobile/sessions/door/134088'],
       ['POST', '/mobile/sessions/move/134088'],
       ['POST', '/mobile/sessions/bring-back/app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f'],
@@ -125,6 +133,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Organization pack and join (org-pack-and-join): publish, join, leave and accept an update; read status.
       ['POST', '/mobile/org/publish'],
       ['GET', '/mobile/org/status'],
+      ['GET', '/mobile/org/pending-checks'],
+      ['POST', '/mobile/org/allow-once'],
       ['GET', '/mobile/org/current-bundle'],
       ['GET', '/mobile/org/members'],
       ['POST', '/mobile/org/members/remove'],

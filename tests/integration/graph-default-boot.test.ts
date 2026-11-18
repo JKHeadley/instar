@@ -90,6 +90,32 @@ describe('zero external configuration owned-machine production default manager',
   }finally{internals.runtimeValue=realRuntime;releaseSwap();}
   await swapJob;expect((await swappedRead).status).toBe(200);
  });
+ it('a save reuses a peer sync and readiness refresh under 10 s old instead of repeating it inline; upkeep still refreshes',async()=>{
+  // Accept-all round 4: while the graph was not ready every save re-ran the peer sync and readiness check that the
+  // 10 s upkeep had just run, waiting out a slow peer's timeouts again, so Accept all saves passed the page's limit.
+  const f=await fixture(),owner=(id:string)=>({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard' as const,requestId:id,isCurrent:()=>true});
+  const runtime=await f.manager.ensureOwner(owner('first-visit'));
+  const internals=f.manager as unknown as {serialized<T>(work:()=>Promise<T>):Promise<T>;compose(publication:unknown,forSave?:boolean):Promise<void>;publication():unknown;synchronizeFrontiers(publication:unknown):Promise<void>;refreshedAt:number;custodyAuthorityValue:unknown};
+  vi.spyOn(runtime,'isReady').mockReturnValue(false);const readiness=vi.spyOn(runtime,'refreshReadiness').mockResolvedValue(false as never);
+  const sync=internals.custodyAuthorityValue?vi.spyOn(internals,'synchronizeFrontiers'):null;
+  const counts=()=>[readiness.mock.calls.length,sync?.mock.calls.length??0];
+  // Upkeep (no save) refreshes.
+  await internals.serialized(()=>internals.compose(internals.publication()));const afterUpkeep=counts();expect(afterUpkeep[0]).toBe(1);
+  // A save right after reuses that refresh.
+  expect(await f.manager.ensureOwner(owner('save-after-upkeep'))).toBe(runtime);expect(counts()).toEqual(afterUpkeep);
+  // A save after the refresh has aged past 10 s refreshes again.
+  internals.refreshedAt=Date.now()-11_000;await f.manager.ensureOwner(owner('save-after-stale-refresh'));
+  expect(counts()[0]).toBe(afterUpkeep[0]+1);if(sync)expect(counts()[1]).toBe(afterUpkeep[1]+1);
+  // Upkeep refreshes even when the last refresh is fresh.
+  await internals.serialized(()=>internals.compose(internals.publication()));expect(counts()[0]).toBe(afterUpkeep[0]+2);
+ });
+ it('names an owner step that held the one-at-a-time lane for more than 2 s, once a minute per step',async()=>{
+  const f=await fixture(),step=f.manager as unknown as {ownerStepValue:string;ownerStepAt:number};const warn=vi.spyOn(console,'warn');
+  const slow=(name:string)=>{step.ownerStepValue=name;step.ownerStepAt=Date.now()-3_000;step.ownerStepValue='nothing (idle)';};
+  slow('the local history check');slow('the local history check');step.ownerStepValue='checking the other machines';step.ownerStepValue='nothing (idle)';
+  const lines=warn.mock.calls.map(call=>String(call[0])).filter(line=>line.startsWith('[conversation-graph] the owner step spent'));
+  expect(lines).toEqual(['[conversation-graph] the owner step spent 3.0 s on the local history check']);
+ });
  it('refuses renamed agent roots and missing acknowledged storage instead of creating another genesis',async()=>{
   const f=await fixture();await f.manager.ensureOwner({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard',requestId:'first-visit',isCurrent:()=>true});await f.manager.close();managers.splice(managers.indexOf(f.manager),1);
   const renamed=new ConversationGraphDefault({...f.options,agentId:'renamed-agent'});managers.push(renamed);await expect(renamed.restore()).rejects.toThrow('rename-requires-migration');

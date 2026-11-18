@@ -46,7 +46,11 @@ export function careRow(state, { self = false, name = 'This machine', now = Date
   const enrolled = Boolean(enrol && enrol.enrolled);
   const win = s.settings && s.settings.window;
   const winText = win && win.start && win.end ? `between ${win.start} and ${win.end}` : 'in the small hours';
-  const skipped = Boolean(s.controls && s.controls.skipped);
+  // An older server (watch-only, before Part F) sends no `controls` and has no skip or window route,
+  // and one before Restart now sends no `restartNow` key: offer only what this server can do.
+  const hasControls = Boolean(s.controls && typeof s.controls === 'object');
+  const hasRestartNow = Object.prototype.hasOwnProperty.call(s, 'restartNow');
+  const skipped = hasControls && Boolean(s.controls.skipped);
 
   if (s.enabled === false) parts.push('Machine care is switched off here, so nothing restarts.');
   else if (!enrol) parts.push('I can’t tell whether this machine is signed up.');
@@ -77,10 +81,10 @@ export function careRow(state, { self = false, name = 'This machine', now = Date
     skipped,
     controls: live ? {
       signUp: Boolean(enrol && !enrolled && enrol.offerable),
-      skip: !skipped,
-      unskip: skipped,
-      window: true,
-      restartNow: enrolled && !s.restartNow,
+      skip: hasControls && !skipped,
+      unskip: hasControls && skipped,
+      window: hasControls,
+      restartNow: enrolled && hasRestartNow && !s.restartNow,
       off: enrolled,
     } : null,
   };
@@ -115,6 +119,7 @@ export function buildMachineCarePage(res, { now = Date.now() } = {}) {
 export function controlAnswer(action, r) {
   if (r.status === 401) return { ok: false, message: 'That needs your dashboard PIN again.' };
   if (r.status === 503) return { ok: false, message: 'Machine care is not turned on on this machine.' };
+  if (r.status === 404) return { ok: false, message: 'This machine runs an older version that can’t do that yet. It can after its next update.' };
   const d = r.data || {};
   if (!r.ok) {
     if (d.error === 'window-invalid') return { ok: false, message: 'Pick a start and an end at least 2 hours apart.' };
