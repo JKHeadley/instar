@@ -4,7 +4,11 @@
 
 A GPT-tier external pass (codex-cli, gpt-6-astra) ran successfully in all six rounds. A clean-door Claude read (claude-code, claude-fable-5-2; not cross-family, recorded separately) also ran every round.
 
-## ⚠ Verdict: CONVERGENCE FAILED (6 rounds + 1 authorized); spec CUT to the smallest safe form
+## Verdict: CONVERGED at round 8 (cut form)
+
+Round 8 (authorized by the Chief of Staff 2026-11-18 03:24 PST, same five reviewers, scoped to holes the cut reopened or any peer-grant path) found no peer-grant path and two reopened holes (a same-epoch tie, a withdrawal made on a standby). Both were fixed and re-asked of the same reviewers, who concurred. See the round 8 log.
+
+## History: the round 7 cut
 
 Round 7 (authorized by the Chief of Staff, 2026-11-18 02:35 PST, same reviewers) found new design blockers in the round-6 hand-over fixes from all five reviewers, including one peer-grant path (a forged epoch-less `change` re-validating an ended legacy grant). Per the cut rule, the fixes were not patched again. The spec was cut: the holder trusts only grants it wrote itself in its current run of the lease; after any hand-over every earlier grant is absent and asked again when next needed; there is no special hand-over path. The cut removes mechanism rather than adding it, and was not reviewed again. It is not tagged converged. See the round 7 log.
 
@@ -33,6 +37,7 @@ Originally: grants count only where written; narrowing from anyone; a forgery al
 | 5 | 4 | same-epoch contest hook; signed-only notice; local sink ownership |
 | 6 | 5 | fixes written, not reviewed (cap) |
 | 7 | 8 (7 hand-over + 1 legacy) | CUT: hand-over path removed; current-run grants only; peer records narrow by id only |
+| 8 | 2 reopened holes, 0 peer-grant paths | foreign epochs (tie, incl. loser-first); withdrawals name every machine's acceptance ids; all re-asked: concur |
 
 Standards-Conformance Gate: ran every round (2, 1, 2, 2, 2, 2 flags). Internal reviewers: the same three subagents every round (re-asked, never replaced).
 
@@ -50,4 +55,4 @@ See the round 6 log; precision items from rounds 1-5 are in each round's log.
 
 ## Recommendation
 
-Build the cut form (in progress on this branch). Bring the three approver items (decision 11: a re-ask after a hand-over and once at upgrade; b the 21-day fleet window or "ignore" fleet-wide from merge; c per-machine, per-run trust levels) to the operator with the approval request, together with the measured runs-ended rate (decision 12: the epoch moved about 100 times in an hour on the evening of 2026-11-17).
+Converged. The build of the cut form is on this branch (second-pass review concurred). Bring the three approver items (decision 11: a re-ask after a hand-over and once at upgrade; b the 21-day fleet window or "ignore" fleet-wide from merge; c per-machine, per-run trust levels) to the operator with the approval request, together with the measured runs-ended rate (decision 12: the epoch moved about 100 times in an hour on the evening of 2026-11-17).

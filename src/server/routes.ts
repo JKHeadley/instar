@@ -37353,10 +37353,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // GET /trust/summary — compact trust summary
   router.get('/trust/summary', (req, res) => {
+    // SEC-088 part 2 (decision 8): the trust journey's counts are returned even without adaptive trust.
+    const tj = ctx.trustAccountPath;
+    const trustJourney = tj ? (() => {
+      const c = tj.store.summary();
+      const run = tj.run;
+      return {
+        peerGrants: c.peerGrants,
+        peerGrantsIgnored: c.peerGrantsIgnored,
+        outsideRun: c.outsideRun,
+        heldEpochs: run ? { count: run.heldCount(), newest: run.newest() } : null,
+        runStartedAt: run ? run.runStart() : null,
+      };
+    })() : null;
     if (!ctx.adaptiveTrust) {
+      if (trustJourney) return res.json({ summary: null, trustJourney });
       return res.status(404).json({ error: 'AdaptiveTrust not configured' });
     }
-    res.json({ summary: ctx.adaptiveTrust.getSummary() });
+    res.json({ summary: ctx.adaptiveTrust.getSummary(), ...(trustJourney ? { trustJourney } : {}) });
   });
 
   // POST /trust/grant — explicitly grant trust

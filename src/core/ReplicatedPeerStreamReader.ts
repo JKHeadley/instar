@@ -62,6 +62,8 @@ const NOOP_COUNTERS: EnvelopeValidationCounters = {
 };
 
 const STREAM_CHUNK_BYTES = 64 * 1024;
+/** The trust store's journal kind (trustJourney/TrustJourneyStore.ts); the writer-keyed read serves it only. */
+const TRUST_GRANT_RECORD_KIND_FOR_WRITER_READ = 'trust-grant-record';
 const WITNESS_KEY_SEPARATOR = '\u0000';
 
 interface WitnessIndexEntry {
@@ -181,6 +183,83 @@ export class ReplicatedPeerStreamReader {
   loadAllOriginRecords(store: string): Map<string, OriginRecord[]> {
     const out = new Map<string, OriginRecord[]>();
     for (const [recordKey, byOrigin] of this.materialize(store)) out.set(recordKey, structuredClone([...byOrigin.values()]));
+    return out;
+  }
+
+  /**
+   * TRUST STORE ONLY (SEC-088 part 2, docs/specs/trust-records-holder-authored.md decision 2).
+   * Every record the trust store holds, each with its WRITER taken from the transport — never
+   * from a payload field:
+   *   - a peer replica entry's writer is its journal entry's `machine` (which the applier's
+   *     `validateEntry` binds to the authenticated sender). An entry whose `machine` does not
+   *     sanitise to the replica file's own id, or that claims THIS machine, is dropped.
+   *   - an own-stream entry's writer is this machine only when both its `machine` and its
+   *     stamped `origin` are this machine; otherwise (a stream restored from another machine id)
+   *     the writer is the other id named there — the payload can only take ownership away.
+   * First record per (writer, recordKey) wins, in each writer's stream order (ascending seq),
+   * instead of `loadAllOriginRecords`' newest-by-HLC per payload origin. Returns [] for any
+   * other store, so no other store's behaviour changes.
+   */
+  loadAllRecordsWithWriter(store: string): Array<{ writer: string; recordKey: string; data: Record<string, unknown> }> {
+    const reg = this.registry.getByStore(store);
+    if (!reg || reg.kind !== TRUST_GRANT_RECORD_KIND_FOR_WRITER_READ) return [];
+    const kind = reg.kind as JournalKind;
+    const schema = reg.schema;
+    const self = this.selfMachineId;
+    const selfSafe = sanitizeMachineId(self);
+
+    // writer → entries (with their seq + file order for a stable sort)
+    const perWriter = new Map<string, Array<{ seq: number; order: number; recordKey: string; data: Record<string, unknown> }>>();
+    let order = 0;
+    const push = (writer: string, entry: JournalEntry, recordKey: string, data: Record<string, unknown>): void => {
+      let list = perWriter.get(writer);
+      if (!list) { list = []; perWriter.set(writer, list); }
+      list.push({ seq: entry.seq, order: order++, recordKey, data });
+    };
+    const validate = (entry: JournalEntry): { recordKey: string; origin: string; data: Record<string, unknown> } | null => {
+      if (entry.kind !== kind) return null;
+      if (!entry.data || typeof entry.data !== 'object') return null;
+      const result = validateReplicatedEnvelope(entry.data as Record<string, unknown>, schema, NOOP_COUNTERS);
+      if (!result.ok) return null;
+      return { recordKey: result.envelope.recordKey, origin: result.envelope.origin, data: result.storeFields };
+    };
+
+    // Own stream: own only when the entry's machine AND its stamped origin are this machine.
+    for (const entry of this.readKindEntries(this.ownStreamFiles(self, kind))) {
+      const v = validate(entry);
+      if (!v) continue;
+      const machine = typeof entry.machine === 'string' ? entry.machine : '';
+      let writer: string;
+      if (machine === self && v.origin === self) writer = self;
+      else if (v.origin !== self) writer = v.origin;
+      else if (machine && machine !== self) writer = machine;
+      else continue;
+      push(writer, entry, v.recordKey, v.data);
+    }
+
+    // Peer replicas: writer = entry.machine, which must match the replica file's own id
+    // (the applier named the file from the authenticated sender) and must not be this machine.
+    for (const { file, safeId } of this.peerStreamFilesWithIds(kind)) {
+      if (safeId === selfSafe) continue;
+      for (const entry of this.readKindEntries([file])) {
+        const machine = typeof entry.machine === 'string' ? entry.machine : '';
+        if (!machine || machine === self || sanitizeMachineId(machine) !== safeId) continue;
+        const v = validate(entry);
+        if (!v) continue;
+        push(machine, entry, v.recordKey, v.data);
+      }
+    }
+
+    const out: Array<{ writer: string; recordKey: string; data: Record<string, unknown> }> = [];
+    for (const [writer, list] of perWriter) {
+      list.sort((a, b) => (a.seq - b.seq) || (a.order - b.order));
+      const seen = new Set<string>();
+      for (const r of list) {
+        if (seen.has(r.recordKey)) continue; // first record per (writer, recordKey) wins
+        seen.add(r.recordKey);
+        out.push({ writer, recordKey: r.recordKey, data: structuredClone(r.data) });
+      }
+    }
     return out;
   }
 
@@ -685,6 +764,17 @@ export class ReplicatedPeerStreamReader {
     for (const n of names) {
       if (n.includes('.quarantine.')) continue;
       if (re.test(n)) out.push(path.join(dir, n));
+    }
+    return out;
+  }
+
+  /** `peerStreamFiles`, each with the (sanitised) machine id its file name carries. */
+  private peerStreamFilesWithIds(kind: JournalKind): Array<{ file: string; safeId: string }> {
+    const re = new RegExp(`^(.+)\\.${escapeRegExp(kind)}(?:\\.\\d+)?\\.jsonl$`);
+    const out: Array<{ file: string; safeId: string }> = [];
+    for (const file of this.peerStreamFiles(kind)) {
+      const m = re.exec(path.basename(file));
+      if (m) out.push({ file, safeId: m[1] });
     }
     return out;
   }

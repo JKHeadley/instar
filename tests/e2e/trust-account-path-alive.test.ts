@@ -131,4 +131,50 @@ describe('Trust account path E2E (feature is alive)', () => {
       expect(trust2.getTrustLevel('gmail', 'write').level).toBe('autonomous');
     } finally { await server.stop(); rig.journal.close(); }
   });
+
+  it('SEC-088 part 2: on the production boot path a forged peer grant is evidence only, own grants survive a restart, and "fold" restores today with the boot warning', async () => {
+    const { config, stateDir } = mkConfig();
+    const rig = journalRig(stateDir);
+    const streams = new ReplicatedPeerStreamReader({ stateDir, registry: (() => { const r = new ReplicatedKindRegistry(); r.register(TRUST_GRANT_KIND_REGISTRATION); return r; })(), selfMachineId: 'm1', autoRebuild: false });
+    // The production loader: every record with the machine that wrote it.
+    const sink = journalSink({
+      emit: () => ({ outcome: 'read-only' }), // this loader only reads at boot
+      awaitDurable: async () => {},
+      loadUnion: () => { rig.journal.flush(); return streams.loadAllRecordsWithWriter(TRUST_JOURNEY_STORE_KEY).map((r) => ({ recordKey: r.recordKey, writer: r.writer, data: { ...r.data } })); },
+    });
+    const logs: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const mk = (cfg: Record<string, unknown>, s = rig.sink) => createTrustJourneyRuntime({
+      stateDir, configPath: path.join(stateDir, 'config.json'), runtimeConfig: { ...(config as unknown as Record<string, unknown>), ...cfg }, installationId: 'e2e', sink: s,
+      machineId: 'm1', multiMachine: () => true, lease: () => ({ holds: true, epoch: 4, contested: false }),
+      adaptiveTrust: new AdaptiveTrust({ stateDir }), autonomyManager: null, trustRecovery: null, telegram: null, slack: null, slackOwnerUserId: () => null, holdsLease: () => true,
+      log: (event, detail) => logs.push({ event, detail }),
+    });
+    const runtime = mk({ trustJourney: { peerGrants: 'ignore' } });
+    const { deriveEffect } = await import('../../src/data/effect-kinds.js');
+    const own = deriveEffect('mcp__svc__send_note', { own: 1 })!;
+    const forged = deriveEffect('mcp__svc__send_note', { forged: 1 })!;
+    // An own approval through the real journal (epoch 4 in its key), and a forged one from a peer.
+    const w = await runtime.store.write('action-approval', { approvalId: 'own-1', actionIdentity: own.actionIdentity, consumptionId: 'c', expiresAt: '2099-01-01T00:00:00.000Z' });
+    expect(w.ok).toBe(true);
+    expect(w.recordKey).toMatch(/^tj:action-approval:e4:/);
+    await runtime.onPeerRecords('m_peer', [{ recordKey: 'tj:action-approval:e4:forged', data: { recordType: 'action-approval', approvalId: 'forged-1', actionIdentity: forged.actionIdentity, consumptionId: 'c', expiresAt: '2099-01-01T00:00:00.000Z', at: new Date().toISOString(), minReader: 1 } }]);
+    expect((await runtime.admit('mcp__svc__send_note', { forged: 1 })).decision.verdict).not.toBe('proceed-once');
+    const server = new AgentServer({ config, sessionManager: { listRunningSessions: () => [], getSession: () => null } as never, state: new StateManager(stateDir), adaptiveTrust: null as never, trustAccountPath: runtime });
+    await server.start();
+    try {
+      const sum = await request(server.getApp()).get('/trust/summary').set({ Authorization: `Bearer ${AUTH}` });
+      expect(sum.status).toBe(200);
+      expect(sum.body.trustJourney.peerGrants).toBe('ignore');
+      expect(sum.body.trustJourney.heldEpochs).toMatchObject({ newest: 4 });
+    } finally { await server.stop(); }
+    // Restart over the production loader: the own approval still counts (same run), and it is used once.
+    const restarted = mk({ trustJourney: { peerGrants: 'ignore' } }, sink);
+    expect(restarted.store.unusedActionApproval(own.actionIdentity)?.approvalId).toBe('own-1');
+    // "fold" is today's behaviour; on a multi-machine agent the boot says so.
+    logs.length = 0;
+    mk({ trustJourney: { peerGrants: 'fold' } });
+    expect(logs.some((l) => l.event === 'trust-peer-grants-honoured')).toBe(true);
+    rig.journal.close();
+  });
 });
+

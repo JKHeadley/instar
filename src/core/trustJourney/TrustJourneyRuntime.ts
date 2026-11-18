@@ -17,7 +17,9 @@ import {
   proofCovers, proposalHashOf, slackRoleRaises, type OperatorProof,
 } from '../TrustRaiseGuard.js';
 import { AccountPathService, proofSubject, type DeviceDirectory, type DirectChatPort, type ProposeResult, type ReceiptOutcome } from './AccountPathService.js';
-import { LocalFileTrustSink, TrustJourneyStore, TRUST_JOURNEY_STORE_KEY, TRUST_GRANT_RECORD_KIND, type TrustChange, type TrustRecord, type TrustRecordSink } from './TrustJourneyStore.js';
+import { LocalFileTrustSink, TrustJourneyStore, TRUST_JOURNEY_STORE_KEY, TRUST_GRANT_RECORD_KIND, type PeerGrantsMode, type TrustChange, type TrustRecord, type TrustRecordSink, type WrittenRecord } from './TrustJourneyStore.js';
+import { TrustRunTracker, type LeaseSnapshot } from './TrustRunTracker.js';
+import { resolveDevAgentGate } from '../devAgentGate.js';
 import { checkTrustProfileAgainstLog, TrustChangeLogWriter, type Narrowed } from './proofCheck.js';
 import { decideAdmission, type AdmissionDecision } from './admission.js';
 import { TrustOutcomeLog } from './TrustOutcomeLog.js';
@@ -29,7 +31,8 @@ import type { AdapterKind, Receipt } from './accountPath.js';
 export function journalSink(deps: {
   emit: (recordKey: string, build: (hlc: unknown, origin: string) => Record<string, unknown> | null) => { outcome: string; seq?: number };
   awaitDurable: (seq: number) => Promise<unknown>;
-  loadUnion: () => Array<{ recordKey: string; data: Record<string, unknown> }>;
+  /** Every record with the machine that wrote it (the replica file's machine; own stream = this machine). */
+  loadUnion: () => Array<{ recordKey: string; data: Record<string, unknown>; writer?: string }>;
 }): TrustRecordSink {
   return {
     description: `replicated store ${TRUST_JOURNEY_STORE_KEY} (${TRUST_GRANT_RECORD_KIND})`,
@@ -39,7 +42,7 @@ export function journalSink(deps: {
       try { await deps.awaitDurable(r.seq); return true; } catch { return false; } // @silent-fallback-ok: false refuses the action
     },
     loadAll() {
-      return deps.loadUnion().map(({ recordKey, data }) => ({ ...data, recordKey }) as unknown as TrustRecord);
+      return deps.loadUnion().map(({ recordKey, data, writer }) => ({ ...data, recordKey, ...(writer ? { writer } : {}) }) as unknown as TrustRecord);
     },
   };
 }
@@ -62,8 +65,16 @@ export interface TrustJourneyRuntimeDeps {
   boardPolicy?: { current(): string; set(policy: string, proof: OperatorProof): Promise<boolean> };
   /** Is this machine the serving-lease holder (single machine: always true). */
   holdsLease: () => boolean;
-  /** This machine's id (legacy grants apply on the machine whose gate config they reproduce). */
+  /** This machine's id: the writer of its own trust records (SEC-088 part 2). */
   machineId?: string;
+  /** True when the agent has more than one machine (the machine registry). Absent: a single machine. */
+  multiMachine?: () => boolean;
+  /** One consistent read of the lease coordinator's view; null when none is attached or it failed. */
+  lease?: () => LeaseSnapshot | null;
+  /** How often the run tracker reads the lease between trust activity (ms; default 5 s). */
+  runObserveMs?: number;
+  /** Resolved `trustJourney.peerGrants` (decision 9); absent resolves from the config. */
+  peerGrants?: PeerGrantsMode;
   /** Inputs to the one-time legacy import (decision 9); absent skips the import. */
   legacyImport?: { gateEnabled: boolean; gateServices: string[]; readOnlyServices: string[]; logServices: () => string[]; mcpServers: () => string[]; alreadyImported: () => boolean; markImported: () => boolean };
   notifyOwner?: (text: string) => Promise<void>;
@@ -80,8 +91,12 @@ export interface TrustAccountPathRuntime {
   propose(change: TrustChange): Promise<ProposeResult>;
   /** A receipt from an adapter's own inbound path on this machine. */
   ingest(r: Receipt): Promise<ReceiptOutcome>;
-  /** Peer-committed records (the holder consumes receipts written elsewhere). */
-  onPeerRecords(records: Array<{ recordKey: string; data: Record<string, unknown> }>): Promise<void>;
+  /** Peer-committed records, with the authenticated sender that wrote them. */
+  onPeerRecords(writer: string, records: Array<{ recordKey: string; data: Record<string, unknown> }>): Promise<void>;
+  /** This machine's own committed records (already folded at write time; a no-op unless written by another path). */
+  onOwnCommitted(records: Array<{ recordKey: string; data: Record<string, unknown> }>): void;
+  /** The lease run, on a multi-machine agent (null on a single machine). */
+  readonly run: TrustRunTracker | null;
   checkAtLoad(): Promise<Narrowed[]>;
   /** Admission for one MCP tool call (decision 13): runs the ask when one is needed. */
   admit(toolName: string, toolInput: unknown): Promise<{ decision: AdmissionDecision; effect: DerivedEffect | null; ask?: ProposeResult }>;
@@ -128,9 +143,37 @@ export function escapeForCard(json: string): string {
 /** Telegram allows 4096 characters; the card must fit whole. */
 export const MAX_CARD_SUMMARY_CHARS = 3000;
 
+/**
+ * Resolves `trustJourney.peerGrants` (decision 9): an explicit `"ignore"` or `"fold"` wins; anything
+ * else resolves to `"ignore"` on a development or throwaway agent and to `"fold"` on the fleet until
+ * the fleet rung.
+ */
+export function resolvePeerGrants(config: Record<string, unknown>, log?: (event: string, detail: Record<string, unknown>) => void): PeerGrantsMode {
+  const raw = (config.trustJourney as { peerGrants?: unknown } | undefined)?.peerGrants;
+  if (raw === 'ignore' || raw === 'fold') return raw;
+  if (raw !== undefined) log?.('trust-peer-grants-invalid', { value: String(raw).slice(0, 40) });
+  return resolveDevAgentGate(undefined, config as { developmentAgent?: boolean }) || config.throwawayAgent === true ? 'ignore' : 'fold';
+}
+
 export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAccountPathRuntime {
   const sink = d.sink ?? new LocalFileTrustSink(path.join(d.stateDir, 'state', 'trust-journey.jsonl'));
-  const store = new TrustJourneyStore(sink);
+  const self = d.machineId ?? 'self';
+  const peerGrants: PeerGrantsMode = d.peerGrants ?? resolvePeerGrants(d.runtimeConfig, d.log);
+  // Decision 3: grants count only inside this machine's current run of the lease. On a single machine
+  // (or with no registry wired) the run never ends, today's behaviour.
+  let onNewRun: (start: number, previous: number | null) => void = () => {};
+  // Only under "ignore": "fold" is today's behaviour, with no run, no recheck and no profile narrowing.
+  const run = peerGrants === 'ignore' && d.multiMachine && d.lease
+    ? new TrustRunTracker({ stateDir: d.stateDir, multiMachine: d.multiMachine, lease: d.lease, onNewRun: (a, b) => onNewRun(a, b), log: d.log })
+    : null;
+  const store = new TrustJourneyStore(sink, () => new Date(), { self, peerGrants, ...(run ? { run } : {}) });
+  // Decision 3: epochs are recorded at every lease tick too, so a same-machine N -> N+1 -> N+2 between
+  // trust activity never looks like a hand-over. Unref'd: it never keeps the process alive.
+  if (run) { const t = setInterval(() => { try { run.observe(); } catch { /* @silent-fallback-ok: a missed tick only fails closed */ } }, d.runObserveMs ?? 5_000); t.unref?.(); }
+  if (peerGrants === 'fold' && d.multiMachine?.()) {
+    const n = store.summary().peerGrantsIgnored.reduce((a, b) => a + b.count, 0);
+    d.log?.('trust-peer-grants-honoured', { message: `Trust records written by other machines are being honoured (${n} grants from other machines are live now)` });
+  }
   const outcomes = new TrustOutcomeLog(d.outcomeSink ?? TrustOutcomeLog.localSink(d.stateDir));
   const writer = new TrustChangeLogWriter(store, (key) => d.log?.('trust-change-log-write-failed', { key }));
   // Every change goes to the durable log, and the hook's fallback file is rebuilt from the records
@@ -139,10 +182,28 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
   d.adaptiveTrust?.setChangeObserver((event, proof) => { writer.observe(event, proof); void writer.drain().then(() => refreshFallback()); });
   // The autonomy profile's switches join the same durable log (narrowings in the background; a
   // raise's record is written by its applier and awaited).
+  // A narrowing this runtime makes itself (a new lease run) is written with source `revoked`.
+  let profileNarrowingSource: string | null = null;
   d.autonomyManager?.setChangeObserver((from, to, proof) => {
     if (proof || from === to) return;
-    void store.write('change', { changeId: `profile:${Date.now()}`, key: 'autonomy.profile', from, to, direction: profileRaises(from, to).length ? 'raise' : 'lower', source: 'route' });
+    void store.write('change', { changeId: `profile:${Date.now()}`, key: 'autonomy.profile', from, to, direction: profileRaises(from, to).length ? 'raise' : 'lower', source: profileNarrowingSource ?? 'route' });
   });
+  // Decision 4: when this machine starts a new run, an autonomy profile wider than its last own
+  // current-run change, or wider than the default with none, is narrowed with the restore line.
+  onNewRun = (start, previous) => {
+    // The hook's offline fallback lists only legacy kinds that still hold in this run.
+    refreshFallback();
+    const m = d.autonomyManager;
+    if (!m) return;
+    const cur = m.getProfile();
+    const lp = store.lastChange('autonomy.profile');
+    const target = (lp ? (lp.direction === 'raise' && !(lp.consumptionId && store.consumption(lp.consumptionId)) ? lp.from : lp.to) : m.configuredDefaultProfile()) as AutonomyProfileLevel | null;
+    if (!target || profileRaises(target, cur).length === 0) return;
+    profileNarrowingSource = 'revoked';
+    try { m.setProfile(target, `new lease run at epoch ${start}: the earlier approval was given before another machine was in charge`); } finally { profileNarrowingSource = null; }
+    d.log?.('trust-run-profile-narrowed', { from: cur, to: target, epoch: start, previous });
+    void d.notifyOwner?.(`I took over approvals on this machine, so I set the autonomy profile back from ${cur} to ${target}. Nothing was widened. Raise it again here if you want it.`).catch(() => {});
+  };
 
   const readFileConfig = (): Record<string, unknown> => {
     try { return JSON.parse(fs.readFileSync(d.configPath, 'utf8')); } catch { return {}; } // @silent-fallback-ok: an unreadable file compares as empty, so any widening still reads as a raise
@@ -307,8 +368,10 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       // and the holder (which polls the chat itself) sees it first-hand.
       return service.onReceiptAwayFromHolder(r);
     },
-    async onPeerRecords(records) {
-      store.applyCommitted(records);
+    run,
+    onOwnCommitted(records) { store.applyCommitted(records.map((r) => ({ writer: self, ...r }))); },
+    async onPeerRecords(writer, records) {
+      store.applyCommitted(records.map((r): WrittenRecord => ({ writer, ...r })));
       if (!d.holdsLease()) return;
       for (const { data } of records) {
         if (data.recordType !== 'receipt') continue;
@@ -321,12 +384,12 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       }
     },
     async admit(toolName, toolInput) {
+      run?.observe(); // a fresh lease read for this admission (the store's run checks share it)
       const effect = deriveEffect(toolName, toolInput);
       const rawInput = JSON.stringify(toolInput ?? {});
       const sentinel = !!toolInput && typeof toolInput === 'object' && ('_truncated' in (toolInput as object) || '_unserializable' in (toolInput as object));
       const uncardable = sentinel || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)
         || rawInput.length > MAX_ONE_ACTION_INPUT_CHARS || toolName.length > 120;
-      const self = d.machineId ?? 'self';
       const decision = decideAdmission({
         effect,
         unchangedLegacy: (kind) => store.legacyUnchanged(kind, self),
@@ -353,8 +416,14 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       }
       if (decision.verdict === 'proceed-once' && effect) {
         // One use: the dispatch is recorded before the call is admitted; a second identical call asks again.
+        const before = run?.observe() ?? null;
         const w = await store.write('dispatch', { approvalId: decision.approvalId, actionIdentity: effect.actionIdentity }, `tj:dispatch:${decision.approvalId}`);
         if (!w.ok) return { decision: { verdict: 'ask', why: 'no-grant' }, effect };
+        // Admission recheck (decision 3): a hand-over during the write ends the run; the approval stays used.
+        if (run && run.multiMachine()) {
+          const after = run.observe();
+          if (!after || !after.holds || after.contested || after.epoch !== before?.epoch) return { decision: { verdict: 'ask', why: 'holder-unreachable' }, effect };
+        }
       }
       if ((decision.verdict === 'proceed' || decision.verdict === 'proceed-once') && effect) {
         // Section 4: every governed effect the holder admits gets an outcome row, "not yet checked".
@@ -377,9 +446,10 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
           // A joining machine imports only kinds still unchanged-legacy somewhere (decision 9).
           logServices: li.logServices(), mcpServers: li.mcpServers(), existingKeys: store.unchangedLegacyKeys(),
           // A record from another machine means this is not the first import, even if none is unchanged now.
-          othersImported: store.legacyKeys().some((k) => store.legacyGrants(k).some((g) => g.machine !== (d.machineId ?? 'self'))),
+          // Evidence only (decision 4): another writer's legacy grant means this is a joining machine.
+          othersImported: store.legacyImportedAnywhere(self),
         });
-        const self0 = d.machineId ?? 'self';
+        const self0 = self;
         for (const g of plan.grants) {
           // A record this machine already wrote (an import that stopped part-way) counts as done.
           if (store.legacyGrants(g.key).some((x) => x.machine === self0)) continue;
@@ -389,7 +459,6 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         }
         if (!li.markImported()) return { imported, fileWritten: false, skipped: 'the import marker could not be saved' };
       }
-      const self = d.machineId ?? 'self';
       const legacyKinds = store.legacyKeys().filter((k) => store.legacyUnchanged(k, self));
       const fileWritten = writeLegacyKindsFile(d.stateDir, {
         generatedAt: new Date().toISOString(),

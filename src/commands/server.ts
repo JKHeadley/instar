@@ -5709,6 +5709,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               stateDir: config.stateDir,
               guardWrite: (p) => state.guardJournalWrite(p),
               logger: (m) => console.log(pc.dim(`  [journal-sync] ${m}`)),
+              // SEC-088 part 2: a replica whose sender claims this machine's own id is refused.
+              ...(cjOwnMachineId ? { selfMachineId: cjOwnMachineId } : {}),
             });
           } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
             journalSyncApplier = undefined;
@@ -6166,7 +6168,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Work Board: this machine's own committed records (a no-op for those already folded at write time).
           if (kind === 'work-card-record') _workBoardRuntime?.onCommitted(entries, null);
           // Trust journey: this machine's own committed records (already folded at write time; a no-op).
-          if (kind === 'trust-grant-record') _trustJourneyRuntime?.store.applyCommitted(entries.map((e) => ({ recordKey: String((e.data as Record<string, unknown>).recordKey ?? ''), data: e.data as Record<string, unknown> })));
+          if (kind === 'trust-grant-record') _trustJourneyRuntime?.onOwnCommitted(entries.map((e) => ({ recordKey: String((e.data as Record<string, unknown>).recordKey ?? ''), data: e.data as Record<string, unknown> })));
           // Project apps: this machine's own offers, answers and pin steps.
           if (kind === 'project-app-record') _projectAppsRuntime?.onCommitted();
           // Custom project apps fold the records, the blobs and the Work Board's approvals.
@@ -6181,7 +6183,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Work Board: a peer's records land in the index, and may cause or stop a pickup here.
           if (kind === 'work-card-record') _workBoardRuntime?.onCommitted(entries, senderMachineId);
           // Trust journey: a peer's records land in the index; the holder consumes a peer's receipts.
-          if (kind === 'trust-grant-record') void _trustJourneyRuntime?.onPeerRecords(entries.map((e) => ({ recordKey: String((e.data as Record<string, unknown>).recordKey ?? ''), data: { ...(e.data as Record<string, unknown>), receivedBy: senderMachineId } })));
+          // SEC-088 part 2: the writer is the authenticated sender, never a payload field.
+          if (kind === 'trust-grant-record') void _trustJourneyRuntime?.onPeerRecords(senderMachineId, entries.map((e) => ({ recordKey: String((e.data as Record<string, unknown>).recordKey ?? ''), data: { ...(e.data as Record<string, unknown>), receivedBy: senderMachineId } })));
           // Project apps: a peer's offers, answers and pin acts (the acting machine may be this one).
           if (kind === 'project-app-record') _projectAppsRuntime?.onCommitted();
           // Custom project apps: a peer's revisions, version cards, answers or an owner's approve tap.
@@ -30253,7 +30256,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // (first-hop only), durably apply an inbound `batch`. The RBAC gate
             // already proved a registered peer; the applier's first-hop sender
             // binding fences forged entries (entry.machine must === env.sender).
-            'journal-sync': (cmd, _sender, env) => {
+            'journal-sync': async (cmd, _sender, env) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'journal-sync' };
               if (!journalSyncApplier) return { ok: false, reason: 'journal disabled' };
               if (c.request) {
@@ -30261,15 +30264,35 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // §3.4 rule 5 serve-batch byte cap (coherenceJournal.replication
                 // .maxBatchBytes; the applier defaults it when absent).
                 const maxBatchBytes = config.multiMachine?.coherenceJournal?.replication?.maxBatchBytes;
+                const servingId = cjOwnMachineId ?? meshSelfId;
                 const served = journalSyncApplier.buildServeBatch(
                   c.request.kind as import('../core/CoherenceJournal.js').JournalKind,
                   c.request.fromSeq,
-                  cjOwnMachineId ?? meshSelfId,
+                  servingId,
                   maxBatchBytes,
                 );
+                // SEC-088 decision 5: sign the served batch with this machine's registry-pinned key
+                // over the requester's nonce. Only when the requester sent one (an older client
+                // ignores `sig`); a signing failure answers unsigned, exactly as an older build.
+                const requesterNonce = typeof c.request.requesterNonce === 'string' && c.request.requesterNonce.length > 0 && c.request.requesterNonce.length <= 256
+                  ? c.request.requesterNonce
+                  : null;
+                if (requesterNonce) {
+                  try {
+                    const sigMod = await import('../core/journalSyncResponseSignature.js');
+                    const signingPem = meshIdMgr.loadSigningKey();
+                    const sig = sigMod.signJournalSyncResponse(
+                      { responder: servingId, requesterNonce, kind: served.kind, incarnation: served.incarnation, fromSeq: c.request.fromSeq, entries: served.entries },
+                      (canonical) => idMod.sign(canonical, signingPem),
+                    );
+                    return { batch: [served], sig };
+                  } catch { /* @silent-fallback-ok: an unsigned journal-sync answer is exactly an older build's answer (accepted as today, decision 5); the requester's trust records can still only narrow */ }
+                }
                 return { batch: [served] };
               }
               if (c.batch) {
+                // SEC-088 decision 2: a replica never speaks for this machine.
+                journalSyncApplier.setSelfMachineId(cjOwnMachineId ?? meshSelfId);
                 // Apply binds every entry to the AUTHENTICATED envelope sender —
                 // never a payload field — so a forged sender is rejected + counted.
                 const r = journalSyncApplier.apply(
@@ -33423,22 +33446,42 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ): Promise<import('../core/PeerPresencePuller.js').JournalDeltaStream | null> => {
                     if (!isFailureReplicationKindAllowed(failureReplicationTransport, kind)) return null;
                     try {
+                      // SEC-088 decision 5: a fresh nonce per request; the server signs its answer over it.
+                      const sigMod = await import('../core/journalSyncResponseSignature.js');
+                      const requesterNonce = sigMod.mintRequesterNonce();
                       const res = await meshClient.send(
                         { machineId, url },
-                        { type: 'journal-sync', request: { machineId, kind, fromSeq } },
+                        { type: 'journal-sync', request: { machineId, kind, fromSeq, requesterNonce } },
                         0,
                       );
                       if (res.ok) _journalSyncLastOkMs = Date.now(); // U4.2 evidence-5 mirror freshness (an empty delta is still a successful sync)
                       if (res.ok && res.result && typeof res.result === 'object' && 'batch' in (res.result as object)) {
                         const b = (res.result as { batch?: unknown }).batch;
                         if (Array.isArray(b) && b.length > 0) {
-                          return b[0] as import('../core/PeerPresencePuller.js').JournalDeltaStream;
+                          const stream = b[0] as import('../core/PeerPresencePuller.js').JournalDeltaStream;
+                          // Verified against the registered key of the machine we ASKED (never a key
+                          // or id named in the body). Unsigned (an older build) is accepted as today;
+                          // an INVALID signature refuses this response's trust-grant-record entries only.
+                          const verdict = sigMod.verifyJournalSyncResponse(
+                            machineId, requesterNonce, fromSeq, stream, (res.result as { sig?: unknown }).sig,
+                            (id, canonical, sig) => {
+                              const pem = meshIdMgr.getSigningPublicKeyPem(id);
+                              return pem ? idMod.verify(canonical, sig, pem) : false;
+                            },
+                          );
+                          const screened = sigMod.screenJournalSyncStream(stream, verdict);
+                          if (screened.stream === null) {
+                            journalSyncApplier?.recordBadSignature(machineId, String(stream.kind), screened.refusedEntries);
+                          }
+                          return screened.stream;
                         }
                       }
                     } catch { /* @silent-fallback-ok: a journal-sync delta fetch to a peer is best-effort + self-healing — an unreachable/rejected peer simply yields no delta this pass and the next presence tick re-requests; never endanger the presence pass (COHERENCE-JOURNAL-SPEC §3.1) */ }
                     return null;
                   },
                   applyDelta: (senderMachineId: string, batch: import('../core/PeerPresencePuller.js').JournalDeltaStream[]) => {
+                    // SEC-088 decision 2: a replica never speaks for this machine.
+                    journalSyncApplier?.setSelfMachineId(cjOwnMachineId ?? meshSelfId);
                     journalSyncApplier?.apply(
                       senderMachineId,
                       filterFailureReplicationBatch(failureReplicationTransport, batch) as import('../core/JournalSyncApplier.js').ApplyBatchStream[],
@@ -35789,13 +35832,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) };
             },
             awaitDurable: (seq) => coherenceJournal!.awaitDurableSeq(tjStore.TRUST_GRANT_RECORD_KIND as import('../core/CoherenceJournal.js').JournalKind, seq, 5_000),
-            loadUnion: () => {
-              const out: Array<{ recordKey: string; data: Record<string, unknown> }> = [];
-              for (const byOrigin of replicatedPeerStreamReader!.loadAllOriginRecords(tjStore.TRUST_JOURNEY_STORE_KEY).values()) {
-                for (const r of byOrigin) out.push({ recordKey: r.envelope.recordKey, data: { ...r.data, receivedBy: r.origin } });
-              }
-              return out;
-            },
+            // SEC-088 part 2: each record with the machine that wrote it (the replica file's machine;
+            // own stream = this machine), first record per (writer, key) wins.
+            loadUnion: () => replicatedPeerStreamReader!.loadAllRecordsWithWriter(tjStore.TRUST_JOURNEY_STORE_KEY)
+              .map((r) => ({ recordKey: r.recordKey, writer: r.writer, data: { ...r.data, receivedBy: r.writer } })),
           })
         : undefined;
       const tjOutcomes = await import('../core/trustJourney/TrustOutcomeLog.js');
@@ -35853,7 +35893,40 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (mode === 'register') reg.register(slackUserId, displayName, role as never); else reg.approve(slackUserId, role as never);
         },
         holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
-        machineId: _meshSelfId ?? cjOwnMachineId ?? 'self',
+        // SEC-088 part 2: with the journal sink, own records are those stamped with the journal's
+        // machine id (origin and the boot loader's writer), so the store's own id is that same id.
+        machineId: tjSink ? (cjOwnMachineId ?? _meshSelfId ?? 'self') : (_meshSelfId ?? cjOwnMachineId ?? 'self'),
+        // SEC-088 part 2 (decision 3): the run of the lease. Multi-machine is decided by the machine
+        // registry; the lease view is one read of the coordinator (holds, epoch, contest).
+        multiMachine: () => { try { return !!coordinator?.enabled && coordinator.managers.identityManager.getActiveMachines().length > 1; } catch { return true; /* @silent-fallback-ok — an unreadable registry counts as multi-machine, so a grant needs a known run (fail closed) */ } },
+        lease: () => {
+          if (!leaseCoordinatorRef) return null;
+          let contested = true;
+          let foreignHolder = false;
+          const e1 = leaseCoordinatorRef.currentEpoch();
+          const holds = leaseCoordinatorRef.holdsLease();
+          const e2 = leaseCoordinatorRef.currentEpoch();
+          try {
+            const st = coordinator?.getSyncStatus?.();
+            contested = (st?.splitBrainState ?? 'clear') !== 'clear';
+            const selfId = coordinator?.identity?.machineId ?? null;
+            foreignHolder = !holds && !!st?.leaseHolder && !!selfId && st.leaseHolder !== selfId;
+          } catch { contested = true; /* @silent-fallback-ok — an unreadable sync status reads as contested, so no grant counts */ }
+          // Every epoch a peer's own lease (live or expired) shows it held: a tie the loser gave up first
+          // still leaves its expired lease at N, which proves the peer held N.
+          const peerHeldEpochs: number[] = [];
+          try {
+            const selfId = coordinator?.identity?.machineId ?? null;
+            for (const [peerId, rec] of leaseCoordinatorRef.peerLeaseObservations()) {
+              const l = rec.lease;
+              if (l && l.holder && l.holder === peerId && l.holder !== selfId && typeof l.epoch === 'number') peerHeldEpochs.push(l.epoch);
+            }
+            const o = leaseCoordinatorRef.observedPeerLease();
+            if (o && o.holder && o.holder !== selfId && typeof o.epoch === 'number') peerHeldEpochs.push(o.epoch);
+          } catch { /* @silent-fallback-ok — no peer observation means no extra foreign mark; the contest and holder checks still apply */ }
+          // One consistent pair: an epoch that moved during the read counts as contested.
+          return { holds: holds && e1 === e2, epoch: e2, contested: contested || e1 !== e2, foreignHolder, peerHeldEpochs };
+        },
         legacyImport: await (async () => {
           const { configuredMcpServers, operationLogServices } = await import('../core/trustJourney/legacyImport.js');
           const ext = (config as { externalOperations?: { enabled?: boolean; services?: Record<string, unknown>; readOnlyServices?: string[] } }).externalOperations;
@@ -35883,6 +35956,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         log: (event, detail) => console.log(`  [trust-journey] ${event} ${JSON.stringify(detail)}`),
       });
       if (telegram) { const tjr = _trustJourneyRuntime; telegram.onTrustAccountPathReceipt = (r) => tjr.ingest(r); }
+      // SEC-088 part 2: a same-epoch tie the coordinator detects marks those epochs foreign, so a tie
+      // resolved between two lease reads still ends this machine's run.
+      try {
+        const tjrRun = _trustJourneyRuntime.run;
+        if (tjrRun) coordinator?.on?.('splitBrainDetected', (e: { peerEpoch?: number; ourEpoch?: number }) => {
+          tjrRun.markForeign([e.ourEpoch, e.peerEpoch].filter((x): x is number => typeof x === 'number'), 'same-epoch tie detected');
+        });
+      } catch { /* @silent-fallback-ok — the periodic lease read still marks a contest it sees */ }
       if (slackAdapter) { const tjr = _trustJourneyRuntime; slackAdapter.onTrustAccountPathReceipt = (r) => tjr.ingest(r); }
       const narrowed = await _trustJourneyRuntime.checkAtLoad();
       const legacy = await _trustJourneyRuntime.importLegacyAndWriteFallback();

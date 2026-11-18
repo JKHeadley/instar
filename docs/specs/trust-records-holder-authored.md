@@ -2,12 +2,18 @@
 title: The lease holder trusts only trust grants it wrote itself (SEC-088, part 2)
 slug: trust-records-holder-authored
 eli16-overview: trust-records-holder-authored.eli16.md
-status: draft
-approved: false
+status: approved
+approved: true
+approved-by: "echo-chief-of-staff (Mac Studio), message 942dabd9 in the M5 store, 2026-11-18 03:24 PST: 'If that round concurs, tag review-convergence + approved per the gate and commit.' Operator items a-c (decision 11) go to Justin in the 07:30 status before merge."
 author: echo
 created: 2026-11-18
 parent-principle: "Signal vs. Authority"
 supersedes: trust-journey-record-provenance (convergence failed at round 6; not built)
+review-convergence: "2026-11-18T11:41:15.141Z"
+review-iterations: 8
+review-completed-at: "2026-11-18T11:41:15.141Z"
+review-report: "docs/specs/reports/trust-records-holder-authored-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
 ---
 
 # The lease holder trusts only trust grants it wrote itself (SEC-088, part 2)
@@ -19,7 +25,9 @@ supersedes: trust-journey-record-provenance (convergence failed at round 6; not 
 > an ended legacy grant). Under the Chief of Staff's cut rule this spec is now the smallest safe
 > form: the holder trusts only grants it wrote itself in its current run of the lease; after any
 > hand-over every earlier grant is absent and is asked again the next time it is needed; there is no
-> special hand-over path. The convergence report records the cut.
+> special hand-over path. The convergence report records the cut. A scoped round 8 on the cut text
+> (same five reviewers) found no peer-grant path and two reopened holes, both fixed and concurred:
+> foreign epochs (decision 3) and withdrawals that name every machine's acceptance ids.
 
 ## Why this exists
 
@@ -86,8 +94,10 @@ again the next time the action is attempted.
    path, `env.sender` of the signed mesh request on the push path). Never a payload field. For the
    trust store only, a new reader method returns every replicated record with its writer taken from
    each entry's `machine` (which `validateEntry` binds to the sender), first record per
-   (writer, recordKey) wins. The applier refuses a replica whose sender, after the same sanitising,
-   is this machine's own id. `validateEntry` adds `trust-grant-record` to the
+   (writer, recordKey) wins. Own-ness comes only from the own stream: the boot reader skips a
+   replica file named with this machine's id and drops a replica entry whose `machine` is this
+   machine. The applier refuses a replica whose sender, after the same sanitising, is this
+   machine's own id. `validateEntry` adds `trust-grant-record` to the
    origin-must-equal-sender kinds and treats a mismatch like `failure-callout-chunk` today
    (`forged`: batch stops, nothing appended, counted).
 3. **The current run.** On a multi-machine agent every grant record this build writes carries the
@@ -96,10 +106,23 @@ again the next time the action is attempted.
    local file, `state/trust-held-epochs.json`: the epochs at which this machine was seen holding the
    lease. An epoch is added whenever `holdsLease()` is true together with the epoch it holds (one
    read of the coordinator's view, so the pair is consistent), at every admission, every trust write
-   and every lease tick. The **current run** is: this machine holds the lease now, at epoch N, and
+   and on a five-second tick (so a same-machine N -> N+1 -> N+2 between trust activity is seen). The
+   first observation (the upgrade, a lost file, a first take of the lease) starts a run. Under
+   `"fold"` none of this runs (no tracker, no recheck, no profile narrowing). The pair is read
+   consistently: an epoch that moves during the read counts as contested.
+   - **Foreign epochs.** An epoch at which the coordinator names another machine as holder, or
+     reports a contest, or for which it emits its same-epoch split-brain detection, or which any
+     peer's own lease in the coordinator's machine-authenticated peer observations shows that peer
+     held (live or expired: an expired lease at N still proves the peer held N, which covers a tie
+     the loser gave up first), is recorded as foreign in the same file, and no run spans a foreign
+     epoch. The list is pruned by value only (epochs below the oldest held range can never lie inside
+     a counting span); if it still outgrows its bound, every run ends (fail closed). So a same-epoch tie ends the run of
+     both machines even after the coordinator resolves it (round 8). This reads only the
+     coordinator's view, never a record. The **current run** is: this machine holds the lease now, at epoch N, and
    the held set contains every epoch from e to N. An own grant keyed `e<e>` counts only inside the
-   current run, so a grant record a machine wrote while it did not hold the lease (several trust
-   routes have no holder guard today) never counts, even after that machine takes the lease. Key
+   current run. A grant record a machine writes while it does not hold the lease (several trust
+   routes have no holder guard today) is keyed `s<N>` instead of `e<N>` and never counts in any run,
+   even after that machine takes the lease. Key
    forms keep today's suffix after the epoch, so the single-use lock keys stay locks within a run
    (`tj:device-acceptance:e<N>:approval:<id>`, `tj:device-acceptance:e<N>:first:<n>`); a record that
    today has no explicit key (changes, acceptances) gets `tj:<type>:e<N>:<random>`. A machine whose
@@ -116,7 +139,8 @@ again the next time the action is attempted.
      (`LeaseCoordinator.holdsLease`, the existing self-fence), so a stale view never counts.
    - While `splitBrainState` is not `clear`, no own grant counts and `admit()` asks.
    - The file is never lowered and is not in the backup set. Missing or unreadable: it starts empty,
-     so only grants written from now on count.
+     so only grants written from now on count (own grants already keyed at the epoch held when the
+     file is re-created still count: they are this machine's own, in the same epoch).
    - A record another machine wrote is never parsed for an epoch.
    - Single machine (the machine registry lists only this machine): epoch 0, the run never ends,
      nothing changes for the owner. More than one machine and the coordinator missing, failed, or not
@@ -227,8 +251,16 @@ again the next time the action is attempted.
 | `apply-outcome` | outcome of an own consumption | none |
 | any type, unreadable (unknown field or `minReader`) | today's unreadable handling for own records | only the id-keyed narrowing of its type; never `unreadableKeys` |
 
-Narrowing records (`request-status`, `consumption`, `dispatch`, withdrawals, `apply-outcome`) keep
-today's keys; they apply from any writer and in any run.
+Narrowing records (`request-status`, `consumption`, `dispatch`, withdrawals) keep today's keys; they
+apply from any writer and in any run. From a peer, `request-status` only closes (its value is used
+for the honest line, never to reopen). `apply-outcome` is own-only. Grant keys marked `s<N>` (written
+while not holding) only ever exist on a multi-machine agent and count in no run.
+
+**Which ids a withdrawal names (round 8).** A withdrawal names every not-yet-withdrawn acceptance id
+for its subject recorded by any machine in any run (chat: `principal|adapter`; device: the device id
+or the phone's key fingerprint, since device ids are per machine). This is an evidence-only read: it
+can only narrow, and it lets an owner's withdrawal made where approvals are not handled reach the
+holder's acceptance.
 
 ### Query table (closed: every read the store exposes)
 
@@ -248,6 +280,7 @@ today's keys; they apply from any writer and in any run.
 | `legacyImportedAnywhere` (new) | every writer's legacy grants, evidence only |
 | `unusedActionApproval` | own, current run, minus used |
 | `hasUnreadableHistory` | own unreadable `change` records only |
+| `acceptanceIdsToWithdraw`, `deviceAcceptancesToWithdraw` (new) | every writer, any run, minus withdrawn: evidence only, names the ids a withdrawal writes |
 
 ## Decision points touched
 
@@ -323,6 +356,15 @@ pooled read is added.
   machine).
 - **Registry integrity**: machine keys and URLs come from the machine registry (SEC-042 / identity
   piece 2).
+- **Back to one machine**: if every other machine is removed from the registry, the single-machine
+  rule applies again and this machine's own grants from earlier runs count again (own records only;
+  removing machines is the owner's act).
+- **Withdrawal before replication**: an acceptance written on the holder that has not yet reached
+  the machine where the owner withdraws is missed by that withdrawal (a replication-lag window).
+- **Withdrawal fan-out**: a peer that floods fake acceptance ids makes one withdrawal write one
+  record per id (denial-free, bounded by what replicated; counted in the logs).
+- **Lease epoch reset**: a lease medium whose epoch were reset to a low value could let an old held
+  range cover a new epoch. The medium only ever writes epoch + 1 today.
 
 ## Open questions
 

@@ -7,3 +7,6 @@ The fix is simple: a page that gives permission only counts on the computer that
 The cost: whenever a different computer takes charge, every earlier permission stops counting, including on a computer that was in charge before and comes back. The agent asks the owner again the next time each thing is needed, and says plainly that it moved and why it is asking. If the same computer just dozes off and picks up again with nobody else in charge in between, nothing is lost. Everything is asked once more when this version is first installed on an agent with more than one computer.
 
 An earlier version tried to carry the owner's answers safely across a change of computer. Each review round found a new gap in that carrying, so it was cut: there is no carrying at all now, only asking again.
+
+Two details make this hold up. If two computers ever briefly both believed they were in charge, that moment counts as a change of computer, so nothing approved before it can be used twice. And when you take a permission away on any of the agent's computers, it is removed everywhere, including on the computer in charge, because taking away is the one kind of page every computer believes.
+
