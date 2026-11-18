@@ -18,6 +18,7 @@
  * is the structural backup that catches lapses.
  */
 
+import { renderDesignApprovalSection } from './designApprovalEvidence.js';
 import { renderSpecApprovalSection } from './specConstitutionCheckLedger.js';
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
@@ -567,6 +568,7 @@ export const VALID_RULES = new Set([
   'B23_UNSOURCED_ATTRIBUTION',
   'B24_OLD_VIEW_LINK',
   'B25_SPEC_APPROVAL_UNCHECKED',
+  'B26_DESIGN_APPROVAL_UNREVIEWED',
 ]);
 
 /**
@@ -633,6 +635,9 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // B25 combines the constitution-check RECORDS signal with a meaning judgment of
   // whether the text asks approval of a spec/design (Echo Bugs topic 10000002750).
   B25_SPEC_APPROVAL_UNCHECKED: 'signal-driven',
+  // B26 (frontier-design-review-standard §4): code-computed review-record evidence
+  // plus the same meaning judgment of whether the text asks approval of a design.
+  B26_DESIGN_APPROVAL_UNREVIEWED: 'signal-driven',
 };
 
 /**
@@ -694,6 +699,9 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   // through is always the agent's own (run the check, carry the result) — the
   // operator is never asked to do anything. Also exempt from the advisory migration.
   B25_SPEC_APPROVAL_UNCHECKED: 'blocking',
+  // B26: for B25's reason — an acknowledgeable nudge would let the judgment that
+  // skipped the review wave the request through. The way through is the agent's own.
+  B26_DESIGN_APPROVAL_UNREVIEWED: 'blocking',
 };
 
 /**
@@ -754,6 +762,7 @@ export const ADVISORY_MIGRATION_EXEMPT_RULES: ReadonlySet<string> = new Set<stri
   // constrains, so an acknowledged override would defeat it (same reasoning as the
   // self-stop family). It stays a hold until the request carries the check result.
   'B25_SPEC_APPROVAL_UNCHECKED',
+  'B26_DESIGN_APPROVAL_UNREVIEWED',
 ]);
 
 /**
@@ -1083,6 +1092,12 @@ export interface ToneReviewContext {
    */
   specConstitutionChecks?: import('./specConstitutionCheckLedger.js').SpecConstitutionCheckRecord[];
   /**
+   * B26 (frontier-design-review-standard §4): the code-computed review-record
+   * evidence for each reference in the text. Present only where the standard is on
+   * (development agents until graduation); absent → the rule is not rendered.
+   */
+  designApprovalEvidence?: import('./designApprovalEvidence.js').DesignApprovalEvidenceEntry[];
+  /**
    * Free-text description of how outbound messages should be written for this
    * agent's user — e.g. "ELI10, short sentences, plain words". Sourced from
    * `InstarConfig.messagingStyle`. When undefined/empty, the style rule
@@ -1313,6 +1328,7 @@ export class MessagingToneGate {
       gateSignals,
       context.agentReach,
       context.specConstitutionChecks,
+      context.designApprovalEvidence,
     );
     // F5: route the operator-facing SYNCHRONOUS reply (a human is waiting) to the
     // interactive reservation lane in the host spawn cap. Honored only when the
@@ -1572,6 +1588,7 @@ export class MessagingToneGate {
     gateSignals?: GateSignal[],
     agentReach?: ToneReviewContext['agentReach'],
     specConstitutionChecks?: ToneReviewContext['specConstitutionChecks'],
+    designApprovalEvidence?: ToneReviewContext['designApprovalEvidence'],
   ): string {
     const boundary = `MSG_BOUNDARY_${crypto.randomBytes(8).toString('hex')}`;
 
@@ -1588,7 +1605,9 @@ export class MessagingToneGate {
       this.renderApprovalNotErrand(messageKind, errandReach ? undefined : agentReach) +
       // B25 (Echo Bugs topic 10000002750): a spec/design approval ask must carry its
       // constitution check result. Every kind except health alerts; no phrase filter.
-      (messageKind === 'health-alert' ? '' : renderSpecApprovalSection(specConstitutionChecks));
+      (messageKind === 'health-alert' ? '' : renderSpecApprovalSection(specConstitutionChecks)) +
+      // B26 (frontier-design-review-standard §4): only where the standard is on.
+      (messageKind === 'health-alert' || designApprovalEvidence === undefined ? '' : renderDesignApprovalSection(designApprovalEvidence));
     // §Design 8 (CMT-1793): B1–B7 artifacts are detected DETERMINISTICALLY here
     // and supplied to the prompt as a bounded signal list — the prompt judges
     // them IN CONTEXT (no in-prompt literal-matching). Rendered in its OWN

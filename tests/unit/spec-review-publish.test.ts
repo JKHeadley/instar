@@ -100,3 +100,18 @@ describe('frontmatter + title parsing', () => {
     expect(specTitle('no title here', 'fb')).toBe('fb');
   });
 });
+
+describe('composeReviewMessage — review record and constitution line (frontier-design-review-standard §4)', () => {
+  it('introduces the line as the record for the full design, never the overview', async () => {
+    const { composeReviewMessage } = await import('../../skills/spec-converge/scripts/publish-spec-review.mjs');
+    const msg = composeReviewMessage({
+      title: 'Export plan', eli16Url: 'https://x.example/docs/1', prUrl: 'https://github.com/o/r/pull/1',
+      reviewLine: 'Reviewed 2 times. On this version: Claude Fable 5.2 found no issues. (Review record 0123456789ab)',
+      constitutionLine: 'Constitution check: ran 2026-11-17T22:03:00Z, 100 standards checked, 0 at risk.',
+    });
+    expect(msg).toContain('Review record for the full design, Export plan: Reviewed 2 times.');
+    expect(msg).toContain('Constitution check: ran 2026-11-17T22:03:00Z');
+    const bare = composeReviewMessage({ title: 'Export plan', eli16Url: 'https://x.example/docs/1' });
+    expect(bare).not.toContain('Review record');
+  });
+});

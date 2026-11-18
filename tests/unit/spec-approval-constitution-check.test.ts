@@ -255,7 +255,7 @@ describe('Work Board judge', () => {
   it('holds on a fire verdict and carries the issue and suggestion', async () => {
     const { provider, last } = capture({ fire: true, issue: 'asks the owner to approve a design without its check', suggestion: 'run the check' });
     const v = await judgeSpecApprovalAsk(provider, 'title: Approve the handoff design\nneed: please approve the spec', []);
-    expect(v).toEqual({ hold: true, issue: 'asks the owner to approve a design without its check', suggestion: 'run the check' });
+    expect(v).toEqual({ hold: true, rules: ['B25_SPEC_APPROVAL_UNCHECKED'], issue: 'asks the owner to approve a design without its check', suggestion: 'run the check' });
     expect(last()).toContain('B25_SPEC_APPROVAL_UNCHECKED');
     expect(last()).toMatch(/<<<CARD_[0-9a-f]{16}>>>/);
   });
@@ -306,7 +306,7 @@ describe('Work Board judge parser contract (the reply shape the prompt teaches i
 
   it('a taught-shape fire reply holds; a taught-shape no-fire reply passes', async () => {
     const fire: IntelligenceProvider = { evaluate: async () => '{"fire": true, "issue": "asks approval with no check", "suggestion": "run the check"}' };
-    expect(await judgeSpecApprovalAsk(fire, 'x', [])).toEqual({ hold: true, issue: 'asks approval with no check', suggestion: 'run the check' });
+    expect(await judgeSpecApprovalAsk(fire, 'x', [])).toEqual({ hold: true, rules: ['B25_SPEC_APPROVAL_UNCHECKED'], issue: 'asks approval with no check', suggestion: 'run the check' });
     const pass: IntelligenceProvider = { evaluate: async () => '{"fire": false, "issue": "", "suggestion": ""}' };
     expect(await judgeSpecApprovalAsk(pass, 'x', [])).toEqual({ hold: false });
   });

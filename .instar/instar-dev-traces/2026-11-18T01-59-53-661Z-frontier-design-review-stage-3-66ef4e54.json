@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "frontier-design-review-stage-3",
+  "sessionId": "fb9f8276-4dab-40e5-8807-ab593543dac6",
+  "timestamp": "2026-11-18T01:59:53.661Z",
+  "artifactPath": "upgrades/side-effects/frontier-design-review-stage-3.md",
+  "artifactSha256": "3e923ef9b0be030ca2bb3bed19c93d10412b689c7b33738c2bbfba226376b045",
+  "specPath": "docs/specs/frontier-design-review-standard.md",
+  "coveredFiles": [
+    "skills/spec-converge/scripts/publish-spec-review.mjs",
+    "src/core/MessagingToneGate.ts",
+    "src/core/approvalRequestDefinition.ts",
+    "src/core/designApprovalEvidence.ts",
+    "src/core/specConstitutionCheckLedger.ts",
+    "src/server/routes.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/unit/designApprovalEvidence.test.ts",
+    "tests/unit/spec-approval-constitution-check.test.ts",
+    "tests/unit/spec-review-publish.test.ts",
+    "tests/unit/tone-gate-advisory-migration.test.ts",
+    "upgrades/next/frontier-design-review-stage-3.md",
+    "upgrades/side-effects/frontier-design-review-stage-3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A new blocking outbound rule and a changed Work Board judge; approved converged spec, stage 3 of 4",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the peer-row refresh starts only when a read needs it, at most once per 60 seconds with a single refresh in flight, like the constitution-check peer cache; no retry loop"
+  }
+}

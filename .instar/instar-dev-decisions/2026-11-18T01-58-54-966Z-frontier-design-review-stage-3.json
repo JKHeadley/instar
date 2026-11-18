@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T01:58:54.966Z",
+  "slug": "frontier-design-review-stage-3",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 425,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/spec-converge/scripts/publish-spec-review.mjs",
+      "src/core/MessagingToneGate.ts",
+      "src/core/approvalRequestDefinition.ts",
+      "src/core/designApprovalEvidence.ts",
+      "src/core/specConstitutionCheckLedger.ts",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 412,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

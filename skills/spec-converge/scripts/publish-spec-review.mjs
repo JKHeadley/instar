@@ -104,15 +104,52 @@ export function specTitle(specText, fallback) {
  * Leads with the rendered ELI16 link (what the operator reads first),
  * then the full-spec PR for the deep read.
  */
-export function composeReviewMessage({ title, eli16Url, prUrl }) {
+export function composeReviewMessage({ title, eli16Url, prUrl, reviewLine, constitutionLine }) {
   const lines = [
     `Spec ready for your review: ${title}`,
     '',
     `ELI16 overview (rendered — tap to read): ${eli16Url}`,
   ];
   if (prUrl) lines.push(`Full spec + the decisions I need: ${prUrl}`);
+  // frontier-design-review-standard §4: the overview is a different file from the
+  // reviewed spec, so the line is introduced as the record for the full design.
+  if (reviewLine) lines.push('', `Review record for the full design, ${title}: ${reviewLine}`);
+  if (constitutionLine) lines.push('', constitutionLine);
   lines.push('', 'Nothing builds until you approve it.');
   return lines.join('\n');
+}
+
+/** The spec's provenance line as it renders now (GET /design/review), or null with the reason. */
+export async function fetchReviewLine(specPath) {
+  const token = process.env.INSTAR_AUTH_TOKEN;
+  if (!token) return { line: null, reason: 'no-token' };
+  try {
+    const res = await fetch(`http://localhost:${API_PORT}/design/review?path=${encodeURIComponent(specPath)}`, {
+      headers: { Authorization: `Bearer ${token}`, ...(process.env.INSTAR_SESSION_ID ? { 'X-Instar-Session-Id': process.env.INSTAR_SESSION_ID } : {}) },
+    });
+    if (!res.ok) return { line: null, reason: `http-${res.status}` };
+    const d = await res.json();
+    return { line: typeof d.line === 'string' ? d.line : null, reason: d.status };
+  } catch {
+    return { line: null, reason: 'unreachable' };
+  }
+}
+
+/** One plain line with the latest built-in constitution check result for this spec, or an honest absence. */
+export async function fetchConstitutionLine(slug) {
+  const token = process.env.INSTAR_AUTH_TOKEN;
+  if (!token || !slug) return null;
+  try {
+    const res = await fetch(`http://localhost:${API_PORT}/spec/constitution-checks`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return 'Constitution check: the record could not be read just now.';
+    const { records = [] } = await res.json();
+    const r = records.find((x) => x && x.slug === slug);
+    if (!r) return 'Constitution check: no recorded run for this spec yet.';
+    const risk = Array.isArray(r.atRisk) && r.atRisk.length ? `, at risk: ${r.atRisk.map((a) => a.standard ?? a).join('; ')}` : '';
+    return `Constitution check: ran ${r.checkedAt}, ${r.standardsChecked} standards checked, ${r.findingsCount} at risk${risk}.`;
+  } catch {
+    return 'Constitution check: the record could not be read just now.';
+  }
 }
 
 /** POST the ELI16 markdown to /view (or /docs where documents replace pages); returns { tunnelUrl, localUrl, id }. */
@@ -200,14 +237,22 @@ async function main() {
   const eli16Markdown = fs.readFileSync(eli16.eli16Path, 'utf8');
 
   // Render + verify the tunnel link BEFORE composing/sending.
-  const view = await createView({ title: `${title} — ELI16`, markdown: eli16Markdown });
+  const review = await fetchReviewLine(specPath);
+  const slugMatch = fm.match(/^slug:\s*"?([^"\n]+?)"?\s*$/m);
+  const constitutionLine = await fetchConstitutionLine(slugMatch ? slugMatch[1] : path.basename(specPath, '.md'));
+  // A rendering of a different file names the record as the full design's, never the overview's.
+  const renderedMarkdown = review.line
+    ? `> Review record for the full design, ${title}: ${review.line}\n\n${eli16Markdown}`
+    : eli16Markdown;
+  const view = await createView({ title: `${title} — ELI16`, markdown: renderedMarkdown });
   const status = await verifyUrl(view.tunnelUrl);
   if (status !== 200) {
     console.error(`REFUSING to send: rendered ELI16 link did not verify (HTTP ${status}). No broken links.`);
     process.exit(1);
   }
 
-  const message = composeReviewMessage({ title, eli16Url: view.tunnelUrl, prUrl: args.pr });
+  if (!review.line) console.error(`Note: no review record line for this version of the spec (${review.reason}); run /design-review or /spec-converge first, or the approval request will be held.`);
+  const message = composeReviewMessage({ title, eli16Url: view.tunnelUrl, prUrl: args.pr, reviewLine: review.line, constitutionLine });
 
   if (args.send) {
     if (!args.topic) {

@@ -423,6 +423,7 @@ import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolv
 import { WORK_KINDS as DESIGN_WORK_KINDS, resolveDesignRouting, classifyDesignWork, chooseLaneAccount, designStandardEnabled, type DesignRoutingOutcome } from '../core/designRouting.js';
 import { readDesignReviewLedger, planEvidenceByAccount, designReviewMachineId } from '../core/designReviewLedger.js';
 import { resolveDesignModel } from '../core/designLane.js';
+import { buildDesignApprovalEvidence, FingerprintCache, DesignRunsPeerCache } from '../core/designApprovalEvidence.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
@@ -3120,6 +3121,44 @@ export function createRoutes(ctx: RouteContext): Router {
     }));
     return answers.filter((a): a is { machine: string; records: unknown } => a !== null);
   });
+  // ── B26 review-record index (frontier-design-review-standard §4, multi-machine posture) ──
+  // This machine's design review rows merged with each online peer's own rows
+  // (GET /design/review/runs), refreshed in the background at most once a minute.
+  // Peer rows are untrusted: cleaned against closed lists; status is always
+  // recomputed locally. Undefined when the local ledger cannot be read at all.
+  const designFingerprintCache = new FingerprintCache();
+  const designRunsPeerCache = new DesignRunsPeerCache(async () => {
+    const self = designReviewMachineId(ctx.meshSelfId);
+    const peers = (ctx.resolvePeerUrls?.() ?? []).filter((p) => ctx.machinePoolRegistry?.getCapacity(p.machineId)?.online !== false);
+    const answers = await Promise.all(peers.map(async (p) => {
+      try {
+        const rows: unknown[] = [];
+        let since = 0;
+        for (let page = 0; page < 20; page++) {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/design/review/runs?since=${since}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) break;
+          const body = await r.json() as { runs?: unknown[]; cursor?: number; total?: number };
+          const got = Array.isArray(body.runs) ? body.runs : [];
+          rows.push(...got);
+          if (got.length === 0 || typeof body.cursor !== 'number' || body.cursor <= since || body.cursor >= (body.total ?? 0)) break;
+          since = body.cursor;
+        }
+        return { machineId: p.machineId, rows };
+      } catch {
+        return null; // @silent-fallback-ok — a peer that does not answer is absent from this refresh only
+      }
+    }));
+    return answers.filter((a): a is { machineId: string; rows: unknown[] } => a !== null && a.machineId !== self);
+  }, () => designReviewMachineId(ctx.meshSelfId));
+  const designReviewRunsIndex = (): import('../core/designReviewLedger.js').DesignReviewRun[] | undefined => {
+    const local = readDesignReviewLedger(ctx.config.stateDir);
+    if (local.unreadable) return undefined;
+    return designRunsPeerCache.get(local.runs);
+  };
+
   const safeRecentSpecChecks = (stateDir: string | undefined): import('../core/specConstitutionCheckLedger.js').SpecConstitutionCheckRecord[] | undefined => {
     if (!stateDir) return undefined;
     try { return specCheckPeerCache.get(recentSpecConstitutionChecks(stateDir)); }
@@ -3284,7 +3323,16 @@ export function createRoutes(ctx: RouteContext): Router {
     saveSettings: (patch) => ctx.workBoard?.()?.saveSettingsPatch(patch) ?? false,
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
     exposeBoardRead: (read) => { workBoardReadAs = read; },
-    specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
+    specApprovalJudge: async (text) => judgeSpecApprovalAsk(
+      ctx.intelligence ?? null,
+      text,
+      safeRecentSpecChecks(ctx.config.stateDir),
+      // B26 (frontier-design-review-standard §4): the same evidence the outbound gate
+      // gets, only where the standard is on; the one call then applies both rules.
+      designStandardEnabled(ctx.config)
+        ? await buildDesignApprovalEvidence({ text, runs: designReviewRunsIndex, selfMachineId: designReviewMachineId(ctx.meshSelfId), fingerprints: designFingerprintCache })
+        : undefined,
+    ),
     // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
     // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
     phoneOnlyCard: (cardId) => { let src: ReturnType<NonNullable<typeof ctx.projectAppCustom>> | null = null; try { src = ctx.projectAppCustom?.() ?? null; } catch { return true; } return isPhoneOnlyCard(src, cardId); }, // @silent-fallback-ok — fail closed: an unreadable source keeps the card phone-only
@@ -5318,6 +5366,19 @@ export function createRoutes(ctx: RouteContext): Router {
           : undefined;
       const templateFingerprint =
         options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
+      // E2E-PAIRING: EXEMPT — adds gate input to the already-live outbound reply routes; no
+      // new route and no route-aliveness change. Proven live through Telegram (stage 3 proof).
+      // B26 (frontier-design-review-standard §4): code-computed review-record evidence
+      // for each reference in the text, only where the standard is on. Local reads plus
+      // the peer cache (never waits on the network); bounded by the references present.
+      const designApprovalEvidence = options.messageKind === 'health-alert' || !designStandardEnabled(ctx.config)
+        ? undefined
+        : await buildDesignApprovalEvidence({
+            text,
+            runs: designReviewRunsIndex,
+            selfMachineId: designReviewMachineId(ctx.meshSelfId),
+            fingerprints: designFingerprintCache,
+          });
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -5362,6 +5423,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // B24 (Echo Bugs topic 10000002750): this machine's built-in constitution
           // check results, so a spec/design approval ask is judged against them.
           specConstitutionChecks: options.messageKind === 'health-alert' ? undefined : safeRecentSpecChecks(ctx.config.stateDir),
+          ...(designApprovalEvidence !== undefined ? { designApprovalEvidence } : {}),
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.

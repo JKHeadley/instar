@@ -76,7 +76,7 @@ export interface WorkBoardRouteDeps {
    * the owner to approve a spec or design without carrying its constitution check
    * result? A hold refuses the write with 422 and the way through. Absent ⇒ no judge.
    */
-  specApprovalJudge?: (text: string) => Promise<{ hold: boolean; issue?: string; suggestion?: string; unavailable?: boolean; noProvider?: boolean }>;
+  specApprovalJudge?: (text: string) => Promise<{ hold: boolean; rules?: string[]; issue?: string; suggestion?: string; unavailable?: boolean; noProvider?: boolean }>;
   /**
    * Project apps part 2 (docs/specs/project-apps-sandbox.md §3.4): a server-owned, phone-only card (a
    * custom app's version card). Its fields are the server's, so no caller's record lands on it, and a
@@ -134,6 +134,21 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
       return false;
     }
     if (!v.hold) return true;
+    const rules = v.rules && v.rules.length ? v.rules : ['B25_SPEC_APPROVAL_UNCHECKED'];
+    if (rules.includes('B26_DESIGN_APPROVAL_UNREVIEWED')) {
+      // E2E-PAIRING: EXEMPT — a new 422 shape on the already-live card route; no new route.
+      // frontier-design-review-standard §4: one 422 lists every rule that fired; the
+      // way through is the agent's own (one /design-review run clears both).
+      deps.log?.('design-approval-held', { issue: v.issue, rules });
+      res.status(422).json({
+        error: 'design-approval-unreviewed',
+        rules,
+        issue: v.issue,
+        suggestion: v.suggestion,
+        message: 'This card asks the owner to approve a design that has no review record for its current text, or does not carry that record\'s line. Run /design-review on the document (it also runs the constitution check), then write the card again with the line from GET /design/review.',
+      });
+      return false;
+    }
     deps.log?.('spec-approval-held', { issue: v.issue });
     res.status(422).json({
       error: 'spec-approval-unchecked',
