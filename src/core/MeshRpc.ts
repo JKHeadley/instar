@@ -25,6 +25,8 @@
 
 export type MachineId = string;
 
+import { meshFenceRefusesFrom } from './meshVerbFenceClass.js';
+
 export type MeshCommand =
   | { type: 'notification-preference'; intent: import('../messaging/NotificationPreferences.js').NotificationPreferenceIntent }
   | import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand
@@ -173,6 +175,10 @@ export type MeshCommand =
       expiresAt: string;
     }
   | { type: 'capacity-report' }
+  // identity-security piece 2b §6: keep the owner record in step. The receiver judges every entry itself
+  // with the 2a evaluator, so the command carries no authority of its own.
+  | import('./ownerRecordSync.js').OwnerRecordPushCmd
+  | import('./ownerRecordSync.js').OwnerRecordPullCmd
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
   // org-pack-and-join §Multi-machine: a validated organization pack change for the same agent's other machines.
@@ -642,6 +648,10 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       return { ok: true, reason: 'ok' };
     case 'capacity-report':
     case 'session-status':
+    // owner-record-push / owner-record-pull (identity-security piece 2b §6): registered-peer class. The
+    // handler is the real gate: bounded, rate-limited, and every entry is judged by the 2a evaluator.
+    case 'owner-record-push':
+    case 'owner-record-pull':
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
@@ -775,7 +785,7 @@ export interface MeshRpcDispatcherDeps {
 
 export type DispatchResult =
   | { ok: true; result: unknown }
-  | { ok: false; reason: VerifyReason | RbacReason | 'no-handler'; status: number };
+  | { ok: false; reason: VerifyReason | RbacReason | 'no-handler' | 'below-minimum-build'; status: number };
 
 /** HTTP status for each rejection reason — auth failures 401/403, freshness 409, unimplemented 501. */
 function statusForReason(reason: string): number {
@@ -828,6 +838,13 @@ export class MeshRpcDispatcher {
       this.d.onReject?.(env, authorized.reason);
       this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${authorized.reason}`);
       return { ok: false, reason: authorized.reason, status: statusForReason(authorized.reason) };
+    }
+    // identity-security piece 2d §2b: an authority verb from a machine below the minimum build is refused.
+    const fenced = meshFenceRefusesFrom(env.sender, env.command);
+    if (fenced) {
+      this.d.onReject?.(env, fenced);
+      this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${fenced}`);
+      return { ok: false, reason: 'below-minimum-build', status: 409 };
     }
     // Accepted — burn the nonce so an immediate replay is caught.
     this.d.recordNonce(env.sender, env.nonce);

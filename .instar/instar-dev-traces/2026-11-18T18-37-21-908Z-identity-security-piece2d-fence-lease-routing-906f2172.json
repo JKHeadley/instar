@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2d-fence-lease-routing",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T18:37:21.908Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2d-fence-lease-routing.md",
+  "artifactSha256": "cd1065b9515783548a0fd8273a6c3106931c27f01601314ba45fc4e4109d45d5",
+  "specPath": "docs/specs/identity-security-piece2d-fence-lease-routing.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/FencedLease.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/MeshRpcClient.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/core/OwnershipApplier.ts",
+    "src/core/PlacementExecutor.ts",
+    "src/core/identityBuildFence.ts",
+    "src/core/meshVerbFenceClass.ts",
+    "src/core/ownerRecordStore.ts",
+    "src/core/ownerRecordSync.ts",
+    "src/core/ownerRecordWiring.ts",
+    "src/data/awareness/owner-record.md",
+    "src/server/WebSocketManager.ts",
+    "src/server/mobileSessionTerminalRoutes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "fence part two: agent-wide hold, exhaustive mesh verb table enforced by direction, lease takeover budget, placement/remote-input/ownership hooks; nothing applies before enrolment",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "2d adds no self-triggered loop: lease takeover is an input to the existing acquire tick, bounded by a fixed per-day budget; the owner notice is 2c registered one"
+  }
+}

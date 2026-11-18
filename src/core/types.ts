@@ -5116,6 +5116,9 @@ export interface InstarConfig {
   dashboardPinGeneration?: string;
   /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
+    /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
+     *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
+    ownerRecord?: { enabled?: boolean };
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
       enabled?: boolean;

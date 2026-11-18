@@ -293,4 +293,21 @@ describe('MeshRpc — dispatcher (receive side)', () => {
     const env = envFrom({ sender: 'ANY_PEER', recipient: 'B', command: { type: 'capacity-report' } });
     expect((await d.dispatch(env)).status).toBe(409);
   });
+
+  it('identity-security piece 2d: an authority verb from a machine below the minimum build is refused after a valid signature; work from it still flows', async () => {
+    const { setMeshFencePolicy } = await import('../../src/core/meshVerbFenceClass.js');
+    const { installMeshFencePolicy } = await import('../../src/core/ownerRecordWiring.js');
+    installMeshFencePolicy({ isBelow: (m: string) => m === 'ROUTER' } as never);
+    try {
+      const { d, rejected, handled } = makeDispatcher({ handlers: { 'secret-share': () => ({ ok: true }), place: (_c: MeshCommand, sender: string) => { handled.push({ type: 'place', sender }); return { placed: true }; } } });
+      const share = envFrom({ sender: 'ROUTER', recipient: 'B', command: { type: 'secret-share', encrypted: 'x' } });
+      const r = await d.dispatch(share);
+      expect(r).toMatchObject({ ok: false, reason: 'below-minimum-build', status: 409 });
+      expect(rejected.at(-1)).toMatchObject({ type: 'secret-share', reason: 'below-minimum-build' });
+      const place = envFrom({ sender: 'ROUTER', recipient: 'B', command: { type: 'place', session: 's', machine: 'B' } });
+      expect((await d.dispatch(place)).ok).toBe(true);
+    } finally {
+      setMeshFencePolicy(null);
+    }
+  });
 });

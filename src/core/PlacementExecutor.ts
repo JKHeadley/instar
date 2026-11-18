@@ -8,6 +8,7 @@
  */
 
 import type { MachineCapacity } from './types.js';
+import { isBelowFence } from './meshVerbFenceClass.js';
 import { LOAD_REPORT_MAX_AGE_MS } from './machineLoadReport.js';
 import { machineServesChannel } from './machineServesChannel.js';
 import { effectivePending, heavyFit, placementLoad, type WorkWeight } from './machineResourceProfile.js';
@@ -231,7 +232,8 @@ export class PlacementExecutor {
     const tp = req.topicMetadata ?? {};
     // Eligible = online (clock-ok machines are already excluded upstream via the registry,
     // but we also honor an explicit offline flag here for determinism).
-    let eligible = req.machineRegistry.filter((m) => m.online && m.clockSkewStatus !== 'suspect-clock-removed');
+    // identity-security piece 2d §2b: nothing new is placed on a machine below the minimum build.
+    let eligible = req.machineRegistry.filter((m) => m.online && m.clockSkewStatus !== 'suspect-clock-removed' && !isBelowFence(m.machineId));
 
     // Quota gate (2026-06-05, quota-aware placement): a machine whose LLM
     // account is blocked (provider block in effect / 5-hour window exhausted,

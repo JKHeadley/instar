@@ -14,6 +14,7 @@
  * Part of Phase 5 (distributed coordination).
  */
 
+import { isBelowFence } from './meshVerbFenceClass.js';
 import { EventEmitter } from 'node:events';
 import { classifyCadenceLiveness } from './cadenceLiveness.js';
 import fs from 'node:fs';
@@ -400,6 +401,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const pref = this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
     if (!pref || !this._identity || !this.leaseCoordinator) return false; // F4 off / no identity
     if (pref === this._identity.machineId) return false;                   // WE are preferred → never defer
+    if (isBelowFence(pref)) return false;                                  // identity-security 2d: a below captain is no preference
     return this.preferredIsHealthy(pref);
   }
 

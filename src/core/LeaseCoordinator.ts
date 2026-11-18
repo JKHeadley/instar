@@ -109,6 +109,11 @@ export interface LeaseTransport {
 }
 
 export interface LeaseCoordinatorDeps {
+  /** identity-security piece 2d §2: holders below the minimum build that may be taken over now (within the
+   *  takeover budget). Read live; absent or empty refuses nothing. */
+  belowFenceHolders?: () => ReadonlySet<string>;
+  /** Counts a takeover from a below holder against its budget. */
+  onBelowFenceTakeover?: (holder: string) => void;
   lease: FencedLease;
   store: LeaseStore;
   tunnel?: LeaseTransport;
@@ -856,6 +861,8 @@ export class LeaseCoordinator {
       this.d.presumedDeadHolders(),
       this.now(),
       this.staleHolderOpts(view.lease),
+      undefined,
+      this.d.belowFenceHolders?.(),
     ).can;
   }
 
@@ -921,7 +928,7 @@ export class LeaseCoordinator {
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
         return this.renew();
       }
-      const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease));
+      const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease), undefined, this.d.belowFenceHolders?.());
       if (!decision.can) {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
@@ -947,6 +954,7 @@ export class LeaseCoordinator {
       const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (view.lease && decision.reason.startsWith('holder-below-minimum-build')) this.d.onBelowFenceTakeover?.(view.lease.holder);
         if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
           this.staleTakeoverEvidence = { holder: view.lease.holder, epoch: candidate.epoch, atMono: this.monotonicNow() };
           featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
