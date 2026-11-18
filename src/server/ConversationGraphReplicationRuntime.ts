@@ -486,6 +486,13 @@ export class ConversationGraphReplicationRuntime {
   }catch{/* DegradationReporter internalOnly via reportUnavailable; invalid or unavailable enrollment cannot accept local private custody. */this.reportUnavailable('graph-local-enrollment-unavailable');return false;}
  }
  private alive():boolean{return !this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();}
+ /**
+  * May this machine serve the owner's private reads right now: alive, and the private-serving custody
+  * check the owner's read view (readView) already requires. Unlike isReady() it does not need a write
+  * readiness proof from the last 60 s; that proof is re-earned by the background pass (zeroed while it
+  * runs), so gating owner reads on it refused most history reads on a busy lease holder.
+  */
+ privateReadsServable():boolean{return this.alive()&&this.privateCustodyAllowed();}
  isReady():boolean{return this.alive()&&this.positiveCustodyAllowed()&&this.options.leaseCoordinator.currentEpoch()<=GRAPH_REPLICATION_MAX_LEASE_EPOCH&&this.readyAt>0&&this.readyLeaseEpoch===this.options.leaseCoordinator.currentEpoch()&&Date.now()-this.readyAt<60000;}
  projection(){if(!this.isReady())throw new Error('graph-runtime-not-ready');return this.source.certifiedUnion(this.reader,this.options.droppedOrigins);}
  /** A cold offline view requires physical all-member ACK proof and no known
@@ -536,7 +543,23 @@ export class ConversationGraphReplicationRuntime {
   * per read. Reads only: writers and proofs still call retainedProjection/inventory, which never cache.
   * The returned view is shared between reads and must not be changed.
   */
+ /** The view one synchronous read is pinned to (withPinnedReadView), or undefined. */
+ private pinnedReadView:NonNullable<ConversationGraphReplicationRuntime['readViewCache']>['view']|undefined;
+ /** Runs `fn` with every readView() inside it answering the one view built at its start.
+  * While writes are in flight the view key is null and nothing is cached, so a page that
+  * looked up N effort titles rebuilt the whole verified view N+1 times in one synchronous
+  * call (accept-all rig, 2026-11-18: 20-28 s stalls). The pin lives only for this
+  * synchronous call (cleared in finally); no write can interleave with it. If the view
+  * cannot be built, `fn` runs unpinned and meets the same refusal itself. */
+ withPinnedReadView<T>(fn:()=>T):T{
+  if(this.pinnedReadView)return fn();
+  let view:NonNullable<ConversationGraphReplicationRuntime['readViewCache']>['view'];
+  try{view=this.readView();}catch{/* @silent-fallback-ok: unpinned, fn's own readView() call reports the refusal exactly as before. */return fn();}
+  this.pinnedReadView=view;
+  try{return fn();}finally{this.pinnedReadView=undefined;}
+ }
  readView(){
+  if(this.pinnedReadView)return this.pinnedReadView;
   if(!this.alive()||!this.privateCustodyAllowed()){this.readViewCache=null;throw new Error('graph-runtime-retained-unavailable');}
   const key=this.readViewKey(),now=Date.now(),cached=this.readViewCache;
   if(key&&cached&&cached.key===key&&now-cached.at>=0&&now-cached.at<15_000)return cached.view;

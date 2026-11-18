@@ -26,3 +26,7 @@ An independent security review concurred. It verified that the device authentica
 ## Device-route inventory verification
 
 The shared mobile route test now exercises all seven owner-only history operations, including selecting one imported conversation and saving confirmed facts. The mobile terminal and imported-history device-rule tests passed together (24 tests).
+
+## Merge with main after #3349 landed (2026-11-18)
+
+#3349 was squash-merged (ced37add9), so this branch's copy of it conflicted with main. Resolution: the merged tree is exactly main plus this PR's own commits (20d5acd1d..4bc9b40c1) replayed on main; the only hand resolution kept both main's machine-care entries and this PR's imported-history entries in the device allowlist test, each once. No behaviour change. Unit: imported-history device rules + mobile-session-terminal + two imported-history files, 24/24; typecheck clean.

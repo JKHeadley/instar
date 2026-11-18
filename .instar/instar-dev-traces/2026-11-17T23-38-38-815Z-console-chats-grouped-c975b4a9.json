@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "console-chats-grouped",
+  "sessionId": "8d848839-63d1-417d-ad1d-769adac726e8",
+  "timestamp": "2026-11-17T23:38:38.815Z",
+  "artifactPath": "upgrades/side-effects/console-chats-grouped.md",
+  "artifactSha256": "0c5fca0dc9ffdf9696f8bd08ac15a112b4af56b8ab4d9ff4f54f49632c946530",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "dashboard/console/projects.js",
+    "dashboard/console/work.js",
+    "docs/specs/console-chats-grouped.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-project-apps-model.test.ts",
+    "upgrades/next/console-chats-grouped.md",
+    "upgrades/side-effects/console-chats-grouped.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Owner follow-ups on the same display-only change: project-linked groups get a flag, status chip and Open project link from the existing /work/projects read; group wording. No server, route, config or stored-data change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-chats-grouped.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-chats-grouped.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

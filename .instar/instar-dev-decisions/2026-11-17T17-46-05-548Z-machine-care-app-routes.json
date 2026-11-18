@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-17T17:46:05.548Z",
+  "slug": "machine-care-app-routes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 64,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The phone routes refuse the agent's own token; restart stays behind the owner's tap and the machine-restart Eternal Sentinel."
+    }
+  },
+  "verdict": "pass"
+}
