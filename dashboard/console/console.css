@@ -1627,3 +1627,9 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-strip > button.needs-more:hover { text-decoration: underline; }
 /* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
 .conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
+/* Project rows that say something (work-door-project-rows §3.1): the folded line is two lines at most; the opened row has it all. */
+.projects-section .project-report { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.projects-section .project-checks { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: var(--s-2) 0; }
+.projects-section .project-check-status:empty { display: none; }
+.projects-section .project-done .done-waiting .done-mark { color: var(--attn); }
+.projects-section .project-row[open] .project-report { display: block; -webkit-line-clamp: unset; overflow: visible; }
