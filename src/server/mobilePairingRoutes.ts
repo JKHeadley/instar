@@ -2653,6 +2653,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: new RegExp(`^/mobile/approver/requests/${UUID}/decline$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'approver-grant' },
     { method: 'DELETE', re: /^\/mobile\/approver\/request$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 12, bucket: 'approver-grant' },
     { method: 'GET', re: /^\/mobile\/approver\/requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'approver-grant-read' },
+    { method: 'GET', re: /^\/mobile\/approvers$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'approver-grant-read' },
     // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The
     // introducer routes re-check owner, local TLS and the switch; the waiting phone hands in its own.
     { method: 'GET', re: /^\/mobile\/introducer$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'introducer-read' },

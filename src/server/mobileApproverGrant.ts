@@ -236,4 +236,41 @@ export function mountApproverGrantRoutes(router: Router, svc: MobilePairingServi
     env.push([draft.id]);
     res.json({ ok: true, revoked: keyId });
   });
+
+  // §3.10 (mobile-approver-mark): the list every owner device reads: who can approve, whether this device may, and
+  // whether the first-approver claim is open. The claim checks every machine again when it starts.
+  router.get('/mobile/approvers', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { res.status(503).json({ error: 'pairing-off' }); return; }
+    const deviceId = deviceOf(req);
+    if (!deviceId) { res.status(403).json({ error: 'device-signature-required' }); return; }
+    if (!activeOwnerPhone(svc, deviceId) && !(svc.devices.get(deviceId)?.status === 'active')) { res.status(403).json({ error: 'owner-device-required' }); return; }
+    const env = approverClaimEnv();
+    const st = env?.store.state() ?? null;
+    const live = new Set(liveOwnerKeys(svc).map((k) => k.publicKey));
+    const holders: Array<Record<string, unknown>> = [];
+    const devices = svc.devices.list().filter((d) => d.status === 'active');
+    for (const d of devices) {
+      if (!mayApprove(svc, d.id)) continue;
+      const k = heldPresenceKeys(svc).find((h) => h.deviceId === d.id)?.key;
+      holders.push({ deviceId: d.id, name: d.label ?? d.deviceName ?? 'Device', fingerprint: d.fingerprint ?? null, via: k && live.has(k) ? 'record' : 'kept', self: d.id === deviceId });
+    }
+    // Owner keys held by no device here belong to another machine's devices.
+    const here = new Set(heldPresenceKeys(svc).map((h) => h.key));
+    const elsewhere = (st?.keys ?? []).filter((k) => k.type === 'owner-key' && live.has(k.publicKey) && !here.has(k.publicKey)).length;
+    const mine = [...asks.values()].find((a) => a.deviceId === deviceId);
+    let opening: Record<string, unknown>;
+    if (st?.everEnrolled) opening = { state: 'closed', reason: 'approver-exists' };
+    else if (svc.approvalPath() !== 'telegram') opening = { state: 'closed', reason: 'no-private-chat' };
+    else if ((svc.devices.get(deviceId)?.approvedVia ?? 'telegram-dm') !== 'telegram-dm') opening = { state: 'closed', reason: 'not-private-chat-paired' };
+    else opening = { state: 'open', route: 'private-chat' };
+    res.json({
+      feature: 1,
+      self: { mayApprove: mayApprove(svc, deviceId), ...(mine ? { request: { requestId: [...asks].find(([, a]) => a === mine)![0], matchCode: mine.matchCode } } : {}) },
+      holders, holdersElsewhere: elsewhere,
+      waiting: [...asks.values()].filter((a) => activeOwnerPhone(svc, a.deviceId)).length,
+      opening,
+      recovery: null,
+    });
+  });
 }

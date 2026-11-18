@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T19:48:45.822Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3a-approver-in-owner-record.md",
+  "artifactSha256": "d780ba1eacee4afaeafd1e8805931bd7308b374f421369bab579e69ddff77f3c",
+  "specPath": "docs/specs/identity-security-piece3a-approver-in-owner-record.md",
+  "coveredFiles": [
+    "src/server/mobileApproverGrant.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/unit/identity-piece3a-approver-claim.test.ts",
+    "upgrades/side-effects/identity-security-piece3a-approver-in-owner-record.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only list route the apps need (mobile-approver-mark §3.10) and a health marker; same reviewed design.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Adds a read-only GET route and a constant health field; no self-triggered action."
+  }
+}

@@ -29,6 +29,9 @@ Piece 3a of the approved identity and security design (topic 144636). It adapts 
   - A device that can't approve can't remove a device with a live claim.
 - **Kept devices** (`migrateApprovers`, once per machine): active owner phones that held a presence key before this release, minus any whose key was set at or after the cutoff. The cutoff moves back to the earliest migration any machine reports. That only shrinks the list. The owner gets one attention item listing the kept devices.
 - **The presence-key route** stores a key only for a device that may already approve (§3.2). Any other device gets `403 approver-required`.
+- **The list the apps read** (mobile-approver-mark §3.10):
+  - `GET /mobile/approvers` (owner device, device-signed) answers who can approve, whether this device may, its own pending request and match code (only to itself), how many wait, and whether the first-approver claim is open, checked again at start.
+  - `/health` reports `approverMark: 1`, which the Windows app checks before pairing.
 - **Joins:** a machine can't join while a claim is live. The join answer carries the pinned genesis, which the joiner pins at once.
 
 ## Decision-point inventory

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T19:49:12.948Z",
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileApproverGrant.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Adds a read-only GET route and a constant health field; no self-triggered action."
+  },
+  "verdict": "pass"
+}

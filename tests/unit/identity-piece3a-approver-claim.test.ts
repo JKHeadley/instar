@@ -291,3 +291,26 @@ describe('removal takes effect safely (round 2)', () => {
     expect(mayApprove(c.svc, a.id)).toBe(true);
   });
 });
+
+describe('the approvers list the apps read (mobile-approver-mark §3.10)', () => {
+  function get(app: express.Express, p: Phone, url: string) {
+    const time = String(Date.now() + (tick++ % 1000));
+    return request(app).get(url).set('Host', HOST).set('X-Instar-Device', p.id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', p.dev.sign(canonicalString(p.id, HOST, 'GET', url, time, undefined)));
+  }
+  it('says the claim is open before any approver, then lists the approver and closes it', async () => {
+    const c = setup();
+    const p = c.pair();
+    const before = await get(c.app, p, '/mobile/approvers');
+    expect(before.status, JSON.stringify(before.body)).toBe(200);
+    expect(before.body).toMatchObject({ feature: 1, self: { mayApprove: false }, holders: [], opening: { state: 'open', route: 'private-chat' } });
+    await becomeFirst(c, p);
+    const after = await get(c.app, p, '/mobile/approvers');
+    expect(after.body).toMatchObject({ self: { mayApprove: true }, opening: { state: 'closed', reason: 'approver-exists' } });
+    expect(after.body.holders).toEqual([expect.objectContaining({ deviceId: p.id, via: 'record', self: true })]);
+    const q = c.pair();
+    const ask = await post(c.app, q, '/mobile/approver/request', { presenceKey: q.presence.publicKey, presenceProof: q.presence.sign(presenceEnrollMessage(q.id, HOST, q.presence.publicKey)) });
+    const mine = await get(c.app, q, '/mobile/approvers');
+    expect(mine.body.self.request).toEqual({ requestId: ask.body.requestId, matchCode: ask.body.matchCode });
+    expect((await get(c.app, p, '/mobile/approvers')).body.self.request).toBeUndefined(); // codes only to the asking device
+  });
+});
