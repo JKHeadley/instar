@@ -361,7 +361,7 @@ import {
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { buildViewTunnelUrl } from './viewTunnelUrl.js';
-import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches, MOBILE_SESSION_ACTION_TIMEOUT_MS, MOBILE_SESSION_MOVE_TIMEOUT_MS } from './middleware.js';
+import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches, MOBILE_SESSION_ACTION_TIMEOUT_MS, MOBILE_SESSION_MOVE_TIMEOUT_MS, isUsableToken, isUnreadableToken } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
 import {
   buildPeerDarkSentence,
@@ -21267,7 +21267,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let scopedStreamToken: string | null = null;
     // Inline auth check for SSE — supports both Authorization header and ?token= query param
     // (EventSource API cannot send custom headers, so token in query is required for browser SSE)
-    if (ctx.config.authToken) {
+    // identity-security-piece1h: an unreadable key refuses cleanly; no key at all stays open as today.
+    if (isUnreadableToken(ctx.config.authToken)) {
+      res.status(503).json({ error: 'agent-credential-unavailable' });
+      return;
+    }
+    if (isUsableToken(ctx.config.authToken)) {
       let tokenValue: string | undefined;
       const header = req.headers.authorization;
       if (header?.startsWith('Bearer ')) {

@@ -1,0 +1,4 @@
+---
+title: The agent API key, missing or unreadable
+---
+If your API key is stored in the secret store but cannot be loaded, requests that need it get `503 agent-credential-unavailable`; the server re-reads the store on its own and raises an owner item "Your agent's API key could not be loaded" after 3 failed tries. Repair the secret store (unlock or re-sync it); the key is used again the moment it loads, with no restart. If there is no key at all, the API is open; the owner is told and can reply "fix auth" in the Agent Attention topic, which creates the key on a single-machine agent. On an agent with several machines, set one key on all of them together: put it in the secret store on the lease holder and push it with secret sync, then restart each machine's server. Afterwards, check that a Telegram message still arrives.

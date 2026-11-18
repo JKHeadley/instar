@@ -865,6 +865,15 @@ export function writePrivatePasteFile(content: string, baseDir: string = os.tmpd
   }
 }
 
+/**
+ * The agent key as a session sees it (identity-security-piece1h): only a non-empty string, never the
+ * literal "undefined" or "[object Object]" a missing or unloaded key would print. Scripts that prefer
+ * the environment then fall back to reading the config.
+ */
+export function sessionAuthToken(token: unknown): string {
+  return typeof token === 'string' ? token : '';
+}
+
 export class SessionManager extends EventEmitter {
   private pendingHeadlessSpawns = 0;
   private pendingScheduledSpawns = 0;
@@ -5033,7 +5042,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         ...this.telemetryIdentityEnvFlags(options.topicId), // skill-learning slice 0: INSTAR_MACHINE_ID / INSTAR_TOPIC_ID
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : sessionAuthToken(this.config.authToken)}`,
         ...this.memorySystemEnvFlags(),
         ...headlessThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
         // Long waits (threadline-mcp-local-http "Bounds", deadline 5): the client
@@ -5522,7 +5531,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         ...this.telemetryIdentityEnvFlags(options.topicId), // skill-learning slice 0: INSTAR_MACHINE_ID / INSTAR_TOPIC_ID
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : sessionAuthToken(this.config.authToken)}`,
         ...this.memorySystemEnvFlags(),
         ...reroutedThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
         ...CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS, // long waits: the client outlasts the 300 s reply wait
@@ -8506,7 +8515,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         ...this.telemetryIdentityEnvFlags(options?.telegramTopicId), // skill-learning slice 0: INSTAR_MACHINE_ID / INSTAR_TOPIC_ID
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${memoryToken ?? this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${memoryToken ?? sessionAuthToken(this.config.authToken)}`,
         ...(memoryScopeEnv ? ['-e', `INSTAR_MEMORY_SCOPE=${memoryScopeEnv}`] : []),
         ...(memoryScoped ? [
           '-e', `INSTAR_PORT=${this.config.port}`,
@@ -9109,7 +9118,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         ...this.telemetryIdentityEnvFlags(), // skill-learning slice 0: INSTAR_MACHINE_ID (a triage spawn has no topic)
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${sessionAuthToken(this.config.authToken)}`,
         ...triageThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only)
         ...CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS, // long waits: the client outlasts the 300 s reply wait
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,

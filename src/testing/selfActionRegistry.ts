@@ -24,6 +24,7 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 
 import { GRAPH_SOURCE_SWEEP_HEARTBEAT_MS, sourceSweepCheckpointDue } from '../core/ConversationGraphSourceSweep.js';
 import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSourceStatusPoll.js';
+import { KEY_REREAD_FIRST_DELAY_MS, nextRereadDelayMs, rereadGivesUp } from '../server/agentKeyHealth.js';
 import { WorkAdmission } from '../core/workAdmission.js';
 import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
@@ -5956,7 +5957,56 @@ const pairingOutcomeNoticeRetry: SelfActionController = {
   },
 };
 
+
+/**
+ * agent-key-reread — identity-security-piece1h (src/server/agentKeyHealth.ts). While the agent's
+ * API key is an unloaded secret-store placeholder, the server re-reads it on its own timer.
+ *
+ * Convergence argument: one timer at a time; the wait after n failures is nextRereadDelayMs(n)
+ * (1 minute doubling, capped at 30), and rereadGivesUp stops all re-reads 24 hours after the first
+ * failure. Under sustained pressure (the store never loads) re-reads are bounded by
+ * 6 + 24h/30min ≈ 54 in total and ZERO after the give-up; the owner is told at most twice (after 3
+ * failures, and once at the give-up). A restart starts a fresh 24-hour window, bounded the same way.
+ */
+function agentKeyRereadModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Mirrors AgentKeyHealth: the window (first failure, failure count, gave-up) lives in a state file
+  // (state/agent-key-reread.json) that survives restarts, so a restart continues it.
+  type Window = { firstFailureAt: number; failures: number; gaveUp?: boolean };
+  const KEY = 'agent-key-reread:window';
+  const kept = f.durableState.get(KEY) as Window | undefined;
+  const w: Window = kept ? { ...kept } : { firstFailureAt: f.clock.nowMs(), failures: 0 };
+  let stopped = !!w.gaveUp || (kept ? rereadGivesUp(w.firstFailureAt, f.clock.nowMs()) : false);
+  let dueAt = f.clock.nowMs() + (kept ? nextRereadDelayMs(w.failures) : KEY_REREAD_FIRST_DELAY_MS);
+  f.durableState.set(KEY, { ...w });
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      if (stopped || now < dueAt) return;
+      sink.emit({ verb: 'retry', target: 'agent-key-store' });
+      w.failures += 1;
+      if (rereadGivesUp(w.firstFailureAt, now)) { stopped = true; w.gaveUp = true; f.durableState.set(KEY, { ...w }); return; }
+      f.durableState.set(KEY, { ...w });
+      dueAt = now + nextRereadDelayMs(w.failures);
+    },
+  };
+}
+const agentKeyReread: SelfActionController = {
+  id: 'agent-key-reread',
+  actionVerb: 'retry',
+  models: 'src/server/agentKeyHealth.ts (AgentKeyHealth.tick — nextRereadDelayMs backoff, rereadGivesUp after 24h; owner told after KEY_REREAD_NOTIFY_AFTER failures)',
+  modelsPath: 'src/server/agentKeyHealth.ts',
+  // A restart while the key is still unreadable starts one new bounded 24-hour window.
+  restartPosture: { pressureSurvives: true, restartUnderPressure: agentKeyRereadModel },
+  boundK: 60,
+  perTargetBoundK: 60,
+  ticks: 2 * 24 * 60,
+  tickMs: KEY_REREAD_FIRST_DELAY_MS,
+  makeUnderPressure: agentKeyRereadModel,
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  agentKeyReread,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
   localVerifyLeftoverReaper,

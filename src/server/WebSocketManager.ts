@@ -27,6 +27,7 @@
  *   { type: 'error', message: '...' }
  */
 
+import { isUnreadableToken, isUsableToken } from './middleware.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -85,7 +86,9 @@ export class WebSocketManager {
   private sessionBroadcastInterval: ReturnType<typeof setInterval> | null = null;
   private sessionManager: SessionManager;
   private state: StateManager;
-  private authToken?: string;
+  /** identity-security-piece1h: read on every connection, so a key set or loaded later applies at once. */
+  private readonly authTokenSource: () => unknown;
+  private get authToken(): string | undefined { return this.authTokenSource() as string | undefined; }
   private scopedSessionVerify?: (token: string) => boolean;
   private scopedSessionOnInvalidated?: (token: string, cb: () => void) => (() => void);
   private registryPath?: string;
@@ -117,7 +120,7 @@ export class WebSocketManager {
     server: HttpServer;
     sessionManager: SessionManager;
     state: StateManager;
-    authToken?: string;
+    authToken?: string | (() => unknown);
     instarDir?: string;
     sessionPresentationSources?: () => SessionPresentationSources;
     hookEventReceiver?: HookEventReceiver;
@@ -141,7 +144,8 @@ export class WebSocketManager {
     this.sessionManager = options.sessionManager;
     this.state = options.state;
     this.sessionPresentationSources = options.sessionPresentationSources;
-    this.authToken = options.authToken;
+    const src = options.authToken;
+    this.authTokenSource = typeof src === 'function' ? src : () => src;
     this.scopedSessionVerify = options.scopedSessionVerify;
     this.scopedSessionOnInvalidated = options.scopedSessionOnInvalidated;
     this.hookEventReceiver = options.hookEventReceiver;
@@ -244,7 +248,8 @@ export class WebSocketManager {
       }
 
       // Authenticate via query param or header
-      const auth = this.authToken ? this.authenticate(request, url) : { ok: true };
+      // identity-security-piece1h: an unreadable key refuses; no key at all stays open as today.
+      const auth = isUsableToken(this.authToken) ? this.authenticate(request, url) : { ok: !isUnreadableToken(this.authToken) };
       if (!auth.ok) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
@@ -326,7 +331,7 @@ export class WebSocketManager {
   /** `{ ok }`, plus the dst_ scoped token when the connection authenticated via one (so the caller
    *  can close the stream when that session family is revoked — SEC-002b). */
   private authenticate(request: IncomingMessage, url: URL): { ok: boolean; scopedToken?: string } {
-    if (!this.authToken) return { ok: true };
+    if (!isUsableToken(this.authToken)) return { ok: !isUnreadableToken(this.authToken) };
     const candidates: string[] = [];
     const tokenParam = url.searchParams.get('token');
     if (tokenParam) candidates.push(tokenParam);
@@ -341,7 +346,7 @@ export class WebSocketManager {
   }
 
   private verifyToken(token: string): boolean {
-    if (!this.authToken) return true;
+    if (!isUsableToken(this.authToken)) return !isUnreadableToken(this.authToken);
     const ha = createHash('sha256').update(token).digest();
     const hb = createHash('sha256').update(this.authToken).digest();
     return timingSafeEqual(ha, hb);

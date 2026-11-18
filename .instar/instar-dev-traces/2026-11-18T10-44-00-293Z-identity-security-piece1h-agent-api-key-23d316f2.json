@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1h-agent-api-key",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T10:44:00.293Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1h-agent-api-key.md",
+  "artifactSha256": "b36c0631520255a1b9452bc78272e480158b48fbf76dc85ccea9dbcca2da3ed7",
+  "specPath": "docs/specs/identity-security-piece1h-no-token-refusal.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece1h-no-token-refusal.eli16.md",
+    "docs/specs/identity-security-piece1h-no-token-refusal.md",
+    "docs/specs/reports/identity-security-piece1h-no-token-refusal-convergence.md",
+    "src/commands/fixAuth.ts",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/data/awareness/agent-api-key.md",
+    "src/lifeline/SlackLifeline.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/forwardErrors.ts",
+    "src/server/AgentServer.ts",
+    "src/server/WebSocketManager.ts",
+    "src/server/agentKeyHealth.ts",
+    "src/server/middleware.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/identity-piece1h-agent-key-alive.test.ts",
+    "tests/integration/identity-piece1h-agent-key.test.ts",
+    "tests/unit/identity-piece1h-agent-key.test.ts",
+    "upgrades/next/identity-security-piece1h-agent-api-key.md",
+    "upgrades/side-effects/identity-security-piece1h-agent-api-key.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Authentication robustness: an unreadable agent key is refused cleanly instead of crashing, the no-key path gains an observe log, the relay re-reads a changed key.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "agent-key-reread is registered in selfActionRegistry: one timer, 1-minute doubling backoff capped at 30, stop 24 hours after the first failure; the window is kept in state/agent-key-reread.json so a restart continues it; at most ~54 re-reads per unreadable-key episode, zero after the give-up."
+    }
+  }
+}

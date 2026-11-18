@@ -288,13 +288,15 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { setNoTokenServedCounter } from './middleware.js';
+import { AgentKeyHealth } from './agentKeyHealth.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason, DESKTOP_PEER_REASON_MAX } from '../core/DesktopProbeReadiness.js';
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
-import { getInstarVersion } from '../core/Config.js';
+import { getInstarVersion, loadConfig } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
@@ -882,6 +884,87 @@ export class AgentServer {
         impact: 'The owner is not yet told about a locked-screen security event.' });
       return false;
     }
+  }
+
+  /**
+   * An owner security notice with a stable condition key (identity-security-piece1h), built like
+   * raiseLockedSecurityItem: a Telegram attention item when Telegram is configured, else the local
+   * attention list (GET /attention, the app) plus a push to paired phones. True once raised; the
+   * caller retries otherwise.
+   */
+  private async raiseOwnerSecurityItem(item: { key: string; title: string; body: string; sourceContext: string }): Promise<boolean> {
+    const id = `agent:${item.key}`;
+    try {
+      if (!this.telegramAdapter) {
+        const stored = this.localAttention?.raise({ id, title: item.title, summary: item.body, description: item.body,
+          priority: 'HIGH', category: 'security', source: 'agent', sourceContext: item.sourceContext }) ?? false;
+        if (stored) {
+          try {
+            this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'HIGH' });
+          } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+        } else {
+          console.warn(`[instar] owner security item ${item.key} could not be stored locally; the next check retries`);
+        }
+        return stored;
+      }
+      await this.telegramAdapter.createAttentionItem({ id, conditionKey: item.key, title: item.title, summary: item.body,
+        description: item.body, priority: 'HIGH', source: 'agent', category: 'security', sourceContext: item.sourceContext } as never);
+      return true;
+    } catch (err) {
+      console.warn(`[instar] owner security item ${item.key} could not be raised; the next check retries: ${err instanceof Error ? err.message : String(err)}`);
+      DegradationReporter.getInstance().report({ feature: 'OwnerSecurityItem.raise',
+        primary: 'An owner security notice on the attention surface', fallback: 'Retried at the next check of the same condition',
+        reason: 'attention item write failed', impact: 'The owner is not yet told about a security condition.' });
+      return false;
+    }
+  }
+
+  /** Close an owner security notice whose cause has cleared. */
+  private async closeOwnerSecurityItem(key: string): Promise<void> {
+    const id = `agent:${key}`;
+    try {
+      if (!this.telegramAdapter) { this.localAttention?.setStatus(id, 'DONE', 'cause cleared'); return; }
+      await this.telegramAdapter.updateAttentionStatus(id, 'DONE', { silent: true, resolution: 'cause cleared', closedBy: 'cause-cleared' } as never);
+    } catch { /* @silent-fallback-ok — an item left open is closed by its own lifecycle or the owner */ }
+  }
+
+  /** identity-security-piece1h: re-reads an agent key the secret store did not load. */
+  private agentKeyHealth: AgentKeyHealth | null = null;
+  private startAgentKeyHealth(): void {
+    // Umbrella section 10 observe log: each request served only because no key is configured, with
+    // its caller, at most one row per route and caller a minute (so a busy route cannot grow the log).
+    // Keys are bounded: one per route (first path segment), at most 64 distinct routes, then 'other';
+    // the caller's details ride in the row's context, not its key.
+    const seenRoutes = new Set<string>();
+    setNoTokenServedCounter((caller) => {
+      let route = `${caller.method} /${(caller.path.split('/')[1] ?? '').slice(0, 40)}`;
+      if (!seenRoutes.has(route)) { if (seenRoutes.size >= 64) route = 'other'; else seenRoutes.add(route); }
+      featureEvidence.recordAtMostEvery('security.agentApiKey', `would-refuse:${route}`, 60_000,
+        { kind: 'held', reason: `Served without a key (none is configured): ${route}`, context: { ...caller } });
+    });
+    this.agentKeyHealth = new AgentKeyHealth({
+      current: () => this.config.authToken,
+      // The same load the server boots with: the config file read fresh, merged with the secret store.
+      reload: () => loadConfig(this.config.projectDir).authToken,
+      apply: (key) => { this.config.authToken = key; console.log('[instar] the agent key loaded from the secret store; API requests are accepted again'); },
+      notify: (final) => this.raiseOwnerSecurityItem({ key: 'agent-api-key-unreadable', sourceContext: 'agent-api-key',
+        title: "Your agent's API key could not be loaded",
+        body: final
+          ? "Your agent's stored API key has not loaded for a day, so its API is refusing requests (Telegram messages wait in their queue). Your agent has stopped retrying on its own; ask it to repair the secret store."
+          : "Your agent's stored API key could not be loaded, so its API is refusing requests (Telegram messages wait in their queue). Your agent keeps retrying; if this lasts, ask it to repair the secret store." }),
+      resolved: () => { void this.closeOwnerSecurityItem('agent-api-key-unreadable'); },
+      // The window survives restarts, so a restart loop cannot reset the backoff or the 24-hour stop.
+      loadWindow: () => {
+        const f = path.join(this.config.stateDir, 'state', 'agent-key-reread.json');
+        return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf-8')) : null;
+      },
+      saveWindow: (w) => {
+        const f = path.join(this.config.stateDir, 'state', 'agent-key-reread.json');
+        if (w) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(w)); }
+        else if (fs.existsSync(f)) SafeFsExecutor.safeUnlinkSync(f, { operation: 'agent-key-reread:window-cleared' });
+      },
+    });
+    this.agentKeyHealth.start();
   }
 
   /**
@@ -2193,7 +2276,8 @@ export class AgentServer {
         try{configRef.dashboardPin=readConversationGraphOwnerCredential({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})??undefined;}
         catch{return void res.status(503).json({error:'PIN authentication is temporarily unavailable.'});}
       }
-      if (!configRef.dashboardPin || !configRef.authToken) {
+      // identity-security-piece1h: a key the secret store did not load is not a key (never signed with).
+      if (!configRef.dashboardPin || typeof configRef.authToken !== 'string' || !configRef.authToken) {
         res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
         return;
       }
@@ -4491,7 +4575,7 @@ export class AgentServer {
         sourceCheckout, hasCanonicalDataDir: Boolean(dataDir), dependenciesReady: Boolean(this.feedbackProcessing && options.initiativeTracker), initialized: false });
       if (drainEnabled && dataDir && this.feedbackProcessing && options.initiativeTracker) {
         const dbPath = options.config.feedbackFactory?.drain?.dbPath ?? path.join(dataDir, 'feedback-drain.db');
-        const tokenKey = createHash('sha256').update(options.config.authToken ?? `feedback-drain:${options.config.projectName}`).digest();
+        const tokenKey = createHash('sha256').update(typeof options.config.authToken === 'string' && options.config.authToken ? options.config.authToken : `feedback-drain:${options.config.projectName}`).digest();
         const store = new FeedbackDrainStore({ dbPath, tokenHmacKey: tokenKey });
         if (!store.integrityCheck()) throw new Error('feedback drain critical integrity_check corruption');
         const promotion = new FeedbackConsumerPromotionStore(path.join(path.dirname(dbPath), 'consumer-live.json'));
@@ -9538,6 +9622,11 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        try { this.startAgentKeyHealth(); } catch (err) {
+          DegradationReporter.getInstance().report({ feature: 'AgentKeyHealth.start', primary: 'Re-reading an unloaded agent key',
+            fallback: 'The key stays refused until a restart', reason: err instanceof Error ? err.message : String(err),
+            impact: 'An agent key the secret store did not load is not retried on its own.' });
+        }
         // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
         bootReadiness().markReady();
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
@@ -9556,7 +9645,7 @@ export class AgentServer {
           server: this.server!,
           sessionManager: this.sessionManager,
           state: this.state,
-          authToken: this.config.authToken,
+          authToken: () => this.config.authToken,
           // SEC-002b: accept a dst_ scoped session token on /ws (dark by default) and close the
           // stream when its session family is revoked.
           scopedSessionVerify: (token: string) =>
@@ -10083,6 +10172,7 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    this.agentKeyHealth?.stop();
     await this.stopGraphSourceInventory();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }

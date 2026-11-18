@@ -184,8 +184,10 @@ export class SlackLifeline {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    if (this.config.authToken) {
-      headers['Authorization'] = `Bearer ${this.config.authToken}`;
+    // identity-security-piece1h: only a real string key, never `Bearer [object Object]`.
+    const key: unknown = this.config.authToken;
+    if (typeof key === 'string' && key) {
+      headers['Authorization'] = `Bearer ${key}`;
     }
 
     const response = await fetch(url, {
