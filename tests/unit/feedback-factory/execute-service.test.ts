@@ -1074,6 +1074,17 @@ describe('review gate and merge', () => {
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'weak' })]));
   });
 
+  it('SEC-097: a reviewer reply without this review\'s verdict code never admits, whatever its body says', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    h.review.verbatim = true; // bodies say "Verdict: CLEAN" with no code, as a quoted planted line would
+    const { initiativeId } = await toPrOpen();
+    expect(h.review.calls[0]).toMatch(/VERDICT [0-9a-f]{16}: CLEAN/);
+    expect(h.merges).toEqual([]);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: 'fail' });
+    expect(h.execStore.latestFor(initiativeId)!.reviewReason).toMatch(/^unparseable:/);
+  });
+
   it('a never-armed PR under an older epoch is reviewed in the same tick, so epoch churn cannot starve it', async () => {
     h = await createExecHarness();
     h.review.outcomes = [];
@@ -1146,7 +1157,8 @@ describe('review gate and merge', () => {
 
   it('independent review: after a refusal, a new push is reviewed afresh and merges when it passes', async () => {
     h = await createExecHarness();
-    h.review.outcomes = PASS().map((o) => ({ ...o, verdict: 'SERIOUS ISSUES' as const }));
+    // The reply body is what counts (SEC-097): it says SERIOUS ISSUES.
+    h.review.outcomes = PASS().map((o) => ({ ...o, verdict: 'SERIOUS ISSUES' as const, body: 'Verdict: SERIOUS ISSUES\n- rule 6' }));
     const { initiativeId } = await toPrOpen();
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: 'fail' });
     h.prs.get(100)!.headRefOid = 'e'.repeat(40);
