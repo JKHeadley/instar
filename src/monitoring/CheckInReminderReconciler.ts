@@ -26,18 +26,8 @@ import {
 import type { Commitment, CommitmentTracker } from './CommitmentTracker.js';
 import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { isPromisedUpdateCommitment } from './PromisedUpdateCapture.js';
-import {
-  isLateNoticeDue,
-  isUnresolvedExhaustion,
-  isDueSoonNudgeDue,
-  buildLateNoticeText,
-  buildPromiseHandoffText,
-  DEFAULT_LATE_TOPIC_COOLDOWN_MS,
-  DEFAULT_MAX_LATE_TOPICS_PER_PASS,
-  DEFAULT_MAX_LATE_TOPICS_PER_HOUR,
-  LATE_NOTICE_MAX_ATTEMPTS,
-  type LateNotDueReason,
-} from './lateNoticeCore.js';
+import { PromiseKeepingPass, emptyPromiseKeepingReport, type PromiseKeepingReport, type PromiseKeepingDeps } from './promiseKeepingPass.js';
+import { preDeadlineCheck, overdueStep, buildPromiseBootstrap, buildLastResortText, promiseWorkMaxLive } from './promiseKeepingCore.js';
 
 /** The send identity: per check-in row, or per late group (docs/specs/overdue-promise-follow-through.md §3.2). */
 export type CheckInSendIdentity =
@@ -66,12 +56,25 @@ export interface CheckInReminderDeps {
    */
   resumePromisedUpdate?: (commitment: Commitment) => void | Promise<void>;
   /**
-   * Overdue-promise follow-through: hand a promise to the topic's RUNNING
-   * session as a system notice (never a user message, never a spawn). Resolves
-   * true only when the session took the text. Absent → no handoff, no due-soon
-   * nudge; the person-facing late notice is unaffected.
+   * Promise keeping (docs/specs/promise-keeping-before-the-deadline.md §3.1):
+   * hand the work to the topic's session — notify a running one, or launch a
+   * start (never awaited by the pass). Absent → nothing can be picked up, and
+   * a missed time reaches the last resort after its deadline.
    */
-  handOffPromise?: (topicId: number, text: string) => Promise<boolean>;
+  pickUp?: PromiseKeepingDeps['pickUp'];
+  /** Reconcile a timed-out attempt against the session registry (exited sessions included). */
+  findAttemptSession?: PromiseKeepingDeps['findAttemptSession'];
+  /** Working promise-work sessions on this machine (for the live limit). */
+  workingPromiseSessions?: () => number;
+  /** sessions.maxSessions on this machine. */
+  maxSessions?: number;
+  /** §3.7 no-time lane: a session is live in this conversation. */
+  hasLiveSession?: PromiseKeepingDeps['hasLiveSession'];
+  /** §3.6 release step: promise-work sessions on this machine, and the guarded release. */
+  listPromiseWorkSessions?: PromiseKeepingDeps['listPromiseWorkSessions'];
+  releaseIfAllowed?: PromiseKeepingDeps['releaseIfAllowed'];
+  /** Resolve a reschedule intent left open (crash residue, §3.4). */
+  resolveRescheduleIntent?: PromiseKeepingDeps['resolveRescheduleIntent'];
   /**
    * This machine's late-notice epoch (first live pass). `read` returns null
    * before the first live pass; `writeOnce` persists it. Absent → the late
@@ -117,31 +120,15 @@ export interface CheckInReminderPassReport {
 
 export interface LatePassReport {
   ran: boolean;
-  /** Rows whose promised time passed and are owed a notice this pass or later. */
-  due: number;
-  /** Conversations sent a late message this pass. */
-  topicsSent: number;
-  /** Rows stamped as noticed this pass. */
-  rowsNoticed: number;
-  /** Conversations held by the per-topic cooldown or the agent-wide budget. */
-  topicsHeld: number;
-  /** Would-send conversations under dry-run. */
-  wouldSendTopics: number;
-  failed: number;
-  /** Rows whose attempts ran out — undelivered late notices (also counted in gaveUp). */
-  gaveUp: number;
-  handoffsAccepted: number;
-  handoffsNotAccepted: number;
-  nudged: number;
+  /** Dry-run: promises a live pass would act on (check, pickup or last resort). */
+  wouldAct: number;
   dueIds: string[];
-  skippedByReason: Partial<Record<LateNotDueReason, number>>;
+  /** The live pass (docs/specs/promise-keeping-before-the-deadline.md). */
+  keeping: PromiseKeepingReport;
 }
 
 function emptyLateReport(): LatePassReport {
-  return {
-    ran: false, due: 0, topicsSent: 0, rowsNoticed: 0, topicsHeld: 0, wouldSendTopics: 0,
-    failed: 0, gaveUp: 0, handoffsAccepted: 0, handoffsNotAccepted: 0, nudged: 0, dueIds: [], skippedByReason: {},
-  };
+  return { ran: false, wouldAct: 0, dueIds: [], keeping: emptyPromiseKeepingReport() };
 }
 
 const DEFAULT_MAX_PER_PASS = 25;
@@ -228,7 +215,7 @@ export class CheckInReminderReconciler {
     return report;
   }
 
-  // ── Late notices (docs/specs/overdue-promise-follow-through.md) ──────────
+  // ── Promise keeping (docs/specs/promise-keeping-before-the-deadline.md) ──
 
   private async runLatePass(now: number, report: CheckInReminderPassReport): Promise<void> {
     const late = report.late;
@@ -236,95 +223,49 @@ export class CheckInReminderReconciler {
     if (!epochStore) return;
     let epochMs = epochStore.read();
     if (epochMs === null) {
-      // The epoch marks the first LIVE pass. A dry-run pass never sets it, so a
-      // long dry-run soak cannot move the backlog window.
+      // The epoch marks the first LIVE pass; a dry-run pass never sets it.
       if (this.config.dryRun) epochMs = now;
       else epochMs = epochStore.writeOnce(now);
     }
     late.ran = true;
-    const self = this.config.selfMachineId;
-    const all = this.deps.tracker.getAll() as Commitment[];
-
-    // 1. Unresolved exhaustion → stamp failed, count it (never a silent give-up).
-    for (const c of all) {
-      if (!isUnresolvedExhaustion(c)) continue;
-      if (self && (c.ownerMachineId ?? c.originMachineId) !== self) continue;
-      if (this.config.dryRun) continue;
-      try {
-        await this.deps.tracker.mutate(c.id, (r) => ({ ...r, lateNoticeFailedAt: new Date(now).toISOString() }));
-        late.gaveUp++;
-        report.gaveUp++;
-      } catch (err) {
-        report.errors.push({ id: c.id, error: `late-exhaustion-stamp: ${err}` });
-      }
-    }
-
-    // 2. Due-soon nudges (session only, running sessions only).
-    if (this.deps.handOffPromise && !this.config.dryRun) {
-      for (const c of all) {
-        const v = isDueSoonNudgeDue({ commitment: c, nowMs: now, selfMachineId: self });
-        if (!v.due) continue;
-        try {
-          // Stamp FIRST: a repeated nudge is noise; a missed one is backed up by the late notice.
-          await this.deps.tracker.mutate(c.id, (r) => ({ ...r, dueSoonNudgeFor: v.promisedTime }));
-          const ok = await this.deps.handOffPromise(c.topicId as number, buildPromiseHandoffText({
-            kind: 'due-soon', id: c.id, origin: c.originMachineId ?? null, promisedTime: v.promisedTime,
-            agentResponse: c.agentResponse, timeZone: this.deps.timeZone,
-          }));
-          if (ok) late.nudged++;
-        } catch (err) {
-          report.errors.push({ id: c.id, error: `due-soon-nudge: ${err}` });
+    if (this.config.dryRun) {
+      // Decide and log only: no notice, start, stamp or send.
+      const self = this.config.selfMachineId;
+      for (const c of this.deps.tracker.getAll() as Commitment[]) {
+        const chk = preDeadlineCheck(c, now, self);
+        const step = chk.due ? null : overdueStep({ c, nowMs: now, selfMachineId: self, epochMs, movedSincePickup: false });
+        if (chk.due || (step && step.act !== 'none')) {
+          late.wouldAct++;
+          late.dueIds.push(c.id);
         }
       }
+      if (late.wouldAct > 0) this.log(`[promise-keeping] dry-run: would act on ${late.wouldAct} promise(s)`);
+      return;
     }
-
-    // 3. Late notices: select, group by topic, order by oldest promised time.
-    const groups = new Map<number, Array<{ c: Commitment; time: string; ms: number }>>();
-    for (const c of all) {
-      const v = isLateNoticeDue({ commitment: c, nowMs: now, selfMachineId: self, epochMs });
-      if (!v.due) {
-        if (v.reason !== 'no-promised-time') late.skippedByReason[v.reason] = (late.skippedByReason[v.reason] ?? 0) + 1;
-        continue;
-      }
-      late.due++;
-      const g = groups.get(c.topicId as number) ?? [];
-      g.push({ c, time: v.promisedTime, ms: v.promisedMs });
-      groups.set(c.topicId as number, g);
-    }
-    if (groups.size === 0) return;
-
-    const cooldown = this.config.lateTopicCooldownMs ?? DEFAULT_LATE_TOPIC_COOLDOWN_MS;
-    const perPass = this.config.maxLateTopicsPerPass ?? DEFAULT_MAX_LATE_TOPICS_PER_PASS;
-    const perHour = this.config.maxLateTopicsPerHour ?? DEFAULT_MAX_LATE_TOPICS_PER_HOUR;
-    // Recent sends per topic, from the durable stamps (survives restarts; no in-memory state).
-    const lastSentByTopic = new Map<number, number>();
-    for (const c of all) {
-      const t = Date.parse(c.lateNoticeSentAt ?? '');
-      if (!Number.isFinite(t) || typeof c.topicId !== 'number') continue;
-      if (self && (c.ownerMachineId ?? c.originMachineId) !== self) continue;
-      if (t > (lastSentByTopic.get(c.topicId) ?? 0)) lastSentByTopic.set(c.topicId, t);
-    }
-    let topicsThisHour = [...lastSentByTopic.values()].filter((t) => now - t < 60 * 60_000).length;
-
-    const ordered = [...groups.entries()]
-      .map(([topicId, rows]) => ({ topicId, rows: rows.sort((a, b) => a.ms - b.ms) }))
-      .sort((a, b) => a.rows[0].ms - b.rows[0].ms);
-
-    let topicsThisPass = 0;
-    for (const group of ordered) {
-      const last = lastSentByTopic.get(group.topicId);
-      if (last !== undefined && now - last < cooldown) { late.topicsHeld++; continue; }
-      if (topicsThisPass >= perPass || topicsThisHour >= perHour) { late.topicsHeld++; continue; }
-      if (this.config.dryRun) {
-        late.wouldSendTopics++;
-        late.dueIds.push(...group.rows.map((r) => r.c.id));
-        topicsThisPass++;
-        this.log(`[late-notice] would tell topic ${group.topicId} about ${group.rows.length} late promise(s)`);
-        continue;
-      }
-      const sent = await this.noticeGroup(group.topicId, group.rows, now, report);
-      if (sent) { topicsThisPass++; topicsThisHour++; }
-    }
+    const pass = new PromiseKeepingPass(
+      {
+        tracker: this.deps.tracker,
+        ...(this.deps.pickUp ? { pickUp: this.deps.pickUp } : {}),
+        ...(this.deps.findAttemptSession ? { findAttemptSession: this.deps.findAttemptSession } : {}),
+        ...(this.deps.workingPromiseSessions ? { workingPromiseSessions: this.deps.workingPromiseSessions } : {}),
+        ...(this.deps.maxSessions !== undefined ? { maxSessions: this.deps.maxSessions } : {}),
+        ...(this.deps.resolveRescheduleIntent ? { resolveRescheduleIntent: this.deps.resolveRescheduleIntent } : {}),
+        ...(this.deps.hasLiveSession ? { hasLiveSession: this.deps.hasLiveSession } : {}),
+        ...(this.deps.listPromiseWorkSessions ? { listPromiseWorkSessions: this.deps.listPromiseWorkSessions } : {}),
+        ...(this.deps.releaseIfAllowed ? { releaseIfAllowed: this.deps.releaseIfAllowed } : {}),
+        sendLastResort: (topicId, text, identity) => this.sendDelivered(topicId, text, identity),
+        timeZone: this.deps.timeZone,
+        log: (l) => this.log(l),
+      },
+      {
+        selfMachineId: this.config.selfMachineId,
+        epochMs,
+        ...(this.config.maxLateTopicsPerPass !== undefined ? { maxLateTopicsPerPass: this.config.maxLateTopicsPerPass } : {}),
+        ...(this.config.maxLateTopicsPerHour !== undefined ? { maxLateTopicsPerHour: this.config.maxLateTopicsPerHour } : {}),
+        ...(this.config.lateTopicCooldownMs !== undefined ? { lateTopicCooldownMs: this.config.lateTopicCooldownMs } : {}),
+      },
+    );
+    await pass.run(now, late.keeping);
   }
 
   /**
@@ -338,113 +279,6 @@ export class CheckInReminderReconciler {
   private async sendDelivered(topicId: number, text: string, identity: CheckInSendIdentity): Promise<void> {
     const receipt = await this.deps.send(topicId, text, identity);
     if (isQuietReceipt(receipt)) throw new Error(`held-not-delivered: the notification policy recorded it quietly (${receipt.quietId})`);
-  }
-
-  /**
-   * One conversation's late rows → one message. Order: count an attempt (with
-   * the predicate re-checked inside the CAS) → send once → stamp every row →
-   * hand off to a running session. The handoff runs only after the stamp, so
-   * its "the user has been told" is true.
-   */
-  private async noticeGroup(
-    topicId: number,
-    rows: Array<{ c: Commitment; time: string; ms: number }>,
-    now: number,
-    report: CheckInReminderPassReport,
-  ): Promise<boolean> {
-    const late = report.late;
-    const self = this.config.selfMachineId;
-    const kept: Array<{ c: Commitment; time: string }> = [];
-    for (const r of rows) {
-      let still = false;
-      try {
-        await this.deps.tracker.mutate(r.c.id, (cur) => {
-          const v = isLateNoticeDue({ commitment: cur, nowMs: now, selfMachineId: self, epochMs: -Infinity });
-          if (!v.due || v.promisedTime !== r.time) return cur;
-          still = true;
-          const sameTime = cur.lateAttemptsFor === r.time;
-          // A new promised time gets a fresh budget: attempts AND any old failure stamp reset together.
-          return { ...cur, lateAttemptsFor: r.time, lateAttempts: (sameTime ? (cur.lateAttempts ?? 0) : 0) + 1, ...(sameTime ? {} : { lateNoticeFailedAt: undefined }) };
-        });
-      } catch (err) {
-        // @silent-fallback-ok — not silent: the error is in the pass report, and the row stays
-        // eligible (no attempt was counted) so the next pass retries it.
-        report.errors.push({ id: r.c.id, error: `late-attempt: ${err}` });
-        continue;
-      }
-      if (still) kept.push({ c: this.deps.tracker.getAll().find((x) => x.id === r.c.id && x.originMachineId === r.c.originMachineId) as Commitment ?? r.c, time: r.time });
-    }
-    if (kept.length === 0) return false;
-
-    const text = buildLateNoticeText(
-      kept.map((k) => ({ promisedTime: k.time, agentResponse: k.c.agentResponse, userRequest: k.c.userRequest })),
-      this.deps.timeZone,
-    );
-    const identity: CheckInSendIdentity = {
-      kind: 'late',
-      topicId,
-      rows: kept
-        .map((k) => ({ origin: k.c.originMachineId ?? null, id: k.c.id, time: k.time }))
-        .sort((a, b) => (a.id + a.time).localeCompare(b.id + b.time)),
-    };
-    try {
-      await this.sendDelivered(topicId, text, identity);
-    } catch (err) {
-      late.failed++;
-      report.failed++;
-      report.errors.push({ id: kept.map((k) => k.c.id).join(','), error: String(err) });
-      for (const k of kept) {
-        const attempts = k.c.lateAttemptsFor === k.time ? (k.c.lateAttempts ?? 0) : 0;
-        if (attempts >= LATE_NOTICE_MAX_ATTEMPTS) {
-          try {
-            await this.deps.tracker.mutate(k.c.id, (cur) => ({ ...cur, lateNoticeFailedAt: new Date(now).toISOString() }));
-          } catch { /* @silent-fallback-ok — the failure is in the pass report; the next pass's exhaustion sweep retries the stamp */ }
-          late.gaveUp++;
-          report.gaveUp++;
-          this.log(`[late-notice] GIVING UP on ${k.c.id} after ${attempts} attempts — late notice UNDELIVERED`);
-        }
-      }
-      return false;
-    }
-
-    const sentAt = new Date(now).toISOString();
-    for (const k of kept) {
-      try {
-        await this.deps.tracker.mutate(k.c.id, (cur) => ({
-          ...cur,
-          lateNoticeFor: k.time,
-          lateNoticeSentAt: sentAt,
-          lateNoticeCount: (cur.lateNoticeCount ?? 0) + 1,
-        }));
-        late.rowsNoticed++;
-        late.dueIds.push(k.c.id);
-      } catch (err) {
-        // The person HAS the notice; the next pass re-sends with the same identity (replayed).
-        report.errors.push({ id: k.c.id, error: `late-sent-but-unstamped: ${err}` });
-      }
-    }
-    late.topicsSent++;
-
-    if (this.deps.handOffPromise) {
-      for (const k of kept) {
-        try {
-          const ok = await this.deps.handOffPromise(topicId, buildPromiseHandoffText({
-            kind: 'late', id: k.c.id, origin: k.c.originMachineId ?? null, promisedTime: k.time,
-            agentResponse: k.c.agentResponse, timeZone: this.deps.timeZone,
-          }));
-          if (ok) {
-            late.handoffsAccepted++;
-            await this.deps.tracker.mutate(k.c.id, (cur) => ({ ...cur, lateHandoffFor: k.time })).catch(() => { /* @silent-fallback-ok — bookkeeping only; the session already has the text */ });
-          } else {
-            late.handoffsNotAccepted++;
-          }
-        } catch (err) {
-          late.handoffsNotAccepted++;
-          report.errors.push({ id: k.c.id, error: `late-handoff: ${err}` });
-        }
-      }
-    }
-    return true;
   }
 
   /**
@@ -476,6 +310,70 @@ export class CheckInReminderReconciler {
     if (typeof topicId !== 'number') return false; // excluded by the predicate; belt-and-braces
 
     const promisedUpdate = isPromisedUpdateCommitment(commitment);
+
+    // promise-keeping §3.8: a promised update is work for a session first. The
+    // person gets a line only when no session could take it after the attempts.
+    if (promisedUpdate && this.deps.pickUp) {
+      const attempts = (commitment.checkInReminderAttempts ?? 0) + 1;
+      try {
+        await this.deps.tracker.mutate(commitment.id, (c) => ({ ...c, checkInReminderAttempts: (c.checkInReminderAttempts ?? 0) + 1 }));
+      } catch (err) {
+        report.errors.push({ id: commitment.id, error: String(err) });
+        return false;
+      }
+      const attemptId = `pu-${now.toString(36)}-${commitment.id}`;
+      let outcome: Awaited<ReturnType<NonNullable<CheckInReminderDeps['pickUp']>>>;
+      try {
+        outcome = await this.deps.pickUp({
+          topicId,
+          bootstrap: buildPromiseBootstrap({
+            stage: 'overdue',
+            rows: [{ id: commitment.id, origin: commitment.originMachineId ?? null, time: commitment.checkInAt ?? null, noTime: !commitment.checkInAt, agentResponse: commitment.agentResponse }],
+            timeZone: this.deps.timeZone,
+          }).replace('stage overdue]', 'stage promised-update]') + '\nThis was a promised UPDATE: send the person the update now (what is done, where it stands, what is next), then deliver the record.',
+          attemptId,
+          triggeredBy: `promise-work:${commitment.id}:${attemptId}`,
+          // Same start limits as the promise-keeping pass: a third of maxSessions working.
+          mayStart: (this.deps.workingPromiseSessions?.() ?? 0) < promiseWorkMaxLive(this.deps.maxSessions ?? 10),
+          onSettled: () => { /* a launched start is confirmed on the next pass, when its session is live and notified */ },
+        });
+      } catch (err) {
+        outcome = { kind: 'failed', error: String(err) };
+      }
+      if (outcome.kind === 'pending' && attempts < 3) {
+        // A start was launched: not handled yet. The next pass finds the session live and
+        // notifies it (then stamps), or counts another attempt toward the last resort.
+        return false;
+      }
+      if (outcome.kind === 'notified' || outcome.kind === 'started') {
+        await this.deps.tracker.mutate(commitment.id, (c) => ({ ...c, checkInReminderSentAt: new Date(now).toISOString(), pickedUpAt: new Date(now).toISOString() })).catch((err) => {
+          report.errors.push({ id: commitment.id, error: `picked-up-but-unstamped: ${err}` });
+        });
+        return true;
+      }
+      if (attempts < 3) return false; // retried next pass; nothing to the person yet
+      // Third attempt and still nothing took it (held, failed, or a start that never came up): last resort.
+      const variant = outcome.kind === 'pending' ? 'could-not-restart' : outcome.kind === 'held'
+        ? (outcome.reason === 'capacity' ? 'busy' : outcome.reason === 'not-holder' ? 'not-here' : 'queued')
+        : 'could-not-restart';
+      const lastResort = buildLastResortText([{ time: commitment.checkInAt ?? '', noTime: !commitment.checkInAt, agentResponse: commitment.agentResponse, userRequest: commitment.userRequest, variant }], this.deps.timeZone);
+      try {
+        await this.sendDelivered(topicId, lastResort, { commitmentId: commitment.id, checkInAt: commitment.checkInAt! });
+      } catch (err) {
+        report.failed++;
+        report.errors.push({ id: commitment.id, error: String(err) });
+        if (attempts >= CHECK_IN_MAX_ATTEMPTS) {
+          await this.deps.tracker.mutate(commitment.id, (c) => ({ ...c, checkInReminderFailedAt: new Date(now).toISOString() })).catch(() => { /* @silent-fallback-ok — in the pass report */ });
+          report.gaveUp++;
+        }
+        return false;
+      }
+      await this.deps.tracker.mutate(commitment.id, (c) => ({ ...c, checkInReminderSentAt: new Date(now).toISOString() })).catch((err) => {
+        report.errors.push({ id: commitment.id, error: `sent-but-unstamped: ${err}` });
+      });
+      return true;
+    }
+
     const text = promisedUpdate
       ? buildPromisedUpdateOverdueText({
         userRequest: commitment.userRequest ?? '',
