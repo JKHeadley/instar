@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "commitment-config-write-authority",
+  "sessionId": "d6cfb2c6-e547-4efc-8a51-332115305932",
+  "timestamp": "2026-11-18T08:46:22.649Z",
+  "artifactPath": "upgrades/side-effects/commitment-config-write-authority.md",
+  "artifactSha256": "5fe296ad03c2f1665b647e128b4d0ffe1a54ccac20af381f7ff140c32e44799b",
+  "coveredFiles": [
+    "docs/specs/commitment-config-write-authority.eli16.md",
+    "src/commands/server.ts",
+    "src/config/LiveConfig.ts",
+    "src/config/bearerConfigWrite.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "tests/unit/CommitmentTracker-config-watch-conflicts.test.ts",
+    "tests/unit/CommitmentTracker.test.ts",
+    "tests/unit/bearer-config-write.test.ts",
+    "tests/unit/reserved-object-keys.test.ts",
+    "upgrades/next/commitment-config-write-authority.md",
+    "upgrades/side-effects/commitment-config-write-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Merge of main into a reviewed Tier-1 fix; import-only conflict resolution, independently reviewed.",
+  "eli16Path": "docs/specs/commitment-config-write-authority.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/commitment-config-write-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
