@@ -31,3 +31,6 @@ The agent already has a way to copy small records between its own computers: eve
 ## What needs deciding
 
 Whether this design is right: decisions replicate, the suggestion list stays local, and the feature is on automatically wherever the agent already shares records between its computers (with an off switch), because it only carries your own choices and restricts nothing. Approving it lets the build go ahead and closes the open promise CMT-1650.
+
+
+Follow-up (2026-11-18): a one-line reorder in the server startup code so an existing safety test that checks that line keeps passing. Nothing about how suggestions behave changed.

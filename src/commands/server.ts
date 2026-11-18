@@ -6389,7 +6389,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Conversations suggestions (docs/specs/conversation-graph-suggestions-replicated-decisions.md): the owner's
       // decisions are the agent's, so the store is on wherever the journal runs; `enabled: false` is the kill switch.
       if (_suggestionDecisionsOn) s = { ...s, conversationGraphSuggestions: { enabled: true } };
-      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _projectAppsOn || _trustJourneyStoreOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _suggestionDecisionsOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _projectAppsOn || _trustJourneyStoreOn || _suggestionDecisionsOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter

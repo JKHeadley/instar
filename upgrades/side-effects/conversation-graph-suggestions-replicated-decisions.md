@@ -120,3 +120,7 @@ Concur with the review. The multi-machine section matches the code (kind registe
 - `tests/unit/conversation-graph-suggestion-decisions.test.ts`, `tests/unit/conversation-graph-suggestions.test.ts`, `tests/unit/CoherenceJournal.test.ts`
 - `tests/integration/conversation-graph-suggestions-replicated.test.ts`
 - `tests/e2e/conversation-graph-suggestion-decisions-alive.test.ts`
+
+## Follow-up fix after Local Verify (2026-11-18)
+
+Local Verify failed `tests/unit/chief-of-staff-store-wiring.test.ts`: it pins the exact order of the stateSync early-return chain in `src/commands/server.ts` (`_staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase`). This change had inserted `_suggestionDecisionsOn` between them. The fix moves `_suggestionDecisionsOn` earlier in the same OR chain. Boolean OR is order-independent here (every term is a side-effect-free value), so behavior is unchanged; only the pinned text order is restored. Over-block / under-block / signal-vs-authority / interactions / external surfaces / multi-machine posture / rollback: unchanged from the review above.
