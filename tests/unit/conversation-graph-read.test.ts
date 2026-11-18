@@ -40,6 +40,19 @@ function makeSource(over: Partial<GraphReadSource> & { events?: GraphEvent[]; co
 const conv = (r: ConversationRef, i: number): ConversationSource => ({ ref: r, conversationId: (r as { topicId: number }).topicId, title: `Chat ${i}`, lastActivity: `2026-11-05T09:${String(i % 60).padStart(2, '0')}:00.000Z` });
 const owner = (grant = 'g1', hidden: string[] = []): GraphViewer => ({ principalKey: 'owner', grantVersion: grant, mayView: (r) => !hidden.includes(nodeKey(r)) });
 
+describe('one verified view per read',()=>{
+ it('runs every read entry point, readiness and titles included, inside the source scope',()=>{
+  const E=effort(1),C=tg(1);let depth=0,scopes=0;const seen:string[]=[];
+  const {src}=makeSource({events:[ev('create',E),ev('place',C,E)],convs:[conv(C,1)],readiness:()=>{seen.push(`readiness@${depth}`);return {ready:true};}});
+  const title=src.effortTitle;src.effortTitle=(e)=>{seen.push(`title@${depth}`);return title(e);};
+  src.scoped=<T,>(fn:()=>T):T=>{scopes++;depth++;try{return fn();}finally{depth--;}};
+  const model=new ConversationGraphReadModel(src);
+  model.roots(owner(),{view:'all'});model.node(owner(),E,{});model.destinations(owner(),C,{});model.unassignedConversations(owner());
+  expect(scopes).toBe(4);
+  expect(seen.length).toBeGreaterThan(4);expect(seen.every(entry=>entry.endsWith('@1'))).toBe(true);
+ });
+});
+
 describe('held canonical authority never becomes an empty graph',()=>{
  it('advertises only actual local recording and never projects private canonical rows',()=>{
   const {src}=makeSource({readiness:()=>({ready:false,reason:'active-profile-held'})});

@@ -71,6 +71,7 @@ import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { projectTapPort } from './workProjectActions.js';
+import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
 import { mountProjectAppCustomRoutes } from './projectAppCustomRoutes.js';
@@ -3360,6 +3361,23 @@ export function createRoutes(ctx: RouteContext): Router {
     enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+  });
+  // Bring your Claude and ChatGPT history into Instar (docs/specs/import-from-claude-chatgpt.md): local only.
+  mountImportedHistoryRoutes(router, {
+    stateDir: ctx.config.stateDir,
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    ownerOk: (req) => {
+      const token = req.headers['x-instar-operator-session'];
+      return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true;
+    },
+    // The owner's own app device (signed through DEVICE_ALLOWLIST, which already refuses others there).
+    deviceOwnerOk: isOwnerAppDevice,
+    rememberFact: ctx.semanticMemory ? ({ text, from }) => ctx.semanticMemory!.remember({
+      type: 'fact', name: text.slice(0, 80), content: text, confidence: 0.8, lastVerified: new Date().toISOString(),
+      source: `import:${from}`, tags: ['imported', from],
+      ownerId: ctx.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? 'owner', privacyScope: 'private',
+    }) : undefined,
+    log: (entry) => console.log(`[imported-history] ${JSON.stringify(entry)}`),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
