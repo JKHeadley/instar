@@ -290,12 +290,15 @@ describe('the decision panel (document-decisions §3.3)', () => {
     expect(member.headline).toBe("Waiting for Justin's decision");
     expect(m.decisionPanel(base(null, undefined, false))!.controls).toBe('open-latest');
   });
-  it('SEC-088 interim: on a machine that waits for the phone\'s own machine, it says waiting and offers no buttons', () => {
+  it('SEC-088 interim: a held answer is a note only and never takes the owner\'s buttons away', () => {
     const b = base(null);
+    const plain = m.decisionPanel(base(null))!;
     (b.decision as Record<string, unknown>).confirmingElsewhere = true;
     const v = m.decisionPanel(b)!;
-    expect(v.headline).toBe('You answered on the phone · waiting for confirmation');
-    expect(v.controls).toBe('none');
+    expect(v.headline).toBe(plain.headline);
+    expect(v.lines.join(' ')).toMatch(/unconfirmed answer is waiting for confirmation by the machine your phone is paired with.*You can still answer here\./);
+    expect(v.controls).toBe(plain.controls);
+    expect(v.controls).not.toBe('none');
     expect(v.waiting).toBe(true);
   });
   it('an approval names the version, and a later version is said to be not approved', () => {

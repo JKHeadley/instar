@@ -503,11 +503,11 @@ export function decisionPanel(page, { inApp = false, appOps = null } = {}) {
     tone = dec.latest ? 'bad' : 'attn';
     headline = `Declined by ${isOwner ? 'you' : owner}${dec.at ? ` · ${shortTime(dec.at)}` : ''} · version ${dec.versionLabel ?? '?'}`;
     if (dec.note) lines.push(`Note: ${dec.note}`);
-  } else if (d.confirmingElsewhere) {
-    headline = `${isOwner ? 'You' : owner} answered on the phone · waiting for confirmation`;
-    lines.push('The answer is recorded on the machine your phone is paired with. It shows here once that machine confirms it.');
   } else {
     headline = isOwner ? `${page.agentName || 'The agent'} asks for your decision` : `Waiting for ${owner}'s decision`;
+    // Advisory only (SEC-088 interim): a held answer can come from a device record any machine may
+    // write, so it never hides the owner's buttons. It says so and leaves the choice with the owner.
+    if (d.confirmingElsewhere) lines.push(`An unconfirmed answer is waiting for confirmation by the machine ${isOwner ? 'your' : `${owner}'s`} phone is paired with. It shows here once that machine confirms it.${isOwner ? ' You can still answer here.' : ''}`);
   }
   if (dec && dec.verdict === 'decline' && !dec.latest && d.waitingOnOwner) lines.push(`${who} declined version ${dec.versionLabel ?? '?'}. This version has changes — decide on it.`);
   if (dec) lines.push(dec.delivered ? `Sent to ${page.primary && page.primary.name ? page.primary.name : 'the conversation'}.` : 'Not sent to the conversation yet.');
@@ -517,7 +517,7 @@ export function decisionPanel(page, { inApp = false, appOps = null } = {}) {
   if (d.writesBlockedBy) lines.push(`${d.writesBlockedBy} needs the update before a decision can be recorded.`);
   let controls = 'none';
   const latestShown = !page.version || page.version.latest;
-  const canAct = isOwner && d.ask && !d.concurrentEdits && !d.writesBlockedBy && !d.confirmingElsewhere;
+  const canAct = isOwner && d.ask && !d.concurrentEdits && !d.writesBlockedBy;
   if (canAct) {
     if (!latestShown) controls = 'open-latest';
     else if (inApp) controls = appOps && appOps.includes('decide') ? 'app-buttons' : 'update-app';

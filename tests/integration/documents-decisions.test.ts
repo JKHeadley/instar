@@ -45,14 +45,14 @@ function deviceKey() {
 }
 const signWith = (k: ReturnType<typeof deviceKey>, msg: string) => lowS(crypto.sign('sha256', Buffer.from(msg), { key: k.privateKey, dsaEncoding: 'der' })).toString('base64url');
 
-function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | null; delivered?: boolean; peer?: boolean; kp?: ReturnType<typeof generateSigningKeyPair> } = {}) {
+function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | null; delivered?: boolean; peer?: boolean; kp?: ReturnType<typeof generateSigningKeyPair>; owner?: ReturnType<typeof deviceKey> } = {}) {
   const kp = opts.kp ?? generateSigningKeyPair();
   const signer: MachineSigner = { machineId: () => 'A', signerKeyHash: () => signerKeyHashOf(kp.publicKey), sign: (p) => ({ machineId: 'A', signerKeyHash: signerKeyHashOf(kp.publicKey), sig: edSign(p, kp.privateKey) }) };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdec-int-')); tmp.push(dir);
   const assets = fs.mkdtempSync(path.join(os.tmpdir(), 'docdec-assets-')); tmp.push(assets);
   fs.writeFileSync(path.join(assets, 'doc-page.js'), 'export {};\n');
   const team: TeamView = { personMay: () => false, ownerOnly: (ref) => ref === OWN, sessionInPlace: () => false, teamRefusal: () => null, sendReachesOwner: () => false };
-  const owner = deviceKey(); const presence = deviceKey(); const browser = deviceKey();
+  const owner = opts.owner ?? deviceKey(); const presence = deviceKey(); const browser = deviceKey();
   const store = new DocumentStore(dir, {
     signer, keyLookup: () => ({ status: 'ok', publicKeyPem: kp.publicKey }), standing: () => 'ok',
     origin: (row, used) => checkRowOrigin(row,
@@ -209,17 +209,46 @@ describe('document decisions over HTTP', () => {
     const { id } = await docWithAsk(host);
     expect((await decide(host, id)).status).toBe(201);
     // The peer holds the same rows (synced), but knows the phone only from replicated fields.
-    const peer = setup({ peer: true, kp: host.kp });
+    const peer = setup({ peer: true, kp: host.kp, owner: host.owner });
     const results = host.store.allRowsOf(id).map((r) => peer.store.ingest(r));
     expect(results).toContain('pending');
     const view = (await request(peer.a).get(`/docs/${id}/decision`)).body;
     expect(view).toMatchObject({ decision: null, waitingOnOwner: true, confirmingElsewhere: true });
     // Needs-you is not cleared on the peer.
     expect((await request(peer.a).get('/docs/decisions/waiting')).body.documents.map((d: { id: string }) => d.id)).toEqual([id]);
-    expect(peer.service.decisionWords(id)).toMatch(/waiting for the machine that phone is paired with/);
+    expect(peer.service.decisionWords(id)).toMatch(/an unconfirmed answer is waiting for the machine the owner.s phone is paired with/);
     // The phone's own machine shows Approved and clears it.
     expect((await request(host.a).get(`/docs/${id}/decision`)).body).toMatchObject({ decision: { verdict: 'approve' }, waitingOnOwner: false, confirmingElsewhere: false });
     expect((await request(host.a).get('/docs/decisions/waiting')).body.documents).toEqual([]);
+  });
+
+  it('SEC-088 interim: a decision row the phone did not sign is refused on the other machines and never hides the owner\'s buttons', async () => {
+    const host = setup();
+    const { id, versionId, askId } = await docWithAsk(host);
+    const questionHash = host.service.decision(id, { principal: { kind: 'bearer' }, actor: { type: 'machine' }, access: {}, reader: { kind: 'owner' } } as never).ask!.questionHash;
+    // Another machine (any holder of a machine key) writes an "answer" in the owner phone's name, unsigned by the phone.
+    const kp = host.kp;
+    const forgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdec-forger-')); tmp.push(forgerDir);
+    const forger = new DocumentStore(forgerDir, {
+      signer: { machineId: () => 'B', signerKeyHash: () => signerKeyHashOf(kp.publicKey), sign: (p) => ({ machineId: 'B', signerKeyHash: signerKeyHashOf(kp.publicKey), sig: edSign(p, kp.privateKey) }) },
+      keyLookup: () => ({ status: 'ok', publicKeyPem: kp.publicKey }), standing: () => 'ok',
+    });
+    for (const r of host.store.allRowsOf(id)) forger.ingest(r);
+    const fakeBody = Buffer.from(JSON.stringify({ askId, onVersion: versionId, verdict: 'approve', questionHash, noteHash: NO_NOTE, supersedes: null, challenge: 'forged-1', presenceSig: 'AA' }));
+    const forged = forger.append(id, { eventKind: 'decision', askId, onVersion: versionId, verdict: 'approve', questionHash, proof: 'telegram' }, {
+      actor: { type: 'owner-phone', deviceId: 'owner-phone', signedOrigin: { keyHash: deviceKeyHashOf(host.owner.raw), deviceId: 'owner-phone', domain: 'instar-device-v1', payloadB64: fakeBody.toString('base64url'), host: HOST, timeMs: String(Date.now()), sig: 'MEUCIQ', requestId: 'forged-1' } } as never,
+      access: {}, primaryRow: host.store.allRowsOf(id).at(-1)!.primaryRow,
+    });
+    // A third machine, without the phone's own enrollment, receives everything.
+    const peer = setup({ peer: true, kp, owner: host.owner });
+    for (const r of host.store.allRowsOf(id)) peer.store.ingest(r);
+    expect(peer.store.ingest(forged)).toEqual({ ignored: 'origin' });
+    const view = (await request(peer.a).get(`/docs/${id}/decision`)).body;
+    expect(view).toMatchObject({ decision: null, waitingOnOwner: true, confirmingElsewhere: false });
+    expect(peer.service.decisionWords(id)).toBe("waiting for the owner's decision");
+    // The phone's own machine refuses it too.
+    expect(host.store.ingest(forged)).toEqual({ ignored: 'origin' });
+    expect((await request(host.a).get(`/docs/${id}/decision`)).body).toMatchObject({ decision: null, waitingOnOwner: true, confirmingElsewhere: false });
   });
 
   it('the agent withdraws the question; nothing waits on the owner', async () => {

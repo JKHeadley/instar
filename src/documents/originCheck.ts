@@ -16,7 +16,8 @@
  * phone, and that the disclosed history equals the row's own `docDeps`.
  *
  * Verdicts: `ok`; `denied` (refused, keeps its chain position); `pending` (the device key, its
- * binding, or a list blob is not here yet: the row is kept out of every read and re-checked).
+ * binding, or a list blob is not here yet: the row is kept out of every read and re-checked);
+ * `held` (a decision signed by the owner's phone, waiting for that phone's own machine).
  */
 import crypto from 'node:crypto';
 import { canonicalJson } from './chain.js';
@@ -26,7 +27,12 @@ import type { DocRow, Vector } from './rows.js';
 import type { TeamAccessState } from '../core/TeamAccessLog.js';
 import { DECIDE_APPROVALS } from './access.js';
 
-export type OriginVerdict = 'ok' | 'denied' | 'pending';
+/**
+ * `held`: a decision whose device signature and contents this machine verified, waiting for the
+ * machine holding the phone's own enrollment to check its Face ID (SEC-088 interim). Read like
+ * `pending` (kept out of every read), except that it alone may show "answered on the phone".
+ */
+export type OriginVerdict = 'ok' | 'denied' | 'pending' | 'held';
 
 /**
  * The device behind a key hash. `role` comes only from records that say so (a replicated team
@@ -122,11 +128,13 @@ export function checkRowOrigin(row: DocRow, devices: DeviceKeyLookup, usedReques
   if (so.domain === 'instar-device-v1') {
     if (row.eventKind === 'decision') {
       // Interim (SEC-088): a decision counts only on the machine holding the phone's own enrollment,
-      // which re-checks its Face ID signature too. Elsewhere it stays held ('pending'): the page
+      // which re-checks its Face ID signature too. Elsewhere it stays held ('held'): the page
       // shows "waiting", Needs-you stays, and no session is told. Replicated activation fields
-      // (approvedVia, keys) never qualify as proof that an owner decided.
-      if (!d.localPresenceKey) return 'pending';
-      return checkDecision(row, so, d.publicKey, d.client, d.approvedVia ?? null, d.localPresenceKey);
+      // (approvedVia, keys) never qualify as proof that an owner decided. The device signature and
+      // the row's contents are still checked here first, so a row with an invalid or altered device
+      // signature is refused. A machine that can write activation and binding rows can still produce
+      // a 'held' row (SEC-088), so 'held' is advisory only: it never hides the owner's buttons.
+      return checkDecision(row, so, d.publicKey, d.client, d.approvedVia ?? null, d.localPresenceKey ?? null);
     }
     return checkMove(row, so, d.publicKey, d.client);
   }
@@ -175,12 +183,8 @@ export const NO_NOTE = '0'.repeat(64);
  * answer, its Face ID challenge and presence signature. The presence signature itself is checked by
  * the machine that took the request (presence keys are not replicated, as for the move).
  */
-function checkDecision(row: DocRow, so: { deviceId: string; host: string; timeMs: string; sig: string; payloadB64: string; requestId?: string }, publicKey: string, client: 'phone' | 'browser', approvedVia: string | null, presenceKey: string): OriginVerdict {
+function checkDecision(row: DocRow, so: { deviceId: string; host: string; timeMs: string; sig: string; payloadB64: string; requestId?: string }, publicKey: string, client: 'phone' | 'browser', approvedVia: string | null, presenceKey: string | null): OriginVerdict {
   if (row.eventKind !== 'decision' || row.actor.type !== 'owner-phone' || client !== 'phone') return 'denied';
-  if (!approvedVia || !DECIDE_APPROVALS.has(approvedVia)) return 'denied';
-  // The row's proof label must match the device's own approval (a PIN device never reads as Telegram).
-  if (approvedVia === 'dashboard-pin' && row.proof !== 'pin') return 'denied';
-  if (approvedVia === 'telegram-dm' && row.proof !== 'telegram') return 'denied';
   const raw = Buffer.from(so.payloadB64, 'base64url');
   let body: Record<string, unknown>;
   try { body = JSON.parse(raw.toString('utf8')) as Record<string, unknown>; } catch { return 'denied'; } // @silent-fallback-ok — an unreadable body is unsigned
@@ -196,6 +200,13 @@ function checkDecision(row: DocRow, so: { deviceId: string; host: string; timeMs
   if (!isStrictLowSDer(sig)) return 'denied';
   const message = canonicalString(so.deviceId, so.host, 'POST', decisionPath(row.docId), so.timeMs, raw);
   try { if (!crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig)) return 'denied'; } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
+  // Device-signed and matching: only the phone's own machine can check the Face ID signature.
+  // Replicated approval fields prove nothing here (SEC-088), so they are not read before this point.
+  if (!presenceKey) return 'held';
+  if (!approvedVia || !DECIDE_APPROVALS.has(approvedVia)) return 'denied';
+  // The row's proof label must match the device's own approval (a PIN device never reads as Telegram).
+  if (approvedVia === 'dashboard-pin' && row.proof !== 'pin') return 'denied';
+  if (approvedVia === 'telegram-dm' && row.proof !== 'telegram') return 'denied';
   // The Face ID signature over exactly this answer, with this machine's own copy of the presence key.
   const line = decisionLine(row.docId, { askId: row.askId, onVersion: row.onVersion, verdict: row.verdict, questionHash: row.questionHash, noteHash: row.noteHash ?? NO_NOTE, supersedes: row.supersedes ?? null });
   return presenceValid(presenceKey, decisionPresenceMessage(so.deviceId, so.host, so.requestId ?? '', line), body.presenceSig) ? 'ok' : 'denied';

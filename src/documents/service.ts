@@ -424,7 +424,7 @@ export class DocumentService {
     if (!v.ask) return null;
     if (v.needsOwner) {
       return this.answeredElsewhere(id, v.ask.askId, latestVersion(s)?.versionId ?? null)
-        ? "answered on the owner's phone; waiting for the machine that phone is paired with to confirm"
+        ? "waiting for the owner's decision; an unconfirmed answer is waiting for the machine the owner's phone is paired with"
         : "waiting for the owner's decision";
     }
     const c = v.current;

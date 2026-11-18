@@ -16,6 +16,6 @@
 
 **Rolling it out.** If you run Echo on two machines, the buttons appear once both have the update, so one machine never gets confused by rows it can't read yet.
 
-**For now, one machine confirms.** Until a later security fix (SEC-088), only the machine your phone is paired with marks the document Approved, clears it from Needs-you and tells the conversation. Your other machines say "answered on the phone · waiting for confirmation" and change nothing.
+**For now, one machine confirms.** Until a later security fix (SEC-088), only the machine your phone is paired with marks the document Approved, clears it from Needs-you and tells the conversation. Your other machines add a note that an answer from your phone is waiting for confirmation, and change nothing else. Your Approve and Decline buttons always stay, so a fake answer can never take them away. An answer whose phone signature does not check out is thrown away.
 
 **Undo.** Revert the change; answers already given stay readable.

@@ -217,8 +217,25 @@ describe('peer origin check for a decision row', () => {
   });
   it('SEC-088 interim: holds a decision on a machine without the phone\'s own enrollment, whatever the replicated fields say', () => {
     // A peer that knows the phone only from replicated activation: waits, never applies.
-    expect(checkRowOrigin(decisionRow(), lookup({ local: false }), new Set())).toBe('pending');
-    expect(checkRowOrigin(decisionRow({ proof: 'pin' }), lookup({ local: false, approvedVia: 'dashboard-pin' }), new Set())).toBe('pending');
+    expect(checkRowOrigin(decisionRow(), lookup({ local: false }), new Set())).toBe('held');
+    expect(checkRowOrigin(decisionRow({ proof: 'pin' }), lookup({ local: false, approvedVia: 'dashboard-pin' }), new Set())).toBe('held');
+    // Replicated approval fields are not read there at all (neither proof nor refusal).
+    expect(checkRowOrigin(decisionRow(), lookup({ local: false, approvedVia: 'owner-agent' }), new Set())).toBe('held');
+  });
+  it('SEC-088 interim: a row the phone did not sign is refused on the other machines, never held as "answered"', () => {
+    const peer = lookup({ local: false });
+    // Unsigned, or with a device signature that does not verify.
+    const unsigned = decisionRow();
+    (unsigned.actor as unknown as { signedOrigin: { sig: string } }).signedOrigin.sig = lowS(crypto.sign('sha256', Buffer.from('x'), { key: pkey().privateKey, dsaEncoding: 'der' })).toString('base64url');
+    expect(checkRowOrigin(unsigned, peer, new Set())).toBe('denied');
+    // Signed, but the row says another verdict, version or question than was signed.
+    expect(checkRowOrigin(decisionRow({ verdict: 'decline' }), peer, new Set())).toBe('denied');
+    expect(checkRowOrigin(decisionRow({ onVersion: '33333333-3333-4333-8333-333333333333' }), peer, new Set())).toBe('denied');
+    expect(checkRowOrigin(decisionRow({}, { presenceSig: undefined }), peer, new Set())).toBe('denied');
+    // A device this machine does not know yet waits (pending), which is not "held".
+    const stranger = decisionRow();
+    (stranger.actor as unknown as { signedOrigin: { keyHash: string } }).signedOrigin.keyHash = 'f'.repeat(64);
+    expect(checkRowOrigin(stranger, peer, new Set())).toBe('pending');
   });
   it('re-checks the Face ID signature with this machine\'s own presence key', () => {
     // A valid device signature with a presence signature from some other key is refused.
