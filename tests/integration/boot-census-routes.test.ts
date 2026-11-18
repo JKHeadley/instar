@@ -27,9 +27,12 @@ afterEach(() => {
   SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/boot-census-routes.test.ts' });
 });
 
-function appWith(records: Record<string, Session>, openWorkTopics: number[] = []): express.Express {
+function appWith(records: Record<string, Session>, openWorkTopics: number[] = [], pool: { machines?: Array<{ machineId: string; lastKnownUrl?: string | null }>; allow?: string[] } = {}): express.Express {
   const ctx = {
-    config: { projectName: 'test', projectDir: tmpDir, stateDir, port: 0, sessions: {} as never, scheduler: {} as never, monitoring: {} },
+    config: { projectName: 'test', projectDir: tmpDir, stateDir, port: 0, sessions: {} as never, scheduler: {} as never, monitoring: {}, authToken: 'tok', multiMachine: { peerUrlAllowlist: pool.allow ?? [] } },
+    meshSelfId: 'm_self',
+    listPoolMachines: () => pool.machines ?? [],
+    resolvePeerUrls: () => [],
     sessionManager: { listRunningSessions: () => [], isSessionAlive: () => false },
     state: { getJobState: () => null, getSession: (id: string) => records[id] ?? null, listSessions: () => Object.values(records), getCoherenceJournal: () => undefined },
     commitmentTracker: { getActiveByTopicId: (t: number) => openWorkTopics.includes(t) ? [{ id: 'CMT-1', status: 'pending', createdAt: '2026-11-01T00:00:00Z' }] : [] },
@@ -82,5 +85,29 @@ describe('/sessions/boot-census', () => {
   it('reviewed refuses a missing bootAt', async () => {
     setActiveBootSessionCensus(new BootSessionCensus({ stateDir, bootAt: BOOT }));
     expect((await request(appWith({})).post('/sessions/boot-census/reviewed').send({})).status).toBe(400);
+  });
+
+  it('?scope=pool reads each peer census and names a peer it could not reach', async () => {
+    setActiveBootSessionCensus(new BootSessionCensus({ stateDir, bootAt: BOOT }));
+    const peerApp = appWith({});
+    const server = await new Promise<import('node:http').Server>((r) => { const s = peerApp.listen(0, '127.0.0.1', () => r(s)); });
+    try {
+      const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`;
+      const app = appWith({}, [], { machines: [{ machineId: 'm_peer', lastKnownUrl: url }, { machineId: 'm_dark', lastKnownUrl: null }] });
+      const res = await request(app).get('/sessions/boot-census?scope=pool');
+      expect(res.status).toBe(200);
+      expect(res.body.bootAt).toBe(BOOT);
+      expect(res.body.pool.machines.map((m: { machineId: string }) => m.machineId)).toEqual(['m_peer']);
+      expect(JSON.stringify(res.body.pool)).toContain('no-known-url');
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('a reviewed mark for an unknown machine is refused, not applied locally', async () => {
+    setActiveBootSessionCensus(new BootSessionCensus({ stateDir, bootAt: BOOT }));
+    const res = await request(appWith({})).post('/sessions/boot-census/reviewed').send({ bootAt: BOOT, machineId: 'm_nowhere' });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('no-known-url');
   });
 });

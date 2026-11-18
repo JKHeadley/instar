@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "boot-census-pool",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T17:58:36.599Z",
+  "artifactPath": "upgrades/side-effects/boot-census-pool.md",
+  "artifactSha256": "c4ae4985dd02fb7f982eb071e4d4ddf4af459f176fd2b01d5858432ef3c9c507",
+  "specPath": "docs/specs/restart-lock-continuity.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/boot-census-routes.test.ts",
+    "upgrades/next/boot-census-pool.md",
+    "upgrades/side-effects/boot-census-pool.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "follow-up to converged spec A.4 (named reader reads every machine); forwards an authenticated write to a peer",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
