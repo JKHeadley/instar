@@ -19496,6 +19496,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           leaseEpoch: () => ctx.coordinator!.getSyncStatus().leaseEpoch ?? null,
         }
       : undefined,
+    // SEC-113 D2.5: the peer quarantine clear is owner-only (the dashboard operator session).
+    ...(ctx.verifyDashboardOperatorSession ? { verifyOperatorSession: (token: string | undefined) => ctx.verifyDashboardOperatorSession!(token) } : {}),
   });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────

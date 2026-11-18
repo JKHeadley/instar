@@ -2142,7 +2142,7 @@
     },
     {
       "category": "local-verify-flaky",
-      "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised; plus this machine's last green `main` record (head, finish time, files not clean on it), which a PR verify's isolation re-run requires. Machine-local: it describes this machine's own runs.",
+      "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised; plus this machine's last green `main` record (head, finish time, files not clean on it, and `origin: 'local'`), which a PR verify's isolation re-run requires. A record without `origin: 'local'` (older code, or a peer) counts as absent (SEC-113). Machine-local: it describes this machine's own runs.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -2154,7 +2154,24 @@
       "retention": {
         "class": "fixed-cardinality",
         "maxRecords": 501,
-        "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window, plus one green-main entry; rewritten in place."
+        "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window, plus one green-main entry carrying its origin; rewritten in place."
+      }
+    },
+    {
+      "category": "local-verify-peer-trust",
+      "description": "local-verify peer trust (SEC-113, docs/specs/local-verify-peer-result-trust.md): the lease-holder's local anchor (its own last main green), the clock peers cannot move, heads it verified itself, which peer called which head green, the peers kept off main after a same-head disagreement, at most one arbitration marker, its last ten main durations, and the holding record that binds all of it to unbroken holding by this machine. Machine-local by the parent Local Verify capacity spec's ratified lease-holder-local queue and peer state (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17); reset on any break in holding.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/peer-trust.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 85,
+        "note": "At most 50 peer greens, 20 locally verified heads, 10 durations, one quarantine entry per configured peer (at most 2), one arbitration marker, one anchor and one holding record; rewritten in place."
       }
     },
     {
