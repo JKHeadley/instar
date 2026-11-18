@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "reaper-ps-snapshot",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T03:48:33.767Z",
+  "artifactPath": "upgrades/side-effects/reaper-ps-snapshot.md",
+  "artifactSha256": "7e3b3145ceabbd665fb64310ad6e7498ed9e524f7b80861ea7fc4b71ac8c50a9",
+  "coveredFiles": [
+    "docs/specs/reaper-ps-snapshot.eli16.md",
+    "src/monitoring/OrphanProcessReaper.ts",
+    "tests/unit/orphan-reaper-ps-snapshot.test.ts",
+    "upgrades/next/reaper-ps-snapshot.md",
+    "upgrades/side-effects/reaper-ps-snapshot.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Same facts from one ps listing instead of per-pid spawns; no change to classification or kills; revert undoes it",
+  "eli16Path": "docs/specs/reaper-ps-snapshot.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reaper-ps-snapshot.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,4 +1,5 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
 import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
 import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
@@ -29,6 +30,9 @@ import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.j
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
+import { bearerConfigWriteRefusal } from '../config/bearerConfigWrite.js';
+import { PATCHABLE_CONFIG_KEYS, OPERATOR_ONLY_SESSION_KEYS } from '../server/routes.js';
+import { isOwnersOwnWords } from '../core/ownerWords.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
@@ -10865,6 +10869,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             wbRuntime.start();
             const wbLeaseWatch = setInterval(() => { try { wbRuntime.noteLeaseHolder(); } catch { /* @silent-fallback-ok: a lease read fault is retried on the next 15 s tick */ } }, 15_000);
             wbLeaseWatch.unref();
+            // Project apps part 2: a stopped custom app's serve card reads as settled (read lazily: the
+            // custom-app source is wired later in boot, and absent ⇒ no card is one).
+            wbRuntime.svc.setStoppedAppCardCheck((cardId) => _projectAppCustom?.stoppedServeCard(cardId) === true);
             _workBoardRuntime = wbRuntime;
             console.log(pc.dim(`  [work-board] live: ${wbRuntime.svc.cardIds().length} card(s), ${wbRuntime.svc.totalRecords()} record(s)`));
           } catch (err) { // @silent-fallback-ok: not silent — warned and reported through DegradationReporter just below
@@ -18716,7 +18723,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const beforeJevCorrectionCb = telegram.onMessageLogged;
         telegram.onMessageLogged = (entry) => {
           if (beforeJevCorrectionCb) beforeJevCorrectionCb(entry);
-          correctionShadow.observe(entry); // synchronous, never throws; the check is detached
+          correctionShadow.observe(entry, telegram.getVerifiedOwner()); // synchronous, never throws; the check is detached
         };
       } catch (err) {
         console.log(pc.yellow(`  Jev correction shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
@@ -19688,7 +19695,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Layer 0 (SYNC, free) — classify on the seam. No signal → stop at
               // ~zero cost on the vast majority of messages.
               // A team member's words never become the owner's learned preferences.
-              const verdict = entry.fromUser && entry.text && !entry.teamPhone
+              // So is forwarded text: someone else's words relayed by the owner (SEC-069).
+              const ownersWords = isOwnersOwnWords(entry, telegram?.getVerifiedOwner());
+              const verdict = ownersWords && entry.text
                 ? HumanAsDetectorLog.getInstance().classify(entry.text)
                 : null;
               // Fire-and-forget — capture/distill latency must NEVER reach the
@@ -19713,7 +19722,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   topicId: entry.topicId ?? null,
                   messageId: entry.messageId,
                   text: entry.text ?? '',
-                  fromUser: !!entry.fromUser,
+                  // Only the owner's own words enter the window as the owner's turn; the
+                  // distill learns only from those (SEC-069).
+                  fromUser: ownersWords,
                   sessionId: entry.sessionName ?? null,
                   deterministicWeight: verdict?.deterministicWeight ?? 0,
                   isLearningSignal: verdict?.learningKind != null,
@@ -21068,6 +21079,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
       orgUpdater.start();
     }
+    // SEC-075: commitment auto-correction writes config only where PATCH /config would let a
+    // bearer caller write (same allowlist, PIN-gated values, executable fence, raise refusal).
+    commitmentTracker.setConfigWriteGuard((configPath, value) => {
+      let fileConfig: Record<string, unknown> = {};
+      try { fileConfig = JSON.parse(fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf-8')); } catch { return 'the config file could not be read'; } // @silent-fallback-ok — a refusal, not a fallback: nothing is written
+      return bearerConfigWriteRefusal(configPath, value, {
+        fileConfig,
+        profile: autonomyManager.getProfile(),
+        patchableKeys: PATCHABLE_CONFIG_KEYS,
+        operatorOnlySessionKeys: OPERATOR_ONLY_SESSION_KEYS,
+      });
+    });
 
     // Trust Elevation Tracker — monitors acceptance rates and surfaces upgrade opportunities
     const trustElevationTracker = new TrustElevationTracker({
@@ -27230,7 +27253,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun
@@ -27551,13 +27574,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // written once to the host ledger, attributed or `unattributed`, and each agent proves its
         // own parts came back against a baseline taken before the restart. Restarts nothing.
         {
-          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
+          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt, serverHealthFromResponse } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
           const self = `http://127.0.0.1:${config.port}`;
           const authed = { Authorization: `Bearer ${config.authToken ?? ''}` };
-          const getJson = async (p: string, auth = true): Promise<{ status: number; body: any } | null> => {
+          const getJson = async (p: string, auth = true): Promise<{ status: number; headers: Headers; body: any } | null> => {
             try {
               const r = await fetch(`${self}${p}`, { headers: auth ? authed : {}, signal: AbortSignal.timeout(8_000) });
-              return { status: r.status, body: await r.json().catch(() => null) };
+              return { status: r.status, headers: r.headers, body: await r.json().catch(() => null) };
             } catch { return null; } // @silent-fallback-ok — an unreachable read is unknown in the proof, never a pass
           };
           const proofDir = path.join(config.stateDir, 'state', 'machine-maintenance');
@@ -27576,10 +27599,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             logPath: path.join(config.stateDir, '..', 'logs', 'machine-maintenance.jsonl'),
             log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
             readers: {
-              serverHealth: async () => {
-                const r = await getJson('/health', false);
-                return r && r.status === 200 ? { state: 'pass', reason: 'health-200' } : { state: 'fail', reason: r ? `health-${r.status}` : 'health-unreachable' };
-              },
+              // Back only when /health answers 200 and says it finished starting; still starting reads again next attempt.
+              serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),
               lifelineProofAt,
               relay: async () => {
                 const r = await getJson('/threadline/health');
@@ -31171,7 +31192,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const paStore = await import('../core/ProjectAppStore.js');
             if (paStore.projectAppsEnabled(config) && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
-              const { ProjectAppsRuntime } = await import('../server/ProjectAppsRuntime.js');
+              const { ProjectAppsRuntime, customAppRow } = await import('../server/ProjectAppsRuntime.js');
               const { MaturationSummaryProvider } = await import('../server/projectAppSummaries.js');
               const { isMaturationBoardEnabled } = await import('../server/maturationBoardRoutes.js');
               const { projectAppsLog } = await import('../server/projectAppsLog.js');
@@ -31235,19 +31256,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 builtinSummary: (appId) => appId === 'maturation-board' ? maturation.get() : { state: 'unreadable', why: 'Unknown app.' },
                 builtinAvailable: (appId) => appId === 'maturation-board' && isMaturationBoardEnabled(config),
                 // Part 2: a custom app by its ref (null when custom apps are off or there is no such app).
-                customApp: (appRef) => {
-                  const src = _projectAppCustom;
-                  const m = /^custom:(pa_[0-9a-f]{16})$/.exec(appRef);
-                  if (!src || !m) return null;
-                  const a = src.app(m[1]);
-                  if (!a) return null;
-                  const sum = src.readSummary(a.appId) as { headline?: unknown; counts?: unknown; asOf?: unknown; erased?: unknown; unreadable?: unknown } | null;
-                  const summary = !sum ? { state: 'pending' as const }
-                    : sum.erased ? { state: 'unreadable' as const, why: '(erased)' }
-                    : sum.unreadable || typeof sum.headline !== 'string' ? { state: 'unreadable' as const, why: 'This app\'s summary cannot be read on this machine.' }
-                    : { state: 'ok' as const, headline: sum.headline, counts: Array.isArray(sum.counts) ? (sum.counts as Array<{ label: string; value: number }>).slice(0, 3) : [], asOf: String(sum.asOf ?? '') };
-                  return { appId: a.appId, title: a.title, conversationKey: a.conversationKey, specOk: src.specOk(a.appId), summary };
-                },
+                customApp: (appRef) => (_projectAppCustom ? customAppRow(_projectAppCustom, appRef) : null),
                 log: (entry) => {
                   projectAppsLog(config.stateDir, entry);
                   // The maturation ladder's evidence (src/data/feature-ladders.json → projectApps.builtin).
@@ -37439,6 +37448,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       }
 
+      // Always available: the per-user start item is off on purpose while a system service runs this agent.
+      if (needsReinstall && process.platform === 'darwin' && daemonRunsAgent(config.projectName)) needsReinstall = false;
       if (needsReinstall) {
         const { installAutoStart } = await import('./setup.js');
         const installed = installAutoStart(config.projectName, config.projectDir, !!telegram || hasTelegramForInstall);
@@ -37844,6 +37855,14 @@ async function stopServerSessionIfPresent(options: { dir?: string }): Promise<vo
 
 export async function restartServer(options: { dir?: string }): Promise<void> {
   const config = loadConfig(options.dir);
+
+  // Always available (§B.5): a system service runs this agent. Restarting it here would start a
+  // second copy beside the service's; the service restarts on its own after a stop.
+  if (process.platform === 'darwin' && daemonRunsAgent(config.projectName)) {
+    console.log(pc.yellow(`  ${ALWAYS_AVAILABLE_REFUSAL}`));
+    console.log('  To restart it, turn Always available off and on in the Instar app, or restart the Mac.');
+    process.exit(2);
+  }
 
   if (process.platform === 'darwin') {
     const label = `ai.instar.${config.projectName}`;

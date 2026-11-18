@@ -227,9 +227,13 @@ async function reloadSection(wrap) {
   } catch { /* the page's own refresh reads it again */ }
 }
 
+/** The project a link asked to open (`?project=<key>`, from the conversation list's "Open project"), focused once per link. */
+let focusedFor = '';
 /** The Projects section, or null when the answer cannot be read and the board is the only thing to show. */
-export function projectsSection(data) {
+export function projectsSection(data, { openKey = null } = {}) {
   const v = projectsView(data);
+  if (!openKey) focusedFor = '';
+  if (openKey && v.ok && [...v.active, ...v.finished].some((p) => p.key === openKey)) openRows.add(openKey);
   const wrap = el('section', { class: 'list-section projects-section', id: 'sec-projects' },
     el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Projects' }), v.ok ? el('span', { class: 'list-count', text: String(v.count) }) : null));
   if (!v.ok) { wrap.append(el('p', { class: 'need-sub', text: 'The projects could not be read, so this may not be everything.' })); return wrap; }
@@ -246,6 +250,16 @@ export function projectsSection(data) {
     fold.append(
       el('summary', { class: 'eyebrow', text: `Finished (${v.finished.length})` }),
       ...v.finished.map(row));
+  }
+  if (openKey && v.ok && focusedFor !== openKey) {
+    // The operator tapped "Open project": open that row and move focus to it, once (a refresh never moves the page).
+    const target = [...wrap.querySelectorAll('details.project-row')].find((d) => d.getAttribute('data-project') === openKey);
+    if (target) {
+      focusedFor = openKey;
+      const fin = target.closest('details.projects-finished');
+      if (fin) fin.open = true;
+      setTimeout(() => { const s = target.querySelector('summary'); if (s && s.isConnected && s.focus) s.focus(); }, 0);
+    }
   }
   if (v.loose.length) {
     wrap.append(el('details', { class: 'projects-loose' },

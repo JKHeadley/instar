@@ -18,6 +18,16 @@ import { workBoardNeedRows } from './work-model.js';
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
 
+/** Needs-you rows for documents that ask the owner to decide (document-decisions.md §3.7). */
+export function documentDecisionNeedRows(res) {
+  if (!res) return UNREADABLE;
+  if (!res.ok) return sourceState(res) === 'off' ? [] : UNREADABLE;
+  const docs = res.data && Array.isArray(res.data.documents) ? res.data.documents : null;
+  if (!docs) return UNREADABLE;
+  return docs.filter((d) => d && typeof d.id === 'string').map((d) => row(`doc-decision:${d.id}`, `Decide: ${d.title || 'a document'}`,
+    d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
+}
+
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
 
@@ -115,6 +125,9 @@ export const NEED_SOURCES = [
   // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
     rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
+  // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
+  { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
+    rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
     rows: ({ pending }, now) => {
@@ -168,6 +181,7 @@ export const NEED_EXEMPT = [
   { file: 'sessions-model.js', phrase: 'Waiting on you', why: 'A comment-like note that sessions do not report this; nothing waits.' },
   { file: 'projects.js', phrase: 'Your agent suggests', why: 'Project app offers are optional suggestions shown on the project\'s Work row, not needs (docs/specs/project-apps.md §3.5); an unanswered offer waits for nothing.' },
   { file: 'projects-model.js', phrase: 'Your agent suggests', why: 'As projects.js: the words of an optional project app suggestion, never a Needs-you row.' },
+  { file: 'projects-model.js', phrase: 'Waiting for your approval', why: 'A custom project app with no approved version mirrors its version card, which is already a Needs-you row through the Work board source (docs/specs/project-apps-sandbox.md §3.4); the project row only says why it has no Open button.' },
 ];
 
 const failedRead = (res) => sourceState(res) === 'failed';

@@ -54,7 +54,9 @@ export async function renderWork(main, ctx) {
   const page = donePageFrom(query);
   // Projects (work-front-doors stage 2a) are read alongside the board; a failed read is named, never empty.
   const [r, pr] = await Promise.all([get(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : get('/work/projects')]);
-  const projects = pr ? projectsSection(pr.ok ? pr.data : null) : null;
+  // "Open project" from the conversation list arrives as ?project=<key>: that project's row opens.
+  const openKey = (() => { try { return new URLSearchParams(query).get('project'); } catch { return null; } })();
+  const projects = pr ? projectsSection(pr.ok ? pr.data : null, { openKey }) : null;
   if (!r.ok) {
     setKids(main, isOff(r)
       ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }), projects)

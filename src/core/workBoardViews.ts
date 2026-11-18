@@ -14,13 +14,18 @@ export interface Viewer { personKey: string | null; isOwner: boolean; isAgent: b
 export interface BehindInfo { machineId: string; since: string }
 
 /** Plain words for each status, for the row's "what is needed" line. */
-export function needLine(v: CardView, opts: { phoneOnly?: boolean } = {}): string {
+/** A stopped project app's serve card: turning the app back on comes with stage 2 (CMT-1882). */
+export const APP_STOPPED_LINE = 'Stopped by you. Turning it back on comes in a later update.';
+
+export function needLine(v: CardView, opts: { phoneOnly?: boolean; appStopped?: boolean } = {}): string {
   const c = v.card;
+  // A stopped app's serve card: no tap on it runs the app again in this build, so it says only that.
+  if (opts.phoneOnly && opts.appStopped && v.status !== 'removed' && v.status !== 'archived') return APP_STOPPED_LINE;
   // A phone-only card (a project app's version card, project-apps-sandbox §3.4) is approved only on
   // the owner's phone and no agent starts anything from it, so it never says "before the agent starts".
   if (opts.phoneOnly) {
     switch (v.status) {
-      case 'needs-approval': return c.withdrawn ? 'Stopped. Approve this version on your phone to run it again' : 'Approve this version on your phone to run it';
+      case 'needs-approval': return c.withdrawn ? 'Stopped by you.' : 'Approve this version on your phone to run it';
       case 'with-person': return c.approvalValid ? 'Approved on your phone; starting this version' : 'Approve this version on your phone to run it';
       case 'done': return 'Approved on your phone; this version is running';
       default: break;
@@ -93,8 +98,10 @@ export function conversationRef(conversationKey: string): Record<string, string>
 export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
+  const phoneOnly = extra?.phoneOnly === true;
+  const appStopped = phoneOnly && svc.isStoppedAppCard(c.cardId);
   const startedAt = svc.startedAt(c.cardId);
-  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly: extra?.phoneOnly === true }), newestAt: new Date(c.newestRecordAt).toISOString() };
+  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
   if (c.redacted) {
     return { ...base, title: `Removed by ${byName(c.redacted.by, name)}`, removed: { by: byJson(c.redacted.by, name), at: c.redacted.at, note: 'The text is hidden from every read. Its bytes stay in the journal until compaction, and a backup taken earlier still holds it.' } };
   }

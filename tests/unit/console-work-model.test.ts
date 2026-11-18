@@ -123,6 +123,17 @@ describe('which buttons each status offers', () => {
     expect(phoneOnlyLine(card())).toBeNull(); // an ordinary card keeps its Approve
     expect(acts(card())).toContain('approve');
   });
+  it('a stopped app\'s card (appStopped): no buttons, no "Approve this on your phone", and Stop says turning it back on comes later', () => {
+    const stopped = card({ phoneOnly: true, appStopped: true, status: 'needs-approval', approved: false, needLine: 'Stopped by you. Turning it back on comes in a later update.' });
+    expect(cardActions(stopped, { inSheet: true })).toEqual([]);
+    expect(phoneOnlyLine(stopped)).toBeNull();
+    // Even if the card reads approved again (a stale phone tap), there is nothing to stop.
+    expect(cardActions(card({ phoneOnly: true, appStopped: true, status: 'done', approved: true }), { inSheet: true })).toEqual([]);
+    const running = card({ phoneOnly: true, status: 'with-agent', approved: true });
+    const words = tapCovers(running, 'withdraw-approval').find((l) => l.label === 'Stopping this app');
+    expect(words?.text).toContain('Turning it back on comes in a later update');
+    expect(words?.text).not.toContain('approval on your phone');
+  });
   it('a question open on a held card can still be answered', () => {
     expect(acts(card({ status: 'held', holds: ['rh1'], question: { id: 'rq1', text: 'Which?' } }))).toEqual(['unhold', 'answer', 'archive']);
   });

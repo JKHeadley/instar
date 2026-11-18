@@ -2442,6 +2442,7 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   // documents router applies its own per-document access (mayDoDocument) on top.
   ['GET', /^\/mobile\/docs$/, 'guest'],
   ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, 'guest'],
+  ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/decision$/, 'guest'],
   ['POST', /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, 'guest'],
   ['GET', /^\/docs\/[0-9a-f-]{36}\/data$/, 'guest'],
   ['POST', /^\/mobile\/browsers\/link$/, 'guest'],
@@ -2540,6 +2541,12 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
+    // Imported Claude/ChatGPT history (import-from-claude-chatgpt §B.3, §D): the owner's app only, never a
+    // browser device or a team member. Kept on this machine; the routes read raw for the owner.
+    { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
+    { method: 'GET', re: /^\/mobile\/imported-history\/conversations\/imported(:|%3a)(claude|chatgpt)(:|%3a)[a-z0-9_.:%-]{1,240}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
+    { method: 'GET', re: /^\/mobile\/imported-history\/search$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'imported-reads' },
+    { method: 'POST', re: /^\/mobile\/imported-history\/(preview|apply|facts)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'imported-import' },
     // Instar Documents phone reads (instar-document-viewer §4.2). Read-only; per-document access is the documents router's.
     { method: 'GET', re: /^\/mobile\/docs$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, statuses: active, body: 'none' },
@@ -2556,6 +2563,12 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Moving a document to another conversation (§4.2): owner phone, Face ID-signed challenge.
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Document decisions (document-decisions §3.2): the app reads the ask itself, then the owner phone
+    // answers on its own sheet with Face ID; the delivered receipt follows the chat route's own record.
+    { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision$/, statuses: active, body: 'none' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision\/delivered$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'doc-open' },
     // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
     { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },

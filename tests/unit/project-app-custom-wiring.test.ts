@@ -37,7 +37,14 @@ describe('custom project apps wiring', () => {
     expect((src.match(/kind === 'project-app-blob' \|\| kind === 'work-card-record'\) \{ _projectAppCustom\?\.invalidate\(\); _projectAppCustom\?\.scheduleSettle\(\); \}/g) ?? []).length).toBe(2);
     // And once at boot (an approve that landed while this machine was down or not the holder).
     expect(src).toContain('paCustom.scheduleSettle();');
-    expect(src).toContain('customApp: (appRef) => {');
+    // The row carries whether the app runs, and folds counts past three instead of cutting them (§3.3).
+    expect(src).toContain('customApp: (appRef) => (_projectAppCustom ? customAppRow(_projectAppCustom, appRef) : null),');
+    expect(src).not.toMatch(/sum\.counts[^\n]*\.slice\(0, 3\)/);
+    const rt = read('src/server/ProjectAppsRuntime.ts');
+    expect(rt).toContain('runState: customAppRunState(src.servedVersion(a.appId).state)');
+    expect(rt).toContain('...foldRowCounts(sum.counts)');
+    // A stopped app's serve card reads as settled on the Work Board (read lazily: the source is wired later).
+    expect(src).toContain('wbRuntime.svc.setStoppedAppCardCheck((cardId) => _projectAppCustom?.stoppedServeCard(cardId) === true);');
   });
 
   it('routes.ts mounts the custom routes and makes version cards phone-only on the Work Board', () => {

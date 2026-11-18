@@ -196,13 +196,28 @@ function splitWhy(why) {
  * A project row's apps, shaped for the page. `has` is false when the row carries no app fields at
  * all (feature off), so the page adds nothing.
  */
+/**
+ * A custom app that does not run (project-apps-sandbox, part 2): the words in place of its summary, or
+ * null when it runs (or is a builtin app, which carries no state). Such an app has nothing to open.
+ */
+export function notRunningLine(app) {
+  const state = app && app.state;
+  if (state === 'off') return { text: 'Stopped', state: 'off' };
+  if (state === 'not-approved') return { text: 'Waiting for your approval', state: 'not-approved' };
+  return null;
+}
+
 export function appsView(row, now = Date.now()) {
   const r = row || {};
   const has = ['apps', 'offers', 'answers', 'addable'].some((k) => Array.isArray(r[k]));
-  const apps = (Array.isArray(r.apps) ? r.apps : []).filter((a) => a && a.appRef).map((a) => ({
-    appRef: String(a.appRef), title: String(a.title || a.appRef), label: `Open ${String(a.title || a.appRef)}`, href: safeAppHref(a.openHref),
-    line: summaryLine(a, now), pin: pinLine(a.pin),
-  }));
+  const apps = (Array.isArray(r.apps) ? r.apps : []).filter((a) => a && a.appRef).map((a) => {
+    const title = String(a.title || a.appRef);
+    const off = notRunningLine(a);
+    return {
+      appRef: String(a.appRef), title, label: `Open ${title}`, href: off ? null : safeAppHref(a.openHref),
+      line: off || summaryLine(a, now), pin: pinLine(a.pin), ...(off ? { notRunning: off.state } : {}),
+    };
+  });
   const titles = new Map();
   for (const list of [r.addable, r.offers, r.apps]) for (const x of Array.isArray(list) ? list : []) if (x && x.appRef) titles.set(String(x.appRef), String(x.title || x.appRef));
   const titleOf = (ref) => titles.get(String(ref)) || String(ref);
@@ -217,7 +232,8 @@ export function appsView(row, now = Date.now()) {
     has,
     buttons: withHref.slice(0, MAX_BUTTONS),
     more: Math.max(0, withHref.length - MAX_BUTTONS),
-    headline: apps.length ? apps[0].line : null,
+    // A stopped or unapproved app reads "Sales pipeline · Stopped" on the collapsed row (no Open there).
+    headline: !apps.length ? null : apps[0].notRunning ? { text: `${apps[0].title} · ${apps[0].line.text}`, state: apps[0].line.state } : apps[0].line,
     apps, offers, addable, answers,
     pins: apps.filter((a) => a.pin).map((a) => ({ appRef: a.appRef, title: a.title, ...a.pin })),
     hint: offers.length ? (offers.length === 1 ? 'Your agent has a suggestion' : `Your agent has ${offers.length} suggestions`) : null,
@@ -241,9 +257,10 @@ export function appStripFor(data, ref, now = Date.now()) {
   const p = data.projects.find((x) => x && conversationRefOf(x.conversationKey || x.key) === want);
   if (!p) return null;
   const v = appsView(p, now);
-  const first = v.apps.find((a) => a.href);
+  // The first app that opens; else the first that does not run, said plainly with nothing to open.
+  const first = v.apps.find((a) => a.href) || v.apps.find((a) => a.notRunning);
   if (!first) return null;
-  return { projectKey: String(p.key), appRef: first.appRef, title: first.title, label: 'Open', href: first.href, line: first.line };
+  return { projectKey: String(p.key), appRef: first.appRef, title: first.title, label: first.href ? 'Open' : null, href: first.href || null, line: first.line };
 }
 
 /** What "Ask for an update" answered, in words: checked now, queued with the server's words, or the refusal. */
