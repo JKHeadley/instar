@@ -13,7 +13,7 @@ import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
   LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
-  refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
+  cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   OUTWARD_WORDS,
 } from './work-model.js';
@@ -217,6 +217,11 @@ function openCard(card, refresh) {
   ].filter(Boolean);
 
   const body = [...warn, el('dl', { class: 'story' }, facts.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]))];
+  const source = cardSourceLink(card);
+  if (source) body.push(el('p', { class: 'card-line work-source' },
+    el('span', { text: 'From: ' }), source.href
+      ? el('a', { href: source.href, text: source.label, onclick: () => closeSheet() })
+      : el('span', { text: source.label }), source.note ? el('span', { text: ` · ${source.note}` }) : null));
   if (card.need) body.push(block('What is needed', needNode(card.need)));
   if (card.recommendation) body.push(block('The agent recommends', el('p', { class: 'card-line work-pre', text: String(card.recommendation) })));
 

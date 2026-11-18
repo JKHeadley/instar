@@ -1,3 +1,5 @@
+import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
+
 // Work board page: pure view-model (docs/specs/work-board-asks.md §4, §5, §7).
 // No DOM, no fetch, no timers. work.js renders these; tests/unit/console-work-model.test.ts
 // checks them. The server's card JSON (src/core/workBoardViews.ts cardJson/boardJson) is the
@@ -414,4 +416,14 @@ export function workBoardNeedRows(wb) {
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
   return rows;
+}
+
+/** Source is already viewer-filtered by the board read. Never infer it from placement. */
+export function cardSourceLink(card) {
+  if (!card || card.removed || !card.source) return null;
+  const ref = parseConversationRef(card.source.conversationKey);
+  const target = messageTarget(card.source.messageId);
+  if (!ref) return { href: null, label: 'The original message cannot be opened here.' };
+  if (!target) return { href: hashFor(ref), label: 'Original conversation', note: 'The exact message is unavailable.' };
+  return { href: `${hashFor(ref)}&m=${encodeURIComponent(target)}`, label: 'Original message' };
 }
