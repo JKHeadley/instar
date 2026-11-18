@@ -799,6 +799,9 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
   for (const key of ['name', 'purpose', 'door'] as const) {
     if (file[key] !== undefined && typeof file[key] !== 'string') return `In the answers file, ${key} must be text.`;
   }
+  if (file.door !== undefined && !(Object.hasOwn(INSTALL_DOOR_LABELS, file.door))) {
+    return `In the answers file, door must be one of: ${Object.keys(INSTALL_DOOR_LABELS).join(', ')}.`;
+  }
   if (file.autostart !== undefined && typeof file.autostart !== 'boolean') {
     return 'In the answers file, autostart must be true or false.';
   }
@@ -932,6 +935,8 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
   const context: InstallFlowContext = {
     detectedDoors: detectInstallDoors(),
     runningInDoor: detectRunningDoor(),
+    // The person's own pick comes first; without it the flow would take the only AI found here.
+    chosenDoor: answersFile.door && Object.hasOwn(INSTALL_DOOR_LABELS, answersFile.door) ? (answersFile.door as InstallDoor) : undefined,
     validateName: validateNewAgentName,
     describePlan: describeInstallPlan,
   };
