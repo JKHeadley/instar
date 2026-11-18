@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'bootSlowCallbacks',
+    configPath: 'monitoring.bootSlowCallbacks',
+    description: 'Boot slow-callback attributor (fb-756ec068-89d): for 120 s after boot, logs any callback that holds the event loop over 1 s with the code that scheduled it; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Observation only: an async_hooks hook that times callbacks and writes at most 20 log lines, then disables itself; an internal error disables the hook, never the callback. No gate, notice, state file or outward action. false turns it off.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
