@@ -9,6 +9,7 @@ export function agentHealthNote(res) {
   return 'clear';
 }
 
+export const AGENT_NOTE_REFRESH_MS = 50000;
 let stopPrevious = null;
 export function mountAgentHealthNote(anchor, { get }) {
   if (stopPrevious) stopPrevious();
@@ -37,7 +38,8 @@ export function mountAgentHealthNote(anchor, { get }) {
     finally { busy = false; }
     if (!stopped && anchor.isConnected) paint(state);
   };
-  const timer = setInterval(load, 45000);
+  // Its own period, apart from the Needs-you strip's 45 s, so each refresh can be told apart (and leaks seen) on its own.
+  const timer = setInterval(load, AGENT_NOTE_REFRESH_MS);
   const stop = () => { stopped = true; clearInterval(timer); dot.remove(); };
   stopPrevious = stop;
   void load();

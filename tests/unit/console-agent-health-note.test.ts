@@ -20,7 +20,7 @@ describe('Agent status beside the door', () => {
   vi.useFakeTimers();
   const dom = new JSDOM('<body><a id="first">Agent</a><a id="second">Agent</a>',{pretendToBeVisual:true});
   globalThis.document = dom.window.document;
-  const {mountAgentHealthNote} = await module();
+  const {mountAgentHealthNote, AGENT_NOTE_REFRESH_MS} = await module();
   let finish;
   const old = vi.fn(() => new Promise(r => {finish=r;}));
   const first = document.querySelector('#first');
@@ -33,11 +33,11 @@ describe('Agent status beside the door', () => {
   expect(first.querySelector('.dot')).toBeNull();
   expect(second.querySelector('.dot').className).toBe('dot attn');
   expect(get).toHaveBeenCalledWith('/mobile/health-issues');
-  await vi.advanceTimersByTimeAsync(45000);
+  await vi.advanceTimersByTimeAsync(AGENT_NOTE_REFRESH_MS);
   expect(second.querySelector('.dot').getAttribute('aria-label')).toContain('could not be read');
-  await vi.advanceTimersByTimeAsync(45000);
+  await vi.advanceTimersByTimeAsync(AGENT_NOTE_REFRESH_MS);
   expect(second.querySelector('.dot').hidden).toBe(true);
-  second.remove(); await vi.advanceTimersByTimeAsync(90000);
+  second.remove(); await vi.advanceTimersByTimeAsync(2 * AGENT_NOTE_REFRESH_MS);
   expect(get).toHaveBeenCalledTimes(3);
   stop();
  });
