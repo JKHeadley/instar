@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T16:58:15.640Z",
+  "slug": "mac-helper-test-budget",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MacDesktopHelperBudget.ts",
+      "src/core/MacDesktopHost.ts"
+    ],
+    "addedLines": 67,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

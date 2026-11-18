@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { macDesktopHelperBudgetScale, setMacDesktopHelperBudgetScale } from '../../src/core/MacDesktopHelperBudget.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // The real host binary is restricted to dist/native. Test helpers live beside
@@ -256,8 +257,16 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
   });
 
   it('bounds a silent native read and kills its child', async () => {
-    const host = helper('silent');
-    await expect(host.capture()).rejects.toThrow('mac-desktop-host-capture-timeout');
-    host.stopIndicator();
+    // The suite setup stretches helper waits tenfold; this test is about the wait itself, so
+    // it runs on the production budget (4 s) and keeps its 7 s bound.
+    const stretched = macDesktopHelperBudgetScale();
+    setMacDesktopHelperBudgetScale(1);
+    try {
+      const host = helper('silent');
+      await expect(host.capture()).rejects.toThrow('mac-desktop-host-capture-timeout');
+      host.stopIndicator();
+    } finally {
+      setMacDesktopHelperBudgetScale(stretched);
+    }
   }, 7_000);
 });
