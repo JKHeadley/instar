@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-14T00:43:20.000Z",
-      "auditRef": "docs/audits/standards-backreference-completion-building-family-2026-11-13.json",
-      "auditSha256": "aaf7aa6ba2a5500c01c2f5b6467cf858026a0331c6399d699a2da9829d2059aa",
-      "areaSha256": "64edd8878c3d67257177b1850c7abd21dd94676d18ab3e096de0e1dc21045723",
+      "lastAuditedAt": "2026-11-18T02:41:00.000Z",
+      "auditRef": "docs/audits/frontier-design-review-building-family-2026-11-17.json",
+      "auditSha256": "860be259b670e2756106e8e8c0e97cbcbcaa1d2abd043e4a7df3d122fa756cc4",
+      "areaSha256": "f43013268822d280d362ee56058b0ef777b0d9851f5a0605ba4921c0620349a0",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -42,10 +42,10 @@
       }
     },
     "The Root": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "e2f8e1efab200ac06d7c2deecac34b6219a3fbc51165993c2fe2557bb787cad1",
+      "lastAuditedAt": "2026-11-18T02:41:00.000Z",
+      "auditRef": "docs/audits/frontier-design-review-root-family-2026-11-17.json",
+      "auditSha256": "e4a6a07a744b5263b16d2ff3bca53e498d76469484466c2f3e2c99ca0bbf729b",
+      "areaSha256": "b9120b7e7e9431dfe76c7bfc9e69e70779c0ff0b513656ab1dd0fec96f45e914",
       "refResolutionFloor": {
         "enforced": 1,
         "total": 1
