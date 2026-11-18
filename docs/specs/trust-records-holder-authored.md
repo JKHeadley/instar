@@ -165,7 +165,14 @@ approval flow asks the owner again the next time the action is attempted.
     forgery open while it watches (*A Dark Feature Guards Nothing*). A resolved `"fold"` on a
     multi-machine agent logs at every boot: "Trust records written by other machines are being
     honoured (N grants from other machines are live now)". Single-machine agents see no change at any
-    setting.
+    setting. *A Dark Feature Guards Nothing* applies to the fleet window: the spec's approval request
+    asks the approver to record acceptance of the fleet running today's behaviour (`"fold"`, the
+    manual fallback being the owner's own review of approvals) for at most the dark window below, or
+    to choose `"ignore"` fleet-wide from merge instead. The approval record is that acceptance.
+14. **Two items the approver decides, named in the approval request:** (a) decision 10's exception to
+    *Trust Is Earned by Work* (re-ask after a handover until identity piece 2 lands); (b) decision
+    11's fleet window. Neither is an open question for the build: the build ships decision 10 as
+    written and decision 11 with the window; a refusal of either sends the spec back to review.
 12. **Merge order.** Part 1 (PR 3403) merges first; this build rebases on it and replaces its
     "send it again" wording only where decision 6 says so.
 13. **Device re-accept on the new holder is proven before the fleet rung.** Phone pairings are per
