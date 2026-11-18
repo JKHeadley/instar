@@ -41,6 +41,10 @@ Actually removing copies is a second step with its own design, built on these me
 
 The measurement has its own entry on the maturation ladder (`monitoring.diskSteward.topicWorktreeMeasure`). It runs first on the development agent only. It moves to every agent only after its runs show no errors, and after 30 days in which the second check never contradicts a "safe to reclaim" verdict.
 
+## What comes next
+
+The second phase actually removes copies, built on what this phase measures. That work is tracked as commitment CMT-1958.
+
 ## What needs deciding
 
 The Chief of Staff approves the design. No operator action is needed.

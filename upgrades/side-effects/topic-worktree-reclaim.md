@@ -107,3 +107,5 @@ D has its own ladder entry, `monitoring.diskSteward.topicWorktreeMeasure` in `sr
 
 **Round 3: Concur with the review** (11:21 PT): the child no longer passes a runner; `measureTopicWorktrees` has one production caller; tsc clean.
 
+**Follow-up commit (11:50 PT):** D's flag is now listed in `DEV_GATED_FEATURES` (`topicWorktreeMeasure`), so the both-sides wiring test covers it: live on dev, dark on the fleet. A second-pass review on a sibling change noticed the missing registry entry.
+

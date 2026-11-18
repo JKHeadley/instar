@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'topicWorktreeMeasure',
+    configPath: 'monitoring.diskSteward.topicWorktreeMeasure',
+    description: 'Topic-worktree reclaim measurement (docs/specs/topic-worktree-reclaim.md part D): inside the disk-steward child, measures which topic worktrees are safely reclaimable and audits each verdict a second way; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only: removes nothing, writes only its own plan and audit files under local-state, and every git/gh call is capped by the disk-steward run deadline so it cannot cost that run its other results. false turns it off.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',

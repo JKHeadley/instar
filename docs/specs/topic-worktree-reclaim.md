@@ -255,3 +255,8 @@ Not applicable. No notice source is added.
 ## Open questions
 
 *(none)*
+
+## Carrier for phase 2
+
+> **CMT-1958** — "Phase 1 (topic-worktree-reclaim spec) measures what is safely reclaimable and stops the lock leak. Phase 2: specify and build live removal on those numbers: creation-race protection, binding deletion, removal and its re-check off the main thread, a creation-vs-adoption provenance event, deeper link coverage, and a decision on dependency copies."
+
