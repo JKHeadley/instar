@@ -111,7 +111,7 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
     const app = server.getApp();
     let first = ''; let second = '';
     try {
-      const a = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false });
+      const a = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false, recommendation: 'Book Hall A: it fits 40 and is near the station.', whyYou: 'Only you can choose where the launch is held.' });
       expect(a.status, JSON.stringify(a.body)).toBe(201);
       first = a.body.cardId;
       expect(a.body.card).toMatchObject({ turn: 'you', started: false, conversation: { kind: 'app', key: a.body.conversationKey } });
@@ -129,7 +129,7 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
       expect(lessons.status).toBe(200);
       expect(lessons.body.lessons.map((l: { reason: string; cardId: string }) => [l.reason, l.cardId])).toEqual([['We already chose last week', first]]);
 
-      const b = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Book catering', need: 'Order food', doneWhen: [{ id: 'd1', text: 'Ordered' }], outward: false });
+      const b = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Book catering', need: 'Order food', doneWhen: [{ id: 'd1', text: 'Ordered' }], outward: false, recommendation: 'Order from the usual caterer.', whyYou: 'You approve the catering budget.' });
       expect(b.status).toBe(201);
       second = b.body.cardId;
       expect(b.body.lessons.map((l: { reason: string }) => l.reason)).toEqual(['We already chose last week']);
@@ -138,7 +138,8 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
       const board = await request(app).get('/work-board').set(auth());
       const doneLane = board.body.lanes.find((l: { lane: string }) => l.lane === 'done');
       expect(doneLane.cards.map((c: { id: string }) => c.id)).toEqual([second]);
-      expect(rig.lines.some((l) => l.text.startsWith('Work board: Justin closed this as done: "Ordered by phone"'))).toBe(true);
+      // The route names the person from the agent's own config (not the rig's displayName), so match the close itself.
+      expect(rig.lines.some((l) => l.text.startsWith('Work board: ') && l.text.includes(' closed this as done: "Ordered by phone"')), JSON.stringify(rig.lines.map((l) => l.text))).toBe(true);
     } finally { await server.stop(); rig.runtime.stop(); rig.journal.close(); }
 
     const again = mkRuntime(stateDir);
