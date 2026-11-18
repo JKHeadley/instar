@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-temp-read-deny",
+  "sessionId": "19c7b64a-3509-4c6c-bcf3-d23ec20615c4",
+  "timestamp": "2026-11-18T06:38:12.281Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-temp-read-deny.md",
+  "artifactSha256": "dc294d3caa3980a033c496915ea171f66a3817d09404b6ca13d7c0e9db94eb9a",
+  "coveredFiles": [
+    "docs/specs/feedback-executor-temp-read-deny.eli16.md",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-executor-temp-read-deny.md",
+    "upgrades/side-effects/feedback-executor-temp-read-deny.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Restores one sandbox read-deny rule the 2026-10-25 write fix over-widened, plus must-fail canary probes; fail closed, reversible by revert, no stored data; independently reviewed.",
+  "eli16Path": "docs/specs/feedback-executor-temp-read-deny.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-executor-temp-read-deny.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

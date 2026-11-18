@@ -32,6 +32,7 @@ import path from 'node:path';
 import { scrubForStore } from './durableSecretScrub.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { splitTag } from './agentSignatureProvenance.js';
+import { isOwnersOwnWords } from './ownerWords.js';
 
 export const JEV_CORRECTION_FEATURE = 'jev-correction-shadow';
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
@@ -216,6 +217,7 @@ export function feedExclusion(text: string, agentName: string | null | undefined
   return null;
 }
 
+
 export interface InboundEntry {
   topicId?: number | null;
   messageId?: number | null;
@@ -223,6 +225,12 @@ export interface InboundEntry {
   fromUser?: boolean;
   provenance?: string;
   sessionName?: string | null;
+  /** Who wrote it (SEC-069): only the owner's own words feed corrections. */
+  teamPhone?: boolean;
+  senderRole?: string;
+  via?: string;
+  telegramUserId?: number;
+  forwarded?: boolean;
 }
 
 export interface JevCorrectionShadowDeps {
@@ -277,7 +285,7 @@ export class JevCorrectionShadow {
   }
 
   /** Synchronous, never throws. Called once per logged message (user or agent). */
-  observe(entry: InboundEntry): void {
+  observe(entry: InboundEntry, ownerUserId?: number): void {
     try {
       const cfg = this.deps.getConfig();
       if (!cfg || cfg.enabled !== true) return;
@@ -292,6 +300,8 @@ export class JevCorrectionShadow {
         if (this.lastAgent.size > MAX_TOPICS) this.lastAgent.delete(this.lastAgent.keys().next().value as number);
         return;
       }
+      // A team member's words and forwarded text are not the owner's (SEC-069).
+      if (!isOwnersOwnWords(entry, ownerUserId)) return;
       const prev = topic === null ? '' : this.lastAgent.get(topic) ?? '';
       const messageId = typeof entry.messageId === 'number' && Number.isFinite(entry.messageId) ? entry.messageId : null;
       const sessionName = typeof entry.sessionName === 'string' && entry.sessionName ? entry.sessionName : null;

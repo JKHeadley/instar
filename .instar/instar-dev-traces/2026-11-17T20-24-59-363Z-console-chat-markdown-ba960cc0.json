@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "console-chat-markdown",
+  "sessionId": "87b9e3bc-ef02-4bec-b420-fa8826c50106",
+  "timestamp": "2026-11-17T20:24:59.363Z",
+  "artifactPath": "upgrades/side-effects/console-chat-markdown.md",
+  "artifactSha256": "cf7a34581503cdf8bf05e39fe862bc25178e62cb1eec531c7d7f26340a16de18",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "docs/specs/console-chat-markdown.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/console-chat-markdown.md",
+    "upgrades/side-effects/console-chat-markdown.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only rendering of inline markdown on one console page; untrusted text stays out of HTML; a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-chat-markdown.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-chat-markdown.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

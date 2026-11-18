@@ -49,7 +49,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'POST' && r.re.test('/sessions/a/input'))).toBe(false);
   });
-  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID)', () => {
+  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID, and machine care)', () => {
     // Each owner-only rule, named by one request it admits. A new owner-only route adds its line here.
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
@@ -175,9 +175,16 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).
       ['POST', '/mobile/accounts/add'],
+      // Machine care from the owner's phone (machine-self-maintenance Part F, CMT-1203).
+      ['GET', '/mobile/machine-care'],
+      ['POST', '/mobile/machine-care/self/skip'],
       // Move a document to another conversation with Face ID (instar-document-viewer §4.2).
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary/challenge'],
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary'],
+      // Approve or decline a document with Face ID, and its delivered receipt (document-decisions §3.2).
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision/challenge'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision/delivered'],
       // A tap on a work card with Face ID (work-board-asks §4): only the team owner taps in phase 1.
       ['POST', '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
     ];

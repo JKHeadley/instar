@@ -74,10 +74,33 @@ describe('conversation graph read view cache',()=>{
   const verifiedOnce=verify.mock.calls.length;
   expect(model.roots(owner,{view:'all'}).status).toBe(200);
   expect(model.roots(owner,{view:'overview'}).status).toBe(200);
-  expect(view).toHaveBeenCalledTimes(3);
+  // Each read pins one view and its own lookups are answered from that pin, so readView() is called
+  // more than once per read; what matters is that all three reads saw the same view, built once.
+  expect(view.mock.calls.length).toBeGreaterThanOrEqual(3);
+  expect(new Set(view.mock.results.map(r=>r.value)).size).toBe(1);
   // Three reads, one union, and no event verified twice.
   expect(union).toHaveBeenCalledTimes(1);
   expect(verify.mock.calls.length).toBe(verifiedOnce);
   view.mockRestore();verify.mockRestore();union.mockRestore();
+ });
+ it('builds one view for a whole read even while writes keep the view key null',async()=>{
+  const {f,runtime}=await setup();
+  expect(await runtime.refreshReadiness()).toBe(true);
+  const r=f.record('read-view-pin-a');
+  expect((await runtime.withSourceMutation(token=>runtime.submitPrepared({coreType:r.coreType,idempotencyKey:r.packet.idempotencyKey,
+   requestHash:canonicalHash('read-view-pin-a'),core:r.core,authorizationProof:r.authorizationProof,plaintextSource:Buffer.from('pin source')},token))).state).toBe('committed');
+  await settle();
+  // A write in flight makes the view key null, so nothing is cached between calls.
+  vi.spyOn(runtime.source,'readViewMarker').mockReturnValue(null);
+  const union=vi.spyOn(runtime.source,'certifiedUnion');
+  runtime.readView();runtime.readView();
+  expect(union).toHaveBeenCalledTimes(2);
+  union.mockClear();
+  const pinned=runtime.withPinnedReadView(()=>{const a=runtime.readView(),b=runtime.readView(),c=runtime.retainedForRead();expect(b).toBe(a);expect(c).toBe(a.retained);return a;});
+  expect(union).toHaveBeenCalledTimes(1);
+  // The pin ends with the call, also when it throws.
+  expect(runtime.readView()).not.toBe(pinned);
+  expect(()=>runtime.withPinnedReadView(()=>{throw new Error('read failed');})).toThrow('read failed');
+  union.mockClear();runtime.readView();expect(union).toHaveBeenCalledTimes(1);
  });
 });

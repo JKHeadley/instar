@@ -49,6 +49,9 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   'machine-ssh/',
   // Inbound-delivery observer HMAC key.
   'state/inbound-delivery.hmac-key',
+  // Always available's record of the earlier Claude sign-in (the credential itself, kept to restore
+  // on turn-off) and its temp files (create-agent-accounts-and-always-on §B.4).
+  'state/always-available-token',
   // Relay session tokens handed out by handshakes.
   'relay-tokens.json',
   // Headless worktree key vault (`local-state/keys.enc`) and its siblings.
@@ -138,6 +141,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
   'state/local-mcp-secret',
+  'state/always-available-token.json',
   'config.json',
 ]);
 
