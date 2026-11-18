@@ -304,6 +304,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Bounded warm-session pool (global/per-peer caps + TTL); no destructive action, no third-party spend.',
   },
   {
+    name: 'telegramSenderAuthority',
+    configPath: 'security.telegramSenderAuthority.enabled',
+    description: 'Telegram sender rule: an empty allowlist is not everyone; one rule on the polling, forward and lifeline paths; controls by standing.',
+    justification: 'Refuses only proven strangers and controls their standing does not allow; unknown senders keep today\'s handling; the fleet observes with one owner item.',
+  },
+  {
     name: 'secretSync',
     configPath: 'multiMachine.secretSync.enabled',
     description: 'Cross-machine secret sync (receive side).',

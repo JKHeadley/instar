@@ -5116,6 +5116,10 @@ export interface InstarConfig {
   dashboardPinGeneration?: string;
   /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
+    /** identity-security-piece1e: the Telegram sender rule. Dev-gated: omit `enabled` so resolveDevAgentGate decides. */
+    telegramSenderAuthority?: { enabled?: boolean };
+    /** identity-security-piece1f: members' no-tools conversations. On unless explicitly false (umbrella §10: a security fix that ships on). */
+    memberConversations?: { enabled?: boolean };
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
       enabled?: boolean;

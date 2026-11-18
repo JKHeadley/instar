@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1f-member-conversations",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T15:02:27.112Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1f-member-conversations.md",
+  "artifactSha256": "3bab78933d7fc979fa26f2af0e54c71833e9130e177aaaccd583a3354343bf60",
+  "specPath": "docs/specs/identity-security-piece1f-member-conversations.md",
+  "coveredFiles": [
+    "docs/LLM-ROUTING-REGISTRY.md",
+    "docs/specs/identity-security-piece1f-member-conversations.eli16.md",
+    "docs/specs/identity-security-piece1f-member-conversations.md",
+    "docs/specs/reports/identity-security-piece1f-member-conversations-convergence.md",
+    "scripts/notification-selectivity-raw-baseline.json",
+    "src/commands/server.ts",
+    "src/core/componentCategories.ts",
+    "src/core/types.ts",
+    "src/data/awareness/member-conversations.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/memberConversation.ts",
+    "src/messaging/memberTurnCaller.ts",
+    "src/messaging/notificationCategories.ts",
+    "src/server/routes.ts",
+    "tests/unit/identity-piece1f-member-conversations.test.ts",
+    "upgrades/next/identity-security-piece1f-member-conversations.md",
+    "upgrades/side-effects/identity-security-piece1f-member-conversations.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Team members' Telegram messages go to a no-tools conversation of their own (locked-down one-shot model calls, a private per-member store), never the owner's session or shared log; ships on per the approved umbrella.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: each member turn answers one inbound member message, capped 30 per member and 120 per agent an hour, one at a time; the notices fire once each; the carrier rebuild runs at most every 5 minutes and only while empty, on a member message"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1e-telegram-senders",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T13:40:46.849Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1e-telegram-senders.md",
+  "artifactSha256": "a6c8c506047747f9668077237b0e9d038748740cb7f7c51863cf533877b5e7a6",
+  "specPath": "docs/specs/identity-security-piece1e-telegram-senders.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece1e-telegram-senders.eli16.md",
+    "docs/specs/identity-security-piece1e-telegram-senders.md",
+    "docs/specs/reports/identity-security-piece1e-telegram-senders-convergence.md",
+    "scripts/notification-selectivity-raw-baseline.json",
+    "src/commands/server.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/awareness/telegram-sender-authority.md",
+    "src/data/feature-ladders.json",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegramSenderAuthority.ts",
+    "src/messaging/telegramSenderWiring.ts",
+    "src/server/routes.ts",
+    "tests/unit/identity-piece1e-sender-wiring.test.ts",
+    "tests/unit/telegram-sender-authority.test.ts",
+    "upgrades/next/identity-security-piece1e-telegram-senders.md",
+    "upgrades/side-effects/identity-security-piece1e-telegram-senders.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Who may use a Telegram agent: one sender rule on the polling, forward and lifeline paths, an empty list no longer means everyone, owner-only whole-agent controls and a working /approve; refusals are dev-gated, the fleet observes.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the private stranger reply and the join-request notice each answer one inbound Telegram message (capped 1 per sender and 20 per agent a day); the owner item is raised once and refreshed per new sender (64 a day); the owner-unknown item is latched once per process"
+  }
+}

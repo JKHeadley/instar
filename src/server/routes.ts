@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { JOIN_REQUEST_COMMAND } from '../messaging/telegramSenderAuthority.js';
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { bootReadiness } from './BootReadiness.js';
@@ -31180,6 +31181,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // identity-security-piece1e: the sender rule on the lifeline path, before anything the message
+    // can cause: topic naming, media capture, pairing, the stop, the history log, delivery and
+    // commands. A refused stranger's words never enter the topic's history. Other agents' bots are
+    // not judged here (the a2a hook below decides them). App and phone messages carry their own
+    // device proof and are not judged here. A sender id counts as proven only when the ingress guard
+    // verified the lifeline; anything else is `unknown` and keeps today's handling.
+    if (!trust && ctx.telegram && senderIsBot !== true) {
+      const proven = ingressDecision.verified === true;
+      if (!ctx.telegram.senderMay(fromUserId, 'message', { path: 'forward', legacy: true, proven })) {
+        void ctx.telegram.answerStranger?.({ userId: fromUserId, chatType: req.body.sourceChatType, chatId: req.body.sourceChatId, firstName: fromFirstName, username: fromUsername }).catch(() => undefined);
+        res.json({ ok: true, forwarded: false, refused: true, reason: 'sender-not-authorized' });
+        return;
+      }
+    }
+
+    // identity-security-piece1f: a team member's message goes to their own no-tools conversation and
+    // no further: no topic naming, media capture, pairing, stop, log, operator bind, a2a hook, delivery
+    // or commands. Pins and topic names are service messages and pass through as today.
+    if (!trust && ctx.telegram && senderIsBot !== true && req.body?.pinOnly !== true && req.body?.nameOnly !== true
+      && Number.isSafeInteger(Number(topicId)) && ctx.telegram.isMemberHere(fromUserId, false, ingressDecision.verified === true)) {
+      const hasMedia = Array.isArray(req.body?.media) && req.body.media.length > 0;
+      const kind = hasMedia || typeof text !== 'string' || text.length === 0 ? 'media' : text.trim().startsWith('/') ? 'command' : 'text';
+      // Where to answer. The chat is trusted only from a verified relay with a matching chat type: the
+      // member's own private chat, or the agent's group. A message with no chat information (a queued
+      // replay) is answered in the group only when it came from a forum topic; otherwise in the
+      // member's private chat, never the group's General topic.
+      const srcId = Number(req.body?.sourceChatId);
+      const srcType = typeof req.body?.sourceChatType === 'string' ? req.body.sourceChatType : '';
+      const verified = ingressDecision.verified === true;
+      const groupId = Number(ctx.telegram.getChatId());
+      const chatId = verified && srcType === 'private' && srcId === Number(fromUserId) ? srcId
+        : verified && (srcType === 'supergroup' || srcType === 'group') && Number.isSafeInteger(srcId) && srcId !== 0 ? srcId
+        : Number(topicId) > 1 ? groupId : Number(fromUserId);
+      void ctx.telegram.memberConversation!.service.handle({ userId: String(fromUserId), memberName: String(fromFirstName || 'a team member').slice(0, 64),
+        where: { chatId, topicId: Number(topicId) }, messageId: Number.isSafeInteger(Number(messageId)) ? Number(messageId) : undefined, text: typeof text === 'string' ? text : '', kind });
+      // `refused` here means "not handed to the topic session": the relay then posts no "✓ Delivered"
+      // in the group (the member is answered in their own chat by the member conversation).
+      res.json({ ok: true, forwarded: false, refused: true, reason: 'member-conversation' });
+      return;
+    }
+
     // E2E-PAIRING: EXEMPT — optional fields on an existing internal route; covered through createRoutes by tests/integration/topic-operator-autobind-route.test.ts.
     // Topic name from the lifeline (agents whose lifeline owns polling never
     // see Telegram's topic-created/renamed service messages here). Only a
@@ -31311,7 +31353,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Spec: docs/specs/emergency-stop-forward-path-wiring.md
     // FAIL-OPEN: any sentinel error falls through to normal routing — the safety
     // check must never block message delivery. Mirrors processUpdate's behavior.
-    if (ctx.sentinel) {
+    // identity-security-piece1e: only a sender whose standing allows session controls may trigger the
+    // stop. Unknown senders keep today's handling; app/phone messages are not judged here.
+    // Asked only once the classifier says kill or pause, so ordinary messages are never judged
+    // (or recorded) as a control. A refused stop falls through to normal routing as text.
+    const stopAllowedBySender = (): boolean => !!trust || !ctx.telegram || senderIsBot === true
+      || ctx.telegram.senderMay(fromUserId, 'session-control', { path: 'forward-stop', legacy: true, proven: ingressDecision.verified === true });
+    // The owner's join-request answer is explicit command syntax, never a stop (its handler judges it).
+    const isJoinRequestAnswer = typeof text === 'string' && JOIN_REQUEST_COMMAND.test(text.trim());
+    if (ctx.sentinel && !isJoinRequestAnswer) {
       try {
         // Operator-channel-sacred: the single disposition helper decides — a 'pause'
         // consumes ONLY on a deterministic match; a bare-LLM/capacity-shed 'pause'
@@ -31319,7 +31369,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // normal routing) instead of consuming the operator's message; a long-form
         // genuine stop is rescued to a kill.
         const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
-        if (decision.disposition === 'kill' || decision.disposition === 'pause') {
+        if ((decision.disposition === 'kill' || decision.disposition === 'pause') && stopAllowedBySender()) {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since
           // a lifeline-owned adapter's in-memory topicToSession map may be empty;
@@ -31545,6 +31595,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+
     // Topic-operator auto-bind (Know Your Principal #898, increment 2d — the WRITE
     // side). Record the VERIFIED operator of this topic from the AUTHENTICATED +
     // AUTHORIZED sender of this real user inbound, so the session-start hook (#908)
@@ -31617,6 +31668,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // Explicit, so the message pipeline can refuse authority by the
           // flag as well as by the missing id.
           ...(senderUntrusted ? { senderUnverified: true } : {}),
+          // identity-security-piece1e: the sender id is proven only when the ingress guard verified it.
+          ...(!trust && ingressDecision.verified === true ? { senderProven: true } : {}),
           // Preserve the platform message id separately from Message.id. The
           // latter has a Date.now fallback for routing/dedupe compatibility and
           // must NEVER be laundered into operator-establishment evidence.

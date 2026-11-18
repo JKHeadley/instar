@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-18T13:41:18.290Z",
+  "slug": "identity-security-piece1e-telegram-senders",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 512,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/notification-selectivity-raw-baseline.json",
+      "src/commands/server.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/awareness/telegram-sender-authority.md",
+      "src/data/feature-ladders.json",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegramSenderAuthority.ts",
+      "src/messaging/telegramSenderWiring.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 464,
+    "deletedLines": 48
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the private stranger reply and the join-request notice each answer one inbound Telegram message (capped 1 per sender and 20 per agent a day); the owner item is raised once and refreshed per new sender (64 a day); the owner-unknown item is latched once per process"
+  },
+  "verdict": "pass"
+}

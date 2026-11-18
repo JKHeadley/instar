@@ -187,6 +187,10 @@ export class NotificationSelectivityGate {
     // Owner decision (cos-owner-decision-delivery): a button only the owner can answer is a decision,
     // not a report. Stamped only in-process by TelegramAdapter.sendOfferList; no producer or request
     // maps to it. A per-topic budget keeps a looping sender from flooding the owner.
+    // Member reply (identity-security-piece1f): the agent's answer to a team member in their own
+    // conversation, sent only by the adapter's member reply. Always delivered, and never recorded in
+    // the owner's quiet feed (whose lines reach the owner's session).
+    if (category === 'member-reply') return result('deliver', 'member-reply');
     if (category === 'owner-decision') {
       return this.budget(`owner-decision:${topicId}`, 10) ? result('deliver', 'owner-decision') : result('record', 'owner-decision-budget');
     }
@@ -336,6 +340,8 @@ export class NotificationSelectivityGate {
     // Opted-in pushes also enter the durable feed; verified replies never do.
     let id: string;
     try {
+      // identity-security-piece1f: a member's conversation never enters the owner's feed, even on a gate error.
+      if (envelope?.category === 'member-reply') text = "[a reply to a team member's own conversation was not sent]";
       const row = await this.store.record({ category: verdict.category, sourceContext: envelope?.sourceContext ?? 'unstamped', topicId, text });
       if (this.failureSince !== null) { this.ledger({ ts: new Date(this.now()).toISOString(), reason: 'store-recovered', lost: this.activeLost, since: this.failureSince }); this.failureSince = null; this.activeLost = 0; }
       id = row.id; if (row.count > 1) this.metrics.coalesced++;
