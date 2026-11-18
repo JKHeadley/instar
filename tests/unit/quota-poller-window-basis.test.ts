@@ -84,13 +84,13 @@ const liveSnap = (atMs: number, resetMs: number, src: 'codex-app-server' | 'code
 });
 
 describe('Codex window rewrite: basis follows the actual source', () => {
-  it('a live read of an elapsed window is idle-live, keeps the original reset, and lists its windows', async () => {
+  it('a live read of an elapsed window is rolled-history (Codex idle premise unverified), keeps the original reset, and lists its windows', async () => {
     const t0 = Date.parse('2026-11-18T08:00:00.000Z');
     const reset = t0 - 3_600_000;
     const { pool, poller } = codexHarness(async () => ({ kind: 'ok', snapshot: liveSnap(t0, reset) }));
     const snap = await poller.pollAccount(pool.get('codex-a')!);
     expect(snap?.sevenDay).toEqual({ utilizationPct: 0, resetsAt: '' });
-    expect(snap?.windowBasis).toEqual({ sevenDay: 'idle-live' });
+    expect(snap?.windowBasis).toEqual({ sevenDay: 'rolled-history' });
     expect(snap?.resetsAtBeforeRewrite).toEqual({ sevenDay: new Date(reset).toISOString() });
     expect(snap?.windowsListed).toEqual(['sevenDay']);
   });
@@ -146,6 +146,28 @@ describe('the out-of-cycle read gate', () => {
     await poller.pollAll(); // the regular poll still runs and closes the breaker
     expect(poller.rereadBreakerOpen('codex-a')).toBe(false);
     void pool;
+  });
+
+  it('a failure that lands after a landed reading cleared the entry does not restore the old count', async () => {
+    let release: (v: unknown) => void = () => {};
+    let mode: 'fail' | 'hang' = 'fail';
+    const reader = vi.fn(async () => {
+      if (mode === 'hang') return new Promise((r) => { release = r; });
+      return { kind: 'unavailable' };
+    });
+    const { poller, clock } = codexHarness(reader);
+    poller.requestRead('codex-a'); await settle();
+    expect(poller.outOfCycleFailures('codex-a')).toBe(1);
+    clock.t += 2 * 15 * 60_000;
+    mode = 'hang';
+    poller.requestRead('codex-a'); await settle(); // in flight, will fail later
+    // A reading lands meanwhile (a scheduled poll shares this in-flight live read per home, so
+    // simulate exactly what pollOne does on a landed reading: clear the account's gate entry).
+    (poller as unknown as { outOfCycle: Map<string, unknown> }).outOfCycle.delete('codex-a');
+    expect(poller.outOfCycleFailures('codex-a')).toBe(0);
+    release({ kind: 'unavailable' }); // the stale in-flight read now fails
+    await settle();
+    expect(poller.outOfCycleFailures('codex-a')).toBe(0);
   });
 
   it('skips needs-reauth and disabled accounts', async () => {

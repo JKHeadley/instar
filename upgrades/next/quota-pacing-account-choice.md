@@ -10,7 +10,8 @@ When a session is started or moved, Instar picks a subscription account. On deve
 - A session launching a Fable model is judged against the Fable window too. If no account has Fable room, it still gets an account (ranked by Fable room), never none.
 - A window whose reset has passed, a placeholder reading, or a reading older than 60 minutes is "not yet checked". It is never counted as room and never as last cycle's number. Such an account is used only when no account with a real reading qualifies, and it asks the quota poller for one out-of-cycle read. The reads are deduped, backed off, held behind a breaker after 6 failures, and live-only for Codex.
 - The default spawn picker (most sessions) used to take the least-used account. It now uses the same rule over its fresh accounts.
-- The quota poller records how each window with an empty reset was read (idle on a live read, rolled from history), the original reset it blanked, and which windows the provider listed. Idle accounts therefore stay measured.
+- The quota poller records how each window with an empty reset was read, the original reset it blanked, and which windows the provider listed. A Claude window the usage endpoint reports as not running is idle (measured room). Codex idle premise unverified; Codex post-reset rewrites read as rolled until a live read shows a new window.
+- The quota throttle reads the same window-aware headroom: a rolled or unknown window reports no percentage, an unmeasured best account marks the reading degraded, and an open re-read breaker is reported.
 - Proactive swaps treat a rolled, placeholder or old-cycle reading as invalid. Whole-pool measurement-blindness counts a rolled reading only after two failed out-of-cycle reads.
 - One shadow row per executed placement goes to `logs/placement-shadow.jsonl`, trimmed to 30 days. It is readable through `GET /quota-pacing/account-choice` as a pool-wide per-day summary, or as paged raw rows per machine.
 

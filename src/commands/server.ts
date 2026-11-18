@@ -17197,6 +17197,43 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): window-aware account choice.
+    // Built BEFORE the throttle wiring below (the throttle reads it); the poller it reads is
+    // constructed later and is only touched when a decision runs. One set of live inputs shared by every picker on this machine; the switch is read live per
+    // decision through the dev-agent gate, and the shadow log records one row per placement.
+    const { AccountChoiceShadowLog, shadowLogPath } = await import('../monitoring/AccountChoiceShadowLog.js');
+    let accountChoiceShadow: InstanceType<typeof AccountChoiceShadowLog> | null = null;
+    const windowAwareEnabled = () => resolveDevAgentGate(
+      (() => {
+        const v = liveConfig.get<boolean | undefined>('subscriptionPool.pacing.windowAwareChoice', config.subscriptionPool?.pacing?.windowAwareChoice);
+        return typeof v === 'boolean' ? v : undefined;
+      })(),
+      config,
+    );
+    const windowAwareDeps: import('../core/windowAwarePlacement.js').WindowAwareDeps = {
+      enabled: windowAwareEnabled,
+      requestRead: (id) => quotaPoller.requestRead(id),
+      failedReads: (id) => quotaPoller.outOfCycleFailures(id),
+      breakerOpen: (id) => quotaPoller.rereadBreakerOpen(id),
+      pollIntervalMs: () => quotaPoller.pollInterval(),
+      record: (row) => {
+        if (!config.stateDir) return;
+        if (!accountChoiceShadow) {
+          accountChoiceShadow = new AccountChoiceShadowLog({ file: shadowLogPath(config.stateDir), machineId: subscriptionPoolMachineId ?? 'local' });
+        }
+        accountChoiceShadow.record(row);
+      },
+    };
+    const windowAwareSelection = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, requestRead: windowAwareDeps.requestRead, failedReads: windowAwareDeps.failedReads, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
+    // The throttle's headroom read (model-blind): window-aware inputs plus the re-read breaker,
+    // behind the same live switch. It never requests reads (it is not a placement).
+    const windowAwareThrottleOpts = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, failedReads: windowAwareDeps.failedReads, breakerOpen: windowAwareDeps.breakerOpen, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
     // POOL-AWARE QUOTA THROTTLE wiring (docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md):
     // give the global quota brake the SAME placeability predicate the placement layer
     // (selectAccount) uses, reading the LIVE SubscriptionPool. Effect: the brake never
@@ -17215,6 +17252,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), {
         nowMs: Date.now(),
         framework: config.sessions.framework ?? 'claude-code',
+        // quota-pacing step 2: rolled/unknown windows report null and an unmeasured best sets degraded.
+        ...windowAwareThrottleOpts(),
       }));
       console.log(pc.green('  Pool-aware quota throttle: wired (placement-shared eligibility, most-headroom gating)'));
     }
@@ -17773,36 +17812,6 @@ export async function startServer(options: StartOptions): Promise<void> {
     // apart, with another account here reading clean, bench an account ON THIS MACHINE. Screens and
     // sign-in pages only ask for a fresh read or stop one repair. Dev-gated: live on a development
     // agent, off on the fleet until graduation; `subscriptionPool.codexDeviceLimit.enabled` wins.
-    // quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): window-aware account choice.
-    // One set of live inputs shared by every picker on this machine; the switch is read live per
-    // decision through the dev-agent gate, and the shadow log records one row per placement.
-    const { AccountChoiceShadowLog, shadowLogPath } = await import('../monitoring/AccountChoiceShadowLog.js');
-    let accountChoiceShadow: InstanceType<typeof AccountChoiceShadowLog> | null = null;
-    const windowAwareEnabled = () => resolveDevAgentGate(
-      (() => {
-        const v = liveConfig.get<boolean | undefined>('subscriptionPool.pacing.windowAwareChoice', config.subscriptionPool?.pacing?.windowAwareChoice);
-        return typeof v === 'boolean' ? v : undefined;
-      })(),
-      config,
-    );
-    const windowAwareDeps: import('../core/windowAwarePlacement.js').WindowAwareDeps = {
-      enabled: windowAwareEnabled,
-      requestRead: (id) => quotaPoller.requestRead(id),
-      failedReads: (id) => quotaPoller.outOfCycleFailures(id),
-      breakerOpen: (id) => quotaPoller.rereadBreakerOpen(id),
-      pollIntervalMs: () => quotaPoller.pollInterval(),
-      record: (row) => {
-        if (!config.stateDir) return;
-        if (!accountChoiceShadow) {
-          accountChoiceShadow = new AccountChoiceShadowLog({ file: shadowLogPath(config.stateDir), machineId: subscriptionPoolMachineId ?? 'local' });
-        }
-        accountChoiceShadow.record(row);
-      },
-    };
-    const windowAwareSelection = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
-      windowAwareEnabled()
-        ? { windowAware: true, requestRead: windowAwareDeps.requestRead, failedReads: windowAwareDeps.failedReads, pollIntervalMs: quotaPoller.pollInterval() }
-        : {};
     let codexDeviceLimit: import('../core/codexDeviceLimitWiring.js').CodexDeviceLimitWiring | null = null;
     if (subscriptionPoolMachineId) {
       try {
@@ -25182,13 +25191,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           const nowMs = Date.now();
           const accounts = subscriptionPool.list();
           const framework = 'claude-code' as const;
-          const oldPick = () => selectAccount(accounts, { nowMs, framework });
+          const softThresholdPct = config.subscriptionPool?.swapSoftThresholdPct ?? 90;
+          const oldPick = () => selectAccount(accounts, { nowMs, framework, softThresholdPct });
           // quota-pacing step 2: the shared tiered score when the switch is on (shadow row per placement).
           const acct = windowAwareOn(windowAwareDeps)
             ? decideWindowAwarePlacement({
                 accounts,
                 framework,
-                softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct ?? 90,
+                softThresholdPct,
                 nowMs,
                 ctx,
                 deps: windowAwareDeps,

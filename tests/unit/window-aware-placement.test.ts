@@ -11,6 +11,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { UsageWallRescue } from '../../src/core/UsageWallRescue.js';
 import { decideWindowAwarePlacement, isWindowAwareChoiceEnabled, type WindowAwareDeps } from '../../src/core/windowAwarePlacement.js';
 import { readingValidity } from '../../src/core/SwapAntiThrash.js';
+import { poolHeadroom } from '../../src/core/QuotaAwareScheduler.js';
 import {
   AccountChoiceShadowLog, readShadowRows, pageShadowRows, summarizeShadowRows, sanitizeModel,
   type PlacementShadowInput,
@@ -183,5 +184,32 @@ describe('AccountChoiceShadowLog', () => {
     const days = summarizeShadowRows(rows);
     expect(days).toHaveLength(1);
     expect(days[0]).toMatchObject({ placements: 7, differing: 4 });
+  });
+});
+
+describe('the throttle (poolHeadroom) is wired window-aware in production', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+  it('the production throttle call spreads the window-aware options, built before it, behind the live switch', () => {
+    const call = src.indexOf('quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), {');
+    expect(call).toBeGreaterThan(0);
+    const callBody = src.slice(call, src.indexOf('}));', call));
+    expect(callBody).toContain('...windowAwareThrottleOpts(),');
+    const def = src.indexOf('const windowAwareThrottleOpts = ');
+    expect(def).toBeGreaterThan(0);
+    expect(def).toBeLessThan(call);
+    expect(src.indexOf('const windowAwareEnabled = ')).toBeLessThan(call);
+    const defBody = src.slice(def, src.indexOf(': {};', def));
+    expect(defBody).toContain('windowAwareEnabled()');
+    expect(defBody).toContain('windowAware: true');
+    expect(defBody).toContain('breakerOpen: windowAwareDeps.breakerOpen');
+  });
+
+  it('with the options the throttle reports null for a rolled window, degraded, and the breaker', () => {
+    const rolled = acct('r', { sevenDay: win(85, -0.5), windowsListed: ['sevenDay'] });
+    const other = acct('o', { sevenDay: win(97, 50), windowsListed: ['sevenDay'] });
+    const old = poolHeadroom([rolled, other], { nowMs: NOW });
+    expect(old.weeklyPercent).toBe(85); // today's rule reads last cycle's number
+    const wa = poolHeadroom([rolled, other], { nowMs: NOW, windowAware: true, breakerOpen: (id) => id === 'r' });
+    expect(wa).toMatchObject({ placeable: true, weeklyPercent: null, degraded: true, rereadBreaker: 'open' });
   });
 });

@@ -3,7 +3,7 @@
 **Version / slug:** `quota-pacing-account-choice`
 **Date:** `2026-11-18`
 **Author:** `echo`
-**Second-pass reviewer:** `pending: an independent reviewer is spawned by the parent session (the build fork may not spawn agents)`
+**Second-pass reviewer:** `independent reviewer spawned by the parent session — concern raised, addressed, re-check pending`
 
 ## Summary of the change
 
@@ -99,6 +99,23 @@ Set `subscriptionPool.pacing.windowAwareChoice: false` (per machine, read live, 
 
 ---
 
+## Where the build differs from the spec
+
+- Shadow log path is `logs/placement-shadow.jsonl` (the ladder evidence allowlist refuses paths containing "account").
+- `resetsAtBeforeRewrite` is a top-level map, not a per-window field (the replicated projection validates window objects strictly); all three new fields are stripped from the projection.
+- The fallback model is `frameworkDefaultModels[framework]` (the spec's `sessions.model ?? defaultModel` does not exist in code).
+- Codex live reads also record `windowsListed`.
+- The reviewer-login use of the resolver writes no shadow row.
+- The ladder has `dev-agent-live` and `fleet` rungs; the test-agent rung stays a manual pre-merge check.
+- **Codex idle premise unverified; Codex post-reset rewrites read as rolled until a live read shows a new window.** At the test-agent rung no idle Codex account was available (live reads at 00:53 PST showed every Codex account with a future reset), so the spec's fallback applies: every Codex `{0, ''}` rewrite is `rolled-history`, including from `codex-app-server`. Claude's null reset from the usage endpoint stays `idle-live`.
+
+## Left behind
+
+- Codex headless placement (`UsageWallRescue.codexSpawnAccount`) is unchanged: not in the spec's caller table; it keeps today's least-used rule over fresh accounts.
+- Burst spreading, Fable awareness in swap paths, and mid-session `/model` changes (as in the spec).
+
+---
+
 ## Conclusion
 
 The review found no design change beyond what the 6-round spec convergence already settled. It made one deviation from the spec text, renaming the shadow file to fit the ladder's evidence allowlist, and it states the Codex-idle premise as unverified until the test-agent rung runs. The change is clear to ship behind the dev gate once the second-pass reviewer concurs and the live throwaway-agent test in the spec's maturation plan has been run.
@@ -107,8 +124,20 @@ The review found no design change beyond what the 6-round spec convergence alrea
 
 ## Second-pass review (if required)
 
-**Reviewer:** pending
-**Independent read of the artifact:** pending
+**Reviewer:** independent second-pass reviewer (spawned by the parent session)
+**Independent read of the artifact:** concern (round 1), addressed in the follow-up commit; awaiting the reviewer's re-check
+
+Concern raised: the window-aware `poolHeadroom` is never wired. The only production caller, src/commands/server.ts:17215, passes `{ nowMs, framework }` with no `windowAware`, so the throttle still reports last cycle's raw weekly/5-hour percent and never sets `degraded` for rolled windows. The spec's Problem table, its §3 "poolHeadroom()" and this artifact's decision inventory all say it was changed. It is covered only by unit tests (tests/unit/window-aware-choice.test.ts:208-237); the e2e source grep does not check it. Fix: pass the window-aware options at 17215. `windowAwareEnabled` is declared later, at 17781, so move it (and `windowAwareDeps`) above the throttle block instead of relying on the closure being called later. Also surface `rereadBreaker` in the output as the spec says.
+- (1) Switch off: identical on every caller. selectAccount/poolHeadroom gate on `windowAware === true` (QuotaAwareScheduler.ts:137,201). The scheduler/codex spreads give `{}` (QuotaAwareScheduler.ts:362-371, server.ts:17803). readingValidity skips the new loop (SwapAntiThrash.ts:179). `oldPick` matches the old body byte for byte (UsageWallRescue.ts:693-695, server.ts:25185).
+- (2) Placement: no rolled, unknown, stale or synthesized window gives a pct or a deadline (windowAwareChoice.ts:121-151), and the tier sort puts measured accounts first (:291). The only path that still counts a rolled window as room is the unwired throttle above.
+- (3) Never-loop: proved by the unit test for the wired functions. In production the throttle is the OLD rule. Old eligibility is a subset of window-aware eligibility, so throttle placeable ⇒ selectAccount non-null still holds. The reverse does not hold (the throttle may shed while placement could succeed). That is conservative, not a loop.
+- (4) Fable: the fallback (windowAwareChoice.ts:336-343) returns null only when the non-Fable eligibility is empty too. No Fable-only null.
+- (5) Read gate (QuotaPoller.ts:1180-1213): deduped per account, backs off 1/2/4 intervals, breaker at 6, fire-and-forget, and the error is caught. Nit: a failure that lands after a scheduled poll has cleared the entry re-adds the old count (:1199). Bounded.
+- (6) Replication: the 3 fields are stripped (SubscriptionAccountMetaReplicatedStore.ts:267-274). Peers on older versions are unaffected.
+- (7) Shadow: the row is written after the pick, inside try blocks (windowAwarePlacement.ts:94-119). record() buffers, and the timer is unref'd. Nit: the pinned shadow `oldPick` uses soft 90, while the new rule uses swapSoftThresholdPct (server.ts:25185 vs 25191).
+- Deviations: all 7 are acceptable. Notes: readingValidity does not refuse `unread-none` (SwapAntiThrash.ts:360-365; refusal-only, so today's behaviour). A Codex live read with no windows lists none, so both windows read not-offered (QuotaPoller.ts:898-903; today's treatment). Codex headless placement unchanged belongs in Left behind.
+
+**Response (follow-up commit):** the throttle now passes the window-aware options behind the same live switch (`windowAwareThrottleOpts()`, built above the throttle wiring together with `windowAwareEnabled`/`windowAwareDeps`), and poolHeadroom reports `rereadBreaker: 'open'` for the best account. A source-wiring unit test and the e2e grep fail if the throttle call drops it; a behavioural test checks null/degraded/breaker. The pinned shadow `oldPick` now uses the configured `swapSoftThresholdPct`. A stale out-of-cycle failure can no longer restore a cleared count (identity guard on the gate entry, with a test). codexSpawnAccount is listed under Left behind.
 
 ---
 
@@ -116,8 +145,8 @@ The review found no design change beyond what the 6-round spec convergence alrea
 
 Targeted test runs during build (Node 24, test-runner-bound slots):
 - tests/unit/window-aware-choice.test.ts — 26 passed
-- tests/unit/quota-poller-window-basis.test.ts — 10 passed
-- tests/unit/window-aware-placement.test.ts — 12 passed
+- tests/unit/quota-poller-window-basis.test.ts — 11 passed (incl. the stale-failure race)
+- tests/unit/window-aware-placement.test.ts — 14 passed (incl. the throttle wiring and its behaviour)
 - tests/unit/swap-antithrash-engine.test.ts (32, incl. the new window-aware blindness case), quota-aware-scheduler (20), usage-wall-rescue (59), swap-continuity-wiring (34), quota-tracker-pool-aware (20) — all passed
 - tests/unit/quota-poller (37), interactive-session-pin (9), lint-dev-agent-dark-gate (31), claudeReviewerLogin (10), feature-ladders-coverage (7), awareness-entry-registry (45), devGatedFeatures-wiring (316), account-follow-me-locally-executable (9) — all passed
 - `npx tsc --noEmit -p .` — clean

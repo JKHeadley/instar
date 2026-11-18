@@ -891,8 +891,11 @@ export class QuotaPoller {
       // than show "No quota reading yet", which reads as a pending poll.
       if (!fiveHour && !sevenDay && usage.windowsUnavailable) snap.noQuotaWindow = true;
       if (emptyKeys.length > 0) {
-        const basis = usage.source === 'codex-app-server' ? 'idle-live' : 'rolled-history';
-        snap.windowBasis = Object.fromEntries(emptyKeys.map((k) => [k, basis]));
+        // Codex idle premise unverified (spec §1 state 4 judgment-candidate, test-agent rung could
+        // not exercise an idle account): every Codex post-reset rewrite reads as rolled — even from
+        // codex-app-server — until a live read shows a new window. Claude's null reset from the
+        // usage endpoint stays idle-live.
+        snap.windowBasis = Object.fromEntries(emptyKeys.map((k) => [k, 'rolled-history' as const]));
       }
       if (Object.keys(rewritten).length > 0) snap.resetsAtBeforeRewrite = rewritten;
       // A live read is the provider's own statement of which windows this account has.
@@ -1190,25 +1193,26 @@ export class QuotaPoller {
     st.lastAttemptAt = nowMs;
     st.inFlight = true;
     this.outOfCycle.set(accountId, st);
+    // A failure that lands after a landed reading cleared this entry must not restore the old
+    // count: it only counts against the entry it started from.
     // liveOnly binds only on the Codex path (the Claude read is always a live endpoint read).
     void this.pollOne(account, { scheduled: false, priority: 'trigger', liveOnly: true })
       .then((snap) => {
         const cur = this.outOfCycle.get(accountId);
         if (snap) { this.outOfCycle.delete(accountId); return; }
-        const next = cur ?? st;
-        next.inFlight = false;
-        next.failures += 1;
-        this.outOfCycle.set(accountId, next);
+        if (cur !== st) return; // cleared (a reading landed) or replaced meanwhile: stale failure
+        st.inFlight = false;
+        st.failures += 1;
+        const next = st;
         if (next.failures === OUT_OF_CYCLE_BREAKER_FAILURES) {
           this.logger.warn(`[QuotaPoller] account ${accountId}: out-of-cycle reads failed ${next.failures} times — breaker open until the next landed reading`);
         }
       })
       .catch(() => {
         // @silent-fallback-ok: counted as a failed out-of-cycle read; the regular poll still runs
-        const next = this.outOfCycle.get(accountId) ?? st;
-        next.inFlight = false;
-        next.failures += 1;
-        this.outOfCycle.set(accountId, next);
+        if (this.outOfCycle.get(accountId) !== st) return; // cleared meanwhile: stale failure
+        st.inFlight = false;
+        st.failures += 1;
       });
   }
 

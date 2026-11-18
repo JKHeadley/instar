@@ -83,5 +83,6 @@ describe('window-aware account choice — production wiring', () => {
     expect(src).toContain('windowAware: windowAwareEnabled,');
     expect(src).toContain('windowAwareSelection,');
     expect(src).toContain("readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs, { windowAware: windowAwareEnabled() })");
+    expect(src).toContain('...windowAwareThrottleOpts(),');
   });
 });

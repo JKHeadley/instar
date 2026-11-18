@@ -53,6 +53,8 @@ export interface SelectionOptions {
   failedReads?: (accountId: string) => number;
   /** The poll cadence the 5-hour grace is measured in (window-aware only). */
   pollIntervalMs?: number;
+  /** The account's out-of-cycle re-read breaker is open (window-aware poolHeadroom reports it). */
+  breakerOpen?: (accountId: string) => boolean;
 }
 
 const DEFAULT_SOFT_THRESHOLD = 90;
@@ -196,6 +198,8 @@ export function poolHeadroom(
    * changed job scheduling for agents that never opted into grok.
    */
   bestFramework?: SubscriptionFramework;
+  /** quota-pacing step 2: the best account's out-of-cycle re-read breaker is open. */
+  rereadBreaker?: 'open';
 } {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
   if (opts.windowAware === true) return windowAwarePoolHeadroom(accounts, opts, soft);
@@ -262,7 +266,12 @@ function windowAwarePoolHeadroom(
   const weeklyPercent = pctOf('sevenDay');
   const fiveHourPercent = pctOf('fiveHour');
   const degraded = best.tier === 'unmeasured' || (weeklyPercent === null && fiveHourPercent === null);
-  return { placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.account.framework };
+  let breakerOpen = false;
+  try { breakerOpen = opts.breakerOpen?.(best.account.id) === true; } catch { breakerOpen = false; } // @silent-fallback-ok: display-only field
+  return {
+    placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.account.framework,
+    ...(breakerOpen ? { rereadBreaker: 'open' as const } : {}),
+  };
 }
 
 /** Is this account at/over the soft pressure threshold on its binding window? */
