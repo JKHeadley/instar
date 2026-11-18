@@ -503,17 +503,7 @@ export class ConversationGraphReplicationRuntime {
    const signing=crypto.createPublicKey(this.signingKey).export({type:'spki',format:'pem'}).toString(),current=crypto.createPublicKey(this.options.identity.loadSigningKey()).export({type:'spki',format:'pem'}).toString();return signing===current&&sameKey(identity.signingPublicKey,signing)&&sameKey(identity.encryptionPublicKey,crypto.createPublicKey(this.options.identity.loadEncryptionKey()).export({type:'spki',format:'pem'}).toString());
   }catch{/* DegradationReporter internalOnly via reportUnavailable; invalid or unavailable enrollment cannot accept local private custody. */this.reportUnavailable('graph-local-enrollment-unavailable');return false;}
  }
- /** alive() reads the machine registry and identity files and re-verifies the signed membership. The readiness
-  * pass calls it once per manifest entry, mostly in stretches with no await between entries (~565 calls per pass,
-  * 8% of the long event-loop stretches on the accept-all rig, 2026-11-18). Its answer is remembered only until the
-  * current synchronous run ends: a microtask clears it, and every await continuation runs after that microtask,
-  * so each check after an await is fresh, as before. */
- private aliveThisRun:boolean|null=null;
- private alive():boolean{
-  if(this.aliveThisRun!==null)return this.aliveThisRun;
-  const value=!this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();
-  this.aliveThisRun=value;queueMicrotask(()=>{this.aliveThisRun=null;});return value;
- }
+ private alive():boolean{return !this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();}
  /**
   * May this machine serve the owner's private reads right now: alive, and the private-serving custody
   * check the owner's read view (readView) already requires. Unlike isReady() it does not need a write
@@ -861,7 +851,13 @@ export class ConversationGraphReplicationRuntime {
    // The removal history is verified once and reused only across records that
    // reach the check with no await since it was read; any awaited step drops it.
    // E2E-PAIRING: EXEMPT — no route or wiring change, only how often the readiness pass reads the removal history; readiness stays exercised end to end by tests/e2e/conversation-graph-surface-alive.test.ts, the reuse by tests/integration/conversation-graph-replication-runtime.test.ts.
-   this.lastReadinessFailure='source-repair';let repairLineage:ReturnType<typeof this.source.repairLineage>=null;for(const entry of checkpoint.manifest.entries){if(!this.alive())return false;let record=this.source.repairRecord(entry.eventId);
+   this.lastReadinessFailure='source-repair';let repairLineage:ReturnType<typeof this.source.repairLineage>=null;
+   // alive() reads the registry and identity files and re-verifies the signed membership (~565 entries per pass,
+   // 8% of the long event-loop stretches on the accept-all rig, 2026-11-18). An entry that ends at the settled
+   // `continue` below awaited nothing since its own check, and the loop's synchronous code changes none of
+   // alive()'s inputs, so the next entry's check would read exactly the same state; it is skipped only then.
+   let aliveStillChecked=false;
+   for(const entry of checkpoint.manifest.entries){if(!aliveStillChecked&&!this.alive())return false;aliveStillChecked=false;let record=this.source.repairRecord(entry.eventId);const foundWithoutAwait=!!record;
     if(!record){repairLineage=null;for(const member of this.config.membership.members){if(member.machineId===this.machineId)continue;if(!this.alive())return false;try{const result=await this.request(member.machineId,'repair',{eventId:entry.eventId}) as {record:ConversationGraphReplicationRecord|null};if(result.record){result.record=await this.hydratePeerRecord(result.record,member.machineId);if(result.record.erasure)await this.applyInventoryErasures([result.record.erasure]);if(result.record.materialization)await this.source.receiveHistorical(result.record);else await this.source.receive(result.record,result.record.packet.writerId);record=this.source.repairRecord(entry.eventId);if(record)break;}}catch{/* @silent-fallback-ok: a sleeping member cannot grant readiness; try other installed members. */}}}
     if(!record){
      try{const recovered=await this.config.witness.recover(entry.idempotencyKey);const operation=recovered.operation;if(operation.erasure)await this.applyInventoryErasures([operation.erasure]);
@@ -873,7 +869,7 @@ export class ConversationGraphReplicationRuntime {
     }
     if(!record||canonicalHash(record.packet)!==entry.operationHash)return false;
     // A record every member has acknowledged cannot change without its signed manifest entry changing, so it needs no witness round trip per pass.
-    repairLineage??=this.source.repairLineage();this.source.assertRepairStillAllowed(record,repairLineage);if(this.settledRecords.get(entry.eventId)===canonicalHash({entry,descriptor:this.source.descriptorFor(record)}))continue;
+    repairLineage??=this.source.repairLineage();this.source.assertRepairStillAllowed(record,repairLineage);if(this.settledRecords.get(entry.eventId)===canonicalHash({entry,descriptor:this.source.descriptorFor(record)})){aliveStillChecked=foundWithoutAwait;continue;}
     repairLineage=null;
     const operation=await this.config.witness.operation(record.packet.idempotencyKey),{stateProof:_freshProof,...reconciled}=operation,operationHash=canonicalHash({reconciled,descriptor:this.source.descriptorFor(record)});
     // A record already reconciled against this exact witness state needs no second write. The lock is held for the whole pass, so per-record work here blocks peer writes.
