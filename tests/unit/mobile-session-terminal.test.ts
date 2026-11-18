@@ -114,6 +114,14 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/controls'],
       ['GET', '/mobile/sessions/new-options'],
       ['GET', '/mobile/sessions/history'],
+      // The owner's signed app device can preview and import personal history and confirm facts.
+      ['GET', '/mobile/imported-history/conversations'],
+      ['GET', '/mobile/imported-history/projects'],
+      ['GET', '/mobile/imported-history/conversations/imported:claude:chat-123'],
+      ['GET', '/mobile/imported-history/search'],
+      ['POST', '/mobile/imported-history/preview'],
+      ['POST', '/mobile/imported-history/apply'],
+      ['POST', '/mobile/imported-history/facts'],
       ['POST', '/mobile/sessions/door/134088'],
       ['POST', '/mobile/sessions/move/134088'],
       ['POST', '/mobile/sessions/bring-back/app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f'],
@@ -166,14 +174,6 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).
       ['POST', '/mobile/accounts/add'],
-      // The owner's signed app device can preview and import personal history and confirm facts.
-      ['GET', '/mobile/imported-history/conversations'],
-      ['GET', '/mobile/imported-history/projects'],
-      ['GET', '/mobile/imported-history/conversations/imported:claude:chat-123'],
-      ['GET', '/mobile/imported-history/search'],
-      ['POST', '/mobile/imported-history/preview'],
-      ['POST', '/mobile/imported-history/apply'],
-      ['POST', '/mobile/imported-history/facts'],
       // Move a document to another conversation with Face ID (instar-document-viewer §4.2).
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary/challenge'],
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary'],
