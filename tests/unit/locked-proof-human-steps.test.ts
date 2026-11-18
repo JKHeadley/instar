@@ -181,7 +181,7 @@ describe('human proof timelines', () => {
     expect(ev.verdict.pass).toBe(false);
     expect(ev.verdict.reasons).toContain('required human action was not observed before the start-by deadline');
   });
-  it.each(['12.8', '12.11'])('waits for the initial locked watch before cueing repeated unlocks in %s', async id => {
+  it.each(['12.11'])('waits for the initial locked watch before cueing repeated unlocks in %s', async id => {
     const w = world(id, { watchDelay: 35_000 });
     const ev = await w.run();
     expect(w.cues).toHaveLength(1);
@@ -198,7 +198,7 @@ describe('human proof timelines', () => {
     expect(w.cues).toHaveLength(0);
     expect(ev.verdict.pass).toBe(false);
   });
-  it.each(['12.8', '12.11'])('rejects no timely fresh unlock in %s even if a failure outcome could arrive later', async id => {
+  it.each(['12.11'])('rejects no timely fresh unlock in %s even if a failure outcome could arrive later', async id => {
     const ev = await world(id, { repeatFirstUnlock: 40_000 }).run();
     expect(ev.error).toContain('human action was not observed');
     expect(ev.person.sawUnlock).toBeUndefined();

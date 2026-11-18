@@ -598,18 +598,19 @@ describe('locked-proof runner and verdict', () => {
   });
 
   it('cues the person, records the security item, and never puts the password in evidence', async () => {
-    const c = CASES.find((x: { id: string }) => x.id === '12.8');
+    const c = CASES.find((x: { id: string }) => x.id === '12.11');
     const target = new FakeTarget(c);
     const act = target.act.bind(target);
     target.act = async action => {
       const result = await act(action);
-      if (action === 'stop-viewer') { target.markers.k.state = 'watching'; target.lockState = 'locked-in-session'; }
+      if (action === 'kill-server') { target.markers.k.state = 'watching'; target.lockState = 'locked-in-session'; }
+      if (action === 'start-server') target.lockState = 'locked-in-session';
       return result;
     };
     const snapshot = target.snapshot.bind(target);
     let personReads = 0;
     target.snapshot = async () => {
-      if (target.asked.length) {
+      if (target.asked.length && !target.acts.includes('start-server')) {
         target.lockState = 'unlocked';
         if (++personReads > 1) target.markers.k.state = 'relock-failed';
       }

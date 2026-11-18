@@ -70,7 +70,7 @@ export const CASES = [
   { id: '12.5c', gate: 'P12', title: 'Guard killed in watching', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'kill-guard', at: 'marker:watching' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
   { id: '12.6', gate: 'P12', title: 'Suspended Node with an unreaped helper and guard', password: true, before: ['serve-under-launchd'], inject: [{ action: 'stop-server', at: 'marker:owed' }, { action: 'kill-helper', at: 'marker:owed' }], cleanup: ['cont-server', 'end-launchd-serve', 'start-server'], final: 'locked' },
   { id: '12.7', gate: 'P12', title: 'Guard killed mid-watch after Stop, Node alive', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'kill-guard', at: 'marker:watching' }], final: 'locked', markerEnd: ['relocked'], watchStartUnchanged: true },
-  { id: '12.8', gate: 'P12', title: 'relock-failed at watch end raises the security item within 10 s, no boot', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }], person: { text: 'Unlock the test account at the test Mac now, and again each time it locks, four times in two minutes. Leave it unlocked after the fourth.', until: 'marker:relock-failed', requireWatching: true, mustUnlock: true, timeoutMs: 240_000 }, final: 'unlocked-accepted-risk', markerEnd: ['relock-failed'], securityItemWithinMs: 10_000, cleanup: ['lock-now'] },
+  { id: '12.8', gate: 'P12', title: 'relock-failed at watch end raises the security item within 10 s, no boot', password: true, before: ['serve-under-launchd'], inject: [{ action: 'stop-viewer', at: 'sent' }], watchEndFault: true, person: { text: 'Unlock the test account at the test Mac now, once, and leave it unlocked. Its test guard is paused until the two-minute watch ends; the independent recovery will lock it afterward.', until: 'marker:relock-failed', requireWatching: true, mustUnlock: true, beforeCue: 'freeze-watch-end', afterFirstAction: 'resume-watch-end', timeoutMs: 240_000 }, final: 'unlocked-accepted-risk', markerEnd: ['relock-failed'], securityItemWithinMs: 10_000 },
   { id: '12.9', gate: 'P12', title: 'Typist and guard suspended through deadline admission recovery, typist then resumed', password: true, before: ['serve-under-launchd'], inject: [{ action: 'stop-typist', at: 'typing' }, { action: 'stop-guard', at: 'typing' }, { action: 'stop-server', at: 'typing' }, { action: 'grant-other-agent', at: 'deadline-passed' }, { action: 'cont-typist', at: 'other-grant-tried' }], final: 'locked', markerEnd: ['relock-failed'], producerGone: true, noSubmissionAfterClose: true, timeoutMs: 840_000, cleanup: ['cont-server', 'end-launchd-serve', 'start-server'] },
   { id: '12.10', gate: 'P12', title: 'Guard suspended across a takeover, resumed during the next grant', password: true, inject: [{ action: 'stop-guard', at: 'marker:owed' }, { action: 'open-next-grant', at: 'takeover' }, { action: 'cont-old-guard', at: 'next-grant-open' }], final: 'locked', oldGuardGone: true },
   { id: '12.11', gate: 'P12', title: 'Relock failing with Node down', password: true, inject: [{ action: 'kill-server', at: 'sent' }], person: { text: 'Unlock the test account at the test Mac now, and again each time it locks, four times in two minutes. Leave it unlocked after the fourth.', until: 'marker:relock-failed', requireWatching: true, mustUnlock: true, timeoutMs: 300_000 }, then: ['start-server'], final: 'locked', markerEnd: ['relock-failed'], securityItemAfterBoot: true },
@@ -260,6 +260,13 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
         if (c.person.consoleRoundTrip && !departure && snap.consoleOwner !== PROOF_USER) {
           throw new Error('proof account was not on console before the switch cue');
         }
+        if (c.person.beforeCue) {
+          const result = await target.act(c.person.beforeCue, { case: c, snap });
+          if (c.watchEndFault && (result?.armed !== true || result?.frozen !== true)) throw new Error('watch-end setup was not confirmed before cue');
+          evidence.fired.push({ action: c.person.beforeCue, at: 'before-person', t: target.now(), result });
+          snap = await sample();
+          if (!['locked', 'locked-in-session'].includes(snap.lockState)) throw new Error('proof Mac no longer locked after person-step setup');
+        }
         const cue = personCue(c, evidence.runId, target.now(), watchStart);
         personCued = true;
         evidence.person = { ...cue, cuedAt: target.now(),
@@ -304,6 +311,12 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
             || (!Number.isFinite(person.actionAt) && snap.now >= person.validUntil)) {
           throw new Error('required human action was not observed before the start-by deadline');
         }
+        if (Number.isFinite(person.actionAt) && c.person.afterFirstAction && !person.afterActionDone) {
+          const result = await target.act(c.person.afterFirstAction, { case: c, snap });
+          evidence.fired.push({ action: c.person.afterFirstAction, at: 'after-person-action', t: target.now(), result });
+          person.afterActionDone = true;
+          snap = await sample();
+        }
         const humanDone = !c.person.consoleRoundTrip || person.returnedAt !== undefined;
         if (!person.doneAt && humanDone && (!c.person.until || matchAt(c.person.until, snap, ctx))) person.doneAt = snap.now;
       }
@@ -323,6 +336,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     // Whatever happened: resume every process this case stopped, then lock the proof session.
     const problems = (await target.recover?.(c).catch(e => [String(e)])) ?? ['target has no recover()'];
     if (problems.length) evidence.recoveryProblems = problems;
+    if (c.watchEndFault) evidence.watchEndRecovery = target.watchEndRecoveryEvidence?.() ?? null;
   }
   evidence.endedAt = target.now();
   evidence.unfired = pending.map(s => `${s.action} at ${s.at}`);
@@ -451,6 +465,34 @@ export function judge(c, ev) {
   if ((c.noSubmissionAfterClose || c.noSubmission) && x.submissionsAfterClose > 0) reasons.push(`${x.submissionsAfterClose} submission(s) after the duty closed`);
   if (c.guardReplaced && !x.guardReplaced) reasons.push('the killed guard was not replaced');
   if (c.watchStartUnchanged && x.watchStartChanged) reasons.push('the replacement guard restarted the watch');
+  if (c.watchEndFault) {
+    const f = x.watchEnd, r = ev.watchEndRecovery;
+    const completeIdentity = i => i && Number.isInteger(i.pid) && i.pid > 1
+      && Number.isInteger(i.uid) && i.uid >= 0
+      && typeof i.start === 'string' && i.start.trim().length > 0
+      && typeof i.command === 'string' && i.command.trim().length > 0;
+    const fields = ['watchStart', 'readyAt', 'frozenAt', 'guardResumedAt', 'failureAt', 'nodeResumedAt', 'attentionAt'];
+    if (!f || fields.some(key => !Number.isFinite(f[key])) || f.readyAt > f.frozenAt || f.frozenAt < f.watchStart || f.guardResumedAt > f.failureAt
+        || f.guardResumedAt < f.watchStart + WATCH_MS || f.failureAt < f.watchStart + WATCH_MS
+        || f.nodeResumedAt < f.failureAt || f.attentionAt < f.failureAt || f.attentionAt - f.failureAt > 10_000
+        || f.sameNode !== true || !completeIdentity(f.receipt?.server)
+        || !completeIdentity(f.receipt?.guard) || !completeIdentity(f.resumedServer)
+        || ['pid', 'uid', 'start', 'command'].some(k => f.receipt.server[k] !== f.resumedServer[k])
+        || !f.agentId || ev.final?.markers?.[f.key]?.agentId !== f.agentId
+        || ev.final?.markers?.[f.key]?.guardPid !== f.receipt?.guard?.pid
+        || ev.final?.markers?.[f.key]?.guardStart !== f.receipt?.guard?.start
+        || f.attentionId !== `agent:desktop-relock-failed:${f.key}`
+        || !(ev.final?.markers?.[f.key]?.state === 'relock-failed'
+          && ev.final.markers[f.key].watchStart === f.watchStart && ev.final.markers[f.key].guardAt === f.failureAt)) {
+      reasons.push('native watch-end failure and same-Node timely security report were not confirmed');
+    }
+    if (r?.state !== 'recovered' || r.results?.lock?.locked !== true || r.recoveryProblems?.length
+        || typeof f?.receipt?.nonce !== 'string' || !f.receipt.nonce.trim()
+        || r.nonce !== f.receipt.nonce || typeof f?.key !== 'string' || !f.key.trim()
+        || f.receipt.key !== f.key || r.key !== f.key) {
+      reasons.push('independent watch-end recovery was not confirmed');
+    }
+  }
   if (c.securityItemWithinMs !== undefined && !(x.securityItemMs <= c.securityItemWithinMs)) reasons.push(`security item ${x.securityItemMs === undefined ? 'never raised' : `raised after ${x.securityItemMs} ms`}`);
   if (c.securityItemAfterBoot && !x.securityItemRaised) reasons.push('security item not raised after the server came back');
   if (c.producerGone && !x.producerGone) reasons.push('marker not recorded with producerGone');
