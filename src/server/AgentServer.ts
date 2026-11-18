@@ -251,6 +251,7 @@ import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
+import { ImportedHistoryStore } from '../import/ImportedHistoryStore.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
 import { conversationIndexSources } from './conversationMeaningSearch.js';
 import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
@@ -7763,6 +7764,7 @@ export class AgentServer {
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
       const searchDeps: ConversationSearchRouteDeps = {
+        importedHistory: () => ImportedHistoryStore.openIfPresent(options.config.stateDir),
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
         topicMemory: () => options.topicMemory ?? null,
