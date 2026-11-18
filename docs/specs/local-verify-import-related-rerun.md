@@ -1,5 +1,5 @@
 ---
-title: "Local Verify — a failed test file that imports a changed file may be re-run alone when the same test has already failed and passed on main, and must then pass three times"
+title: "Local Verify: a second try for a failed test that imports changed code, on named main evidence"
 slug: local-verify-import-related-rerun
 author: echo
 status: draft
