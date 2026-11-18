@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "machine-care-app-routes",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-17T23:49:53.327Z",
+  "artifactPath": "upgrades/side-effects/machine-care-app-routes.md",
+  "artifactSha256": "ae36f2a94f22f9931c5dd2be01e1c45506102241bf0ea30acbe6d41344bf3811",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/machine-care-app-routes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Annotation only; both catches answer 500 with the reason."
+    }
+  }
+}

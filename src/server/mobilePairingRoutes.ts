@@ -2747,6 +2747,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // the permission switches, and adding accounts joins it). Owner phones only; never named for a team phone.
     // E2E-PAIRING: EXEMPT — rate-bucket name only; the route is covered by the account-sign-in-face-id e2e test
     { method: 'POST', re: /^\/mobile\/accounts\/sign-in\/start$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
+    // Machine care from the app (machine-self-maintenance Part F, CMT-1203): owner phones only; the
+    // route refuses the bearer and any other machine's id. Restart only sends the owner's Telegram card.
+    { method: 'GET', re: /^\/mobile\/machine-care$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
+    { method: 'POST', re: /^\/mobile\/machine-care\/[A-Za-z0-9_-]{1,128}\/(skip|unskip|window|restart)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Add a Claude or Codex account with Face ID (docs/specs/account-add-face-id.md): same path, the account-actions bucket, owner only.
     { method: 'POST', re: /^\/mobile\/accounts\/add$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
   ];
