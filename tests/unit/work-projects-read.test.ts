@@ -119,6 +119,18 @@ describe('the projects routes', () => {
 });
 
 describe('the console Projects model', () => {
+  it('keeps routing identifiers in links instead of presenting them as project names', async () => {
+    const { projectsView } = await import('../../dashboard/console/projects-model.js');
+    for (const title of ['', '   ', 'telegram:142909', '142909', 'Topic 142909']) {
+      const view = projectsView(composeProjects([proj({ title })], board([])));
+      expect(view.active[0].title).toBe('Project name unavailable');
+      expect(view.active[0].key).toBe('telegram:142909');
+      expect(view.active[0].chatHref).toBe('#/work/chats?c=telegram%3A142909');
+    }
+    const view = projectsView(composeProjects([proj({ title: '  Android app  ' })], board([])));
+    expect(view.active[0].title).toBe('Android app');
+  });
+
   it('shapes rows with links, keeps Done apart, and never says "no projects" on an incomplete read', async () => {
     const { projectsView, conversationHref } = await import('../../dashboard/console/projects-model.js');
     const a = composeProjects([

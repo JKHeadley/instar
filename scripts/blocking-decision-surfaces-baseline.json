@@ -167,8 +167,8 @@
     },
     {
       "path": "src/templates/scripts/instar-watchdog.sh",
-      "sha256": "26d825029b02c4232077dc337c1e0d42fa98760bd746cb74604e50860ebc033d",
-      "reason": "Re-reviewed 2026-11-06: finite exact-agent holds and shared rule ownership constrain only internal owned watchdog actions. Active enrolled rules perform bounded fixed stop/bootstrap and skip npm, interpreter and wrapper rewrites; inactive agents keep ordinary supervision. Typed admission serializes mutation/update authority, not user or tool decisions. Real shell regression covers scope, expiry and tamper refusal."
+      "sha256": "faf8deab7bc36cd923294235c26cac339ec7524f09b3fb3988ea77a4d15243a0",
+      "reason": "Re-reviewed 2026-11-06: finite exact-agent holds and shared rule ownership constrain only internal owned watchdog actions. Active enrolled rules perform bounded fixed stop/bootstrap and skip npm, interpreter and wrapper rewrites; inactive agents keep ordinary supervision. Typed admission serializes mutation/update authority, not user or tool decisions. Real shell regression covers scope, expiry and tamper refusal. Re-reviewed 2026-11-17: the Always available skip (create-agent-accounts-and-always-on §B.5) only withholds the watchdog's own reload of an agent a system service runs; it decides nothing for a user or tool, and tests/unit/always-available-guards.test.ts runs it under set -euo pipefail."
     },
     {
       "path": "src/templates/scripts/instar-worktree-create.sh",

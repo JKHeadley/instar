@@ -66,7 +66,7 @@ export class DocumentStore {
    * device key or its binding has not arrived), or was found wrong later. Kept in the chain so later
    * rows of the same machine still apply, but left out of every read (`rowsOf`). Value: why.
    */
-  private hidden = new Map<string, 'origin-pending' | 'origin-denied' | 'standing'>();
+  private hidden = new Map<string, 'origin-pending' | 'origin-held' | 'origin-denied' | 'standing'>();
   private readonly hiddenFile: string;
   private readonly refusedFile: string;
   /** Hash per held row key, to tell a duplicate from a fork. */
@@ -87,7 +87,9 @@ export class DocumentStore {
     standing: StandingCheck;
     incarnation?: string;
     /** Re-checks the device signature behind a person or owner row (originCheck.ts). Production always sets it. */
-    origin?: (row: DocRow, usedRequestIds: ReadonlySet<string>) => 'ok' | 'denied' | 'pending';
+    origin?: (row: DocRow, usedRequestIds: ReadonlySet<string>) => 'ok' | 'denied' | 'pending' | 'held';
+    /** Told of each row once it is readable here (written here, synced in, or verified late). Never throws into the store. */
+    onApplied?: (row: DocRow) => void;
   }) {
     this.dir = path.join(stateDir, 'documents');
     this.rowsDir = path.join(this.dir, 'rows');
@@ -122,7 +124,7 @@ export class DocumentStore {
       if (!head || m.seq > head.seq) this.heads.set(m.s, { seq: m.seq, hash: m.hash });
     }
     for (const row of readJsonl<DocRow>(this.pendingFile)) if (!this.held.has(rowKeyOf(row))) this.pending.set(rowKeyOf(row), row);
-    for (const [k, why] of Object.entries(readJson<Record<string, 'origin-pending' | 'origin-denied' | 'standing'>>(this.hiddenFile) ?? {})) this.hidden.set(k, why);
+    for (const [k, why] of Object.entries(readJson<Record<string, 'origin-pending' | 'origin-held' | 'origin-denied' | 'standing'>>(this.hiddenFile) ?? {})) this.hidden.set(k, why);
   }
 
   private writeHidden(): void {
@@ -160,6 +162,15 @@ export class DocumentStore {
       if (w === undefined || k < w) winner.set(rq, k);
     }
     return winner.size === 0 ? visible : visible.filter((r) => { const rq = requestKeyOf(r); return !rq || winner.get(rq) === rowKeyOf(r); });
+  }
+
+  /**
+   * A document's decision rows held here because this machine can't verify them (SEC-088 interim:
+   * only the machine holding the phone's own enrollment can). For the "waiting" state only; never read
+   * as an answer.
+   */
+  heldDecisionsOf(docId: string): Array<Extract<DocRow, { eventKind: 'decision' }>> {
+    return (this.byDoc.get(docId) ?? []).filter((r): r is Extract<DocRow, { eventKind: 'decision' }> => r.eventKind === 'decision' && this.hidden.get(rowKeyOf(r)) === 'origin-held');
   }
 
   /** Rows held but not readable here yet (origin not verifiable) or refused after the fact, with why. */
@@ -250,10 +261,10 @@ export class DocumentStore {
       // machine reads only the lowest row key for that device request (rowsOf), so all agree.
       const o = this.opts.origin(row, new Set());
       if (o === 'denied') return this.refuse(row, 'origin');
-      if (o === 'pending') {
+      if (o === 'pending' || o === 'held') {
         // Keep its chain place so this machine's later rows still apply; hide it until it verifies.
         this.persist(row);
-        this.hidden.set(k, 'origin-pending');
+        this.hidden.set(k, o === 'held' ? 'origin-held' : 'origin-pending');
         this.writeHidden();
         this.pending.delete(k);
         return 'pending';
@@ -292,11 +303,15 @@ export class DocumentStore {
     let shown = 0;
     let changed = false;
     for (const [k, why] of [...this.hidden]) {
-      if (why !== 'origin-pending') continue;
+      if (why !== 'origin-pending' && why !== 'origin-held') continue;
       const row = this.findRow(k);
       if (!row) continue;
       const o = this.opts.origin(row, new Set());
-      if (o === 'pending') continue;
+      if (o === 'pending' || o === 'held') {
+        const now = o === 'held' ? 'origin-held' : 'origin-pending';
+        if (now !== why) { this.hidden.set(k, now); changed = true; }
+        continue;
+      }
       changed = true;
       if (o === 'denied') { this.hidden.set(k, 'origin-denied'); this.ignore('origin'); continue; }
       const standing = this.opts.standing(row);
@@ -338,6 +353,7 @@ export class DocumentStore {
   }
 
   private afterApply(row: DocRow): void {
+    if (this.opts.onApplied) { try { this.opts.onApplied(row); } catch { /* @silent-fallback-ok — a listener's failure never refuses a row */ } }
     if (row.eventKind === 'purge') {
       this.purged.add(row.docId);
       SafeFsExecutor.atomicWriteJsonSync(this.purgedFile, [...this.purged], { operation: 'documents.purged', mode: 0o600 });

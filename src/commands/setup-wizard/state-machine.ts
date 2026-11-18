@@ -440,6 +440,11 @@ export interface InstallFlowContext {
   detectedDoors: InstallDoor[];
   /** The harness running the installer, when there is one. */
   runningInDoor?: InstallDoor;
+  /**
+   * The AI the person already chose (the Mac app's "Which AI account do you have?", or an answers
+   * file's `door`). It wins over every guess: a Claude found on the Mac must not override a ChatGPT pick.
+   */
+  chosenDoor?: InstallDoor;
   /** Refuses a name that can't be used, with a plain reason. */
   validateName: (name: string) => string | null;
   /** What the installer will do, listed in the single consent. */
@@ -448,6 +453,7 @@ export interface InstallFlowContext {
 
 /** The door when there is nothing to ask: the harness running this, or the only one found. */
 export function impliedInstallDoor(context: InstallFlowContext): InstallDoor | undefined {
+  if (context.chosenDoor) return context.chosenDoor;
   if (context.runningInDoor) return context.runningInDoor;
   return context.detectedDoors.length === 1 ? context.detectedDoors[0] : undefined;
 }

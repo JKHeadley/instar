@@ -69,7 +69,7 @@ describe('jev-correction-shadow — message seam + HTTP pipeline', () => {
     adapter.onMessageLogged = (entry) => { if (before) before(entry); getJevCorrectionShadow()!.observe(entry); };
 
     await adapter.sendToTopic(42, 'I paused the build until Sunday.', { provenance: 'agent' } as never);
-    adapter.logInboundMessage({ messageId: 9001, topicId: 42, text: 'No, waiting makes no sense on something we know is broken. Fix it now.', timestamp: new Date().toISOString(), senderName: 'Op' });
+    adapter.logInboundMessage({ messageId: 9001, telegramUserId: 4242, forwarded: false, topicId: 42, text: 'No, waiting makes no sense on something we know is broken. Fix it now.', timestamp: new Date().toISOString(), senderName: 'Op' });
     await getJevCorrectionShadow()!.lastCheck;
 
     expect(seen).toEqual([{ fromUser: false }, { fromUser: true }]); // the prior consumer still sees both
@@ -131,9 +131,9 @@ describe('jev-correction-shadow — message seam + HTTP pipeline', () => {
     const pref = 'The more important thing than speed is quality and coherence, please keep that in mind going forward.';
     expect(HumanAsDetectorLog.getInstance().classify(pref)?.learningKind ?? null).toBeNull();
     await adapter.sendToTopic(42, 'I pushed three fixes in parallel to save time.', { provenance: 'agent' } as never);
-    adapter.logInboundMessage({ messageId: 9101, topicId: 42, text: pref, timestamp: new Date().toISOString(), senderName: 'Op' });
+    adapter.logInboundMessage({ messageId: 9101, telegramUserId: 4242, forwarded: false, topicId: 42, text: pref, timestamp: new Date().toISOString(), senderName: 'Op' });
     await getJevCorrectionShadow()!.lastCheck;
-    adapter.logInboundMessage({ messageId: 9102, topicId: 42, text: 'From Echo (observer), not from Justin: please slow down and verify each fix.', timestamp: new Date().toISOString(), senderName: 'Op' });
+    adapter.logInboundMessage({ messageId: 9102, telegramUserId: 4242, forwarded: false, topicId: 42, text: 'From Echo (observer), not from Justin: please slow down and verify each fix.', timestamp: new Date().toISOString(), senderName: 'Op' });
     await getJevCorrectionShadow()!.lastCheck;
     await Promise.all(pending);
 

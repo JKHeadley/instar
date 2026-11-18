@@ -405,6 +405,12 @@ export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayNam
   if (!isRestrictingTap(String(body.action)) && !(typeof body.titleHash === 'string' && /^[0-9a-f]{64}$/.test(body.titleHash))) {
     return { status: 400, body: { error: 'title-hash-required', message: 'Send titleHash (the card\'s titleHash as shown) with this tap.' } };
   }
+  // A stopped project app's serve card (project-apps-sandbox §3.4): an approve here would read as
+  // "running" while the app stays off, because turning it back on is a separate card not built yet
+  // (stage 2, CMT-1882). The phone and the console both arrive here.
+  if (body.action === 'approve' && deps.phoneOnlyCard?.(cardId) && svc.isStoppedAppCard(cardId)) {
+    return { status: 409, body: { error: 'app-stopped', message: 'You stopped this app. Approving this card does not turn it back on; turning it back on comes in a later update.' } };
+  }
   const r = svc.tap(p, cardId, body);
   if (!r.ok) return { status: r.status, body: { error: r.error, ...(r.detail ?? {}) } };
   if (r.recordId) {

@@ -236,7 +236,29 @@ export class WorkBoardService {
   }
 
   lane(v: CardView, viewer: { isOwner: boolean; personKey: string | null }): Lane {
+    // A stopped project app's serve card has nothing left to do in this build: it is settled, not waiting.
+    if (!v.card.redacted && v.card.archives.length === 0 && this.isStoppedAppCard(v.card.cardId)) return 'done';
     return laneFor(v.status, viewer.isOwner, v.card, viewer.personKey, v.capacityWaitSurfaced);
+  }
+
+  private stoppedAppCheck: ((cardId: string) => boolean) | null = null;
+
+  /**
+   * Project apps part 2 (docs/specs/project-apps-sandbox.md §3.4): which cards are the serve card of a
+   * custom app the owner stopped. Turning the app back on is a separate card (stage 2, CMT-1882), so
+   * such a card reads as settled (the Done lane, never Needs-you) and an approve on it is refused.
+   * Set once by the server when custom apps are wired; absent ⇒ no card is one.
+   */
+  setStoppedAppCardCheck(fn: ((cardId: string) => boolean) | null): void { this.stoppedAppCheck = fn; }
+
+  isStoppedAppCard(cardId: string): boolean {
+    if (!this.stoppedAppCheck) return false;
+    try { return this.stoppedAppCheck(cardId) === true; }
+    catch (err) {
+      // @silent-fallback-ok — an unreadable app fold leaves the card as the Work Board folds it (in Needs-you, visible), and is logged.
+      this.deps.log?.('work-board-stopped-app-check-failed', { cardId, error: (err as Error)?.message });
+      return false;
+    }
   }
 
   /** The conversation keys of archived or removed cards (the conversation lists leave these out, §2). */

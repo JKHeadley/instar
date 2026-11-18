@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T10:57:05.908Z",
+  "slug": "always-available-combined",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/install.ts",
+      "src/core/localOwnerTicket.ts",
+      "src/server/mobileLocalOwnerDevice.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

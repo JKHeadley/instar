@@ -18,6 +18,13 @@ export function refString(ref) { return ref ? `${ref.kind}:${ref.id}` : ''; }
 export function refFromQuery(query) {
   try { return parseConversationRef(new URLSearchParams(String(query || '').replace(/^\?/, '')).get('c')); } catch { return null; }
 }
+/** Opaque stored message/event identity, bounded by the card-source schema, never a URL. */
+export function messageTarget(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value) ? value : null;
+}
+export function messageFromQuery(query) {
+  return messageTarget(new URLSearchParams(String(query || '').replace(/^\?/, '')).get('m'));
+}
 export function hashFor(ref) { return ref ? `#/work/chats?c=${encodeURIComponent(refString(ref))}` : '#/work/chats'; }
 
 export const KIND_LABEL = { app: 'App', telegram: 'Telegram', slack: 'Slack' };
