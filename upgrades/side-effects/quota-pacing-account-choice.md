@@ -3,7 +3,7 @@
 **Version / slug:** `quota-pacing-account-choice`
 **Date:** `2026-11-18`
 **Author:** `echo`
-**Second-pass reviewer:** `independent reviewer spawned by the parent session — concern raised, addressed, re-check pending`
+**Second-pass reviewer:** `independent reviewer spawned by the parent session — concern raised, addressed in c7723dd66, re-checked: concur`
 
 ## Summary of the change
 
@@ -127,7 +127,8 @@ The review found no design change beyond what the 6-round spec convergence alrea
 **Reviewer:** independent second-pass reviewer (spawned by the parent session)
 **Independent read of the artifact:** concern (round 1), addressed in the follow-up commit; awaiting the reviewer's re-check
 
-Concern raised: the window-aware `poolHeadroom` is never wired. The only production caller, src/commands/server.ts:17215, passes `{ nowMs, framework }` with no `windowAware`, so the throttle still reports last cycle's raw weekly/5-hour percent and never sets `degraded` for rolled windows. The spec's Problem table, its §3 "poolHeadroom()" and this artifact's decision inventory all say it was changed. It is covered only by unit tests (tests/unit/window-aware-choice.test.ts:208-237); the e2e source grep does not check it. Fix: pass the window-aware options at 17215. `windowAwareEnabled` is declared later, at 17781, so move it (and `windowAwareDeps`) above the throttle block instead of relying on the closure being called later. Also surface `rereadBreaker` in the output as the spec says.
+Concur with the review
+- Re-check (git diff 8a8d1ba84 c7723dd66): round-1 concern resolved. The throttle at server.ts:17252 now spreads `windowAwareThrottleOpts()` (empty when off, so today's rule), and `rereadBreaker` is reported (QuotaAwareScheduler.ts:269-274). The pinned oldPick uses the configured soft line. The race fix uses an identity guard (QuotaPoller.ts:1203,1213). Codex resets now always read rolled-history, which is conservative: idle Codex accounts stay in the unmeasured tier and get at most one extra live read per interval. Residual nit: the throttle provider reads `quotaPoller` (declared at :17719) lazily; a call before that line throws, and QuotaTracker.ts:204-213 catches it and falls back to the file-based throttle, so it fails safe.
 - (1) Switch off: identical on every caller. selectAccount/poolHeadroom gate on `windowAware === true` (QuotaAwareScheduler.ts:137,201). The scheduler/codex spreads give `{}` (QuotaAwareScheduler.ts:362-371, server.ts:17803). readingValidity skips the new loop (SwapAntiThrash.ts:179). `oldPick` matches the old body byte for byte (UsageWallRescue.ts:693-695, server.ts:25185).
 - (2) Placement: no rolled, unknown, stale or synthesized window gives a pct or a deadline (windowAwareChoice.ts:121-151), and the tier sort puts measured accounts first (:291). The only path that still counts a rolled window as room is the unwired throttle above.
 - (3) Never-loop: proved by the unit test for the wired functions. In production the throttle is the OLD rule. Old eligibility is a subset of window-aware eligibility, so throttle placeable ⇒ selectAccount non-null still holds. The reverse does not hold (the throttle may shed while placement could succeed). That is conservative, not a loop.
