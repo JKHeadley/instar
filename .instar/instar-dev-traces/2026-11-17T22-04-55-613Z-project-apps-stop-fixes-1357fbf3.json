@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "project-apps-stop-fixes",
+  "sessionId": "9fedf354-db71-4764-adc2-99986abaf297",
+  "timestamp": "2026-11-17T22:04:55.613Z",
+  "artifactPath": "upgrades/side-effects/project-apps-stop-fixes.md",
+  "artifactSha256": "c8d3c6225137b6fcb1d1cb5a58cfe9deff652a4480ea779aca994b28f4ad90e0",
+  "specPath": "docs/specs/project-apps-sandbox.md",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/needs-model.js",
+    "dashboard/console/projects-model.js",
+    "dashboard/console/work-model.js",
+    "src/commands/server.ts",
+    "src/core/WorkBoardService.ts",
+    "src/core/workBoardViews.ts",
+    "src/server/ProjectAppCustomSource.ts",
+    "src/server/ProjectAppsRuntime.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/project-apps-custom-alive.test.ts",
+    "tests/helpers/projectAppCustomHarness.ts",
+    "tests/integration/project-app-custom-routes.test.ts",
+    "tests/unit/ProjectAppCustomSource.test.ts",
+    "tests/unit/ProjectAppsRuntime.test.ts",
+    "tests/unit/console-project-apps-model.test.ts",
+    "tests/unit/console-work-model.test.ts",
+    "tests/unit/project-app-custom-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Display honesty after Stop: read-time settle, one refusal, row state; no new authority.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: a read-time settle (no writes), one refusal, and display state."
+  }
+}

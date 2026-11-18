@@ -134,7 +134,7 @@ export function cardActions(card, { inSheet = false } = {}) {
   // A phone-only card (a project app's version card, project-apps-sandbox §3.4): the server refuses
   // every console tap on it except withdraw-approval, which only stops the app. So no Approve here
   // (phoneOnlyLine says where to approve) and, once approved, one "Stop this app".
-  if (card.phoneOnly) return card.approved && card.status !== 'archived' ? [{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }] : [];
+  if (card.phoneOnly) return card.approved && !card.appStopped && card.status !== 'archived' ? [{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }] : [];
   const out = [];
   const add = (action, tone = 'quiet') => { if (!out.some((x) => x.action === action)) out.push({ action, label: actionLabel(action), tone }); };
   const approved = Boolean(card.approved);
@@ -163,6 +163,8 @@ export function cardActions(card, { inSheet = false } = {}) {
 /** What a phone-only card says in place of an Approve button, or null for any other card. */
 export function phoneOnlyLine(card) {
   if (!card || !card.phoneOnly || card.removed || card.status === 'removed') return null;
+  // A stopped app's card has nothing to approve (its need line says it was stopped).
+  if (card.appStopped) return null;
   return card.approved ? null : 'Approve this on your phone';
 }
 
@@ -266,7 +268,7 @@ export function tapCovers(card, action, extra = {}) {
     case 'reopen': lines.push({ label: 'Reopening', text: 'The card is not finished. From now on every finish of this card needs your sign-off.' }); break;
     case 'hold': lines.push({ label: 'Putting on hold', text: 'The agent stops work on this card until you release it. This always goes through.' }); break;
     case 'withdraw-approval': lines.push(card.phoneOnly
-      ? { label: 'Stopping this app', text: 'The app stops running. Running it again needs your approval on your phone. This always goes through.' }
+      ? { label: 'Stopping this app', text: 'The app stops running. Turning it back on comes in a later update. This always goes through.' }
       : { label: 'Withdrawing approval', text: 'The agent stops and waits for your approval again. This always goes through.' }); break;
     case 'archive': lines.push({ label: 'Archiving', text: 'The card leaves the board. You can restore it later.' }); break;
     case 'redact': lines.push({ label: 'Removing for good', text: 'The card’s text is hidden from every read and its conversation is deleted. This cannot be undone.' }); break;

@@ -10866,6 +10866,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             wbRuntime.start();
             const wbLeaseWatch = setInterval(() => { try { wbRuntime.noteLeaseHolder(); } catch { /* @silent-fallback-ok: a lease read fault is retried on the next 15 s tick */ } }, 15_000);
             wbLeaseWatch.unref();
+            // Project apps part 2: a stopped custom app's serve card reads as settled (read lazily: the
+            // custom-app source is wired later in boot, and absent ⇒ no card is one).
+            wbRuntime.svc.setStoppedAppCardCheck((cardId) => _projectAppCustom?.stoppedServeCard(cardId) === true);
             _workBoardRuntime = wbRuntime;
             console.log(pc.dim(`  [work-board] live: ${wbRuntime.svc.cardIds().length} card(s), ${wbRuntime.svc.totalRecords()} record(s)`));
           } catch (err) { // @silent-fallback-ok: not silent — warned and reported through DegradationReporter just below
@@ -31168,7 +31171,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const paStore = await import('../core/ProjectAppStore.js');
             if (paStore.projectAppsEnabled(config) && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
-              const { ProjectAppsRuntime } = await import('../server/ProjectAppsRuntime.js');
+              const { ProjectAppsRuntime, customAppRow } = await import('../server/ProjectAppsRuntime.js');
               const { MaturationSummaryProvider } = await import('../server/projectAppSummaries.js');
               const { isMaturationBoardEnabled } = await import('../server/maturationBoardRoutes.js');
               const { projectAppsLog } = await import('../server/projectAppsLog.js');
@@ -31232,19 +31235,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 builtinSummary: (appId) => appId === 'maturation-board' ? maturation.get() : { state: 'unreadable', why: 'Unknown app.' },
                 builtinAvailable: (appId) => appId === 'maturation-board' && isMaturationBoardEnabled(config),
                 // Part 2: a custom app by its ref (null when custom apps are off or there is no such app).
-                customApp: (appRef) => {
-                  const src = _projectAppCustom;
-                  const m = /^custom:(pa_[0-9a-f]{16})$/.exec(appRef);
-                  if (!src || !m) return null;
-                  const a = src.app(m[1]);
-                  if (!a) return null;
-                  const sum = src.readSummary(a.appId) as { headline?: unknown; counts?: unknown; asOf?: unknown; erased?: unknown; unreadable?: unknown } | null;
-                  const summary = !sum ? { state: 'pending' as const }
-                    : sum.erased ? { state: 'unreadable' as const, why: '(erased)' }
-                    : sum.unreadable || typeof sum.headline !== 'string' ? { state: 'unreadable' as const, why: 'This app\'s summary cannot be read on this machine.' }
-                    : { state: 'ok' as const, headline: sum.headline, counts: Array.isArray(sum.counts) ? (sum.counts as Array<{ label: string; value: number }>).slice(0, 3) : [], asOf: String(sum.asOf ?? '') };
-                  return { appId: a.appId, title: a.title, conversationKey: a.conversationKey, specOk: src.specOk(a.appId), summary };
-                },
+                customApp: (appRef) => (_projectAppCustom ? customAppRow(_projectAppCustom, appRef) : null),
                 log: (entry) => {
                   projectAppsLog(config.stateDir, entry);
                   // The maturation ladder's evidence (src/data/feature-ladders.json → projectApps.builtin).
