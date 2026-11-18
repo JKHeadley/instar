@@ -62,10 +62,22 @@ The spec grew from about 120 to about 220 lines. Two cuts kept it from growing f
 
 The cut should have come one round earlier. Rounds 1 and 2 both showed revival generating new failure modes.
 
+## Chief of Staff fold-ins (approval 2026-11-18, msg 4f877632)
+
+Approved as maintainer, with three fold-ins, all applied:
+1. **Self-Heal Before Notify.** The A.5 notice now states that revival is phase 2 and will be attempted first once it exists. A bounded revival attempt in phase 1 was declined, because choosing which sessions to revive safely is what three rounds could not settle.
+2. **Judgment Within Floors.** Each lock episode has its own alert key, so the one-hour mute no longer silences later episodes. A floor allows at most 3 per host per hour, and an episode that interrupts Local Verify work always reports.
+3. **Never Silently Cut the Data.** A census is kept until the stewardship pass marks it reviewed. A backlog of more than 200 unreviewed files reports loudly and drops nothing.
+
+**Constitution check re-run after the fold-ins:** ran (5 flags).
+- **Applied:** a concurrency ceiling of 8 on the `machine-away` sends (Bounded Blast Radius); backoff and pause brakes on the lock-watch loop (No Unbounded Loops).
+- **Accepted:**
+  - **The Agent Carries the Loop / Self-Heal Before Notify:** both restate the phase-2 revival deferral, which the Chief of Staff allowed under fold-in 1 (tracked under CMT-1940).
+  - **Judgment Within Floors:** a lock that blocks Local Verify sooner is already reported by Local Verify's own failure path, so the 10-minute hold applies only to the lock-only report.
+
 ## Left behind (accepted, with reason)
 
 - **Phase 1 notifies without a self-heal step first.** The final gate flagged this. It is deliberate, and it follows the parent spec's Part E: with no healing step to wait for, the notice goes directly. Phase 2 makes revival the self-heal and moves the notice after it (CMT-1940).
-- **A second lock episode within an hour is recorded but not alerted.** This is `DegradationReporter`'s existing one-hour per-feature mute, which this spec accepts and does not set.
 - **A Mac that requires its password only after a delay reads `unknown`, so it is never reported.** The spec states this gap.
 - **Round 6's final edits were not re-reviewed, because round 6 was the cap.** Each one is a rule within an existing mechanism. They add no new mechanism.
 
