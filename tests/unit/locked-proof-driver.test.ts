@@ -210,6 +210,50 @@ describe('locked-proof viewer driving', () => {
   });
 });
 
+describe('locked-proof next grant evidence', () => {
+  const c = CASES.find((x: { id: string }) => x.id === '12.10');
+  const target = (visible: boolean, waitFails = false) => Object.assign(Object.create(RealTarget.prototype), {
+    a: {}, events: new Set(),
+    main: { page: { click: async () => {} } },
+    viewer: async () => ({ page: {
+      waitForSelector: async () => { if (waitFails) throw new Error('grant timed out'); },
+      isVisible: async () => visible,
+    } }),
+    requestGrant: async () => {},
+  });
+
+  it('never announces a next grant after a timeout or hidden controls', async () => {
+    for (const t of [target(false, true), target(false)]) {
+      await expect(t.act('open-next-grant')).rejects.toThrow();
+      expect(t.events.has('next-grant-open')).toBe(false);
+    }
+  });
+
+  it('announces a next grant only after its controls are visible', async () => {
+    const t = target(true);
+    expect(await t.act('open-next-grant')).toEqual({ opened: true });
+    expect(t.events.has('next-grant-open')).toBe(true);
+  });
+
+  it('records the failed setup and recovers without attempting to resume the old guard', async () => {
+    const t = new FakeTarget(c);
+    t.failAt = 'open-next-grant';
+    const ev = await runCase(c, t);
+    expect(ev.verdict.pass).toBe(false);
+    expect(ev.error).toContain('open-next-grant');
+    expect(t.acts).not.toContain('cont-old-guard');
+    expect(t.recovered).toBe(1);
+  });
+
+  it('rejects missing or failed next-grant evidence even if the Mac ends locked', () => {
+    const ev = { samples: [], final: { lockState: 'locked', markers: { k: { state: 'relocked' } } }, extra: { oldGuardGone: true }, fired: [] };
+    for (const fired of [[], [{ action: 'open-next-grant', result: { opened: false } }], [{ action: 'open-next-grant', result: {} }]]) {
+      expect(judge(c, { ...ev, fired }).reasons).toContain('the next grant was not confirmed open');
+    }
+    expect(judge(c, { ...ev, fired: [{ action: 'open-next-grant', result: { opened: true } }] }).pass).toBe(true);
+  });
+});
+
 describe('locked-proof person steps', () => {
   const rows = (out: string) => fs.readFileSync(path.join(out, 'person-steps.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
 

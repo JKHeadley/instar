@@ -475,6 +475,10 @@ export function judge(c, ev) {
   if (c.securityItemAfterBoot && !x.securityItemRaised) reasons.push('security item not raised after the server came back');
   if (c.producerGone && !x.producerGone) reasons.push('marker not recorded with producerGone');
   if (c.oldGuardGone && !x.oldGuardGone) reasons.push('the suspended guard was not killed before takeover');
+  if ((c.inject ?? []).some(s => s.action === 'open-next-grant')
+      && !(ev.fired ?? []).some(f => f.action === 'open-next-grant' && f.result?.opened === true)) {
+    reasons.push('the next grant was not confirmed open');
+  }
   if (c.typistGone && !x.typistGone) reasons.push('typist not confirmed gone');
   if (c.grantAlive && !x.grantAlive) reasons.push('the grant ended after a stray letter');
   if (c.secretRefused && ev.secretResult?.refused !== c.secretRefused) reasons.push(`expected refusal ${c.secretRefused}, got ${JSON.stringify(ev.secretResult ?? null)}`);
