@@ -15,7 +15,9 @@ Second, each PC belongs to the one agent machine that paired it. Sessions on the
 ## The safeguards, plainly
 
 - The file is harmless on its own: a copy only ever connects to the agent of whoever approves it on their own phone.
-- The PC checks that every command really comes from the machine it paired with.
+- The PC checks that every command really comes from the machine it paired with, and it does nothing at all until it has checked the owner's Face ID approval itself.
+- Before a command runs or a file is changed or deleted on the PC, the agent's own safety check looks at it; deleting many files or a whole folder waits for the owner's yes in the app.
+- If the PC loses its connection, anything still running on it is stopped.
 - Moving from "Look only" up to "Full control" needs Face ID on the owner's phone, checked by the PC itself, and each approval can be used only once, so the agent cannot raise its own access or replay an old yes. Lowering works from the PC, the phone or the web console.
 - Only the owner's own conversations with the agent are let through to the PC; scheduled jobs are turned away. This is a filter, not a wall: all the agent's sessions run as one computer user, so under "Full control" the agent as a whole can reach the PC. The window says so, and "Look only" is there for anyone who does not want that. "Look only" also keeps the agent out of the usual places passwords and keys are saved, unless the person allows it.
 - Against scammers: a warning and a wait before Connect, a stronger warning and longer wait if a remote-control program is running, a notice at every Windows sign-in saying who is connected with a one-click Disconnect, and a pop-up whenever a new agent session starts using the PC.
