@@ -13030,7 +13030,7 @@ export function createRoutes(ctx: RouteContext): Router {
           res.status(r.status).json({ ...body, placedOn });
         } catch (err) {
           // @silent-fallback-ok — not silent: the caller gets 502 placed-on-peer-unreachable naming the machine
-          res.status(502).json({ error: 'placed-on-peer-unreachable', placedOn, detail: err instanceof Error ? err.message : String(err) });
+          res.status(502).json({ error: 'placed-on-peer-unreachable', placedOn, detail: operatorError(err, res.app?.locals?.stateDir) });
         }
         return;
       }

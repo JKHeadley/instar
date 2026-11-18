@@ -70,3 +70,7 @@ One attention item per unconfirmed placement and one for a full placement record
 - **harm:** the share of live placements that fell back to local because the target was unreachable, at most 20%.
 
 Data only: no runtime behaviour changes, no blocking authority. Rollback is to delete the line.
+
+## Addendum 2 (2026-11-18 06:48 PT): qualified error detail
+
+The 502 `placed-on-peer-unreachable` answer in `/sessions/spawn` now passes its caught error through `operatorError`, as `storage-error-response-ratchet` requires of every caught-exception JSON response in `src/server`, so a local path or storage detail can't leak in the response. Nothing changes for callers except the wording of `detail`.
