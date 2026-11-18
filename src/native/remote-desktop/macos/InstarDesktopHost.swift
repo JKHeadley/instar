@@ -5,6 +5,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
+import CoreFoundation
 import CoreImage
 import CoreMedia
 import CoreVideo
@@ -15,6 +16,38 @@ import IOKit
 import IOKit.pwr_mgt
 import ScreenCaptureKit
 import VideoToolbox
+
+// BEGIN SECRET ENTER BOUNDARY
+/// The existing Enter-intent write is an admission prerequisite, not telemetry.
+/// A serial input stream has only one secretType invocation in flight per producer.
+enum SecretEnterBoundary {
+    static func recordIntent(state: inout [String: Any], key: String, requestId: String,
+                             pid: Int, start: String, now: Int64) -> Bool {
+        guard pid > 1, !start.isEmpty,
+              var markers = state["markers"] as? [String: Any],
+              var entry = markers[key] as? [String: Any],
+              entry["requestId"] as? String == requestId,
+              entry["state"] as? String == "owed",
+              entry["typistPid"] as? Int == pid, entry["typistStart"] as? String == start else { return false }
+        if let value = entry["relockNow"] {
+            guard let requested = value as? NSNumber,
+                  CFGetTypeID(requested) == CFBooleanGetTypeID(), !requested.boolValue else { return false }
+        }
+        entry["enterPendingAt"] = now
+        markers[key] = entry
+        state["markers"] = markers
+        return true
+    }
+
+    static func dispatch(commit: () -> Bool?, post: () -> Void) -> Bool {
+        // nil is an outer store failure; false is a failed inner ownership check.
+        guard commit() == true else { return false }
+        // The transaction has returned: never hold the store lock across key posting.
+        post()
+        return true
+    }
+}
+// END SECRET ENTER BOUNDARY
 
 @available(macOS 14.0, *)
 private final class LatestScreenFrame: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -1462,15 +1495,21 @@ extension InstarDesktopHost {
             abandonField()
             throw HostError.refused("aborted")
         }
-        // The relock path and the grant-end rule both read this time.
-        _ = LockedStore.withLock(root: lockedRoot) { state in
-            if var entry = LockedStore.marker(state, markerKey) {
-                entry["enterPendingAt"] = Int64(Date().timeIntervalSince1970 * 1000)
-                LockedStore.setMarker(&state, markerKey, entry)
+        // The relock path and the grant-end rule both read this time. Enter must
+        // not proceed if the owned duty disappeared or its write could not persist.
+        let typistStart = LockedStore.processInfo(getpid())?.start ?? ""
+        guard SecretEnterBoundary.dispatch(commit: {
+            LockedStore.withLock(root: lockedRoot) { state in
+                SecretEnterBoundary.recordIntent(state: &state, key: markerKey, requestId: requestId,
+                    pid: Int(getpid()), start: typistStart, now: Int64(Date().timeIntervalSince1970 * 1000))
             }
+        }, post: {
+            postKey(36, flags: [], down: true)
+            postKey(36, flags: [], down: false)
+        }) else {
+            abandonField()
+            throw HostError.refused("state-unavailable")
         }
-        postKey(36, flags: [], down: true)
-        postKey(36, flags: [], down: false)
         // Only after Enter: a kill before it leaves a full password in the field.
         _ = LockedStore.withLock(root: lockedRoot) { $0["dirty"] = nil }
     }
