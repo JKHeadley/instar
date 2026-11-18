@@ -83,7 +83,7 @@ describe('formatDashboardMessage — never leaks the placeholder', () => {
     const msg = format(makeAdapter(undefined), null, true);
     expect(msg).not.toContain(DASHBOARD_PIN_PLACEHOLDER);
     expect(msg).not.toContain('PIN: `'); // no fake code-span PIN
-    expect(msg.toLowerCase()).toContain('ask me for your dashboard pin'); // honest, actionable
+    expect(msg.toLowerCase()).toContain('ask me in your private chat'); // honest, actionable
     // The dashboard link itself is still present and useful.
     expect(msg).toContain('https://echo.example.dev/dashboard');
   });
@@ -91,7 +91,7 @@ describe('formatDashboardMessage — never leaks the placeholder', () => {
   it('a null PIN omits the PIN line and NEVER emits the placeholder (quick)', () => {
     const msg = format(makeAdapter(undefined), null, false);
     expect(msg).not.toContain(DASHBOARD_PIN_PLACEHOLDER);
-    expect(msg.toLowerCase()).toContain('ask me for your dashboard pin');
+    expect(msg.toLowerCase()).toContain('ask me in your private chat');
   });
 });
 

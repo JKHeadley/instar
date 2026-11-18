@@ -593,9 +593,10 @@ export class CoherenceMonitor extends EventEmitter {
             passed: false,
             message: 'Dashboard PIN was missing',
             corrected: true,
-            correctionDetail: `Generated PIN: ${newPin}`,
+            // identity-security-piece1d: never the digits. This report is served by GET /health/coherence.
+            correctionDetail: 'Generated a new dashboard PIN; the owner gets it in their private chat with the agent',
           });
-          this.logCorrection('readiness-dashboard-pin', `Generated missing dashboard PIN: ${newPin}`);
+          this.logCorrection('readiness-dashboard-pin', 'Generated a missing dashboard PIN (digits not recorded)');
         }
       }
     } catch {
