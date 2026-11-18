@@ -193,6 +193,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     const aimsBeforeEnter = c.timing !== 'deadline' && pending.some(s => s.at === 'before-enter');
     const grant = await target.openGrant(c);
     evidence.grantOpenedAt = target.now();
+    evidence.grantRequestId = grant?.requestId ?? grant?.id ?? null;
     evidence.grantExpiresAt = grant?.expiresAt ?? null; // the server's own end time for the grant, when the page was told it
     if (c.password) {
       // Deadline cases aim their typing at the grant's limit instead (driver typePassword); the step
@@ -354,6 +355,42 @@ export function launchdServePlist({ label, node, cli, dir, pathEnv, log }) {
 `;
 }
 
+/** A missing Enter marker is unknown, including an aborted UI result: native writes can fail. */
+export function beforeEnterTiming(ev, expectedAction) {
+  const unknown = reason => ({ measured: false, reason });
+  const steps = (ev.fired ?? []).filter(f => f.at === 'before-enter');
+  if (steps.length !== 1 || (expectedAction !== undefined && steps[0].action !== expectedAction)) return unknown('missing or ambiguous injection');
+  if (typeof ev.grantRequestId !== 'string' || !ev.grantRequestId || !Number.isFinite(ev.grantOpenedAt)) return unknown('missing grant identity');
+  const duties = new Map();
+  for (const sample of [...(ev.samples ?? []), ...(ev.final ? [ev.final] : [])]) {
+    for (const [key, marker] of Object.entries(sample.markers ?? {})) {
+      if (marker.requestId === ev.grantRequestId) {
+        if (!duties.has(key)) duties.set(key, []);
+        duties.get(key).push(marker);
+      }
+    }
+  }
+  if (duties.size !== 1) return unknown('missing or ambiguous same-grant duty');
+  const [key, observations] = [...duties.entries()][0];
+  // A reused key or inconsistent creation time cannot bind Enter to this password.
+  const all = [...(ev.samples ?? []), ...(ev.final ? [ev.final] : [])].flatMap(s => s.markers?.[key] ? [s.markers[key]] : []);
+  if (all.some(m => m.requestId !== ev.grantRequestId)) return unknown('duty identity changed');
+  const createdAt = observations[0].createdAt;
+  if (!Number.isFinite(createdAt) || createdAt < ev.grantOpenedAt - 1_000
+      || observations.some(m => m.createdAt !== createdAt)) return unknown('missing or inconsistent duty creation');
+  const enters = observations.filter(m => Object.hasOwn(m, 'enterPendingAt')).map(m => m.enterPendingAt);
+  if (!enters.length || enters.some(t => !Number.isFinite(t) || t < createdAt || t !== enters[0])) return unknown('missing or inconsistent same-duty Enter');
+  const deadline = steps[0].action === 'wait-deadline';
+  // Completion is a conservative upper bound: starting a revoke before Enter does not
+  // establish that its awaited response (or the transport-offline action) preceded Enter.
+  const eventAt = deadline ? ev.grantExpiresAt : steps[0].t;
+  if (!deadline && (!Number.isFinite(steps[0].startedAt) || steps[0].startedAt < createdAt
+      || !Number.isFinite(eventAt) || steps[0].startedAt > eventAt)) return unknown('missing or invalid interruption interval');
+  const gap = eventAt - enters[0];
+  if (!Number.isFinite(eventAt) || eventAt < createdAt || !Number.isFinite(gap)) return unknown('missing or invalid interruption time');
+  return { measured: true, deadline, enterAt: enters[0], gap, dutyKey: key };
+}
+
 /** Measurements every target gets from its own samples (the target may add more). */
 export function measured(ev) {
   const out = {};
@@ -363,14 +400,11 @@ export function measured(ev) {
       && Object.values(s.markers).every(m => TERMINAL.includes(m.state)));
     if (closed) out.relockAfterDropMs = closed.t - drop.t;
   }
-  // Which side of Enter each before-enter step landed on (negative = before Enter).
-  const enterAt = [...(ev.samples ?? []), ...(ev.final ? [ev.final] : [])]
-    .flatMap(s => Object.values(s.markers ?? {})).map(m => m.enterPendingAt).find(t => typeof t === 'number');
-  const aimed = ev.fired.find(f => f.at === 'before-enter');
-  if (aimed && typeof enterAt === 'number') {
-    out.enterAt = enterAt;
-    if (aimed.action === 'wait-deadline') { if (typeof ev.grantExpiresAt === 'number') out.limitMinusEnterMs = ev.grantExpiresAt - enterAt; }
-    else out.injectMinusEnterMs = (aimed.startedAt ?? aimed.t) - enterAt;
+  // Diagnostic only; judge recomputes this from raw evidence, never extraEvidence.
+  const timing = beforeEnterTiming(ev);
+  if (timing.measured) {
+    out.enterAt = timing.enterAt;
+    out[timing.deadline ? 'limitMinusEnterMs' : 'injectMinusEnterMs'] = timing.gap;
   }
   const last = ev.samples[ev.samples.length - 1];
   if (last && typeof last.dirty === 'boolean') out.fieldDirtyAtEnd = last.dirty;
@@ -400,9 +434,14 @@ export function judge(c, ev) {
   const refusedWord = ev.secretResult?.refused;
   const typingRefused = !!refusedWord && !['aborted', 'no-result-within-60s'].includes(refusedWord);
   if (landsOnTyping && !c.secretRefused && (!typed || typingRefused)) reasons.push(`the password was never typed${refusedWord ? ` (${refusedWord})` : ''}`);
-  // A before-enter case whose step started after Enter repeats its after-Enter twin: not a pass.
-  if (x0(ev).injectMinusEnterMs >= 0) reasons.push(`before-enter step landed ${x0(ev).injectMinusEnterMs} ms after Enter`);
-  if (x0(ev).limitMinusEnterMs >= 0) reasons.push(`grant limit arrived ${x0(ev).limitMinusEnterMs} ms after Enter`);
+  const beforeSteps = (c.inject ?? []).filter(step => step.at === 'before-enter');
+  if (beforeSteps.length) {
+    const timing = beforeEnterTiming(ev, beforeSteps[0].action);
+    if (beforeSteps.length !== 1 || !timing.measured) reasons.push(`before-enter timing unmeasured: ${timing.reason ?? 'ambiguous case injection'}`);
+    else if (timing.gap >= 0) reasons.push(timing.deadline
+      ? `grant limit arrived ${timing.gap} ms after Enter`
+      : `before-enter step completed ${timing.gap} ms after Enter`);
+  }
   if (c.person && !ev.person?.doneAt) reasons.push(`person step never completed: ${c.person.until ?? 'no result seen'}`);
   if (c.person) {
     const p = ev.person, d = p?.delivery;
