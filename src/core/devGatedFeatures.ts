@@ -50,6 +50,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'The shadow log only writes an audit line and never changes where a session starts. Live placement is opt-in per request (no caller sends placement:"auto" by default), starts through the peer\'s own /sessions/spawn so its caps and admission apply, never starts a name twice from one origin (durable placement record written before the send, unresolved names read-only, no local start after an ambiguous hand-off), never proxies a kill, and no eligible peer means local exactly as today. enabled:false and a restart restore today\'s behaviour; placed sessions keep running where they are.',
   },
   {
+    name: 'topicSpawnPlacement',
+    configPath: 'multiMachine.placement.agentSessions.topicBound',
+    description: 'Topic-bound agent spawns placed by load (docs/specs/topic-spawns-placed-by-load.md, placement Step 2): a POST /sessions/spawn with placement:"auto" and a topicId, into a topic with no live owner, starts on a peer through the fenced place/deliver/settle path a person\'s first message uses when this lease-holding machine is busy; a topic-bound spawn into a topic a peer owns answers 409 topic-owned-elsewhere; the brief is replicated as a topic-spawn-brief record. Requires multiMachine.placement.agentSessions.enabled; omitted => live on a development agent, dark on the fleet.',
+    justification: 'Opt-in per request (no caller sends placement:"auto" by default). The claim is the shared, epoch-fenced topic-ownership record; an unknown hand-off keeps the claim and starts nothing locally; a rejected deliver falls back to a checked local claim, never a blind spawn; peers must advertise agent-brief@1. The new 409 only stops a second session in a topic whose messages already go to a peer. topicBound:false and a restart restore today\'s behaviour; placed topics stay on their machines like any placed conversation.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',

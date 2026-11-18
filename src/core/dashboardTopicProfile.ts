@@ -456,8 +456,9 @@ export interface SpawnForTopicDeps {
    * overwrites it. Absent ⇒ any mapping refuses (legacy behavior).
    */
   isSessionAlive?: (tmuxSession: string) => boolean;
-  /** The ONE spawn chokepoint, called with silentStart. A throw propagates. */
-  spawn: (topicId: number, name: string) => Promise<string>;
+  /** The ONE spawn chokepoint, called with silentStart — or, with `task`, with the agent-task
+   *  framing (placement Step 2's checked local fallback). A throw propagates. */
+  spawn: (topicId: number, name: string, task?: string) => Promise<string>;
 }
 
 /**
@@ -466,8 +467,8 @@ export interface SpawnForTopicDeps {
  * "no session mapped" gate first, then has() → add() with NO await between
  * them (add() overwrites and never refuses a duplicate, so has() is the guard).
  */
-export function createSpawnForTopic(deps: SpawnForTopicDeps): (topicId: number, name: string) => Promise<SpawnForTopicResult> {
-  return async (topicId, name) => {
+export function createSpawnForTopic(deps: SpawnForTopicDeps): (topicId: number, name: string, task?: string) => Promise<SpawnForTopicResult> {
+  return async (topicId, name, task) => {
     const guard = deps.guard();
     const tg = deps.telegram();
     if (!guard || !tg) return { ok: false, code: 'telegram-routing-not-wired' };
@@ -476,7 +477,7 @@ export function createSpawnForTopic(deps: SpawnForTopicDeps): (topicId: number, 
     if (guard.has(topicId)) return { ok: false, code: 'topic-spawning' };
     const token = guard.add(topicId);
     try {
-      const session = await deps.spawn(topicId, name);
+      const session = task !== undefined ? await deps.spawn(topicId, name, task) : await deps.spawn(topicId, name);
       try {
         tg.registerTopicSession(topicId, session, name);
         return { ok: true, session, registered: true };

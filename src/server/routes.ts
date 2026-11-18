@@ -422,6 +422,7 @@ import { TeamConfinement } from '../users/TeamConfinement.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
 import { AgentSessionPlacementService, AgentSessionPlacementStore, agentSessionPlacementEnabled, decideAgentSessionPlacement, isUnresolved, setActiveAgentSessionPlacement, travelBlocker } from '../core/agentSessionPlacement.js';
+import { decideTopicSpawnPlacement, ownedElsewhereAnswer, placeTopicSpawn, runCheckedLocalFallback, topicBoundPlacementEnabled, topicOwnershipState } from '../core/topicSpawnPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
@@ -1576,7 +1577,15 @@ export interface RouteContext {
      *  chokepoint (spawnSessionForTopic, silentStart) AND register the binding,
      *  both under one spawningTopics token. Absent/not-wired ⇒ the
      *  `telegram-routing-not-wired` refusal. A spawn throw propagates. */
-    spawnForTopic?: (topicId: number, name: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
+    spawnForTopic?: (topicId: number, name: string, task?: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
+    /** Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md) — start an agent's topic spawn
+     *  on a peer through the fenced place → checked deliver → settle protocol, delivering
+     *  `{text, authorship}` under messageId `agent-spawn:<topicId>:<nonce>`. Absent ⇒ not wired. */
+    startAgentTopicOnMachine?: (topicKey: string, targetMachineId: string, payload: { text: string; authorship: import('../core/topicSpawnPlacement.js').AgentAuthorship }) => Promise<import('../core/dashboardMachineChoice.js').StartTopicOnMachineResult>;
+    /** The seam above is bound (false during the boot window before the router block ran). */
+    agentStartSeamWired?: () => boolean;
+    /** Placement Step 2: the replicated `topic-spawn-brief` records. Absent ⇒ no journal here. */
+    briefReplication?: import('../core/TopicSpawnBriefReplicatedStore.js').TopicSpawnBriefReplication;
     /**
      * session-conversation-for-every-session §2.1: start a new session for a just-created app
      * conversation, on its profile, with no message. Null when nothing was started (not served
@@ -13021,7 +13030,9 @@ export function createRoutes(ctx: RouteContext): Router {
           return;
         }
         try {
-          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/output?lines=${lines}`, {
+          // Placement Step 2: a topic placement is read by the name its target gave it (learned by reconciliation).
+          const peerName = typeof entry.topicId === 'number' && entry.tmuxSession ? entry.tmuxSession : req.params.name;
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(peerName)}/output?lines=${lines}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
             signal: AbortSignal.timeout(10_000),
           });
@@ -13764,6 +13775,16 @@ export function createRoutes(ctx: RouteContext): Router {
           .catch(() => { /* @silent-fallback-ok — best-effort; the placement store and audit log keep the state */ });
       },
       nickname: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      // Placement Step 2: a placed topic session seen gone marks its replicated brief completed.
+      onGone: (_name, e) => { if (typeof e.topicId === 'number') ctx.topicProfile?.briefReplication?.markCompleted(e.topicId, e.machineId); },
+      // Which machines are KNOWN to hold a topic's brief: this machine when its own copy reads back.
+      // No per-peer replication cursor is read here, so every other machine is reported "not yet".
+      briefHolders: (topicId) => {
+        const self = ctx.meshSelfId ?? null;
+        const held = !!self && !!ctx.topicProfile?.briefReplication?.read(topicId);
+        const others = ctx.machinePoolRegistry!.getCapacities().map((c) => c.machineId).filter((id) => id !== self);
+        return { heldBy: held && self ? [self] : [], notYet: others };
+      },
     });
     setActiveAgentSessionPlacement(svc);
     return svc;
@@ -13916,13 +13937,34 @@ export function createRoutes(ctx: RouteContext): Router {
       }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
     }
 
+    // topic-spawns-placed-by-load (placement Step 2). The topic's ownership state rides every
+    // topic-bound shadow row; with topicBound on, a topic a peer owns gets one answer on EVERY
+    // topic-bound spawn (with or without placement:"auto"): 409, nothing starts here.
+    const topicBoundOn = !!agentSessionPlacement && topicBoundPlacementEnabled(ctx.config as never, resolveDevAgentGate as never);
+    const topicOwnRec = parsedTopicId !== undefined ? (ctx.sessionOwnershipRegistry?.read(String(parsedTopicId)) ?? null) : null;
+    const topicOwnState = parsedTopicId !== undefined ? topicOwnershipState(topicOwnRec, ctx.meshSelfId ?? null) : undefined;
+    const topicRowPart = parsedTopicId !== undefined ? { topicId: parsedTopicId, topicOwnership: topicOwnState } : {};
+    const ownerReachable = (id: string): boolean => {
+      const c = ctx.machinePoolRegistry?.getCapacity(id);
+      return !!c && c.online === true && c.liveness?.state !== 'unreachable';
+    };
+    const machineNick = (id: string): string | null => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null;
+    if (topicBoundOn && parsedTopicId !== undefined && ctx.meshSelfId) {
+      const owned = ownedElsewhereAnswer(topicOwnRec, ctx.meshSelfId, machineNick, ownerReachable);
+      if (owned) {
+        agentSessionPlacement!.log({ name, topicBound: true, weight: (workWeight ?? 'standard') as 'light' | 'standard' | 'heavy', mode: 'live', ...topicRowPart, outcome: 'topic-owned-elsewhere' });
+        res.status(owned.status).json({ ...owned.body, topicId: parsedTopicId });
+        return;
+      }
+    }
+
     // agent-sessions-placed-by-load §1a/§1b. A forwarded spawn (X-Instar-Placed) is never
     // re-placed; it was logged at its origin and is tagged `forwarded` here.
     let localPlacement: { outcome: string; reason: string } | undefined;
     if (agentSessionPlacement) {
       const weight = (workWeight ?? 'standard') as 'light' | 'standard' | 'heavy';
       if (req.headers['x-instar-placed'] === '1') {
-        agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'forwarded' });
+        agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'forwarded', ...topicRowPart });
       } else {
         // One start decision per name at a time, held until this response is sent, so a
         // local start and a placement of the same name cannot race.
@@ -13937,9 +13979,54 @@ export function createRoutes(ctx: RouteContext): Router {
           const blocker = travelBlocker(req.body ?? {}, req.headers as Record<string, unknown>);
           const decide = () => decideAgentSessionPlacement({ capacities: ctx.machinePoolRegistry!.getCapacities(), selfMachineId: ctx.meshSelfId ?? null, workWeight: weight });
           const runningHere = resolveActiveSessionTmux(ctx.state.listSessions(), name) !== null;
-          if (placement !== 'auto' || blocker || runningHere) {
+          if (topicBoundOn && parsedTopicId !== undefined && placement === 'auto' && ctx.meshSelfId) {
+            // Placement Step 2: the topic spawn travels the way a person's first message does.
+            const selfId = ctx.meshSelfId;
+            const topicId = parsedTopicId;
+            const readOwnership = (k: string) => ctx.sessionOwnershipRegistry?.read(k) ?? null;
+            const briefs = ctx.topicProfile?.briefReplication ?? null;
+            const placed = await placeTopicSpawn({
+              name, topicId, prompt, body: req.body ?? {}, headers: req.headers as Record<string, unknown>, runningHere,
+              deps: {
+                svc: agentSessionPlacement, selfMachineId: selfId, nickname: machineNick, readOwnership, ownerReachable,
+                holdsLease: () => { try { return !!ctx.coordinator?.enabled && ctx.coordinator.holdsLease(); } catch { return false; } }, // @silent-fallback-ok — an unreadable lease is not held: start here
+                seamWired: () => !!ctx.topicProfile?.startAgentTopicOnMachine && (ctx.topicProfile.agentStartSeamWired?.() ?? true),
+                decision: () => decideTopicSpawnPlacement({ capacities: ctx.machinePoolRegistry!.getCapacities(), selfMachineId: selfId }),
+                emitBrief: briefs ? (rec) => briefs.emit(rec) : null,
+                recordLocalBrief: (placedOn) => ctx.topicProfile?.spawnBriefs?.record(topicId, name, prompt, new Date(), { placedOn }),
+                start: (k, target, payload) => ctx.topicProfile!.startAgentTopicOnMachine!(k, target, payload),
+                onSend: () => { sent = true; },
+              },
+            });
+            if (placed.kind === 'respond') { res.status(placed.status).json(placed.body); return; }
+            if (placed.kind === 'local-fallback') {
+              const fb = await runCheckedLocalFallback({
+                name, topicId, prompt, reason: placed.reason,
+                deps: {
+                  claim: () => { const a = ctx.topicProfile?.sessionPoolLocalClaim?.(); return a && a.kind === 'ready' ? a : null; },
+                  spawnForTopic: async (t, n, task) => {
+                    if (!ctx.topicProfile?.spawnForTopic) return { ok: false as const, code: 'telegram-routing-not-wired' };
+                    return ctx.topicProfile.spawnForTopic(t, n, task);
+                  },
+                  isRunning: (tmux) => { try { return ctx.sessionManager.isSessionAlive?.(tmux) ?? true; } catch { return false; } }, // @silent-fallback-ok — an unreadable liveness is not running
+                  readOwnership, selfMachineId: selfId, nickname: machineNick, ownerReachable,
+                  answerSpawnError: (err) => {
+                    const refusal = classifySpawnRefusal(err);
+                    return refusal ? { status: 409, body: { error: redactSpawnError(err), code: refusal } } : { status: 500, body: { error: redactSpawnError(err) } };
+                  },
+                  recordLocalBrief: (tmux) => ctx.topicProfile?.spawnBriefs?.record(topicId, tmux, prompt, new Date(), { placedOn: selfId }),
+                  log: (row) => agentSessionPlacement.log({ name, topicBound: true, weight, mode: 'live', ...topicRowPart, ...row }),
+                },
+              });
+              // Correct placedOn only once this machine actually won the topic and started it.
+              if (fb.status === 201) { try { briefs?.emit({ topicId, name, prompt, placedOn: selfId, originMachineId: selfId }); } catch { /* @silent-fallback-ok — best-effort correction of placedOn */ } }
+              res.status(fb.status).json(fb.body);
+              return;
+            }
+            localPlacement = { outcome: 'local', reason: placed.reason };
+          } else if (placement !== 'auto' || blocker || runningHere) {
             const d = decide();
-            agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'shadow', self: d.self, wouldPlaceOn: d.target, wouldPlaceOnNickname: d.targetNickname, why: d.reason, blocker: blocker ?? (runningHere ? 'name-running-here' : null) });
+            agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'shadow', self: d.self, wouldPlaceOn: d.target, wouldPlaceOnNickname: d.targetNickname, why: d.reason, blocker: blocker ?? (runningHere ? 'name-running-here' : null), ...topicRowPart });
             if (placement === 'auto') localPlacement = { outcome: 'local', reason: blocker ?? 'name-running-here' };
           } else {
             const result = await agentSessionPlacement.placeLive({

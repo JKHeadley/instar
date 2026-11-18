@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-18T22:49:49.960Z",
+  "slug": "topic-spawns-placed-by-load",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 875,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/TopicSpawnBriefReplicatedStore.ts",
+      "src/core/TopicSpawnBriefStore.ts",
+      "src/core/agentSessionPlacement.ts",
+      "src/core/dashboardTopicProfile.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/topicSpawnPlacement.ts",
+      "src/core/types.ts",
+      "src/data/awareness/agent-sessions-placed-by-load.md",
+      "src/data/feature-ladders.json",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 834,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot caller-driven action: each placement runs once per /sessions/spawn request from an agent; its reconciliation is a fixed 3-read check, and an unknown outcome waits for a person instead of retrying"
+  },
+  "verdict": "blocked"
+}

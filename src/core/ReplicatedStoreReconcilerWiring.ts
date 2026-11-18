@@ -73,6 +73,7 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   contextLayers: 'written only by the server context-layer store and fold coordinator (contextLayerKind, docs/specs/context-budget-layered-summaries.md §14); no CLI path; per-entry records, HLC-latest per key',
   projectApps: 'written only by the server project-apps runtime and the custom-app source on the lease holder (ProjectAppStore + ProjectAppCustomFold, docs/specs/project-apps.md, project-apps-sandbox.md); no CLI path; immutable or last-writer records',
   projectAppBlobs: 'written only by the server custom-app source on the lease holder (ProjectAppBlobStore, docs/specs/project-apps-sandbox.md §3.2); no CLI path; immutable encrypted chunks and revisions',
+  topicSpawnBriefs: 'written only by the server /sessions/spawn placement path and the session-end hook (TopicSpawnBriefReplicatedStore, docs/specs/topic-spawns-placed-by-load.md); no CLI path; one record per topic, updated to completed, never deleted',
   sessionTranscripts: 'written only by the server transcript checkpoint tick and peer ingest (transcriptCheckpoints.ts, docs/specs/native-conversation-any-machine-access.md §3f); no CLI path; dark by default',
 });
 

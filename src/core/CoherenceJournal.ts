@@ -44,7 +44,7 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-list-pin' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record' | 'work-card-record' | 'trust-grant-record' | 'trust-outcome-record' | 'session-transcript-checkpoint' | 'context-layer-record' | 'conversation-graph-event' | 'project-app-record' | 'project-app-blob';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-list-pin' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record' | 'work-card-record' | 'trust-grant-record' | 'trust-outcome-record' | 'session-transcript-checkpoint' | 'context-layer-record' | 'conversation-graph-event' | 'project-app-record' | 'project-app-blob' | 'topic-spawn-brief';
 
 /**
  * What happened to one `emit` call. Every branch of the private `emit` already
@@ -62,7 +62,7 @@ export type JournalEmitOutcome =
   | 'not-replicated-kind'
   | 'error';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-list-pin', 'conversation-read-marker', 'email-outbox-record', 'chief-of-staff-record', 'work-card-record', 'trust-grant-record', 'trust-outcome-record', 'session-transcript-checkpoint', 'context-layer-record', 'conversation-graph-event', 'project-app-record', 'project-app-blob'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-list-pin', 'conversation-read-marker', 'email-outbox-record', 'chief-of-staff-record', 'work-card-record', 'trust-grant-record', 'trust-outcome-record', 'session-transcript-checkpoint', 'context-layer-record', 'conversation-graph-event', 'project-app-record', 'project-app-blob', 'topic-spawn-brief'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -377,6 +377,9 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.2): encrypted chunks + revisions of
   // custom apps. rotateKeep 0: never silently deleted; erasure destroys keys, never journal lines.
   'project-app-blob': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 0 },
+  // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): one brief per placed agent topic spawn,
+  // updated to completed when the session ends, never deleted by the step; a few archives are kept.
+  'topic-spawn-brief': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 4 },
   // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
   // never-delete would be a compliance defect). Actions are FEW + bounded (the
   // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
@@ -621,7 +624,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-list-pin': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 , 'work-card-record': 1, 'trust-grant-record': 1, 'trust-outcome-record': 1, 'session-transcript-checkpoint': 1 , 'context-layer-record': 1 , 'conversation-graph-event': 1, 'project-app-record': 1, 'project-app-blob': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-list-pin': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 , 'work-card-record': 1, 'trust-grant-record': 1, 'trust-outcome-record': 1, 'session-transcript-checkpoint': 1 , 'context-layer-record': 1 , 'conversation-graph-event': 1, 'project-app-record': 1, 'project-app-blob': 1, 'topic-spawn-brief': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -652,6 +655,7 @@ export class CoherenceJournal {
     'conversation-graph-event': 0,
     'project-app-record': 0,
     'project-app-blob': 0,
+    'topic-spawn-brief': 0,
     'conversation-read-marker': 0,
     'email-outbox-record': 0,
     'chief-of-staff-record': 0,
@@ -693,6 +697,7 @@ export class CoherenceJournal {
     'conversation-graph-event': new Set(),
     'project-app-record': new Set(),
     'project-app-blob': new Set(),
+    'topic-spawn-brief': new Set(),
     'conversation-read-marker': new Set(),
     'email-outbox-record': new Set(),
     'chief-of-staff-record': new Set(),
@@ -764,6 +769,7 @@ export class CoherenceJournal {
       'conversation-graph-event': config.retention?.['conversation-graph-event'] ?? DEFAULT_RETENTION['conversation-graph-event'],
       'project-app-record': config.retention?.['project-app-record'] ?? DEFAULT_RETENTION['project-app-record'],
       'project-app-blob': config.retention?.['project-app-blob'] ?? DEFAULT_RETENTION['project-app-blob'],
+      'topic-spawn-brief': config.retention?.['topic-spawn-brief'] ?? DEFAULT_RETENTION['topic-spawn-brief'],
       'conversation-read-marker': config.retention?.['conversation-read-marker'] ?? DEFAULT_RETENTION['conversation-read-marker'],
       'email-outbox-record': config.retention?.['email-outbox-record'] ?? DEFAULT_RETENTION['email-outbox-record'],
       'chief-of-staff-record': config.retention?.['chief-of-staff-record'] ?? DEFAULT_RETENTION['chief-of-staff-record'],
@@ -819,6 +825,7 @@ export class CoherenceJournal {
       'conversation-graph-event': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'project-app-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'project-app-blob': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'topic-spawn-brief': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'conversation-read-marker': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'email-outbox-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'chief-of-staff-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },

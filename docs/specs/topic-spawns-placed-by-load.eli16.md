@@ -14,7 +14,7 @@ When the agent asks to start work for a conversation and says "place this where 
 - **If the conversation is already running somewhere,** the work goes there, just as now. A conversation is never split across two computers.
 - **If this computer is busy and another has room,** the work starts on the other computer. It uses the same careful hand-over the system already uses to start a person's conversation on a chosen machine. That hand-over claims the conversation first, so it can never end up running twice.
 - **Later messages in that conversation** go to the computer it now lives on, the same way they do for a person's conversation.
-- **If anything is uncertain** (the other computer doesn't answer clearly), nothing is started a second time. The agent is told which computer has it, and a person is told if it still can't be confirmed after ten minutes.
+- **If anything is uncertain** (the other computer doesn't answer clearly, or the hand-over is cut off partway), nothing is started a second time. The agent is told which computer has it, and a person is told if it still can't be confirmed after ten minutes.
 - **If the work fails to start on the other computer,** that computer posts a notice in the conversation, so it's never silently lost.
 - **The other computer reads the hand-over as a task to do now,** not as something a person said and not as a resumed conversation to wait on.
 

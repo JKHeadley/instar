@@ -27,6 +27,8 @@ export interface TopicSpawnBrief {
   tmuxSession: string;
   prompt: string;
   recordedAt: string;
+  /** Placement Step 2: the machine the topic spawn was placed on (optional; older readers ignore it). */
+  placedOn?: string;
 }
 
 /** Prompts above this size are truncated on record (the route caps at 500KB). */
@@ -43,13 +45,14 @@ export class TopicSpawnBriefStore {
     return path.join(this.dir, `${Math.trunc(topicId)}.json`);
   }
 
-  record(topicId: number, tmuxSession: string, prompt: string, now: Date = new Date()): void {
+  record(topicId: number, tmuxSession: string, prompt: string, now: Date = new Date(), opts?: { placedOn?: string }): void {
     if (!Number.isFinite(topicId) || !tmuxSession || typeof prompt !== 'string' || prompt.length === 0) return;
     const brief: TopicSpawnBrief = {
       topicId: Math.trunc(topicId),
       tmuxSession,
       prompt: prompt.length > MAX_BRIEF_CHARS ? prompt.slice(0, MAX_BRIEF_CHARS) : prompt,
       recordedAt: now.toISOString(),
+      ...(typeof opts?.placedOn === 'string' && opts.placedOn.length > 0 ? { placedOn: opts.placedOn } : {}),
     };
     this.write(brief);
   }
@@ -65,6 +68,7 @@ export class TopicSpawnBriefStore {
         tmuxSession: parsed.tmuxSession,
         prompt: parsed.prompt,
         recordedAt: String(parsed.recordedAt ?? ''),
+        ...(typeof parsed.placedOn === 'string' ? { placedOn: parsed.placedOn } : {}),
       };
     } catch {
       // @silent-fallback-ok: no brief (missing or unreadable file) is the
@@ -116,5 +120,21 @@ export function formatCarriedBriefBlock(prompt: string): string {
     ``,
     prompt,
     `--- End Original Task Brief ---`,
+  ].join('\n');
+}
+
+/**
+ * Placement Step 2: the block a session started by the agent itself gets as its first input
+ * (spawnOpts.agentTask). It is a NEW task to do now: no restart wording, no "wait silently"
+ * hand-off instruction, and never "the user's latest message". Pure — exported for tests.
+ */
+export function formatAgentTaskBlock(task: string): string {
+  return [
+    `--- Task started by the agent: do this now ---`,
+    `This session was started by the agent itself (not by a person) to do the task below.`,
+    `It is a new task, not a resumed conversation: start working on it now.`,
+    ``,
+    task,
+    `--- End task ---`,
   ].join('\n');
 }

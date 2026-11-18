@@ -177,7 +177,7 @@ The work itself must survive that too. The brief is replicated to every pool mac
 
 ## Tracked follow-through
 
-Step 4 (CMT-1938) stays as tracked in the parent spec. Nothing new is deferred by this step.
+Step 4 (CMT-1938) stays as tracked in the parent spec. This step leaves no new work for later.
 
 ## Accepted conformance flags
 

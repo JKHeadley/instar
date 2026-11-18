@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-18T22:47:16.522Z",
+  "slug": "topic-spawns-placed-by-load",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 875,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/TopicSpawnBriefReplicatedStore.ts",
+      "src/core/TopicSpawnBriefStore.ts",
+      "src/core/agentSessionPlacement.ts",
+      "src/core/dashboardTopicProfile.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/topicSpawnPlacement.ts",
+      "src/core/types.ts",
+      "src/data/awareness/agent-sessions-placed-by-load.md",
+      "src/data/feature-ladders.json",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 834,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
