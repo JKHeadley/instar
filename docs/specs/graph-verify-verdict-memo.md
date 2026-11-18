@@ -125,7 +125,7 @@ Not a state surface: the memo is derived, process-local and behaviour-identical 
 - **fleet:** the same release; ungated, with the `INSTAR_GRAPH_VERDICT_MEMO=off` kill switch for any machine.
 - **graduation criterion:** on the rig, memo-on shows no repeated `verify`/`fullyPersisted` for unchanged eligible rows after warm-up and a lower longest graph step than memo-off on the same snapshot; and the dev-agent week shows no divergence in check-mode suites. A run with zero Accept all records is not a pass.
 - **dark-window:** none, live on release; if the rig criterion is not met within 7 days of merge, the reason and a new date are recorded in topic 144559 and the kill switch is set on the Studio.
-- **ladder:** none (no config flag, live on release, environment kill switch)
+- **ladder:** not applicable: no config flag, live on release, an environment kill switch is the step back
 
 ## Rollback
 
