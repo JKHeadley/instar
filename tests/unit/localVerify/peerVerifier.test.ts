@@ -17,7 +17,7 @@ import { computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
 import {
-  PEER_LIMITS, importRefusal, noteFailure, parsePeerRunRequest, parsePeers, peerHealthy,
+  PEER_LIMITS, importRefusal, noteFailure, parsePeerMainRun, parsePeerRunRequest, parsePeers, peerHealthy,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type RemoteMarker,
 } from '../../../src/localVerify/peer.js';
 
@@ -218,18 +218,20 @@ import { AutoUpdater } from '../../../src/core/AutoUpdater.js';
 import type { UpdateChecker } from '../../../src/core/UpdateChecker.js';
 import type { StateManager } from '../../../src/core/StateManager.js';
 
-function coordinator(opts: { epoch?: number; holds?: boolean } = {}) {
+function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean } = {}) {
   const h = harness();
   const peer = fakePeer();
   let epoch = opts.epoch ?? 7;
   let holds = opts.holds ?? true;
+  let mainOnPeers = opts.mainOnPeers ?? false;
   h.svc.setPeerWiring({
     peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }],
     client: peer.client,
     lease: { holdsLease: () => holds, leaseEpoch: () => epoch, holderMachineId: () => 'coord' },
+    mainOnPeers: () => mainOnPeers,
   });
   peer.watchQueue(() => h.queueFile());
-  return { ...h, peer, setEpoch: (e: number) => { epoch = e; }, setHolds: (v: boolean) => { holds = v; } };
+  return { ...h, peer, setEpoch: (e: number) => { epoch = e; }, setHolds: (v: boolean) => { holds = v; }, setMainOnPeers: (v: boolean) => { mainOnPeers = v; } };
 }
 
 // ── coordinator ────────────────────────────────────────────────────────
@@ -1190,5 +1192,409 @@ describe('coordinator — peer fit (resource-aware placement)', () => {
     await c.svc.request(1);
     await c.runTimers();
     expect(c.sentTo[0]).toBe('mini');
+  });
+});
+
+// ── a `main` verify on a peer ──────────────────────────────────────────
+
+describe('a main verify on whichever host is free', () => {
+  const HEAD = sha('d');
+  const mainReq = (over: Partial<PeerRunRequest> = {}): PeerRunRequest => runReq({ pr: 0, headSha: HEAD, baseSha: HEAD, kind: 'main', ...over });
+  const mainRecord = (req: PeerRunRequest, over: Partial<LocalVerifyRecord> = {}) => record({
+    pr: 0, kind: 'main', headSha: req.headSha, baseSha: req.baseSha, machineId: 'peer1',
+    startedAt: new Date(Date.parse('2026-10-21T12:00:00.000Z') + 60_000).toISOString(),
+    attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 }, ...over,
+  });
+  /** main queued while another suite holds the coordinator's slot, then handed to the idle peer. */
+  async function mainOnPeer() {
+    const c = coordinator({ mainOnPeers: true });
+    c.setForeignHolders([9001]);
+    c.svc.noteMainHead(HEAD);
+    await c.runTimers();
+    return { c, req: c.peer.runs()[0] };
+  }
+
+  describe('the request and the record (pure)', () => {
+    it('accepts a main request only in its exact shape', () => {
+      expect(parsePeerRunRequest(mainReq())).not.toBeNull();
+      expect(parsePeerRunRequest(mainReq({ pr: 1 }))).toBeNull();
+      expect(parsePeerRunRequest(mainReq({ baseSha: sha('b') }))).toBeNull();
+      expect(parsePeerRunRequest(mainReq({ baseRefName: 'release' }))).toBeNull();
+      expect(parsePeerRunRequest(mainReq({ preflightRediscoverable: true }))).toBeNull();
+      expect(parsePeerRunRequest(mainReq({ isolation: { allowed: true, notCleanOnGreenMain: [] } }))).toBeNull();
+      expect(parsePeerRunRequest({ ...mainReq(), kind: 'other' })).toBeNull();
+      // A PR request still needs a real PR number, with or without the new key.
+      expect(parsePeerRunRequest(runReq({ pr: 0 }))).toBeNull();
+      expect(parsePeerRunRequest(runReq())).not.toBeNull();
+    });
+    it('imports a main record only for a main dispatch, and a PR record only for a PR dispatch', () => {
+      const ctx = { repo: REPO, verifierVersion: '1.0.0', policyHash: POLICY, holdsLease: true, leaseEpoch: 7, coordinatorMachineId: 'coord' };
+      const m = marker({ dispatched: { pr: 0, headSha: HEAD, baseSha: HEAD, baseRefName: 'main', verifierVersion: '1.0.0', policyHash: POLICY, kind: 'main' } });
+      const rec = mainRecord(mainReq());
+      expect(importRefusal(rec, m, ctx)).toBeNull();
+      expect(importRefusal({ ...rec, attempt: undefined }, m, ctx)).toBe('no-attempt');
+      expect(importRefusal(record({ attempt: { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 } }), m, ctx)).toBe('wrong-kind');
+      expect(importRefusal(rec, marker(), ctx)).toBe('wrong-kind');
+    });
+    it('bounds and shape-checks the failure detail a peer sends with a red main', () => {
+      expect(parsePeerMainRun(undefined)).toBeUndefined();
+      expect(parsePeerMainRun({ reasons: [], failures: [] })).toBeUndefined();
+      const many = Array.from({ length: 80 }, (_, i) => ({ file: `tests/unit/f${i}.test.ts`, lane: 'unit', failed: 1, message: 'x'.repeat(5000) }));
+      const run = parsePeerMainRun({ reasons: ['unit lane failed', 7, ''], failures: [...many, { file: 5 }, null, { file: '' }] })!;
+      expect(run.reasons).toEqual(['unit lane failed']);
+      expect(run.failures).toHaveLength(30);
+      expect(run.failures[0]).toEqual({ file: 'tests/unit/f0.test.ts', lane: 'unit', failed: 1, message: 'x'.repeat(2000) });
+    });
+  });
+
+  describe('coordinator', () => {
+    it('hands a waiting main verify to an idle peer when its own slot is taken, with the reservation saved before the send', async () => {
+      const { c, req } = await mainOnPeer();
+      expect(c.spawned).toHaveLength(0);
+      expect(req).toMatchObject({ pr: 0, kind: 'main', headSha: HEAD, baseSha: HEAD, baseRefName: 'main', coordinatorMachineId: 'coord' });
+      expect(req.isolation).toBeUndefined(); // a main verify has no isolation input
+      const atSend = c.peer.queueAtSend() as { entries: Array<{ kind?: string; pr: number; remote?: { attemptId: string; state: string; dispatched: { kind?: string } } }> };
+      expect(atSend.entries).toEqual([expect.objectContaining({ kind: 'main', pr: 0, remote: expect.objectContaining({ attemptId: req.attemptId, state: 'sending', dispatched: expect.objectContaining({ kind: 'main' }) }) })]);
+      expect(c.svc.mainHealth()).toMatchObject({ mainInFlight: HEAD, pendingMainHead: null });
+    });
+
+    it('fair share holds on the peer too: a waiting PR goes first until main is due, then main goes', async () => {
+      const early = coordinator({ mainOnPeers: true });
+      early.setForeignHolders([9001]);
+      early.svc.noteMainHead(HEAD);
+      await early.svc.request(1);
+      await early.runTimers();
+      expect(early.peer.runs().map((r) => r.pr)).toEqual([1]); // main not due: the PR takes the free peer
+
+      const due = coordinator({ mainOnPeers: true });
+      due.setForeignHolders([9001]);
+      due.svc.noteMainHead(HEAD);
+      await due.svc.request(1);
+      due.advance(91 * 60_000); // past the fair-share window
+      await due.runTimers();
+      expect(due.peer.runs().map((r) => r.kind ?? r.pr)).toEqual(['main']);
+      expect(due.svc.snapshot().queue.some((e) => e.pr === 1 && !e.remote)).toBe(true); // the PR keeps its place
+    });
+
+    it('a green main record from the peer feeds main health, never the PR index', async () => {
+      const { c, req } = await mainOnPeer();
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(req) }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth()).toMatchObject({ state: 'healthy', lastGreenHead: HEAD, mainInFlight: null });
+      expect(c.svc.snapshot().queue).toEqual([]);
+      expect(c.svc.getRecord(0, HEAD, 'main')).toBeNull();
+      expect(fs.existsSync(path.join(c.stateDir, 'state', 'local-verify', 'journal.jsonl'))).toBe(false);
+    });
+
+    it('a green peer run covers merges by the coordinator\'s own clock and the first newer head, never the peer\'s clock', async () => {
+      const { c, req } = await mainOnPeer();
+      const obs = (c.svc as unknown as { mainObs: { oldestUnverifiedAt: number | null } }).mainObs;
+      const dispatchedAt = Date.parse('2026-10-21T12:00:00.000Z');
+      expect(obs.oldestUnverifiedAt).toBe(dispatchedAt);
+      c.advance(60_000);
+      c.svc.noteMainHead(sha('e')); // a merge the peer run does not contain, first seen one minute after dispatch
+      c.advance(60_000);
+      // The peer's clock runs an hour ahead.
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(req, { startedAt: new Date(dispatchedAt + 60 * 60_000).toISOString(), finishedAt: new Date(dispatchedAt + 61 * 60_000).toISOString() }) }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth().lastGreenHead).toBe(HEAD);
+      // Unverified since the newer head was first seen: not cleared, and not the peer's future time.
+      expect(obs.oldestUnverifiedAt).toBe(dispatchedAt + 60_000);
+    });
+
+    it('a red main record from the peer turns main suspect, keeps the failing files, and queues the re-run', async () => {
+      const { c, req } = await mainOnPeer();
+      c.peer.setResult(() => ({
+        state: 'done', record: mainRecord(req, { outcome: 'failure' }),
+        run: { reasons: ['unit lane failed'], failures: [{ file: 'tests/unit/broken.test.ts', lane: 'unit', failed: 1, message: 'expected 1 to be 2' }] },
+      }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth().state).toBe('main-suspect');
+      const saved = JSON.parse(fs.readFileSync(path.join(c.stateDir, 'state', 'local-verify', 'main-failure.json'), 'utf-8')) as { detail: { headSha: string; files: string[] } };
+      expect(saved.detail).toMatchObject({ headSha: HEAD, files: ['tests/unit/broken.test.ts'] });
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => e.headSha)).toEqual([HEAD]); // the re-run of the failed head
+      // The confirming re-run is the coordinator's own: a peer can make main suspect, never red.
+      for (let i = 0; i < 4; i++) { c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); await c.runTimers(); }
+      expect(c.peer.runs()).toHaveLength(1);
+      expect(c.svc.snapshot().peers.reserved).toEqual([]);
+      c.setForeignHolders([]);
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+      expect(JSON.parse(fs.readFileSync(c.spawned[0].inputPath, 'utf-8'))).toMatchObject({ kind: 'main', headSha: HEAD });
+    });
+
+    it('a record that arrives after main stopped being healthy is not judged in either direction: the coordinator runs it itself', async () => {
+      for (const outcome of ['failure', 'success'] as const) {
+        const { c, req } = await mainOnPeer();
+        // Main turns suspect while the peer runs (here: the state file says so, as after a boot or a too-long-unverified alarm).
+        const health = (c.svc as unknown as { health: { snapshot(): { state: string }; isHealthy(): boolean } }).health;
+        const real = health.isHealthy.bind(health);
+        health.isHealthy = () => false;
+        c.peer.setResult(() => ({ state: 'done', record: mainRecord(req, { outcome }) }));
+        await c.svc.tick();
+        await c.flush();
+        health.isHealthy = real;
+        expect(c.svc.mainHealth().lastGreenHead).toBeNull(); // nothing was recorded
+        expect(c.svc.mainHealth().state).toBe('healthy'); // and nothing turned suspect or red from it
+        expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => [e.headSha, !!e.remote])).toEqual([[HEAD, false]]);
+        expect(fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8')).toContain('"event":"peer-main-unjudged"');
+      }
+    });
+
+    it('when main stops being healthy while a peer runs its verify, the run is taken back at the next poll and cancelled', async () => {
+      const { c, req } = await mainOnPeer();
+      const health = (c.svc as unknown as { health: { isHealthy(): boolean } }).health;
+      health.isHealthy = () => false;
+      c.advance(PEER_LIMITS.pollMs);
+      await c.svc.tick(); // the peer answers "running"
+      expect(c.svc.snapshot().peers.reserved).toEqual([]);
+      expect(c.peer.calls.some((x) => x.kind === 'cancel' && x.arg === req.attemptId)).toBe(true);
+      expect(c.signals.some((k) => k.startsWith('local-verify:peer-breaker:'))).toBe(false);
+      // Not offered to the peer again while unhealthy: it waits for the coordinator's own slot.
+      for (let i = 0; i < 3; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.peer.runs()).toHaveLength(1);
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => [e.headSha, !!e.remote])).toEqual([[HEAD, false]]);
+    });
+
+    it('a red main record whose failure detail is missing or malformed still turns main suspect, with no files named', async () => {
+      const { c, req } = await mainOnPeer();
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(req, { outcome: 'failure' }) }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth().state).toBe('main-suspect');
+      const saved = JSON.parse(fs.readFileSync(path.join(c.stateDir, 'state', 'local-verify', 'main-failure.json'), 'utf-8')) as { detail: { files: string[] } };
+      expect(saved.detail.files).toEqual([]);
+    });
+
+    it('the switch is off unless set: main stays on the coordinator, and turning it off live stops new hand-outs', async () => {
+      const off = coordinator();
+      off.setForeignHolders([9001]);
+      off.svc.noteMainHead(HEAD);
+      for (let i = 0; i < 3; i++) { await off.runTimers(); off.advance(PEER_LIMITS.statusMs); await off.svc.tick(); }
+      expect(off.peer.runs()).toHaveLength(0);
+      expect(off.svc.snapshot().queue.filter((e) => e.kind === 'main' && !e.remote)).toHaveLength(1);
+
+      const { c, req } = await mainOnPeer();
+      c.setMainOnPeers(false); // a reserved attempt finishes as usual
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(req) }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth().lastGreenHead).toBe(HEAD);
+      c.advance(60_000); c.svc.noteMainHead(sha('e')); c.advance(10 * 60_000); c.svc.noteMainHead(sha('e'));
+      for (let i = 0; i < 3; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.peer.runs()).toHaveLength(1); // nothing new went out
+    });
+
+    it('main is not offered to a peer while the coordinator runs a main verify itself', async () => {
+      const c = coordinator({ mainOnPeers: true });
+      c.svc.noteMainHead(HEAD); // free local slot: it starts here
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+      c.advance(60_000); c.svc.noteMainHead(sha('e')); c.advance(10 * 60_000); c.svc.noteMainHead(sha('e'));
+      for (let i = 0; i < 3; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => e.headSha)).toEqual([sha('e')]);
+      expect(c.peer.runs()).toHaveLength(0);
+    });
+
+    it('a peer that cannot confirm main three times in a row is offered no main verify for a while, with one signal', async () => {
+      const c = coordinator({ mainOnPeers: true });
+      c.setForeignHolders([9001]);
+      c.peer.setRun((r) => (r.kind === 'main' ? { ok: false, reason: 'pr-unreadable' } : { ok: true, attemptId: r.attemptId }));
+      c.svc.noteMainHead(HEAD);
+      for (let i = 0; i < 4; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.peer.runs()).toHaveLength(2); // the entry's two peer attempts
+      // A newer head is a fresh entry: its first refusal is the third in a row.
+      c.advance(60_000); c.svc.noteMainHead(sha('e')); c.advance(10 * 60_000); c.svc.noteMainHead(sha('e'));
+      for (let i = 0; i < 4; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.peer.runs()).toHaveLength(3);
+      expect(c.signals.filter((k) => k === 'local-verify:peer-main-unconfirmed:peer1')).toHaveLength(1);
+      expect(c.signals.some((k) => k.startsWith('local-verify:peer-breaker:'))).toBe(false);
+      // Paused: the peer still takes PRs.
+      await c.svc.request(1);
+      for (let i = 0; i < 2; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.peer.runs().map((r) => r.kind ?? r.pr)).toEqual(['main', 'main', 'main', 1]);
+    });
+
+    it('a second main reservation found in the saved queue is dropped and audited, never restored', async () => {
+      const { c, req } = await mainOnPeer();
+      c.svc.shutdown();
+      const file = path.join(c.stateDir, 'state', 'local-verify', 'queue.json');
+      const q = JSON.parse(fs.readFileSync(file, 'utf-8')) as { v: number; entries: Array<Record<string, unknown>> };
+      const second = JSON.parse(JSON.stringify(q.entries[0])) as { headSha: string; baseSha: string; remote: { attemptId: string; dispatched: { headSha: string; baseSha: string } } };
+      second.headSha = second.baseSha = second.remote.dispatched.headSha = second.remote.dispatched.baseSha = sha('e');
+      second.remote.attemptId = 'f'.repeat(32);
+      fs.writeFileSync(file, JSON.stringify({ v: 1, entries: [...q.entries, second] }));
+      const h2 = harness({ stateDir: c.stateDir });
+      h2.svc.setPeerWiring({ peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client: fakePeer().client, lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' }, mainOnPeers: () => true });
+      await h2.svc.boot();
+      expect(h2.svc.snapshot().peers.reserved).toEqual([expect.objectContaining({ pr: 0, attemptId: req.attemptId })]);
+      const audit = fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8');
+      expect(audit).toContain('"event":"queue-restore-dropped","kind":"main"');
+    });
+
+    it('a newer head never cancels the peer run: it queues behind it and does not start beside it', async () => {
+      const { c, req } = await mainOnPeer();
+      c.setForeignHolders([]); // the coordinator's own slot is free again
+      c.advance(60_000);
+      c.svc.noteMainHead(sha('e'));
+      c.advance(10 * 60_000);
+      c.svc.noteMainHead(sha('e'));
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.peer.calls.some((x) => x.kind === 'cancel')).toBe(false);
+      const mains = c.svc.snapshot().queue.filter((e) => e.kind === 'main');
+      expect(mains.find((e) => e.remote)?.headSha).toBe(HEAD);
+      expect(c.spawned).toHaveLength(0); // one main verify at a time, on either host
+      // When the peer run ends green, the pending one may start.
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(req) }));
+      c.advance(PEER_LIMITS.pollMs);
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.svc.mainHealth().lastGreenHead).toBe(HEAD);
+      // ... and it does: the newer head now runs here (the peer is asked for nothing more).
+      await c.flush();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+      expect(JSON.parse(fs.readFileSync(c.spawned[0].inputPath, 'utf-8'))).toMatchObject({ kind: 'main', headSha: sha('e') });
+    });
+
+    it('a peer that goes silent gives the main verify back within minutes, not at the run bound', async () => {
+      const { c, req } = await mainOnPeer();
+      c.peer.setResult(() => null); // unreachable
+      c.peer.setStatus(null);
+      for (let i = 0; i < 4; i++) { c.advance(PEER_LIMITS.pollMs); await c.svc.tick(); }
+      expect(c.svc.snapshot().peers.reserved).toHaveLength(1); // four minutes: still the peer's
+      for (let i = 0; i < 2; i++) { c.advance(PEER_LIMITS.pollMs); await c.svc.tick(); }
+      expect(c.svc.snapshot().peers.reserved).toEqual([]);
+      expect(c.peer.calls.some((x) => x.kind === 'cancel' && x.arg === req.attemptId)).toBe(true);
+      // The entry is the coordinator's again and starts as soon as its slot is free.
+      c.setForeignHolders([]);
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+      expect(JSON.parse(fs.readFileSync(c.spawned[0].inputPath, 'utf-8'))).toMatchObject({ kind: 'main', headSha: HEAD });
+    });
+
+    it('a peer that keeps answering "running" keeps a long main verify', async () => {
+      const { c } = await mainOnPeer();
+      for (let i = 0; i < 20; i++) { c.advance(PEER_LIMITS.pollMs); await c.svc.tick(); }
+      expect(c.svc.snapshot().peers.reserved).toHaveLength(1);
+      expect(c.peer.calls.some((x) => x.kind === 'cancel')).toBe(false);
+    });
+
+    it('an error record from the peer hands the main verify back; it is not judged and not lost', async () => {
+      const { c, req } = await mainOnPeer();
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(req, { outcome: 'error', errorStep: 'peer-crash' }) }));
+      c.peer.setStatus({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: true }); // no second hand-out in this test
+      c.advance(PEER_LIMITS.statusMs);
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth()).toMatchObject({ state: 'healthy', lastGreenHead: null });
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => [e.headSha, !!e.remote])).toEqual([[HEAD, false]]);
+    });
+
+    it('a main verify taken back beside a newer pending head is dropped: the newer one covers it', async () => {
+      const { c } = await mainOnPeer();
+      c.advance(60_000);
+      c.svc.noteMainHead(sha('e'));
+      c.advance(10 * 60_000);
+      c.svc.noteMainHead(sha('e')); // debounced enqueue of the newer head
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main')).toHaveLength(2);
+      c.setHolds(false); // the lease moves: the reservation is abandoned
+      await c.svc.tick();
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => [e.headSha, !!e.remote])).toEqual([[sha('e'), false]]);
+    });
+
+    it('a peer that cannot confirm the head is not counted as a failing peer', async () => {
+      const c = coordinator({ mainOnPeers: true });
+      c.setForeignHolders([9001]);
+      c.peer.setRun(() => ({ ok: false, reason: 'head-moved' }));
+      c.svc.noteMainHead(HEAD);
+      for (let i = 0; i < 6; i++) { await c.runTimers(); c.advance(PEER_LIMITS.statusMs); await c.svc.tick(); }
+      expect(c.signals.some((k) => k.startsWith('local-verify:peer-breaker:'))).toBe(false);
+      // The attempts are spent: after the limit the entry is the coordinator's own.
+      expect(c.peer.runs()).toHaveLength(PEER_LIMITS.maxAttemptsPerEntry);
+      expect(c.svc.snapshot().queue.filter((e) => e.kind === 'main' && !e.remote)).toHaveLength(1);
+    });
+
+    it('a restart keeps the main reservation and imports the same attempt', async () => {
+      const { c, req } = await mainOnPeer();
+      c.svc.shutdown();
+      const saved = c.queueFile().entries as Array<{ kind?: string; remote?: { attemptId: string } }>;
+      expect(saved).toEqual([expect.objectContaining({ kind: 'main', remote: expect.objectContaining({ attemptId: req.attemptId }) })]);
+      const h2 = harness({ stateDir: c.stateDir });
+      const peer2 = fakePeer();
+      peer2.setResult(() => ({ state: 'done', record: mainRecord(req) }));
+      h2.svc.setPeerWiring({ peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client: peer2.client, lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' }, mainOnPeers: () => true });
+      await h2.svc.boot();
+      expect(h2.svc.snapshot().peers.reserved).toEqual([expect.objectContaining({ pr: 0, attemptId: req.attemptId })]);
+      await h2.svc.tick();
+      await h2.flush();
+      expect(h2.svc.mainHealth().lastGreenHead).toBe(HEAD);
+    });
+
+    it('an unreserved main entry is still never saved (it is re-derived)', async () => {
+      const c = coordinator({ mainOnPeers: true });
+      c.setForeignHolders([9001]);
+      c.peer.setStatus({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: true });
+      c.svc.noteMainHead(HEAD);
+      await c.runTimers();
+      expect(c.peer.runs()).toHaveLength(0);
+      expect(c.queueFile().entries).toEqual([]);
+    });
+  });
+
+  describe('peer', () => {
+    function peerSide(mainHead: string) {
+      const h = harness({ peerOnly: true, machineId: 'peer1' });
+      h.svc.setPeerWiring({ peerRoleEnabled: () => true });
+      h.seams.baseHead = async () => mainHead;
+      return h;
+    }
+    const notHolder = { holdsLease: false, holderMachineId: 'coord' };
+
+    it('runs main at its head, as a main verify that carries the attempt, and returns the failing files with a red result', async () => {
+      const h = peerSide(HEAD);
+      expect(await h.svc.peerRun(mainReq(), notHolder)).toEqual({ ok: true, attemptId: ATT });
+      const input = JSON.parse(fs.readFileSync(h.spawned[0].inputPath, 'utf-8'));
+      expect(input).toMatchObject({ pr: 0, kind: 'main', headSha: HEAD, baseSha: HEAD, attempt: { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 } });
+      expect(input.isolation).toBeUndefined();
+      expect(input.preflightMode).toBeUndefined();
+      const rec = mainRecord(mainReq(), { outcome: 'failure' });
+      await h.finish(0, { kind: 'record', record: rec, reasons: ['unit lane failed'], overlaps: [], keptWorktree: null,
+        failures: [{ file: 'tests/unit/broken.test.ts', lane: 'unit', failed: 1, message: 'expected 1 to be 2' }] });
+      expect(h.svc.peerResult(ATT)).toEqual({ state: 'done', record: rec,
+        run: { reasons: ['unit lane failed'], failures: [{ file: 'tests/unit/broken.test.ts', lane: 'unit', failed: 1, message: 'expected 1 to be 2' }] } });
+      // The peer never judges main itself.
+      expect(h.svc.mainHealth().state).toBe('healthy');
+    });
+
+    it('a crashed main run still answers with a valid error record for the attempt', async () => {
+      const h = peerSide(HEAD);
+      await h.svc.peerRun(mainReq(), notHolder);
+      await h.finish(0, null);
+      const res = h.svc.peerResult(ATT);
+      expect(res).toMatchObject({ state: 'done', record: { kind: 'main', pr: 0, outcome: 'error', attempt: { id: ATT } } });
+    });
+
+    it('accepts the commit directly under main (a release commit on top), refuses a head main does not contain', async () => {
+      const under = peerSide(sha('f'));
+      under.seams.commitInfo = async (s) => (s === sha('f') ? { subject: 'chore: release v1', parents: [HEAD], files: null } : null);
+      expect(await under.svc.peerRun(mainReq(), notHolder)).toEqual({ ok: true, attemptId: ATT });
+
+      const stranger = peerSide(sha('f'));
+      stranger.seams.commitInfo = async () => ({ subject: 'x', parents: [sha('9')], files: null });
+      stranger.seams.isAncestor = async () => false;
+      expect(await stranger.svc.peerRun(mainReq(), notHolder)).toEqual({ ok: false, reason: 'head-moved' });
+      expect(stranger.spawned).toHaveLength(0);
+
+      const blind = peerSide(HEAD);
+      blind.seams.baseHead = async () => null;
+      expect(await blind.svc.peerRun(mainReq(), notHolder)).toEqual({ ok: false, reason: 'pr-unreadable' });
+    });
   });
 });

@@ -550,4 +550,32 @@ describe('Conversations page', () => {
     expect(doc.body.textContent).toContain('This browser was removed.');
     expect(idb.stores.get('device')?.has('m1')).toBe(false);
   });
+
+  it('an agent message shows its inline markdown as styling, built from elements, never markup', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const text = '**Build things.** see `npm test`, [docs](https://example.com/a) and [bad](javascript:alert(1)) <img src=x onerror=alert(1)>';
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [{ eventId: 'e1', messageId: 'msg-1', role: 'agent', text, at: new Date().toISOString() }], nextBefore: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const body = doc.querySelector('.chat-bubble.chat-left .chat-text')!;
+    expect(body).toBeTruthy();
+    expect(body.querySelector('strong')?.textContent).toBe('Build things.');
+    expect(body.textContent).not.toContain('**');
+    expect(body.querySelector('code')?.textContent).toBe('npm test');
+    const links = [...body.querySelectorAll('a')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com/a']);
+    expect(links[0].getAttribute('target')).toBe('_blank');
+    expect(links[0].getAttribute('rel')).toBe('noopener noreferrer');
+    expect(body.textContent).toContain('[bad](javascript:alert(1))');
+    expect(body.querySelector('img')).toBeNull();
+    expect(body.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
 });

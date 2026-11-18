@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "main-verify-either-host",
+  "sessionId": "9d6ea36e-2ba6-4499-9c2e-afafd6fbb081",
+  "timestamp": "2026-11-17T21:12:28.826Z",
+  "artifactPath": "upgrades/side-effects/main-verify-either-host.md",
+  "artifactSha256": "2c2c414ad3d296afa8cf61424df5244fc1c3ce67d811824e72fd281c5fc213f9",
+  "specPath": "docs/specs/local-verify-main-on-peer.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-main-on-peer.eli16.md",
+    "docs/specs/local-verify-main-on-peer.md",
+    "docs/specs/reports/local-verify-main-on-peer-convergence.md",
+    "src/data/awareness/local-verify-main-on-peers.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/record.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/localVerify/record.test.ts",
+    "upgrades/next/main-verify-either-host.md",
+    "upgrades/side-effects/main-verify-either-host.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Amends one clause of an approved spec (a peer may run the main verify while main is healthy); peer protocol field, record validation, coordinator dispatch/import, a default-off live config switch; converged in 8 review rounds and approved by the maintainer desk.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

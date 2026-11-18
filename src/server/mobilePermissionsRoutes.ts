@@ -18,6 +18,10 @@
  *   POST /mobile/sessions/default                   — set or clear the default door and model for new topics
  *   POST /mobile/accounts/sign-in/start             — start a fresh sign-in for one account on one machine (docs/specs/account-sign-in-face-id.md)
  *   POST /mobile/accounts/add                       — add a Claude or Codex account and start its sign-in here (docs/specs/account-add-face-id.md)
+ *   GET  /mobile/trust/requests                     — trust raises waiting for the person, and the last 7 days' results (docs/specs/app-trust-approval.md)
+ *   POST /mobile/trust/requests/:id/approve         — approve one trust raise with a presence signature (`approve-widening`)
+ *   POST /mobile/trust/device-acceptance            — a device records its own acceptance, or an accepted device approves a new one (`accept-device`)
+ *   POST /mobile/trust/device-acceptance/withdraw   — withdraw a device's acceptance (a narrowing)
  *
  * The reads: the bearer or an owner phone. The writes: ONLY an active owner phone that signs the
  * request with its device key AND carries a fresh presence-key signature (Face ID / Touch ID /
@@ -49,6 +53,8 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { isNewAccountKind, type NewAccountKind } from '../core/newSubscriptionAccountId.js';
+import { keyHashOf, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
+import { arrivedLocallyUnforwarded, trustAnswerStatus, type MobileTrustPort } from './mobileTrustApproval.js';
 
 export const MOBILE_PERMISSIONS_SCHEMA_VERSION = 1;
 export const PERMISSION_ACTION_VERSION = 'instar-permission-action-v1';
@@ -86,6 +92,16 @@ export function isPermissionActionsEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.permissionActions?.enabled, config);
 }
 
+/**
+ * `mobilePairing.trustApproval.enabled`: approving trust raises from a paired device (app-trust-approval).
+ * A separate switch from phone permission changes. A new agent gets it on at install (Justin, topic 143810,
+ * 2026-11-16 20:35 PST: "support Instar app only as the primary route"); an existing fleet agent keeps it
+ * dark until set, and a development agent has it live.
+ */
+export function isTrustApprovalEnabled(config: InstarConfig): boolean {
+  return resolveDevAgentGate(config.mobilePairing?.trustApproval?.enabled, config);
+}
+
 // ── the action line ───────────────────────────────────────────────────────────
 
 export type PermissionAction =
@@ -109,7 +125,15 @@ export type PermissionAction =
   /** Add a Claude or Codex account (account-add-face-id): the kind is the signed target. */
   | { kind: 'account-add'; target: NewAccountKind }
   /** A tap on a work card (work-board-asks §4): the signed line covers the action and everything it binds to. */
-  | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields };
+  | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields }
+  /** Approve one trust raise (app-trust-approval §B): the request and its exact proposal hash. */
+  | { kind: 'approve-widening'; target: string; proposalHash: string }
+  /**
+   * A device acceptance (app-trust-approval §A): the device it is for, that device's key fingerprint
+   * and the hash of the disclosure it shows. Signed by the device itself to record its own, or by an
+   * accepted device to approve a new one.
+   */
+  | { kind: 'accept-device'; target: string; keyFingerprint: string; disclosureHash: string };
 
 /** The fields one work-card tap binds to; the title enters the signature only through its hash. */
 export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }
@@ -160,6 +184,8 @@ export function actionLine(a: PermissionAction): string {
     case 'account-sign-in': return `account-sign-in ${a.target}`;
     case 'account-add': return `account-add ${a.target}`;
     case 'work-card-tap': return tapActionLine({ cardId: a.target, ...a.tap });
+    case 'approve-widening': return `approve-widening ${a.target} ${a.proposalHash}`;
+    case 'accept-device': return `accept-device ${a.target} ${a.keyFingerprint} ${a.disclosureHash}`;
   }
 }
 
@@ -172,7 +198,12 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 }
 
 /** Builds an action from its parts, or names what is wrong with them. */
-export function buildAction(kind: unknown, target: unknown, extra: { tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+/** A trust request id as AccountPathService mints one: `tr-<12 hex>-<code>`. */
+export const TRUST_REQUEST_ID = /^tr-[0-9a-f]{12}-[0-9A-Z]{6}$/;
+/** A device key fingerprint as `deviceFingerprint` writes one. */
+export const KEY_FINGERPRINT = /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/;
+
+export function buildAction(kind: unknown, target: unknown, extra: { keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
   if (kind === 'work-card-tap') {
     if (!isCardId(target)) return { ok: false, error: 'bad-target' };
@@ -191,6 +222,17 @@ export function buildAction(kind: unknown, target: unknown, extra: { tapAction?:
       tap.answer = extra.answer;
     }
     return { ok: true, action: { kind, target, tap } };
+  }
+  if (kind === 'approve-widening') {
+    if (typeof target !== 'string' || !TRUST_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'accept-device') {
+    if (typeof target !== 'string' || !TARGET_PATTERN.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.keyFingerprint !== 'string' || !KEY_FINGERPRINT.test(extra.keyFingerprint)) return { ok: false, error: 'bad-key-fingerprint' };
+    if (typeof extra.disclosureHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.disclosureHash)) return { ok: false, error: 'bad-disclosure-hash' };
+    return { ok: true, action: { kind, target, keyFingerprint: extra.keyFingerprint, disclosureHash: extra.disclosureHash } };
   }
   // An account sign-in names `<accountId>@<machineId>`, split and re-checked part by part.
   if (kind === 'account-sign-in') {
@@ -303,7 +345,7 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
 
 /** The fields one request can carry into `buildAction`. */
 function actionExtras(b: Rec): Parameters<typeof buildAction>[2] {
-  return { tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
+  return { keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
 }
 
 /** Text that holds a token, before or after cleaning: a name is not where a key goes. */
@@ -341,12 +383,18 @@ export class ActionChallengeStore {
 
   /** Deletes the secret first; true only when it was live and bound to exactly this device, Host and line. */
   consume(secret: unknown, deviceId: string, host: string, line: string): boolean {
-    if (typeof secret !== 'string' || !SECRET_PATTERN.test(secret)) return false;
+    return this.take(secret, deviceId, host, line) !== null;
+  }
+
+  /** `consume`, answering the challenge's own expiry and reference when it was good (null otherwise). */
+  take(secret: unknown, deviceId: string, host: string, line: string): { expiresAt: number; ref: string } | null {
+    if (typeof secret !== 'string' || !SECRET_PATTERN.test(secret)) return null;
     const digest = sha256(secret);
     const e = this.entries.get(digest);
-    if (!e) return false;
+    if (!e) return null;
     this.entries.delete(digest);
-    return e.expiresAt > this.now() && e.deviceId === deviceId && e.host === host.toLowerCase() && e.line === line;
+    const ok = e.expiresAt > this.now() && e.deviceId === deviceId && e.host === host.toLowerCase() && e.line === line;
+    return ok ? { expiresAt: e.expiresAt, ref: digest.slice(0, 12) } : null;
   }
 
   size(): number { this.prune(); return this.entries.size; }
@@ -359,7 +407,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'work-card-tap' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -673,6 +721,8 @@ export interface MobilePermissionsDeps {
   addAccount?: (input: { kind: NewAccountKind; nickname: string | null; email: string }) => Promise<ActionResult>;
   /** Apply the owner's tap to a work card (work-board-asks §4); absent ⇒ the work board is off here. */
   workCardTap?: (cardId: string, tap: WorkCardTapFields) => Promise<ActionResult>;
+  /** Approving trust raises from the app (docs/specs/app-trust-approval.md); absent ⇒ 503 here. */
+  trust?: () => MobileTrustPort | null;
   now?: () => number;
 }
 
@@ -777,7 +827,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
   // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
   // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
-  const writeGate = (req: Request, res: Response, teamControl = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -787,7 +837,13 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     };
     const svc = deps.pairing();
     const config = deps.config();
-    if (!svc || !svc.enabled() || (!teamControl && !isPermissionActionsEnabled(config))) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    const teamControl = mode === true;
+    if (!svc || !svc.enabled()) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    if (mode === 'trust' ? !isTrustApprovalEnabled(config) : (!teamControl && !isPermissionActionsEnabled(config))) {
+      return mode === 'trust'
+        ? refuse({ status: 503, error: 'trust-approval-off', detail: 'Approving changes from this device is turned off on this agent. Ask your agent to turn it on (mobilePairing.trustApproval).' })
+        : refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    }
     const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
     if (!p || p.kind !== 'device' || typeof p.deviceId !== 'string') return refuse({ status: 403, error: 'device-signature-required', detail: 'Only the owner\'s paired phone can do this here. Open the console to change this.' });
     const deviceId = p.deviceId;
@@ -804,33 +860,46 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
-    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
+    const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
+      : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    // A trust approval is decided only by the serving-lease holder: elsewhere no challenge is issued (app-trust-approval §B).
+    if (built.action.kind === 'approve-widening' || built.action.kind === 'accept-device') {
+      const port = deps.trust?.() ?? null;
+      if (!port) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'trust-approvals-unavailable', status: 503 }); res.status(503).json({ error: 'trust-approvals-unavailable' }); return; }
+      if (!port.holdsLease()) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 }); res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' }); return; }
+    }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
     audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: built.action.kind, target: built.action.target, ...(built.action.kind === 'set-feature' ? { value: built.action.value } : {}) });
     res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString() });
   });
 
-  /** Steps 7–9: the action line from the route, the challenge, the signature. */
-  const proven = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction): boolean => {
+  /**
+   * Steps 7–9: the action line from the route, the challenge, the signature. Answers the consumed
+   * challenge's expiry and reference. `presenceKey` overrides the enrolled key only for the local
+   * override, which proves possession of the key it installs.
+   */
+  const provenDetail = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction, presenceKey: string = g.presenceKey): { expiresAt: number; ref: string } | null => {
     const b = rec(req.body);
     const line = actionLine(action);
     const base = { deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'set-feature' ? { value: action.value } : {}) };
-    if (!challenges.consume(b.challenge, g.deviceId, g.host, line)) {
+    const c = challenges.take(b.challenge, g.deviceId, g.host, line);
+    if (!c) {
       audit.record({ event: 'refused', ...base, reason: 'challenge-invalid', status: 401 });
       res.status(401).json({ error: 'challenge-invalid' });
-      return false;
+      return null;
     }
-    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, b.challenge as string, line), b.presenceSig)) {
+    if (!verifyPresenceSignature(presenceKey, permissionPresenceMessage(g.deviceId, g.host, b.challenge as string, line), b.presenceSig)) {
       audit.record({ event: 'refused', ...base, reason: 'presence-invalid', status: 401 });
       res.status(401).json({ error: 'presence-invalid' });
-      return false;
+      return null;
     }
-    return true;
+    return c;
   };
+  const proven = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction): boolean => provenDetail(req, res, g, action) !== null;
 
   const finish = (res: Response, event: PermissionAuditEvent, action: PermissionAction, g: { deviceId: string; personId: string | null }, r: ActionResult): void => {
     const ok = r.status >= 200 && r.status < 300;
@@ -1006,8 +1075,170 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     finish(res, 'account-add', a, g, r);
   });
 
+  // ── Approving a trust raise from the app (docs/specs/app-trust-approval.md) ──────────────
+  // The routes own the gate and the presence proof; AccountPathService owns every decision. The bearer
+  // token, the dashboard PIN and a request body can never approve, record an acceptance or make a proof.
+  const trustPort = (res: Response): MobileTrustPort | null => {
+    const port = deps.trust?.() ?? null;
+    if (!port) { res.set('Cache-Control', 'no-store'); res.status(503).json({ error: 'trust-approvals-unavailable', detail: 'Approving changes from the app is not available on this agent.' }); }
+    return port;
+  };
+  const notHolder = (res: Response, g: { deviceId: string; personId: string | null }, req: Request): void => {
+    audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 });
+    res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' });
+  };
+  /** A trust route whose store or registry write throws answers 500 (reported), never a hung request. */
+  const guarded = (what: string, h: (req: Request, res: Response) => Promise<void>) => async (req: Request, res: Response): Promise<void> => {
+    try { await h(req, res); } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the device is told it did not finish
+      report('MobilePermissions.trust', what, 'the device is told it did not finish', err);
+      if (!res.headersSent) res.status(500).json({ error: 'trust-action-failed', detail: 'That did not finish. Check again before retrying.' });
+    }
+  };
+  const refuse400 = (req: Request, res: Response, g: { deviceId: string; personId: string | null }, error: string, detail?: string): void => {
+    audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: error, status: 400 });
+    res.status(400).json({ error, ...(detail ? { detail } : {}) });
+  };
+
+  router.get('/mobile/trust/requests', guarded('GET /mobile/trust/requests lists trust requests', async (req: Request, res: Response) => {
+    if (!readGuard(req, res)) return;
+    const port = trustPort(res);
+    if (!port) return;
+    const self = principalDevice(req);
+    // A device whose key changed or that was removed loses its acceptance here, before anything is shown.
+    if (port.holdsLease()) {
+      try { await port.service.sweepDeviceAcceptances(); } catch (err) {
+        // @silent-fallback-ok — not silent: reported; the listing still answers, and every approval re-checks the device itself
+        report('MobilePermissions.trust', 'GET /mobile/trust/requests re-checks device acceptances', 'the listing answers without the re-check', err);
+      }
+    }
+    const store = port.service;
+    const mine = self ? (await store.currentDeviceAcceptance(self)) : null;
+    const nameOf = (id: string) => cleanText(port.devices.get(id)?.name ?? null, 60);
+    res.json({
+      ...head(),
+      actions: actionsState(req, deps),
+      holder: port.holdsLease(),
+      requests: store.deviceListing(),
+      // The calling device's own key fingerprint, so the app signs exactly what the server will check.
+      thisDeviceKey: self ? (port.devices.get(self)?.keyFingerprint ?? null) : null,
+      approvals: {
+        thisDevice: mine ? { acceptanceId: mine.acceptanceId, via: mine.via, keyPolicy: mine.keyPolicy, acceptedAt: mine.acceptedAt } : null,
+        anyCurrent: port.holdsLease() ? (await store.sweepDeviceAcceptances()).length > 0 : null,
+        // Every acceptance and withdrawal, shown on every accepted device (app-trust-approval §C): the record of who can approve.
+        record: storeHistory(port).slice(0, 20).map((a) => ({
+          deviceId: a.deviceId, device: nameOf(a.deviceId), via: a.via, keyPolicy: a.keyPolicy, acceptedAt: a.acceptedAt, current: !a.withdrawn,
+          ...(a.via === 'local-override' ? { note: 'approval key replaced on this Mac' } : {}),
+        })),
+      },
+    });
+  }));
+
+  router.post('/mobile/trust/requests/:id/approve', async (req: Request, res: Response) => {
+    const port = trustPort(res);
+    if (!port) return;
+    const g = writeGate(req, res, 'trust');
+    if (!g) return;
+    if (!port.holdsLease()) { notHolder(res, g, req); return; }
+    const built = buildAction('approve-widening', String(req.params.id), { proposalHash: rec(req.body).proposalHash });
+    if (!built.ok) { refuse400(req, res, g, built.error); return; }
+    const p = provenDetail(req, res, g, built.action);
+    if (!p) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'approve-widening' }>;
+    let r: ActionResult;
+    try {
+      const out = await port.service.onPresenceApproval({
+        deviceId: g.deviceId, keyFingerprint: port.devices.get(g.deviceId)?.keyFingerprint ?? '', host: g.host,
+        requestId: a.target, proposalHash: a.proposalHash, challengeId: p.ref,
+      });
+      r = { status: trustAnswerStatus(out), body: out.status === 'refused' || out.status === 'not-holder' || out.status === 'not-recorded' || out.status === 'already-approved' ? { error: out.reason, status: out.status, detail: out.message } : out };
+    } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the phone is told the approval did not finish
+      report('MobilePermissions.trust', 'a device approval of a trust raise runs the account path', 'the phone says it could not finish', err);
+      r = { status: 500, body: { error: 'trust-approval-failed', detail: 'That did not finish. Check the request again before retrying.' } };
+    }
+    finish(res, 'trust-approved', a, g, r);
+  });
+
+  router.post('/mobile/trust/device-acceptance', guarded('POST /mobile/trust/device-acceptance records an acceptance', async (req: Request, res: Response) => {
+    const port = trustPort(res);
+    if (!port) return;
+    const g = writeGate(req, res, 'trust');
+    if (!g) return;
+    if (!port.holdsLease()) { notHolder(res, g, req); return; }
+    const b = rec(req.body);
+    const target = absent(b.target) ? g.deviceId : b.target;
+    const built = buildAction('accept-device', target, { keyFingerprint: b.keyFingerprint, disclosureHash: b.disclosureHash });
+    if (!built.ok) { refuse400(req, res, g, built.error); return; }
+    const a = built.action as Extract<PermissionAction, { kind: 'accept-device' }>;
+    let r: ActionResult;
+    if (a.target !== g.deviceId) {
+      // An accepted device approves a new device: the approval lives as long as this challenge did.
+      if (b.override !== undefined || b.newPresenceKey !== undefined) { refuse400(req, res, g, 'bad-request', 'A key can only be replaced on the device itself.'); return; }
+      const p = provenDetail(req, res, g, a);
+      if (!p) return;
+      const out = await port.service.recordDeviceApproval({ approverDeviceId: g.deviceId, deviceId: a.target, keyFingerprint: a.keyFingerprint, disclosureHash: a.disclosureHash, expiresAt: new Date(p.expiresAt).toISOString() });
+      r = { status: trustAnswerStatus(out), body: out.status === 'recorded' ? out : { error: out.reason, status: out.status, detail: out.message } };
+      finish(res, 'trust-acceptance', a, g, r);
+      return;
+    }
+    // The device records its own acceptance: the disclosure it showed is sent, and its hash is the signed one.
+    if (typeof b.disclosure !== 'string' || b.disclosure.trim().length === 0 || b.disclosure.length > 8000) { refuse400(req, res, g, 'disclosure-required', 'Send the disclosure the app showed.'); return; }
+    if (sha256(b.disclosure) !== a.disclosureHash) { refuse400(req, res, g, 'disclosure-mismatch', 'The disclosure does not match its signed hash.'); return; }
+    if (typeof b.keyPolicy !== 'string') { refuse400(req, res, g, 'bad-key-policy'); return; }
+    const keyPolicy = b.keyPolicy;
+    if (b.override === true) {
+      // The local override (app-trust-approval §D): only the app on the agent's own computer, over
+      // loopback with no forwarding header, for the device the app paired here. The new key signs.
+      const newKey = b.newPresenceKey;
+      if (typeof newKey !== 'string' || newKey.length > 128 || !parseDevicePublicKey(newKey)) { refuse400(req, res, g, 'bad-public-key'); return; }
+      if (!arrivedLocallyUnforwarded(req) || !port.localBindingHere(g.deviceId)) {
+        audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'local-only', status: 403 });
+        res.status(403).json({ error: 'local-only', detail: 'Only the Instar app on the agent\'s own computer can replace its approval key.' });
+        return;
+      }
+      if (!provenDetail(req, res, g, a, newKey)) return;
+      const out = await port.service.recordDeviceAcceptance({
+        deviceId: g.deviceId, keyFingerprint: a.keyFingerprint, presenceKeyHash: keyHashOf(newKey), keyPolicy, disclosureHash: a.disclosureHash,
+        override: { replaceKey: () => {
+          const done = port.replacePresenceKey(g.deviceId, newKey);
+          return done === 'replaced' || done === 'same' ? { ok: true, presenceKeyHash: keyHashOf(newKey) } : { ok: false, reason: `key-${done}` };
+        } },
+      });
+      r = { status: trustAnswerStatus(out), body: out.status === 'recorded' || out.status === 'already-accepted' ? out : { error: out.reason, status: out.status, detail: out.message } };
+      finish(res, 'trust-acceptance', a, g, r);
+      return;
+    }
+    if (b.override !== undefined && b.override !== false) { refuse400(req, res, g, 'bad-override'); return; }
+    if (!provenDetail(req, res, g, a)) return;
+    const out = await port.service.recordDeviceAcceptance({
+      deviceId: g.deviceId, keyFingerprint: a.keyFingerprint, presenceKeyHash: keyHashOf(g.presenceKey), keyPolicy, disclosureHash: a.disclosureHash,
+    });
+    r = { status: trustAnswerStatus(out), body: out.status === 'recorded' || out.status === 'already-accepted' ? out : { error: out.reason, status: out.status, detail: out.message } };
+    finish(res, 'trust-acceptance', a, g, r);
+  }));
+
+  // Withdrawing is a narrowing: a device-signed request from an owner device over local TLS, no Face ID needed.
+  router.post('/mobile/trust/device-acceptance/withdraw', guarded('POST /mobile/trust/device-acceptance/withdraw withdraws an acceptance', async (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    const port = trustPort(res);
+    if (!port) return;
+    const deviceId = principalDevice(req);
+    const svc = deps.pairing();
+    if (!deviceId || !svc) { audit.record({ event: 'refused', deviceId: null, route: auditRoute(req), reason: 'device-signature-required', status: 403 }); res.status(403).json({ error: 'device-signature-required' }); return; }
+    if (!overLocalTls(req)) { audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: 'secure-transport-required', status: 403 }); res.status(403).json({ error: 'secure-transport-required' }); return; }
+    if (!activeOwnerPhone(svc, deviceId)) { audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: 'owner-phone-required', status: 403 }); res.status(403).json({ error: 'owner-phone-required' }); return; }
+    const b = rec(req.body);
+    const which = absent(b.deviceId) ? deviceId : b.deviceId;
+    if (typeof which !== 'string' || !TARGET_PATTERN.test(which)) { audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: 'bad-target', status: 400 }); res.status(400).json({ error: 'bad-target' }); return; }
+    const n = await port.service.withdrawDeviceAcceptance(which, which === deviceId ? 'withdrawn from this device' : 'withdrawn from another accepted device');
+    audit.record({ event: 'trust-withdrawn', deviceId, route: auditRoute(req), target: which, status: 200 });
+    res.json({ withdrawn: n });
+  }));
+
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
-    const g = writeGate(req, res);
+    // Withdrawing only narrows, so it works even with the switch off (like turning team access off).
+    const g = writeGate(req, res, true);
     if (!g) return;
     const built = buildAction('set-feature', String(req.params.id), { value: rec(req.body).to, disclosureHash: rec(req.body).disclosureHash });
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
@@ -1036,6 +1267,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     finish(res, 'feature-set', a, g, r);
   });
 }
+
+function storeHistory(port: MobileTrustPort) { return port.service.deviceAcceptanceHistory(); }
 
 function runAction(f: () => ActionResult): ActionResult {
   try { return f(); } catch (err) {
