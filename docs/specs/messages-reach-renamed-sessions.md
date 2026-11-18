@@ -303,7 +303,7 @@ The resolver is a lookup. The only authority, refusing to type into a session th
 
   A zero count of cross-machine deliveries is not a pass.
 - **dark-window:** none; the change is live on release. If the criterion isn't met within 14 days of the release, the reason and a new date are recorded on CMT-1940.
-- **ladder:** test-agent-live (throwaways), dev-agent-live (Echo, one week), fleet (same release)
+- **ladder:** not applicable: no flag, ships live on every agent (revert is the rollback)
 
 Phase 2 (durable retries, automatic re-send) starts after graduation <!-- tracked: CMT-1940 -->.
 
