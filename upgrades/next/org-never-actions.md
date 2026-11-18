@@ -1,0 +1,25 @@
+# An organization's "never" rules are checked against what a joined agent actually does
+
+<!-- bump: patch -->
+
+## What Changed
+
+For an agent that joined an organization, its outward actions are now checked against the organization's "never" rules, by meaning: tool calls that send, write or delete, commands that send data off the computer (curl or wget with a body, gh issue or pr writes, scp, rsync, mail), and outgoing messages. The check reads what is actually being sent. A keyword match is only a hint; a judgment on the agent's own AI account decides, under its own small daily budget, within one 9-second deadline. In observe mode, the default and the only mode reachable in this release, nothing is blocked: the agent is told which rule may apply and who to ask, and every judgment is recorded. Block mode, with a one-tap "allow once" in the Instar app, is built but unreachable until it is approved. Agents that never joined an organization pay only a file check per tool call.
+
+## What to Tell Your User
+
+- **Policy check**: "Because I'm part of your organization, I now check what I'm about to send against its 'never' rules, and I'll tell you if something might break one."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Action check (observe) | Automatic for joined agents |
+| Allow once (block mode, when approved) | The Instar app's card |
+
+## Evidence
+
+- Unit: `tests/unit/org-action-check.test.ts` (17).
+- Integration: `tests/integration/org-never-actions.test.ts`.
+- E2E: `tests/e2e/org-never-actions-alive.test.ts`.
+- Evaluation: `tests/fixtures/org-never-actions-eval.json` (60 labelled cases), `scripts/org-never-actions-eval.mts`: on 2026-11-16, 0/20 routine flagged, 0/20 breaches missed, 0/10 injections changed the verdict, 0 unknown (after a prompt change made on this same set, so block mode also needs a fresh held-out set).

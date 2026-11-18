@@ -2,6 +2,7 @@
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -8472,6 +8473,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       result.upgraded.push('hooks/instar/external-operation-gate.js (MCP tool safety gate)');
     } catch (err) {
       result.errors.push(`external-operation-gate.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // Organization never rules checking actions (docs/specs/org-never-actions.md §A): always overwritten.
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/org-policy-gate.sh + .js (organization never rules check)');
+    } catch (err) {
+      result.errors.push(`org-policy-gate: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -18522,6 +18532,20 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.skipped.push('.claude/settings.json: PreToolUse MCP matcher already present');
     }
 
+    // Organization never rules check (org-never-actions §A): its own entries, found by command content,
+    // not by matcher (the external-operation gate already owns an mcp__.* entry).
+    for (const matcher of ['Bash', 'mcp__.*']) {
+      const has = preToolUse.some(e => e.matcher === matcher && JSON.stringify(e.hooks ?? []).includes('org-policy-gate'));
+      if (!has) {
+        preToolUse.push({
+          matcher,
+          hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/org-policy-gate.sh"', blocking: true, timeout: 12 }],
+        });
+        patched = true;
+        result.upgraded.push(`.claude/settings.json: added PreToolUse ${matcher} organization policy check`);
+      }
+    }
+
     // Add PostToolUse Write/Edit matcher for the working-set artifact recorder
     // (intelligent-working-set-lazy-sync F8). Fire-and-forget + non-blocking; the
     // hook itself early-exits fast when the feature is off (dark by default:
@@ -25206,6 +25230,8 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Token-less standby hold-and-retry version (#3095), before the org-policy 422 branch (org-never-actions).
+    '1636ee1ed4eb4441843383d8085b7489d61add84ebf3f154f81448ac37cac295',
     // Native-conversation-base 3b version (PR #3092), before this PR's token-less
     // forward change. Shipped through v1.3.1795.
     '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',
