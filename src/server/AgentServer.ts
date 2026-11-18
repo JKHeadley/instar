@@ -10916,7 +10916,7 @@ export class AgentServer {
     const now = Date.now();
     let caps: ReturnType<typeof reg.getCapacities>;
     // An unreadable pool is treated as "not sure every machine has the update": refuse with a reason.
-    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; }
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: decision writes refuse until the machine list reads
     for (const c of caps) {
       if (c.machineId === this.meshSelfId) continue;
       const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');

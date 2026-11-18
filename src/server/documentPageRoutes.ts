@@ -290,7 +290,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!raw || !deviceKey || payloadB64.length > 2048) { res.status(413).json({ error: 'move-request-too-large' }); return; }
     const signedOrigin: SignedOrigin = { keyHash: deviceKeyHashOf(deviceKey), deviceId: g.deviceId, domain: 'instar-device-v1', payloadB64, host: g.host, timeMs: String(req.headers['x-instar-device-time'] ?? ''), sig: String(req.headers['x-instar-device-sig'] ?? ''), requestId: String(body.challenge) };
     const caller: Caller = { ...g.caller, actor: { type: 'owner-phone', deviceId: g.deviceId, signedOrigin } };
-    try { svc.setPrimary(id, caller, b.primary as never, b.docDeps); featureEvidence.record('documents', { kind: 'fired', reason: 'move' }); res.json({ ok: true, primary: b.primary }); } catch (err) { fail(res, err); }
+    try { svc.setPrimary(id, caller, b.primary as never, b.docDeps); featureEvidence.record('documents', { kind: 'fired', reason: 'move' }); res.json({ ok: true, primary: b.primary }); } catch (err) { fail(res, err); } // @silent-fallback-ok — not a fallback: fail() answers with the error
   });
 
   // ── Decisions (owner phone, Face ID; document-decisions §3.2, §3.4) ───────────────────

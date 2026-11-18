@@ -278,7 +278,7 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
     try {
       const d = r.svc.read(id, forDoc(r.svc, r.caller, id));
       res.json({ versions: d.state.versionOrder.map((v) => d.state.versions.get(v)!).map((v) => ({ id: v.versionId, label: v.label, parents: v.parents, pruned: v.pruned, author: v.author })) });
-    } catch (err) { fail(res, err); }
+    } catch (err) { fail(res, err); } // @silent-fallback-ok — not a fallback: fail() answers with the error
   });
 
   router.post('/docs/:id/versions', (req, res) => {

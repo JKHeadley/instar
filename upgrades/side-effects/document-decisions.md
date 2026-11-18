@@ -90,3 +90,9 @@ Its non-blocking findings and what was done:
 7. Session notice prefix → now `[system:document-decision telegram:N]`, never the inbound user prefix.
 8. Wording in the shared gate refusal → left (cosmetic).
 The delivered-outcome check it flagged mid-review is now a pure function (`chatRecordDelivered`) with a unit test over every recorded outcome.
+
+## Guard-test follow-up (after merging main)
+
+Local verify on the merge with main failed four guard tests: the Needs-you source needed a fixture and a registered page (now `work/documents`; the Documents page leads with the waiting asks, owner surface only, an unreadable list leaves the page as it was); the guest-route count is 45 with its reason; the three owner-only decision routes are in the named set; three catch blocks carry `@silent-fallback-ok` (one fails closed with a 409, two answer with `fail(res, err)`). Whole unit lane (69,947 tests), the decisions integration (7) and e2e (2) files pass on the merge.
+
+Second-pass reviewer on this follow-up: CONCUR. The waiting list is owner reach only; a failed read degrades to the plain list; text goes through textContent; the guest read uses the same audience check as the summary; the three annotations are honest.

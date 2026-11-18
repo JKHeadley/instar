@@ -126,7 +126,7 @@ export const NEED_SOURCES = [
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
     rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => row(r.key, r.main, r.sub, r.href)); } },
   // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
-  { id: 'document-decisions', page: 'work/docs', reads: { waiting: '/docs/decisions/waiting' },
+  { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
     rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
