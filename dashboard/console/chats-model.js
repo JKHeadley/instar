@@ -693,6 +693,8 @@ export function effortMembers(pages) {
  * read the same. Both the projects route's `state` words and raw Chief of Staff verdicts are accepted.
  * Anything else (claims-done, unknown, …) → no chip.
  */
+// A project group's chip sits on its row, which opens to "Open project" (the project's Work row).
+// warning-path: #/work/board
 const MOVING = { label: 'Moving', tone: 'ok' }, STUCK = { label: 'Stuck', tone: 'bad' }, NEEDS = { label: 'Needs you', tone: 'attn' };
 const DONE = { label: 'Done', tone: 'quiet' }, PAUSED = { label: 'Paused', tone: 'quiet' };
 export const PROJECT_STATUS = {
@@ -700,6 +702,7 @@ export const PROJECT_STATUS = {
   stalled: STUCK, 'stopped-retrying': STUCK, stuck: STUCK,
   'waiting-on-you': NEEDS, 'waiting-on-user': NEEDS,
   done: DONE, 'done-verified': DONE,
+  // warning-path: #/work/board
   drifting: { label: 'Drifting', tone: 'attn' },
   paused: PAUSED,
 };
