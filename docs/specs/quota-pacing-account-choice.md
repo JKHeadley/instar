@@ -156,7 +156,7 @@ The resolver types in `SessionManager` widen to `(ctx?: { model?: string }) => â
 ## Safety and side effects
 
 - **Authority:** unchanged in kind. Placement already decides where a session runs; this changes what it reads and how it ranks. With the switch off nothing changes.
-- **Unmeasured is never room:** rolled, unknown and absent windows rank below every measured account and are reported `null`/`degraded`, so the agent never certifies capacity nobody has read.
+- **Unmeasured is never room:** rolled, unknown and unread windows rank below every measured account and are reported `null`/`degraded`, so the agent never certifies capacity nobody has read.
 - **New swap behaviour:** only a refusal (`rolled` invalid reading). No new swap trigger is added: Fable stays out of the swap paths.
 - **Fable classification wrong:** a non-Fable model read as Fable can only reorder or fall back (`fable-no-room`), never deny an account; a Fable model read as unknown gets ranking-only Fable awareness.
 - **Re-poll load:** at most one extra read per account per 15 minutes, only after a reset.
