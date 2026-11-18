@@ -28,6 +28,7 @@ import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const PIN = '424242';
@@ -103,7 +104,7 @@ function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | n
     const created = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
     if (!created.ok) throw new Error('setup');
     pairing.devices.applyConfirm(created.device.id, { ok: true });
-    pairing.devices.setPresenceKey(created.device.id, presence.publicKey);
+    markApproverForTest(pairing, created.device.id, presence.publicKey);
     return { dev, presence, id: created.device.id };
   };
   return { app, svc, pair, lines, removed, sessions, shared, dir };

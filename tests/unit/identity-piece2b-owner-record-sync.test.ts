@@ -98,6 +98,9 @@ describe('keeping machines in step', () => {
     const o = keypair();
     const add = signOwnerRecordEntry({ kind: 'add-owner-key', agentId: AGENT, parents: [head], body: { keyId: 'o_phone', publicKey: o.pub, label: 'phone', proof: 'route-ok' }, signer: { type: 'owner-key', keyId: 'o_phone' } }, signer(o.priv));
     const { added } = a.store.ingest([add.entry]);
+    // Piece 3a: each machine's tick now adds its own key, and those entries are relayed; let the per-peer push
+    // interval pass so this push isn't answered "busy".
+    clock += 11_000;
     await a.sync.pushToPeers(added);
     for (const n of [b, c]) {
       expect(n.store.state()?.everEnrolled).toBe(true);

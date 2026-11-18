@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  evaluateOwnerRecord, ownerRecordEntryId, ownerRecordSignedText, signOwnerRecordEntry, OWNER_RECORD_MAX_INPUT,
+  evaluateOwnerRecord, ownerRecordEntryId, signOwnerRecordEntry, verifyEntrySignature, OWNER_RECORD_MAX_INPUT, type OwnerKeyType,
   type EvaluateOptions, type OwnerRecordEntry, type OwnerRecordState,
 } from './ownerRecord.js';
 
@@ -101,6 +101,8 @@ export class OwnerRecordStore {
   }
 
   state(): OwnerRecordState | null { return this.current; }
+  /** Piece 3a: this machine's record signer (its machine key, or a lone agent's record-only key), if it has one. */
+  selfSigner(): OwnerRecordSelf | null { return this.deps.self(); }
   hasRecord(): boolean { return this.entries.size > 0; }
   pinned(): string | null {
     const p = readJson<{ genesis?: unknown; agentId?: unknown }>(path.join(this.machineDir, PIN_FILE));
@@ -210,6 +212,44 @@ export class OwnerRecordStore {
     return { id: g.id, state };
   }
 
+  /**
+   * Piece 3a §2: before any owner key exists, put this machine's own key in the record (self-signed), so any lease
+   * holder can attest the first owner key against the record. Once per machine; nothing once an owner key exists.
+   */
+  ensureOwnMachineKey(): 'added' | 'present' | 'not-applicable' {
+    const self = this.deps.self();
+    const st = this.current;
+    if (!self || !st || st.status !== 'ok' || st.everEnrolled) return 'not-applicable';
+    if (st.keys.some((k) => k.type === 'machine' && k.keyId === self.machineId)) return 'present';
+    if (st.head.length !== 1) return 'not-applicable'; // forked: merge first (mergeForksAtBasic)
+    const e = signOwnerRecordEntry({ kind: 'add-machine-key', agentId: this.deps.agentId, parents: [st.head[0]], body: { machineId: self.machineId, publicKey: self.publicKeyPem }, signer: { type: 'machine', keyId: self.machineId } }, self.sign);
+    const r = this.ingest([e.entry]);
+    return r.added.includes(e.id) ? 'added' : 'not-applicable';
+  }
+
+  /**
+   * Piece 3a §2: while the record has no owner key, a fork (machines adding their keys at about the same time) is
+   * merged by a machine key, so a first owner key never lands on a branch no owner could merge.
+   */
+  mergeForksAtBasic(): 'merged' | 'not-forked' | 'not-applicable' {
+    const self = this.deps.self();
+    const st = this.current;
+    if (!self || !st || st.everEnrolled) return 'not-applicable';
+    if (st.head.length < 2) return 'not-forked';
+    if (!st.keys.some((k) => k.type === 'machine' && k.keyId === self.machineId)) return 'not-applicable';
+    const e = signOwnerRecordEntry({ kind: 'merge', agentId: this.deps.agentId, parents: [...st.head].sort(), body: {}, signer: { type: 'machine', keyId: self.machineId } }, self.sign);
+    const r = this.ingest([e.entry]);
+    return r.added.includes(e.id) ? 'merged' : 'not-applicable';
+  }
+
+  /** Piece 3a §3: the record is whole: not forked, and every given machine's key is on it. */
+  isWhole(machineIds: string[]): boolean {
+    const st = this.current;
+    if (!st || st.status !== 'ok' || st.forked) return false;
+    const have = new Set(st.keys.filter((k) => k.type === 'machine').map((k) => k.keyId));
+    return machineIds.every((m) => have.has(m));
+  }
+
   /** §5's table: the one place later pieces ask what the record means right now. */
   gate(peers: PeerView): GateVerdict {
     const st = this.current;
@@ -268,8 +308,8 @@ export class OwnerRecordStore {
   }
 
   /** Keys this record has ever held (genesis and every add entry stored), for checking arrivals cheaply. */
-  private knownKeys(): Map<string, string> {
-    const keys = new Map<string, string>();
+  private knownKeys(): Map<string, { publicKey: string; keyType: OwnerKeyType }> {
+    const keys = new Map<string, { publicKey: string; keyType: OwnerKeyType }>();
     for (const e of this.entries.values()) addKeyOf(e, keys);
     return keys;
   }
@@ -284,6 +324,10 @@ export class OwnerRecordStore {
     const selfSignAllowed = (e: OwnerRecordEntry): boolean => {
       const introduces = (e.body as Record<string, unknown> | undefined)?.keyId ?? (e.body as Record<string, unknown> | undefined)?.machineId;
       if (e.kind === 'genesis') return true;
+      // Piece 3a §2: before any owner key, a machine adds its own key, but only its REAL key (the registered one).
+      if (e.kind === 'add-machine-key' && introduces === e.signer?.keyId && !recordHasOwnerKey) {
+        return typeof introduces === 'string' && this.deps.registeredKey(introduces) === e.body?.publicKey;
+      }
       return e.kind === 'add-owner-key' && introduces === e.signer?.keyId && !recordHasOwnerKey;
     };
     // Keys introduced within this batch, by the entry that introduces them (not yet verified). Every one is
@@ -311,19 +355,21 @@ export class OwnerRecordStore {
       const selfSigned = selfSignAllowed(e);
       // Every candidate key is tried: the one already known, and the key of EVERY introducer that verifies.
       // Stopping at the first would let a junk self-signed add under the same key id stand in for the real one.
-      const pubs = new Set<string>();
-      if (selfSigned) { if (typeof e.body?.publicKey === 'string') pubs.add(e.body.publicKey); }
+      // Candidate keys with their type (piece 3a: owner keys may be P-256 presence keys).
+      const pubs = new Map<string, OwnerKeyType>();
+      const typeOf = (x: OwnerRecordEntry): OwnerKeyType => (x.kind === 'add-owner-key' && x.body?.keyType === 'p256' ? 'p256' : 'ed25519');
+      if (selfSigned) { if (typeof e.body?.publicKey === 'string') pubs.set(e.body.publicKey, typeOf(e)); }
       else {
         const known = keys.get(e.signer.keyId);
-        if (known) pubs.add(known);
+        if (known) pubs.set(known.publicKey, known.keyType);
         for (const intro of introducers.get(e.signer.keyId) ?? []) {
           if (pubs.size >= MAX_CANDIDATES) break;
-          if (intro !== e && check(intro) && typeof intro.body?.publicKey === 'string') pubs.add(intro.body.publicKey);
+          if (intro !== e && check(intro) && typeof intro.body?.publicKey === 'string') pubs.set(intro.body.publicKey, typeOf(intro));
         }
       }
       let ok = false;
-      for (const pub of pubs) {
-        try { ok = crypto.verify(null, Buffer.from(ownerRecordSignedText(e)), pub, Buffer.from(e.sig, 'base64')); } catch { ok = false; /* @silent-fallback-ok: an unparseable key or signature does not verify; the arrival is dropped */ }
+      for (const [pub, keyType] of pubs) {
+        ok = verifyEntrySignature(e, this.deps.agentId, pub, keyType);
         if (ok) break;
       }
       inProgress.delete(e);
@@ -398,15 +444,29 @@ function writeJsonAtomic(file: string, value: unknown): void {
 }
 
 /** Record the key an entry introduces (genesis, add-machine-key, add-owner-key). Returns true if it was new. */
-function addKeyOf(e: OwnerRecordEntry, keys: Map<string, string>): boolean {
+function addKeyOf(e: OwnerRecordEntry, keys: Map<string, { publicKey: string; keyType: OwnerKeyType }>): boolean {
   const b = e?.body as Record<string, unknown> | undefined;
   if (!b || typeof b.publicKey !== 'string') return false;
   const id = e.kind === 'genesis' || e.kind === 'add-machine-key' ? b.machineId : e.kind === 'add-owner-key' ? b.keyId : null;
   if (typeof id !== 'string' || keys.has(id)) return false;
-  keys.set(id, b.publicKey);
+  keys.set(id, { publicKey: b.publicKey, keyType: e.kind === 'add-owner-key' && b.keyType === 'p256' ? 'p256' : 'ed25519' });
   return true;
 }
 
 function ownerRecordEntryIdSafe(e: OwnerRecordEntry): string {
   try { return ownerRecordEntryId(e); } catch { return ''; /* @silent-fallback-ok: malformed; sorts first and fails verification anyway */ }
+}
+
+/**
+ * Piece 3a §2: a machine joining later pins the inviting machine's genesis at the join handshake, so it adopts the
+ * enrolled record even when its own registry doesn't hold that genesis key (a lone agent's `m_local_` key). Writes
+ * only when no pin exists; an existing pin is never replaced.
+ */
+export function pinOwnerRecordGenesisAtJoin(instarDir: string, agentId: string, genesis: string, now = Date.now()): 'pinned' | 'already-pinned' | 'invalid' {
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(genesis)) return 'invalid';
+  const file = path.join(instarDir, 'machine', PIN_FILE);
+  if (fs.existsSync(file)) return 'already-pinned';
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  writeJsonAtomic(file, { agentId, genesis, at: new Date(now).toISOString(), via: 'join' });
+  return 'pinned';
 }

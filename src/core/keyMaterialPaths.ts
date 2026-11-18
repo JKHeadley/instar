@@ -129,6 +129,8 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'machine/signing-key.pem',
   'machine/encryption-key.pem',
   'machine/secrets-master.key',
+  // identity-security piece 3a §2: a lone agent's record-only key (signs owner-record entries, never mesh traffic).
+  'machine/owner-record-key.pem',
   'secrets/passkeys/store.enc',
   'remediation-keys.age',
   'telemetry/local-secret',

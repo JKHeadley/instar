@@ -20,6 +20,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-team-two.example.dev';
 const servers: AgentServer[] = [];
@@ -128,7 +129,7 @@ describe('team access on two machines', () => {
     const owner = client(A.app, r.body.deviceId, ownerDev);
     const ownerCode = /is (\d{3}) (\d{3})\./.exec(A.dms[0]!)!.slice(1).join('');
     expect((await owner('POST', '/mobile/device/confirm', { code: ownerCode })).body.status).toBe('active');
-    svcA.devices.setPresenceKey(r.body.deviceId, makeDevice().publicKey);
+    markApproverForTest(svcA, r.body.deviceId, makeDevice().publicKey);
 
     const shared = (await owner('POST', '/mobile/conversations', { title: 'Client work', requestId: rid() })).body.conversationKey as string;
     const inv = await owner('POST', '/mobile/team/invites', { events: [

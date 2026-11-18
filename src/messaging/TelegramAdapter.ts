@@ -1285,11 +1285,13 @@ export class TelegramAdapter implements MessagingAdapter {
     const browser = typeof raw !== 'string' && raw.client === 'browser';
     // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
     // way is answered "already approved", never as declined.
-    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
+    // identity-security piece 3a §6: a handler that isn't about pairing gives its own words.
+    const own = typeof raw !== 'string' && typeof raw.text === 'string' ? raw.text : null;
+    const toast = own ?? (r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
       : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
-      : 'This pairing has already ended.';
+      : 'This pairing has already ended.');
     await this.answerCallback(t.callbackQueryId, toast);
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
+    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, own ?? (browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.'));
     return r === 'declined' ? 'declined' : 'unknown';
   }
 
@@ -2632,7 +2634,7 @@ export class TelegramAdapter implements MessagingAdapter {
   public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
-  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser' }) | null = null;
+  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser'; text?: string }) | null = null;
   /** Approve instead of a code (mobile-pairing-approve §3.2): the owner's Approve tap. Wired by AgentServer. */
   public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */

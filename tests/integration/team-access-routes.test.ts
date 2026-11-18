@@ -23,6 +23,7 @@ import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { mountNeedsRoutes } from '../../src/server/needsRoutes.js';
 import { mountProjectsRoutes } from '../../src/server/workProjectsRoutes.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const dirs: string[] = [];
@@ -124,7 +125,7 @@ function phone(e: Env, person?: { userId: string; role: 'msp' | 'team' }, withFa
   if (!c.ok) throw new Error('setup');
   e.svc.devices.applyConfirm(c.device.id, { ok: true });
   e.svc.keyLedger!.recordActivation(e.svc.devices.get(c.device.id)!, 'telegram-dm', new Date(Date.now() - 60_000).toISOString());
-  if (withFaceId) e.svc.devices.setPresenceKey(c.device.id, presence.publicKey);
+  if (withFaceId) markApproverForTest(e.svc, c.device.id, presence.publicKey);
   return { dev, presence, id: c.device.id };
 }
 

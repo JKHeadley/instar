@@ -7,6 +7,7 @@
  * and its key (the store's composite key). The waiting phone must be held by this machine: a pending pairing lives in the
  * machine-local registry and nothing here is forwarded (spec §6).
  */
+import { APPROVER_REQUIRED, approverPresenceKey, approverSigRefusal, mayApprove, verifyApproverPresence } from './mobileApprover.js';
 import { deviceClientOf } from '../core/deviceClientWording.js';
 import type { Request, Response, Router } from 'express';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
@@ -84,7 +85,7 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
     const approver = gate(req, res);
     if (!approver) return;
     res.json({
-      presenceKey: !!svc.devices.get(approver)?.presenceKey,
+      presenceKey: mayApprove(svc, approver), // piece 3a: carries mayApprove under the old name
       waiting: svc.waitingPhones().map((d) => ({
         deviceId: d.id, client: isBrowserDevice(d) ? 'browser' : d.deviceKind === 'computer' ? 'computer' : 'phone', deviceName: d.deviceName, label: d.label, fingerprint: d.fingerprint ?? null, requestedAt: d.pairedAt, expiresAt: d.expiresAt ?? null, canApprove: svc.approvable(d), ...personFields(d, svc),
       })),
@@ -94,7 +95,7 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
   router.post('/mobile/pairing-requests/:id/challenge', (req: Request, res: Response) => {
     const approver = gate(req, res);
     if (!approver) return;
-    if (!svc.devices.get(approver)?.presenceKey) { res.status(409).json({ error: 'presence-key-missing' }); return; }
+    if (!mayApprove(svc, approver)) { res.status(403).json(APPROVER_REQUIRED); return; } // piece 3a
     const action = (req.body as Record<string, unknown> | undefined)?.action;
     if (action !== 'approve' && action !== 'decline') { res.status(400).json({ error: 'bad-action', detail: 'action must be "approve" or "decline".' }); return; }
     const id = String(req.params.id);
@@ -106,8 +107,8 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
 
   /** The challenge (deleted before it is judged) and the presence signature, for one exact line. */
   const proven = (req: Request, res: Response, approver: string, action: PairingApproveAction, d: DeviceRecord): boolean => {
-    const key = svc.devices.get(approver)?.presenceKey;
-    if (!key) { res.status(409).json({ error: 'presence-key-missing' }); return false; }
+    const key = approverPresenceKey(svc, approver);
+    if (!key) { res.status(403).json(APPROVER_REQUIRED); return false; }
     const b = (req.body ?? {}) as Record<string, unknown>;
     const line = pairingApproveLine(action, d.id, d.fingerprint!);
     const host = signedHost(req, svc, approver);
@@ -117,9 +118,11 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
       res.status(401).json({ error: 'challenge-invalid' });
       return false;
     }
-    if (!verifyPresenceSignature(key, pairingApproveMessage(approver, host, b.challenge as string, line), b.presenceSig)) {
+    const presenceCheck = verifyApproverPresence(svc, approver, pairingApproveMessage(approver, host, b.challenge as string, line), b.presenceSig); // identity-security piece 3a: the one reader
+    if (presenceCheck !== 'ok') {
+      const presenceRefusal = approverSigRefusal(presenceCheck, 'presence-invalid');
       featureEvidence.record('mobilePairing', { kind: 'held', reason: 'phone approval refused: presence-invalid', context: { approver, deviceId: d.id } });
-      res.status(401).json({ error: 'presence-invalid' });
+      res.status(presenceRefusal.status).json(presenceRefusal.body);
       return false;
     }
     return true;

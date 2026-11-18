@@ -24,6 +24,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import type { TeamView } from '../../src/documents/access.js';
 import { checkRowOrigin } from '../../src/documents/originCheck.js';
 import { deviceKeyHashOf } from '../../src/core/AppRecordSignatures.js';
+import { verifyPresenceSignature } from '../../src/server/mobileConsoleTicket.js';
 
 const tmp: string[] = [];
 afterEach(() => { for (const d of tmp.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/documents-page.test.ts' }); });
@@ -70,7 +71,7 @@ function setup() {
     device: (id) => id === 'owner-phone' ? { person: { ok: true, role: 'owner', userId: null, name: 'Justin', telegramUserId: null } as never, client: 'phone', publicKey: owner.raw, approvedVia: 'phone' }
       : id === 'stranger' ? { person: null, client: 'phone', publicKey: stranger.raw, approvedVia: null } : null,
     isOwnHost: (h) => h === HOST, stableOrigin: () => origin, assetsDir: assets,
-    ownerPresence: (_req, id) => id === 'owner-phone' ? { presenceKey: presence.raw, host: HOST } : null,
+    ownerPresence: (_req, id) => id === 'owner-phone' ? { host: HOST, verify: (m: string, sig: unknown) => (verifyPresenceSignature(presence.raw, m, sig) ? 'ok' : 'bad-signature') } : null,
   };
   const a = express();
   a.use(express.json({ limit: '2mb', verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = Buffer.from(buf); } }));

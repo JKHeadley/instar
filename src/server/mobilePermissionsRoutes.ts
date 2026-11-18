@@ -30,6 +30,7 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
+import { APPROVER_REQUIRED, approverPresenceKey, approverSigRefusal, mayApprove, proveCandidatePresenceKey, verifyApproverPresence } from './mobileApprover.js';
 import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS } from '../core/WorkCardStore.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -752,7 +753,7 @@ export function actionsState(req: Request, deps: Pick<MobilePermissionsDeps, 'pa
   const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
   const svc = deps.pairing();
   if (!p || p.kind !== 'device' || typeof p.deviceId !== 'string') return { state: 'console-only', reason: 'bearer', presenceKey: false };
-  const presenceKey = !!svc?.devices.get(p.deviceId)?.presenceKey;
+  const presenceKey = !!svc && mayApprove(svc, p.deviceId); // piece 3a: the flag keeps its name for older apps and carries mayApprove
   const config = deps.config();
   if (!svc || !svc.enabled() || !isPermissionActionsEnabled(config)) return { state: 'console-only', reason: 'off', presenceKey };
   if (!overLocalTls(req)) return { state: 'console-only', reason: 'transport', presenceKey };
@@ -851,11 +852,12 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
     if (!teamControl && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
-    if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
+    const approverKey = approverPresenceKey(svc, deviceId); // identity-security piece 3a: only an approving device
+    if (!d || !approverKey) return refuse({ status: 403, ...APPROVER_REQUIRED }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
     const host = normalHost(typeof raw === 'string' && raw.length > 0 ? raw : d.host ?? '');
     const person = svc.personOfDevice(d);
-    return { deviceId, personId: person.userId ?? null, host, presenceKey: d.presenceKey, svc };
+    return { deviceId, personId: person.userId ?? null, host, presenceKey: approverKey, svc };
   };
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
@@ -882,7 +884,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
    * challenge's expiry and reference. `presenceKey` overrides the enrolled key only for the local
    * override, which proves possession of the key it installs.
    */
-  const provenDetail = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction, presenceKey: string = g.presenceKey): { expiresAt: number; ref: string } | null => {
+  const provenDetail = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string; svc?: MobilePairingService }, action: PermissionAction, presenceKey?: string): { expiresAt: number; ref: string } | null => {
     const b = rec(req.body);
     const line = actionLine(action);
     const base = { deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'set-feature' ? { value: action.value } : {}) };
@@ -892,14 +894,21 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       res.status(401).json({ error: 'challenge-invalid' });
       return null;
     }
-    if (!verifyPresenceSignature(presenceKey, permissionPresenceMessage(g.deviceId, g.host, b.challenge as string, line), b.presenceSig)) {
-      audit.record({ event: 'refused', ...base, reason: 'presence-invalid', status: 401 });
-      res.status(401).json({ error: 'presence-invalid' });
+    const message = permissionPresenceMessage(g.deviceId, g.host, b.challenge as string, line);
+    // identity-security piece 3a: the approver's own key goes through the one reader (which records the approval);
+    // the local override instead proves possession of the NEW key it installs, which grants nothing by itself.
+    const presenceCheck = presenceKey !== undefined
+      ? (proveCandidatePresenceKey(presenceKey, message, b.presenceSig) ? 'ok' : 'bad-signature')
+      : g.svc ? verifyApproverPresence(g.svc, g.deviceId, message, b.presenceSig) : 'not-approver';
+    if (presenceCheck !== 'ok') {
+      const presenceRefusal = approverSigRefusal(presenceCheck, 'presence-invalid');
+      audit.record({ event: 'refused', ...base, reason: presenceRefusal.body.error, status: presenceRefusal.status });
+      res.status(presenceRefusal.status).json(presenceRefusal.body);
       return null;
     }
     return c;
   };
-  const proven = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction): boolean => provenDetail(req, res, g, action) !== null;
+  const proven = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string; svc?: MobilePairingService }, action: PermissionAction): boolean => provenDetail(req, res, g, action) !== null;
 
   const finish = (res: Response, event: PermissionAuditEvent, action: PermissionAction, g: { deviceId: string; personId: string | null }, r: ActionResult): void => {
     const ok = r.status >= 200 && r.status < 300;
@@ -1195,6 +1204,17 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       if (!arrivedLocallyUnforwarded(req) || !port.localBindingHere(g.deviceId)) {
         audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'local-only', status: 403 });
         res.status(403).json({ error: 'local-only', detail: 'Only the Instar app on the agent\'s own computer can replace its approval key.' });
+        return;
+      }
+      // identity-security piece 3a (mobile-approver-mark §3.5): this gate already requires a device that approves, so
+      // the override now always answers here; it stays as the explicit refusal an older Mac app gets.
+      // identity-security piece 3a (mobile-approver-mark §3.5): replacing the approval key of a device that approves
+      // would silently remove its right (the new key is neither in the record nor kept). The way to change it is to
+      // remove this device and set it up again.
+      const gs = (g as { svc?: MobilePairingService }).svc;
+      if (gs && mayApprove(gs, g.deviceId)) {
+        audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'approver-key-locked', status: 409 });
+        res.status(409).json({ error: 'approver-key-locked', detail: 'This device approves changes, so its approval key can\'t be replaced here. Remove the device and set it up again.' });
         return;
       }
       if (!provenDetail(req, res, g, a, newKey)) return;

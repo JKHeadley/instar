@@ -18,6 +18,7 @@ import { authMiddleware } from '../../src/server/middleware.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const OWNER = 7812716706;
@@ -88,7 +89,9 @@ function signedRequest(e: Env, p: Phone, url: string, body: unknown) {
 }
 const signed = (e: Env, p: Phone, url: string, body: unknown = {}) => signedRequest(e, p, url, body).send();
 
-async function enroll(e: Env, p: Phone, key = p.presence) {
+async function enroll(e: Env, p: Phone, key = p.presence, mark = true) {
+  // identity-security piece 3a: the route stores a key only for a device that already may approve.
+  if (mark && !e.pairing.devices.get(p.deviceId)?.presenceKey) markApproverForTest(e.pairing, p.deviceId, p.presence.publicKey);
   return signed(e, p, '/mobile/device/presence-key', { publicKey: key.publicKey, proof: key.sign(presenceEnrollMessage(p.deviceId, HOST, key.publicKey)) });
 }
 async function mint(e: Env, p: Phone) {
@@ -104,6 +107,9 @@ describe('console ticket routes', () => {
   it('enrolls once, mints with the presence key, and redeems exactly once for the API token', async () => {
     const e = setup();
     const p = phone(e);
+    const unmarked = await enroll(e, p, p.presence, false);
+    expect([unmarked.status, unmarked.body.error]).toEqual([403, 'approver-required']); // piece 3a: stores nothing
+    expect(e.pairing.devices.get(p.deviceId)?.presenceKey).toBeUndefined();
     expect((await enroll(e, p)).status).toBe(200);
     expect((await enroll(e, p)).status).toBe(200); // same key: idempotent
     const unproven = await signed(e, p, '/mobile/device/presence-key', { publicKey: makeDevice().publicKey, proof: p.presence.sign('x') });
@@ -162,8 +168,8 @@ describe('console ticket routes', () => {
     const p = phone(e);
     const c0 = await signed(e, p, '/mobile/console-ticket/challenge');
     const noKey = await signed(e, p, '/mobile/console-ticket', { challenge: c0.body.challenge, presenceSig: 'x' });
-    expect(noKey.status).toBe(409);
-    expect(noKey.body.error).toBe('presence-key-missing');
+    expect(noKey.status).toBe(403); // piece 3a: a device that may not approve can't mint
+    expect(noKey.body.error).toBe('approver-required');
     await enroll(e, p);
 
     const c = await signed(e, p, '/mobile/console-ticket/challenge');

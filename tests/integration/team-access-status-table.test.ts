@@ -22,6 +22,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { tierAtLeast, type Tier } from '../../src/permissions/TeamAccess.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -129,7 +130,7 @@ async function post(e: Env, p: Phone, url: string, body: unknown): Promise<numbe
 async function teamOn(e: Env, owner: Phone) {
   e.svc.keyLedger!.recordActivation(e.svc.devices.get(owner.id)!, 'telegram-dm', new Date(Date.now() - 60_000).toISOString());
   owner.presence = makeDevice();
-  e.svc.devices.setPresenceKey(owner.id, owner.presence.publicKey);
+  markApproverForTest(e.svc, owner.id, owner.presence.publicKey);
   e.live.setup = true;
   const status = await post(e, owner, '/mobile/team/invites', { events: [
     { type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' },
