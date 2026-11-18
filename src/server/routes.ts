@@ -620,7 +620,7 @@ import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
-import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
+import { historySenderLabel, resolveSignedByAgent, aspClassifiedText, labelFromEnvelope, signedInboundSnapshot } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -6256,6 +6256,8 @@ export function createRoutes(ctx: RouteContext): Router {
           slack: ledger ? { ...ledger.counters, coversSince: ledger.coversSince === null ? null : new Date(ledger.coversSince).toISOString() } : null,
         };
       }
+      // SEC-106 decision 9: agent-signed label framing per delivery path since boot (counts only).
+      base.signedInboundLabel = signedInboundSnapshot();
       // Origin worker health rides the AUTHED extension: a held-sends outage is
       // visible without a status fan-out, and never inferred from silence.
       if (ctx.telegramOrigin) {
@@ -31462,6 +31464,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // duplicate/in-flight event we return ok+deduped WITHOUT routing — the
     // structural no-duplicate-reply guarantee. FAIL-OPEN: any ledger error
     // falls through to normal routing (the gate must never drop a real message).
+    // SEC-106 decisions 5a and 6: the classifier read for THIS message's classified text (the same
+    // form the log call above logged), and the processing ledger's ingress-time label for a reclaim.
+    const lifelineClassifiedText = aspClassifiedText(
+      typeof text === 'string' ? text : '',
+      fwdMedia.media.length > 0 ? fwdMedia.media : null,
+    );
+    const lifelineMessageIdNum = typeof messageId === 'number' ? messageId : Number(messageId) || null;
+    const readLifelineClassifier = (): string | null => trust ? null : resolveSignedByAgent(
+      ctx.getAspClassifier?.() ?? null,
+      typeof topicId === 'number' ? topicId : null,
+      lifelineMessageIdNum,
+      lifelineClassifiedText,
+      // The ingress read counts a mismatch; these route reads of the same message do not.
+      { count: false },
+    );
+    let ledgerLabel: string | undefined;
     let shouldClaimInbound = true;
     if (ctx.sessionOwnershipRegistry && ctx.meshSelfId) {
       try {
@@ -31490,6 +31508,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             userId: fromUserId,
             username: fromUsername,
             firstName: fromFirstName,
+            // SEC-106 decision 2c: the label is written in the SAME call that creates the row.
+            ...((): { signedByAgent?: string } => { const l = readLifelineClassifier(); return l ? { signedByAgent: l } : {}; })(),
           },
           epoch,
           maxProcessingMs: ctx.config.multiMachine?.maxProcessingMs ?? 5 * 60_000,
@@ -31501,6 +31521,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         // Claimed for processing — remember it so the outbound reply commits it.
         ctx.currentInboundByTopic?.set(String(topicId), dedupeKey);
+        // SEC-106 decision 6: a reclaimed row (restart + re-forward) still holds the label written when
+        // the message was first seen. Copied ONLY when the row's stored input equals this text (a
+        // dedupe key can fall back from update_id to message_id, so two messages could share a row)
+        // and never for an app message.
+        if (!trust) {
+          const row = ctx.messageLedger.get(dedupeKey);
+          if (row && row.inputSnapshot === text) {
+            const carried = labelFromEnvelope(row.senderEnvelope);
+            if (carried) ledgerLabel = carried;
+          }
+        }
       } catch (err) {
         console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
       }
@@ -31557,11 +31588,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // this human's account is not evidence the human is present, so it never
     // binds them. The verdict is the classifier's own, cached when the message
     // was logged above (single-use nonce — never re-verified), read by message id.
-    const lifelineSignedByAgent = resolveSignedByAgent(
-      ctx.getAspClassifier?.() ?? null,
-      typeof topicId === 'number' ? topicId : null,
-      typeof messageId === 'number' ? messageId : Number(messageId) || null,
-    );
+    // SEC-106 decision 6: the classifier's text-bound verdict, else the ledger copy — a reclaim after a
+    // restart sees a used nonce, but the row still says agent-written, so neither site binds.
+    const lifelineSignedByAgent = readLifelineClassifier() ?? ledgerLabel ?? null;
     if (lifelineSignedByAgent) {
       console.log(`[telegram-forward] ${topicRef(topicId)} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
@@ -31633,6 +31662,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // lifeline that omits the field reads as `false` here (it cannot send
           // a real forward through the legacy wire), which is the safe direction.
           forwarded: req.body.forwarded === true,
+          // SEC-106 decision 6: the ledger copy, in process; ingress reconciles it and removes it.
+          ...(ledgerLabel ? { ledgerSignedByAgent: ledgerLabel } : {}),
         },
       };
 
