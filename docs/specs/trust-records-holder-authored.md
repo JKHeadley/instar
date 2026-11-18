@@ -115,8 +115,16 @@ approval flow asks the owner again the next time the action is attempted.
    records, and a peer's `change` never affects this machine's levels in either direction ("levels"
    excludes legacy admission, which decision 5 governs: a peer's real owner change does end this
    machine's legacy grant for that kind). A kind with
-   no own `change` keeps today's rule ("no recorded grant means Ask me first"). There is no peer-driven
-   "ask-first" state (round 2: it was order-dependent and honest standbys triggered it).
+   no own `change` keeps today's rule ("no recorded grant means Ask me first").
+   - One exception keeps the owner's narrowing from being lost on a hand-back: a peer `change` keyed
+     at epoch W whose source is not automatic (not `revoked` or `default`) puts the kind on "ask me
+     first" on this machine unless an own `change` for that kind is keyed at an epoch above W. So if
+     A raised a kind, the owner lowered it on B, and the lease returns to A, A asks rather than acting
+     on its older raise. It is order-free (epochs, not arrival), an honest standby's automatic restore
+     never triggers it, pre-build peer changes (no epoch) never trigger it, and a forger gains only
+     denial. It is checked after an own unused one-time approval in admission, with its own reason
+     ("changed on <machine> since I last had your OK"), so approving one action still works. The round-2 "ask-first" state
+   (order-dependent, triggered by honest standbys) is gone; the one exception below is epoch-based.
 5. **Legacy grants are own-only and end on any change except a machine's own automatic narrowing.**
    - `legacyUnchanged(kind, self)` holds only if this machine's own legacy grant exists AND no `change`
      record for that kind exists other than the record(s) whose `changeId` equals `afterChange` (from
@@ -127,10 +135,16 @@ approval flow asks the owner again the next time the action is attempted.
      incident drop, `AdaptiveTrust.ts` ~192 and ~282) and `default`. So `user-explicit`, `earned`,
      `config`, the autonomy observer's `route`, a missing source and any unknown value all end it,
      which is today's behaviour for those; an honest standby's restore does not. A `change` with a
-     missing `changeId` counts. No ordering is used.
+     missing `changeId` counts. Pre-build `change` records (no epoch in the key) are judged by
+     today's rule among themselves (the latest of them must be the anchor), so history already
+     incorporated at import never ends a grant; every epoch-keyed change outside the automatic-source
+     list ends it, with no ordering.
    - A peer can end a legacy grant by forging a change: denial, permanent for that kind until the
      owner approves the kind on this machine. Listed under residuals and shown on `/trust/summary`.
-   - The legacy import on a joining machine imports nothing from peers; a joining machine starts
+   - The legacy import's "another machine already imported" check (`othersImported`) reads a new
+     evidence query, `legacyImportedAnywhere()`, over every writer's `legacy-grant` records; it only
+     decides that this machine is a joining machine, never grants. The legacy import on a joining
+     machine imports nothing from peers; a joining machine starts
      with no legacy grants, so its kinds are gated ("ask") until approved there.
    - Note that `admit()` lets a non-holder admit a `legacy` verdict itself (today's behaviour,
      unchanged); with own-only legacy grants that is now each machine's own record.
@@ -181,7 +195,9 @@ approval flow asks the owner again the next time the action is attempted.
      A stale copy restored by other means is caught by the gap rule, because its `lastSeenEpoch` is
      old.
    - The record key carries the epoch it was written in: `tj:action-approval:e<epoch>:<id>`,
-     `tj:device-approval:e<epoch>:<id>`, and every request key form (the base request is written with
+     `tj:device-approval:e<epoch>:<id>`, acceptances and their withdrawals
+     (`tj:acceptance:e<epoch>:<id>`, `tj:device-acceptance:e<epoch>:<id>` and the two withdrawal
+     types), `change` records (`tj:change:e<epoch>:<id>`), and every request key form (the base request is written with
      an explicit `tj:request:e<epoch>:<id>` key instead of today's random or `tj:request:<id>` key; the
      own index keeps each request's epoch so its `:card` record is written as
      `tj:request:e<epoch>:<id>:card`; when they differ the earlier epoch governs). Keys are free-form
@@ -196,6 +212,9 @@ approval flow asks the owner again the next time the action is attempted.
    - Records written before this build carry no epoch in the key. On a multi-machine agent they do
      not count as one-time grants (one re-ask at upgrade, listed in decision 6); on a single machine
      they count as today.
+   - Fresh view after wake: `admit()` grants proceed-once only if the lease view was refreshed (a
+     poll, fold or broadcast observed) after the last wake or restart; otherwise it asks. This closes
+     the window after a wake before a same-epoch peer lease is seen.
    - Admission recheck: after the `dispatch` write and before returning proceed-once, `admit()`
      re-reads `holdsLease()` and the current term; if either changed during the write, it returns
      "ask" (the approval is then used up, which is the safe side).
@@ -220,7 +239,10 @@ approval flow asks the owner again the next time the action is attempted.
    signed push (decision 3), and only after re-reading the lease confirms this machine still holds it
    and that writer has not held it at or after the record's term (so an older-build or `"fold"` peer
    that took the lease and honestly consumed a request never triggers it); unsigned cases are counted
-   only. `codeTaken` reads every writer's requests (it only blocks a code, never grants), so a new
+   only. The notice is also suppressed while `splitBrainState` is `contested`. The build enumerates
+   every writer of `request-status`, `consumption` and `dispatch` with its lease guard (today all sit
+   behind `holds()` / `onReceipt` or the holder-only admission path) and keeps that list in a test.
+   `codeTaken` reads every writer's requests (it only blocks a code, never grants), so a new
    holder never reuses an id an earlier holder issued. The first such record from a given writer in a term sends the owner one plain notice through the existing
    owner channel (`notifyOwner`): "<machine> closed or used a request I made while I am in charge,
    which it should never do. Nothing was approved. If you do not recognise this, remove <machine> from
@@ -280,14 +302,14 @@ approval flow asks the owner again the next time the action is attempted.
 | `receipt` | first-hand receipt (part 1) | none |
 | `acceptance-sent` | precondition for an acceptance | none |
 | `acceptance` | account path accepted | none |
-| `acceptance-withdrawn` | removes an acceptance | removes the named acceptance id only. A withdrawal writes one record per acceptance id the withdrawing machine can see for that subject (`principal|adapter`), own or kept as evidence, so it reaches the other holder's acceptance after a hand-back while a later re-acceptance (a fresh id) is unaffected |
+| `acceptance-withdrawn` | removes an acceptance | removes the named acceptance id; a peer withdrawal keyed at epoch W also ends every own acceptance for the same `principal|adapter` whose key epoch is W or lower (pre-build acceptances count as lower). Order-free; a re-acceptance at a later epoch survives, and it reaches an acceptance the withdrawing machine never saw |
 | `consumption` | records an approve; backs a raise at load | marks the request id and receipt id used |
 | `change` | proven level, load check, legacy validity | ends this machine's legacy grant for the kind unless its source is `revoked` or `default` (decision 5); nothing else |
 | `legacy-grant` | own legacy behaviour (`machine` = this machine) | none; never imported |
 | `action-approval` | proceed-once (current term only) | none |
 | `dispatch` | marks approval used | marks the named approval id used |
 | `device-acceptance` | device may approve | marks its `approvalId` used |
-| `device-acceptance-withdrawn` | removes a device | removes the named acceptance id only; written once per acceptance id the withdrawing machine sees for that `deviceId` + `keyFingerprint`, own or evidence (same rule) |
+| `device-acceptance-withdrawn` | removes a device | removes the named acceptance id; a peer withdrawal keyed at epoch W also ends every own acceptance for the same `deviceId` (the field the record already carries) keyed at W or lower (same rule) |
 | `device-approval` | approves a new device (current term only) | none |
 | `apply-outcome` | outcome of an own consumption | none |
 | any type, unreadable (unknown field or `minReader`) | today's unreadable handling for own records | only the id-keyed narrowing of its type (used, closed, withdrawn); never `unreadableKeys` |
@@ -306,6 +328,7 @@ approval flow asks the owner again the next time the action is attempted.
 | `deviceAcceptanceHistory` | all records, each marked own or "from <machine>, not counted here" |
 | `changeLog`, `lastChange` | own changes in own journal sequence order |
 | `legacyGrants`, `legacyKeys`, `unchangedLegacyKeys`, `legacyUnchanged` | own legacy grants; decision 5 |
+| `legacyImportedAnywhere` (new) | every writer's legacy grants, evidence only: decides joining-machine status for the import, never grants |
 | `unusedActionApproval` | own, current term, minus narrowing |
 | `hasUnreadableHistory` | own unreadable `change` records only; an unreadable peer record keeps only its id-keyed narrowing (see the record table) |
 
@@ -324,6 +347,9 @@ approval flow asks the owner again the next time the action is attempted.
 | Admission recheck after the dispatch write | invariant; basis: irreversible-consequence; evidence: a handover during the write would admit on an obsolete term | Returns ask; the approval stays used |
 | Own stream ownership | invariant; basis: external-constraint; evidence: the stamped origin compared with this machine's current id | Origin can only remove ownership |
 | Owner notice on a peer closing or using a current-term own id | invariant; basis: enumerable-domain; evidence: during this machine's term only it consumes, dispatches and closes its own requests; only signature-verified records from a writer that has not held the lease since | Once per writer per term, sent at once by the holder |
+| Peer non-automatic `change` at epoch W -> ask-first unless own change above W | invariant; basis: irreversible-consequence; evidence: an owner lowering on another holder would otherwise be lost on a hand-back | Order-free; checked after an own unused approval |
+| Peer withdrawal at epoch W ends own acceptances of the subject at W or lower | invariant; basis: irreversible-consequence; evidence: a revoked device approving again after a hand-back | Order-free; later re-acceptance survives |
+| Proceed-once needs a lease view refreshed since wake | invariant; basis: irreversible-consequence; evidence: a same-epoch peer lease unseen after wake could allow a double run | Asks until refreshed |
 | Honest denial line (decision 8) | invariant; basis: enumerable-domain; evidence: the request was closed or used by a non-own record | Never "already approved" |
 | Writer identity of a record | invariant; basis: external-constraint; evidence: the authenticated sender (asked machine on pull, signed `env.sender` on push) and the replica file's machine | Never a payload field |
 | `journal-sync` response signature | invariant; basis: external-constraint; evidence: the registered Ed25519 machine key; invalid -> trust records refused; absent -> accepted, narrowing-only, which is every peer record's ceiling | No ratchet |
@@ -331,7 +357,7 @@ approval flow asks the owner again the next time the action is attempted.
 | Re-ask and re-accept lines after a handover | invariant; basis: enumerable-domain; evidence: the existing approval and acceptance flows, worded per decision 6 | No new prompt or authority |
 | Boot warning under `"fold"` | invariant; basis: irreversible-consequence; evidence: peer grants become live on that boot | Tells the operator the protection is off |
 | Fleet default of `trustJourney.peerGrants` | judgment-candidate; floor: `"fold"` on the fleet until the reviewed change; arbiter: the recurring maturation review (two independent readings) | Maturation Path |
-| Dark window before the fleet decision (21 days) | judgment-candidate; floor: the reason and a new date are recorded if the criterion is unmet; arbiter: the maturation review | A review date, never an automatic flip |
+| Dark window before the fleet decision (21 days) | judgment-candidate; floor: if the criterion is unmet the reason is recorded and an extension needs the operator's renewed acceptance; arbiter: the maturation review and the operator | A review deadline, never an automatic flip |
 | Graduation criterion | judgment-candidate; floor: the measurable conditions in the maturation plan; arbiter: the maturation review | Thresholds raise, the review decides |
 
 ## Multi-machine posture
@@ -421,8 +447,9 @@ approval as an ordinary approval (today's behaviour). A mixed-version pool repli
   while B held, A re-acquires two epochs later) is caught by the gap rule; a woken holder that
   re-acquires at the same epoch as the peer that took over treats that epoch as foreign; `lastForeignEpoch` never
   decreases; a multi-machine agent with no coordinator asks; a withdrawal on B removes A's acceptance
-  for the same subject after a hand-back and a later re-acceptance on A still counts; an existing legacy grant whose `afterChange` names a peer
-  change survives the upgrade; a new-id restore narrows raised levels with no own record; a handover
+  for the same subject after a hand-back even when A's acceptance never replicated to B, and a
+  re-acceptance on A at a later epoch still counts; an existing legacy grant whose `afterChange` names a peer
+  change survives the upgrade; a new-id restore narrows raised levels with no own record; A raises, the owner lowers on B, hand-back to A asks; a pre-build history C1, C2 with a grant anchored to C2 survives the upgrade; a joining machine with no own grants still detects that another machine imported; admit right after a wake asks until the view refreshes; a handover
   during the dispatch write returns ask; a restored stream from another machine
   id is foreign; an unreadable peer `change` never puts a kind into unreadable history; a
   single-machine agent (epoch 0) is unchanged; a standby's boot after a handover changes nothing on
