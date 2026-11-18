@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "restart-lock-continuity-c2",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T17:40:18.535Z",
+  "artifactPath": "upgrades/side-effects/restart-lock-continuity-c2.md",
+  "artifactSha256": "782a640851068613013686d3e956bb291eb1a9e8fa18abeede7cca407637e896",
+  "specPath": "docs/specs/restart-lock-continuity.md",
+  "coveredFiles": [
+    "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+    "tests/unit/machine-wedge-unlock-resample.test.ts",
+    "upgrades/next/restart-lock-continuity-c2.md",
+    "upgrades/side-effects/restart-lock-continuity-c2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "wedge monitor (watchdog) change; converged spec part C.2",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
