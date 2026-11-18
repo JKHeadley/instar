@@ -193,8 +193,16 @@ approval flow asks the owner again the next time the action is attempted.
    closed or used an own id from the current term, which an honest peer never does because only the
    holder consumes and dispatches), returned even when adaptive trust is absent (today that route
    404s without it). No forgery alarm: whether a peer was in charge when it wrote cannot be
-   established, so the design does not judge it; a real forgery is therefore only a count nobody is
-   pushed to read, which the approver should know.
+   established, so the design does not judge ordinary peer grants. One case IS provable: a peer
+   record that closes or uses an own id from the current term (`peerNarrowingOfCurrentTerm`), because
+   during this machine's term no other machine consumes, dispatches or closes its requests. The first
+   such record from a given writer in a term sends the owner one plain notice through the existing
+   owner channel (`notifyOwner`): "<machine> closed or used a request I made while I am in charge,
+   which it should never do. Nothing was approved. If you do not recognise this, remove <machine> from
+   my computers." It is a security-class signal, so it is sent at once (there is nothing to heal:
+   the narrowing already only denied), at most once per writer per term, and every occurrence is
+   counted and logged. Legacy grants ended by a peer change are not provable forgery (an earlier
+   holder's real change also ends them) and stay a count.
 10. **Asking again after a handover, and the standard it strains.** *Trust Is Earned by Work* says
     the same yes is never asked twice unless the person chooses to keep being asked. On the new holder
     the earlier yes is a record another machine wrote, which it cannot tell apart from a forgery, so it
@@ -289,6 +297,7 @@ approval flow asks the owner again the next time the action is attempted.
 | Invalid `trustJourney.peerGrants` value | invariant; basis: enumerable-domain; evidence: the two valid values | Logged; resolves as absent |
 | Admission recheck after the dispatch write | invariant; basis: irreversible-consequence; evidence: a handover during the write would admit on an obsolete term | Returns ask; the approval stays used |
 | Own stream ownership | invariant; basis: external-constraint; evidence: the stamped origin compared with this machine's current id | Origin can only remove ownership |
+| Owner notice on a peer closing or using a current-term own id | invariant; basis: enumerable-domain; evidence: during this machine's term only it consumes, dispatches and closes its own requests | Once per writer per term, sent at once |
 | Honest denial line (decision 8) | invariant; basis: enumerable-domain; evidence: the request was closed or used by a non-own record | Never "already approved" |
 | Writer identity of a record | invariant; basis: external-constraint; evidence: the authenticated sender (asked machine on pull, signed `env.sender` on push) and the replica file's machine | Never a payload field |
 | `journal-sync` response signature | invariant; basis: external-constraint; evidence: the registered Ed25519 machine key; invalid -> trust records refused; absent -> accepted, narrowing-only, which is every peer record's ceiling | No ratchet |
@@ -371,7 +380,7 @@ approval as an ordinary approval (today's behaviour). A mixed-version pool repli
   it "ask"; a peer change with a reused or missing `changeId` and a far-future `at` never re-validates
   a legacy grant; peer changes of sources `user-explicit`, `earned`, `config`, `route`, missing and
   unknown end it, and `revoked` and `default` do not; peer legacy grants
-  are never imported; a peer `consumption` gives the honest denial line; a boot refold gives the same
+  are never imported; a peer `consumption` gives the honest denial line; a peer consumption of a current-term own request sends one owner notice and a second does not; a boot refold gives the same
   state as the live fold for any file enumeration order and does not re-count `peerGrantsIgnored`.
 - Unit (applier): an invalid response signature is refused and counted; an unsigned response is
   accepted with trust records narrowing-only; an origin mismatch is `forged`; a replica claiming this
