@@ -804,6 +804,8 @@ async function loadDesktopPage(options) {
 async function loadTargetsAndMaybeOpen({ open = true, targets } = {}) {
   targets ??= await api('/desktop/targets');
   const machines = targets.machines || [];
+  const previousOption = $('machine').selectedOptions[0];
+  const selectedMachine = previousOption && !previousOption.disabled ? previousOption.value : null;
   $('machine').replaceChildren();
   $('machineNotes')?.replaceChildren();
   trustedTargetKeys.clear();
@@ -837,7 +839,9 @@ async function loadTargetsAndMaybeOpen({ open = true, targets } = {}) {
   $('unlock').hidden = true;
   const ready = [...$('machine').options].filter(option => !option.disabled);
   $('requestButton').disabled = ready.length === 0;
-  if (!preferredMachine && ready.length > 0) $('machine').value = ready[0].value;
+  if (!preferredMachine && ready.length > 0) {
+    $('machine').value = trustedTargetKeys.has(selectedMachine) ? selectedMachine : ready[0].value;
+  }
   if (preferredMachine && !hasPreferredMachine) {
     $('request').hidden = machines.length === 0;
     $('retryButton').hidden = false;
@@ -851,7 +855,7 @@ async function loadTargetsAndMaybeOpen({ open = true, targets } = {}) {
     status(reason || 'This machine’s desktop is not available right now.');
     return;
   }
-  if (open && (hasPreferredMachine || (machines.length === 1 && ready.length === 1))) {
+  if (open && (hasPreferredMachine || (!selectedMachine && machines.length === 1 && ready.length === 1))) {
     if (!hasPreferredMachine) $('machine').value = ready[0].value;
     status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
     await requestDesktop();

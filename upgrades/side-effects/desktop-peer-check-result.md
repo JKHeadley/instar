@@ -19,3 +19,5 @@ The defect class is claim-vs-evidence. A rejected probe provides no desktop read
 ## 6b. Operator-surface quality
 
 The primary action remains Open selected machine. Check again is a separate, plainly labeled action. The picker gives each machine its name and repeats the full reason below the selector for phone-width screens. It exposes no raw probe exceptions or machine identifiers. Neither control is destructive. Both a manual open and an automatic deep-link open hide retry for the duration of the request.
+
+The picker captures the currently selectable machine immediately before rebuilding its options. A refresh restores it only if its new row passes the existing readiness and signing-key checks. Otherwise it selects the first usable row and leaves opening it to the person. A deep link retains its existing behavior. The browser regression checks a retained selection and three fallbacks (removed, unavailable, or missing a key).

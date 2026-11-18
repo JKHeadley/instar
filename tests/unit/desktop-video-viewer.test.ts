@@ -207,6 +207,33 @@ describe('desktop target selection', () => {
     v.dom.window.close();
   });
 
+  it.each(['ready', 'removed', 'unavailable', 'missing key'])('rechecks the selected machine when it is %s', async state => {
+    const v = viewer();
+    const doc = v.window.document;
+    const alpha = { machineId: 'alpha', label: 'Alpha', ready: true, targetSigningPublicKey: 'a-key' };
+    const beta = { ...alpha, machineId: 'beta', label: 'Beta', targetSigningPublicKey: 'b-key' };
+    const gamma = { machineId: 'gamma', label: 'Gamma', ready: false };
+    const refreshed = state === 'removed' ? [alpha] : [
+      alpha, { ...beta, ready: state !== 'unavailable', targetSigningPublicKey: state === 'missing key' ? '' : beta.targetSigningPublicKey }, gamma,
+    ];
+    const targets = vi.fn().mockResolvedValueOnce({ machines: [alpha, beta, gamma] })
+      .mockResolvedValueOnce({ machines: refreshed });
+    const open = vi.fn();
+    Object.assign(v.window, { targets, openFixture: open });
+    v.window.eval('api = window.targets; refreshLockedCard = () => {}; refreshSetup = async () => {}; requestDesktop = window.openFixture;');
+    await v.window.eval('loadTargetsAndMaybeOpen()');
+    const picker = doc.querySelector<HTMLSelectElement>('#machine')!;
+    picker.value = beta.machineId;
+    const retry = doc.querySelector<HTMLButtonElement>('#retryButton')!;
+    retry.click();
+    await vi.waitFor(() => expect(retry.disabled).toBe(false));
+    expect(picker.value).toBe(state === 'ready' ? beta.machineId : alpha.machineId);
+    expect(picker.selectedOptions[0].disabled).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+    expect(targets.mock.calls).toEqual([['/desktop/targets'], ['/desktop/targets']]);
+    v.dom.window.close();
+  });
+
   it.each(['manual', 'deep link'])('hides retry while a %s open is pending and restores it on failure', async mode => {
     const v = viewer();
     const doc = v.window.document;

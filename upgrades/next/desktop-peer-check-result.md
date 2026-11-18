@@ -19,3 +19,5 @@ The **Check again** button is available when some machines are ready and others 
 The picker regression in `tests/unit/desktop-video-viewer.test.ts` clicks **Check again** and checks the option, full explanation and button before and after a successful response. The HTTP regression in `tests/integration/desktop-routes.test.ts` models a peer timeout followed by a successful reply.
 
 The boot lifecycle regression in `tests/e2e/desktop-mesh-boot-lifecycle.test.ts` covers a registered peer before its endpoint is discovered. The session-end test verifies that the picker renders the same checked response.
+
+Check again also keeps your selected Mac when it is still ready. If that Mac disappears or can no longer be selected, you can choose from the machines that are ready.
