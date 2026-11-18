@@ -1,0 +1,22 @@
+# Saving a change no longer waits on repeated slow checks
+
+<!-- bump: patch -->
+
+## What Changed
+
+When an agent runs on more than one machine and the other machine is slow, the shared conversation history is marked not ready. Every save then waited for the background upkeep and afterwards repeated the same slow work itself: asking the other machines, re-checking readiness, and re-reading every saved record on disk. With a busy machine that took longer than the Conversations page waits, so Accept all stopped with "your agent is not answering right now". Now the disk check reuses its last result while nothing has changed, and a save reuses a peer and readiness check that is less than 10 seconds old. Owner steps that take more than 2 seconds are named in the log with their duration.
+
+## What to Tell Your User
+
+- **Accept all on a busy machine**: "Accepting suggested projects no longer stops after two with 'your agent is not answering' just because your machines are busy; each save no longer repeats checks that were just done."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Saves answer in time while the history is catching up | Automatic |
+| Slow owner steps named in the log | Automatic |
+
+## Evidence
+
+Accept all round 4 part 2 (topic 144007): live run 2026-11-18 ~17:00Z on 1.3.1890-local.a88a06f stopped at 2 of 20; Studio log names the owner step as busy with the local history check. Tests: `tests/integration/graph-custody-peer-frontier.test.ts` (history check reused while unchanged, re-verified after a commit, still refused after a peer refusal), `tests/integration/graph-default-boot.test.ts` (save reuses a fresh refresh, refreshes after 10 s, upkeep always refreshes, slow-step log).

@@ -98,6 +98,31 @@ describe('JobReflector', () => {
 
   // ─── No Data ──────────────────────────────────────────────────────
 
+  describe('recorded commands in the prompt (bounded-input review)', () => {
+    it('passes a normal command whole and discloses a long one as cut', async () => {
+      const provider = makeMockProvider(GOOD_RESPONSE);
+      const reflector = new JobReflector({ stateDir, intelligence: provider });
+      const medium = `node scripts/run.mjs ${'--flag value '.repeat(12)}`.trim(); // ~180 chars: used to be cut at 100
+      const long = `bash -c "${'echo step && '.repeat(60)}true"`; // ~730 chars
+      writeRecords(stateDir, 'cmd-job', [
+        makeRecord({
+          jobSlug: 'cmd-job',
+          actualSteps: [
+            { step: 'medium', timestamp: daysAgo(1), source: 'hook', command: medium },
+            { step: 'long', timestamp: daysAgo(1), source: 'hook', command: long },
+          ],
+          timestamp: daysAgo(1),
+        }),
+      ]);
+      await reflector.reflect('cmd-job');
+      const prompt = (provider.evaluate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+      expect(prompt).toContain(medium);
+      expect(prompt).not.toContain(long);
+      expect(prompt).toContain(long.slice(0, 100));
+      expect(prompt).toContain('[BOUNDED INPUT:');
+    });
+  });
+
   describe('no execution data', () => {
     it('returns null when no journal entries exist', async () => {
       const provider = makeMockProvider(GOOD_RESPONSE);

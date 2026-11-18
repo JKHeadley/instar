@@ -112,6 +112,18 @@ export interface AccountQuotaSnapshot {
    * feeds placement, shedding or swap decisions.
    */
   noQuotaWindow?: boolean;
+  /**
+   * quota-pacing (additive): a Codex rollout reading carried no captured time, so `measuredAt`
+   * is the read time and the reading's real age is unknown. Display/telemetry only; stripped
+   * from the replicated account projection.
+   */
+  measuredAtSynthesized?: boolean;
+  /**
+   * quota-pacing (additive): the provider sent `percent: null` for the Fable window. The
+   * `fable.utilizationPct` value is unchanged (0) for existing readers; the history stores null.
+   * Stripped from the replicated account projection.
+   */
+  fableUnknown?: boolean;
 }
 
 export interface SubscriptionAccount {
