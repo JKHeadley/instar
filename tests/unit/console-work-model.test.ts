@@ -279,6 +279,49 @@ describe('the page', () => {
   beforeEach(() => { installDom(); reads = {}; posts = []; postAnswer = { status: 200, data: { recordId: 'rt1' } }; });
   const ctx = () => ({ get: vi.fn(async (p: string) => (p in reads ? reads[p] : { ok: false, reason: 'the server answered 500' })), post: vi.fn() });
 
+  it('folds finished history, keeps active work visible, and preserves an opened history section on refresh', async () => {
+    reads['/work-board'] = ok(board([card()], { done: [card({ id: 'wc_finished', status: 'done', title: 'Finished renewal' })], doneTotal: 21 }));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode();
+    await renderWork(main, ctx());
+    for (const id of ['done', 'archived']) {
+      const section = main.querySelector(`#sec-${id}`);
+      expect(section.querySelector('button.list-head')?.getAttribute('aria-expanded')).toBe('false');
+      expect(section.querySelector('.work-lane-body')?.hidden).toBe(true);
+    }
+    expect(main.querySelector('#sec-waiting-on-you .work-lane-body').hidden).toBe(false);
+    const done = main.querySelector('#sec-done');
+    expect(done.querySelector('.list-count').textContent).toBe('21');
+    expect(done.querySelector('.work-lane-body a')).toBeTruthy();
+    done.querySelector('button.list-head').click();
+    expect(done.querySelector('.work-lane-body').hidden).toBe(false);
+    await renderWork(main, ctx());
+    expect(main.querySelector('#sec-done button.list-head').getAttribute('aria-expanded')).toBe('true');
+    expect(main.querySelector('#sec-done .work-lane-body').hidden).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
+
+  it('opens Done when following its paging link and keeps the pager with the cards', async () => {
+    location.hash = '#/work/board?donePage=1';
+    reads['/work-board?donePage=1'] = ok(board([], { done: [card({ id: 'wc_page', status: 'done' })], doneTotal: 75 }));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode();
+    await renderWork(main, ctx());
+    expect(main.querySelector('#sec-done button.list-head').getAttribute('aria-expanded')).toBe('true');
+    expect(main.querySelector('#sec-done .work-lane-body').hidden).toBe(false);
+    expect(main.querySelector('#sec-done .work-lane-body a[href*="donePage"]')).toBeTruthy();
+  });
+
+  it('a direct link opens a finished card even while its lane is folded', async () => {
+    const id = 'wc_1234567890abcdef';
+    location.hash = `#/work/board?card=${id}`;
+    reads['/work-board'] = ok(board([], { done: [card({ id, status: 'done', title: 'Finished direct link' })] }));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    await renderWork(mainNode(), ctx());
+    expect(document.querySelector('.sheet').getAttribute('aria-label')).toBe('Finished direct link');
+    expect(document.querySelector('#sec-done .work-lane-body').hidden).toBe(true);
+  });
+
   it('leads with Waiting on you, marked, with the card, its need line and an enabled Approve', async () => {
     reads['/work-board'] = ok(board([card({ repliedAfterQuestion: true })], { more: 2 }));
     const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
