@@ -44,3 +44,7 @@ Testing lane note: Vitest `-t` namefilter caused suite-lane classification despi
 Actual combined test mapping: timing25 + driver78 =103 passing. No inferred total from separately run source-branch tests. Parent reviewed the receipt boundary and source approved-GET shape; independent final-delta concurrence is recorded before commit.
 
 Final review: parent and independent proof_ack_gap concurred on the bounded receipt wait, exact approved GET shape and inert fake composition. Normal integration commit authorized before the affected combined unit-file batches; fullsuite, integration/E2E, package build, guard rerun and publication remain outside this step.
+
+## Combined release-note gate follow-up
+
+The normal first push stopped before tests/publication because the inherited guard-ACK and next-grant fragments were also internal-only beside the combined runtime diff. Their markers are now removed and complete user/capability headings added on this combined branch only, matching the already converted watch fragment. This is documentation-only; no executable source, tests, helper, configuration or artifact bytes change. Existing source PRs remain intact. The local proof package remains exactly from3a3c6b963; the later documentation commit does not claim a new package build. Revert these note edits if separating the combined changes again. No additional tests are warranted for release prose; normal commit/push gates still run.

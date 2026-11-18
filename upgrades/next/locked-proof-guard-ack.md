@@ -1,4 +1,3 @@
-<!-- internal-only -->
 # Make the missing guard acknowledgement proof deterministic
 
 ## What Changed
@@ -8,3 +7,11 @@ Case 12.18 arms a request-scoped stale immutable heartbeat before password submi
 ## Evidence
 
 Targeted regression tests exercise the driver/judge lifecycle and real immutable-file behavior in disposable macOS directories. They cover setup and cleanup failures, crash windows, wrong file identity, live competing drivers and missing evidence. This is harness verification; it does not claim the dedicated proof Mac has passed this case or enable any production Mac.
+
+## What to Tell Your User
+
+No new action is needed. This is a proof-harness reliability change; live Mac acceptance and fleet enablement remain separate.
+
+## Summary of New Capabilities
+
+The developer proof harness can establish and recover an exact missing-acknowledgement fault before password submission. Product authorization and relock policy are unchanged by this harness change.
