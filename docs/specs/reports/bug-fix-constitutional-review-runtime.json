@@ -635,5 +635,27 @@
     "commit": "e575f8232881dbb8f22cb65321413f154203ec91",
     "checkedAt": "2026-11-18T05:35:32.024Z",
     "provenance": "exact-upstream-bytes-on-protected-main"
+  },
+  "installedConsumerRepair": {
+    "observations": {
+      "MiniWriterSha256": "b166b5f44bb83e35354e251012b5a80831c16fad6dd8e748aa0a17e103c589ec",
+      "StudioWriterSha256": "e3848c4ab226d30fffc3c746b9ef35639c8c92c62c4cb59565bb7db263a7023f",
+      "actualReportingSkill": "feedback, from installBuiltinSkills inline template; standalone instar-feedback not normally installed"
+    },
+    "repair": "Recognize all5exact historical defaults; preserve unknown/custom files. Share problem-first clause between real fresh feedback generation and actual existingfeedback migration across3roots; retain standalone alias.",
+    "independentTests": {
+      "reviewer": "spec_decisions_lessons",
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "limit": "Compiled/full-suite final validation and package activation still pending"
+  },
+  "node26CompatibilityFinding": {
+    "feedback": "fb-e2381cbb-f0e",
+    "error": "UND_ERR_INVALID_ARG: invalid onError method",
+    "component": "Native Node26fetch with Undici6Agent in unchanged Threadline MCP HTTP client",
+    "controls": "Both address forms fail with customAgent; defaultfetch succeeds; identical customAgent succeedsNode24.14.1",
+    "limit": "Final tests use installedNode24; Node24green does not clearNode26compatibility."
   }
 }

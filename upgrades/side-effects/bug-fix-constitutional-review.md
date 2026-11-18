@@ -12,7 +12,9 @@ conformance reviewer and feedback safety reviewer receive a complete, pinned mas
 rule book instead of relying only on the retained registry. Source integrity, upstream protected-main
 provenance, exact review-input identity, unavailable states and whole-prompt transport limits are
 explicit. Bug-report instructions separate evidence from proposed remedies. Existing installations
-receive allowlisted skill guidance and helper files; the actual Echo Bugs overseer consumes the
+receive allowlisted skill guidance and helper files; the actual feedback installer and its
+existing feedback alias share the same problem-first clause. Exact historical default writers
+are upgraded while unknown customized bytes stay owned. the actual Echo Bugs overseer consumes the
 evidence on its existing cadence. No new constitutional or operator approval authority is created.
 
 ## Decision-point inventory
@@ -169,6 +171,27 @@ historical response used the old `model: capable` label; it proves semantic beha
 metadata/unit tests distinguish requestedModelTier from actualModel (unknown). The purpose citation
 that was machine-unresolved was manually reconciled to the governing sign-off list; no machine
 citation-resolution success is claimed for that historical response.
+
+## Actual installed-consumer review
+
+Inventory found the Mini using the exact d0fe838db default writer in all three roots and
+Mac Studio using the exact204426ef5 default. The prior single-hash branch would preserve
+these shipped defaults as custom. The replacement accepts all five verified historical default
+hashes, preserving unknown/custom bytes. Two unmodified source snapshots are stored as text
+fixtures (read as bytes, never executed); each is tested across all three roots, including
+already-appended guidance, idempotence and customized suffix preservation.
+
+The real installed reporting entry is feedback, generated inline by installBuiltinSkills;
+instar-feedback is an optional standalone alias. The canonical problem-first clause now feeds
+the actual fresh installer and migration of both names. A real installer test reads emitted
+canonical/Claude feedback and exercises existing guidance in all three roots. The independent
+reviewer spec_decisions_lessons reproduced these four tests with zero failures/skips and restored
+concurrence. This is consumer proof, not a package-deployment claim.
+
+The migration follow-up records primary defectClass claim-vs-evidence, closure guard,
+enforcementType ratchet, citation tests/unit/PostUpdateMigrator-constitutionalReview.test.ts.
+It catches this exact false-delivery claim by exercising the actual installer and captured
+installed default bytes. The earlier bounded-test-spawn negative declaration remains historical.
 
 ## Conclusion
 

@@ -50,7 +50,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
-import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT, PROBLEM_FIRST_FEEDBACK_CLAUSE } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { packageInstallCommand } from '../core/packageInstall.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
@@ -2190,6 +2190,8 @@ curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback/retry
 Your feedback is stored locally AND forwarded to the instar maintainers. When they fix the issue and publish an update, the built-in auto-updater detects it, applies it, and restarts the server — no manual intervention needed. One agent's bug report lifts all ships.
 
 **User feedback matters too.** When your user says "this isn't working" or "I wish I could..." — capture it with their original words. User language carries context that technical rephrasing loses.
+
+${PROBLEM_FIRST_FEEDBACK_CLAUSE}
 `,
     },
     'triage-findings': {
