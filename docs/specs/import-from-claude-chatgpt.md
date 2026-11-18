@@ -3,6 +3,8 @@ title: "Bring your Claude and ChatGPT history into Instar"
 slug: import-from-claude-chatgpt
 author: echo
 status: converged
+approved: true
+approved-by: "Justin, topic 143810, 2026-11-17 13:19 PST: deep research, map to native Instar, and build any gaps so the user never has to return to the Claude or Codex app"
 parent-principle: "The Person Decides; the Agent Does the Rest"
 eli16-overview: import-from-claude-chatgpt.eli16.md
 ---
