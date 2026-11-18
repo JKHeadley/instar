@@ -29,6 +29,7 @@ import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.j
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { replyWaiterAccepts } from '../threadline/replyWaiterMatch.js';
+import { isOwnersOwnWords } from '../core/ownerWords.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
@@ -18716,7 +18717,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const beforeJevCorrectionCb = telegram.onMessageLogged;
         telegram.onMessageLogged = (entry) => {
           if (beforeJevCorrectionCb) beforeJevCorrectionCb(entry);
-          correctionShadow.observe(entry); // synchronous, never throws; the check is detached
+          correctionShadow.observe(entry, telegram.getVerifiedOwner()); // synchronous, never throws; the check is detached
         };
       } catch (err) {
         console.log(pc.yellow(`  Jev correction shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
@@ -19688,7 +19689,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Layer 0 (SYNC, free) — classify on the seam. No signal → stop at
               // ~zero cost on the vast majority of messages.
               // A team member's words never become the owner's learned preferences.
-              const verdict = entry.fromUser && entry.text && !entry.teamPhone
+              // So is forwarded text: someone else's words relayed by the owner (SEC-069).
+              const ownersWords = isOwnersOwnWords(entry, telegram?.getVerifiedOwner());
+              const verdict = ownersWords && entry.text
                 ? HumanAsDetectorLog.getInstance().classify(entry.text)
                 : null;
               // Fire-and-forget — capture/distill latency must NEVER reach the
@@ -19713,7 +19716,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   topicId: entry.topicId ?? null,
                   messageId: entry.messageId,
                   text: entry.text ?? '',
-                  fromUser: !!entry.fromUser,
+                  // Only the owner's own words enter the window as the owner's turn; the
+                  // distill learns only from those (SEC-069).
+                  fromUser: ownersWords,
                   sessionId: entry.sessionName ?? null,
                   deterministicWeight: verdict?.deterministicWeight ?? 0,
                   isLearningSignal: verdict?.learningKind != null,
