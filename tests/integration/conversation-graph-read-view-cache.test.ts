@@ -74,7 +74,10 @@ describe('conversation graph read view cache',()=>{
   const verifiedOnce=verify.mock.calls.length;
   expect(model.roots(owner,{view:'all'}).status).toBe(200);
   expect(model.roots(owner,{view:'overview'}).status).toBe(200);
-  expect(view).toHaveBeenCalledTimes(3);
+  // Each read pins one view and its own lookups are answered from that pin, so readView() is called
+  // more than once per read; what matters is that all three reads saw the same view, built once.
+  expect(view.mock.calls.length).toBeGreaterThanOrEqual(3);
+  expect(new Set(view.mock.results.map(r=>r.value)).size).toBe(1);
   // Three reads, one union, and no event verified twice.
   expect(union).toHaveBeenCalledTimes(1);
   expect(verify.mock.calls.length).toBe(verifiedOnce);
