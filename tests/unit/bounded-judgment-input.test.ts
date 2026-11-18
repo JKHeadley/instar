@@ -9,7 +9,9 @@ import { describe, it, expect } from 'vitest';
 import {
   boundedTail,
   boundedHead,
+  boundedEnds,
   BOUNDED_INPUT_MIN_CHARS,
+  BOUNDED_ENDS_MIN_CHARS,
 } from '../../src/core/boundedInput.js';
 import {
   isLoadBearingContext,
@@ -143,5 +145,41 @@ describe('boundedInput — a cut must not produce malformed text', () => {
     const text = '🙂'.repeat(5000);
     expect(boundedTail(text, 1200).length).toBeLessThanOrEqual(1200);
     expect(boundedHead(text, 1200).length).toBeLessThanOrEqual(1200);
+  });
+});
+
+describe('boundedEnds — both ends kept, the middle disclosed', () => {
+  it('keeps the start AND the end; the disclosure sits at the cut and names the middle', () => {
+    const doc = `# Who I am\n${'old reflection. '.repeat(500)}\n## Newest: compaction is choice`;
+    const out = boundedEnds(doc, 1000);
+    expect(out.startsWith('# Who I am')).toBe(true);
+    expect(out.endsWith('## Newest: compaction is choice')).toBe(true);
+    expect(out).toMatch(/\n\[BOUNDED INPUT: \d+ characters removed .*MIDDLE content was omitted/);
+    expect(out.length).toBeLessThanOrEqual(1000);
+  });
+
+  it('returns the text unchanged when it fits', () => {
+    expect(boundedEnds('short', 1000)).toBe('short');
+  });
+
+  it('the omitted count is exact', () => {
+    const text = 'a'.repeat(3000);
+    const out = boundedEnds(text, 600);
+    const kept = out.split('\n')[0].length + out.split('\n')[2].length;
+    expect(out).toContain(`${3000 - kept} characters removed`);
+  });
+
+  it('refuses a bound below its floor and keeps content at both ends at the floor, even for astral text', () => {
+    expect(() => boundedEnds('x'.repeat(5000), BOUNDED_ENDS_MIN_CHARS - 1)).toThrow(RangeError);
+    const out = boundedEnds('\u{1F642}'.repeat(400), BOUNDED_ENDS_MIN_CHARS);
+    expect(out.length).toBeLessThanOrEqual(BOUNDED_ENDS_MIN_CHARS);
+    const [head, , tail] = out.split('\n');
+    expect(head.length).toBeGreaterThan(0);
+    expect(tail.length).toBeGreaterThan(0);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(out)).toBe(false);
+  });
+
+  it('does not raise the single-ended floor (the middle wording is no longer than the others)', () => {
+    expect(BOUNDED_INPUT_MIN_CHARS).toBe(235);
   });
 });
