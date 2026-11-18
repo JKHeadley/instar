@@ -58,6 +58,8 @@ Tier 2. Spec `docs/specs/identity-security-piece1e-telegram-senders.md` (two rou
 - **Allowlist writes are in memory.** On a fleet agent whose list already has entries, an approved person is added to that list in memory only. After a restart, observe mode refuses them again until the owner adds them, as mini-onboarding does today. They stay registered, and the rule admits registered people when it enforces.
 - **Join requests are capped.** After 20 strangers in a day, no further join requests are created that day.
 
+- **The owner item is upserted.** `createAttentionItem` would keep the first count, so a follow-up commit switched both wiring sites to `upsertAttentionItem`.
+
 ## 3. Level-of-abstraction fit
 
 One pure module holds the rule and the table. The adapter owns the polling and command paths, the route calls the adapter, and the lifeline reuses the same pure functions with its own config reads. The join-request wiring is one function used by both adapter setups.

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-18T13:59:13.431Z",
+  "slug": "identity-security-piece1e-telegram-senders",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the owner item is upserted on a new would-refuse sender (64 a day), each caused by an inbound message"
+  },
+  "verdict": "pass"
+}
