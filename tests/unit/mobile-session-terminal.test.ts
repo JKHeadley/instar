@@ -172,6 +172,10 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Move a document to another conversation with Face ID (instar-document-viewer §4.2).
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary/challenge'],
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary'],
+      // Approve or decline a document with Face ID, and its delivered receipt (document-decisions §3.2).
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision/challenge'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision/delivered'],
       // A tap on a work card with Face ID (work-board-asks §4): only the team owner taps in phase 1.
       ['POST', '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
       // The owner's project actions from the phone (work-door-project-rows §3.2–3.5): owner phones only.

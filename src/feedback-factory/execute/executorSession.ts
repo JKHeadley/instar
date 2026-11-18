@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EVIDENCE_FILE, RESULT_FILE, RESULT_NOTES_MAX } from './executePolicy.js';
 import type { TriageBrief } from '../triage/triageFloors.js';
+import { workerReviewRulesSection } from './reviewRules.js';
 
 export interface ExecutorPromptInput {
   initiativeId: string;
@@ -53,6 +54,8 @@ export function buildExecutorPrompt(input: ExecutorPromptInput): string {
     ] : []),
     '',
     task,
+    '',
+    ...workerReviewRulesSection(input.needsSpec ? 'spec' : 'fix'),
     '',
     `Result file: ${path.join(input.workspace, RESULT_FILE)} — JSON exactly of the shape`,
     '{ "outcome": "fixed" | "spec-drafted" | "not-reproducible" | "gave-up", "testFiles": ["tests/..."], "testName": "<the failing-then-passing test name>", "notes": "<= 1000 chars", "fixedByCommit": "<SHA, only for not-reproducible when already fixed>" }',
