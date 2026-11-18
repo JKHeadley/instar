@@ -102,3 +102,9 @@ A throwaway agent (built from this branch, dev gate on, no messaging, a disabled
 
 - Spec and convergence report: `docs/specs/quota-pacing-forecast.md`, `docs/specs/reports/quota-pacing-forecast-convergence.md`.
 - Tests: `tests/unit/quota-pacing.test.ts`, `tests/unit/quota-history-ledger.test.ts`, the poller wiring test, `tests/integration/quota-pacing-routes.test.ts`, `tests/e2e/quota-pacing-alive.test.ts`.
+
+## PR3330 route-neighbour repair (2026-11-18)
+
+The forecast mount had been inserted between queue pace and skill learning, breaking the existing source wiring guard (649 characters apart, limit600). Move quota pacing after skill learning instead: distance311. Each router remains mounted once; both use disjoint explicit paths, with no router-wide middleware, so this restores the existing arrangement without changing request handling or tests. No new decisions, over-block/under-block surface, external contract, migration, or cross-machine state. Reverting this three-line reorder fully reverses the repair. Existing route bearer/PIN checks are untouched. Direct red/green source assertions reproduce the old guard failure and confirm the new layout. Full-suite Local Verify remains the merge condition; the separate machine-wedge lifecycle failure needs a rerun before any verdict.
+
+Independent review: parent Echo inspected both route builders and the diff on2026-11-18; concurs that explicit disjoint routes and no router-wide middleware preserve matching and authority. TypeScript noEmit passed; full Local Verify and lifecycle rerun remain pending.

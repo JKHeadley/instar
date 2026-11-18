@@ -7652,13 +7652,13 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
+    // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
+    this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
     // Quota pacing (docs/specs/quota-pacing-forecast.md): reading history + read-only forecast
     // (dev-gated through subscriptionPool.pacing.enabled; 503 quota-pacing-off when it resolves off).
     this.startQuotaPacing(options);
     this.app.use(createQuotaPacingRoutes({ ...routeCtx, quotaPacing: () => this.quotaPacingLedger }));
-    // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
-    // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
-    this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
