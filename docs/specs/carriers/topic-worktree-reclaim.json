@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-18T18:32:46.000Z",
+  "slug": "topic-worktree-reclaim",
+  "carriers": {
+    "CMT-1958": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Phase 2: specify and build live removal of retired topic worktrees on the phase 1 numbers (creation-race protection, binding deletion, removal off the main thread, provenance, deeper links, dependency copies)."
+    }
+  }
+}
