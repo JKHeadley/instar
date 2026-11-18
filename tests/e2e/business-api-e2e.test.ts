@@ -33,6 +33,14 @@ import {
 import { mountWhatsAppWebhooks } from '../../src/messaging/backends/WhatsAppWebhookRoutes.js';
 import type { Express, Request, Response } from 'express';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import crypto from 'node:crypto';
+
+// SEC-086: Meta signs every webhook delivery with the app secret (X-Hub-Signature-256
+// over the exact body bytes). Route-level tests sign their deliveries the same way.
+const APP_SECRET = 'e2e-app-secret';
+function signBody(rawBody: Buffer, secret = APP_SECRET): string {
+  return 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+}
 
 // ── Test helpers ──────────────────────────────────────
 
@@ -73,6 +81,7 @@ function createBackendWithAdapter(tmpDir: string, overrides: Record<string, unkn
       phoneNumberId: '123456789',
       accessToken: 'test-token',
       webhookVerifyToken: 'verify-secret',
+      appSecret: APP_SECRET,
     },
     handlers,
   );
@@ -456,7 +465,12 @@ describe('Phase 3: Business API — E2E', () => {
       } as unknown as Response;
 
       const payload = makeTextPayload('14155552671', 'Through the routes');
-      const req = { body: payload } as unknown as Request;
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      const req = {
+        body: payload,
+        rawBody,
+        headers: { 'x-hub-signature-256': signBody(rawBody) },
+      } as unknown as Request;
 
       await postHandler!(req, res);
       await messagePromise;
@@ -467,6 +481,35 @@ describe('Phase 3: Business API — E2E', () => {
       expect(receivedMessages[0]).toBe('Through the routes');
 
       fetchSpy.mockRestore();
+    });
+
+    it('POST without a valid Meta signature is refused before reaching the adapter (SEC-086)', async () => {
+      const { adapter, backend } = createBackendWithAdapter(tmpDir);
+      const received: string[] = [];
+      adapter.onMessage(async (msg) => { received.push(msg.content); });
+
+      let postHandler: (req: Request, res: Response) => Promise<void>;
+      const app = {
+        get: vi.fn(),
+        post: vi.fn((_path: string, handler: (req: Request, res: Response) => Promise<void>) => {
+          postHandler = handler;
+        }),
+      } as unknown as Express;
+      mountWhatsAppWebhooks({ app, backend });
+
+      const payload = makeTextPayload('14155552671', 'Forged delivery');
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      for (const headers of [{}, { 'x-hub-signature-256': signBody(rawBody, 'not-the-app-secret') }]) {
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn().mockReturnThis(),
+          json: vi.fn().mockReturnThis(),
+        } as unknown as Response;
+        await postHandler!({ body: payload, rawBody, headers } as unknown as Request, res);
+        expect((res as any).status).toHaveBeenCalledWith(401);
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(received).toHaveLength(0);
     });
   });
 

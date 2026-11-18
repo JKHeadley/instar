@@ -19,3 +19,7 @@ Meta's signature has no timestamp and deliveries are not de-duplicated by messag
 The access token and verify token still live in the config file as before; moving them to the secret store is separate work.
 
 **Reviewer:** independent second-pass subagent (fresh context, read-only) — CONCUR. Confirmed the raw-body parser runs before the route, the HMAC compare is constant-time with no header/body bypass, and no other unauthenticated path reaches handleWebhook. Nits addressed (test-count wording, template line, replay noted).
+
+## Local Verify follow-on (2026-11-18 00:50 PST, M5)
+
+Local Verify at 23:15 failed on `tests/e2e/business-api-e2e.test.ts`: its route-level POST test sent an unsigned delivery, which this change now correctly refuses. The test now configures an app secret and signs the delivery the way Meta does (HMAC-SHA256 of the raw body in `X-Hub-Signature-256`). A new case in the same file proves an unsigned or wrongly signed POST gets 401 and never reaches the adapter. Test-only; no runtime code changed. The file passes on its own (27 tests).
