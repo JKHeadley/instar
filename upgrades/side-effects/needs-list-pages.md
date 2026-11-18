@@ -3,7 +3,7 @@
 **Version / slug:** needs-list-pages
 **Date:** 2026-11-17
 **Author:** Echo
-**Second-pass reviewer:** needs_final_review
+**Second-pass reviewer:** independent general-purpose reviewer agent (post-merge pass, 2026-11-18)
 
 ## Summary of the change
 
@@ -65,6 +65,10 @@ A list of 105 visible needs can be opened in two bounded pages. Viewer checks ru
 ## Second-pass review (if required)
 
 The independent reviewer concurred with the source and artifacts after two corrections. A focused heading now permits refresh, including a stale or denied response. The production E2E fixture now checks the actual Desktop destination for an item on the second page. The reviewer checked the changes in source. Local Verify owns execution of the integration and E2E tests.
+
+**Reviewer:** independent general-purpose reviewer agent, run 2026-11-18 by the helper session that merged main (separate context, given the code rather than a conclusion)
+
+Post-merge pass, 2026-11-18. Main was merged in after #3361 (merged 02:05 PST). The only conflict was in dashboard/console/needs-strip.js: #3361 added the truncated-list notice and a moreButton helper, and this branch had already folded both into the paging controls. The branch side was kept. The reviewer concurred with notes. #3361's intent still holds: with no continuation, omitted rows are named and expansion counts only received rows. No moreButton or paint(last) references remain. The server cursor contract matches the client checks. Three minor notes are left for the PR owner. (1) Previous page back to the first page uses a signed cursor for position 0, so polling there skips the owner cache and a list change shows Reload rather than refreshing. (2) A 400 for an invalid cursor is retried rather than treated as stale. (3) One row without a title or action kind marks the whole strip unreadable. The upgrade note for the earlier overflow change came back with the merge. v1.3.1887 had already released it, so it was dropped.
 
 ## Evidence pointers
 
