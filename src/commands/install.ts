@@ -8,7 +8,7 @@
 import { storageMachineName } from '../core/storageMachineName.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
-import { appTicketRefusal, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
+import { appTicketPlan, ownMachineId, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -825,6 +825,8 @@ export interface InstallCommandOptions {
   appTicket?: boolean;
   /** The app's device public key, with appTicket. */
   key?: string;
+  /** With appTicket: replace this Mac's own earlier app key (the app lost it). */
+  replaceAppKey?: boolean;
 }
 
 export const INSTALL_EXIT_CODES: Record<InstallStatus, number> = {
@@ -846,6 +848,9 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
     const a = file.account as { use?: unknown; new?: unknown };
     const ok = !!a && typeof a === 'object' && ((typeof a.use === 'string' && /^[0-9a-f]{16}$/.test(a.use) && a.new === undefined) || (a.new === true && a.use === undefined));
     if (!ok) return 'In the answers file, account must be { "use": "<account id>" } or { "new": true }.';
+  }
+  if (file.door !== undefined && !(Object.hasOwn(INSTALL_DOOR_LABELS, file.door))) {
+    return `In the answers file, door must be one of: ${Object.keys(INSTALL_DOOR_LABELS).join(', ')}.`;
   }
   if (file.autostart !== undefined && typeof file.autostart !== 'boolean') {
     return 'In the answers file, autostart must be true or false.';
@@ -890,7 +895,7 @@ export function reportedStatus(progress: InstallProgress, holder: number | null)
  * one-time ticket for the finished install the Mac app ran, so the app can finish (or recover) its
  * enrollment with the same key. Changes nothing else.
  */
-export function appTicketCommand(existing: InstallProgress | null, key: string | undefined): InstallStatus {
+export function appTicketCommand(existing: InstallProgress | null, key: string | undefined, replace = false): InstallStatus {
   if (!existing || existing.status !== 'complete' || !existing.appEnroll) {
     console.log('  There is no finished install for the Instar app here.');
     return 'failed';
@@ -900,13 +905,15 @@ export function appTicketCommand(existing: InstallProgress | null, key: string |
     return 'needs-answers';
   }
   const stateDir = path.join(existing.appEnroll.agentDir, '.instar');
-  const refusal = appTicketRefusal(stateDir, key);
-  if (refusal) {
-    console.log(`  ${refusal}`);
+  const plan = appTicketPlan(stateDir, key, { replace, machineId: replace ? ownMachineId(stateDir) : null });
+  if ('refusal' in plan) {
+    console.log(`  ${plan.refusal}`);
     return 'failed';
   }
-  writeLocalOwnerTicket(stateDir);
-  console.log('  A fresh setup ticket is ready for the Instar app.');
+  writeLocalOwnerTicket(stateDir, Date.now(), plan.replaces);
+  console.log(plan.replaces.length
+    ? "  A fresh setup ticket is ready for the Instar app. It replaces this Mac's earlier app connection."
+    : '  A fresh setup ticket is ready for the Instar app.');
   return 'complete';
 }
 
@@ -915,7 +922,7 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
   const existing = readInstallProgress(file);
   const lock = installLockPath(file);
 
-  if (options.appTicket) return appTicketCommand(existing, options.key);
+  if (options.appTicket) return appTicketCommand(existing, options.key, options.replaceAppKey === true);
 
   if (options.status) {
     const holder = liveLockHolder(lock);
@@ -979,6 +986,8 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
   const context: InstallFlowContext = {
     detectedDoors: detectInstallDoors(),
     runningInDoor: detectRunningDoor(),
+    // The person's own pick comes first; without it the flow would take the only AI found here.
+    chosenDoor: answersFile.door && Object.hasOwn(INSTALL_DOOR_LABELS, answersFile.door) ? (answersFile.door as InstallDoor) : undefined,
     validateName: validateNewAgentName,
     describePlan: describeInstallPlan,
   };

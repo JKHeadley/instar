@@ -100,7 +100,9 @@ export function createConversationGraphSurface(options:{
  const model=new ConversationGraphReadModel(source,{rootConversation});
  router.use(createConversationGraphRouter({model,resolveViewer}));
  if(options.history)router.use(createConversationGraphHistoryRoutes({...options.history,
-  ready:()=>runtime.isReady(),verifyOwner:req=>resolveViewer(req,'dashboard')!==null,
+  // The same private-serving gate as the owner's read view that showed this conversation (readView), not
+  // the 60 s write-readiness proof: history is a read (conversation-graph-suggestions follow-up, 2026-11-17).
+  ready:()=>runtime.privateReadsServable(),verifyOwner:req=>resolveViewer(req,'dashboard')!==null,
   resolveSource:(routeRef,req)=>{
    const viewer=resolveViewer(req,'dashboard'),ref=decodeRouteRef(routeRef);if(!viewer||!ref||ref.kind!=='conversation')return null;
    const result=model.node(viewer,ref,{});if(result.status!==200)return null;

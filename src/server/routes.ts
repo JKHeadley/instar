@@ -61,7 +61,7 @@ import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyO
 import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
-import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
+import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf, principalOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
@@ -70,6 +70,7 @@ import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTru
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
+import { mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
 import { mountProjectAppCustomRoutes } from './projectAppCustomRoutes.js';
@@ -432,6 +433,9 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, canonicalDecisionPoint, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
+import { buildDateMissingHint } from '../monitoring/lateNoticeCore.js';
+import { detectPromisedTime } from '../monitoring/promisedUpdateDetector.js';
+import { makeHandOffPromise, makeLateEpochStore } from '../monitoring/promiseHandoff.js';
 import { CheckInReminderTicker, resolveCheckInTickIntervalMs } from '../monitoring/CheckInReminderTicker.js';
 import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
@@ -3353,6 +3357,16 @@ export function createRoutes(ctx: RouteContext): Router {
     enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+  });
+  // Bring your Claude and ChatGPT history into Instar (docs/specs/import-from-claude-chatgpt.md): local only.
+  mountImportedHistoryRoutes(router, {
+    stateDir: ctx.config.stateDir,
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    ownerOk: (req) => {
+      const token = req.headers['x-instar-operator-session'];
+      return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true;
+    },
+    log: (entry) => console.log(`[imported-history] ${JSON.stringify(entry)}`),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
@@ -16114,7 +16128,58 @@ export function createRoutes(ctx: RouteContext): Router {
     const c = getActiveEnrolmentController();
     if (!c) { res.status(503).json({ error: 'machine maintenance enrolment not enabled on this agent' }); return; }
     try { res.json(await c.remove('dashboard')); }
-    catch (err) { res.status(500).json({ error: 'remove-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+    catch (err) { /* @silent-fallback-ok — not silent: the dashboard gets the 500 with the reason */ res.status(500).json({ error: 'remove-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+  });
+
+  // The app's machine care (Part F, CMT-1203): the owner's own phone, by its device signature only.
+  // The agent's bearer token is refused here, as the dashboard controls need the PIN: the agent never
+  // skips, moves or asks for a restart on its own. Skip and window are in the safe direction, so the
+  // owner's active phone is enough; `restart` only sends the owner the Restart now card, and nothing
+  // restarts until the owner taps it. Each change is recorded as `mobile-device:<id>`.
+  const ownerPhone = (req: ExpressRequest, res: ExpressResponse): string | null => {
+    res.set('Cache-Control', 'no-store');
+    const p = principalOf(req);
+    const person = devicePersonOf(req);
+    if (p.kind !== 'device' || !person || person.role !== 'owner') {
+      res.status(403).json({ error: 'owner-phone-required', detail: 'Only the owner\'s phone can change machine care here.' });
+      return null;
+    }
+    return p.deviceId;
+  };
+  router.get('/mobile/machine-care', async (req, res) => {
+    if (ownerPhone(req, res) === null) return;
+    res.json(await maintenancePoolView('status', async () => {
+      const local = getActiveDrainRehearsal();
+      return local
+        ? { body: { ...local.status(), enrolment: await readEnrolmentStatus(), restartNow: getActiveRestartNowController()?.readActive() ?? null } as Record<string, unknown> }
+        : { reason: 'not-enabled' };
+    }));
+  });
+  router.post('/mobile/machine-care/:machineId/:action', async (req, res) => {
+    const deviceId = ownerPhone(req, res);
+    if (deviceId === null) return;
+    const { machineId, action } = req.params;
+    if (!['skip', 'unskip', 'window', 'restart'].includes(action)) { res.status(404).json({ error: 'unknown-action' }); return; }
+    // `self` names the machine serving the request (a single machine may have no mesh id).
+    if (machineId !== 'self' && machineId !== ctx.meshSelfId) {
+      res.status(409).json({ error: 'other-machine', detail: 'Change this machine from the app connected to it.' });
+      return;
+    }
+    const by = `mobile-device:${deviceId}`;
+    if (action === 'restart') {
+      const c = getActiveRestartNowController();
+      if (!c) { res.status(503).json({ error: 'restart now not enabled on this agent' }); return; }
+      try {
+        const r = await c.offer();
+        res.status(r.result === 'refused' ? 409 : r.result === 'not-delivered' ? 502 : 200).json({ ...r, viaMobileDevice: true });
+      } catch (err) { /* @silent-fallback-ok — not silent: the phone gets the 500 with the reason */ res.status(500).json({ error: 'restart-now-offer-failed', detail: operatorError(err, res.app?.locals?.stateDir) }); }
+      return;
+    }
+    const r = getActiveDrainRehearsal();
+    if (!r) { res.status(503).json({ error: 'machine maintenance not enabled on this agent' }); return; }
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const out = action === 'skip' ? r.skip(by) : action === 'unskip' ? r.unskip(by) : r.setWindow(by, body.reset === true ? null : body.window);
+    res.status(out.ok ? 200 : out.error === 'window-invalid' ? 400 : 409).json({ ...out, viaMobileDevice: true });
   });
 
   router.get('/machine-maintenance', async (req, res) => {
@@ -38932,7 +38997,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * counter is the rollout hard-stop signal. MUST be registered before
    * `/commitments/:id` or Express routes the literal here to the :id handler.
    */
-  type CheckInReminderConfig = { enabled?: boolean; dryRun?: boolean; maxPerPass?: number; tickEnabled?: boolean; tickIntervalMs?: number };
+  type CheckInReminderConfig = { enabled?: boolean; dryRun?: boolean; maxPerPass?: number; tickEnabled?: boolean; tickIntervalMs?: number; maxLateTopicsPerPass?: number; maxLateTopicsPerHour?: number; lateNoticeTopicCooldownMs?: number };
   // Live, so tickEnabled and dryRun take effect without a restart: ctx.config is the boot snapshot.
   const checkInReminderConfig = () => ctx.liveConfig?.get?.<CheckInReminderConfig | undefined>('commitments.checkInReminder', undefined)
     ?? ((ctx.config as Record<string, any>).commitments?.checkInReminder as CheckInReminderConfig | undefined);
@@ -38949,6 +39014,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       {
         tracker,
         ...(quiet ? { log: () => {} } : {}),
+        // Overdue-promise follow-through (docs/specs/overdue-promise-follow-through.md):
+        // the backlog epoch, the agent's zone for the late text, and a handoff that
+        // only ever injects into a RUNNING session as a system notice.
+        lateEpoch: makeLateEpochStore(ctx.config.stateDir),
+        timeZone: ctx.liveConfig?.get?.<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) ?? null,
+        ...(telegram && ctx.sessionManager ? {
+          handOffPromise: makeHandOffPromise({
+            getSessionForTopic: (topicId) => telegram.getSessionForTopic(topicId),
+            isSessionAlive: (session) => ctx.sessionManager!.isSessionAlive(session),
+            injectObserved: (session, text) => ctx.sessionManager!.injectPasteNotificationObserved(session, text),
+          }),
+        } : {}),
         // Promised update overdue (docs/specs/promised-update-capture.md): after
         // the honest line is out, hand the promise to the topic's session the
         // same way a dashboard decision is handed over — the inbound path
@@ -39029,6 +39106,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         dryRun,
         selfMachineId: ctx.meshSelfId ?? null,
         ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
+        ...(typeof cfg?.maxLateTopicsPerPass === 'number' ? { maxLateTopicsPerPass: cfg.maxLateTopicsPerPass } : {}),
+        ...(typeof cfg?.maxLateTopicsPerHour === 'number' ? { maxLateTopicsPerHour: cfg.maxLateTopicsPerHour } : {}),
+        ...(typeof cfg?.lateNoticeTopicCooldownMs === 'number' ? { lateTopicCooldownMs: cfg.lateNoticeTopicCooldownMs } : {}),
       },
     );
     return reconciler.runPass();
@@ -39449,9 +39529,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         } catch { /* attention is observability */ }
       }
+      // overdue-promise-follow-through §3.5: ask once when the words name a time
+      // but no promised time was recorded. Advisory only — never writes a date.
+      let dateMissing: ReturnType<typeof buildDateMissingHint> = null;
+      try {
+        dateMissing = buildDateMissingHint(commitment, Date.now(), detectPromisedTime,
+          ctx.liveConfig?.get?.<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) ?? null);
+      } catch { /* @silent-fallback-ok — an advisory hint must never fail the record */ }
       res.status(201).json({ ...commitment, classReviewAdmission: {
         wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
-      } });
+      }, ...(dateMissing ? { dateMissing } : {}) });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -40010,6 +40097,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...prev,
         ...(nextUpdateDueAt !== undefined ? { nextUpdateDueAt } : {}),
         ...(softDeadlineAt !== undefined ? { softDeadlineAt } : {}),
+        // A promised time IS follow-through: the opt-out no longer describes the row.
+        ...(softDeadlineAt ? { followThroughOptOutReason: undefined } : {}),
         ...(hardDeadlineAt !== undefined ? { hardDeadlineAt } : {}),
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
         ...(beaconEnabled !== undefined ? { beaconEnabled } : {}),

@@ -32,3 +32,7 @@ Round 2 concurred.
 Known follow-ups:
 - the handler doesn't pass this machine's id, so only the legacy fallback guards a git-shared pool, and paths missing on this Mac are dropped by the sign-in check;
 - nothing reads `account-sources.json` yet; the Mac's "shared with" label comes from discovery at choice time.
+
+## Merge with main after #3316 landed (2026-11-18)
+
+#3316 (the AI the person picked wins) added a `door` check to `answersFileProblem` in the same place this PR added the `account` check; both are kept, in that order. #3316 decides which AI (`chosenDoor`); this PR's account choice runs after it for that AI, so the two compose. Typecheck clean; install-flow, install-account-choice and install-accounts 65/65.

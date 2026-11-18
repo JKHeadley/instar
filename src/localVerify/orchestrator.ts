@@ -786,7 +786,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   };
   if (errorStep) record.errorStep = errorStep;
   if (input.kind === 'main') record.kind = 'main';
-  if (input.attempt && input.kind !== 'main') record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
+  if (input.attempt) record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
   if (preflight) record.preflight = preflight;
   if (outcome === 'failure' && input.kind !== 'main' && boundedFailedFiles) record.failedFiles = boundedFailedFiles;

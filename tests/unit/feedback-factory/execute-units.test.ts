@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath, nodeInstallReadAllows,
-  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
+  pathSlug, resolveExecuteConfig, systemTempDenies, systemTempRoots, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, readBaseFile, addsCredentialShape, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount } from '../../../src/feedback-factory/execute/executorSession.js';
@@ -92,6 +92,25 @@ describe('policy', () => {
     // With no attempt temp under it, the system temp stays denied (the must-fail probe's premise).
     expect(systemTempDenies('/h/.worktrees/w')).toContain(realTmp);
     expect(systemTempDenies('/h/.worktrees/w', '/h/.worktrees/w-tmp')).toContain(realTmp);
+  });
+
+  it('SEC-098: reads stay denied across the WHOLE shared temp even though the attempt temp lives under it', () => {
+    const realTmp = fs.realpathSync('/tmp');
+    const tmpDir = `${realTmp}/fb-abc1234567`;
+    const paths = { workspace: '/h/.worktrees/w', tmpDir, depsCache: '/h/.cache/deps', agentHome: '/h', publishClone: '/h/.worktrees/w-publish', homeDir: '/u', testRunnerHoldersFile: '/h/.instar/state/host-test-runner-holders.json' } as Parameters<typeof buildSandboxRuntimeSettings>[0];
+    const runtime = buildSandboxRuntimeSettings(paths);
+    // The read deny list carries every temp root, the attempt temp's ancestor included…
+    expect(runtime.filesystem.denyRead).toEqual(expect.arrayContaining(['/tmp', '/private/tmp', '/var/tmp', realTmp]));
+    expect(runtime.filesystem.denyRead).toEqual(expect.arrayContaining(systemTempRoots()));
+    // …and only the attempt's own temp is re-allowed (allowRead wins inside a denied region).
+    expect(runtime.filesystem.allowRead).toContain(tmpDir);
+    expect(runtime.filesystem.allowRead).not.toContain(realTmp);
+    // The write side keeps the ancestor filtering (the 2026-10-22 base-unit-smoke EPERM fix).
+    expect(runtime.filesystem.denyWrite).not.toContain(realTmp);
+    // The session worker inherits the same read deny list.
+    const worker = buildClaudeSandboxSettings({ paths, agentHomeChildren: [] }) as { sandbox: { filesystem: { denyRead: string[]; allowRead: string[] } } };
+    expect(worker.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['/tmp', '/private/tmp', realTmp]));
+    expect(worker.sandbox.filesystem.allowRead).toContain(tmpDir);
   });
 
   it('re-allows reads of a Node install under home (nvm), never one that would re-open a denied path (fb-c238c6c9-f0d)', () => {
@@ -688,7 +707,7 @@ describe('canary judgement', () => {
       const broken = await runRunnerCanary({ paths: p, fixture: fx, runner: runner(() => 1), fullGate: null });
       expect(verdictOf(broken, 's').ok).toBe(false);
       const leaky = await runRunnerCanary({ paths: p, fixture: fx, runner: runner((c) => (/^cat /.test(c) ? 0 : confinedOk(c))), fullGate: null });
-      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree']);
+      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree', 'bash-read-system-temp']);
       // The sibling probe reads a nonce placed beside the workspace under .worktrees/.
       expect(fs.readFileSync(fx.siblingNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(path.dirname(fx.siblingNoncePath))).toBe(path.join(p.agentHome, '.worktrees'));
@@ -698,6 +717,31 @@ describe('canary judgement', () => {
       expect(fs.readFileSync(fx.homeNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(fx.homeNoncePath)).toBe(p.homeDir);
     } finally { await fx.close(); }
+  });
+
+  it('SEC-098: on Linux the shared-temp write probe is judged by its effect (a read-denied /tmp is a private writable tmpfs there)', async () => {
+    const p = paths(tmp());
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    // The write "succeeds" (exit 0) but nothing reaches the host's shared temp: the private-tmpfs case.
+    const privateTmpfs = runner((c) => (c.startsWith('echo x > ') && c.includes('feedback-canary-') && !c.includes('.worktrees') ? 0 : confinedOk(c)));
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      const linux = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(linux.find((x) => x.probe === 'bash-write-system-temp')).toMatchObject({ ok: true, detail: 'written to the sandbox-private temp only' });
+      Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+      const mac = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(mac.find((x) => x.probe === 'bash-write-system-temp')!.ok).toBe(false);
+      // A write that really lands in the shared temp fails on every platform.
+      fs.writeFileSync(fx.systemTmpWritePath, 'x');
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      const landed = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(landed.find((x) => x.probe === 'bash-write-system-temp')!.ok).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      try { SafeFsExecutor.safeUnlinkSync(fx.systemTmpWritePath, { operation: 'SEC-098 test cleanup' }); } catch { /* absent */ }
+      await fx.close();
+    }
   });
 
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {
@@ -849,7 +893,7 @@ describe('canary review-round regressions', () => {
       expect(prompt).toContain(`Read tool to read ${l.symLink}`);
       expect(prompt).toContain(`Write tool to create ${l.depsWriteViaLink}`);
       expect(prompt).not.toContain('ln -s'); // a model asked to build the link itself declines; trusted code builds it
-      expect(SESSION_CANARY_STEPS).toBe(21);
+      expect(SESSION_CANARY_STEPS).toBe(22);
       expect(prompt).toContain(`Bash tool: cat ${fx.siblingNoncePath}`);
       expect(prompt).toContain(`Read tool to read ${fx.siblingNoncePath}`);
       // The sibling directory is reached through a workspace symlink trusted code made: Read, Write

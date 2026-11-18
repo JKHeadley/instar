@@ -222,6 +222,9 @@ describe('install flow', () => {
     expect(impliedInstallDoor(context({ detectedDoors: ['claude-code'] }))).toBe('claude-code');
     expect(impliedInstallDoor(context({ detectedDoors: ['claude-code', 'codex-cli'] }))).toBeUndefined();
     expect(impliedInstallDoor(context({ detectedDoors: [] }))).toBeUndefined();
+    // The person's pick (the Mac app's 'Which AI account do you have?') wins over what is found here.
+    expect(impliedInstallDoor(context({ detectedDoors: ['claude-code'], chosenDoor: 'codex-cli' }))).toBe('codex-cli');
+    expect(impliedInstallDoor(context({ detectedDoors: ['claude-code'], runningInDoor: 'claude-code', chosenDoor: 'codex-cli' }))).toBe('codex-cli');
     expect(impliedInstallDoor(context({ detectedDoors: ['claude-code', 'codex-cli'], runningInDoor: 'codex-cli' }))).toBe('codex-cli');
   });
 
@@ -309,6 +312,9 @@ describe('answers file problems', () => {
   it('refuses an autostart that would be misread', () => {
     expect(answersFileProblem({ autostart: 'no' as unknown as boolean })).toContain('true or false');
     expect(answersFileProblem({ autostart: false, name: 'a' })).toBeNull();
+    expect(answersFileProblem({ door: 'chatgpt' })).toContain('door must be one of');
+    expect(answersFileProblem({ door: 'codex-cli' })).toBeNull();
+    expect(answersFileProblem({ door: 'constructor' })).toContain('door must be one of');
     expect(answersFileProblem({ name: 3 as unknown as string })).toContain('name');
   });
 });

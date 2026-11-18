@@ -56,9 +56,9 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     // source attempt made it past the cancelled stat.
     expect(control.reads).toBe(1); expect(control.workers).toBe(1);
   }, 15_000);
-  it('gives a read 10 seconds by default, so a saturated host is not read as a config failure', () => {
+  it('gives a read 25 seconds by default, so a saturated host is not read as a config failure', () => {
     const reader = new OriginConfigReader(temporaryState(), worker); readers.push(reader);
-    expect(reader.readBudgetMs).toBe(10_000);
+    expect(reader.readBudgetMs).toBe(25_000);
   });
   it('keeps the revision through a timed-out read and revokes on a real refusal', async () => {
     const stateDir = temporaryState(); await mkdir(path.join(stateDir, 'state'), { recursive: true });

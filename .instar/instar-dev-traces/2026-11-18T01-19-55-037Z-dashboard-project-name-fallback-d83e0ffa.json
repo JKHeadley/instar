@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "dashboard-project-name-fallback",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T01:19:55.037Z",
+  "artifactPath": "upgrades/side-effects/dashboard-project-name-fallback.md",
+  "artifactSha256": "539e2107f40ec565ce388fa04d469be1f922e39cb85827a079a9d8154f979c8d",
+  "coveredFiles": [
+    "dashboard/console/projects-model.js",
+    "tests/unit/work-projects-read.test.ts",
+    "upgrades/eli16/dashboard-project-name-fallback.md",
+    "upgrades/next/dashboard-project-name-fallback.md",
+    "upgrades/side-effects/dashboard-project-name-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible presentation correction reusing existing display-name policy; no API or state changes.",
+  "eli16Path": "upgrades/eli16/dashboard-project-name-fallback.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-project-name-fallback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
