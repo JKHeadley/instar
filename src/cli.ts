@@ -411,6 +411,7 @@ program
   .option('--for-app', 'The Instar Mac app is running this install and will connect itself')
   .option('--app-ticket', 'Write a fresh setup ticket for the Instar app (finished app installs only)')
   .option('--key <publicKey>', 'The Instar app\'s device key, with --app-ticket')
+  .option('--replace-app-key', 'With --app-ticket: replace the key this Mac\'s own Instar app enrolled earlier (the app lost it)')
   .action(async (opts) => {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (major < 20 || (major === 20 && minor < 12)) {
