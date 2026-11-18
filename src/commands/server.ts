@@ -1,4 +1,6 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { addToNonEmptyTelegramAllowList } from '../messaging/telegramSenderWiring.js';
+import { createSenderAuthorityWiring } from '../messaging/telegramSenderWiring.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
 import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
@@ -3109,7 +3111,11 @@ export function wireTelegramRouting(
     if (text.startsWith('/') && !teamPhone) {
       const privateChatId = msg.metadata?.telegramPrivateChatId;
       const handled = await telegram.handleCommand(text, topicId, telegramUserId,
-        typeof privateChatId === 'number' ? { privateChatId } : undefined);
+        typeof privateChatId === 'number' ? { privateChatId } : undefined,
+        // identity-security-piece1e: a lifeline id is proven only when the ingress guard verified it;
+        // app and phone messages are judged by their device proof, not here.
+        msg.metadata?.viaMobileDevice === true ? { judge: false }
+          : { proven: msg.metadata?.viaLifeline === true ? msg.metadata?.senderProven === true : msg.metadata?.senderUnverified !== true });
       if (handled) return;
     }
 
@@ -9738,6 +9744,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => resolveHubClassifierDeps(config, _sharedIntelligence),
         { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
+      // identity-security-piece1e: the Telegram sender rule (dev-gated enforce; the fleet observes).
+      { const tg = telegram!; tg.setSenderAuthority(createSenderAuthorityWiring({
+        config: () => config as never,
+        registeredIds: () => userManagerSendOnly.listUsers().map((u) => u.telegramUserId).filter((v): v is number => typeof v === 'number'),
+        raiseOwnerItem: async (title, body) => { await tg.createAttentionItem({ id: 'agent:telegram-senders', conditionKey: 'telegram-senders',
+          title, summary: body, description: body, priority: 'NORMAL', category: 'security', source: 'agent' } as never); return true; },
+      })); }
+      wireTelegramJoinRequests(telegram!, config, userManagerSendOnly);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
 
@@ -9889,6 +9903,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => resolveHubClassifierDeps(config, _sharedIntelligence),
         { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
+      // identity-security-piece1e: the Telegram sender rule (dev-gated enforce; the fleet observes).
+      { const tg = telegram!; tg.setSenderAuthority(createSenderAuthorityWiring({
+        config: () => config as never,
+        registeredIds: () => userManager.listUsers().map((u) => u.telegramUserId).filter((v): v is number => typeof v === 'number'),
+        raiseOwnerItem: async (title, body) => { await tg.createAttentionItem({ id: 'agent:telegram-senders', conditionKey: 'telegram-senders',
+          title, summary: body, description: body, priority: 'NORMAL', category: 'security', source: 'agent' } as never); return true; },
+      })); }
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
       telegram.onGetRegistrationPolicy = () => ({
@@ -9897,26 +9918,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         agentName: config.projectName,
       });
 
-      telegram.onNotifyAdminJoinRequest = async (request) => {
-        const { JoinRequestManager } = await import('../users/UserOnboarding.js');
-        const joinManager = new JoinRequestManager(config.stateDir);
-        const joinRequest = joinManager.createRequest(
-          request.name,
-          request.telegramUserId,
-          null, // agentAssessment — could be enhanced later with LLM evaluation
-        );
-
-        // Notify admin via Lifeline topic (the always-available admin channel)
-        const lifelineTopicId = telegram!.getLifelineTopicId();
-        if (lifelineTopicId) {
-          const userLabel = request.username ? `@${request.username}` : request.name;
-          await withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(lifelineTopicId,
-            `\ud83d\udc64 **Join Request** from ${userLabel} (ID: ${request.telegramUserId})\n\n` +
-            `To approve: \`/approve ${joinRequest.approvalCode}\`\n` +
-            `To deny: \`/deny ${joinRequest.approvalCode}\``
-          )).catch(() => {});
-        }
-      };
+      wireTelegramJoinRequests(telegram, config, userManager);
 
       telegram.onStartMiniOnboarding = async (telegramUserId, firstName, username) => {
         const { buildUserProfile, buildCondensedConsentDisclosure } = await import('../users/UserOnboarding.js');
@@ -9934,20 +9936,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Add to persistent UserManager (reuses the instance created above)
         userManager.upsertUser(profile);
 
-        // Add to authorized user IDs so future messages are accepted
-        const telegramConfig = config.messaging?.find(m => m.type === 'telegram');
-        if (telegramConfig?.config) {
-          const authIds = (telegramConfig.config.authorizedUserIds as number[]) ?? [];
-          // Type-tolerant membership check: config JSON may already hold ids as
-          // strings, so a strict `includes(number)` would miss an existing string
-          // entry and push a duplicate (leaving mixed-type config). Compare as
-          // strings; isAuthorized() is likewise type-tolerant.
-          const already = authIds.some(id => String(id) === String(telegramUserId));
-          if (!already) {
-            authIds.push(telegramUserId);
-            telegramConfig.config.authorizedUserIds = authIds;
-          }
-        }
+        // Add to authorized user IDs so future messages are accepted — only when the list already has
+        // entries (identity-security-piece1e): a one-person list would turn away everyone else.
+        addToNonEmptyTelegramAllowList(config, telegramUserId);
 
         console.log(`[telegram] Mini-onboarding complete for ${firstName} (${telegramUserId})`);
       };
@@ -37921,4 +37912,50 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
   await stopServer(options);
   await new Promise(r => setTimeout(r, 500));
   await startServer({ dir: options.dir });
+}
+
+/**
+ * Join requests on Telegram (Multi-User Setup Wizard Phase 4.5; identity-security-piece1e): a refused
+ * stranger's request goes to the owner with an approval code, and the owner's /approve or /decline
+ * resolves it. Wired on both the server-polling and the lifeline (send-only) adapters.
+ */
+function wireTelegramJoinRequests(telegram: TelegramAdapter, config: InstarConfig, userManager: UserManager): void {
+  telegram.onNotifyAdminJoinRequest = async (request) => {
+    const { JoinRequestManager } = await import('../users/UserOnboarding.js');
+    const joinManager = new JoinRequestManager(config.stateDir);
+    const joinRequest = joinManager.createRequest(
+      request.name,
+      request.telegramUserId,
+      null, // agentAssessment — could be enhanced later with LLM evaluation
+    );
+
+    // Notify admin via Lifeline topic (the always-available admin channel)
+    const lifelineTopicId = telegram.getLifelineTopicId();
+    if (lifelineTopicId) {
+      // identity-security-piece1e: the name is the sender's own choice, so it is shown as such.
+      const userLabel = request.username ? `@${request.username}` : request.name;
+      await withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(lifelineTopicId,
+        `\ud83d\udc64 **Join Request** from someone calling themselves "${userLabel.slice(0, 64)}" (Telegram ID: ${request.telegramUserId})\n\n` +
+        `To approve: \`/approve ${joinRequest.approvalCode}\`\n` +
+        `To decline: \`/decline ${joinRequest.approvalCode}\``
+      )).catch(() => {});
+    }
+  };
+
+  // identity-security-piece1e: the owner's /approve and /decline. Approving registers the person
+  // (the sender rule counts registered people as authorized). The legacy allowlist is written only
+  // when it already has entries: a one-person list would turn away everyone else under today's check.
+  telegram.onResolveJoinRequest = async (code, action, by) => {
+    const { JoinRequestManager, buildUserProfile } = await import('../users/UserOnboarding.js');
+    const request = new JoinRequestManager(config.stateDir).resolveRequest(code, action, by);
+    if (!request) return 'No pending join request has that code.';
+    if (action === 'denied') return 'Declined. They will not be let in.';
+    // The id comes from the Telegram id, never the sender's chosen name, so an approval can never
+    // replace an existing person's record; someone already registered with this Telegram id is kept.
+    if (!userManager.resolveFromTelegramUserId(request.telegramUserId)) {
+      userManager.upsertUser(buildUserProfile({ userId: `telegram-${request.telegramUserId}`, name: request.name.slice(0, 64), telegramUserId: request.telegramUserId }));
+    }
+    addToNonEmptyTelegramAllowList(config, request.telegramUserId);
+    return `Approved. Telegram ID ${request.telegramUserId} can now talk to the agent on this machine.`;
+  };
 }

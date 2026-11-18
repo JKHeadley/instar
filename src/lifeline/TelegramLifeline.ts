@@ -113,6 +113,9 @@ import { telegramFetch } from '../messaging/telegram-egress.js';
 import { inboundTopicId, normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
+import { standingMay, telegramSenderStanding, type TelegramSenderAction } from '../messaging/telegramSenderAuthority.js';
+import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { UserManager } from '../users/UserManager.js';
 
 /** Each live message's Telegram update_id, for the server's single-use receipt key (trust-journey decision 5). */
 const lifelineUpdateIds = new WeakMap<object, number>();
@@ -1332,6 +1335,47 @@ export class TelegramLifeline {
     this.pollTimeout = setTimeout(() => this.poll(loopId), this.pollBackoffMs);
   }
 
+  private registryCache: { mtimeMs: number; ids: number[] } | null = null;
+  /** identity-security-piece1e: Telegram ids of registered people, re-read when users.json changes. */
+  private registeredTelegramIds(): number[] {
+    const file = path.join(this.projectConfig.stateDir, 'users.json');
+    let mtimeMs = 0;
+    try { mtimeMs = fs.statSync(file).mtimeMs; } catch { return []; /* @silent-fallback-ok: no registry file means nobody registered */ }
+    if (this.registryCache?.mtimeMs === mtimeMs) return this.registryCache.ids;
+    // A file that does not parse THROWS here, so the standing answers `unknown`, never `stranger`.
+    const ids = UserManager.readProfilesFromDisk(path.dirname(file)).profiles
+      .map((u) => u.telegramUserId).filter((v): v is number => typeof v === 'number');
+    this.registryCache = { mtimeMs, ids };
+    return ids;
+  }
+
+  /**
+   * identity-security-piece1e: the sender rule on the lifeline's own actions. The lifeline reads
+   * Telegram directly, so a human sender id here is proven. Other agents' bots are not judged.
+   * Enforced only where the dev-gated switch is on; elsewhere a would-refuse is logged (observe).
+   */
+  private senderMayHere(from: { id: number; is_bot?: boolean } | undefined, action: TelegramSenderAction): boolean {
+    if (!from || from.is_bot) return true;
+    const tg = this.projectConfig.messaging?.find((m) => m.type === 'telegram')?.config as
+      { ownerUserId?: unknown; promptGate?: { ownerId?: unknown }; authorizedUserIds?: Array<number | string> } | undefined;
+    const standing = telegramSenderStanding(from.id, {
+      ownerId: () => resolveApprovalOwner(tg?.ownerUserId ?? tg?.promptGate?.ownerId, [], []),
+      allowList: () => tg?.authorizedUserIds,
+      registeredIds: () => this.registeredTelegramIds(),
+    });
+    const list = tg?.authorizedUserIds;
+    let viaWildcardOnly = false;
+    try {
+      viaWildcardOnly = standing === 'authorized' && !!list?.some((v) => String(v) === '*') && !list.some((v) => String(v) === String(from.id))
+        && !this.registeredTelegramIds().includes(from.id);
+    } catch { viaWildcardOnly = false; /* @silent-fallback-ok: an unreadable registry already answered unknown */ }
+    if (standingMay(standing, action, { viaWildcardOnly })) return true;
+    const cfg = this.projectConfig as { developmentAgent?: boolean; security?: { telegramSenderAuthority?: { enabled?: boolean } } };
+    if (resolveDevAgentGate(cfg.security?.telegramSenderAuthority?.enabled, cfg)) return false;
+    console.warn(`[Lifeline] sender-authority observe: would refuse ${standing} sender ${from.id} (${action})`);
+    return true;
+  }
+
   private notificationInbound = new Map<number, Map<string, number>>();
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     const msg = update.message;
@@ -1387,6 +1431,9 @@ export class TelegramLifeline {
       return;
     }
 
+    // identity-security-piece1e: a stranger's photo or file is never downloaded here.
+    if (((msg.photo && msg.photo.length > 0) || msg.document) && !this.senderMayHere(msg.from, 'media')) return;
+
     // Handle photo messages
     if (msg.photo && msg.photo.length > 0 && !msg.text) {
       await this.handlePhotoMessage(msg);
@@ -1408,6 +1455,14 @@ export class TelegramLifeline {
 
     // Handle lifeline-specific commands directly (bypass server)
     if (text.startsWith('/lifeline')) {
+      // identity-security-piece1e: restart/reset/doctor/queue act on the whole agent (owner only);
+      // status and help are ordinary commands.
+      const sub = text.trim().toLowerCase().split(/\s+/)[1] ?? 'status';
+      const action: TelegramSenderAction = ['restart', 'reset', 'doctor', 'queue'].includes(sub) ? 'agent-control' : 'command';
+      if (!this.senderMayHere(msg.from, action)) {
+        await this.sendFixedNotice(topicId, action === 'agent-control' ? "Only the agent's owner can use that." : "Only people on the agent's list can use that.");
+        return;
+      }
       await this.handleLifelineCommand(text, topicId, msg.from.id);
       return;
     }
@@ -1415,7 +1470,7 @@ export class TelegramLifeline {
     // Intercept /restart when server is down — treat as /lifeline restart
     // This solves the dead man's switch: /restart gets queued when the server is down,
     // but that's exactly when you need it most. Route it to the lifeline instead.
-    if (text.trim().toLowerCase() === '/restart' && !this.supervisor.healthy) {
+    if (text.trim().toLowerCase() === '/restart' && !this.supervisor.healthy && this.senderMayHere(msg.from, 'agent-control')) {
       console.log(`[Lifeline] Intercepting /restart (server is down) — treating as /lifeline restart`);
       await this.handleLifelineCommand('/lifeline restart', topicId, msg.from.id);
       return;
