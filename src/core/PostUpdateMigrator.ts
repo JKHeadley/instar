@@ -4689,6 +4689,8 @@ export class PostUpdateMigrator {
           );
           continue;
         }
+// bounded-input-reviewed: a string SPLICE (head up to the anchor + inserted line + the rest), not a bound;
+// nothing is dropped. Matches the detector by shape only.
         const next =
           `${current.slice(0, anchorIndex)}\n${questionLine}` +
           current.slice(anchorIndex);
@@ -24010,11 +24012,20 @@ process.stdin.on('end', async () => {
     if (!rawMessage || !topicRaw) process.exit(0);
     const topicId = parseInt(topicRaw, 10);
     if (!Number.isFinite(topicId)) process.exit(0);
-    // Clamp the payload (§4.4): a pathological multi-MB reply would exceed the
-    // server body-parser limit → a silent non-registration; the classifiers only
-    // need the first 16KB. NO length floor — the high-precision classifiers are the
-    // semantic filter, so terse promises ("I'll fix it") must not be dropped.
-    const message = rawMessage.slice(0, 16384);
+    // Clamp the payload (§4.4) so a pathological multi-MB reply cannot become a
+    // slow classifier pass. The FIRST 16384 characters are kept byte-for-byte:
+    // the route dedups against the completion-claim path by fingerprinting
+    // exactly that prefix (CompletionClaimVerifier messageFingerprint), so the
+    // prefix must not change. A longer reply then gets a disclosure and its last
+    // 8000 characters appended, because a promise ("I'll follow up in an hour")
+    // usually CLOSES a reply and the old head-only cut dropped it. ~25KB worst
+    // case, far under the route's 12MB JSON limit. NO length floor — the
+    // high-precision classifiers are the semantic filter, so terse promises
+    // ("I'll fix it") must not be dropped.
+    const ACTION_CLAIM_HEAD_CHARS = 16384;
+    const ACTION_CLAIM_TAIL_CHARS = 8000;
+    // bounded-input-reviewed: this is emitted hook JS and cannot import src/core/boundedInput.ts; it keeps the dedup prefix + tail and discloses the cut in-band in that helper's wording.
+    const message = rawMessage.length <= ACTION_CLAIM_HEAD_CHARS + ACTION_CLAIM_TAIL_CHARS ? rawMessage : rawMessage.slice(0, ACTION_CLAIM_HEAD_CHARS) + '\\n[BOUNDED INPUT: ' + (rawMessage.length - ACTION_CLAIM_HEAD_CHARS - ACTION_CLAIM_TAIL_CHARS) + ' characters removed from the MIDDLE to fit a size limit. Your view of this section is PARTIAL; do not treat its absence of something as evidence that it is absent.]\\n' + rawMessage.slice(-ACTION_CLAIM_TAIL_CHARS);
     const bindToken = process.env.INSTAR_BIND_TOKEN;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
