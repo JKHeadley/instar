@@ -1,0 +1,23 @@
+# Reports for a person arrive as a document
+
+<!-- bump: patch -->
+
+## What Changed
+
+Agents were told to publish research and reports with Telegraph or the Private Viewer. Where documents are on, the Private Viewer refuses new pages, so a session that followed those instructions had no route left and sent a report as a file in a code repository with a GitHub link. The instruction rows now say: a report, plan or research write-up for a person is made as a document (`POST /docs`) and its link is sent; a GitHub file link is for code review, not for a person reading a report. The Private Viewer stays the route only where documents are off or in Slack.
+
+Existing agents get the corrected rows on update. Only the exact old wording is replaced; a row the agent has edited is left alone. New agents' identity principles and the Documents feature note say the same.
+
+## What to Tell Your User
+
+- **Reports come as documents**: "When I write you a report or a plan, you'll get it as a document you can read and comment on in the app, not a link to a file on GitHub."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Reports delivered as documents | Automatic: agents make reports with `POST /docs` and send the link |
+
+## Evidence
+
+- Unit: `tests/unit/report-delivery-as-document.test.ts` (7), covering new-agent rows, the migration in both CLAUDE.md layouts, idempotency, and an edited row left alone.

@@ -144,7 +144,7 @@ import {
   APPROVAL_NOT_CHORE_TRAP,
   APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
-import { generateClaudeMd } from '../scaffold/templates.js';
+import { generateClaudeMd, RETIRED_DOC_DELIVERY_ROWS, RETIRED_AGENT_PRINCIPLE_WORDING, PRIVATE_VIEWS_SENTENCE } from '../scaffold/templates.js';
 import {
   CLAUDE_MD_DIFFERING_LINES_REL,
   CLAUDE_MD_LEGACY_BACKUP_REL,
@@ -3304,6 +3304,7 @@ export class PostUpdateMigrator {
 
     this.migrateHooks(result);
     this.migrateClaudeMd(result);
+    this.migrateAgentMdReportDelivery(result);
     this.migrateFrameworkShadowCapabilities(result);
     this.migrateScripts(result);
     this.migrateSecretExternalizationSurvivability(result);
@@ -9400,6 +9401,32 @@ setTimeout(() => process.exit(0), 2000);
    * Patch CLAUDE.md with any new sections that don't exist yet.
    * Only adds — never modifies or removes existing content.
    */
+  /**
+   * fb-3bc8a879-2c7: AGENT.md principles 6 and 9 and the Private Viewing line sent
+   * reports to the Private Viewer only. Replace each retired wording verbatim;
+   * wording the agent rewrote is left alone. Idempotent.
+   */
+  private migrateAgentMdReportDelivery(result: MigrationResult): void {
+    const agentMdPath = path.join(this.config.stateDir, 'AGENT.md');
+    if (!fs.existsSync(agentMdPath)) return;
+    try {
+      let content = fs.readFileSync(agentMdPath, 'utf-8');
+      let changed = false;
+      for (const [retired, current] of [...RETIRED_AGENT_PRINCIPLE_WORDING, ...RETIRED_DOC_DELIVERY_ROWS]) {
+        if (content.includes(retired)) {
+          content = content.replace(retired, () => current);
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(agentMdPath, content);
+        result.upgraded.push('AGENT.md: reports for a person go to a document, not a GitHub link');
+      }
+    } catch (err) {
+      result.errors.push(`AGENT.md report delivery: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateClaudeMd(result: MigrationResult): void {
     const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
     if (!fs.existsSync(claudeMdPath)) {
@@ -10386,6 +10413,17 @@ setTimeout(() => process.exit(0), 2000);
         content = content.replace(marker, `${paragraph}\n\n${marker}`);
         patched = true;
         result.upgraded.push('CLAUDE.md: added held script route guidance');
+      }
+    }
+    // fb-3bc8a879-2c7: the shipped report-delivery rows pointed only at the
+    // Private Viewer (which refuses while documents serve), so a session wrote a
+    // repo file and sent a GitHub link. Replace each retired row verbatim; a row
+    // the agent has edited is left alone.
+    for (const [retired, current] of RETIRED_DOC_DELIVERY_ROWS) {
+      if (content.includes(retired)) {
+        content = content.replace(retired, () => current);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reports for a person go to a document, not a GitHub link');
       }
     }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
@@ -15572,7 +15610,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - Update: \`curl -X PUT http://localhost:${port}/view/VIEW_ID -H 'Content-Type: application/json' -d '{"title":"Updated","markdown":"# New content"}'\`
 - Delete: \`curl -X DELETE http://localhost:${port}/view/VIEW_ID\`
 
-**Use private views for sensitive content. Use Telegraph for public content.**
+${PRIVATE_VIEWS_SENTENCE}
 
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl http://localhost:${port}/tunnel\`
