@@ -109,3 +109,9 @@ Closes the reproduced bypass with a single shared rule. The second pass's findin
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable (a code defect in an authority path, closed by the tests above).
+
+## Merge with main (2026-11-17, M5)
+
+The PR's base commit had already merged as #3284. Main was merged in; two server.ts conflicts were additive (imports, and main's organization-pack block next to this PR's config write guard) and keep both sides; the guard still registers at function scope right after the autonomy profile line. Typecheck passes; the four targeted test files pass (107 tests).
+
+**Reviewer:** independent second-pass subagent (fresh context, read-only) — CONCUR; nothing from main or the PR was dropped and the guard runs under the same startup conditions.
