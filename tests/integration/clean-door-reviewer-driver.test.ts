@@ -17,6 +17,7 @@ import {
   runCrossModelReview,
   assembleReviewerPrompt,
   aggregateRoundOutcomes,
+  CLAUDE_REVIEWER_DEFAULT_MODEL,
   type ReviewerConfig,
   type ReviewerResult,
 } from '../../src/core/crossModelReviewer.js';
@@ -55,7 +56,10 @@ describe('driver --family claude-code path (enabled)', () => {
     expect(r.status).toBe('ok');
     expect(r.framework).toBe('claude-code');
     expect(r.crossFamily).toBe(false);
-    expect(r.flag).toBe('clean-door-anthropic-review: claude-code:claude-fable-5');
+    // The default pin is the Claude design lane (frontier-design-review-standard §1);
+    // read it from the constant so this test follows the lane, not a stale literal.
+    expect(CLAUDE_REVIEWER_DEFAULT_MODEL).toBe('claude-fable-5-2');
+    expect(r.flag).toBe(`clean-door-anthropic-review: claude-code:${CLAUDE_REVIEWER_DEFAULT_MODEL}`);
     expect(r.flag).not.toContain('cross-model-review:');
   });
 
