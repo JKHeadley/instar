@@ -11,7 +11,9 @@ export function isolateNativeObservation(home: string) {
   const helper = path.join(home, 'inert-native-helper');
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(path.join(root, 'locked-state.json'), JSON.stringify({ markers: {} }));
-  fs.writeFileSync(helper, `#!${process.execPath}\nconst verb = process.argv[2];\nif (verb === 'state-op') { process.stdin.resume(); process.stdin.on('end', () => console.log(JSON.stringify({state:{markers:{}},attempts:{count:0},loginSession:'inert-login'}))); } else if (verb === 'relock-guard') { if (process.argv[3] !== ${JSON.stringify(root)} || !process.env.INSTAR_GUARD_OBSERVATION) process.exit(3); } else { console.log('{}'); }\n`, { mode: 0o700 });
+  // The status route probes the helper first; a reply the probe parser rejects
+  // turns GET /desktop/locked/status into a 503, so answer with a valid, unready probe.
+  fs.writeFileSync(helper, `#!${process.execPath}\nconst verb = process.argv[2];\nif (verb === 'state-op') { process.stdin.resume(); process.stdin.on('end', () => console.log(JSON.stringify({state:{markers:{}},attempts:{count:0},loginSession:'inert-login'}))); } else if (verb === 'probe') { console.log(JSON.stringify({screenPermission:false,inputPermission:false,sessionActive:false,displayCount:0})); } else if (verb === 'relock-guard') { if (process.argv[3] !== ${JSON.stringify(root)} || !process.env.INSTAR_GUARD_OBSERVATION) process.exit(3); } else { console.log('{}'); }\n`, { mode: 0o700 });
   const attemptedRealPaths: string[] = [];
   const mocks: Array<{ mockRestore(): void }> = [];
   // Fail before touching the operator's desktop store, including failed-* flags.

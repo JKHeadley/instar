@@ -25,6 +25,8 @@ describe('native observer boot fixture isolation', () => {
       expect(controller.root).toBe(isolation.root);
       expect((host as any).lockedRoot).toBe(isolation.root);
       expect((host as any).packagedBinary()).toBe(isolation.helper);
+      // GET /desktop/locked/status probes first; the inert reply must parse, or the route answers 503.
+      await expect(host.probe()).resolves.toMatchObject({ screenPermission: false, inputPermission: false, displayCount: 0 });
       await controller.sweep(true); // actual reportGuardFailures + read, only against the temporary store
       await host.startRelockGuard('12345678-1234-1234-1234-123456789abc.0');
       await vi.waitFor(() => expect(host.getRelockGuardObservation().entries[0].exit).toBe('exited'), { timeout: 10_000 });
