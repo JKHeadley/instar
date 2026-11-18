@@ -204,8 +204,10 @@ export class RealTarget {
     }
     if (guard) { this.events.add('guard-spawned'); this.pids.firstGuard ??= guard.pid; this.pids.guard = guard.pid; }
     if (typist) this.pids.typist = typist.pid;
-    if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
-    return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
+    const consoleOwner = this.consoleOwner();
+    if (consoleOwner === PROOF_USER) this.events.add('proof-user-console');
+    else this.events.delete('proof-user-console');
+    return { now, consoleOwner, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
       // Judged only once a duty exists and has closed, and only against the processes that duty
       // recorded. An input helper that refused the password before reserving belongs to no duty:
       // with its server frozen it stays up, holds no password, and is not a leftover typist.
@@ -614,14 +616,7 @@ export class RealTarget {
         this.events.add('next-grant-open');
         return { opened: await v.page.isVisible('#control') };
       }
-      case 'logout-proof-user': {
-        const out = sudo(['launchctl', 'bootout', `gui/${this.uid}`], { allowFail: true });
-        // The event is sticky, and this case waits for the user's return: it must first see them gone.
-        const until = this.now() + 30_000;
-        while (this.now() < until && this.consoleOwner() === PROOF_USER) await this.sleep(500);
-        this.events.delete('proof-user-console');
-        return { out };
-      }
+      case 'logout-proof-user': return this.logoutProofUser();
       case 'lock-now': return { out: this.asProof(['python3', '-c', LOCK_PY]) };
       default: throw new Error(`unknown action ${action}${step ? ` (case step ${step.at})` : ''}`);
     }
@@ -633,6 +628,55 @@ export class RealTarget {
       [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
       { encoding: 'utf8', input: `Locked-Mac proof: ${text}`, timeout: 30_000 }));
   }
+
+  async logoutProofUser() {
+    if (this.consoleOwner() !== PROOF_USER) throw new Error('proof account is not on console before logout');
+    const markers = Object.values(this.caseMarkers());
+    const identities = [];
+    const validIdentity = (pid, start) => Number.isSafeInteger(pid) && pid > 0
+      && typeof start === 'string' && /^\d+\.\d+$/.test(start);
+    if (!markers.length) throw new Error('logout has no recorded duty');
+    for (const marker of markers) {
+      // A replacement may briefly clear guardPid. That is an unknown producer set,
+      // not permission to drop the guard and check only the typist.
+      if (!validIdentity(marker.guardPid, marker.guardStart)) throw new Error('logout has no valid recorded guard identity');
+      identities.push([marker.guardPid, marker.guardStart]);
+      if (marker.typistPid != null || marker.typistStart != null) {
+        if (!validIdentity(marker.typistPid, marker.typistStart)) throw new Error('logout has an invalid recorded typist identity');
+        identities.push([marker.typistPid, marker.typistStart]);
+      }
+    }
+    this.bootoutProofUser();
+    const until = this.now() + 30_000;
+    let departedAt;
+    while (this.now() < until) {
+      const owner = this.consoleOwner();
+      if (departedAt !== undefined && owner === PROOF_USER) throw new Error('proof account returned before the login cue');
+      if (owner && owner !== PROOF_USER) departedAt ??= this.now();
+      const gone = identities.every(([pid, start]) => this.recordedProducerGone(pid, start));
+      if (departedAt !== undefined && owner && owner !== PROOF_USER && gone) {
+        this.events.delete('proof-user-console');
+        return { departed: true, departedAt, producersGone: true, identities };
+      }
+      await this.sleep(500);
+    }
+    throw new Error('logout did not confirm departure and old producer exit within 30 seconds');
+  }
+
+  recordedProducerGone(pid, start) {
+    const r = spawnSync('ps', ['-p', String(pid), '-o', 'pid=,stat=,lstart=,command='], { encoding: 'utf8', timeout: 5_000 });
+    if (r.status === 1 && !r.stdout?.trim() && !r.stderr?.trim()) return true;
+    if (r.status !== 0 || r.stderr?.trim()) throw new Error('could not observe the old producer identity');
+    const parsed = parseProcessList(r.stdout);
+    if (parsed.zombies.includes(pid)) return true;
+    const row = parsed.live.find(p => p.pid === pid);
+    if (!row) throw new Error('could not parse the old producer identity');
+    const observed = Date.parse(row.start);
+    if (!Number.isFinite(observed)) throw new Error('could not parse the old producer start time');
+    return observed !== Number(start.split('.')[0]) * 1_000;
+  }
+
+  bootoutProofUser() { sudo(['launchctl', 'bootout', `gui/${this.uid}`]); }
 
   async extraEvidence(c, ev) {
     const enters = new Map();

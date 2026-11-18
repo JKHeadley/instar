@@ -51,7 +51,7 @@ class FakeTarget {
     if (action === 'grant-other-agent') return { opened: false, refused: 'relock-pending' };
     // Any disruption: the guard does its duty (unless this fake is broken).
     const end = this.c.markerEnd?.[0] ?? 'relocked';
-    this.markers.k = { ...this.markers.k, state: end, guardReplacements: 1, producerGone: true };
+    this.markers.k = { ...this.markers.k, state: end, watchStart: this.t, guardReplacements: 1, producerGone: true };
     this.typist = false; this.guard = null;
     this.lockState = this.broken ? 'unlocked' : (this.c.final === 'unlocked-accepted-risk' ? 'unlocked' : 'locked-in-session');
     return { done: true };

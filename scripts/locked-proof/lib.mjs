@@ -74,8 +74,8 @@ export const CASES = [
   { id: '12.9', gate: 'P12', title: 'Typist and guard suspended through deadline admission recovery, typist then resumed', password: true, before: ['serve-under-launchd'], inject: [{ action: 'stop-typist', at: 'typing' }, { action: 'stop-guard', at: 'typing' }, { action: 'stop-server', at: 'typing' }, { action: 'grant-other-agent', at: 'deadline-passed' }, { action: 'cont-typist', at: 'other-grant-tried' }], final: 'locked', markerEnd: ['relock-failed'], producerGone: true, noSubmissionAfterClose: true, timeoutMs: 840_000, cleanup: ['cont-server', 'end-launchd-serve', 'start-server'] },
   { id: '12.10', gate: 'P12', title: 'Guard suspended across a takeover, resumed during the next grant', password: true, inject: [{ action: 'stop-guard', at: 'marker:owed' }, { action: 'open-next-grant', at: 'takeover' }, { action: 'cont-old-guard', at: 'next-grant-open' }], final: 'locked', oldGuardGone: true },
   { id: '12.11', gate: 'P12', title: 'Relock failing with Node down', password: true, inject: [{ action: 'kill-server', at: 'sent' }], person: { text: 'Unlock the test account at the test Mac now, and again each time it locks, four times in two minutes. Leave it unlocked after the fourth.', until: 'marker:relock-failed', timeoutMs: 300_000 }, then: ['start-server'], final: 'locked', markerEnd: ['relock-failed'], securityItemAfterBoot: true },
-  { id: '12.12', gate: 'P12', title: 'User switch with the guard alive', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }], person: { text: 'At the test Mac, switch to your own account (your own password), wait 30 seconds, then switch back to the test account.', until: 'marker:closed-not-applicable', timeoutMs: 300_000 }, final: 'not-judged', markerEnd: ['closed-not-applicable'], noLockCall: true },
-  { id: '12.13', gate: 'P12', title: 'Logout with the guard alive', password: true, inject: [{ action: 'logout-proof-user', at: 'marker:watching' }], person: { text: 'At the test Mac, log in to the test account again.', until: 'proof-user-console', timeoutMs: 300_000 }, final: 'not-judged', markerEnd: ['closed-not-applicable'], noLockCall: true },
+  { id: '12.12', gate: 'P12', title: 'User switch with the guard alive', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }], person: { text: 'At the test Mac, switch to your own account (your own password), wait 30 seconds, then switch back to the test account.', until: 'marker:closed-not-applicable', consoleRoundTrip: true, minAwayMs: 30_000, timeoutMs: 300_000 }, final: 'not-judged', markerEnd: ['closed-not-applicable'], noLockCall: true },
+  { id: '12.13', gate: 'P12', title: 'Logout with the guard alive', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'logout-proof-user', at: 'marker:watching' }], person: { text: 'At the test Mac, log in to the test account again.', until: 'proof-user-console', consoleRoundTrip: true, departureAction: 'logout-proof-user', minAwayMs: 0, timeoutMs: 300_000 }, final: 'not-judged', markerEnd: ['closed-not-applicable'], noLockCall: true },
   { id: '12.14a', gate: 'P12', title: 'Leave unlocked racing the guard: Leave first', password: true, inject: [{ action: 'leave-unlocked', at: 'unlocked' }, { action: 'revoke', at: 'unlocked' }], final: 'either', markerEnd: ['left-unlocked', 'relocked'] },
   { id: '12.14b', gate: 'P12', title: 'Leave unlocked racing the guard: Stop first', password: true, inject: [{ action: 'revoke', at: 'unlocked' }, { action: 'leave-unlocked', at: 'unlocked', delayMs: 150 }], final: 'either', markerEnd: ['left-unlocked', 'relocked'] },
   { id: '12.15', gate: 'P12', title: 'Leave unlocked followed by a crash', password: true, inject: [{ action: 'leave-unlocked', at: 'unlocked' }, { action: 'kill-server', at: 'marker:left-unlocked' }], then: ['start-server'], final: 'left-unlocked', markerEnd: ['left-unlocked'], typistGone: true, cleanup: ['lock-now'] },
@@ -92,8 +92,8 @@ export const CASES = [
   { id: '15.7', gate: 'P15', title: 'Node kill immediately before Enter', password: true, inject: [{ action: 'kill-server', at: 'before-enter' }], then: ['start-server'], final: 'locked', noSubmissionAfterClose: true },
   { id: '15.8', gate: 'P15', title: 'Node kill immediately after Enter', password: true, inject: [{ action: 'kill-server', at: 'after-enter' }], then: ['start-server'], final: 'locked', noSubmissionAfterClose: true },
   { id: '15.9', gate: 'P15', title: 'input-stream suspended mid-password', password: true, inject: [{ action: 'stop-typist', at: 'typing' }, { action: 'revoke', at: 'typing', delayMs: 2_000 }], then: ['next-helper-clears-field'], final: 'locked', typistGone: true, fieldClearedBeforeNextEnter: true },
-  { id: '15.10', gate: 'P15', title: 'Delayed completion inside the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'In about 30 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 30_000, until: 'marker:relocked', timeoutMs: 180_000, mustUnlock: true }, final: 'locked', markerEnd: ['relocked'] },
-  { id: '15.11', gate: 'P15', title: 'Delayed completion past the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'In about 2 minutes 10 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 130_000, until: 'unlocked', timeoutMs: 300_000, mustUnlock: true }, final: 'unlocked-accepted-risk', markerEnd: ['relocked'], cleanup: ['lock-now'] },
+  { id: '15.10', gate: 'P15', title: 'Delayed completion inside the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'Unlock the test account at the test Mac now, once, and leave it.', cueFromWatchMs: 30_000, until: 'marker:relocked', timeoutMs: 180_000, mustUnlock: true }, final: 'locked', markerEnd: ['relocked'] },
+  { id: '15.11', gate: 'P15', title: 'Delayed completion past the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'Unlock the test account at the test Mac now, once, and leave it.', cueFromWatchMs: 130_000, until: 'unlocked', timeoutMs: 300_000, mustUnlock: true }, final: 'unlocked-accepted-risk', markerEnd: ['relocked'], cleanup: ['lock-now'] },
 ];
 
 export function selectCases(ids) {
@@ -169,7 +169,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
   const evidence = { id: c.id, gate: c.gate, startedAt: target.now(), samples: [], fired: [], person: null, notes: [] };
   const sample = async () => {
     const snap = await target.snapshot();
-    evidence.samples.push({ t: snap.now, lockState: snap.lockState, serverLockState: snap.serverLockState, markers: snap.markers, dirty: snap.dirty, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
+    evidence.samples.push({ t: snap.now, lockState: snap.lockState, serverLockState: snap.serverLockState, markers: snap.markers, dirty: snap.dirty, consoleOwner: snap.consoleOwner, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
     return snap;
   };
   const pending = [...c.inject];
@@ -216,15 +216,64 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
         log(`[${c.id}] ${step.action} (${step.at})`);
       }
       if (c.person && !personCued && pending.length === 0) {
+        // The injection can log out or revoke the grant: never reuse its earlier snapshot.
+        snap = await sample();
+        let watchStart;
+        if (c.person.cueFromWatchMs !== undefined) {
+          const starts = [...new Set(Object.values(snap.markers ?? {}).map(m => m.watchStart).filter(Number.isFinite))];
+          if (starts.length !== 1) { await target.sleep(pollMs); continue; }
+          watchStart = starts[0];
+          const due = watchStart + c.person.cueFromWatchMs;
+          if (target.now() < due) { await target.sleep(Math.min(pollMs, due - target.now())); continue; }
+          if (c.person.cueFromWatchMs < WATCH_MS && target.now() >= watchStart + WATCH_MS) {
+            throw new Error('the inside-watch cue missed the watch window');
+          }
+        }
+        if (c.person.mustUnlock && !['locked', 'locked-in-session'].includes(snap.lockState)) {
+          throw new Error('Mac was not confirmed locked immediately before the unlock cue');
+        }
+        const departure = c.person.departureAction
+          ? evidence.fired.find(f => f.action === c.person.departureAction)?.result : null;
+        if (c.person.departureAction && (departure?.departed !== true || departure?.producersGone !== true
+            || !Number.isFinite(departure.departedAt))) throw new Error('logout departure and old producer exit were not confirmed');
+        if (departure && (typeof snap.consoleOwner !== 'string' || !snap.consoleOwner || snap.consoleOwner === PROOF_USER)) {
+          throw new Error('proof account departure was not still observed before the login cue');
+        }
+        if (c.person.consoleRoundTrip && !departure && snap.consoleOwner !== PROOF_USER) {
+          throw new Error('proof account was not on console before the switch cue');
+        }
         personCued = true;
-        if (c.person.cueAfterMs) await target.sleep(c.person.cueAfterMs);
-        evidence.person = { cuedAt: target.now(), text: c.person.text };
+        evidence.person = { cuedAt: target.now(), text: c.person.text,
+          ...(watchStart !== undefined ? { watchStart, cueDueAt: watchStart + c.person.cueFromWatchMs } : {}),
+          ...(departure ? { awayAt: departure.departedAt, awayObservedAt: departure.departedAt, departureConfirmed: true } : {}) };
         await target.askPerson(c.person.text);
+        evidence.person.cueCompletedAt = target.now();
         deadline = Math.max(deadline, target.now() + (c.person.timeoutMs ?? 0));
+        snap = await sample();
       }
-      // A person step is finished only when its result is seen. Asking is not doing.
-      if (personCued && !evidence.person.doneAt && (!c.person.until || matchAt(c.person.until, snap, ctx))) evidence.person.doneAt = target.now();
-      if (personCued && c.person.mustUnlock && snap.lockState === 'unlocked') evidence.person.sawUnlock = true;
+      if (personCued && snap.now >= evidence.person.cueCompletedAt) {
+        const person = evidence.person;
+        if (c.person.consoleRoundTrip && !person.returnedAt) {
+          const owner = snap.consoleOwner;
+          // Unknown readings break dwell evidence; they are never evidence of departure.
+          const away = typeof owner === 'string' && owner.length > 0 && owner !== PROOF_USER
+            && (c.person.departureAction || !['root', 'loginwindow'].includes(owner));
+          if (away) {
+            person.awayAt ??= snap.now; person.awayObservedAt = snap.now;
+            if (snap.now - person.awayAt >= (c.person.minAwayMs ?? 0)) person.dwellCompletedAt ??= snap.now;
+          }
+          else if (owner === PROOF_USER && person.awayAt !== undefined) {
+            if ((c.person.minAwayMs ?? 0) > 0 && person.dwellCompletedAt === undefined) throw new Error('returned before the required time away');
+            person.returnedAt = snap.now;
+          } else if (!c.person.departureAction && person.dwellCompletedAt === undefined) { delete person.awayAt; delete person.awayObservedAt; }
+        }
+        if (c.person.mustUnlock && snap.lockState === 'unlocked') {
+          person.sawUnlock = true;
+          person.unlockAt ??= snap.now;
+        }
+        const humanDone = !c.person.consoleRoundTrip || person.returnedAt !== undefined;
+        if (!person.doneAt && humanDone && (!c.person.until || matchAt(c.person.until, snap, ctx))) person.doneAt = snap.now;
+      }
       const settled = pending.length === 0 && (!c.person || (evidence.person?.doneAt && (!c.person.mustUnlock || evidence.person.sawUnlock))) && target.settled(snap, c);
       if (settled) break;
       await target.sleep(aimsBeforeEnter && ctx.beforeEnterDue === undefined ? Math.min(pollMs, FAST_POLL_MS) : pollMs);
@@ -323,6 +372,22 @@ export function judge(c, ev) {
   if (x0(ev).limitMinusEnterMs >= 0) reasons.push(`grant limit arrived ${x0(ev).limitMinusEnterMs} ms after Enter`);
   if (c.person && !ev.person?.doneAt) reasons.push(`person step never completed: ${c.person.until ?? 'no result seen'}`);
   if (c.person?.mustUnlock && !ev.person?.sawUnlock) reasons.push('no unlock was seen after the person was asked');
+  if (c.person?.consoleRoundTrip) {
+    const p = ev.person;
+    if (!Number.isFinite(p?.awayAt) || !Number.isFinite(p?.returnedAt) || !Number.isFinite(p?.cueCompletedAt)
+        || p.returnedAt < p.cueCompletedAt || p.returnedAt - p.awayAt < c.person.minAwayMs
+        || (c.person.minAwayMs > 0 && (!Number.isFinite(p.dwellCompletedAt) || p.dwellCompletedAt - p.awayAt < c.person.minAwayMs))
+        || (c.person.departureAction && p.departureConfirmed !== true)) reasons.push('required console departure, dwell and return were not observed');
+  }
+  if (c.person?.cueFromWatchMs !== undefined) {
+    const p = ev.person;
+    if (!Number.isFinite(p?.watchStart) || !Number.isFinite(p?.unlockAt) || !Number.isFinite(p?.cuedAt)
+        || !Number.isFinite(p?.cueCompletedAt) || p.cuedAt < p.watchStart + c.person.cueFromWatchMs
+        || p.unlockAt < p.cueCompletedAt
+        || (c.person.cueFromWatchMs < WATCH_MS ? p.unlockAt >= p.watchStart + WATCH_MS : p.unlockAt <= p.watchStart + WATCH_MS)) {
+      reasons.push('unlock was not observed after its cue on the required side of the watch');
+    }
+  }
   if (c.final === 'unlocked-accepted-risk' && lock !== 'unlocked') reasons.push(`Mac ended ${lock}, expected unlocked with the risk recorded`);
   if (c.final === 'locked' && lock !== 'locked-in-session' && lock !== 'locked') reasons.push(`Mac ended ${lock}, expected locked`);
   if (c.final === 'left-unlocked' && !terminal.some(m => m.state === 'left-unlocked')) reasons.push('Leave unlocked was not the recorded outcome');
