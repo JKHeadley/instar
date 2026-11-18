@@ -113,6 +113,10 @@ Precision items not worked into the spec: wording of the client-name scan test (
 | 27 | decision | `shows` 60-char minimum rejects correct short descriptions | DESIGN | Description or `nothing` with a reason; verifiers check the picture |
 | — | gate: Structure beats Willpower (client isolation by instruction) | partly resolved structurally (fresh readers tool-less, folder location and sync target checked); the rest accepted, see Left behind | | |
 
+## Post-convergence amendment (first user)
+
+After the tag, Luna (the first user, thread 1f805ef5, 2026-11-17 ~18:01 PT) checked the plan against her skill and asked for two changes, both applied: (1) the declared repository is wherever the agent keeps that client's meeting folders (hers is her own agent repository), never the client's code repositories, and the meeting lock lives beside the meeting folder; (2) a shipped one-time converter from her older `.mjs` ledger sources to JSON, run in a separate Node process under the permission model (read one file, no write, no child processes), so the checks never load `.mjs`. Neither was re-reviewed by a round; both narrow behaviour rather than widen it.
+
 ## Convergence verdict
 
 Converged at the round-6 cap (Tier 2). The last round found three build-detail design items, none about safety, security or data loss; they were applied to the spec and are disclosed above as not re-reviewed. Six accepted limits and five contested constitution flags are listed under Left behind. Spec is ready for Justin's review and approval; nothing is built before `approved: true`.
