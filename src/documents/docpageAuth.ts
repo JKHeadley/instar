@@ -14,7 +14,7 @@ import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from '..
 import { canonicalJson } from './chain.js';
 
 export const DOCPAGE_DOMAIN = 'instar-docpage-v1' as const;
-export const DOCPAGE_OPS = ['comment', 'reply', 'resolve', 'reopen', 'edit', 'reanchor', 'send', 'open'] as const;
+export const DOCPAGE_OPS = ['comment', 'reply', 'resolve', 'reopen', 'edit', 'reanchor', 'send', 'open', 'decide-on-phone'] as const;
 export type DocpageOp = (typeof DOCPAGE_OPS)[number];
 
 /** The fields each operation's payload must carry, exactly (§3.6). */
@@ -29,6 +29,8 @@ const PAYLOAD_FIELDS: Record<DocpageOp, readonly string[]> = {
   reanchor: ['docId', 'commentKey', 'onVersion', 'start', 'end'],
   send: ['docId', 'batchId', 'commentKeysHash', 'primaryRow', 'messageRequestId'],
   open: ['docId'],
+  // Ask the owner's phone to decide (document-decisions §3.3). Writes no row: it sends one push.
+  'decide-on-phone': ['docId', 'askId', 'verdict'],
 };
 
 export function docpageString(deviceId: string, host: string, docId: string, op: DocpageOp, requestId: string, timeMs: string, payload: Record<string, unknown>): string {
@@ -108,12 +110,13 @@ const STAMPED_ID = /^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{
 function payloadValuesValid(p: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(p)) {
     switch (k) {
-      case 'docId': case 'commentId': case 'replyId': case 'onVersion': if (typeof v !== 'string' || !UUID_RE.test(v)) return false; break;
+      case 'docId': case 'commentId': case 'replyId': case 'onVersion': case 'askId': if (typeof v !== 'string' || !UUID_RE.test(v)) return false; break;
       case 'start': case 'end': if (!Number.isSafeInteger(v) || (v as number) < 0) return false; break;
       case 'bodyHash': case 'commentKeysHash': if (typeof v !== 'string' || !HEX64.test(v)) return false; break;
       case 'commentKey': if (typeof v !== 'string' || v.length > 200 || !/^[A-Za-z0-9._:-]{1,160}:[0-9a-f-]{36}$/.test(v)) return false; break;
       case 'batchId': case 'messageRequestId': if (typeof v !== 'string' || !STAMPED_ID.test(v)) return false; break;
       case 'primaryRow': if (typeof v !== 'string' || v.length === 0 || v.length > 200) return false; break;
+      case 'verdict': if (v !== 'approve' && v !== 'decline') return false; break;
       default: return false;
     }
   }

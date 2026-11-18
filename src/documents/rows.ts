@@ -36,6 +36,8 @@ export const WRITE_DEFAULTS = Object.freeze({
   commentBytes: 256 * 1024,
   commentsPerHourPerDoc: 120,
   textBytesPerPersonPerDay: 20 * 1024 * 1024,
+  /** A decision ask's question (document-decisions §3.1): read in full on a phone sheet before Face ID. */
+  questionChars: 2000,
 });
 
 export type Vector = Readonly<Record<string, number>>;
@@ -101,7 +103,18 @@ export type RowBody =
   | { eventKind: 'tombstone' | 'purge' }
   | { eventKind: 'prune'; versionIds: string[] }
   | { eventKind: 'place-disclosure'; grantRow: string; heads: Vector }
-  | { eventKind: 'device-seen'; deviceId: string };
+  | { eventKind: 'device-seen'; deviceId: string }
+  // Document decisions (docs/specs/document-decisions.md): the agent asks, the owner's phone answers.
+  | { eventKind: 'decision-ask'; askId: string; questionHash: string }
+  | { eventKind: 'decision-ask-close'; askId: string }
+  | { eventKind: 'decision'; askId: string; onVersion: string; verdict: DecisionVerdict; questionHash: string; noteHash?: string; supersedes?: RowKey; proof: DecisionProof }
+  | { eventKind: 'decision-delivered'; decisionRow: RowKey; messageRequestId: string };
+
+export type DecisionVerdict = 'approve' | 'decline';
+/** The approval root the accepting machine found for the deciding phone (§3.2). */
+export type DecisionProof = 'telegram' | 'pin';
+/** The decision kinds, which older builds don't read: written only once every peer reads them (§6). */
+export const DECISION_KINDS: ReadonlySet<string> = new Set(['decision-ask', 'decision-ask-close', 'decision', 'decision-delivered']);
 
 export type EventKind = RowBody['eventKind'];
 export type LinkKind = 'discusses' | 'derived-from' | 'supersedes' | 'references' | 'about-project';
@@ -205,6 +218,11 @@ function validBody(r: Record<string, unknown>): boolean {
     case 'prune': return Array.isArray(r.versionIds) && r.versionIds.length > 0 && r.versionIds.length <= 256 && r.versionIds.every(isUuid);
     case 'place-disclosure': return typeof r.grantRow === 'string' && r.grantRow.length <= 300 && isVector(r.heads);
     case 'device-seen': return typeof r.deviceId === 'string' && r.deviceId.length <= 200;
+    case 'decision-ask': return isUuid(r.askId) && isHash(r.questionHash);
+    case 'decision-ask-close': return isUuid(r.askId);
+    case 'decision': return isUuid(r.askId) && isUuid(r.onVersion) && (r.verdict === 'approve' || r.verdict === 'decline') && isHash(r.questionHash)
+      && (r.noteHash === undefined || isHash(r.noteHash)) && (r.supersedes === undefined || isRowKey(r.supersedes)) && (r.proof === 'telegram' || r.proof === 'pin');
+    case 'decision-delivered': return isRowKey(r.decisionRow) && typeof r.messageRequestId === 'string' && /^\d{13}-[0-9a-f-]{36}$/.test(r.messageRequestId);
     default: return false;
   }
 }
@@ -231,6 +249,12 @@ const WRITERS: Record<EventKind, ReadonlyArray<Actor['type']>> = {
   'prune': ['owner-phone'],
   'place-disclosure': ['machine'],
   'device-seen': ['machine'],
+  'decision-ask': ['agent'],
+  'decision-ask-close': ['agent'],
+  // Only the owner's phone decides, with Face ID (originCheck re-verifies on every machine).
+  'decision': ['owner-phone'],
+  // Written by the machine after the chat route's own record says the owner's message was delivered.
+  'decision-delivered': ['machine'],
 };
 
 export type RowCheck = { ok: true } | { ok: false; reason: string };
