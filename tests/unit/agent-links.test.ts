@@ -163,7 +163,9 @@ describe('proof', () => {
 describe('instar.sh /a page and Apple link file', () => {
   const root = path.resolve(__dirname, '../..');
   it('the page loads exactly one same-origin script and no outside resource', () => {
-    const html = fs.readFileSync(path.join(root, 'site/src/pages/a.astro'), 'utf-8').replace(/^---[\s\S]*?---/, '');
+    // A plain static file: an Astro page would get the site's injected prefetch script (seen on the deployed preview).
+    expect(fs.existsSync(path.join(root, 'site/src/pages/a.astro'))).toBe(false);
+    const html = fs.readFileSync(path.join(root, 'site/public/a/index.html'), 'utf-8');
     const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map((m) => m[0]);
     expect(scripts).toHaveLength(1);
     expect(scripts[0]).toContain('src="/a.js"');

@@ -1,12 +1,14 @@
----
-// Fallback page for permanent agent links (docs/specs/permanent-agent-links.md §4).
-// Link v1: https://instar.sh/a#v=1&i=<agent id>&t=<target>[&r=<ref>][&c=<comment key>]
-// With the Instar app installed, iOS/macOS hand the tap to the app (apple-app-site-association
-// names /a) and this page is never shown. It shows in a plain browser, or when a chat app keeps
-// the link in its own browser. It stores nothing, redirects nowhere, asks for no sign-in, and makes
-// no network request. Its script is the same-origin file /a.js, because the CSP blocks inline scripts.
----
 <!doctype html>
+<!--
+  Fallback page for permanent agent links (docs/specs/permanent-agent-links.md §4).
+  Link v1: https://instar.sh/a#v=1&i=<agent id>&t=<target>[&r=<ref>][&c=<comment key>]
+  With the Instar app installed, iOS/macOS hand the tap to the app (apple-app-site-association
+  names /a) and this page is never shown. It shows in a plain browser, or when a chat app keeps
+  the link in its own browser. It stores nothing, redirects nowhere, asks for no sign-in, and makes
+  no network request. Its script is the same-origin file /a.js, because the CSP blocks inline scripts.
+  Served as a plain static file (not an Astro page) so the build injects nothing: an Astro page gets the
+  site's prefetch script, and this page must load exactly one script (docs/specs/permanent-agent-links.md section 4).
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -48,6 +50,6 @@
       </div>
       <noscript><p class="small">Open this link in the Instar app.</p></noscript>
     </main>
-    <script is:inline type="module" src="/a.js"></script>
+    <script type="module" src="/a.js"></script>
   </body>
 </html>

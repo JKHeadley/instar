@@ -18,7 +18,7 @@ Server side:
 - Ladder entry `agentLinks`, set to `default-off-by-preference`.
 
 Site side:
-- A static `site/src/pages/a.astro` with a same-origin `site/public/a.js`. It makes no network request and never redirects.
+- A static `site/public/a/index.html` (a plain file, so the site build injects no script into it) with a same-origin `site/public/a.js`. It makes no network request and never redirects.
 - AASA: `/a` and `/a/` for the iPhone app, and a new Mac app entry.
 
 The app handlers (iPhone and Mac) are a separate change in the app repo, built against this spec.
