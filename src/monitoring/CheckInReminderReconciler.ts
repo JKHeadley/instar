@@ -353,6 +353,8 @@ export class CheckInReminderReconciler {
           return { ...cur, lateAttemptsFor: r.time, lateAttempts: (sameTime ? (cur.lateAttempts ?? 0) : 0) + 1, ...(sameTime ? {} : { lateNoticeFailedAt: undefined }) };
         });
       } catch (err) {
+        // @silent-fallback-ok — not silent: the error is in the pass report, and the row stays
+        // eligible (no attempt was counted) so the next pass retries it.
         report.errors.push({ id: r.c.id, error: `late-attempt: ${err}` });
         continue;
       }

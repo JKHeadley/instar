@@ -208,7 +208,7 @@ Rollback is `commitments.checkInReminder.dryRun: true`, read live. It stops send
 - **fleet:** it follows the check-in reminder's own graduation. Its `dryRun` default flips fleet-wide in one place, and this feature rides on it. Nothing separate is flipped.
 - **graduation criterion:** on Echo over 7 days, at least one real late notice delivered and stamped. Zero give-ups that are not explained. No conversation receiving more than one late message per hour. Fewer than half of the late notices for work that was already done (a stale record), counted from the sessions' replies. A zero count of late notices is not a pass.
 - **dark-window:** at most 14 days from merge to the fleet decision. If the criterion is not met by then, the reason and a new date are recorded on the run's commitment, so it is never left dark silently.
-- **ladder:** test agent (E2E), then Echo live, then fleet via the check-in reminder dryRun default
+- **ladder:** not applicable: no flag of its own, it rides the commitments.checkInReminder gate (test agent E2E, then Echo live, then fleet via that gate dryRun default)
 
 ## 7. Tests
 

@@ -32,7 +32,7 @@ Two smaller fixes are filed separately: the reminder's startup limit (it keeps t
 
 ## Where it's switched on
 
-It rides on the existing check-in reminder, so it is live on Echo and off by default for other agents until that reminder is turned on for them. One setting turns it off again without a restart.
+It has no switch of its own: it rides on the existing check-in reminder, so it is live on Echo and off by default for other agents until that reminder is turned on for them. The check-in reminder's one setting turns it off again without a restart.
 
 ## What you need to decide
 

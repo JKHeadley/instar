@@ -88,3 +88,7 @@ This is a bounded, deterministic extension of a live, proven mechanism. It holds
   - `tests/unit/CommitmentTracker-auto-expiry.test.ts` (+2);
   - `tests/integration/overdue-promise-follow-through-routes.test.ts`;
   - `tests/e2e/overdue-promise-follow-through-alive.test.ts`.
+
+## Revision — guard-test fixes on the merge with main (2026-11-18)
+
+Two catch blocks gained in-brace `@silent-fallback-ok` notes. Neither is silent: the handoff inject failure returns "not accepted", which the pass report records, and the attempt-count CAS failure is in the pass report with the row left eligible. The spec's maturation `ladder:` field now says "not applicable", because this feature has no flag of its own and rides `commitments.checkInReminder`. No behavior change.

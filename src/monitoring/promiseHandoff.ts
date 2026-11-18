@@ -31,6 +31,8 @@ export function makeHandOffPromise(deps: HandOffDeps): (topicId: number, text: s
       const r = await deps.injectObserved(session, text);
       return r.state === 'submitted' || r.state === 'queued-busy';
     } catch (err) {
+      // @silent-fallback-ok — "not accepted" IS the honest answer: the caller records it in the
+      // pass report (handoffsNotAccepted), and the person-facing late notice already went out.
       (deps.log ?? console.warn)(`[promise-handoff] inject into ${session} failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
