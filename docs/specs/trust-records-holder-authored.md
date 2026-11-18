@@ -63,7 +63,11 @@ approval flow asks the owner again the next time the action is attempted.
    boot refold and the live state are always the same. The closed query table below is part of the
    decision.
 2. **The writer is transport-derived.** The writer reaching `fold` is: this machine for its own
-   stream files, provided the records' stamped `origin` equals this machine's current id (a restored
+   stream files, provided the records' stamped `origin` equals this machine's current id (the
+   journal sink stamps it; records in the local-file sink, used only when the journal is off and
+   therefore on a single machine, carry no origin and are own: with no other machine there is no
+   peer to confuse them with, and a new-id restore of such an agent is covered by the same-id
+   restore residual) (a restored
    stream from another machine id is foreign: its records are treated as a peer's, never as own; the
    payload `origin` can only take ownership away, never grant it); for a replica, the machine the
    replica file belongs to, which the applier set from
@@ -100,7 +104,9 @@ approval flow asks the owner again the next time the action is attempted.
    identity piece 2. Unifying levels is tracked as its own item, blocked on piece 2, and is approver
    item 14c. A `change` record describes the level of the machine that wrote it. So
    `provenLevel(kind)`, `changeLog`, `lastChange` and the load-time proof check read only own `change`
-   records, and a peer's `change` never affects this machine's levels in either direction. A kind with
+   records, and a peer's `change` never affects this machine's levels in either direction ("levels"
+   excludes legacy admission, which decision 5 governs: a peer's real owner change does end this
+   machine's legacy grant for that kind). A kind with
    no own `change` keeps today's rule ("no recorded grant means Ask me first"). There is no peer-driven
    "ask-first" state (round 2: it was order-dependent and honest standbys triggered it).
 5. **Legacy grants are own-only and end on any change except a machine's own automatic narrowing.**
@@ -156,6 +162,12 @@ approval flow asks the owner again the next time the action is attempted.
      re-acquire is exactly +1 (acquisition always writes the current epoch + 1, `FencedLease.ts`), so
      it never moves the boundary and pending approvals survive sleep or a restart past the lease time
      limit (`seamlessness.leaseTtlMs`). Then `lastSeenEpoch = max(lastSeenEpoch, E)`.
+   - Same-epoch contests: any peer lease the coordinator observes (every effective-view fold,
+     received broadcasts, and the contested branch where `splitBrainState` is `contested`) at an epoch
+     N equal to or above this machine's own counts as foreign at N: `lastForeignEpoch = max(.., N)`.
+     The coordinator gains one observer hook for this (`onPeerLeaseObserved(epoch, holder)`), called
+     from those paths. So a woken holder that re-acquires at the same epoch as the peer that took over
+     kills its own approvals for that epoch and earlier (denial at worst, never a double run).
    - Neither value is ever lowered. The file is not in the backup set; when it is missing or
      unreadable, `lastForeignEpoch` starts at `currentEpoch - 1` (only current-epoch records count).
      A stale copy restored by other means is caught by the gap rule, because its `lastSeenEpoch` is
@@ -186,7 +198,7 @@ approval flow asks the owner again the next time the action is attempted.
    marked used (a non-own `consumption` or `request-status`), the reply is "Another of my machines
    closed that request, so nothing was approved; I will ask again when it next comes up", never
    "already approved". `applyOutcome` is read only for own consumptions.
-9. **Visibility, counts only.** Peer grant records kept but not counted are counted by (type, writer),
+9. **Visibility: counts, plus one provable case.** Peer grant records kept but not counted are counted by (type, writer),
    de-duplicated by (writer, recordKey) so a boot refold does not re-count, and returned by
    `GET /trust/summary` in a new `trustJourney` block (`peerGrantsIgnored`; each kind whose legacy grant
    a peer change ended, with writer and source; and `peerNarrowingOfCurrentTerm`, peer records that
@@ -195,8 +207,13 @@ approval flow asks the owner again the next time the action is attempted.
    404s without it). No forgery alarm: whether a peer was in charge when it wrote cannot be
    established, so the design does not judge ordinary peer grants. One case IS provable: a peer
    record that closes or uses an own id from the current term (`peerNarrowingOfCurrentTerm`), because
-   during this machine's term no other machine consumes, dispatches or closes its requests. The first
-   such record from a given writer in a term sends the owner one plain notice through the existing
+   during this machine's term no other machine consumes, dispatches or closes its requests. The
+   notice fires only when the record arrived in a signature-verified `journal-sync` response or a
+   signed push (decision 3), and only after re-reading the lease confirms this machine still holds it
+   and that writer has not held it at or after the record's term (so an older-build or `"fold"` peer
+   that took the lease and honestly consumed a request never triggers it); unsigned cases are counted
+   only. `codeTaken` reads every writer's requests (it only blocks a code, never grants), so a new
+   holder never reuses an id an earlier holder issued. The first such record from a given writer in a term sends the owner one plain notice through the existing
    owner channel (`notifyOwner`): "<machine> closed or used a request I made while I am in charge,
    which it should never do. Nothing was approved. If you do not recognise this, remove <machine> from
    my computers." It is a security-class signal, so it is sent at once (there is nothing to heal:
@@ -255,14 +272,14 @@ approval flow asks the owner again the next time the action is attempted.
 | `receipt` | first-hand receipt (part 1) | none |
 | `acceptance-sent` | precondition for an acceptance | none |
 | `acceptance` | account path accepted | none |
-| `acceptance-withdrawn` | removes an acceptance | removes the named acceptance id and every own acceptance for the same `principal|adapter` (by subject, so a withdrawal on one holder reaches the other holder's acceptance after a hand-back) |
+| `acceptance-withdrawn` | removes an acceptance | removes the named acceptance id only. A withdrawal writes one record per acceptance id the withdrawing machine can see for that subject (`principal|adapter`), own or kept as evidence, so it reaches the other holder's acceptance after a hand-back while a later re-acceptance (a fresh id) is unaffected |
 | `consumption` | records an approve; backs a raise at load | marks the request id and receipt id used |
 | `change` | proven level, load check, legacy validity | ends this machine's legacy grant for the kind unless its source is `revoked` or `default` (decision 5); nothing else |
 | `legacy-grant` | own legacy behaviour (`machine` = this machine) | none; never imported |
 | `action-approval` | proceed-once (current term only) | none |
 | `dispatch` | marks approval used | marks the named approval id used |
 | `device-acceptance` | device may approve | marks its `approvalId` used |
-| `device-acceptance-withdrawn` | removes a device | removes the named acceptance id and every own acceptance for the same `deviceId` + `keyFingerprint` (by subject) |
+| `device-acceptance-withdrawn` | removes a device | removes the named acceptance id only; written once per acceptance id the withdrawing machine sees for that `deviceId` + `keyFingerprint`, own or evidence (same rule) |
 | `device-approval` | approves a new device (current term only) | none |
 | `apply-outcome` | outcome of an own consumption | none |
 | any type, unreadable (unknown field or `minReader`) | today's unreadable handling for own records | only the id-keyed narrowing of its type (used, closed, withdrawn); never `unreadableKeys` |
@@ -271,7 +288,8 @@ approval flow asks the owner again the next time the action is attempted.
 
 | Query | Reads |
 |---|---|
-| `request`, `openRequests`, `allRequests`, `requestByCode`, `requestByCard`, `codeTaken` | own index, status from the narrowing set; the device listing, `propose()` de-duplication and `MAX_OPEN_REQUESTS` go through these, so peer requests are never shown, never suppress an ask and never fill the cap |
+| `codeTaken` | every writer's requests (blocks a code only, never grants) |
+| `request`, `openRequests`, `allRequests`, `requestByCode`, `requestByCard` | own index, status from the narrowing set; the device listing, `propose()` de-duplication and `MAX_OPEN_REQUESTS` go through these, so peer requests are never shown, never suppress an ask and never fill the cap |
 | `receipt`, `receiptConsumed` | own receipts; consumed from the narrowing set |
 | `acceptance`, `acceptanceStatementSent` | own index minus narrowing withdrawals |
 | `consumption`, `consumptionOf`, `requestConsumedOrPending`, `applyOutcome` | own index; `requestConsumedOrPending` is also true when the narrowing set has the request used |
@@ -297,7 +315,7 @@ approval flow asks the owner again the next time the action is attempted.
 | Invalid `trustJourney.peerGrants` value | invariant; basis: enumerable-domain; evidence: the two valid values | Logged; resolves as absent |
 | Admission recheck after the dispatch write | invariant; basis: irreversible-consequence; evidence: a handover during the write would admit on an obsolete term | Returns ask; the approval stays used |
 | Own stream ownership | invariant; basis: external-constraint; evidence: the stamped origin compared with this machine's current id | Origin can only remove ownership |
-| Owner notice on a peer closing or using a current-term own id | invariant; basis: enumerable-domain; evidence: during this machine's term only it consumes, dispatches and closes its own requests | Once per writer per term, sent at once |
+| Owner notice on a peer closing or using a current-term own id | invariant; basis: enumerable-domain; evidence: during this machine's term only it consumes, dispatches and closes its own requests; only signature-verified records from a writer that has not held the lease since | Once per writer per term, sent at once by the holder |
 | Honest denial line (decision 8) | invariant; basis: enumerable-domain; evidence: the request was closed or used by a non-own record | Never "already approved" |
 | Writer identity of a record | invariant; basis: external-constraint; evidence: the authenticated sender (asked machine on pull, signed `env.sender` on push) and the replica file's machine | Never a payload field |
 | `journal-sync` response signature | invariant; basis: external-constraint; evidence: the registered Ed25519 machine key; invalid -> trust records refused; absent -> accepted, narrowing-only, which is every peer record's ceiling | No ratchet |
@@ -334,8 +352,9 @@ read is added because only the lease holder acts on approvals.
   (lease flapping multiplies re-asks); both channels (chat acceptance and app device
   re-accept) observed live or proven on the test-agent rung. A period with zero handovers is not a
   pass.
-- **dark-window:** at most 21 days from merge to the fleet decision; if the criterion is not met by
-  then, the reason and a new date are recorded on the maturation track.
+- **dark-window:** a review deadline of 21 days from merge to the fleet decision. If the criterion is
+  not met by then, the reason is recorded and extending the fleet's `"fold"` window needs the
+  operator's renewed acceptance (decision 14b), never only a new date.
 - **ladder:** trustJourney.peerGrants
 
 ## Honest residuals
@@ -391,9 +410,10 @@ approval as an ordinary approval (today's behaviour). A mixed-version pool repli
   leaves A's earlier-term approvals and requests dead; a restart of the same holder keeps them; a
   lapse re-acquire past the lease limit (sleep) with no other holder keeps them; an unknown epoch at
   boot asks; a lost `trust-term.json` counts only current-epoch records; a missed foreign term (A down
-  while B held, A re-acquires two epochs later) is caught by the gap rule; `lastForeignEpoch` never
+  while B held, A re-acquires two epochs later) is caught by the gap rule; a woken holder that
+  re-acquires at the same epoch as the peer that took over treats that epoch as foreign; `lastForeignEpoch` never
   decreases; a multi-machine agent with no coordinator asks; a withdrawal on B removes A's acceptance
-  for the same subject after a hand-back; an existing legacy grant whose `afterChange` names a peer
+  for the same subject after a hand-back and a later re-acceptance on A still counts; an existing legacy grant whose `afterChange` names a peer
   change survives the upgrade; a new-id restore narrows raised levels with no own record; a handover
   during the dispatch write returns ask; a restored stream from another machine
   id is foreign; an unreadable peer `change` never puts a kind into unreadable history; a
