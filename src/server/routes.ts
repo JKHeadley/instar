@@ -70,7 +70,7 @@ import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTru
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
-import { mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
+import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
 import { mountProjectAppCustomRoutes } from './projectAppCustomRoutes.js';
@@ -3366,6 +3366,13 @@ export function createRoutes(ctx: RouteContext): Router {
       const token = req.headers['x-instar-operator-session'];
       return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true;
     },
+    // The owner's own app device (signed through DEVICE_ALLOWLIST, which already refuses others there).
+    deviceOwnerOk: isOwnerAppDevice,
+    rememberFact: ctx.semanticMemory ? ({ text, from }) => ctx.semanticMemory!.remember({
+      type: 'fact', name: text.slice(0, 80), content: text, confidence: 0.8, lastVerified: new Date().toISOString(),
+      source: `import:${from}`, tags: ['imported', from],
+      ownerId: ctx.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? 'owner', privacyScope: 'private',
+    }) : undefined,
     log: (entry) => console.log(`[imported-history] ${JSON.stringify(entry)}`),
   });
   mountOriginDisplayPreferences(router, ctx);
