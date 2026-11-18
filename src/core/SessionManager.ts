@@ -3587,6 +3587,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       };
     } catch {
       // Registry read failure — fail open (no binding = no check)
+      // @silent-fallback-ok: a missing binding only skips the topic-binding check; nothing is delivered on it
       return null;
     }
   }

@@ -93,6 +93,7 @@ export class SenderNotifier {
       await this.deps.markNotice(id, { noticePending: true });
       this.arm();
     } catch (err) {
+      // @silent-fallback-ok: the failure is already recorded on the envelope; the notice is best-effort and logged
       this.deps.log?.(`[sender-notice] failure handling error: ${err instanceof Error ? err.message : err}`);
     }
   }

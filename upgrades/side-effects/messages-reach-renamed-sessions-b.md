@@ -77,3 +77,7 @@ The independent second-pass reviewer (2026-11-18 06:55 PT) raised two concerns. 
 
 A re-check of the fixes follows below.
 Re-check (06:58 PT): "Concur with the review. Both fixes hold."
+
+## Fix 2026-11-18 09:15: silent-fallback guard
+
+The no-silent-fallbacks ratchet counted 496 against 494. Two deliberate best-effort catches were marked `@silent-fallback-ok` with their reason: the sender-notice failure handler (the failure is already on the envelope) and the topic-registry read in SessionManager, whose block the guard now reads differently after the added registry cache. Comments only; no behaviour change.
