@@ -5,20 +5,7 @@
   "_rule": "SHRINK-ONLY. Removing an entry is the work — either convert it or mark it exempt with a written reason on the line. Adding one is a regression the lint refuses.",
   "_baselinedOn": "2026-08-22",
   "_auditLedger": "docs/audits/truncated-judgment-input.md",
-  "grandfatheredBareTruncation": [
-    "src/messaging/SpawnRequestManager.ts:selected",
-    "src/messaging/TelegramAdapter.ts:dSliced",
-    "src/messaging/TelegramAdapter.ts:title",
-    "src/messaging/slack/SlackAdapter.ts:truncated",
-    "src/permissions/AmbientContributionGate.ts:userPrompt",
-    "src/permissions/LlmIntentClassifier.ts:userPrompt",
-    "src/scheduler/MentorStageBForensics.ts:title",
-    "src/threadline/HubIntentClassifier.ts:body",
-    "src/threadline/WarrantsReplyGate.ts:messageSlice",
-    "src/threadline/openConversationBrief.ts:slice",
-    "src/threadline/openConversationBrief.ts:snippet",
-    "src/threadline/openConversationBrief.ts:text"
-  ],
-  "ceiling": 12,
+  "grandfatheredBareTruncation": [],
+  "ceiling": 0,
   "_regenerated": "Re-derived 2026-08-22 after the independent review found the inline detector desynchronised by a stray backtick (C4) and the keys unstable under line shifts (C5). The population GREW from 26 to 45 because shape 1 now also sees named-constant bounds, wrapped declarations and substr — the evasions of finding C6, one of which (a named constant) is the style the standard itself prescribes. Four inline entries were removed as parity-bug artifacts, not as fixes."
 }

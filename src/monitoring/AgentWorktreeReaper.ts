@@ -145,12 +145,23 @@ export interface AgentWorktreeReaperDeps {
   warn?: (line: string) => void;
   /** Restart-surviving failure count/time. Current blind state is never restored. */
   failureHistory?: WorktreeEnumerationFailureHistoryPort;
+  /**
+   * A dry-run pass, evaluated OFF the main thread (agentWorktreeEvaluationJob.ts).
+   * When present, a pass that removes nothing (dry-run, or the reaper disabled) uses
+   * it instead of evaluating every checkout synchronously on the event loop, and the
+   * report route answers from the last pass. Never rejects: a failure resolves
+   * `{ ok: false, error }` and is recorded as an enumeration failure.
+   */
+  evaluateAllOffThread?: () => Promise<WorktreeEnumeration<WorktreeEvaluation>>;
   now?: () => number;
 }
 
 // The enumeration contract lives in its own module so the sentinel does not have
 // to import its diagnostics from the reaper. Re-exported for existing consumers.
 export { type WorktreeEnumeration, MAX_ENUMERATION_ERROR_CHARS, summarizeEnumerationError } from './worktreeEnumeration.js';
+
+/** A failed off-thread pass is retried from a route read no sooner than this. */
+export const FAILED_PASS_RETRY_MS = 5 * 60 * 1000;
 
 export class AgentWorktreeReaper extends EventEmitter {
   private readonly cfg: AgentWorktreeReaperConfig;
@@ -161,12 +172,17 @@ export class AgentWorktreeReaper extends EventEmitter {
   private initialTimer?: NodeJS.Timeout;
   private running = false;
   private lastPassAt = 0;
+  /** The last pass's evaluations, for the report route. In memory only. */
+  private lastEvaluations: { at: number; worktrees: WorktreeEvaluation[] } | null = null;
   private reapedLastPass = 0;
   /**
    * Metric (Observability standard): how many background REAP PASSES have failed
    * to enumerate in the retained history, and when the most recent one was.
    * Incremented ONLY by `reap()` — never by `snapshot()`, which runs per route hit
-   * and would otherwise make this a measure of polling frequency. Without a count, the
+   * and would otherwise make this a measure of polling frequency. (With an off-thread
+   * evaluator, `report()` may start a dry-run `reap()`: at most one at a time, and a
+   * failed pass is retried no sooner than FAILED_PASS_RETRY_MS later, so polling the
+   * route cannot inflate this count.) Without a count, the
    * only evidence a guard is blind is a log line someone has to be reading at the
    * right moment — and the defect this whole change addresses went unnoticed for
    * an unknown duration precisely because nothing counted it.
@@ -250,6 +266,37 @@ export class AgentWorktreeReaper extends EventEmitter {
     const reaped: string[] = [];
     const evaluations: WorktreeEvaluation[] = [];
     try {
+      if (this.deps.evaluateAllOffThread && !this.killsEnabled) {
+        // A pass that removes nothing only classifies: do it in a worker, never on the event loop.
+        const result = await this.deps.evaluateAllOffThread();
+        if (!result.ok) {
+          const failedAt = this.now();
+          this.lastPassAt = failedAt;
+          this.lastEnumerationOk = false;
+          this.lastEnumerationError = result.error;
+          this.lastEvaluations = null;
+          this.recordEnumerationFailure(failedAt);
+          this.emit('enumeration-failed', { error: result.error });
+          this.warn(`[agent-worktree-reaper] off-thread pass FAILED — reclaimable is UNKNOWN, not zero: ${result.error}`);
+          featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'error', reason: 'enumeration failed: reclaimable unknown', context: { dryRun: true, offThread: true, enumerationFailures: this.enumerationFailures } });
+          return { ts: failedAt, evaluations: [], reaped: [], dryRun: true };
+        }
+        evaluations.push(...result.worktrees);
+        const at = this.now();
+        this.lastPassAt = at;
+        this.lastEnumerationOk = true;
+        this.lastEnumerationError = null;
+        this.reapedLastPass = 0;
+        this.lastEvaluations = { at, worktrees: evaluations };
+        this.emit('pass', { evaluations, reaped });
+        const eligibleOff = evaluations.filter((e) => e.verdict === 'reap-eligible').length;
+        featureEvidence.record('monitoring.agentWorktreeReaper', {
+          kind: eligibleOff > 0 ? 'fired' : 'held',
+          reason: eligibleOff > 0 ? 'would reap (dry run)' : 'pass kept everything',
+          context: { dryRun: true, offThread: true, worktrees: evaluations.length, eligible: eligibleOff, reaped: 0, inUse: evaluations.filter((e) => e.reason === 'in-use').length, dirty: evaluations.filter((e) => e.reason === 'uncommitted-changes').length },
+        });
+        return { ts: at, evaluations, reaped, dryRun: true };
+      }
       await this.deps.preparePass?.();
       // The `ok` narrowing is mandatory — `worktrees` is unreachable without it.
       const enumeration = this.deps.listWorktrees();
@@ -325,6 +372,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       this.lastEnumerationOk = true;
       this.lastEnumerationError = null;
       this.reapedLastPass = reaped.length;
+      this.lastEvaluations = { at: this.lastPassAt, worktrees: evaluations };
       this.emit('pass', { evaluations, reaped });
       const eligible = evaluations.filter((e) => e.verdict === 'reap-eligible').length;
       featureEvidence.record('monitoring.agentWorktreeReaper', {
@@ -449,6 +497,50 @@ export class AgentWorktreeReaper extends EventEmitter {
   async prepare(): Promise<void> {
     try { await this.deps.preparePass?.(); }
     catch { /* @silent-fallback-ok — preparePass never throws by contract; a failure leaves isInUse fail-closed */ }
+  }
+
+  /**
+   * The report for GET /worktrees/agent-reaper. With an off-thread evaluator it never
+   * evaluates on the event loop: it answers from the last pass, and runs one pass in
+   * the worker when there is none yet (or answers `passRunning: true` while one runs).
+   * A last pass older than the reap interval, or a failed one, is refreshed in the
+   * background, so a disabled reaper (no timer) does not serve one answer forever.
+   * A live reaper (dryRun false) is never driven from here.
+   * Without one it keeps the old shape: prepare, then a synchronous snapshot().
+   */
+  async report(): Promise<ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt?: number | null; source?: 'last-pass' | 'live'; passRunning?: boolean }> {
+    if (!this.deps.evaluateAllOffThread) {
+      await this.prepare();
+      return { ...this.snapshot(), source: 'live' };
+    }
+    // Only a pass that cannot remove anything may be started from a read. A live
+    // reaper (dryRun false) is never driven by GET: it answers from its own timer's pass.
+    if (!this.killsEnabled && !this.running) {
+      const stale = this.lastEvaluations !== null && this.now() - this.lastEvaluations.at > this.cfg.reapIntervalMs;
+      if (this.lastEvaluations === null && this.lastEnumerationOk !== false) {
+        await this.reap(); // first read: wait for one off-thread pass (the event loop stays free)
+      } else if (stale || (this.lastEnumerationOk === false && this.now() - this.lastPassAt > Math.min(this.cfg.reapIntervalMs, FAILED_PASS_RETRY_MS))) {
+        void this.reap(); // refresh in the background; this answer carries passRunning: true
+      }
+    }
+    const cached = this.lastEvaluations;
+    const enumerationOk = this.lastEnumerationOk !== false && cached !== null;
+    return {
+      enabled: this.cfg.enabled,
+      dryRun: this.cfg.dryRun,
+      lastPassAt: this.lastPassAt,
+      reapedLastPass: this.reapedLastPass,
+      initialPassPending: this.initialTimer !== undefined,
+      worktrees: cached?.worktrees ?? [],
+      reclaimable: enumerationOk ? (cached?.worktrees ?? []).filter((w) => w.verdict === 'reap-eligible').length : null,
+      enumerationOk,
+      enumerationError: this.lastEnumerationOk === false ? this.lastEnumerationError : cached ? null : 'no pass has finished yet',
+      enumerationFailures: this.enumerationFailures,
+      lastEnumerationFailureAt: this.lastEnumerationFailureAt,
+      evaluatedAt: cached?.at ?? null,
+      source: 'last-pass',
+      passRunning: this.running,
+    };
   }
 
   snapshot(): {

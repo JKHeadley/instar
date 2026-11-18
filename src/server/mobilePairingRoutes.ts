@@ -2512,6 +2512,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Not in BROWSER_ROUTES, so a browser device (key not hardware-held) is refused.
     { method: 'POST', re: /^\/mobile\/org\/(publish|join|leave|update-accept)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 5, bucket: 'org-acts' },
     { method: 'GET', re: /^\/mobile\/org\/status$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    // Never rules checking actions (org-never-actions §C): the app's allow-once card and the mode switch.
+    { method: 'GET', re: /^\/mobile\/org\/pending-checks$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'POST', re: /^\/mobile\/org\/(allow-once|actions-mode)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 10, bucket: 'org-acts' },
     // Work agents page, departure and keepers (org-members-and-keepers §B–D).
     { method: 'GET', re: /^\/mobile\/org\/current-bundle$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
     { method: 'GET', re: /^\/mobile\/org\/members$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
