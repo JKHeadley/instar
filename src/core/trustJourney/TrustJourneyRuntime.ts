@@ -16,7 +16,7 @@ import {
   boardPolicyRaises, configPatchRaises, isKnownTrustLevel, isTrustLevelRaise, mergedConfigValue, profileRaises,
   proofCovers, proposalHashOf, slackRoleRaises, type OperatorProof,
 } from '../TrustRaiseGuard.js';
-import { AccountPathService, proofSubject, type DirectChatPort, type ProposeResult, type ReceiptOutcome } from './AccountPathService.js';
+import { AccountPathService, proofSubject, type DeviceDirectory, type DirectChatPort, type ProposeResult, type ReceiptOutcome } from './AccountPathService.js';
 import { LocalFileTrustSink, TrustJourneyStore, TRUST_JOURNEY_STORE_KEY, TRUST_GRANT_RECORD_KIND, type TrustChange, type TrustRecord, type TrustRecordSink } from './TrustJourneyStore.js';
 import { checkTrustProfileAgainstLog, TrustChangeLogWriter, type Narrowed } from './proofCheck.js';
 import { decideAdmission, type AdmissionDecision } from './admission.js';
@@ -73,6 +73,10 @@ export interface TrustJourneyRuntimeDeps {
 export interface TrustAccountPathRuntime {
   readonly store: TrustJourneyStore;
   readonly service: AccountPathService;
+  /** Is this machine the serving-lease holder (only the holder decides approvals). */
+  holdsLease(): boolean;
+  /** The server binds its paired-device registry here once it exists (app-trust-approval). */
+  bindDevices(devices: DeviceDirectory | null): void;
   propose(change: TrustChange): Promise<ProposeResult>;
   /** A receipt from an adapter's own inbound path on this machine. */
   ingest(r: Receipt): Promise<ReceiptOutcome | 'recorded-for-holder'>;
@@ -199,6 +203,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
     };
   }
 
+  const approvedHow = (proof: OperatorProof) => (proof.kind === 'accepted-device' ? 'approved by the person on a paired device' : 'approved by the person in their direct chat');
   const requireProof = (c: TrustChange, proof: OperatorProof) => {
     if (!proofCovers(proof, proposalHashOf(proofSubject(c)))) throw new Error('the proof does not cover this exact change');
   };
@@ -209,7 +214,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       case 'trust-grant': {
         if (!d.adaptiveTrust) return { ok: false, detail: 'trust settings are not available on this machine' };
         const prev = d.adaptiveTrust.getTrustLevel(c.service, c.operation as OperationMutability).level;
-        d.adaptiveTrust.grantTrust(c.service, c.operation as OperationMutability, c.level as TrustLevel, 'approved by the person in their direct chat', proof);
+        d.adaptiveTrust.grantTrust(c.service, c.operation as OperationMutability, c.level as TrustLevel, approvedHow(proof), proof);
         if (await writer.drain()) return { ok: true };
         // Not durable: undo it, so what the person is told is true.
         d.adaptiveTrust.restoreFromCommittedLog(c.service, c.operation as OperationMutability, prev, 'the approved change could not be recorded');
@@ -218,7 +223,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       case 'autonomy-profile': {
         if (!d.autonomyManager) return { ok: false, detail: 'autonomy settings are not available on this machine' };
         if (d.autonomyManager.getProfile() !== c.from) return { ok: false, detail: `the profile is now ${d.autonomyManager.getProfile()}, not ${c.from}` };
-        d.autonomyManager.setProfile(c.to as AutonomyProfileLevel, 'approved by the person in their direct chat', proof);
+        d.autonomyManager.setProfile(c.to as AutonomyProfileLevel, approvedHow(proof), proof);
         const ok = (await store.write('change', { changeId: `profile:${Date.now()}`, key: 'autonomy.profile', from: c.from, to: c.to, direction: 'raise', consumptionId: proof.receiptRef, source: 'person' })).ok;
         if (ok) return { ok: true };
         d.autonomyManager.setProfile(c.from as AutonomyProfileLevel, 'the approved change could not be recorded'); // a narrowing back
@@ -283,12 +288,15 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       const v = (d.runtimeConfig.trustJourney as { cardTtlDays?: unknown } | undefined)?.cardTtlDays;
       return typeof v === 'number' && v > 0 && v <= 90 ? v : 7;
     },
+    holdsLease: d.holdsLease,
     log: d.log,
   });
 
   const runtime: TrustAccountPathRuntime = {
     store,
     service,
+    holdsLease: () => d.holdsLease(),
+    bindDevices: (devices) => service.bindDevices(devices),
     propose: (c) => service.propose(c.kind === 'config-patch' ? { ...c, basedOn: configRevision(c.patch) } : c),
     async ingest(r) {
       if (!service.claims(r)) return 'not-for-us';

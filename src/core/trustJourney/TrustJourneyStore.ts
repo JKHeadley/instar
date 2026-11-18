@@ -25,7 +25,10 @@ export const TRUST_JOURNEY_STORE_KEY = 'trustJourney';
 /** The highest `minReader` this build understands. */
 export const TRUST_READER_VERSION = 1;
 
-export const TRUST_RECORD_TYPES = ['request', 'request-status', 'receipt', 'acceptance-sent', 'acceptance', 'acceptance-withdrawn', 'consumption', 'change', 'legacy-grant', 'action-approval', 'dispatch'] as const;
+export const TRUST_RECORD_TYPES = ['request', 'request-status', 'receipt', 'acceptance-sent', 'acceptance', 'acceptance-withdrawn', 'consumption', 'change', 'legacy-grant', 'action-approval', 'dispatch',
+  // Approving from the Instar app (docs/specs/app-trust-approval.md): a device's acceptance, its
+  // withdrawal, an accepted device's approval of a new device, and the outcome of an applied raise.
+  'device-acceptance', 'device-acceptance-withdrawn', 'device-approval', 'apply-outcome'] as const;
 export type TrustRecordType = typeof TRUST_RECORD_TYPES[number];
 
 /** A change the person can approve, as structured data the server renders and hashes. */
@@ -61,6 +64,54 @@ export interface ConsumptionRecord {
   proposalHash: string;
   principal: string;
   at: string;
+  /** Present on a device approval: `accepted-device`, with the approving device. Absent on the chat path. */
+  kind?: 'accepted-device';
+  deviceId?: string;
+}
+
+/**
+ * A paired device's recorded acceptance (app-trust-approval §A): its approvals count for `principal`
+ * while it is current. It belongs to one key: the device key fingerprint and the presence key's hash.
+ */
+export interface DeviceAcceptanceRecord {
+  acceptanceId: string;
+  principal: string;
+  deviceId: string;
+  /** The device key's fingerprint (`deviceFingerprint`, the one shown at pairing). */
+  keyFingerprint: string;
+  /** SHA-256 hex of the presence key the device approves with. */
+  presenceKeyHash: string;
+  /** The presence key's access policy, as the app reports it. */
+  keyPolicy: 'biometryCurrentSet' | 'userPresence';
+  /** SHA-256 hex of the disclosure text the app showed. */
+  disclosureHash: string;
+  /** How it was allowed: the first local pairing, another accepted device's approval, or the local key replacement. */
+  via: 'local-install' | 'accept-device' | 'local-override';
+  /** For `accept-device`: the approval it used (single use). */
+  approvalId?: string;
+  acceptedAt: string;
+  withdrawnAt?: string;
+}
+
+/** An accepted device's approval of a new device's acceptance (single use, short-lived). */
+export interface DeviceApprovalRecord {
+  approvalId: string;
+  approverDeviceId: string;
+  approverAcceptanceId: string;
+  deviceId: string;
+  keyFingerprint: string;
+  disclosureHash: string;
+  expiresAt: string;
+  at: string;
+}
+
+/** What happened after a consumption: written once the apply returns. A consumption without one is `unknown`. */
+export interface ApplyOutcomeRecord {
+  requestId: string;
+  consumptionId: string;
+  outcome: 'applied' | 'not-applied';
+  detail?: string;
+  at: string;
 }
 
 const KNOWN = new Set([
@@ -77,6 +128,9 @@ const KNOWN = new Set([
   'consumptionId', 'changeId', 'key', 'from', 'to', 'direction', 'source',
   // legacy grants, one-action approvals, dispatches
   'machine', 'behaviour', 'actionIdentity', 'approvalId', 'afterChange',
+  // device acceptances, device approvals, apply outcomes (app-trust-approval)
+  'deviceId', 'keyFingerprint', 'presenceKeyHash', 'keyPolicy', 'disclosureHash', 'via', 'approverDeviceId',
+  'approverAcceptanceId', 'reason', 'outcome', 'detail', 'kind',
 ]);
 
 const str = (v: unknown, max = 4000): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -150,6 +204,12 @@ export class TrustJourneyStore {
   private changes: ChangeLogRecord[] = [];
   /** Legacy grants by kind key: the machines whose gate config defines today's behaviour. */
   private legacy = new Map<string, Array<{ machine: string; behaviour: string; at: string; afterChange: string | null }>>();
+  private deviceAcceptances = new Map<string, DeviceAcceptanceRecord>();
+  private deviceApprovals = new Map<string, DeviceApprovalRecord>();
+  /** Device approvals already used by an acceptance (order-independent). */
+  private usedDeviceApprovals = new Set<string>();
+  private outcomes = new Map<string, ApplyOutcomeRecord>();
+  private consumptionByRequest = new Map<string, ConsumptionRecord>();
   private actionApprovals = new Map<string, Array<{ approvalId: string; consumptionId: string; expiresAt?: string }>>();
   private dispatchedApprovals = new Set<string>();
   /** Keys being written right now (reserved before the durable wait). */
@@ -185,7 +245,9 @@ export class TrustJourneyStore {
       if (r.recordType === 'change' && typeof r.key === 'string') this.unreadableKeys.add(r.key);
       // A record that only restricts is never dropped for being unreadable (spec 6a reader rule):
       // its restricting effect applies, keyed by id.
-      if (r.recordType === 'acceptance-withdrawn' && typeof r.acceptanceId === 'string') this.withdrawnAcceptanceIds.add(r.acceptanceId);
+      if ((r.recordType === 'acceptance-withdrawn' || r.recordType === 'device-acceptance-withdrawn') && typeof r.acceptanceId === 'string') this.withdrawnAcceptanceIds.add(r.acceptanceId);
+      // An unreadable acceptance grants nothing, but the approval it used stays used.
+      if (r.recordType === 'device-acceptance' && typeof r.approvalId === 'string') this.usedDeviceApprovals.add(r.approvalId);
       if (r.recordType === 'consumption') {
         if (typeof r.receiptId === 'string') this.consumedReceiptIds.add(r.receiptId);
         if (typeof r.requestId === 'string') this.consumedRequestIds.add(r.requestId);
@@ -216,6 +278,20 @@ export class TrustJourneyStore {
         this.consumptions.set(c.consumptionId, c);
         this.consumedReceiptIds.add(c.receiptId);
         this.consumedRequestIds.add(c.requestId);
+        this.consumptionByRequest.set(c.requestId, c);
+        break;
+      }
+      case 'device-acceptance': {
+        const a = r as unknown as DeviceAcceptanceRecord;
+        this.deviceAcceptances.set(a.acceptanceId, a);
+        if (a.approvalId) this.usedDeviceApprovals.add(a.approvalId);
+        break;
+      }
+      case 'device-acceptance-withdrawn': this.withdrawnAcceptanceIds.add(r.acceptanceId as string); break;
+      case 'device-approval': { const a = r as unknown as DeviceApprovalRecord; this.deviceApprovals.set(a.approvalId, a); break; }
+      case 'apply-outcome': {
+        const o = r as unknown as ApplyOutcomeRecord;
+        if (!this.outcomes.has(o.requestId)) this.outcomes.set(o.requestId, o);
         break;
       }
       case 'change': this.changes.push(r as unknown as ChangeLogRecord); break;
@@ -272,6 +348,39 @@ export class TrustJourneyStore {
   }
   acceptanceStatementSent(principal: string, adapter: AdapterKind) { return this.acceptanceSent.get(`${principal}|${adapter}`) ?? null; }
   consumption(id: string) { return this.consumptions.get(id) ?? null; }
+  /** The one consumption of a request (its key is `tj:consumption:<requestId>`), or null. */
+  consumptionOf(requestId: string) { return this.consumptionByRequest.get(requestId) ?? null; }
+  /** True while a consumption of this request is recorded or being written right now. */
+  requestConsumedOrPending(requestId: string) { return this.consumedRequestIds.has(requestId) || this.pendingKeys.has(`tj:consumption:${requestId}`); }
+  /** The apply outcome recorded after a request's consumption, or null (with a consumption: `unknown`). */
+  applyOutcome(requestId: string) { return this.outcomes.get(requestId) ?? null; }
+
+  // ── device acceptances (app-trust-approval §A) ──
+  private deviceAcceptanceCurrent(a: DeviceAcceptanceRecord): boolean { return !a.withdrawnAt && !this.withdrawnAcceptanceIds.has(a.acceptanceId); }
+  /** The device's acceptance on record that is not withdrawn (the latest), or null. Key checks are the caller's. */
+  deviceAcceptance(deviceId: string): DeviceAcceptanceRecord | null {
+    const mine = [...this.deviceAcceptances.values()].filter((a) => a.deviceId === deviceId && this.deviceAcceptanceCurrent(a));
+    mine.sort((a, b) => a.acceptedAt.localeCompare(b.acceptedAt));
+    return mine.length ? mine[mine.length - 1] : null;
+  }
+  /** Every device acceptance not withdrawn. */
+  currentDeviceAcceptances(): DeviceAcceptanceRecord[] { return [...this.deviceAcceptances.values()].filter((a) => this.deviceAcceptanceCurrent(a)); }
+  /** Every device acceptance ever recorded, with `withdrawn` (newest first), for the record the devices show. */
+  deviceAcceptanceHistory(): Array<DeviceAcceptanceRecord & { withdrawn: boolean }> {
+    return [...this.deviceAcceptances.values()].map((a) => ({ ...a, withdrawn: !this.deviceAcceptanceCurrent(a) }))
+      .sort((a, b) => b.acceptedAt.localeCompare(a.acceptedAt));
+  }
+  /** True when this device has ever had an acceptance that is now withdrawn. */
+  deviceAcceptanceWithdrawn(deviceId: string): boolean {
+    return [...this.deviceAcceptances.values()].some((a) => a.deviceId === deviceId && !this.deviceAcceptanceCurrent(a));
+  }
+  deviceApproval(approvalId: string) { return this.deviceApprovals.get(approvalId) ?? null; }
+  /** Unused approvals naming exactly this device, key and disclosure (expiry is the caller's check). */
+  unusedDeviceApprovals(deviceId: string, keyFingerprint: string, disclosureHash: string): DeviceApprovalRecord[] {
+    return [...this.deviceApprovals.values()].filter((a) => a.deviceId === deviceId && a.keyFingerprint === keyFingerprint
+      && a.disclosureHash === disclosureHash && !this.usedDeviceApprovals.has(a.approvalId)
+      && !this.pendingKeys.has(`tj:device-acceptance:approval:${a.approvalId}`));
+  }
   changeLog(): ChangeLogRecord[] { return [...this.changes].sort((a, b) => a.at.localeCompare(b.at)); }
   /** Legacy grants for a kind key (empty when the kind has none). */
   legacyGrants(key: string) { return this.legacy.get(key) ?? []; }

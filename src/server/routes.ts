@@ -66,7 +66,8 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
-import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
+import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
@@ -37354,16 +37355,31 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/trust/requests', (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
-    const rows = ctx.trustAccountPath.store.allRequests().map((r) => ({
-      requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
-      delivered: !!r.cardMessageId,
-    }));
+    // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
+    const results = new Map(ctx.trustAccountPath.service.deviceListing().map((d) => [d.requestId, d]));
+    const rows = ctx.trustAccountPath.store.allRequests().map((r) => {
+      const d = results.get(r.requestId);
+      return {
+        requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
+        delivered: r.adapter === 'device' ? true : !!r.cardMessageId,
+        ...(d && d.status !== 'open' ? { result: d.status } : {}),
+        ...(d?.disclosure ? { disclosure: d.disclosure } : {}),
+        ...(d?.message ? { message: d.message } : {}),
+      };
+    });
     res.json({ requests: rows, store: ctx.trustAccountPath.store.sinkDescription });
   });
 
   // Withdrawing an acceptance is a narrowing: it stops new approvals and keeps committed grants.
   router.post('/trust/acceptance/withdraw', async (req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    // `adapter: "device"` withdraws a paired device's acceptance (one `deviceId`, or every device's): app-trust-approval §A.
+    if ((req.body ?? {}).adapter === 'device') {
+      const deviceId = (req.body ?? {}).deviceId;
+      if (deviceId !== undefined && (typeof deviceId !== 'string' || !/^[a-z0-9._:-]{1,128}$/.test(deviceId))) return res.status(400).json({ error: 'bad-device-id' });
+      const n = await ctx.trustAccountPath.service.withdrawDeviceAcceptance(deviceId ?? null, 'withdrawn by the agent at the person\'s request');
+      return res.json({ withdrawn: n > 0, count: n });
+    }
     const adapter = (req.body ?? {}).adapter === 'slack' ? 'slack' : 'telegram';
     const ok = await ctx.trustAccountPath.service.withdrawAcceptance('owner', adapter);
     res.json({ withdrawn: ok });
@@ -41951,7 +41967,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pendingRegistry: ctx.ownerApprovedActionPending,
       });
     }
+    // Approving trust raises from the app (docs/specs/app-trust-approval.md): the account path reads the
+    // paired devices from this server's registry, and the phone routes reach the service through one port.
+    const trustDevicePort = ctx.trustAccountPath ? createMobileTrustPort(ctx.trustAccountPath, () => ctx.mobilePairingService ?? null, () => ctx.meshSelfId ?? null, () => isTrustApprovalEnabled(ctx.config)) : null;
+    if (trustDevicePort) {
+      ctx.trustAccountPath!.bindDevices(trustDevicePort.devices);
+      // Every new pairing is shown on the devices that approve changes (app-trust-approval §C).
+      const registry = ctx.mobilePairingService?.devices;
+      if (registry) registry.onActivated = (d) => {
+        void ctx.trustAccountPath!.service.noteDevicePaired(d.id).catch((err: unknown) => {
+          // @silent-fallback-ok: a notice is a courtesy; the pairing is recorded and the device list shows it
+          console.warn('[trust] paired-device notice failed:', err instanceof Error ? err.message : String(err));
+        });
+      };
+    }
     mountMobilePermissionsRoutes(router, {
+      trust: () => trustDevicePort,
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
       // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
