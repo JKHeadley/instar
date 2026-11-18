@@ -207,7 +207,9 @@ describe('IDLE_BACKOFF — tiered sleep engages', () => {
     writeSidecar({ lastResumedAt: now, quickStops: 10 }); // T3 territory (4s)
     const r = runHook({ INSTAR_HOOK_BACKOFF_MAX_SLEEP: '1' });
     expect(r.decision).toBe('block');
-    expect(r.elapsedMs).toBeLessThan(2500); // clamped to 1s, not 4s
+    // Clamped to 1s, not the 4s tier. The bound separates the two, with room for a loaded machine:
+    // 2500 failed at 2501 ms under a full verify run on a host at load 35 (2026-11-18, PR 3316).
+    expect(r.elapsedMs).toBeLessThan(3500);
     expect(readSidecar().lastSleepSecs).toBe(1);
   });
 
