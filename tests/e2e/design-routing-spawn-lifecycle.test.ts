@@ -37,7 +37,7 @@ import { makeOrchestratorDeps, newRecorder } from '../helpers/topicProfileOrches
 import type { InstarConfig } from '../../src/core/types.js';
 
 const AUTH = 'test-design-routing-e2e';
-const PINNED_TOPIC = 10000003323;
+const PINNED_TOPIC = 33230;
 const LANE = resolveDesignModel('claude-code')!;
 
 describe('Design routing × spawn E2E lifecycle', () => {
@@ -51,6 +51,7 @@ describe('Design routing × spawn E2E lifecycle', () => {
   let evidence: FeatureEvidenceLog;
   const servers: AgentServer[] = [];
   const classifierPrompts: string[] = [];
+  const spawnsByName = new Map<string, any>();
 
   function serverWith(extra: Partial<InstarConfig>): AgentServer {
     const config = {
@@ -98,6 +99,10 @@ describe('Design routing × spawn E2E lifecycle', () => {
     evidence = new FeatureEvidenceLog({ projectDir: tmpDir, machine: 'e2e', instarVersion: 'test' });
     setFeatureEvidenceLog(evidence);
     sm = createMockSessionManager();
+    // The production composition starts its own background sessions at boot, so
+    // assertions read the spawn by its name, never "the last spawn".
+    const realSpawn = sm.spawnSession.bind(sm);
+    (sm as any).spawnSession = async (opts: any) => { spawnsByName.set(opts.name, opts); return realSpawn(opts); };
     // The default login has a recorded same-door review that answered on the design model.
     const run: DesignReviewRun = {
       v: 1, runId: 'e2e-run', machineId: 'local', recordedAt: new Date().toISOString(), path: path.join(tmpDir, 'plan.md'),
@@ -126,7 +131,7 @@ describe('Design routing × spawn E2E lifecycle', () => {
       .send({ name: 'design-e2e', prompt: 'Write the plan for the export feature.', workKind: 'design', topicId: PINNED_TOPIC });
     expect(res.status).toBe(201);
     designTmux = res.body.tmuxSession;
-    const args = sm._lastSpawnArgs as any;
+    const args = spawnsByName.get('design-e2e');
     expect(args.model).toBe(LANE);
     expect(args.designRouting).toEqual({ workKind: 'design', workKindSource: 'declared', designRouting: { decision: 'design-lane', model: LANE } });
     expect(evidenceRows().map((r) => r.reason)).toContain('spawn-routed:design-lane');
@@ -138,8 +143,8 @@ describe('Design routing × spawn E2E lifecycle', () => {
       .send({ name: 'design-e2e-2', prompt: 'Draft the architecture for the sync service.' });
     expect(res.status).toBe(201);
     expect(classifierPrompts.some((p) => p.includes('Draft the architecture for the sync service.'))).toBe(true);
-    expect((sm._lastSpawnArgs as any).model).toBe(LANE);
-    expect((sm._lastSpawnArgs as any).designRouting.workKindSource).toBe('classified');
+    expect(spawnsByName.get('design-e2e-2').model).toBe(LANE);
+    expect(spawnsByName.get('design-e2e-2').designRouting.workKindSource).toBe('classified');
   });
 
   it('Phase 3 — after a restart the pinned topic\'s design session is not respawned to restore the pin', async () => {
@@ -161,8 +166,8 @@ describe('Design routing × spawn E2E lifecycle', () => {
     const res = await request(fleet.getApp()).post('/sessions/spawn').set('Authorization', `Bearer ${AUTH}`)
       .send({ name: 'fleet-e2e', prompt: 'Write the plan for the export feature.', workKind: 'design' });
     expect(res.status).toBe(201);
-    expect((sm._lastSpawnArgs as any).model).toBeUndefined();
-    expect((sm._lastSpawnArgs as any).designRouting).toBeUndefined();
+    expect(spawnsByName.get('fleet-e2e').model).toBeUndefined();
+    expect(spawnsByName.get('fleet-e2e').designRouting).toBeUndefined();
     expect(evidenceRows().length).toBe(before);
     expect(classifierPrompts.length).toBe(prompts);
   });
