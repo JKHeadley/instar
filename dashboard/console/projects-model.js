@@ -20,6 +20,57 @@ function cardView(c) {
   return { id: String(c.id), title: String(c.title || 'Untitled card'), sub: c.needLine ? String(c.needLine) : null, href: cardHref(c.id), chatHref: conversationHref(c.conversationKey) };
 }
 
+// ── Rows that say something (docs/specs/work-door-project-rows.md §3.1). Every word is the server's;
+// a row from an older server (no `actions`) shows none of this and keeps its old shape.
+
+/** A done item: the evidence result as before, plus the server's words for a judged item. */
+function doneItemView(i) {
+  const state = i.state === 'pass' ? 'pass' : i.state === 'fail' ? 'fail' : 'unknown';
+  const judged = i.kind === 'owner-judged' || i.kind === 'agent-may-certify';
+  // A judged item the owner checked reads as done; one waiting for them is marked as waiting, never as failed.
+  const mark = judged ? (i.checkedByYou ? 'pass' : 'waiting') : state;
+  return { text: String(i.text), state, mark, words: i.stateWords ? String(i.stateWords) : null, judged, canMark: i.canMark === true, checked: !!i.checkedByYou };
+}
+
+/** "today 14:05", "Nov 3 14:05": when a check ran or will run. */
+function whenShort(iso, now) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  const sameDay = new Date(t).toDateString() === new Date(now).toDateString();
+  return `${sameDay ? 'today' : shortDate(iso)} ${hhmm(t)}`;
+}
+
+/** The new row fields in words; all null on a row from an older server. */
+function rowNews(p, state, now) {
+  const hasNew = !!(p.actions && typeof p.actions === 'object');
+  if (!hasNew) return { reportLine: null, waitingLine: null, stoppedLine: null, checksLine: null, checkNow: null, phoneLine: null, finishWhy: null };
+  const report = p.latestReport && p.latestReport.text ? String(p.latestReport.text) : null;
+  const waiting = state === 'waiting-on-you' && p.waitingOnYou && p.waitingOnYou.why ? String(p.waitingOnYou.why) : null;
+  const stopped = p.stopped && p.stopped.words ? String(p.stopped.words) : null;
+  const c = p.checks || {};
+  const parts = [];
+  if (c.last) { const w = whenShort(c.last, now); if (w) parts.push(`Last checked ${w}`); }
+  if (c.nextWords) parts.push(String(c.nextWords));
+  else if (c.next) { const w = whenShort(c.next, now); if (w) parts.push(`next check ${w}`); }
+  const a = p.actions;
+  const cn = a.checkNow && typeof a.checkNow === 'object' ? a.checkNow : null;
+  // Pause, Mark checked and Finish are owner Face ID taps on the phone (spec decisions 6 and 8): said, never offered here.
+  const phone = [];
+  if (a.pause === 'pause') phone.push('pause it'); else if (a.pause === 'resume') phone.push('resume it');
+  // Only items the phone can actually check (an item whose id is used twice cannot be checked on its own).
+  if (((p.done && p.done.items) || []).some((i) => i && i.canMark === true && !i.checkedByYou)) phone.push('check the items only you can judge');
+  if (a.finish && a.finish.allowed) phone.push('finish it');
+  return {
+    reportLine: report,
+    waitingLine: waiting,
+    stoppedLine: stopped,
+    checksLine: parts.length ? parts.join(' · ').replace(/^./, (x) => x.toUpperCase()) : null,
+    checkNow: cn ? { allowed: cn.allowed !== false, why: cn.why ? String(cn.why) : null } : null,
+    phoneLine: phone.length ? `On your phone you can ${phone.length > 1 ? `${phone.slice(0, -1).join(', ')} and ${phone[phone.length - 1]}` : phone[0]} (each needs Face ID).` : null,
+    finishWhy: a.finish && !a.finish.allowed && a.finish.why ? String(a.finish.why) : null,
+  };
+}
+
 function shortDate(iso) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
@@ -40,9 +91,10 @@ export function projectsView(data, now = Date.now()) {
       key: String(p.key), title: verifiedDisplayName(p.title, p.key) || 'Project name unavailable', goal: String(p.goal || ''), state, stateWords: String(p.stateWords || ''), tone: TONE[state] || 'unknown',
       // Items nobody has checked yet are not "not done": say so instead of "0 of 3 done".
       doneLine: !done.total ? null : (done.items || []).every((i) => i.state !== 'pass' && i.state !== 'fail') ? `${done.total} to finish, not checked yet` : `${done.met} of ${done.total} done`,
-      doneItems: (done.items || []).map((i) => ({ text: String(i.text), state: i.state === 'pass' ? 'pass' : i.state === 'fail' ? 'fail' : 'unknown' })),
+      doneItems: (done.items || []).map(doneItemView),
       whyLine: state === 'unknown' && p.why ? `Why it's not known: ${String(p.why)}` : null,
-      pausedLine: state === 'paused' && p.paused ? `You paused it on ${shortDate(p.paused.at)}: "${String(p.paused.quote)}"` : null,
+      pausedLine: state === 'paused' && p.paused ? `You paused it on ${shortDate(p.paused.at)}${p.paused.via === 'app' ? ' in the Instar app' : ''}: "${String(p.paused.quote)}"` : null,
+      ...rowNews(p, state, now),
       cards: (p.cards || []).map(cardView), moreCards: Number(p.moreCards) || 0,
       cardsLine: (p.cards || []).length ? `${(p.cards || []).length + (Number(p.moreCards) || 0)} card${(p.cards || []).length + (Number(p.moreCards) || 0) === 1 ? '' : 's'}` : null,
       chatHref: conversationHref(p.conversationKey || p.key),
@@ -192,6 +244,15 @@ export function appStripFor(data, ref, now = Date.now()) {
   const first = v.apps.find((a) => a.href);
   if (!first) return null;
   return { projectKey: String(p.key), appRef: first.appRef, title: first.title, label: 'Open', href: first.href, line: first.line };
+}
+
+/** What "Ask for an update" answered, in words: checked now, queued with the server's words, or the refusal. */
+export function checkAnswerWords(status, data) {
+  const d = data || {};
+  if (status === 200 && d.ok) return { ok: true, words: 'Checked just now.' };
+  if (status === 202 && d.ok) return { ok: true, words: d.words ? String(d.words) : 'The Chief of Staff will check it on its next round.' };
+  if (!status) return { ok: false, words: 'The server could not be reached. Nothing was asked.' };
+  return { ok: false, words: d.detail ? String(d.detail) : 'That did not go through. Nothing was asked.' };
 }
 
 /** The path of a project-app write route. */
