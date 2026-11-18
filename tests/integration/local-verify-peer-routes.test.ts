@@ -6,6 +6,8 @@
  * and gh are fakes.
  */
 
+import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
+import { signerKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -90,6 +92,15 @@ const runBody = () => ({
   policyHash: computePolicyHash(), coordinatorMachineId: 'coord', leaseEpoch: 7,
 });
 
+/** SEC-113 D1: peer1's machine key, used by the peer to sign and pinned on the coordinator. */
+const TEST_PEER_KEYS = generateSigningKeyPair();
+const TEST_PEER_HASH = signerKeyHashOf(TEST_PEER_KEYS.publicKey);
+const TEST_PEER_SIGNER: MachineSigner = {
+  machineId: () => 'peer1', signerKeyHash: () => TEST_PEER_HASH,
+  sign: (payload) => ({ machineId: 'peer1', signerKeyHash: TEST_PEER_HASH, sig: edSign(payload, TEST_PEER_KEYS.privateKey) }),
+};
+const TEST_PEER_PINS: MachineKeyLookup = (_m, hash) => (hash === TEST_PEER_HASH ? { status: 'ok', publicKeyPem: TEST_PEER_KEYS.publicKey } : { status: 'unknown' });
+
 describe('peer verifier routes (integration, real HTTP)', () => {
   it('refuses a new peer attempt over HTTP while installed bytes still await a restart', async () => {
     const p = peerService();
@@ -159,6 +170,7 @@ describe('peer verifier routes (integration, real HTTP)', () => {
   });
   it('dispatches over real HTTP while an unrelated suite occupies the coordinator slot', async () => {
     const p = peerService();
+    p.svc.setPeerWiring({ signer: TEST_PEER_SIGNER }); // SEC-113 D1: the peer signs, and reports its key in peer-status
     const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
     const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeercoord-')));
     dirs.push(stateDir);
@@ -178,6 +190,7 @@ describe('peer verifier routes (integration, real HTTP)', () => {
     svc.setPeerWiring({
       peers: () => [{ machineId: 'peer1', url }], client: makePeerClient(AUTH, 'echo'),
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
+      keyLookupFactory: () => TEST_PEER_PINS, // SEC-113 D1: the coordinator has peer1's key pinned
     });
     expect((await svc.request(3)).ok).toBe(true);
     for (let i = 0; i < 200 && svc.snapshot().peers.reserved[0]?.state !== 'accepted'; i++) {

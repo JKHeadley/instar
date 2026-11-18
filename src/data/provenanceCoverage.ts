@@ -764,6 +764,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Outcomes come from the bounded pane observer (terminal-prompt-* rules): only progressed-without-input is tool evidence; the rest grade unknown.',
   },
   {
+    decisionPoint: 'org-policy-judge',
+    component: 'OrgPolicyJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      "An organization's never rules judged against one action of a joined agent (org-never-actions); enrollment queued in the ACT-1193 retrofit backlog.",
+  },
+  {
     decisionPoint: 'external-operation-gate',
     component: 'ExternalOperationGate',
     status: 'pending:backlog:decision-quality-enrolment',
