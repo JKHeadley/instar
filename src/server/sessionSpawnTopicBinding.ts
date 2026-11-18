@@ -140,3 +140,40 @@ export function resolveTopicSpawnProfile(input: {
     },
   };
 }
+
+/**
+ * Design routing (frontier-design-review-standard §2, step 7): a topic-bound
+ * spawn launched on the design model records what it launched with AND a launch
+ * expectation, exactly as an explicit model request does, so the profile
+ * orchestrator does not respawn the session to restore the topic's pin.
+ * Returns null when there is no topic or its profile cannot be resolved.
+ */
+export function designLaneTopicLaunch(input: {
+  resolver?: { resolve(topicId: number): import('../core/TopicProfileResolver.js').ResolvedTopicProfile } | null;
+  topicId?: number;
+  framework?: import('../core/intelligenceProviderFactory.js').IntelligenceFramework;
+  laneModel: string;
+}): {
+  applied: import('../core/TopicProfileOrchestrator.js').AppliedProfile;
+  launchExpectation: LaunchExpectation;
+} | null {
+  if (!input.resolver || input.topicId === undefined) return null;
+  let resolved: import('../core/TopicProfileResolver.js').ResolvedTopicProfile;
+  try {
+    resolved = input.resolver.resolve(input.topicId);
+  } catch {
+    // @silent-fallback-ok: with no resolvable profile nothing is recorded, as for any direct spawn.
+    return null;
+  }
+  const framework = input.framework ?? resolved.framework;
+  const baseline = resolvedToApplied(resolved);
+  return {
+    applied: { framework, model: input.laneModel, modelTier: null, thinkingMode: null, effort: null },
+    launchExpectation: {
+      baseline,
+      // The direct spawn has no launch control for thinking or effort, so the
+      // expectation is exactly what this launch carries (equal to `applied`).
+      expected: { framework, model: input.laneModel, modelTier: null, thinkingMode: null, effort: null },
+    },
+  };
+}

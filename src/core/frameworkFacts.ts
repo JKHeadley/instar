@@ -96,6 +96,9 @@ export function frameworkHasNoUsageSurface(framework: string | undefined | null)
  */
 export const CLAUDE_CODE_FRAMEWORK = 'claude-code' as const satisfies IntelligenceFramework;
 export const CODEX_CLI_FRAMEWORK = 'codex-cli' as const satisfies IntelligenceFramework;
+export const GEMINI_CLI_FRAMEWORK = 'gemini-cli' as const satisfies IntelligenceFramework;
+export const PI_CLI_FRAMEWORK = 'pi-cli' as const satisfies IntelligenceFramework;
+export const GROK_BUILD_FRAMEWORK = 'grok-build' as const satisfies IntelligenceFramework;
 
 /** The two engines whose context recovery the Context Budget work verifies. */
 export type ClaudeOrCodexEngine = typeof CLAUDE_CODE_FRAMEWORK | typeof CODEX_CLI_FRAMEWORK;

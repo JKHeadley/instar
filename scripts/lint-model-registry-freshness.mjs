@@ -177,6 +177,24 @@ export function checkModelRegistryFreshness({
     }
   }
 
+  // --- DESIGN LANE (spec frontier-design-review-standard §1): a door's
+  //     `designLane` is null or an id in that door's derived frontier set. ---
+  for (const door of Object.keys(doorsObj)) {
+    const entry = doorsObj[door];
+    if (!entry || !Object.prototype.hasOwnProperty.call(entry, 'designLane')) continue;
+    const lane = entry.designLane;
+    if (lane === null) continue;
+    const { set: laneFrontier } = frontierSetForDoor(manifest, door);
+    if (typeof lane !== 'string' || !laneFrontier.includes(lane)) {
+      findings.push(
+        `DESIGN-LANE: doors['${door}'].designLane is ${JSON.stringify(lane)}, which is NOT in that door's frontier set = [${laneFrontier.join(', ')}]. ` +
+        `A design lane must be a frontier id (promoted by benchmark or by recorded operator ratification).`
+      );
+    } else {
+      info.push(`Design lane OK: ${door} -> '${lane}'.`);
+    }
+  }
+
   // --- TOOTH 2: drift (pin id must be in its door's DERIVED frontier set) ---
   for (const pin of manifest.pins || []) {
     const abs = path.join(repoRoot, pin.file);
@@ -206,6 +224,17 @@ export function checkModelRegistryFreshness({
       source === 'literal'
         ? `frontierAllowlist['${pin.door}']`
         : `the derived frontier set for '${pin.door}' (doors['${pin.door}'].topModels[frontier=true])`;
+    if (pin.designLane === true) {
+      const lane = doorsObj[pin.door] ? doorsObj[pin.door].designLane : undefined;
+      for (const id of ids) {
+        if (id !== lane) {
+          findings.push(
+            `DRIFT: design-lane pin '${pin.id}' pins '${id}' in ${pin.file}, but doors['${pin.door}'].designLane is ${JSON.stringify(lane)}. ` +
+            `The lane in code and the lane in the registry must be the same id.`
+          );
+        }
+      }
+    }
     for (const id of ids) {
       if (!doorFrontier.includes(id)) {
         findings.push(

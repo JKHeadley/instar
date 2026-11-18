@@ -4566,6 +4566,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
      */
     accountPin?: { accountId: string; configHome: string };
     /**
+     * Design routing (frontier-design-review-standard §2): the work kind and the
+     * routing outcome the spawn route resolved, recorded on the session as-is.
+     */
+    designRouting?: Pick<import('./types.js').Session, 'workKind' | 'workKindSource' | 'designRouting'>;
+    /**
      * Feedback executor (docs/specs/feedback-triage-and-execution.md §4 step 4): run the session in
      * this directory instead of the project directory. Limited to paths under
      * `<projectDir>/.worktrees/`; mutually exclusive with `topicId` worktree resolution.
@@ -5134,6 +5139,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Subscription-pool pinning: tag the session with the account it launched
       // under, so auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
+      ...(options.designRouting ?? {}),
       // §2.10 credential provenance — derived from the SAME predicate as the env block.
       ...(headlessCredentialSource ? { credentialSource: headlessCredentialSource } : {}),
       // Positive-lane observability (june15-headless-spawn-reroute O4): always
@@ -5606,6 +5612,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
+      ...(options.designRouting ?? {}),
       // §2.10 credential provenance — derived from the SAME predicate as the env block.
       credentialSource: reroutedCredentialSource,
       // The reroute's completion contract (spec O1 + O4):

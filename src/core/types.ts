@@ -134,6 +134,16 @@ export interface Session {
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
    *  legacy records and single-account agents. */
   subscriptionAccountId?: string;
+  /** Design routing (frontier-design-review-standard §2): the work kind this session was started for. */
+  workKind?: 'design' | 'build' | 'other' | 'unknown';
+  /** How the work kind was known: declared by the caller, classified from the brief, or unknown. */
+  workKindSource?: 'declared' | 'classified' | 'unknown';
+  /** What design routing decided at spawn, and why (absent when the standard was off). */
+  designRouting?: {
+    decision: 'explicit-model' | 'remote-not-routed' | 'suppressed' | 'not-design' | 'lane-refused' | 'design-lane';
+    reason?: 'not-confirmed' | 'not-on-plan' | 'no-room';
+    model: string | null;
+  };
   /** Memory privacy: the audience this session was started for (`audienceKey`). */
   memoryAudience?: string;
   /** Memory privacy: this session's own folder; set only inside the boundary. */

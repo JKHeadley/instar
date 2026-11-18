@@ -292,7 +292,7 @@ A missing or stale record holds a request the agent clears by one driver run. An
 - **fleet:** delivered dark by the release; the code default turns on for every agent when the graduation criterion holds.
 - **graduation criterion:** decided by the existing maturation review over real design requests on the development agent that exercised a routed spawn, a held request and a cleared hold: every approval request for a design carried a line resolving to a record; every hold was cleared by the agent alone; false holds are counted and each is traced; the classifier's added spawn latency and its agreement with a design-model reading of sampled briefs are reported, with each disagreement traced; the design model's weekly window kept room for other work; the share of design requests not written on the design model is reported by how the session was started, and stays a standing line in the weekly maturation review after graduation so the next version routes whichever start the numbers show; one design request is read end to end as Justin received it, with the time from his request to the approval ask; zero operator-found requests without provenance. Missing evidence records `incomplete`, never a pass. No minimum duration.
 - **dark-window:** the fleet stays dark until the graduation criterion holds; the weekly maturation review then records the fleet outcome. No fixed duration.
-- **ladder:** not applicable: no flag of its own until the stage 1 change adds the frontier-design-review entry, gated by developmentAgent, and points this line at it
+- **ladder:** frontier-design-review
 - **Owner:** Echo.
 
 ## Build stages with live proof

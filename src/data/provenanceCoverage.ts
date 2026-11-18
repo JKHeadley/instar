@@ -480,6 +480,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Advice-only grouping of the owner\'s unassigned conversations into proposed efforts. Deterministic floors drop invalid groups; every surviving group is graded by the owner\'s own Accept or Reject before anything moves.',
   },
   {
+    decisionPoint: 'design-work-classifier',
+    component: 'DesignWorkClassifier',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Classifies a spawn brief as design work or not (frontier-design-review-standard section 2). Its only outcomes are the design model or today\'s default model; no answer gives today\'s default, and every decision is recorded on the session for the maturation review.',
+  },
+  {
     decisionPoint: 'work-board-spec-approval-judge',
     component: 'WorkBoardSpecApprovalJudge',
     status: 'pending:backlog:decision-quality-enrolment',

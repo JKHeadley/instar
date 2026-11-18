@@ -79,6 +79,7 @@ import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.j
 import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { ClaudeForbiddenError } from './claudeForbiddenGuard.js';
+import { DESIGN_LANE_CLAUDE_CODE } from './designLane.js';
 import {
   buildIntelligenceProvider,
   type IntelligenceFramework,
@@ -1131,7 +1132,15 @@ export const GROK_REVIEWER_MODEL = 'grok-4.6';
  * freshness lint, so a rotted pin fails CI (the anti-rot ratchet); the
  * degraded-loud no-silent-fallback path (§1.3) is the second, runtime guarantee.
  */
-export const CLAUDE_REVIEWER_DEFAULT_MODEL = 'claude-fable-5';
+export const CLAUDE_REVIEWER_DEFAULT_MODEL: string = DESIGN_LANE_CLAUDE_CODE;
+
+/**
+ * The previous default pin. Kept in the accept-set so an existing
+ * `specConverge.reviewers.anthropic.model: 'claude-fable-5'` override keeps
+ * working after the default moved to the design lane
+ * (frontier-design-review-standard §1).
+ */
+export const CLAUDE_REVIEWER_PREVIOUS_DEFAULT_MODEL = 'claude-fable-5';
 
 /**
  * The default frontier accept-set for a config override (§1.3). A concrete
@@ -1143,7 +1152,7 @@ export const CLAUDE_REVIEWER_DEFAULT_MODEL = 'claude-fable-5';
  * "derived-from-the-manifest frontier set" stays current structurally rather than
  * by willpower (Structure > Willpower).
  */
-export const CLAUDE_REVIEWER_FRONTIER_MODELS: readonly string[] = [CLAUDE_REVIEWER_DEFAULT_MODEL];
+export const CLAUDE_REVIEWER_FRONTIER_MODELS: readonly string[] = [CLAUDE_REVIEWER_DEFAULT_MODEL, CLAUDE_REVIEWER_PREVIOUS_DEFAULT_MODEL];
 
 /**
  * Operator-authorized concrete review pins. Never a default or fallback.
@@ -1215,7 +1224,7 @@ export type ClaudeReviewerModelResolution =
  *      MUST be a concrete id (`isConcreteReviewerModel`) AND a member of the
  *      frontier accept-set or the explicit operator set; an unapproved
  *      concrete id (e.g. `claude-opus-4-8`) is REJECTED (`override-not-frontier`);
- *   2. else the default pin `CLAUDE_REVIEWER_DEFAULT_MODEL` (`claude-fable-5`).
+ *   2. else the default pin `CLAUDE_REVIEWER_DEFAULT_MODEL` (the Claude design lane).
  * A rejected override degrades the round LOUDLY (§1.4) — it is never coerced to
  * a default, because a config typo silently re-opening the door penalty is
  * exactly the "strongest model isn't actually reviewing" gap this spec closes.

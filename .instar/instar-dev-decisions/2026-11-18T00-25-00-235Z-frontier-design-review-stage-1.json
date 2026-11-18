@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-18T00:25:00.235Z",
+  "slug": "frontier-design-review-stage-1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 772,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-model-registry-freshness.mjs",
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/SessionManager.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/core/componentCategories.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/core/designLane.ts",
+      "src/core/designReviewLedger.ts",
+      "src/core/designRouting.ts",
+      "src/core/frameworkFacts.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/server/routes.ts",
+      "src/server/sessionSpawnTopicBinding.ts"
+    ],
+    "addedLines": 749,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the only added spawn is a single unpinned retry inside the caller request when the session manager refuses the design-lane account pin; it runs at most once per POST /sessions/spawn and behind the existing spawnLimiter"
+  },
+  "verdict": "blocked"
+}
