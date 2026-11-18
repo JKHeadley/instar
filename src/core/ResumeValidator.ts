@@ -43,6 +43,9 @@ import { boundedTail } from './boundedInput.js';
  */
 export const COHERENCE_CONTEXT_MAX_CHARS = 4000;
 
+/** The per-message clamp the derivation above assumes (ten messages x this, plus prefixes). */
+export const RESUME_TOPIC_MESSAGE_CHARS = 200;
+
 export const RESUME_UUID_VALIDATE_PROMPT_ID = 'resume-uuid-validate-v1';
 
 /** Identity-only envelope for the exact topic/session slices shown to the validator. */
@@ -129,10 +132,12 @@ export async function llmValidateResumeCoherence(
       try {
         const history = telegram.searchLog({ topicId, limit: 10 });
         if (history.length > 0) {
-          topicHistory += 'Recent topic messages:\n';
+          topicHistory += `Recent topic messages (each shown up to its first ${RESUME_TOPIC_MESSAGE_CHARS} characters; a cut one ends in " …[cut]"):\n`;
           for (const m of history) {
             const sender = (m.fromJustin || m.fromUser) ? 'User' : 'Agent';
-            const text = (m.text || '').slice(0, 200);
+            // bounded-input-reviewed: a per-message sample whose 200 is an input to the derived COHERENCE_CONTEXT_MAX_CHARS; the full helper marker (~230 chars) x10 would overflow that bound and push out the newest messages, so the header discloses the clamp and a cut message carries a short " …[cut]" tag (10 x 7 chars fits). The injected getTopicHistory path above is not clamped per message; its block is tail-bounded and disclosed below.
+            const raw = m.text || '';
+            const text = raw.length > RESUME_TOPIC_MESSAGE_CHARS ? `${raw.slice(0, RESUME_TOPIC_MESSAGE_CHARS)} …[cut]` : raw;
             topicHistory += `  ${sender}: ${text}\n`;
           }
         } else {
