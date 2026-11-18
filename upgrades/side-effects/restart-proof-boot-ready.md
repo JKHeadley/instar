@@ -80,3 +80,7 @@ The restart proof no longer calls a server "back" while it is still starting. Cl
 ## Second pass: the watch-only folder stays sealed
 
 Local Verify failed `tests/unit/machine-maintenance-watch-only.test.ts`: PostRestartProof.ts imported `src/server/BootReadiness.js`, which is outside that folder's import allowlist (BootReadiness also reads files and holds the boot tracker). The fix does not widen the allowlist. `serverHealthFromResponse` now takes the boot check as an argument, and `server.ts` passes `isPeerBooting`; the tests pass the same real function. Behaviour is unchanged.
+
+## Also: the wedge alive test no longer depends on a quiet host
+
+`tests/e2e/machine-wedge-lifecycle.test.ts` samples the real process table. On a busy verify machine a family can read positive for a moment, and the dry-run gentle rung records what it would resume; the test required no record at all and failed another PR's run (3329, 04:15Z). It now accepts a record and checks the real guarantee: mode `dry-run`, result `none-found`, `would-resume` or `unread`, never a resume. Test-only.

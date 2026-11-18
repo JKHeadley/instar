@@ -103,9 +103,14 @@ describe('machine wedge detection lifecycle', () => {
     const w = res.body.wedge;
     expect(w).toMatchObject({ enabled: true, dryRun: true, actuation: 'not-built', canRestart: false, canStopWork: false, noticeEnabled: false, role: 'maintainer', lastError: null });
     expect(w.lastSampleAt).toEqual(expect.any(Number));
-    // The gentle rung ships in dry-run, and a healthy machine never runs it.
+    // The gentle rung ships in dry-run. This samples the REAL host, and on a busy verify machine other
+    // test processes can be paused for a moment, so a wedge family may read positive and the rung may
+    // run. Whatever it read, in dry-run it never resumes anything: that is the guarantee, not a quiet host.
     expect(w.gentleResume).toBe('dry-run');
-    if (w.families.F1.reason !== 'canary-left-stopped') expect(w.lastGentle).toBeNull();
+    if (w.lastGentle !== null) {
+      expect(w.lastGentle.mode).toBe('dry-run');
+      expect(['none-found', 'would-resume', 'unread']).toContain(w.lastGentle.result);
+    }
     // The real process table answered (a healthy test machine); the result is a reading, not a default.
     expect(['negative', 'positive']).toContain(w.families.F2.result);
     // No load report wired here: F4 is unknown, never "healthy".
