@@ -31,6 +31,7 @@
  */
 
 import { topicRef } from '../messaging/shared/topicRef.js';
+import { isBelowFence } from './meshVerbFenceClass.js';
 import { appRowWinsTie, isAppOwnershipKey, type SessionOwnershipRecord } from './SessionOwnership.js';
 import type { SessionOwnershipStore } from './SessionOwnershipRegistry.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -243,6 +244,16 @@ export class OwnershipApplier {
           const owner = typeof e.data.owner === 'string' ? e.data.owner : '';
           const epoch = typeof e.data.epoch === 'number' ? e.data.epoch : Number(e.data.epoch);
           if (!owner || !Number.isFinite(epoch) || epoch <= 0) continue;
+          // identity-security piece 2d §2b: a machine below the minimum build can't pull a topic to itself through
+          // the journal. Its own ownership claims are skipped here (the journal itself stays faithful); its releases
+          // still apply.
+          const releasing = e.data.status === 'released' || e.data.reason === 'released';
+          if (!releasing && owner === e.machine && isBelowFence(e.machine)) {
+            // Only a claim that would push out a DIFFERENT active owner is skipped. Topics it really holds (placed
+            // while it held the lease, or never owned elsewhere) are kept, so nothing re-places a live session.
+            const cur = this.d.store.read(appKey ?? String(e.topic));
+            if (cur && cur.status === 'active' && cur.ownerMachineId !== e.machine) continue;
+          }
           const key = appKey ?? String(e.topic);
           const cur = bestByTopic.get(key);
           const cand: Best = {

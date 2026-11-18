@@ -365,6 +365,9 @@ export class FencedLease {
     nowMs: number,
     staleHolderOpts?: StaleHolderTakeoverOpts,
     handbackOpts?: HandbackTakeoverOpts,
+    /** identity-security piece 2d §2: holders below the minimum build (already budget-filtered). A separate
+     *  input, never the shared presumed-dead set other guards read. */
+    belowFenceHolders?: ReadonlySet<string>,
   ): AcquireDecision {
     if (!currentLease) return { can: true, reason: 'no-current-lease' };
     if (this.isExpired(currentLease, nowMs)) return { can: true, reason: 'current-lease-expired' };
@@ -373,6 +376,9 @@ export class FencedLease {
     }
     if (presumedDeadHolders.has(currentLease.holder)) {
       return { can: true, reason: `holder-presumed-dead (${currentLease.holder})` };
+    }
+    if (belowFenceHolders?.has(currentLease.holder)) {
+      return { can: true, reason: `holder-below-minimum-build (${currentLease.holder})` };
     }
     // F2 (staleHolderTakeover) — DARK by default: opts are passed ONLY when the
     // flag is on, so with no opts this method is byte-for-byte the legacy

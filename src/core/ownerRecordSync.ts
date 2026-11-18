@@ -83,6 +83,8 @@ export interface OwnerRecordSyncDeps {
 }
 
 interface PeerInfo {
+  /** When a verified mesh envelope last came from this peer (2d §0); pull replies never set it. */
+  lastVerifiedAt?: number;
   /** The build a peer's pull reply showed: display only, never evidence. */
   replyBuild?: string | null;
   answered: boolean;
@@ -126,6 +128,13 @@ export class OwnerRecordSync {
     return p;
   }
 
+  /** A verified mesh envelope from the peer (the dispatcher's onVerified, or one of our handlers): evidence it is
+   *  alive for 2d's hold, and a re-arm of the bootstrap breaker. */
+  heardVerified(peer: string): void {
+    this.info(peer).lastVerifiedAt = this.now();
+    this.heardFrom(peer);
+  }
+
   /** Any signed mesh message from a peer re-arms the bootstrap breaker (§3). */
   heardFrom(peer: string): void {
     const p = this.info(peer);
@@ -143,7 +152,7 @@ export class OwnerRecordSync {
   // ── serving ──────────────────────────────────────────────────────
 
   handlePull(from: string, cmd: OwnerRecordPullCmd, at?: number): OwnerRecordPullReply {
-    this.heardFrom(from);
+    this.heardVerified(from);
     this.recordStatement(from, cmd.build ?? null, cmd.guards, at ?? this.now()); // recorded before judged (2c §2)
     const have = new Set(Array.isArray(cmd.have) ? cmd.have.filter((x) => typeof x === 'string').slice(0, 4 * OWNER_RECORD_PUSH_MAX_ENTRIES) : []);
     const page = this.d.store.page(have, typeof cmd.after === 'string' ? cmd.after : null, OWNER_RECORD_PUSH_MAX_ENTRIES);
@@ -160,7 +169,7 @@ export class OwnerRecordSync {
 
   /** Accept a push: bounded, deduped, rate-limited per peer except for the checked revocation lane. */
   handlePush(from: string, cmd: OwnerRecordPushCmd): { ok: boolean; reason?: string; queued?: number } {
-    this.heardFrom(from);
+    this.heardVerified(from);
     const entries = Array.isArray(cmd.entries) ? cmd.entries : [];
     if (entries.length > OWNER_RECORD_PUSH_MAX_ENTRIES || jsonBytes(entries) > OWNER_RECORD_PUSH_MAX_BYTES) {
       this.counters.pushRefusedTooLarge++;
@@ -351,6 +360,31 @@ export class OwnerRecordSync {
     return this.peerMayHaveRecord(peer);
   }
 
+  /** 2d §0: a peer is below the fence in force (a signed statement under it, sticky). Nothing before enrolment. */
+  isBelow(peer: string): boolean {
+    const f = this.fence();
+    if (!f.value || !this.d.ledger || !this.d.peerKey) return false;
+    return this.d.ledger.stateOf(peer, this.d.peerKey(peer), f.value) === 'below';
+  }
+
+  /** 2d §0/§1: the machines the agent-wide hold is for: below the fence, or alive (a verified mesh envelope
+   *  within 24 h) with no signed build statement in that time — uncertainty, never called below. */
+  machinesHeld(): { below: string[]; unconfirmed: string[] } {
+    const f = this.fence();
+    if (!f.value || !this.d.ledger || !this.d.peerKey) return { below: [], unconfirmed: [] };
+    const day = 24 * 60 * 60 * 1000;
+    const below: string[] = []; const unconfirmed: string[] = [];
+    for (const peer of this.d.peers()) {
+      const state = this.d.ledger.stateOf(peer, this.d.peerKey(peer), f.value);
+      if (state === 'below') { below.push(peer); continue; }
+      if (state !== 'unconfirmed') continue;
+      const heard = this.peerInfo.get(peer)?.lastVerifiedAt ?? null; // verified envelopes only (§0), never a reply
+      const obs = this.d.ledger.observation(peer, this.d.peerKey(peer));
+      if (heard !== null && this.now() - heard <= day && (!obs || this.now() - obs.at > day)) unconfirmed.push(peer);
+    }
+    return { below, unconfirmed };
+  }
+
   /** 2c §3: readiness against a target build, from this machine's own first-hand observations. */
   fenceStatus(target: string): FenceStatus | null {
     if (!this.d.ledger || !this.d.peerKey) return null;
@@ -382,7 +416,9 @@ export class OwnerRecordSync {
     const list2 = (ms: string[]): string => ms.map(name).join(', ');
     if (st.below.length > 0) parts.push(`${list2(st.below)} ${st.below.length === 1 ? 'runs' : 'run'} a version of Instar older than ${f.value}. Update ${st.below.length === 1 ? 'it' : 'them'}, or remove ${st.below.length === 1 ? 'it' : 'them'} from the agent.`);
     if (stale.length > 0) parts.push(`${list2(stale)} hasn't confirmed which version ${stale.length === 1 ? 'it runs' : 'they run'} for a day. Check ${stale.length === 1 ? "it's" : "they're"} on and connected.`);
-    this.d.notify(`${parts.join(' ')} Until then, ${st.below.length + stale.length === 1 ? 'that computer' : 'those computers'} won't get your ownership record.`);
+    const held = this.machinesHeld();
+    const holdNote = held.below.length + held.unconfirmed.length > 0 ? ' Until then, risky actions are paused on all your computers; you can still talk to the agent and look at everything.' : '';
+    this.d.notify(`${parts.join(' ')} Until then, ${st.below.length + stale.length === 1 ? 'that computer' : 'those computers'} won't get your ownership record.${holdNote}`);
   }
 
   /** Close the owner notice: once per process even with nothing recorded here, so a new lease holder closes an
@@ -401,7 +437,8 @@ export class OwnerRecordSync {
       const m = this.peerInfo.get(peer)?.marker;
       return !!m && m.agentId === this.d.agentId && (m.genesis === st?.genesis || enrolledGeneses.has(m.genesis));
     });
-    return { allAnswered: peers.every((p) => this.peerInfo.get(p)?.answered), honouredPeerMarker: honoured, fenceUnusable: this.fence().unusable };
+    const held = this.machinesHeld();
+    return { allAnswered: peers.every((p) => this.peerInfo.get(p)?.answered), honouredPeerMarker: honoured, fenceUnusable: this.fence().unusable, machinesBelow: held.below, machinesUnconfirmed: held.unconfirmed };
   }
 
   /** §3: bootstrap only on the lease holder, no split-brain, every peer answered with nothing that blocks it. */

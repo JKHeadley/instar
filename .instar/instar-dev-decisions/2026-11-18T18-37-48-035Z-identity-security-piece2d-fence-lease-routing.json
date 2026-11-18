@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-18T18:37:48.035Z",
+  "slug": "identity-security-piece2d-fence-lease-routing",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 340,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/FencedLease.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/MeshRpcClient.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/OwnershipApplier.ts",
+      "src/core/PlacementExecutor.ts",
+      "src/core/identityBuildFence.ts",
+      "src/core/meshVerbFenceClass.ts",
+      "src/core/ownerRecordStore.ts",
+      "src/core/ownerRecordSync.ts",
+      "src/core/ownerRecordWiring.ts",
+      "src/data/awareness/owner-record.md",
+      "src/server/WebSocketManager.ts",
+      "src/server/mobileSessionTerminalRoutes.ts"
+    ],
+    "addedLines": 327,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "2d adds no self-triggered loop: lease takeover is an input to the existing acquire tick, bounded by a fixed per-day budget; the owner notice is 2c registered one"
+  },
+  "verdict": "pass"
+}

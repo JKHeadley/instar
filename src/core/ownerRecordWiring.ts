@@ -11,6 +11,7 @@ import { sign as machineSign } from './MachineIdentity.js';
 import type { MachineIdentityManager } from './MachineIdentity.js';
 import type { OwnerRecordRouteDeps } from '../server/ownerRecordRoutes.js';
 import { PeerBuildLedger, fenceInForce, keyFingerprint } from './identityBuildFence.js';
+import { MESH_VERB_FENCE_CLASS, setBelowFencePredicate, setMeshFencePolicy } from './meshVerbFenceClass.js';
 import { getInstarVersion } from './Config.js';
 import type { GateVerdict } from './ownerRecordStore.js';
 
@@ -59,7 +60,7 @@ export function wireOwnerRecordStore(config: OwnerRecordConfigView, identity: Ma
 
 /** Any signed, verified mesh message from a peer re-arms the bootstrap breaker (2b §3). */
 export function ownerRecordHeardFrom(peer: string): void {
-  live?.sync?.heardFrom(peer);
+  live?.sync?.heardVerified(peer);
 }
 
 /** The two mesh handlers. Registered always, so a peer gets a clean "disabled" answer, never no-handler. */
@@ -89,6 +90,8 @@ export interface OwnerRecordSyncWiring {
   notify?: (summary: string) => void;
   machineName?: (machineId: string) => string;
   clearNotice?: () => void;
+  /** Piece 2d: the ownership record for a session (who owns it, at what epoch). */
+  activeOwner?: (sessionKey: string) => { owner: string | null; epoch: number; status: string | null };
   degradeFence?: (summary: string) => void;
 }
 
@@ -127,7 +130,8 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
     selfBuild: () => getInstarVersion(),
     // Identity guards this build runs live (piece 2c §3). Pieces that add one list it here, e.g. 2d's
     // 'fence-lease' and 'fence-routing'. None yet.
-    selfGuards: () => [],
+    // Piece 2d: this build refuses a below machine the lease and routing whenever the fence is in force.
+    selfGuards: () => ['fence-lease', 'fence-routing'],
     peerKey: (machineId) => keyFingerprint(w.identity.getSigningPublicKeyPem(machineId)),
     ledger: PeerBuildLedger.at(w.config.stateDir),
     notify: w.notify,
@@ -137,6 +141,8 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
     peerSince: (machineId) => { const t = Date.parse(String(w.identity.loadRegistry().machines?.[machineId]?.pairedAt ?? '')); return Number.isFinite(t) ? t : null; },
   });
   live.sync = sync;
+  installMeshFencePolicy(sync, w.activeOwner);
+  setBelowFencePredicate((machineId) => sync.isBelow(machineId));
   // @silent-fallback-ok: a failed pass is logged and retried on the next 15-minute tick; peers' state is per pass.
   const run = (): void => { sync.tick().catch((e) => console.warn(`[owner-record] sync pass failed: ${e instanceof Error ? e.message : String(e)}`)); }; // @silent-fallback-ok: retried next tick
   const first = setTimeout(run, FIRST_PULL_DELAY_MS); first.unref?.();
@@ -147,7 +153,61 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
 
 /** Tests and shutdown: stop the timers and forget the live store. */
 export function resetOwnerRecordWiringForTests(): void {
+  setMeshFencePolicy(null);
+  setBelowFencePredicate(null);
   for (const t of timers) clearTimeout(t);
   timers = [];
   live = null;
+}
+
+/**
+ * Piece 2d §2b: refuse work and authority to a machine below the fence, and authority from it. Conversation
+ * delivery still reaches it for a session it actively owns at that epoch, so failover never doubles replies.
+ */
+export function installMeshFencePolicy(sync: OwnerRecordSync, activeOwner?: OwnerRecordSyncWiring['activeOwner']): void {
+  setMeshFencePolicy({
+    refuseTo(machineId, command) {
+      if (!sync.isBelow(machineId)) return null;
+      const cls = MESH_VERB_FENCE_CLASS[command.type]?.cls;
+      if (cls === 'liveness' || cls === 'read') return null;
+      if (cls === 'conversation') {
+        if (command.type === 'a2a-topic-reply-inject') return null; // its handler acts only on its own live session
+        if (command.type === 'telegram-origin') return null; // the holder asks a standby only for reads (capabilities, receipts, audit)
+        if (command.type === 'deliverMessage' && activeOwner) {
+          const o = activeOwner(command.session);
+          if (o.status === 'active' && o.owner === machineId && o.epoch === command.ownershipEpoch) return null;
+        }
+      }
+      return 'below-minimum-build';
+    },
+    refuseFrom(machineId, command) {
+      if (!sync.isBelow(machineId)) return null;
+      const cls = MESH_VERB_FENCE_CLASS[command.type]?.cls;
+      if (cls === 'authority') return 'below-minimum-build';
+      // A below standby's replies post through the holder's bot only for a topic it actively owns (§2c).
+      if (command.type === 'telegram-origin' && (command as { action?: string }).action === 'submit') {
+        const topic = (command as { operation?: { record?: { destination?: { topicId?: string | null } } } }).operation?.record?.destination?.topicId;
+        const o = topic && activeOwner ? activeOwner(String(topic)) : null;
+        return o && o.status === 'active' && o.owner === machineId ? null : 'below-minimum-build';
+      }
+      return null;
+    },
+  });
+}
+
+/** Piece 2d: is this machine below the fence in force? False before enrolment or with no sync. */
+export function ownerRecordIsBelow(machineId: string | null | undefined): boolean {
+  return !!machineId && !!live?.sync?.isBelow(machineId);
+}
+
+/** Piece 2d §2: below holders the lease may be taken from now (each within its daily takeover budget). */
+export function belowFenceHoldersForLease(stateDir: string): ReadonlySet<string> {
+  if (!live?.sync) return new Set();
+  const ledger = PeerBuildLedger.at(stateDir);
+  return new Set(live.sync.machinesHeld().below.filter((m) => ledger.takeoverAllowed(m)));
+}
+
+/** Piece 2d §2: count a takeover from a below holder against its budget. */
+export function noteBelowFenceTakeover(stateDir: string, holder: string): void {
+  PeerBuildLedger.at(stateDir).noteTakeover(holder);
 }

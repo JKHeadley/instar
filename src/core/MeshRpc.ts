@@ -25,6 +25,8 @@
 
 export type MachineId = string;
 
+import { meshFenceRefusesFrom } from './meshVerbFenceClass.js';
+
 export type MeshCommand =
   | { type: 'notification-preference'; intent: import('../messaging/NotificationPreferences.js').NotificationPreferenceIntent }
   | import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand
@@ -783,7 +785,7 @@ export interface MeshRpcDispatcherDeps {
 
 export type DispatchResult =
   | { ok: true; result: unknown }
-  | { ok: false; reason: VerifyReason | RbacReason | 'no-handler'; status: number };
+  | { ok: false; reason: VerifyReason | RbacReason | 'no-handler' | 'below-minimum-build'; status: number };
 
 /** HTTP status for each rejection reason — auth failures 401/403, freshness 409, unimplemented 501. */
 function statusForReason(reason: string): number {
@@ -836,6 +838,13 @@ export class MeshRpcDispatcher {
       this.d.onReject?.(env, authorized.reason);
       this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${authorized.reason}`);
       return { ok: false, reason: authorized.reason, status: statusForReason(authorized.reason) };
+    }
+    // identity-security piece 2d §2b: an authority verb from a machine below the minimum build is refused.
+    const fenced = meshFenceRefusesFrom(env.sender, env.command);
+    if (fenced) {
+      this.d.onReject?.(env, fenced);
+      this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${fenced}`);
+      return { ok: false, reason: 'below-minimum-build', status: 409 };
     }
     // Accepted — burn the nonce so an immediate replay is caught.
     this.d.recordNonce(env.sender, env.nonce);
