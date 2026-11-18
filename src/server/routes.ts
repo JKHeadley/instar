@@ -16274,7 +16274,10 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      res.json(await reader.read());
+      // The lock watch's own state (restart-lock-continuity C.1), including a pause after repeated probe failures.
+      const { getActiveLockWatch } = await import('../monitoring/LockWatch.js');
+      const watch = getActiveLockWatch();
+      res.json({ ...(await reader.read()), lockWatch: watch ? watch.status() : null });
     } catch (err) {
       res.status(500).json({ error: 'lock-state read failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }

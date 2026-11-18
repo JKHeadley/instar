@@ -4326,6 +4326,49 @@ function makeMachineRestart(f: PressureFixture, sink: ActionSink): { tick(): voi
   };
 }
 
+/**
+ * lock-watch-report — restart-lock-continuity C.1 (src/monitoring/LockWatch.ts). A watched
+ * machine whose screen stays locked is reported once per lock episode per host. The pressure:
+ * a lock that never clears, read every 5 minutes for a day. Convergence: the episode and its
+ * report state live in the durable host file (lock-watch.json), so a restart or a co-resident
+ * agent sees `delivered` and stays quiet; a new report needs a new episode, which needs an
+ * unlocked reading first (never reached under this pressure). Bound: one report.
+ */
+function makeLockWatchReport(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const HOLD_MS = 10 * 60_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      if (!f.targetAlwaysRejects()) { f.durableState.delete('lock-watch:episode'); return; } // unlocked ends the episode
+      const ep = (f.durableState.get('lock-watch:episode') as { since: number; state: 'none' | 'delivered' } | undefined) ?? { since: now, state: 'none' as const };
+      if (ep.state === 'none' && now - ep.since >= HOLD_MS) {
+        sink.emit({ verb: 'lock-notify', target: 'host:self' });
+        ep.state = 'delivered';
+      }
+      f.durableState.set('lock-watch:episode', ep);
+    },
+  };
+}
+
+const lockWatchReport: SelfActionController = {
+  id: 'lock-watch-report',
+  actionVerb: 'lock-notify',
+  models: 'src/monitoring/LockWatch.ts (tick: host-file episode, pending/delivered claim, one report per episode)',
+  modelsPath: 'src/monitoring/LockWatch.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 288,
+  tickMs: 5 * 60_000, // the 5-minute watch interval, 24 h of a lock that never clears
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeLockWatchReport(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeLockWatchReport(f, sink);
+  },
+};
+
 const machineWedgeNotice: SelfActionController = {
   id: 'machine-wedge-notice',
   actionVerb: 'wedge-notify',
@@ -6084,6 +6127,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  lockWatchReport,
   machineWedgeCanaryReap,
   machineRestart,
   machineWedgeGentleResume,

@@ -26917,6 +26917,56 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(pc.dim(`  local-verify enabled in config but inert (${built.reason})`));
         }
       }
+      // Lock watch (restart-lock-continuity C.1): runs whether or not machine
+      // maintenance is enabled. The lock reader is created here, outside the
+      // maintenance gate (it spawns nothing until read); the gate reuses it.
+      try {
+        const { MachineLockStateReader, setActiveMachineLockStateReader, getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        const { readEnrolment, defaultDoNotMaintainPath } = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+        const { LockWatch, setActiveLockWatch } = await import('../monitoring/LockWatch.js');
+        const { readBootAt } = await import('../core/BootSessionCensus.js');
+        if (!getActiveMachineLockStateReader()) setActiveMachineLockStateReader(new MachineLockStateReader());
+        const lvSvc = localVerifyService;
+        const enrolledSelfCare = (): boolean => { const e = readEnrolment(); return !!e && (e.mode === 'unattended' || e.mode === 'proving'); };
+        if (lvSvc || enrolledSelfCare()) {
+          const lockWatch = new LockWatch({
+            hostDir: path.join(os.homedir(), '.instar', 'host-maintenance'),
+            read: async () => {
+              const reader = getActiveMachineLockStateReader();
+              return reader ? (await reader.read()).lockState : 'unknown';
+            },
+            scope: () => {
+              if (fs.existsSync(defaultDoNotMaintainPath())) return { watched: false, interruptsWork: false, lockOnly: true };
+              const selfCare = enrolledSelfCare();
+              const peerOnly = !!lvSvc && lvSvc.isPeerOnly();
+              let interruptsWork = false;
+              if (lvSvc && !peerOnly) {
+                // Work waiting now; LockWatch also remembers work seen at any reading in the episode.
+              try { const snap = lvSvc.snapshot(); interruptsWork = snap.queue.length > 0 || snap.inFlight !== null; } catch { interruptsWork = false; }
+              }
+              return { watched: selfCare || !!lvSvc, interruptsWork, lockOnly: selfCare || peerOnly };
+            },
+            report: (r) => {
+              DegradationReporter.getInstance().report({
+                feature: r.feature,
+                primary: 'This machine is unlocked so it can run tests and maintain itself',
+                fallback: 'Work that needs the screen waits until someone unlocks it',
+                reason: `${coordinator.identity?.name ?? os.hostname()} has been locked since ${new Date(r.firstLockedAt).toLocaleString()}`,
+                impact: 'Tests on this machine can fail while its screen is locked. Unlock it at its console.',
+              });
+            },
+            machineId: lvMachineId,
+            agentName: config.projectName,
+            bootAt: readBootAt(),
+            holdMs: Math.min(60 * 60 * 1000, Math.max(60 * 1000, Number(liveConfig.get<number>('machineMaintenance.lockReportAfterMs', 10 * 60 * 1000)) || 10 * 60 * 1000)),
+            log: (line) => console.log(line),
+          });
+          setActiveLockWatch(lockWatch);
+          lockWatch.start();
+        }
+      } catch (err) {
+        console.warn(`[lock-watch] not started: ${err instanceof Error ? err.message : String(err)}`);
+      }
       // The status reconcile loop (§3). Built on any instar source checkout with the
       // agent's GitHub login: the Actions-floor mirror must stay on whenever GitHub
       // requires the check, independent of monitoring.localVerify.enabled (with the
@@ -27859,8 +27909,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
 
         // Honest lock reading (Part A): a read of the session, never the flag alone.
-        const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
-        setActiveMachineLockStateReader(new MachineLockStateReader());
+        const { MachineLockStateReader, setActiveMachineLockStateReader, getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        // Usually already created at startup for the lock watch (restart-lock-continuity C.1); reuse it.
+        if (!getActiveMachineLockStateReader()) setActiveMachineLockStateReader(new MachineLockStateReader());
 
         // Browser care (Part B), watch-only: the sweep records what it WOULD close and has
         // no way to close anything. Only the macOS normal-Chrome helpers keep a ledger.
