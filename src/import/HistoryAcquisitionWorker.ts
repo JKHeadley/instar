@@ -73,7 +73,7 @@ export class HistoryAcquisitionWorker {
             return this.accounts(chat,job.provider).some(a => a.profileId===job.profileId && a.expectedEmail.trim().toLowerCase()===job.expectedEmail)
               ? job : undefined;
           }});
-        this.native.sweepExpired();
+        this.native.sweepExpired(true);
       }
     } catch (error) {
       this.native?.close();
@@ -316,6 +316,7 @@ export class HistoryAcquisitionWorker {
       this.ticking = true;
       try {
         await this.tracked(async () => {
+          await this.native?.reconcilePublished();
           this.native?.sweepExpired();
           this.archives.recover(id => this.jobs.keepArchive(id));
           if (cleanupOnly) {

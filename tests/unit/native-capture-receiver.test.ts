@@ -81,6 +81,39 @@ describe.skipIf(process.platform !== 'darwin')('same-Mac path-free receipt',() =
     expect(await worker.receiveNativeCapture(caller,r)).toEqual({accepted:true});
     expect((await worker.step(owner,id)).phase).toBe('review');
   });
+  it('keeps a verified published archive when the lease expired before restart, and discards a mismatched one',async () => {
+    const {captureId}=issue(); const file=write(captureId,Buffer.alloc(zip.length)); const r=receipt(captureId);
+    await expect(worker.receiveNativeCapture(caller,r)).rejects.toThrow();
+    await new AcquisitionArchives(dir).stageReceipt(id,Readable.from(zip),r,() => true);
+    SafeFsExecutor.safeUnlinkSync(file,{operation:'native-capture-receiver.test:remove-native-source'});
+    now += 16*60_000; await restart();
+    expect(new AcquisitionArchives(dir).hasArchive(id)).toBe(true); // the boot sweep leaves it for reconciliation
+    // Before reconciliation the expired lease refuses a late receipt; afterwards it replays as accepted.
+    await expect(worker.receiveNativeCapture(caller,r)).rejects.toThrow();
+    worker.startPolling(() => undefined,true);
+    await vi.waitFor(async () => expect(await worker.receiveNativeCapture(caller,r)).toEqual({accepted:true}));
+    expect(new AcquisitionArchives(dir).hasArchive(id)).toBe(true);
+    expect((await worker.step(owner,id)).phase).toBe('review');
+  });
+  it('discards a matching published archive when its job has passed its deadline',async () => {
+    const {captureId}=issue(); write(captureId,Buffer.alloc(zip.length)); const r=receipt(captureId);
+    await expect(worker.receiveNativeCapture(caller,r)).rejects.toThrow();
+    await new AcquisitionArchives(dir).stageReceipt(id,Readable.from(zip),r,() => true);
+    now += 9*24*60*60_000; await restart();
+    worker.startPolling(() => undefined,true);
+    await vi.waitFor(() => expect(new AcquisitionArchives(dir).hasArchive(id)).toBe(false));
+    await expect(worker.receiveNativeCapture(caller,r)).rejects.toThrow();
+  });
+  it('discards an expired published archive whose bytes no longer match the lease',async () => {
+    const {captureId}=issue(); write(captureId,Buffer.alloc(zip.length)); const r=receipt(captureId);
+    await expect(worker.receiveNativeCapture(caller,r)).rejects.toThrow();
+    const other=makeZip([{name:'user.json',data:JSON.stringify({email:account.expectedEmail})},{name:'conversations.json',data:'[{}]'}]);
+    await new AcquisitionArchives(dir).stageReceipt(id,Readable.from(other),{captureId,size:other.length,sha256:sha(other)},() => true);
+    now += 16*60_000; await restart();
+    worker.startPolling(() => undefined,true);
+    await vi.waitFor(() => expect(new AcquisitionArchives(dir).hasArchive(id)).toBe(false));
+    expect(worker.status(owner,id)?.phase).not.toBe('review');
+  });
   it('stops an in-flight receipt and leaves nothing visible after owner cancellation',async () => {
     const {captureId}=issue(); write(captureId);
     const pending=worker.receiveNativeCapture(caller,receipt(captureId));

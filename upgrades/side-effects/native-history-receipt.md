@@ -18,9 +18,9 @@ The reviewed native transfer, redirect controls and server-signed response pin s
 
 Machine-local by design. The capture database is tagged history-acquisition-local, and admission requires the caller's machine binding to equal the job's machine: a Mac can hand a capture only to the agent server on the same computer. Nothing replicates. Another machine sees the job's existing status through the importer's normal views and never a capture row or archive.
 
-## Known liveness gap (production-enablement condition)
+## Publication-before-acknowledgement recovery
 
-If the process dies after the archive is published but before the receipt row is marked accepted, and the 15-minute lease runs out before the restart, the boot sweep discards the archive and the job stays at native-capture-pending until the owner cancels it. This fails closed: nothing is copied. Enabling the receiver in production requires reconciling a published archive whose digest matches the lease on boot. The receiver is dark today, so no install can reach this state.
+The reviewer's liveness case is closed in this PR. Suppose the process dies after the archive is published but before the receipt row is marked accepted, and the 15-minute lease runs out before the restart. The boot sweep no longer discards that archive; it leaves it for reconcilePublished on the first polling tick. reconcilePublished marks the capture accepted only if two things hold. First, the published bytes still match the digest and size the receipt stored before any file was opened. Second, the job is still the same authorized personal job, in submitting or waiting, before its deadline. If either fails and the lease has expired, the same tick's sweep discards the archive as before; while the lease is still live the row stays so an in-flight receive can finish. Accepting only moves the job to review. The owner's fresh preview confirmation is still required before any copy. Three tests cover it: a verified archive is kept and replays as accepted; a mismatched one is discarded; a matching one whose job passed its deadline is discarded.
 
 ## Second-pass review
 
@@ -30,4 +30,6 @@ Reviewer (independent subagent, 2026-11-17 22:49 PST): Concur with the review. I
 
 - defectClass: unbounded-self-action
 - closure: n/a
-- reason: One-shot caller-driven action: each signed same-Mac receipt request spawns one bounded reader with a single expiry timer; no retry, respawn or self-triggered loop. Periodic acquisition work stays under the parent's registered convergence guard.
+- reason: One-shot caller-driven action: each signed same-Mac receipt request spawns one bounded reader with a single expiry timer; no retry, respawn or self-triggered loop. The tick's reconcilePublished is a one-way state check (receiving to accepted, at most once per capture), with no spawn, notify or retry; periodic acquisition work stays under the parent's registered convergence guard.
+
+Reviewer of the recovery delta (independent subagent, 2026-11-17 23:21 PST): Concur. It checked that only an archive produced by a verified receipt for that same capture can be accepted (one row per job, issue refuses an existing archive, ordinary import held, digest stored before any open, digest/size/authority re-checked before linking), that skipping the caller check is safe because acceptance leads only to preview, that every accept is conditional on 'receiving' (cancel wins, a concurrent receive replays), and that no row stays receiving forever. Its two small notes (lease-expiry wording, a past-deadline test) are applied.

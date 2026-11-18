@@ -139,9 +139,31 @@ export class NativeCaptureReceiver {
     }
   }
 
-  sweepExpired():void {
-    const stale = this.db.prepare("SELECT job FROM captures WHERE state IN ('issued','receiving') AND expires<=?").all(this.options.now()) as {job:string}[];
-    for (const {job} of stale) {
+  /**
+   * Recovery for a death between verified publication and the ACK commit. The archive was linked only after
+   * its digest and size matched this lease under live authority. Keep it when the published bytes still match
+   * the stored expectation and the job is still the same authorized personal job; the owner's preview
+   * confirmation is still required before any copy. Anything else is left to sweepExpired.
+   */
+  async reconcilePublished():Promise<void> {
+    const rows = this.db.prepare("SELECT * FROM captures WHERE state='receiving' AND digest IS NOT NULL").all() as Capture[];
+    for (const row of rows) {
+      if (this.active.has(row.id) || !this.options.archives.hasArchive(row.job)) continue;
+      const job = this.options.readAuthorizedJob(row,row.job);
+      if (!job || job.workspace!=='personal' || job.profileId!==row.profile || job.provider!==row.provider
+        || job.expectedEmail!==row.account || !['submitting','waiting'].includes(job.phase) || job.deadline<=this.options.now()) continue;
+      const exact = await this.options.archives.readSnapshot(row.job,async (_file,r) => r.size===row.size && r.sha256===row.digest)
+        .catch(() => false);
+      if (exact) this.db.prepare("UPDATE captures SET state='accepted' WHERE id=? AND state='receiving' AND digest=? AND size=?")
+        .run(row.id,row.digest,row.size);
+    }
+  }
+
+  /** keepPublished: at boot, leave a published receiving capture for reconcilePublished on the first tick. */
+  sweepExpired(keepPublished=false):void {
+    const stale = this.db.prepare("SELECT job,state FROM captures WHERE state IN ('issued','receiving') AND expires<=?").all(this.options.now()) as {job:string;state:State}[];
+    for (const {job,state} of stale) {
+      if (keepPublished && state==='receiving' && this.options.archives.hasArchive(job)) continue;
       this.cancelJob(job);
       this.options.archives.discard(job);
     }
