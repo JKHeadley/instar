@@ -343,6 +343,14 @@ interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[]; bro
 
 export class DeviceRegistry {
   readonly file: string;
+  /**
+   * Called after a device becomes active (any pairing path). The trust journey uses it to tell every
+   * device that approves changes that a new device was paired (app-trust-approval §C). Never throws out.
+   */
+  onActivated: ((d: DeviceRecord) => void) | null = null;
+  private activated(d: DeviceRecord): void {
+    try { this.onActivated?.(d); } catch { /* @silent-fallback-ok: a notice is a courtesy; the pairing itself is recorded */ }
+  }
   constructor(stateDir: string, private readonly now: () => number = Date.now) {
     this.file = path.join(stateDir, 'state', 'mobile-devices.json');
   }
@@ -442,6 +450,7 @@ export class DeviceRegistry {
     };
     f.devices.unshift(device);
     this.write(f);
+    this.activated(device);
     return { ok: true, device };
   }
 
@@ -522,6 +531,23 @@ export class DeviceRegistry {
     return 'set';
   }
 
+  /**
+   * Replace an active device's presence key: ONLY for the local override of the device the Instar app
+   * paired on the agent's own computer (docs/specs/app-trust-approval.md §D). The caller has checked
+   * loopback, the local binding and the new key's signature. The old key is gone from the record (no
+   * signature by it verifies again). A key another record holds is refused.
+   */
+  replacePresenceKey(id: string, publicKey: string): 'replaced' | 'same' | 'conflict' | 'not-active' {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return 'not-active';
+    if (d.presenceKey === publicKey) return 'same';
+    if (deviceKeyOf(d) === publicKey || f.devices.some((x) => x.id !== id && keysOf(x).includes(publicKey))) return 'conflict';
+    d.presenceKey = publicKey;
+    this.write(f);
+    return 'replaced';
+  }
+
   remove(id: string): void {
     const f = this.read();
     f.devices = f.devices.filter((d) => d.id !== id);
@@ -550,6 +576,7 @@ export class DeviceRegistry {
       if (d.wrongCodes.length >= MAX_WRONG_PER_DEVICE) { d.status = 'declined'; d.declinedAt = new Date(this.now()).toISOString(); }
     }
     this.write(f);
+    if (outcome.ok) this.activated(d);
     return d;
   }
 
@@ -654,6 +681,7 @@ export class DeviceRegistry {
     };
     f.devices.unshift(device);
     this.write(f);
+    this.activated(device);
     return { ok: true, device };
   }
 
@@ -701,6 +729,7 @@ export class DeviceRegistry {
     if (effects.length) d.effects = effects; else delete d.effects;
     delete d.activating; delete d.setupState; delete d.notifyingSince; delete d.wrongCodes; delete d.expiresAt;
     this.write(f);
+    this.activated(d);
     return d;
   }
 

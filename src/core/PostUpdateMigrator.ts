@@ -3370,6 +3370,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
+    this.migrateBootBeaconFleetGraduation(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
@@ -4841,6 +4842,60 @@ export class PostUpdateMigrator {
       result.upgraded.push(`dev-gate-teeth: stripped default-shaped \`enabled: false\` at ${stripped.join(', ')} so the developmentAgent gate resolves them live (CMT-1438; re-add \`enabled: false\` to deliberately keep one off — it will not be re-stripped)`);
     } else {
       result.skipped.push('dev-gate-teeth: no default-shaped false to strip (marker set)');
+    }
+  }
+
+  // ── LISTEN-EARLY GRADUATION (PR 3270, 2026-11-17): the boot health beacon left the
+  // dev gate and is on for every agent (`enabled !== false`). A fleet agent that
+  // persisted the old default-shaped `monitoring.bootHealthBeacon.enabled: false`
+  // (applyDefaults is add-missing-only, and migrateDevGateTeethStrip skips fleet
+  // agents) would otherwise keep the beacon dark with no message — the exact M5
+  // outage shape. While dev-gated, a fleet `false` was the dark default, never a
+  // working choice, so it is stripped ONCE here. Dev agents are skipped: their stale
+  // default was already stripped by dev-gate-teeth, so a `false` left there is a
+  // deliberate off. Run-once marker: a later operator-set `false` is never touched.
+  private migrateBootBeaconFleetGraduation(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('boot-beacon-graduation: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`boot-beacon-graduation: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+    const marker = 'boot-beacon-graduation-strip';
+    if (migrations.some(m => typeof m === 'string' && m.startsWith(marker))) {
+      result.skipped.push('boot-beacon-graduation: already migrated');
+      return;
+    }
+    let stripped = false;
+    if (config.developmentAgent !== true) {
+      const mon = config.monitoring;
+      if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+        const sub = (mon as Record<string, unknown>).bootHealthBeacon;
+        if (sub && typeof sub === 'object' && !Array.isArray(sub) && (sub as Record<string, unknown>).enabled === false) {
+          delete (sub as Record<string, unknown>).enabled;
+          stripped = true;
+        }
+      }
+    }
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`boot-beacon-graduation: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (stripped) {
+      result.upgraded.push('boot-beacon-graduation: stripped the stale dark-default `monitoring.bootHealthBeacon.enabled: false` so the boot beacon runs (it is on for every agent now; re-add `enabled: false` to keep it off — it will not be re-stripped)');
+    } else {
+      result.skipped.push('boot-beacon-graduation: nothing to strip (marker set)');
     }
   }
 

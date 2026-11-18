@@ -15,7 +15,13 @@ import { Lexer, type Token, type Tokens } from 'marked';
 import { PROJECTION_VERSION, projectText } from './projection.js';
 
 export type Mark = 'strong' | 'em' | 'code' | 'del' | 'link';
-export interface Run { text: string; marks?: Mark[]; href?: string }
+/**
+ * `cell` and `sep` exist only on a table row's runs: `cell` is the column the run belongs to and
+ * `sep` marks the " | " joiner between columns. The joiner is part of the projection text (so
+ * offsets and quotes stay exact) but the page lays the row out as real table cells and does not
+ * show it.
+ */
+export interface Run { text: string; marks?: Mark[]; href?: string; cell?: number; sep?: true }
 export interface Block {
   kind: 'heading' | 'paragraph' | 'code' | 'html' | 'item' | 'row' | 'text';
   level?: number;
@@ -24,11 +30,13 @@ export interface Block {
   quote?: number;
   start: number;
   end: number;
+  /** A table row only: each column's alignment from the delimiter row, `null` for unset. */
+  align?: Array<'left' | 'center' | 'right' | null>;
   runs: Run[];
 }
 
-interface RawRun { text: string; marks: Mark[]; href?: string }
-interface RawBlock { kind: Block['kind']; level?: number; ordered?: boolean; header?: boolean; quote: number; runs: RawRun[] }
+interface RawRun { text: string; marks: Mark[]; href?: string; cell?: number; sep?: true }
+interface RawBlock { kind: Block['kind']; level?: number; ordered?: boolean; header?: boolean; align?: Block['align']; quote: number; runs: RawRun[] }
 
 const LEXER_OPTIONS_V1 = Object.freeze({ gfm: true, breaks: false, pedantic: false });
 
@@ -87,11 +95,11 @@ function walk(tokens: readonly Token[], emit: (b: RawBlock) => void, quote: numb
         const row = (cells: Tokens.TableCell[], header: boolean): void => {
           const runs: RawRun[] = [];
           cells.forEach((c, i) => {
-            if (i > 0) runs.push({ text: ' | ', marks: [] });
+            if (i > 0) runs.push({ text: ' | ', marks: [], sep: true });
             // Cells are collapsed individually by the projection: do the same here.
-            runs.push(...collapseRuns(inlineRuns(c.tokens, [])));
+            for (const r of collapseRuns(inlineRuns(c.tokens, []))) runs.push({ ...r, cell: i });
           });
-          emit({ kind: 'row', header, quote, runs });
+          emit({ kind: 'row', header, align: table.align.map((a) => a ?? null), quote, runs });
         };
         row(table.header, true);
         for (const r of table.rows) row(r, false);
@@ -126,7 +134,7 @@ function collapseRuns(runs: RawRun[]): RawRun[] {
     if (last && (last as RawRun & { _r?: number })._r === ch.r) last.text += ch.c;
     else merged.push({ ...runs[ch.r], text: ch.c, _r: ch.r } as RawRun & { _r: number });
   }
-  return merged.map(({ text, marks, href }) => ({ text, marks, ...(href ? { href } : {}) }));
+  return merged.map(({ text, marks, href, cell, sep }) => ({ text, marks, ...(href ? { href } : {}), ...(cell !== undefined ? { cell } : {}), ...(sep ? { sep } : {}) }));
 }
 
 /**
@@ -150,7 +158,8 @@ export function renderTree(markdown: string, projectionVersion: number = PROJECT
     blocks.push({
       kind: b.kind, start, end: offset, quote: b.quote || undefined,
       ...(b.level !== undefined ? { level: b.level } : {}), ...(b.ordered !== undefined ? { ordered: b.ordered } : {}), ...(b.header !== undefined ? { header: b.header } : {}),
-      runs: runs.map((r) => ({ text: r.text, ...(r.marks.length ? { marks: r.marks } : {}), ...(r.href ? { href: r.href } : {}) })),
+      ...(b.align ? { align: b.align } : {}),
+      runs: runs.map((r) => ({ text: r.text, ...(r.marks.length ? { marks: r.marks } : {}), ...(r.href ? { href: r.href } : {}), ...(r.cell !== undefined ? { cell: r.cell } : {}), ...(r.sep ? { sep: r.sep } : {}) })),
     });
   }
   const joined = blocks.map((b) => b.runs.map((r) => r.text).join('')).join('\n');

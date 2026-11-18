@@ -20,13 +20,13 @@ describe('careRow', () => {
   it('a signed-up machine says when it restarts, that it is practising only, and when it last started', () => {
     const r = careRow({ ...base, enrolment: enrolled }, { self: true, name: 'Mac Studio', now: NOW });
     expect(r.sentence).toBe('Weekly restart between 03:00 and 06:00 is practising only: nothing restarts on its own yet. Last start 3 days ago.');
-    expect(r.controls).toEqual({ signUp: false, skip: true, unskip: false, window: true, restartNow: true });
+    expect(r.controls).toEqual({ signUp: false, skip: true, unskip: false, window: true, restartNow: true, off: true });
   });
 
   it('a machine not signed up offers Sign up, not Restart now', () => {
     const r = careRow({ ...base, enrolment: notEnrolled }, { self: true, now: NOW });
     expect(r.sentence).toMatch(/^Not signed up, so nothing restarts here\./);
-    expect(r.controls).toMatchObject({ signUp: true, restartNow: false });
+    expect(r.controls).toMatchObject({ signUp: true, restartNow: false, off: false });
   });
 
   it('says why sign-up waits: someone else signed in, or a login screen after restart', () => {
@@ -96,6 +96,9 @@ describe('controlAnswer', () => {
     expect(controlAnswer('window', { ok: true, status: 200, data: { effectiveWindow: { start: '01:00', end: '04:00' } } }).message).toContain('between 01:00 and 04:00');
     expect(controlAnswer('sign-up', { ok: true, status: 200, data: { outcome: 'already-offered' } }).ok).toBe(true);
     expect(controlAnswer('sign-up', { ok: true, status: 200, data: { outcome: 'not-offerable' } }).ok).toBe(false);
+    expect(controlAnswer('off', { ok: true, status: 200, data: { ok: true, wasEnrolled: true, ruleRemoved: true } }).message).toMatch(/^Turned off\..*permission is removed/);
+    expect(controlAnswer('off', { ok: true, status: 200, data: { ok: true, wasEnrolled: true, ruleRemoved: false, reason: 'needs-admin' } }).message).toMatch(/still installed but unused/);
+    expect(controlAnswer('off', { ok: true, status: 200, data: { ok: true, wasEnrolled: false } }).message).toMatch(/was not signed up/);
   });
 });
 
@@ -131,6 +134,7 @@ describe('Machine care page in a DOM', () => {
         posts.push({ url, headers: init.headers || {}, body: init.body ? JSON.parse(init.body) : null });
         if (url === '/dashboard/unlock') return { ok: true, status: 200, json: async () => ({ operatorSessionToken: 'op-1', operatorSessionExpiresAt: new Date(Date.now() + 600000).toISOString() }) };
         if (url === '/machine-maintenance/skip') return { ok: true, status: 200, json: async () => ({ ok: true, controls: { skipUntil: Date.now() + 72 * H } }) };
+        if (url === '/machine-maintenance/remove') return { ok: true, status: 200, json: async () => ({ ok: true, wasEnrolled: true, ruleRemoved: true }) };
         if (url === '/machine-maintenance/restart-now/offer') return { ok: true, status: 200, json: async () => ({ result: 'offered', named: [], recentBoot: false }) };
       }
       const b = table[url];
@@ -154,7 +158,7 @@ describe('Machine care page in a DOM', () => {
     await tick();
     const offer = posts.find((p) => p.url === '/machine-maintenance/restart-now/offer')!;
     expect(offer.headers['X-Instar-Operator-Session']).toBeUndefined();
-    expect(cards[0].querySelector('.action-status')!.textContent).toContain('Telegram');
+    expect(cards[0].querySelector('.care-status')!.textContent).toContain('Telegram');
 
     btn('Skip once').click();
     await tick();
@@ -165,6 +169,16 @@ describe('Machine care page in a DOM', () => {
     await tick();
     const skip = posts.find((p) => p.url === '/machine-maintenance/skip')!;
     expect(skip.headers['X-Instar-Operator-Session']).toBe('op-1');
-    expect(cards[0].querySelector('.action-status')!.textContent).toMatch(/^Skipped\. The next restart is after /);
+    expect(cards[0].querySelector('.care-status')!.textContent).toMatch(/^Skipped\. The next restart is after /);
+
+    // Turn off: a confirm naming the machine, then the held PIN unlock goes with the request.
+    const offBtn = btn('Turn off');
+    offBtn.click();
+    expect(cards[0].querySelector('.confirm-text')!.textContent).toContain('Stop restarting Mac Studio?');
+    ([...cards[0].querySelectorAll('.confirm-row button')].find((b) => b.textContent === 'Turn off') as HTMLButtonElement).click();
+    await tick();
+    const removed = posts.find((p) => p.url === '/machine-maintenance/remove')!;
+    expect(removed.headers['X-Instar-Operator-Session']).toBe('op-1');
+    expect(cards[0].textContent).toContain('Turned off.');
   });
 });

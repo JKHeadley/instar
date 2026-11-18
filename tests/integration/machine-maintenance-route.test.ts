@@ -285,4 +285,35 @@ describe('POST /machine-maintenance/skip, /unskip, /window (integration, Part F)
     expect(status.body).toMatchObject({ controls: { skipped: false, window: { start: '01:00', end: '04:00' } }, settings: { window: { start: '01:00', end: '04:00' } } });
     expect((await op('/machine-maintenance/window').send({ reset: true })).body).toMatchObject({ ok: true, effectiveWindow: DEFAULT_MACHINE_MAINTENANCE.window });
   });
+
+  it('POST /machine-maintenance/remove (Off): 401 without the PIN unlock, 503 dark, then the record is set aside and the rule taken out', async () => {
+    const off = (session?: string) => { const r = request(appWith(true)).post('/machine-maintenance/remove').set('Authorization', `Bearer ${AUTH}`); return session ? r.set('X-Instar-Operator-Session', session) : r; };
+    expect((await request(appWith(true)).post('/machine-maintenance/remove')).status).toBe(401);
+    const noPin = await off();
+    expect(noPin.status).toBe(401);
+    expect(noPin.body.error).toMatch(/PIN unlock/);
+    expect((await off(SESSION)).status).toBe(503);
+    const host = path.join(dir, 'host');
+    fs.mkdirSync(host, { recursive: true });
+    fs.writeFileSync(path.join(host, 'enrolment.json'), JSON.stringify({ machineId: 'm1', principal: 'telegram:7' }));
+    const ran: string[][] = [];
+    setActiveEnrolmentController(new EnrolmentController({
+      hostDir: host, agent: 'echo', user: 'me', platform: 'darwin', machineId: () => 'm1', machineLabel: () => 'Mac',
+      status: async () => { throw new Error('not read by remove'); },
+      ingressArmed: () => true, sendOffer: async () => 1, openApps: async () => null,
+      run: async (command, args) => { ran.push([command, ...args]); return { code: 0, stdout: '' }; },
+    }));
+    try {
+      expect((await off('nope')).status).toBe(401);
+      expect(fs.existsSync(path.join(host, 'enrolment.json'))).toBe(true);
+      const res = await off(SESSION);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, wasEnrolled: true, ruleRemoved: true });
+      expect(fs.existsSync(path.join(host, 'enrolment.json'))).toBe(false);
+      expect(JSON.parse(fs.readFileSync(path.join(host, 'enrolment.removed.json'), 'utf-8'))).toMatchObject({ by: 'dashboard', record: { principal: 'telegram:7' } });
+      expect(ran.map((r) => r.join(' '))).toEqual(['sudo -n true', 'sudo -n rm -f /etc/sudoers.d/instar-reboot', 'sudo -k']);
+    } finally {
+      setActiveEnrolmentController(null);
+    }
+  });
 });

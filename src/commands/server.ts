@@ -364,6 +364,8 @@ import { IdentityRecoveryBearerAuthority } from '../core/IdentityRecoveryBearer.
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
+import { describeRestartRequester } from '../core/restartRequestAttribution.js';
+import { bootReadiness, isPeerBooting } from '../server/BootReadiness.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import { EvolutionArchiveSync } from '../core/EvolutionArchiveSync.js';
 import { admitNoticeToHub, recordHeldHubPost, resolveHubFilterMode } from '../messaging/attentionHubPolicy.js';
@@ -4849,6 +4851,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // must remain visible to GET /guards as diverged-pending-restart.
   const bootGuardConfigSnapshot = resolveGuardConfigSnapshot(config.projectDir);
   ensureStateDir(config.stateDir);
+  // Listen early: the typed boot state the beacon and /health report (bootReadiness.state).
+  bootReadiness().init(config.stateDir);
+  bootReadiness().mark('config');
   // attention-lifecycle-close-on-cause §3.2 — a cleared condition closes every
   // episode's attention row. `telegram` is constructed much later, so the store
   // calls through a late-bound reference assigned once the adapter exists.
@@ -5135,6 +5140,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       process.exit(1);
     }
     installReleaseHandlers(singleInstanceLock);
+    bootReadiness().mark('instance-lock');
 
     // ── Boot health beacon (topic 21816 root cause #1 — Liveness Before Load) ──
     // The heavy boot below (TopicMemory/SemanticMemory load + session reconcile)
@@ -5142,17 +5148,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     // /health and the supervisor can mistake a slow boot for a dead process →
     // the restart loop. This minimal beacon answers /health from the very start
     // of boot; it is closed at the handoff just before server.start().
-    // DEV-GATED (CMT-1438): `enabled` OMITTED from defaults so the developmentAgent
-    // gate decides — LIVE on a dev agent, DARK on the fleet; the grace bump (#979)
-    // covers the window on the fleet. D4-verified read-only (localhost-only inbound
-    // socket, zero outbound). Belt-and-suspenders, not a boot reorder.
+    // Was dev-gated (CMT-1438); on for every agent since 2026-11-16. Read-only: an
+    // inbound socket that answers the typed boot state (BootReadiness), zero outbound.
+    // Belt-and-suspenders, not a boot reorder.
     let bootBeacon: BootHealthBeacon | undefined;
     let bootBeaconBindErrorCode: string | null = null;
-    if (resolveDevAgentGate(config.monitoring?.bootHealthBeacon?.enabled, config)) {
+    // Listen early (2026-11-16, graduated to every agent): `enabled: false` is the off switch.
+    // It binds the SAME host the real server will, so mesh peers get a typed "starting"
+    // answer instead of ECONNREFUSED. The host predicate mirrors AgentServer's
+    // (`meshBindActive` = has a machine identity and the mesh transport is not off).
+    if (config.monitoring?.bootHealthBeacon?.enabled !== false) {
       try {
-        bootBeacon = new BootHealthBeacon(config.port);
+        const earlyBindHost = resolveMeshBindHost({
+          configHost: config.host,
+          meshBindActive: new MachineIdentityManager(config.stateDir).hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false,
+          meshBindHostOverride: config.multiMachine?.meshTransport?.bindHost,
+        });
+        bootBeacon = new BootHealthBeacon(config.port, earlyBindHost);
         await bootBeacon.start();
-        console.log(pc.dim('  Boot health beacon: answering /health during boot'));
+        console.log(pc.dim(`  Boot health beacon: listening early on ${earlyBindHost}:${config.port} (typed "starting" until ready)`));
       } catch (err) {
         // @silent-fallback-ok — the boot beacon is best-effort liveness; a bind
         // failure must NEVER block the server boot (the startupGrace bump still
@@ -5564,6 +5578,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       onLeasePullTick: () => _leaseHandbackReconciler?.observe(),
     });
     const machineRole = coordinator.start();
+    bootReadiness().mark('multi-machine');
     // The origin writer and native app conversations require a current lease even
     // on ordinary, non-development installations (without Telegram, the app was
     // the only surface and its lease lapsed at TTL between 2-minute heartbeats).
@@ -9268,6 +9283,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       scheduler.start();
       console.log(pc.green('  Scheduler started'));
+      bootReadiness().mark('scheduler');
 
       // ── CrashLoopPauser (B3.1) — the construction that was missing ──────
       //
@@ -9766,6 +9782,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
+      bootReadiness().mark('messaging');
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
 
       // UNIFIED-SESSION-LIFECYCLE bonus — session label follows topic rename.
@@ -15503,7 +15520,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             updatesTopicId,
           );
         } else {
-          console.log(`[ForegroundRestartWatcher] Silent restart — no active sessions (v${request.previousVersion} → v${request.targetVersion})`);
+          console.log(request.targetVersion
+            ? `[ForegroundRestartWatcher] Silent restart — no active sessions (v${request.previousVersion} → v${request.targetVersion})`
+            : `[ForegroundRestartWatcher] Silent restart — no active sessions (requested by ${describeRestartRequester(request).label}; no version change)`);
         }
       },
     });
@@ -25681,6 +25700,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   headers: { Authorization: `Bearer ${config.authToken}` },
                   signal: AbortSignal.timeout(3000),
                 });
+                // A booting peer is unknown (retry), not "stand-down off there".
+                if (isPeerBooting(r)) throw new Error('peer-starting');
                 if (r.status === 503) return { featureDark: true as const };
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return (await r.json()) as {
@@ -26748,6 +26769,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const built = wiring.buildLocalVerifyService({
           config: lvCfg,
           expectedGhLogin: gpCfg?.expectedGhLogin,
+          // Read live: a changed trusted operator login applies without a restart.
+          liveOperatorGhLogin: () => { const v = liveConfig.get<unknown>('monitoring.localVerify.operatorGhLogin', null); return typeof v === 'string' && v.trim() ? v.trim() : null; },
           repo: 'JKHeadley/instar',
           repoPath: process.cwd(),
           stateDir: config.stateDir,
@@ -26825,6 +26848,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             machineId: lvMachineId,
             expectedGhLogin: gpCfg.expectedGhLogin,
             operatorGhLogin: lvCfg?.operatorGhLogin?.trim() || null,
+            liveOperatorGhLogin: () => { const v = liveConfig.get<unknown>('monitoring.localVerify.operatorGhLogin', null); return typeof v === 'string' && v.trim() ? v.trim() : null; },
             service: localVerifyService && !localVerifyService.isPeerOnly() ? localVerifyService : null,
             localVerifyEnabled: () => liveConfig.get<boolean>('monitoring.localVerify.enabled', false) === true,
             postStatuses: () => liveConfig.get<boolean>('monitoring.localVerify.postStatuses', false) === true,
@@ -27708,6 +27732,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               readBootAt: restartBootAt,
               freshCheck: () => {
                 if (!mmEnabled()) return 'machine care switched off';
+                // Off (CMT-1203) removes the record: a countdown already running is refused here, in the lock.
+                if (!fs.existsSync(path.join(os.homedir(), '.instar', 'host-maintenance', 'enrolment.json'))) return 'machine not signed up';
                 if (holdsBeforeDispatch === null) return 'safety holds unread';
                 const hard = holdsBeforeDispatch.find((h) => (h.id === 'S1' || h.id === 'S2') && h.active);
                 return hard ? `${hard.label.toLowerCase()} (${hard.id})` : null;
@@ -36936,6 +36962,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // construction left a first-tick window with no ReapGuard and, on standby,
     // no per-session write admission.
     sessionManager.startMonitoring();
+    bootReadiness().mark('sessions');
     wireTeamChecks(server);
     await server.start();
     // After the port is bound: installs the Linux Chrome driver's packages on a new agent. All

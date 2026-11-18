@@ -682,12 +682,6 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'D4-verified inert-on-enable: server constructs the sentinel but does NOT start it — ticks are driven by the SEPARATE `release-readiness-check` cron job which ships (and is) enabled:false. So dev-gating makes only the READ surface live (routes stop 503-ing); the send capability is reachable only if the operator ALSO enables that dark job (a P17-budgeted createForumTopic), a separate explicit decision pinned by a drift-guard test. No egress/spend on enable.',
   },
   {
-    name: 'bootHealthBeacon',
-    configPath: 'monitoring.bootHealthBeacon.enabled',
-    description: 'Boot health beacon — a minimal /health responder during the heavy boot phase.',
-    justification: 'D4-verified read-only: binds a localhost-only inbound /health socket during boot and cleanly releases it before the real server binds; zero outbound (no fetch/Telegram), no spend, no destructive action.',
-  },
-  {
     name: 'meshCoherenceLiveCheck',
     configPath: 'monitoring.meshCoherenceLiveCheck.enabled',
     description: 'Periodic mesh config-vs-live-state coherence check (signal-only log warnings; per-feature metric). Spec: docs/specs/mesh-coherence-live-state-honesty.md.',

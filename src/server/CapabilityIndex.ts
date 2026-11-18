@@ -634,6 +634,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileTrustApproval',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Approving a trust raise from the Instar app (docs/specs/app-trust-approval.md), for a person with no Telegram or Slack owner chat. A paired device records a withdrawable acceptance once (the first one only for the device the Mac app paired on the agent\'s computer; a later one needs an approval from an accepted device; the Mac app replaces its own key locally). Then POST /trust/requests with no chat sends the request to the accepted devices (status sent, via device) instead of no-approver, and the person approves it on the device with a presence signature (Face ID / Touch ID) over a single-use challenge. Each approval counts once, for the exact proposal hash, and is refused after withdrawal or a key change. GET /trust/requests shows result applied / not-applied / unknown and how it was approved; POST /trust/acceptance/withdraw {adapter:"device"} turns device approvals off. The bearer token and the dashboard PIN can never approve or record an acceptance.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/trust/requests', 'POST /mobile/trust/requests/:id/approve', 'POST /mobile/trust/device-acceptance', 'POST /mobile/trust/device-acceptance/withdraw'],
+    }),
+  },
+  {
     key: 'mobileProposalsInsideScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
@@ -1759,7 +1769,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'GET /trust — full trust profile',
             'GET /trust/summary — compact trust summary',
             'POST /trust/grant — set a trust level (a stricter level applies; a wider one is refused with 403 naming the approval it needs)',
-            'POST /trust/requests { change } — open the person\'s approval request for a raise (card to their direct chat; they reply approve <code>)',
+            'POST /trust/requests { change } — open the person\'s approval request for a raise (card to their direct chat; they reply approve <code>; with no chat, sent to the Instar app devices that accepted approvals)',
             'GET /trust/requests — open and past approval requests',
             'GET /trust/elevations — pending elevation suggestions',
             'GET /trust/changelog — recent trust changes',
@@ -1881,6 +1891,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  * here — never both, never neither.
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'server', reason: 'POST /server/restart (listen-early-boot-readiness spec) — an attributed request for this server\'s own supervised restart (requestedBy + reason); operator/session plumbing, not a user capability. The agent learns it via the CLAUDE.md awareness card (server-restart-and-boot-readiness), not /capabilities' },
   { prefix: 'transcript-copies', reason: 'Transcript copies on every machine (native-conversation-any-machine-access §3f) — owner-only GET /transcript-copies reports per-session copy coverage (no text) for a dark, dev-gated feature; the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'memory-picker', reason: 'Jev memory picker (jev-memory-picker spec) — POST /memory-picker/session-context is the session-start hook\'s call (and its compaction twin); dev-gated, shadow by default (503 when off); the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'jev-correction', reason: 'Jev correction-detector shadow (jev-correction-shadow spec) — GET /jev-correction/summary reads a dark, log-only research instrument comparing Jev with the correction sentinel\'s Layer-0 detector; the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether Jev should feed the sentinel' },
