@@ -35,7 +35,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/work-card-closeout-routes.test.ts' });
 });
 
-const CARD = { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false };
+const CARD = { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false, recommendation: 'Book Hall A: it fits 40 and is near the station.', whyYou: 'Only you can choose where the launch is held.' };
 
 function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | null; specApprovalJudge?: WorkBoardRouteDeps['specApprovalJudge'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-card-closeout-int-'));
