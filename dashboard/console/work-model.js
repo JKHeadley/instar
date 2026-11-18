@@ -141,6 +141,20 @@ export function closeoutLine(card) {
   if (!c || typeof c.note !== 'string') return null;
   return `${c.as === 'done' ? 'Closed as done' : 'Closed as not important'} by ${byWords(c.by)}${c.at ? `, ${whenWords(c.at)}` : ''}: ${c.note}`;
 }
+// ── slice 2 (docs/specs/work-board-cards-appear.md §2–3): why you, what a card is about, server-owned cards ──
+/** What a card is about, in words: pull requests by number and plans by kind; never an internal id, never the Chief of Staff's own key. */
+export function coversWords(card) {
+  const keys = Array.isArray(card && card.covers) ? card.covers.filter((k) => typeof k === 'string') : [];
+  // One line per pull request and per plan, however the key was written (pr:3404, pr:#3404, pr:03404).
+  const prs = [...new Set(keys.map((k) => /^pr:#?(\d{1,7})$/.exec(k)).filter(Boolean).map((m) => Number(m[1])))].map((n) => `pull request #${n}`);
+  const plans = new Set(keys.filter((k) => k.startsWith('plan:'))).size;
+  const parts = [...prs, ...(plans ? [plans === 1 ? 'a plan in Needs you' : `${plans} plans in Needs you`] : [])];
+  return parts.length ? parts.join(', ') : null;
+}
+/** A card the Chief of Staff writes and updates itself (a server-owned wait card). */
+export function chiefOfStaffCard(card) { return !!card && card.serverOwned === true; }
+export const CHIEF_OF_STAFF_WORDS = 'From the Chief of Staff';
+
 /** Whose turn it is, for the card's colour: you (light red), agent or others (light blue), nobody. */
 export function turnOf(card) { return card && ['you', 'agent', 'others', 'nobody'].includes(card.turn) ? card.turn : null; }
 

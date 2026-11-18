@@ -15,7 +15,7 @@ import {
   LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
-  OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf,
+  OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf, coversWords, chiefOfStaffCard, CHIEF_OF_STAFF_WORDS,
 } from './work-model.js';
 
 const EYEBROW = 'Work · Work board';
@@ -30,6 +30,18 @@ async function send(path, body) {
     const r = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
     return { status: r.status, data: await r.json().catch(() => ({})) };
   } catch { return { status: 0, data: {} }; }
+}
+
+function clearCardFromHash() {
+  const h = location.hash || '';
+  const i = h.indexOf('?');
+  if (i < 0) return;
+  const params = new URLSearchParams(h.slice(i + 1));
+  if (!params.has('card')) return;
+  params.delete('card');
+  const rest = params.toString();
+  try { history.replaceState(history.state, '', `${location.pathname}${location.search}${h.slice(0, i)}${rest ? `?${rest}` : ''}`); } catch { /* the address stays; the once-only guard still holds */ }
+  openedFromLink = null;
 }
 
 function queryOf() { const h = location.hash || ''; const i = h.indexOf('?'); return i >= 0 ? h.slice(i + 1) : ''; }
@@ -90,6 +102,9 @@ export async function renderWork(main, ctx) {
     const all = LANES.flatMap((l) => board.lanes[l.id].cards);
     const c = all.find((x) => x.id === want);
     if (c) openCard(c, refresh);
+    // Take the card out of the address once it is open, so the same link (a Needs-you row's card link) opens it
+    // again on a later tap; the page's own refresh still never reopens a card the person closed.
+    clearCardFromHash();
   }
 }
 
@@ -120,6 +135,7 @@ function cardRowNode(card, refresh, lead) {
   return el('div', { class: `${lead ? 'need-card work-card' : 'need-card muted-card work-card'}${turn ? ` turn-${turn}` : ''}`, 'data-card': card.id, ...(turn ? { 'data-turn': turn } : {}) },
     title,
     r.sub ? el('p', { class: 'need-sub', text: r.sub }) : null,
+    chiefOfStaffCard(card) ? el('p', { class: 'need-sub work-tag', text: CHIEF_OF_STAFF_WORDS }) : null,
     r.outward ? el('p', { class: 'need-sub', text: card.outwardWords || OUTWARD_WORDS }) : null,
     r.notes.map((t) => el('p', { class: 'need-sub work-note', text: t })),
     phoneOnlyLine(card) ? el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }) : null,
@@ -239,6 +255,8 @@ function openCard(card, refresh) {
   const facts = [
     { label: 'Now', text: String(card.needLine || '') },
     { label: 'Carried by', text: principalWords(card.carrier) },
+    chiefOfStaffCard(card) ? { label: 'Written by', text: 'The Chief of Staff, which keeps this card up to date itself' } : null,
+    coversWords(card) ? { label: 'About', text: coversWords(card) } : null,
     card.waitingOn ? { label: 'Waiting on', text: principalWords(card.waitingOn) } : null,
     { label: 'Outside your team', text: card.outward ? (card.outwardWords || OUTWARD_WORDS) : 'Nothing is sent outside your team and nothing is spent' },
     card.due ? { label: 'Due', text: when(card.due) } : null,
@@ -253,6 +271,7 @@ function openCard(card, refresh) {
       : el('span', { text: source.label }), source.note ? el('span', { text: ` · ${source.note}` }) : null));
   if (card.need) body.push(block('What is needed', needNode(card.need)));
   if (card.recommendation) body.push(block('The agent recommends', el('p', { class: 'card-line work-pre', text: String(card.recommendation) })));
+  if (card.whyYou) body.push(block('Why you', el('p', { class: 'card-line work-pre', text: String(card.whyYou) })));
   // A person's close in force: who closed it, when, and the note (work-front-doors §6).
   const closed = closeoutLine(card);
   if (closed) body.push(block('Closed', el('p', { class: 'card-line work-pre', text: closed })));
