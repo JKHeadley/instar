@@ -162,6 +162,9 @@ export class PinThrottle {
     return !m || m.failures < this.cfg.markedAbuseCap;
   }
 
+  /** Read-only: whether a verified marker id is still honoured (not abused past its own cap). */
+  isMarkerHonored(markerId: string): boolean { return this.markerHonored(markerId); }
+
   /** Decide whether this attempt reaches the PIN check, BEFORE the PIN is compared. A blocked
    *  attempt is refused without comparing the PIN (no success oracle, a real limit). `markerId` is
    *  the verified prior-unlock cookie id, or null for an unmarked request. */

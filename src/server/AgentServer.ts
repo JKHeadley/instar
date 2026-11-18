@@ -286,6 +286,7 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { LOCAL_ACCESS_PREFIX, LocalAccessService, verifiedLocalBudgetKey } from './localAccessRoutes.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -924,6 +925,8 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** The one-time local dashboard link (piece 1a); constructed with the unlock route. */
+  localAccess: LocalAccessService | null = null;
   private deliverA2aToMachine?: (input: {
     machineId: string;
     targetAgent: string;
@@ -2013,6 +2016,8 @@ export class AgentServer {
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
     // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
     this.app.use('/mobile/local-owner-device', express.json({ limit: '4kb' }));
+    // The one-time local dashboard link (identity-security-piece1a-local-link.md): small bodies only.
+    this.app.use(LOCAL_ACCESS_PREFIX, express.json({ limit: '8kb' }));
     // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
     this.app.use('/org/checkin', express.json({ limit: '4kb' }));
     this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
@@ -2179,6 +2184,33 @@ export class AgentServer {
     const LOCAL_PIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
     let lastLocalPinAlertAt = -Infinity;
 
+    // Piece 1a (docs/specs/identity-security-piece1a-local-link.md): the one-time local link.
+    // Its credential's only consumer is the unlock route below: a browser holding a verified
+    // credential (and no prior-unlock marker) is judged on the verified-local budget alone.
+    this.localAccess = new LocalAccessService({
+      stateDir: options.config.stateDir,
+      agentName: () => String(configRef.projectName ?? 'agent'),
+      enabled: () => resolveDevAgentGate(configRef.security?.localAccessLink?.enabled, configRef),
+      boundAddress: () => this.server?.address() ?? null,
+      dashboardDir,
+    });
+    this.localAccess.mount(this.app);
+    const verifiedPinMem = new Map<string, { count: number; resetAt: number }>();
+    const verifiedPinBlocked = (key: string, now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.blocked(key, LOCAL_PIN_MAX_FAILURES);
+      const e = verifiedPinMem.get(key);
+      return !!e && now <= e.resetAt && e.count >= LOCAL_PIN_MAX_FAILURES;
+    };
+    /** Records one verified-local failure; true when this failure reached the cap. */
+    const recordVerifiedPinFailure = (key: string, now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.recordFailure(key, LOCAL_PIN_MAX_FAILURES) <= 0;
+      let e = verifiedPinMem.get(key);
+      if (!e || now > e.resetAt) { e = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS }; verifiedPinMem.set(key, e); }
+      e.count++;
+      return e.count === LOCAL_PIN_MAX_FAILURES;
+    };
+    let lastVerifiedPinAlertAt = -Infinity;
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
       if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
@@ -2204,16 +2236,25 @@ export class AgentServer {
         : (req.ip || req.socket.remoteAddress || 'unknown');
       const markerId = readPinMarker(req);
       let entry: { count: number; resetAt: number } | undefined;
+      // Piece 1a §5: checked first, before the local/remote split. A browser with a marker keeps
+      // today's marker rules; the credential is not used.
+      // When the verified-local budget is full, the request falls back to today's rules: a valid
+      // link never makes unlock harder than it is without one.
+      const verifiedKey = verifiedLocalBudgetKey(this.meshSelfId ?? null, configRef.dashboardPinGeneration ?? null);
+      // An honoured marker keeps today's marker rules; no marker, or an abused one, may use the link.
+      const markerHonoured = !!markerId && (!pinThrottle || pinThrottle.isMarkerHonored(markerId));
+      const verifiedLocal = !markerHonoured && this.localAccess!.verifyUnlockLocalAccess(req) && !verifiedPinBlocked(verifiedKey, now);
 
       // SEC-070: a local caller without a prior-unlock marker gets its OWN small budget. Other
       // processes on this machine (including confined sessions, which share the loopback) are
       // local too, so local must not mean unlimited. A browser that unlocked before (signed
       // marker) is never capped, and this budget is separate from the remote one, so a stranger
       // elsewhere can never lock the owner out at the machine.
-      const localUnmarked = isLocalDirect && !markerId;
+      const localUnmarked = isLocalDirect && !markerId && !verifiedLocal;
       if (pinThrottle && localUnmarked && localPinBlocked(now)) {
         res.status(429).json({
-          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.'
+            + (this.localAccess && !this.localAccess.unavailableReason() ? ` At this computer, ask your agent to open the dashboard for you, or run ${this.localAccess.launcherPath()}.` : ''),
           retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
         });
         return;
@@ -2221,7 +2262,7 @@ export class AgentServer {
       // A local browser that unlocked before is judged on its own marker, exactly like a known
       // remote browser: its gentle backoff and the marked abuse cap apply, so a copied marker
       // cookie is not an unlimited pass from this machine.
-      if (pinThrottle && isLocalDirect && markerId) {
+      if (pinThrottle && isLocalDirect && markerId && !verifiedLocal) {
         const decision = pinThrottle.consult(ip, markerId, now);
         if (!decision.allow) {
           res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
@@ -2229,7 +2270,9 @@ export class AgentServer {
         }
       }
 
-      if (pinThrottle) {
+      if (verifiedLocal) {
+        // Admitted on the verified-local budget (checked above); no stranger limit applies.
+      } else if (pinThrottle) {
         if (!isLocalDirect) {
           const decision = pinThrottle.consult(ip, markerId, now);
           if (!decision.allow) {
@@ -2268,6 +2311,20 @@ export class AgentServer {
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
+        if (verifiedLocal) {
+          if (recordVerifiedPinFailure(verifiedKey, now) && now - lastVerifiedPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+            lastVerifiedPinAlertAt = now;
+            DegradationReporter.getInstance().report({
+              feature: 'DashboardPin.localLinkGuessing',
+              primary: 'Repeated wrong PINs are being entered through the local link on this machine',
+              fallback: 'PIN entry through the local link is paused for a few minutes',
+              reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs through the local link within the window`,
+              impact: 'Only this computer\'s own account can open the local link. If this was not you, a program running as you may be trying to guess your PIN. Your PIN was not accepted.',
+            });
+          }
+          res.status(403).json({ error: 'Incorrect PIN' });
+          return;
+        }
         if (pinThrottle) {
           if (!isLocalDirect) {
             const { alert } = pinThrottle.recordFailure(ip, markerId, now);
@@ -2321,7 +2378,14 @@ export class AgentServer {
           configRef.dashboardPin=policy.pin;configRef.dashboardPinGeneration=policy.generation;
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
-      if (pinThrottle) {
+      if (verifiedLocal) {
+        // Piece 1a: no budget is reset by a success. The marker is still set, so this browser is a
+        // known browser next time.
+        if (pinThrottle && configRef.authToken) {
+          const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
+          res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
+        }
+      } else if (pinThrottle) {
         // The local count is NOT reset by a success: an owner's unlock must not hand a guessing
         // program a fresh budget (the same choice as the remote global budget).
         pinThrottle.recordSuccess(ip, markerId);
@@ -9532,6 +9596,10 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // Piece 1a: only once this process holds the socket (a second instance that fails to bind
+        // never touches the running server's links): revoke links minted before this start, sweep
+        // launch documents, write the launcher.
+        try { this.localAccess?.startSweeps(); } catch (err) { console.warn('[instar] local link start-up sweep failed:', err); } // @silent-fallback-ok — the link reports itself unavailable; unlock keeps today's rules
         // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
         bootReadiness().markReady();
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
@@ -10078,6 +10146,7 @@ export class AgentServer {
 
   async stop(): Promise<void> {
     await this.stopGraphSourceInventory();
+    this.localAccess?.close();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }
     if (this.documentPullTimer) clearInterval(this.documentPullTimer);

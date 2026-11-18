@@ -2824,5 +2824,19 @@
         "note": "Retain unresolved operation scope and monotonic revocation evidence through verified recovery, never expire them into permission. Encrypted action records contain no PIN/session token/private key; their reserved local vault key is excluded from generic secret sync. They are recovery evidence, not a substitute for fresh owner authentication. Backup copies and full authority rollback remain explicit privacy limits."
       }
     }
+    ,{
+      "category": "local-access-link",
+      "description": "The one-time local dashboard link (docs/specs/identity-security-piece1a-local-link.md): the private listener key, the ticket store (ticket digests, challenges, mint nonces, local credentials bound to a browser key), short-lived launch documents and the launcher. Written only by the server process, except the launch document the CLI writes. Never synced, backed up or served (KEY_MATERIAL_PATHS).",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["local-access/listener.key", "local-access/tickets.db", "local-access/tickets.db-wal", "local-access/tickets.db-shm", "local-access/launch/*.html", "bin/dashboard-open"],
+      "grandfathered": false,
+      "retention": {
+        "class": "A", "access": "bounded", "maxBytes": 4194304,
+        "note": "At most 10 unredeemed tickets and 10 live credentials (oldest evicted), 8 open challenges each, mint nonces for 60 seconds; every row is deleted at its 15-minute expiry by the 60-second sweep, and unredeemed tickets are revoked at every server start. The key is 32 bytes; the launcher is rewritten at each start."
+      }
+    }
   ]
 }

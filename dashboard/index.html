@@ -4579,11 +4579,7 @@
       }
 
       // Try PIN-based unlock first, fall back to direct token auth
-      fetch('/dashboard/unlock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin }),
-      })
+      import('/dashboard/local-access.js').then(m => m.postUnlock(pin), () => fetch('/dashboard/unlock', { method: 'POST', cache: 'no-store', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }))
         .then(r => {
           if (r.ok) return r.json();
           if (r.status === 429) throw new Error('Too many attempts. Try again later.');
@@ -9420,7 +9416,7 @@
       operatorSessionToken = ''; operatorSessionExpiresAt = '';
       const pin = window.prompt('Enter your dashboard PIN to switch this feature.');
       if (!pin) return '';
-      const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: pin.trim() }) });
+      const r = await (await import('/dashboard/local-access.js').catch(() => ({ postUnlock: (pin) => fetch('/dashboard/unlock', { method: 'POST', cache: 'no-store', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }) }))).postUnlock(pin.trim());
       const data = await r.json().catch(() => ({}));
       if (r.status === 403 || r.status === 429 || r.status === 400) { showToast(data.error || 'Incorrect PIN', 'error'); return ''; }
       // No PIN endpoint on this install (raw-token login): the switch still works on the
