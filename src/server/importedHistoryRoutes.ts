@@ -1,7 +1,7 @@
 /**
  * Bring your Claude and ChatGPT history into Instar (docs/specs/import-from-claude-chatgpt.md §B, §D).
  *
- *   POST /imported-history/preview          {path}        Bearer or owner  counts only, writes nothing
+ *   POST /imported-history/preview          {path}        Bearer or owner  counts only, temporary private copy
  *   POST /imported-history/apply            {previewId}   Bearer or owner  writes, only for a fresh preview of the same unchanged file
  *   GET  /imported-history/conversations                   Bearer or owner  the list, newest first
  *   GET  /imported-history/conversations/:ref              owner: raw messages; Bearer: quoted history
@@ -9,7 +9,7 @@
  *   GET  /imported-history/search?q=                       Bearer or owner; the agent gets quoted history
  *
  * Apply never runs on its own: it needs a preview made in the last 30 minutes for the same file, still
- * the same size and time. The person's yes reaches it two ways: the owner's own session (the app's
+ * the same size, time and content digest. The person's yes reaches it two ways: the owner's own session (the app's
  * Import button, a later slice), or the agent relaying a yes the person gave in chat after hearing the
  * preview. The agent route is deliberate: the data is the person's own export, it stays on this machine,
  * and deleting <stateDir>/imported-history undoes it. Each apply logs which caller made it. The agent (Bearer) only ever reads
@@ -23,8 +23,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Request, Response, Router } from 'express';
-import { ImportedHistoryStore, type SearchHit } from '../import/ImportedHistoryStore.js';
-import { applyExport, previewExport, type ImportPreview } from '../import/importExport.js';
+import { ImportedHistoryStore, ImportWriterBusy, type SearchHit } from '../import/ImportedHistoryStore.js';
+import { applyExport, previewExport } from '../import/importExport.js';
+import { ArchiveSourceChanged, ArchiveStaging, type ArchiveReceipt } from '../import/archiveStaging.js';
 import { ZipRefused } from '../import/safeZip.js';
 import { removeSecrets, type ImportedMessage } from '../import/exportParsers.js';
 
@@ -44,6 +45,7 @@ export interface ImportedHistoryRouteDeps {
   now?: () => number;
 }
 
+class PreviewExpired extends Error {}
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
 const REF_RE = /^imported:(claude|chatgpt):[A-Za-z0-9_.:-]{1,200}$/;
 
@@ -68,10 +70,13 @@ export function quoteImported(from: string, title: string, date: string | null, 
   return `<imported-history from="${escAttr(from)}" title="${escAttr(title)}" date="${escAttr(date ?? 'unknown')}">\n${safe}\n</imported-history>`;
 }
 
-interface PendingPreview { file: string; size: number; mtimeMs: number; madeAt: number }
+interface PendingPreview { source: string; receipt: ArchiveReceipt; madeAt: number }
 
 export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistoryRouteDeps): void {
   const now = deps.now ?? Date.now;
+  const staging = new ArchiveStaging(deps.stateDir);
+  try { staging.recover(); }
+  catch (err) { deps.log?.({ event: 'imported-history-staging-cleanup-failed', code: (err as NodeJS.ErrnoException).code ?? 'unsafe-staging-directory' }); }
   const previews = new Map<string, PendingPreview>();
   let store: ImportedHistoryStore | null = null;
   const getStore = () => (store ??= new ImportedHistoryStore(deps.stateDir));
@@ -99,17 +104,23 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
       res.status(400).json({ error: 'bad-path', detail: 'Give the full path of the export .zip file.' }); return;
     }
     let st: fs.Stats;
-    try { st = fs.statSync(p.path); } catch { res.status(404).json({ error: 'not-found', detail: 'That file is not there.' }); return; }
+    try { st = fs.lstatSync(p.path); } catch { res.status(404).json({ error: 'not-found', detail: 'That file is not there.' }); return; }
     if (!st.isFile()) { res.status(400).json({ error: 'bad-path', detail: 'That is not a file.' }); return; }
     if (previewing) { res.status(409).json({ error: 'preview-running', detail: 'A preview is already running.' }); return; }
     previewing = true;
-    let preview: ImportPreview;
-    try { preview = await previewExport(p.path); } catch (err) { refused(res, err); return; } finally { previewing = false; }
-    for (const [id, v] of previews) if (now() - v.madeAt > PREVIEW_TTL_MS) previews.delete(id);
-    while (previews.size >= MAX_PENDING) previews.delete(previews.keys().next().value as string);
-    const previewId = crypto.randomBytes(12).toString('hex');
-    previews.set(previewId, { file: p.path, size: st.size, mtimeMs: st.mtimeMs, madeAt: now() });
-    res.json({ previewId, expiresInMinutes: PREVIEW_TTL_MS / 60000, preview });
+    try {
+      const { preview, receipt } = await staging.withSnapshot(p.path, async (file, receipt) => ({
+        preview: await previewExport(file), receipt,
+      }));
+      for (const [id, v] of previews) if (now() - v.madeAt > PREVIEW_TTL_MS) previews.delete(id);
+      while (previews.size >= MAX_PENDING) previews.delete(previews.keys().next().value as string);
+      const previewId = crypto.randomBytes(12).toString('hex');
+      previews.set(previewId, { source: p.path, receipt, madeAt: now() });
+      res.json({ previewId, expiresInMinutes: PREVIEW_TTL_MS / 60000, preview });
+    } catch (err) {
+      if (err instanceof ArchiveSourceChanged) { res.status(409).json({ error: 'file-changed', detail: 'The export file changed. Preview it again.' }); return; }
+      refused(res, err);
+    } finally { previewing = false; }
   });
 
   router.post(['/imported-history/apply', '/mobile/imported-history/apply'], async (req, res) => {
@@ -119,19 +130,41 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
     if (!pending || now() - pending.madeAt > PREVIEW_TTL_MS) {
       res.status(409).json({ error: 'preview-needed', detail: 'Show the person a fresh preview first, then apply it.' }); return;
     }
-    let st: fs.Stats;
-    try { st = fs.statSync(pending.file); } catch { res.status(409).json({ error: 'file-changed', detail: 'The export file is gone. Preview it again.' }); return; }
-    if (st.size !== pending.size || st.mtimeMs !== pending.mtimeMs) {
-      res.status(409).json({ error: 'file-changed', detail: 'The export file changed since the preview. Preview it again.' }); return;
-    }
     if (applying) { res.status(409).json({ error: 'import-running', detail: 'An import is already running.' }); return; }
     applying = true;
-    previews.delete(id as string);
+    let keepPreview = false;
     try {
-      const result = await applyExport(pending.file, getStore());
+      let sourceStat: fs.Stats;
+      try { sourceStat = fs.lstatSync(pending.source); }
+      catch { throw new ArchiveSourceChanged('The selected export is gone.'); }
+      if (!sourceStat.isFile() || sourceStat.size !== pending.receipt.size || sourceStat.mtimeMs !== pending.receipt.mtimeMs) {
+        throw new ArchiveSourceChanged('The export changed since the preview.');
+      }
+      const result = await staging.withSnapshot(pending.source, async (file, receipt) => {
+        if (receipt.sha256 !== pending.receipt.sha256 || receipt.mtimeMs !== pending.receipt.mtimeMs) {
+          throw new ArchiveSourceChanged('The export changed since the preview.');
+        }
+        return applyExport(file, getStore(), () => {
+          if (previews.get(id) !== pending || now() - pending.madeAt > PREVIEW_TTL_MS) throw new PreviewExpired();
+          previews.delete(id);
+        });
+      });
       deps.log?.({ event: 'imported-history-applied', by: caller, previewId: id, ...result });
       res.json({ ok: true, result });
-    } catch (err) { refused(res, err); } finally { applying = false; }
+    } catch (err) {
+      if (err instanceof ImportWriterBusy) {
+        keepPreview = true;
+        res.status(409).json({ error: 'import-running', detail: 'An import is already running.' }); return;
+      }
+      if (err instanceof PreviewExpired) {
+        res.status(409).json({ error: 'preview-needed', detail: 'Show the person a fresh preview first, then apply it.' }); return;
+      }
+      if (err instanceof ArchiveSourceChanged) { res.status(409).json({ error: 'file-changed', detail: 'The export file changed. Preview it again.' }); return; }
+      refused(res, err);
+    } finally {
+      if (!keepPreview) previews.delete(id);
+      applying = false;
+    }
   });
 
   // §B.9: only facts the PERSON ticked, so only the owner's own session or app device may store them.

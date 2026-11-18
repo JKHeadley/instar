@@ -249,6 +249,8 @@ import { ConversationUnreadService, type TelegramRowLike } from '../core/Convers
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
+import { HistoryAcquisitionChat } from './historyAcquisitionRoutes.js';
+import { HistoryAcquisitionWorker, type AcquisitionConnection } from '../import/HistoryAcquisitionWorker.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
@@ -547,6 +549,7 @@ export class AgentServer {
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
+  private historyAcquisitionWorker: HistoryAcquisitionWorker | null = null;
   appConversations: AppConversationService | null = null;
   /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
   platformMedia: PlatformMediaForSession | null = null;
@@ -1572,6 +1575,8 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** Trusted pilot bootstrap after the local provider and delivery connection have been proven. */
+    historyAcquisitionConnection?: AcquisitionConnection;
     conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
     conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
     conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
@@ -7734,7 +7739,29 @@ export class AgentServer {
         }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
+      const connection = this.appConversations ? options.historyAcquisitionConnection : undefined;
+      let historyAcquisition: HistoryAcquisitionChat;
+      try {
+        const previous = path.join(options.config.stateDir, 'history-acquisition', 'jobs.sqlite');
+        if (connection || fs.lstatSync(previous, {throwIfNoEntry:false})) {
+          // A withdrawn connection still gets local expiry and deletion. Its worker cannot
+          // perform browser/mail actions or publish notices, or accept a new chat action.
+          this.historyAcquisitionWorker = new HistoryAcquisitionWorker({
+            stateDir:options.config.stateDir,
+            connection:connection ?? {available:() => [], accounts:() => [], delivery:() => undefined},
+            authorized:chat => !!connection && historyAcquisition.authorized(chat),
+          });
+        }
+      } catch {
+        DegradationReporter.getInstance().report({feature:'HistoryAcquisition.worker',primary:'Open the history acquisition worker',
+          fallback:'Keep the existing-file import available',reason:'acquisition-worker-unavailable',
+          impact:'Automatic history acquisition stays unavailable on this machine',internalOnly:true});
+      }
+      historyAcquisition = new HistoryAcquisitionChat(this.mobilePairing, this.appConversations, connection ? this.historyAcquisitionWorker : null);
+      this.app.use(historyAcquisition.router());
+      this.historyAcquisitionWorker?.startPolling(notice => historyAcquisition.publish(notice), !connection);
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
+        historyAcquisition,
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
@@ -10093,6 +10120,7 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    await this.historyAcquisitionWorker?.close();
     await this.stopGraphSourceInventory();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }
