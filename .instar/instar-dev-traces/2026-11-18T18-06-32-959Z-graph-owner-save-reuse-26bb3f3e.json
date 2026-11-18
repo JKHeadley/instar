@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "graph-owner-save-reuse",
+  "sessionId": "4e81326d-5c23-4bba-a349-427ccf37313c",
+  "timestamp": "2026-11-18T18:06:32.959Z",
+  "artifactPath": "upgrades/side-effects/graph-owner-save-reuse.md",
+  "artifactSha256": "c4166dc30db005ded16ec37adc929c32fe821858cf8d3e55478ad3ee527e10cb",
+  "coveredFiles": [
+    "docs/specs/graph-owner-save-reuse.eli16.md",
+    "src/core/GraphCustodyPeerFrontier.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "tests/integration/graph-custody-peer-frontier.test.ts",
+    "tests/integration/graph-default-boot.test.ts",
+    "upgrades/next/graph-owner-save-reuse.md",
+    "upgrades/side-effects/graph-owner-save-reuse.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reuses already-verified results on the owner save path; no stored state, no migration, no new authority; a revert fully undoes it",
+  "eli16Path": "docs/specs/graph-owner-save-reuse.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-owner-save-reuse.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

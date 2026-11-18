@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSource } from './exportParsers.js';
+import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 
 export interface ConversationSummary {
   ref: string;
@@ -67,7 +68,7 @@ export class ImportedHistoryStore {
   private dirty = false;
 
   constructor(stateDir: string) {
-    this.dir = path.join(stateDir, 'imported-history');
+    this.dir = path.join(stateDir, IMPORTED_HISTORY_DIRNAME);
     fs.mkdirSync(path.join(this.dir, 'conversations'), { recursive: true, mode: 0o700 });
     fs.mkdirSync(path.join(this.dir, 'attachments'), { recursive: true, mode: 0o700 });
     this.manifest = this.readManifest();

@@ -20,6 +20,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { assignNickname, deriveBaseNickname, isValidNickname } from './NicknameAssigner.js';
 import { detectFriendlyMachineName } from './friendlyMachineName.js';
 import { IdentityStore, type IdentityMutationActor, type IdentityMutationPath } from './IdentityStore.js';
+import { IMPORTED_HISTORY_PROJECT_PATH } from './importedHistoryPaths.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -1004,6 +1005,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/state/skill-learning.db*',
   '.instar/skill-telemetry.jsonl*',
   '.instar/skill-telemetry/unknown.jsonl',
+  '# Imported Claude/ChatGPT history (private to this machine — never commit)',
+  IMPORTED_HISTORY_PROJECT_PATH,
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

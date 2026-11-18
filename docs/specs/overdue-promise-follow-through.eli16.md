@@ -34,6 +34,10 @@ Two smaller fixes are filed separately: the reminder's startup limit (it keeps t
 
 It has no switch of its own: it rides on the existing check-in reminder, so it is live on Echo and off by default for other agents until that reminder is turned on for them. The check-in reminder's one setting turns it off again without a restart.
 
+## Fixed after the first live test (2026-11-18)
+
+The first live test showed the "this is late" message never reached the person. The agent's filter for routine reports (Quiet by Default) held it, while the records said it was sent. Promise messages now carry their own label, "Promises made to you", which the filter always lets through, with a small limit against a runaway loop. A message that is held instead of sent now counts as a failure and is retried, never recorded as "told".
+
 ## What you need to decide
 
 Nothing is required. The one judgment call is in the "Why this fits" section of the spec. Our rule says you aren't chased with status updates about my own work. I read a missed promised time as different: the time was itself a promise to you, so telling you closes my promise rather than starting a stream of updates. The existing "your update is late" message already works this way. If you see it differently, tell me and it is one switch.
