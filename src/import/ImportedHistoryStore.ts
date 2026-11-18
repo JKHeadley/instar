@@ -14,6 +14,7 @@ import Database from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { privateImportDatabasePath, verifyPrivateImportDirectory } from './privateImportState.js';
 import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSource } from './exportParsers.js';
+import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 
 export interface ConversationSummary {
   ref: string;
@@ -75,7 +76,7 @@ export class ImportedHistoryStore {
   private writing = false;
 
   constructor(stateDir: string) {
-    this.dir = path.join(stateDir, 'imported-history');
+    this.dir = path.join(stateDir, IMPORTED_HISTORY_DIRNAME);
     for (const directory of [this.dir, path.join(this.dir, 'conversations'), path.join(this.dir, 'attachments')]) {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
       verifyPrivateImportDirectory(directory);

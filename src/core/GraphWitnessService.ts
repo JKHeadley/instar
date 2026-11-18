@@ -444,7 +444,7 @@ export class GraphWitnessService {
   recoveryManifest(agentId: string): GraphRecoverySourceManifest {
     const membership = this.membership(agentId);
     const rows = this.db.prepare('SELECT idempotencyKey FROM operations WHERE agentId=?').all(agentId) as Array<{ idempotencyKey: string }>;
-    const operations = rows.map((r) => this.operation(agentId, r.idempotencyKey)!).sort((a, b) => a.packet.sourceSequence - b.packet.sourceSequence || a.packet.eventId.localeCompare(b.packet.eventId));
+    const operations = rows.map((r) => this.operationState(agentId, r.idempotencyKey)!.state).sort((a, b) => a.packet.sourceSequence - b.packet.sourceSequence || a.packet.eventId.localeCompare(b.packet.eventId));
     let highestCertifiedSequence = 0; let highestCertifiedCoreHash: string | null = null;
     let highestAcknowledgedSequence = 0; let highestAcknowledgedCoreHash: string | null = null;
     for (const operation of operations) {
@@ -460,7 +460,7 @@ export class GraphWitnessService {
     return { v: 1, agentId, membershipHash: canonicalHash(membership), highestCertifiedSequence, highestCertifiedCoreHash,
       highestAcknowledgedSequence, highestAcknowledgedCoreHash, entries: operations.map(op=>this.recoveryEntry(op)) };
   }
-  private recoveryEntry(op:GraphWitnessOperation):GraphRecoverySourceManifest['entries'][number]{return { eventId: op.packet.eventId,
+  private recoveryEntry(op:Omit<GraphWitnessOperation,'stateProof'>):GraphRecoverySourceManifest['entries'][number]{return { eventId: op.packet.eventId,
         idempotencyKey: op.packet.idempotencyKey, sourceSequence: op.packet.sourceSequence, operationHash: canonicalHash(op.packet),
         coreHash: op.packet.coreHash, authorizationReceiptHash: op.packet.authorizationReceiptHash, sourceBundleHash: op.packet.sourceBundleHash,
         prepareProofHash: op.prepareProof?canonicalHash(op.prepareProof):null,erasedControlProofHash:op.erasedControlProof?canonicalHash(op.erasedControlProof):null, certificateHash: op.certificate ? canonicalHash(op.certificate) : null,
@@ -1182,7 +1182,11 @@ export class GraphWitnessService {
       return this.operation(packet.agentId,packet.idempotencyKey)!;
     }).immediate();
   }
-  operation(agentId: string, idempotencyKey: string): GraphWitnessOperation | null {
+  /** The operation's verified state without the signed state proof: the same reads and the same
+   * verification (each failure throws exactly as operation() does). recoveryManifest only reads these fields,
+   * and signing a proof per stored operation on every inventory, only to drop it, was most of the witness
+   * inventory's cost (accept-all rig profile, 2026-11-18). */
+  private operationState(agentId: string, idempotencyKey: string): {state: Omit<GraphWitnessOperation,'stateProof'>;packet:GraphOperationPacket;row:StoredOperation} | null {
     const row = this.db.prepare('SELECT packet,packetSignature,prepareProof,state,certificate,cancellation,cancellationCertificate,adoption FROM operations WHERE agentId=? AND idempotencyKey=?').get(agentId, idempotencyKey) as StoredOperation | undefined;
     if (!row) return null;
     const packet = JSON.parse(row.packet) as GraphOperationPacket;
@@ -1205,6 +1209,11 @@ export class GraphWitnessService {
       erasure:resolvedErasure,
       adoption: row.adoption ? JSON.parse(row.adoption) as GraphAdoptionCertificate : null,
       certificatePersistenceReceipts: (this.db.prepare('SELECT receipt FROM certificateReceipts WHERE agentId=? AND eventId=? ORDER BY machineId').all(agentId, packet.eventId) as Array<{ receipt: string }>).map((r) => JSON.parse(r.receipt) as GraphMemberReceipt) };
+    return {state,packet,row};
+  }
+  operation(agentId: string, idempotencyKey: string): GraphWitnessOperation | null {
+    const loaded=this.operationState(agentId,idempotencyKey);if(!loaded)return null;
+    const {state,packet,row}=loaded;
     return { ...state, stateProof: this.signed(D.operationState, { v: 1 as const, agentId, idempotencyKey, operationHash: canonicalHash(packet), packetSignatureHash:canonicalHash(row.packetSignature),erasedControlProofHash:state.erasedControlProof?canonicalHash(state.erasedControlProof):null,state: row.state,
       certificateHash: state.certificate ? canonicalHash(state.certificate) : null, cancellationHash: state.cancellation ? canonicalHash(state.cancellation) : null,
       cancellationCertificateHash: state.cancellationCertificate ? canonicalHash(state.cancellationCertificate) : null,

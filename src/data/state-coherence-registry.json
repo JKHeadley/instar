@@ -2260,6 +2260,46 @@
       }
     },
     {
+      "category": "quota-pacing-history",
+      "description": "Quota pacing reading history (docs/specs/quota-pacing-forecast.md section 1): one JSONL file per subscription account, one row per 5-minute bucket per window state (polledAt, measuredAt, identity hash, source, per-window percentage and reset), plus failed-read outcome rows. Each machine keeps the readings it took itself; GET /quota-pacing merges every machine's computed summaries on read. Excluded from git-sync and backups; rebuilt after a restore.",
+      "scope": "coherent-on-demand",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "state/quota-history/*.jsonl",
+        "state/quota-history/retired/*.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "compactAfterMs": 1209600000,
+        "maxAgeMs": 1814400000,
+        "maxRecords": 5000,
+        "note": "Round-robin: 14 days at full resolution, one row per hour to 21 days, then only each weekly window's cycle-end row. Hard cap 5,000 rows per file (about 1 MB), oldest first, disclosed as droppedRows. Retired files (account left the pool) are kept 35 days."
+      }
+    },
+    {
+      "category": "quota-pacing-ticks",
+      "description": "Quota pacing hourly tick row per machine (accounts, accounts with history, stale reasons, ledger write failures, malformed and dropped rows, verdict counts): the durable evidence the feature ladder reads.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/quota-pacing.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 5242880,
+        "keepSegments": 4,
+        "note": "One row per hour per machine (about 300 bytes); segment-rotated at 5 MB, 4 segments kept."
+      }
+    },
+    {
       "category": "app-conversations",
       "description": "Native app conversation store (docs/specs/mobile-native-conversations.md \u00a74.5): one append-only JSONL file per conversation (immutable events keyed by eventId, each with this machine's ingestSeq), the source of truth for a native conversation. Replicated to every machine through the appConversations replicated-store kind whenever native conversations are on. Also holds the per-request dispatch context files under state/app-dispatch/.",
       "scope": "must-be-coherent",

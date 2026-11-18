@@ -954,6 +954,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
   },
   {
+    name: 'quotaPacing',
+    configPath: 'subscriptionPool.pacing.enabled',
+    description: 'Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable, bounded history of every subscription quota reading and a read-only forecast of where each account lands at its reset and whether each provider keeps weekly room (GET /quota-pacing).',
+    justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
+  },
+  {
     name: 'ecosystemIdeas',
     configPath: 'ecosystemIdeas.enabled',
     description: 'Ecosystem idea pipeline: a weekly review of similar projects that checks each idea against our own source and goals and ranks it. Advice only; it builds nothing and contacts no one. Reads outside text only through frameworks that pass a must-fail file-read probe.',

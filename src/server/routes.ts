@@ -33,10 +33,11 @@ import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
+const stampPromiseNotice = notificationStamper('src/server/routes.ts', 'promise-notice');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { jobReportChoice } from '../messaging/notificationCategories.js';
-import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
+import { verifiedReplyEnvelope, requireTelegramDelivery, isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
 import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
@@ -215,7 +216,9 @@ import { resolveTranscriptAudience, TRANSCRIPT_AUDIENCE_SENTENCES, type Transcri
 import { SignedReadCapability, signedThenBearer, BearerReadRefused } from '../core/poolSignedReads.js';
 import { TOPIC_HISTORY_POOL_MAX_MESSAGES, TOPIC_HISTORY_POOL_TIMEOUT_MS, poolRowId } from '../core/topicHistoryPull.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
-import { boundedHead } from '../core/boundedInput.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
+import { SESSION_HISTORY_MESSAGE_CHARS } from '../memory/TopicMemory.js';
+import { SUBJECT_MAX as LEDGER_SUBJECT_MAX, SUMMARY_MAX as LEDGER_SUMMARY_MAX } from '../core/SharedStateLedger.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -8780,6 +8783,7 @@ export function createRoutes(ctx: RouteContext): Router {
     return { rec: final, sweep, unbuilt, clearedCount, degraded: sweep.degraded || corr.degraded };
   };
 
+  // bounded-input-reviewed: caps an ARRAY of paths and discloses the rest in-band (" — and N more"); its readers (the operator notice, the attention item, the session's scope-accretion hold reason) are all told the list continues.
   const clampPathList = (paths: string[], limit = 50): string => {
     const shown = paths.slice(0, limit);
     const more = paths.length - shown.length;
@@ -8991,6 +8995,7 @@ export function createRoutes(ctx: RouteContext): Router {
       windowLedger,
       nowMs: Date.parse(windowNow()),
     });
+    // bounded-input-reviewed: the slice inside this call clamps an idempotencyKey (an identifier) before storage.
     const result = autonomousRunStore.register({
       topicId,
       condition,
@@ -9036,6 +9041,7 @@ export function createRoutes(ctx: RouteContext): Router {
     runDailySweepBackstop();
     const topic = String(req.params.topic);
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // bounded-input-reviewed: run-end reason stored on the run record and shown in the operator's topic and an attention item ("run-end: <reason>"); display text, never a judgment's input.
     const reason = typeof body.reason === 'string' ? body.reason.slice(0, 200) : 'run-end';
     const runId = typeof body.runId === 'string' ? body.runId : undefined;
     const rec = autonomousRunStore.getRecord(topic);
@@ -11936,8 +11942,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'agent worktree reaper unavailable' });
       return;
     }
-    await ctx.agentWorktreeReaper.prepare();
-    res.json(ctx.agentWorktreeReaper.snapshot());
+    // Answers from the last pass (off the event loop) when the server wired the
+    // off-thread evaluator; a synchronous re-evaluation here blocked the server ~45 s.
+    res.json(await ctx.agentWorktreeReaper.report());
   });
 
   // ── External-Hog zombie auto-kill sentinel (CMT-1901) ──
@@ -19150,6 +19157,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const caller = `bearer:${req.ip ?? 'unknown'}`;
+    // bounded-input-reviewed: API input clamped for the stored spend-cap freeze audit; never a model's input.
     const reason = typeof (req.body ?? {}).reason === 'string' ? String((req.body ?? {}).reason).slice(0, 300) : 'not stated';
     try {
       const def = DEFAULT_METERED_CAPS[keyRef];
@@ -19498,6 +19506,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'pr must be a positive integer' });
       return;
     }
+    // bounded-input-reviewed: API input clamped for the auto-merge hold note; display/audit text, never a model's input.
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
     const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
     res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
@@ -20975,7 +20984,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const rawReason = (req.body?.reason as string) || 'manual';
-    const reason = typeof rawReason === 'string' ? rawReason.slice(0, 500) : 'manual';
+    // The trigger reason reaches the Jev completion-audit prompt as a trigger
+    // label (JobScheduler triggeredBy -> JevJobCompletionAudit), so a cut says
+    // so. 500 characters of content kept, as before.
+    const reason = typeof rawReason === 'string' ? boundedHead(rawReason, 500 + BOUNDED_INPUT_MIN_CHARS) : 'manual';
 
     try {
       const result = await ctx.scheduler.triggerJob(req.params.slug, reason);
@@ -21947,6 +21959,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof metadata?.toneAdvisoryAck === 'string'
         ? metadata.toneAdvisoryAck.slice(0, 64)
         : undefined;
+    // bounded-input-reviewed: an identifier (job slug) clamp on message metadata, not text a judgment reads.
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
     // A relay hop carries the origin machine's structural classification. For
     // a local call, derive it at this send seam: ordinary replies are agent
@@ -24990,6 +25003,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (refuseInadmissibleWrite(req, res)) return;
+    // bounded-input-reviewed: the slice inside this call clamps stored display text (the resolution note), never fed to a model.
     const result = ctx.telegram.clearAttentionCondition(
       { conditionKey: conditionKey?.trim(), id: id?.trim(), idPrefix: idPrefix?.trim() },
       resolution.trim().slice(0, 2000), // bounded-input-reviewed: stored display text, never fed to a model
@@ -26786,6 +26800,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'lease hand-back reconciler not constructed (single-machine / mesh dark)' });
       return;
     }
+    // bounded-input-reviewed: API input clamped for the stored lease hand-back latch; never a model's input.
     const reason = typeof (req.body ?? {}).reason === 'string' ? String((req.body as { reason: string }).reason).slice(0, 300) : undefined;
     const latch = ctx.leaseHandback.latchWrite(reason);
     res.json({ ok: true, latch });
@@ -30706,7 +30721,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               for (const m of history) {
                 const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-                const histText = (m.text || '').slice(0, 2000);
+                // Same per-message bound as TopicMemory.formatContextForSession.
+                const histText = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
               historyLines.push(``);
@@ -31770,7 +31786,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               for (const m of history) {
                 const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-                const histText = (m.text || '').slice(0, 2000);
+                // Same per-message bound as TopicMemory.formatContextForSession.
+                const histText = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
               historyLines.push(``);
@@ -39084,7 +39101,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return { ok: true, suppressedDuplicate: true } as unknown;
           }
           try {
-            const send = () => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
+            // A promise-notice envelope, not this module's 'uncategorized' one: under that, the
+            // notification policy filed every reminder in the Notifications feed (CMT-1951).
+            const send = () => withNotificationEnvelope(stampPromiseNotice(), async () => (telegram)!.sendToTopic(topicId, text));
             let r;
             if (ctx.telegramOrigin) {
               const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
@@ -39096,7 +39115,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
               r = await service.runWithAutomationReply(token, topicId, body, send);
             } else r = await send();
-            if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+            // A held (quiet) send is not delivered: release, so the retry is not taken for a duplicate.
+            if (!originOwnsContent) { if (isQuietReceipt(r)) outboundContentDedup.releaseReservation(topicId, text); else outboundContentDedup.record(topicId, text); }
             return r;
           } catch (err) {
             // Release so a genuine transport failure is retried rather than
@@ -39877,6 +39897,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       lane = 'time';
+      // bounded-input-reviewed: a dedup KEY hashed into externalKey; keying on the normalized OPENING is deliberate coarse dedup (two time-promises in one topic that open alike are the same promise re-stated), mirroring Lane A's topic+verb key. No reader sees it.
       const normalizedPromiseText = agentResponse.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
       externalKey =
         'timepromise:' + createHash('sha256').update(`${topicId}|${normalizedPromiseText}`).digest('hex').slice(0, 16);
@@ -47360,6 +47381,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       // Use a test session ID to avoid interfering with real sessions
       const testSessionId = `test-${Date.now()}`;
+      // bounded-input-reviewed: the slice inside this call clamps fixtureId, a test-fixture identifier, not the reviewed message.
       const result = await ctx.responseReviewGate.evaluate({
         message,
         sessionId: testSessionId,
@@ -48859,7 +48881,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const note = typeof body.note === 'string' ? body.note.slice(0, 400) : undefined;
         const evidenceRef =
           typeof body.evidenceRef === 'string' ? body.evidenceRef.slice(0, 200) : undefined;
-        const subject = `${outcome === 'success' ? 'resolved' : 'cancelled'}: ${commitmentEntry.subject}`.slice(0, 200);
+        // The ledger subject is rendered into every session's context (GET
+        // /shared-state/render via the session-start hook), and the ledger
+        // refuses a subject over LEDGER_SUBJECT_MAX. It is a label: `supersedes`
+        // below links the full commitment entry it closes. A cut now ends in "…".
+        const rawSubject = `${outcome === 'success' ? 'resolved' : 'cancelled'}: ${commitmentEntry.subject}`;
+        // bounded-input-reviewed: a label held to the ledger's own SUBJECT_MAX (longer throws); the cut is marked with "…" and the full commitment is linked by `supersedes`.
+        const subject = rawSubject.length > LEDGER_SUBJECT_MAX ? `${rawSubject.slice(0, LEDGER_SUBJECT_MAX - 1)}…` : rawSubject;
         const appended = await ctx.sharedStateLedger!.append({
           emittedBy: { subsystem: 'session', instance: sessionId },
           kind: 'note',
@@ -48904,17 +48932,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           res.status(429).json({ error: 'dispute rate exceeded', reason: capReason });
           return;
         }
-        const disputeReason =
-          typeof body.disputeReason === 'string' ? body.disputeReason.slice(0, 200) : '';
+        // The dispute reason is the load-bearing part of a dispute, and it is
+        // rendered into every session's context through the shared ledger. It
+        // used to be cut to 200 (and again inside the subject) with no sign.
+        // REFUSE rather than cut: a reason longer than the ledger's summary field
+        // is sent back to the calling session to shorten. The whole reason goes
+        // into `summary`; the subject is a label that says it continues there.
+        const disputeReason = typeof body.disputeReason === 'string' ? body.disputeReason.trim() : '';
         if (!disputeReason) {
           res.setHeader('X-Invalid-Field', 'disputeReason');
           res.status(400).json({ error: 'disputeReason required for dispute resolution' });
           return;
         }
+        if (disputeReason.length > LEDGER_SUMMARY_MAX) {
+          res.setHeader('X-Invalid-Field', 'disputeReason');
+          res.status(400).json({
+            error: `disputeReason is ${disputeReason.length} characters; the ledger holds ${LEDGER_SUMMARY_MAX}. Shorten it and resend — it is not cut for you, because a cut reason would read as the whole reason.`,
+          });
+          return;
+        }
+        const disputeLabel = `disputed: ${disputeReason}`;
+        const disputeSubject = disputeLabel.length > LEDGER_SUBJECT_MAX
+          ? `${disputeLabel.slice(0, LEDGER_SUBJECT_MAX - 1)}…`
+          : disputeLabel;
         const appended = await ctx.sharedStateLedger!.append({
           emittedBy: { subsystem: 'session', instance: sessionId },
           kind: 'note',
-          subject: `disputed: ${disputeReason}`.slice(0, 200),
+          subject: disputeSubject,
+          summary: disputeReason,
           counterparty: {
             type: commitmentEntry.counterparty.type,
             name: commitmentEntry.counterparty.name,

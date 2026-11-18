@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { GitStateConfig, GitLogEntry, GitStatus } from './types.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
 
 const ALLOWED_REMOTE_SCHEMES = [
   /^https:\/\//,
@@ -64,6 +65,7 @@ logs/
 # Secrets -- NEVER tracked
 config.json
 secrets/
+${IMPORTED_HISTORY_STATE_PATH}
 
 # Derived data -- reconstructable
 memory.db
