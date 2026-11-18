@@ -257,11 +257,18 @@ function rememberHeldPrivateFailure(root:string,row:HeldPrivateView,value:object
  const count=heldPrivateFailedCounts.get(root)??0;if((heldPrivateViewsByRoot.get(root)?.size??0)+count>=HELD_PRIVATE_REFERENCE_BUDGET){row.overflow=true;return;}
  row.failed.add(new WeakRef(value));heldPrivateFailedCounts.set(root,count+1);
 }
+/** Values deep-frozen by the verdict memo's check mode (stored rows' values; tests only). */
+const verdictMemoFrozen=new WeakSet<object>();
+/** Verdict-memo divergences seen in this process (check mode only). Kept on globalThis so the shared test
+ * setup can assert it stays zero without importing this module into every test file. */
+const VERDICT_MEMO_DIVERGENCES='__instarGraphVerdictMemoDivergences';
+export function graphVerdictMemoDivergences():number{return Number((globalThis as Record<string,unknown>)[VERDICT_MEMO_DIVERGENCES]??0);}
+function countVerdictMemoDivergence():void{(globalThis as Record<string,unknown>)[VERDICT_MEMO_DIVERGENCES]=graphVerdictMemoDivergences()+1;}
 function clearHeldPrivateObject(value:object|undefined,seen=new WeakSet<object>(),failed?:(value:object)=>void):boolean{
  if(!value)return true;if(seen.has(value))return Object.keys(value).length===0;seen.add(value);let childrenCleared=true;
  for(const child of Object.values(value))if(child&&typeof child==='object'&&!clearHeldPrivateObject(child,seen,failed))childrenCleared=false;
  for(const key of Object.keys(value))Reflect.deleteProperty(value,key);if(Array.isArray(value)&&Object.getOwnPropertyDescriptor(value,'length')?.writable)Reflect.set(value,'length',0);
- const ownCleared=Object.keys(value).length===0;if(!ownCleared)failed?.(value);return childrenCleared&&ownCleared;
+ const ownCleared=Object.keys(value).length===0;if(!ownCleared){/* A stored row's value reached this mutator: the verdict memo's no-nested-edit assumption broke (check mode). */if(verdictMemoFrozen.has(value))countVerdictMemoDivergence();failed?.(value);}return childrenCleared&&ownCleared;
 }
 function releaseHeldPrivateView(root:string,row:HeldPrivateView):boolean{
  const remember=(value:object)=>rememberHeldPrivateFailure(root,row,value);
@@ -431,9 +438,18 @@ export function registerConversationGraphReplication(registry: ReplicatedKindReg
     schema: CONVERSATION_GRAPH_REPLICATION_SCHEMA });
 }
 
+/** Test-mode only (verdict-memo check): freeze a stored row's value all the way down, also under an already-frozen parent. */
+function deepFreezeGraphValue(value:unknown,seen=new Set<object>()):void{if(!value||typeof value!=='object'||ArrayBuffer.isView(value)||seen.has(value))return;seen.add(value);if(!Object.isFrozen(value)){Object.freeze(value);verdictMemoFrozen.add(value);}for(const child of Object.values(value as Record<string,unknown>))deepFreezeGraphValue(child,seen);}
+/** One stored row's cached per-row results, valid while the row's top-level values and the pass context are unchanged. */
+interface GraphRowMemo{context:string;keys:string[];values:unknown[];verified:Map<string,boolean>;persisted?:boolean;descriptorHash?:string}
 export class ConversationGraphReplication {
   readonly erasureAuthorities:ConversationGraphErasureAuthorityStore;
   private readonly records = new Map<string, Stored>();
+  /** Bumped wherever class-local verifier state changes (spec graph-verify-verdict-memo §1). */
+  private verifierEpoch=0;
+  private readonly rowMemo=new WeakMap<ConversationGraphReplicationRecord,GraphRowMemo>();
+  private readonly rowMemoEnabled=process.env.INSTAR_GRAPH_VERDICT_MEMO!=='off';
+  private readonly rowMemoCheck=process.env.INSTAR_GRAPH_VERDICT_MEMO_CHECK==='1';
   private readonly inFlight = new Map<string, string>();
   private readonly erasureProofs:GraphWitnessErasure[]=[];
   private readonly pendingErasureTargets=new Map<string,Set<string>>();
@@ -650,12 +666,12 @@ export class ConversationGraphReplication {
     if(![...lineage.activations,...lineage.memberLossActivations].some(row=>canonicalHash(row.certificate.newMembership)===canonicalHash(membership))||!membership.members.some(member=>member.machineId===this.options.machineId))throw new Error('graph-history-import-activation-missing');
     if(this.options.installedMembership&&!([lineage.genesis,...[...lineage.activations,...lineage.memberLossActivations].map(row=>row.certificate.newMembership)].some(known=>canonicalHash(known)===canonicalHash(this.options.installedMembership))))throw new Error('graph-history-import-installed-lineage-mismatch');
     const activation=[...lineage.activations,...lineage.memberLossActivations].find(row=>canonicalHash(row.certificate.newMembership)===canonicalHash(membership))!;
-    this.historicalImportAuthority=authority;this.historicalImportMembership=structuredClone(membership);this.historicalImportActivationHash=canonicalHash(activation.certificate);this.historicalReopen=null;
+    this.verifierEpoch++,this.historicalImportAuthority=authority;this.historicalImportMembership=structuredClone(membership);this.historicalImportActivationHash=canonicalHash(activation.certificate);this.verifierEpoch++,this.historicalReopen=null;
   }
   private currentHistoricalImportMembership(requireCurrentLoss=false):GraphMembershipEpoch|undefined{
     if(!this.historicalImportAuthority)return this.options.installedMembership;
-    let lineage:ReturnType<GraphCustodyProfileAuthority['verifiedNegativeRoleLineage']>;try{lineage=this.historicalImportAuthority.verifiedNegativeRoleLineage();}catch(error){this.historicalReopen=null;throw error;}const membership=lineage.current,activation=[...lineage.activations,...lineage.memberLossActivations].find(row=>canonicalHash(row.certificate.newMembership)===canonicalHash(membership));
-    if(!this.historicalImportMembership||canonicalHash(membership)!==canonicalHash(this.historicalImportMembership)||!activation||canonicalHash(activation.certificate)!==this.historicalImportActivationHash){this.historicalReopen=null;throw new Error('graph-history-import-authority-changed');}
+    let lineage:ReturnType<GraphCustodyProfileAuthority['verifiedNegativeRoleLineage']>;try{lineage=this.historicalImportAuthority.verifiedNegativeRoleLineage();}catch(error){this.verifierEpoch++,this.historicalReopen=null;throw error;}const membership=lineage.current,activation=[...lineage.activations,...lineage.memberLossActivations].find(row=>canonicalHash(row.certificate.newMembership)===canonicalHash(membership));
+    if(!this.historicalImportMembership||canonicalHash(membership)!==canonicalHash(this.historicalImportMembership)||!activation||canonicalHash(activation.certificate)!==this.historicalImportActivationHash){this.verifierEpoch++,this.historicalReopen=null;throw new Error('graph-history-import-authority-changed');}
     if(requireCurrentLoss&&activation.certificate.memberLoss)this.historicalImportAuthority.assertCurrentMemberLossActivation(activation.certificate);return membership;
   }
   receiveHistorical(record:ConversationGraphReplicationRecord):Promise<void>{return this.serial(async()=>{
@@ -1299,11 +1315,11 @@ export class ConversationGraphReplication {
   /** Actual cold-store verification for an activation persistence pin. Reopen
    * once per immutable ACT/manifest + local mutation generation, then verify and
    * fsync each requested record from disk. No old receipt is synthesized. */
-  async verifyDurableHistoricalImport(eventId:string,activationHash:string,manifestHash:string):Promise<string>{try{return await this.verifyDurableHistoricalImportCore(eventId,activationHash,manifestHash);}catch(error){this.historicalReopen=null;throw error;}}
+  async verifyDurableHistoricalImport(eventId:string,activationHash:string,manifestHash:string):Promise<string>{try{return await this.verifyDurableHistoricalImportCore(eventId,activationHash,manifestHash);}catch(error){this.verifierEpoch++,this.historicalReopen=null;throw error;}}
   private async verifyDurableHistoricalImportCore(eventId:string,activationHash:string,manifestHash:string):Promise<string>{
     if(!hash(activationHash)||!hash(manifestHash))throw new Error('graph-history-import-proof-invalid');this.currentHistoricalImportMembership(true);const generation=this.durableGeneration;
-    let cached=this.historicalReopen;if(!cached||cached.generation!==generation||cached.activationHash!==activationHash||cached.manifestHash!==manifestHash){cached={generation,activationHash,manifestHash,source:ConversationGraphReplication.open(this.options,'verify-only',this.historicalImportAuthority??undefined).then(reopened=>{if(this.historicalImportAuthority)reopened.installHistoricalImportAuthority(this.historicalImportAuthority);return reopened;})};this.historicalReopen=cached;}
-    let reopened:ConversationGraphReplication;try{reopened=await cached.source;}catch(error){if(this.historicalReopen===cached)this.historicalReopen=null;throw error;}
+    let cached=this.historicalReopen;if(!cached||cached.generation!==generation||cached.activationHash!==activationHash||cached.manifestHash!==manifestHash){cached={generation,activationHash,manifestHash,source:ConversationGraphReplication.open(this.options,'verify-only',this.historicalImportAuthority??undefined).then(reopened=>{if(this.historicalImportAuthority)reopened.installHistoricalImportAuthority(this.historicalImportAuthority);return reopened;})};this.verifierEpoch++,this.historicalReopen=cached;}
+    let reopened:ConversationGraphReplication;try{reopened=await cached.source;}catch(error){if(this.historicalReopen===cached)this.verifierEpoch++,this.historicalReopen=null;throw error;}
     const proof=reopened.historicalTerminalProof(eventId),record=reopened.repairRecord(eventId);if(!proof||!record?.materialization||!reopened.validMaterialization(record,true)||proof.activationHash!==activationHash||proof.manifestHash!==manifestHash)throw new Error('graph-history-import-terminal-evidence-missing');
     const expected=new Map<string,unknown>([[this.file(eventId,'source'),this.immutable(record)],[this.file(eventId,'intent'),this.immutable(record)]]);
     const reference=splitGraphMaterialization(record.materialization).reference;expected.set(this.file(eventId,'materialization'),reference);
@@ -1427,7 +1443,7 @@ export class ConversationGraphReplication {
     const changed=new Set(matches.filter(stored=>!stored.record.erasure||stored.record.packet.eventId===canonicalEventId&&canonicalHash(stored.record.erasure)!==canonicalHash(proof)).map(stored=>stored.record.packet.eventId));
     for(const stored of matches){stored.record.encryptedSourceBundle=null;delete stored.record.rewrap;if(!stored.record.erasure||stored.record.packet.eventId===canonicalEventId)stored.record.erasure=structuredClone(proof);this.inFlight.delete(stored.record.packet.eventId);}
     await this.save(`global-erasure-${canonicalHash(proof)}.json`,proof,true);
-    if(!this.erasureProofs.some(existing=>canonicalHash(existing)===canonicalHash(proof)))this.erasureProofs.push(structuredClone(proof));
+    if(!this.erasureProofs.some(existing=>canonicalHash(existing)===canonicalHash(proof)))this.verifierEpoch++,this.erasureProofs.push(structuredClone(proof));
     for(const stored of matches)if(changed.has(stored.record.packet.eventId))await this.save(this.file(stored.record.packet.eventId,'erasure'),stored.record.erasure);
     await this.purgePayloadFilesMany([...matches.map(stored=>stored.record.packet.eventId),...await this.intentIds(proof.target)]);await this.scrubUnattributedPayloads();
     // Include crash-orphaned bundle/rewrap publication temporaries even when no
@@ -1544,22 +1560,26 @@ export class ConversationGraphReplication {
     const pending=new Set<string>();const missing=new Set<string>();const writerVerified=new Set<string>();
     const peerErasures = new Map<string, GraphWitnessErasure>();
     const droppedOrigins = dropped.droppedOrigins(CONVERSATION_GRAPH_STORE);
+    // One context for the whole synchronous pass (spec graph-verify-verdict-memo §3).
+    const memo=this.rowMemoContext();this.rowMemoPass=new WeakMap();
+    // Own rows reach the accept loop as clones; fullyPersisted reads none of the fields the clone may change.
+    const clonedFrom=new Map<ConversationGraphReplicationRecord,ConversationGraphReplicationRecord>();
     let partial = false;
     for (const [key, union] of reader.readAll(CONVERSATION_GRAPH_STORE)) {
       if (union.conflict || union.divergenceFlag) { blocked.add(key); partial = true; continue; }
       const descriptor=validateGraphReplicationDescriptor(union.value?.data.descriptor);
       const stored=this.records.get(key);const record=stored?.record;
-      if(!descriptor||!record||!union.value||stored?.quarantine||!this.verify(record,union.value.origin)
-        ||canonicalHash(descriptor)!==canonicalHash(this.descriptorFor(record))){partial=true;blocked.add(key);continue;}
+      if(!descriptor||!record||!union.value||stored?.quarantine||!this.memoVerify(record,union.value.origin,memo)
+        ||canonicalHash(descriptor)!==this.memoDescriptorHash(record,memo)){partial=true;blocked.add(key);continue;}
       if(union.value.origin===record.packet.writerId)writerVerified.add(key);
       if(record.erasure)peerErasures.set(key,record.erasure);
       if(this.terminal(record))candidates.set(key,record);
-      if(!this.fullyPersisted(record)){pending.add(key);if(!(excludedPendingEventIds?.has(key)&&!this.terminal(record)&&!record.erasure&&!record.cancellation))partial=true;}
+      if(!this.memoFullyPersisted(record,memo)){pending.add(key);if(!(excludedPendingEventIds?.has(key)&&!this.terminal(record)&&!record.erasure&&!record.cancellation))partial=true;}
     }
     for (const [key, stored] of this.records) {
       if (stored.record.packet.writerId !== this.options.machineId || droppedOrigins.has(this.options.machineId)) continue;
       if (stored.quarantine || blocked.has(key)) { blocked.add(key); partial = true; continue; }
-      if(!this.fullyPersisted(stored.record)){pending.add(key);if(!(excludedPendingEventIds?.has(key)&&!this.terminal(stored.record)&&!stored.record.erasure&&!stored.record.cancellation))partial=true;}
+      if(!this.memoFullyPersisted(stored.record,memo)){pending.add(key);if(!(excludedPendingEventIds?.has(key)&&!this.terminal(stored.record)&&!stored.record.erasure&&!stored.record.cancellation))partial=true;}
       if(!this.terminal(stored.record))continue;
       const peer = candidates.get(key);
       if (peer && canonicalHash(this.immutable(peer)) !== canonicalHash(this.immutable(stored.record))) { blocked.add(key); partial = true; continue; }
@@ -1570,6 +1590,7 @@ export class ConversationGraphReplication {
       // A validated peer tombstone cannot be overridden by an older local
       // source copy while its asynchronous source-side apply is catching up.
       const chosen = cloneGraphRecord(peer ?? stored.record);
+      clonedFrom.set(chosen, peer ?? stored.record);
       const erasure = peerErasures.get(key) ?? peer?.erasure ?? stored.record.erasure;
       if (erasure) { chosen.erasure = erasure; chosen.encryptedSourceBundle = null; delete chosen.rewrap; }
       candidates.set(key, chosen);
@@ -1597,7 +1618,7 @@ export class ConversationGraphReplication {
       if ((previous === null && (record.packet.sourceSequence !== 1 || record.packet.predecessorHash !== null))
         || (previous !== null && (record.packet.sourceSequence !== previous.sourceSequence + 1
           || record.packet.predecessorHash !== previous.coreHash))) { partial = true; missing.add(record.packet.eventId); continue; }
-      if (record.certificate&&this.fullyPersisted(record)&&(record.coreType==='graph-event'||!this.options.localErasure?.isDenied(record.packet.erasureIdentity))) accepted.push(cloneGraphRecord(record));
+      if (record.certificate&&this.acceptPersisted(record,clonedFrom.get(record),memo)&&(record.coreType==='graph-event'||!this.options.localErasure?.isDenied(record.packet.erasureIdentity))) accepted.push(cloneGraphRecord(record));
       previous = record.packet;
     }
     const verifiedEventIds=new Set(accepted.map(record=>record.packet.eventId).filter(id=>writerVerified.has(id)));
@@ -1615,6 +1636,58 @@ export class ConversationGraphReplication {
     return this.verify(record, record.packet.writerId);
   }
 
+  /** The per-pass context for the row memo (spec graph-verify-verdict-memo §3), or null: memo off for this pass. */
+  private rowMemoContext():string|null{
+    if(!this.rowMemoEnabled)return null;
+    try{
+      const fence=this.options.localErasure;if(fence&&!(fence instanceof ConversationGraphLocalErasureFence))return null;
+      const keys=[...this.options.witnessPublicKeys.entries()].map(([id,key])=>[id,crypto.createHash('sha256').update(typeof key==='string'||Buffer.isBuffer(key)?key:(key instanceof crypto.KeyObject&&key.type==='public'?key:crypto.createPublicKey(key)).export({type:'spki',format:'der'})).digest('hex')]).sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+      return `${this.verifierEpoch}|${fence?fence.answerSignature():'none'}|${canonicalHash(keys)}|${canonicalHash(this.options.installedMembership??null)}`;
+    }catch{/* @silent-fallback-ok: an unreadable context only turns the memo off for this pass; every row is verified fresh. */return null;}
+  }
+  /** The cache entry for a stored row under this context, refreshed when any top-level value changed; null for rows
+   * whose checks read the clock, files or custody lineage (spec §2) and when the memo is off. */
+  /** Rows already fingerprinted in the current pass. Reset at the start of every certifiedUnion call (never
+   * shared between passes, even with an equal context: a row can be reassigned between two passes). */
+  private rowMemoPass=new WeakMap<ConversationGraphReplicationRecord,GraphRowMemo|null>();
+  private rowMemoEntry(record:ConversationGraphReplicationRecord,context:string|null):GraphRowMemo|null{
+    if(this.rowMemoPass.has(record))return this.rowMemoPass.get(record)!;
+    const entry=this.rowMemoEntryFresh(record,context);this.rowMemoPass.set(record,entry);return entry;
+  }
+  private rowMemoEntryFresh(record:ConversationGraphReplicationRecord,context:string|null):GraphRowMemo|null{
+    if(context===null||record.materialization||record.adoption?.activation?.memberLoss||record.erasure||record.erasedControlProof||record.custodyMembership||record.custodyActivations)return null;
+    const keys=Object.keys(record),values=keys.map(key=>(record as unknown as Record<string,unknown>)[key]);let entry=this.rowMemo.get(record);
+    if(!entry||entry.context!==context||entry.keys.length!==keys.length||entry.keys.some((key,i)=>key!==keys[i]||entry!.values[i]!==values[i])){
+      if(this.rowMemoCheck)for(const value of values)deepFreezeGraphValue(value);
+      entry={context,keys,values,verified:new Map()};this.rowMemo.set(record,entry);
+    }
+    return entry;
+  }
+  private rowMemoDiverged(what:string):never{countVerdictMemoDivergence();throw new Error('graph-verdict-memo-divergence:'+what);}
+  private memoVerify(record:ConversationGraphReplicationRecord,origin:string,context:string|null):boolean{
+    const entry=this.rowMemoEntry(record,context);if(!entry)return this.verify(record,origin);
+    const cached=entry.verified.get(origin);
+    if(cached!==undefined){if(this.rowMemoCheck&&this.verify(record,origin)!==cached)this.rowMemoDiverged('verify');return cached;}
+    const fresh=this.verify(record,origin);entry.verified.set(origin,fresh);return fresh;
+  }
+  private memoFullyPersisted(record:ConversationGraphReplicationRecord,context:string|null):boolean{
+    const entry=this.rowMemoEntry(record,context);if(!entry)return this.fullyPersisted(record);
+    if(entry.persisted!==undefined){if(this.rowMemoCheck&&this.fullyPersisted(record)!==entry.persisted)this.rowMemoDiverged('persisted');return entry.persisted;}
+    return entry.persisted=this.fullyPersisted(record);
+  }
+  /** fullyPersisted for an accept-loop candidate. A clone built from a stored row differs only in erasure,
+   * encryptedSourceBundle and rewrap, none of which fullyPersisted reads, so the stored row's result applies. */
+  private acceptPersisted(record:ConversationGraphReplicationRecord,source:ConversationGraphReplicationRecord|undefined,memo:string|null):boolean{
+    if(!source)return this.memoFullyPersisted(record,memo);
+    const result=this.memoFullyPersisted(source,memo);
+    if(this.rowMemoCheck&&this.fullyPersisted(record)!==result)this.rowMemoDiverged('accept-persisted');
+    return result;
+  }
+  private memoDescriptorHash(record:ConversationGraphReplicationRecord,context:string|null):string{
+    const entry=this.rowMemoEntry(record,context);if(!entry)return canonicalHash(this.descriptorFor(record));
+    if(entry.descriptorHash!==undefined){if(this.rowMemoCheck&&canonicalHash(this.descriptorFor(record))!==entry.descriptorHash)this.rowMemoDiverged('descriptor');return entry.descriptorHash;}
+    return entry.descriptorHash=canonicalHash(this.descriptorFor(record));
+  }
   private fullyPersisted(record: ConversationGraphReplicationRecord): boolean {
     if(record.materialization)return this.validMaterialization(record);
     const terminal = this.terminal(record);
@@ -1880,8 +1953,8 @@ export class ConversationGraphReplication {
   private erasureHashPreflight(proof:GraphWitnessErasure):void{
     const target=canonicalHash(proof.target);for(const hash of proof.bundleHashes)for(const known of this.controlTargets.get(hash)??[])if(known!==target)throw new Error('graph-erasure-cross-target-hash');
   }
-  private retainPendingErasure(proof:GraphWitnessErasure):void{const target=canonicalHash(proof.target),proofs=this.pendingErasureTargets.get(target)??new Set<string>();proofs.add(canonicalHash(proof));this.pendingErasureTargets.set(target,proofs);this.purgeMemberLossSnapshots(proof.target);}
-  private releasePendingErasure(proof:GraphWitnessErasure):void{const target=canonicalHash(proof.target),proofs=this.pendingErasureTargets.get(target);proofs?.delete(canonicalHash(proof));if(!proofs?.size)this.pendingErasureTargets.delete(target);}
+  private retainPendingErasure(proof:GraphWitnessErasure):void{const target=canonicalHash(proof.target),proofs=this.pendingErasureTargets.get(target)??new Set<string>();proofs.add(canonicalHash(proof));this.verifierEpoch++,this.pendingErasureTargets.set(target,proofs);this.purgeMemberLossSnapshots(proof.target);}
+  private releasePendingErasure(proof:GraphWitnessErasure):void{const target=canonicalHash(proof.target),proofs=this.pendingErasureTargets.get(target);proofs?.delete(canonicalHash(proof));if(!proofs?.size)this.verifierEpoch++,this.pendingErasureTargets.delete(target);}
   private async intentIds(target:GraphErasureIdentity):Promise<string[]>{
     const ids:string[]=[];for(const name of await fs.readdir(this.options.directory))if(name.endsWith('.intent.json')||name.endsWith('.source.json')){
       const raw=await this.load(name) as Pick<ConversationGraphReplicationRecord,'coreType'|'packet'|'packetSignature'|'core'|'authorizationProof'>;
