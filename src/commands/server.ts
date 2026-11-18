@@ -25901,6 +25901,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // disabled. Observability at GET /worktrees/agent-reaper.
     const { AgentWorktreeReaper } = await import('../monitoring/AgentWorktreeReaper.js');
     const { makeAgentWorktreeReaperDeps } = await import('../monitoring/agentWorktreeGit.js');
+    const { evaluateAgentWorktreesInWorker } = await import('../monitoring/agentWorktreeEvaluationJob.js');
     const { WorktreeEnumerationFailureStore } = await import('../monitoring/WorktreeEnumerationFailureStore.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
     const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
@@ -25916,6 +25917,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
         }),
         failureHistory: _worktreeEnumerationFailureStore.forGuard('agent-worktree-reaper'),
+        // A pass that removes nothing runs in a worker thread: evaluating every checkout
+        // here blocked the event loop about 45 s per pass on the Studio (fb-91e824f4-920).
+        evaluateAllOffThread: () => evaluateAgentWorktreesInWorker({
+          instarRepo: config.projectDir,
+          worktreesDir: _agentWorktreesDir,
+          githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+        }),
       },
       config.monitoring?.agentWorktreeReaper,
     );
