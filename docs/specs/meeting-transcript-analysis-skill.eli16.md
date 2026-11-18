@@ -1,0 +1,20 @@
+# Meeting-transcript analysis for every agent (ELI16)
+
+When an agent sits in on a client call, the operator wants a "post-meeting read" afterwards: what was decided, who does what next, and what the client still owes us. Reading a long transcript once misses things, and the misses are the costly ones: a direct request to the agent buried in small talk, a "this" that decides which item matters, a "maybe" that got written down as a "yes".
+
+Luna, the SageMind agent, built a careful method for this and measured it. On her first full run, seven fresh checkers went over a read that already looked complete and found 35 more things that mattered. Her method makes misses fail a check instead of relying on care:
+
+- every line of the transcript has to be filed somewhere, with its exact words;
+- five searches for tell-tale words (the agent's name, "I'll", "important", names and numbers) have to be settled one by one;
+- two helpers read the transcript blind, in different ways, and anything they found that the main read did not has to be explained;
+- every item has to end up somewhere: an action, a question for the client, a file, or "just information, because...";
+- every screenshot or highlight the recorder kept has to be opened and tied to what was said at that moment;
+- then fresh checkers keep looking for what is still missing until one finds nothing that matters. If they never get there, the report says "incomplete", never "done".
+
+Justin asked (through Luna) for this to be part of Instar for every agent. This plan ships it as a built-in skill plus its small checking scripts. Everything that touches a real client (where the recording comes from, what gets prepared for the client's page, how the operator is told) stays in each agent's own small add-on scripts, because that differs per client. Nothing is ever sent to a client; changes are only prepared, and publishing waits for the operator.
+
+The review of this plan changed a few things. The checkers are no longer told "this read is incomplete" (that told them what to find); they are asked what is missing and may say "nothing". Only findings that change an action, an owner, a decision or a priority keep the checking going; notes about how firm a yes was are fixed and shown but don't. If a checker contradicts an earlier one, the agent settles it from the exact words, and if the words don't settle it, the operator gets one question while anything that depends on it is held. The helper readers run with no tools at all, so a sentence planted in a transcript can't make them do anything. Client recordings and screenshots stay in that client's own folder and are only shared where the operator chose. And a final check refuses to call a run finished if its records don't add up.
+
+It starts on development agents and on Luna, who will use it on her next real client call. Only after a real call where the operator finds nothing missing does it go to every agent. Nothing runs on its own; an agent uses it only for a meeting read. Turning it off is one setting.
+
+**Status.** Draft for Justin's approval. Nothing is built before he says yes.
