@@ -11,10 +11,10 @@ import type { Application, Request, Response } from 'express';
 import { MobilePairingService, deviceAuthenticator } from '../../src/server/mobilePairingRoutes.js';
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { canonicalString, DeviceRegistry } from '../../src/core/MobileDeviceKeys.js';
-import { signerKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
+import { deviceKeyHashOf as signerKeyHashOfDevice, signerKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
 import { LOCAL_OWNER_PATH, localOwnerProofMessage, mountLocalOwnerDeviceRoute } from '../../src/server/mobileLocalOwnerDevice.js';
-import { appTicketRefusal, localOwnerTicketPath, readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
+import { appTicketPlan, appTicketRefusal, localOwnerTicketPath, readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
 import { appTicketCommand } from '../../src/commands/install.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -44,10 +44,12 @@ function setup(o: { multiRoute?: boolean; killSwitch?: boolean; ledger?: boolean
     mobilePairing: { enabled: true, multiRoute: { enabled: o.multiRoute ?? false }, ...(o.killSwitch ? { localOwnerDevice: { enabled: false } } : {}) },
   };
   const degradations: string[] = [];
+  const attention: string[] = [];
   const pairing = new MobilePairingService({
     config: config as never, stateDir: dir, holdsLease: () => true,
     selfMachineId: o.selfMachineId === undefined ? 'm_alpha' : o.selfMachineId,
     reportDegradation: (what: string) => { degradations.push(what); },
+    raiseAttention: (title: string) => { attention.push(title); },
   } as never);
   stops.push(() => pairing.stop());
   if (o.ledger !== false) pairing.keyLedger = makeLedger(dir);
@@ -61,7 +63,7 @@ function setup(o: { multiRoute?: boolean; killSwitch?: boolean; ledger?: boolean
     handler!(req, res);
     return { status, json };
   };
-  return { dir, pairing, call, degradations };
+  return { dir, pairing, call, degradations, attention };
 }
 
 function enrollBody(dev: ReturnType<typeof makeDevice>, ticket: string, host = HOST, time = Date.now()) {
@@ -175,6 +177,70 @@ describe('POST /mobile/local-owner-device — enrolling', () => {
     expect(e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir))).json.error).toBe('owner-device-exists');
   });
 
+  it('replace: a ticket naming this Mac\'s earlier app device revokes it and enrolls the new key', () => {
+    const e = setup();
+    const old = makeDevice();
+    const first = e.call(enrollBody(old, writeLocalOwnerTicket(e.dir)));
+    const oldId = String(first.json.deviceId);
+    const fresh = makeDevice();
+    const r = e.call(enrollBody(fresh, writeLocalOwnerTicket(e.dir, Date.now(), [oldId])));
+    expect(r.status).toBe(200);
+    expect(r.json.replaced).toEqual([oldId]);
+    const reg = new DeviceRegistry(e.dir);
+    expect(reg.get(oldId)!.status).toBe('revoked');
+    expect(reg.get(String(r.json.deviceId))).toMatchObject({ status: 'active', localBinding: { machineId: 'm_alpha' } });
+    expect(e.pairing.keyLedger!.keyRevoked(signerKeyHashOfDevice(old.publicKey))).toBe(true);
+    // The old key can never come back.
+    expect(e.call(enrollBody(old, writeLocalOwnerTicket(e.dir))).json.error).toBe('device-revoked');
+    // The person is told.
+    expect(e.attention).toEqual(["This Mac's Instar app was connected again"]);
+  });
+
+  it('replace never revokes the owner for a key that then cannot be enrolled', () => {
+    const e = setup();
+    const first = e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir)));
+    const oldId = String(first.json.deviceId);
+    const held = makeDevice();
+    // The new key is already in the ledger (e.g. once used and revoked elsewhere): refused, owner intact.
+    e.pairing.keyLedger!.recordActivation({ id: 'elsewhere', publicKey: held.publicKey, host: HOST } as never, 'local-install', new Date().toISOString());
+    expect(e.call(enrollBody(held, writeLocalOwnerTicket(e.dir, Date.now(), [oldId]))).json.error).toBe('duplicate-key');
+    expect(new DeviceRegistry(e.dir).get(oldId)!.status).toBe('active');
+    expect(e.attention).toEqual([]);
+  });
+
+  it('replace on a server that does not know its machine refuses in plain words', () => {
+    const e = setup({ selfMachineId: null });
+    const first = e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir)));
+    const r = e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir, Date.now(), [String(first.json.deviceId)])));
+    expect(r.json.error).toBe('machine-identity-missing');
+    expect(new DeviceRegistry(e.dir).get(String(first.json.deviceId))!.status).toBe('active');
+  });
+
+  it('a replace whose enrollment failed after the revoke recovers with a fresh ticket and the same key', () => {
+    const e = setup();
+    const first = e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir)));
+    const oldId = String(first.json.deviceId);
+    // Simulate the crash: the old owner was revoked, the new key never enrolled.
+    e.pairing.keyLedger!.recordRevocation(new DeviceRegistry(e.dir).get(oldId)!, new Date().toISOString());
+    new DeviceRegistry(e.dir).revoke(oldId);
+    const fresh = makeDevice();
+    const r = e.call(enrollBody(fresh, writeLocalOwnerTicket(e.dir)));
+    expect(r.status).toBe(200);
+  });
+
+  it('replace refuses when the active owner is not named, or is bound to another machine', () => {
+    const e = setup();
+    e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir)));
+    expect(e.call(enrollBody(makeDevice(), writeLocalOwnerTicket(e.dir, Date.now(), ['someone-else']))).json.error).toBe('owner-device-exists');
+    const other = setup({ selfMachineId: 'm_beta' });
+    // An owner bound to m_alpha cannot be replaced by a server that is m_beta.
+    const reg = new DeviceRegistry(other.dir);
+    const dev = makeDevice();
+    reg.createActiveLocalOwner({ id: 'alpha-dev', publicKey: dev.publicKey, host: HOST, label: null, machineId: 'm_alpha', approvedAt: new Date().toISOString() });
+    expect(other.call(enrollBody(makeDevice(), writeLocalOwnerTicket(other.dir, Date.now(), ['alpha-dev']))).json.error).toBe('owner-device-exists');
+    expect(reg.get('alpha-dev')!.status).toBe('active');
+  });
+
   it('a crash after the ledger row: the retry rebuilds the record from the row', () => {
     const e = setup();
     const dev = makeDevice();
@@ -266,6 +332,37 @@ describe('instar install --app-ticket', () => {
     ledger.recordActivation({ id: 'd1', publicKey: dev.publicKey, host: HOST } as never, 'local-install', new Date().toISOString());
     expect(appTicketRefusal(agentState, dev.publicKey)).toBeNull();
     expect(appTicketRefusal(agentState, other.publicKey)).toMatch(/Another app/);
+  });
+
+  it('--replace-app-key: allowed only for this machine\'s own app device; the ticket names it', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'app-ticket-'));
+    dirs.push(tmp);
+    const agent = path.join(tmp, 'scout');
+    const agentState = path.join(agent, '.instar');
+    fs.mkdirSync(path.join(agentState, 'machine'), { recursive: true });
+    fs.writeFileSync(path.join(agentState, 'machine', 'identity.json'), JSON.stringify({ machineId: 'm_alpha' }));
+    const old = makeDevice(); const fresh = makeDevice();
+    makeLedger(agentState).recordActivation({ id: 'd-old', publicKey: old.publicKey, host: HOST } as never, 'local-install', new Date().toISOString());
+    new DeviceRegistry(agentState).createActiveLocalOwner({ id: 'd-old', publicKey: old.publicKey, host: HOST, label: null, machineId: 'm_alpha', approvedAt: new Date().toISOString() });
+    // Without the flag: refused, with the hint.
+    expect(appTicketRefusal(agentState, fresh.publicKey)).toMatch(/--replace-app-key/);
+    expect(appTicketCommand(finishedInstall(agent), fresh.publicKey)).toBe('failed');
+    // With it, on the same machine: a ticket naming the old device.
+    expect(appTicketCommand(finishedInstall(agent), fresh.publicKey, true)).toBe('complete');
+    expect(readLocalOwnerTicket(agentState)!.replaces).toEqual(['d-old']);
+    // Another machine's identity: refused.
+    expect(appTicketPlan(agentState, fresh.publicKey, { replace: true, machineId: 'm_beta' })).toMatchObject({ refusal: expect.stringMatching(/Another computer/) });
+    expect(appTicketPlan(agentState, fresh.publicKey, { replace: true, machineId: null })).toMatchObject({ refusal: expect.stringMatching(/identity could not be read/) });
+  });
+
+  it('--replace-app-key never replaces an interrupted enrollment another machine signed', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'app-ticket-'));
+    dirs.push(tmp);
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    makeLedger(stateDir, 'm_beta').recordActivation({ id: 'd-x', publicKey: makeDevice().publicKey, host: HOST } as never, 'local-install', new Date().toISOString());
+    expect(appTicketPlan(stateDir, makeDevice().publicKey, { replace: true, machineId: 'm_alpha' })).toMatchObject({ refusal: expect.stringMatching(/Another computer/) });
+    expect(appTicketPlan(stateDir, makeDevice().publicKey, { replace: true, machineId: 'm_beta' })).toEqual({ replaces: ['d-x'] });
   });
 
   it('refuses when an owner device the app did not create is active', () => {

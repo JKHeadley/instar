@@ -8,7 +8,7 @@
 import { storageMachineName } from '../core/storageMachineName.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
-import { appTicketRefusal, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
+import { appTicketPlan, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -780,6 +780,8 @@ export interface InstallCommandOptions {
   appTicket?: boolean;
   /** The app's device public key, with appTicket. */
   key?: string;
+  /** With appTicket: replace this Mac's own earlier app key (the app lost it). */
+  replaceAppKey?: boolean;
 }
 
 export const INSTALL_EXIT_CODES: Record<InstallStatus, number> = {
@@ -840,7 +842,7 @@ export function reportedStatus(progress: InstallProgress, holder: number | null)
  * one-time ticket for the finished install the Mac app ran, so the app can finish (or recover) its
  * enrollment with the same key. Changes nothing else.
  */
-export function appTicketCommand(existing: InstallProgress | null, key: string | undefined): InstallStatus {
+export function appTicketCommand(existing: InstallProgress | null, key: string | undefined, replace = false): InstallStatus {
   if (!existing || existing.status !== 'complete' || !existing.appEnroll) {
     console.log('  There is no finished install for the Instar app here.');
     return 'failed';
@@ -850,14 +852,24 @@ export function appTicketCommand(existing: InstallProgress | null, key: string |
     return 'needs-answers';
   }
   const stateDir = path.join(existing.appEnroll.agentDir, '.instar');
-  const refusal = appTicketRefusal(stateDir, key);
-  if (refusal) {
-    console.log(`  ${refusal}`);
+  const plan = appTicketPlan(stateDir, key, { replace, machineId: replace ? thisMachineId(stateDir) : null });
+  if ('refusal' in plan) {
+    console.log(`  ${plan.refusal}`);
     return 'failed';
   }
-  writeLocalOwnerTicket(stateDir);
-  console.log('  A fresh setup ticket is ready for the Instar app.');
+  writeLocalOwnerTicket(stateDir, Date.now(), plan.replaces);
+  console.log(plan.replaces.length
+    ? "  A fresh setup ticket is ready for the Instar app. It replaces this Mac's earlier app connection."
+    : '  A fresh setup ticket is ready for the Instar app.');
   return 'complete';
+}
+
+/** This machine's id, from the agent's own machine identity (the id its server binds local owners to). */
+function thisMachineId(stateDir: string): string | null {
+  try {
+    const id = JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8')) as { machineId?: unknown };
+    return typeof id.machineId === 'string' && id.machineId ? id.machineId : null;
+  } catch { return null; } // @silent-fallback-ok — no identity means the replace is refused in plain words
 }
 
 export async function runInstallCommand(options: InstallCommandOptions): Promise<InstallStatus> {
@@ -865,7 +877,7 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
   const existing = readInstallProgress(file);
   const lock = installLockPath(file);
 
-  if (options.appTicket) return appTicketCommand(existing, options.key);
+  if (options.appTicket) return appTicketCommand(existing, options.key, options.replaceAppKey === true);
 
   if (options.status) {
     const holder = liveLockHolder(lock);
