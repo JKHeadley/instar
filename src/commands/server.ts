@@ -388,6 +388,7 @@ import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { PlaceSessionRegistry, DEFAULT_PLACE_GLOBAL_CAP, DEFAULT_PLACE_IDLE_MS } from '../threadline/PlaceSessionRegistry.js';
 import { PEER_PLACE_SESSION_MARKER } from '../users/peerPlaceAdmission.js';
 import { PEER_PLACE_QUEUE_PREFIX } from '../messaging/SpawnRequestManager.js';
+import { WORK_ADMISSION_REFUSAL_REASON } from '../core/QueueDrainLoop.js';
 import { ThreadlineRouter, trustMeetsFloor } from '../threadline/ThreadlineRouter.js';
 import { WarmSessionPool } from '../threadline/WarmSessionPool.js';
 import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
@@ -3726,7 +3727,7 @@ export function wireTelegramRouting(
               payload: text, ...(inboundMedia ? { media: inboundMedia } : {}),
               senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
-            }, 'work-admission-refusal');
+            }, WORK_ADMISSION_REFUSAL_REASON);
             custody = q.result === 'queued' || q.result === 'already-queued';
           } catch { /* @silent-fallback-ok: custody is best-effort — no custody ⇒ the honest fallback reply below */ }
           if (custody) {

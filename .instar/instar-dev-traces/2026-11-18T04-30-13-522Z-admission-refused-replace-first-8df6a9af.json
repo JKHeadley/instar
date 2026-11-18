@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "admission-refused-replace-first",
+  "sessionId": "0dccc3dc-db30-4733-ae50-bb01bde13ba1",
+  "timestamp": "2026-11-18T04:30:13.522Z",
+  "artifactPath": "upgrades/side-effects/admission-refused-replace-first.md",
+  "artifactSha256": "0397f78046207dbcaff3bf8f056b9960bcbff5d2c3b5b65ab71ca88c9c7338fe",
+  "coveredFiles": [
+    "docs/specs/admission-refused-replace-first.eli16.md",
+    "src/commands/server.ts",
+    "src/core/QueueDrainLoop.ts",
+    "tests/unit/queue-drain-loop.test.ts",
+    "upgrades/next/admission-refused-replace-first.md",
+    "upgrades/side-effects/admission-refused-replace-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reuses the existing forced re-place path for one recorded enqueue reason; no block/allow surface; failure keeps the old retry; a revert fully undoes it.",
+  "eli16Path": "docs/specs/admission-refused-replace-first.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/admission-refused-replace-first.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
