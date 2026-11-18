@@ -13640,11 +13640,73 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     });
 
+    // ── Boot session census (restart-lock-continuity part A) ──
+    // Taken BEFORE the purge below rewrites the records of sessions that died with
+    // the previous boot. Once per OS boot; a server restart in the same boot keeps
+    // the first census. Lists, marks open work, and notifies once; never revives
+    // (revival is phase 2, CMT-1940). Runs whether or not machine maintenance is on.
+    try {
+      const { BootSessionCensus, readBootAt, setActiveBootSessionCensus } = await import('../core/BootSessionCensus.js');
+      const census = new BootSessionCensus({ stateDir: config.stateDir, bootAt: readBootAt() });
+      setActiveBootSessionCensus(census);
+      const captured = census.capture(state.listSessions());
+      console.log(`[boot-census] ${captured.written ? 'written' : 'not written'}: ${captured.reason}`);
+      const pruned = census.prune();
+      if (pruned.backlog) {
+        DegradationReporter.getInstance().report({
+          feature: `boot-census.unreviewed-backlog:${config.projectName}`,
+          primary: 'Boot census files are reviewed by the daily stewardship pass and then removed after 30 days',
+          fallback: 'All unreviewed census files are kept; nothing is dropped',
+          reason: `${pruned.unreviewed} unreviewed boot census files (limit 200)`,
+          impact: 'The list of sessions ended by restarts is growing unread',
+        });
+      }
+    } catch (err) {
+      console.warn(`[boot-census] census unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Fast startup purge — remove session records for dead tmux sessions BEFORE
     // monitoring starts. Prevents the death spiral where stale sessions overwhelm
     // the health endpoint (synchronous tmux has-session calls) and cause the
     // lifeline to restart the server in a tight loop.
     await sessionManager.purgeDeadSessions();
+
+    // Boot census notice (restart-lock-continuity A.5): 15 minutes after start, one
+    // report per boot when ended sessions with open work have not come back.
+    {
+      const bootCensusServerStartedAt = Date.now();
+      const bootCensusTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const { getActiveBootSessionCensus, bootCensusDeps, buildOpenWorkNotice } = await import('../core/BootSessionCensus.js');
+            const census = getActiveBootSessionCensus();
+            const file = census?.current();
+            if (!census || !file || file.noticeSentAt) return;
+            const livCfg = config.monitoring?.autonomousLivenessReconciler ?? {};
+            const deps = bootCensusDeps({
+              state, sessionManager, commitmentTracker,
+              ownMachineId: _meshSelfId ?? undefined,
+              activeAutonomousTopics: () => new Set(activeAutonomousJobs(config.stateDir).filter((j) => j.active && j.topic).map((j) => String(j.topic))),
+              reconcilerEnabled: resolveDevAgentGate(livCfg.enabled, config) && livCfg.dryRun === false,
+              serverStartedAt: bootCensusServerStartedAt,
+            });
+            const notice = buildOpenWorkNotice(census.classify(file, deps));
+            if (!notice) return;
+            if (!census.markNoticeSent()) return;
+            DegradationReporter.getInstance().report({
+              feature: `boot-census.open-work-ended:${config.projectName}:${file.bootAt}`,
+              primary: 'Sessions with open work continue after a restart',
+              fallback: 'They resume when their topic gets its next message',
+              reason: notice,
+              impact: 'Work that was in progress when the machine restarted is waiting',
+            });
+          } catch (err) {
+            console.warn(`[boot-census] notice check failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
+      }, 15 * 60 * 1000);
+      bootCensusTimer.unref?.();
+    }
 
     // ── A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md) ──
     // Opened HERE, at the inbound-queue sweep's boot site and BEFORE

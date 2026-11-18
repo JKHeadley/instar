@@ -12140,6 +12140,56 @@ export function createRoutes(ctx: RouteContext): Router {
   // Bearer-auth (router-level middleware). A wedged drainer is detectable
   // from lastTickAt + paused + breaker state in the GET.
 
+  // Boot session census (restart-lock-continuity A.3): served whether or not the
+  // resume queue exists. `?since=<bootAt>` lists every retained census after it.
+  router.get('/sessions/boot-census', async (req, res) => {
+    try {
+      const { getActiveBootSessionCensus, bootCensusDeps } = await import('../core/BootSessionCensus.js');
+      const { activeAutonomousJobs } = await import('../core/AutonomousSessions.js');
+      const census = getActiveBootSessionCensus();
+      if (!census || census.bootAt == null) {
+        res.json({ unavailable: census ? 'boot time unreadable' : 'census not started on this server' });
+        return;
+      }
+      const livCfg = ctx.config.monitoring?.autonomousLivenessReconciler ?? {};
+      const deps = bootCensusDeps({
+        state: ctx.state, sessionManager: ctx.sessionManager,
+        commitmentTracker: ctx.commitmentTracker ?? { getActiveByTopicId: () => { throw new Error('commitment tracker unavailable'); } },
+        ownMachineId: ctx.meshSelfId ?? undefined,
+        activeAutonomousTopics: () => new Set(activeAutonomousJobs(ctx.config.stateDir).filter((j) => j.active && j.topic).map((j) => String(j.topic))),
+        reconcilerEnabled: resolveDevAgentGate(livCfg.enabled, ctx.config) && livCfg.dryRun === false,
+        serverStartedAt: census.serverStartedAt,
+      });
+      const sinceRaw = typeof req.query.since === 'string' ? Number(req.query.since) : NaN;
+      const { files, unreadable } = census.listFiles();
+      const chosen = Number.isFinite(sinceRaw) ? files.filter((f) => f.bootAt > sinceRaw) : [census.current()].filter((f): f is NonNullable<typeof f> => !!f);
+      const gap = Number.isFinite(sinceRaw) && files.length > 0 && files[0].bootAt > sinceRaw && files[0].reviewedAt
+        ? `files before ${new Date(files[0].bootAt).toISOString()} were reviewed and removed` : null;
+      res.json({
+        bootAt: census.bootAt,
+        boots: chosen.map((f) => ({ bootAt: f.bootAt, writtenAt: f.writtenAt, reviewedAt: f.reviewedAt ?? null, noticeSentAt: f.noticeSentAt ?? null, sessions: census.classify(f, deps) })),
+        ...(gap ? { gap } : {}),
+        ...(unreadable.length ? { unreadable } : {}),
+      });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
+  router.post('/sessions/boot-census/reviewed', async (req, res) => {
+    try {
+      const bootAt = Number(req.body?.bootAt);
+      if (!Number.isFinite(bootAt)) { res.status(400).json({ error: 'bootAt (number) required' }); return; }
+      const { getActiveBootSessionCensus } = await import('../core/BootSessionCensus.js');
+      const census = getActiveBootSessionCensus();
+      if (!census) { res.status(503).json({ error: 'census not started on this server' }); return; }
+      const ok = census.markReviewed(bootAt);
+      res.status(ok ? 200 : 404).json({ ok, bootAt });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
   router.get('/sessions/resume-queue', (_req, res) => {
     if (!ctx.resumeQueue) {
       res.status(503).json({ error: 'resume-queue not available on this agent' });
