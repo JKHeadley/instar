@@ -20,8 +20,23 @@ import {
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
-  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime,
+  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
 } from './chats-model.js';
+
+/**
+ * A message's text with its inline markdown shown as styling (bold, italic, code, strike, web links).
+ * Built from text nodes and elements only: message text is untrusted, so it never goes through HTML.
+ */
+export function messageTextNode(text) {
+  return el('div', { class: 'chat-text' }, messagePieces(text).map((p) => {
+    let n = p.code ? el('code', { class: 'chat-code', text: p.text }) : document.createTextNode(p.text);
+    if (p.strike) n = el('s', {}, n);
+    if (p.italic) n = el('em', {}, n);
+    if (p.bold) n = el('strong', {}, n);
+    if (p.url) n = el('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, n);
+    return n;
+  }));
+}
 import { chiefOfStaffNeedRows } from './needs-model.js';
 import { appStripFor, appPath, appNavigation } from './projects-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
@@ -698,7 +713,7 @@ class ChatsPage {
     }
     return el('div', { class: `chat-bubble chat-${b.side}`, 'data-id': b.id, ...(b.messageId ? { 'data-message-id': b.messageId } : {}) },
       b.who ? el('div', { class: 'chat-who', text: b.who }) : null,
-      b.text ? el('div', { class: 'chat-text', text: b.text }) : null,
+      b.text ? messageTextNode(b.text) : null,
       b.attachments.length ? el('div', { class: 'chat-files' }, b.attachments.map((a) => this.attachmentNode(v, a))) : null,
       el('div', { class: 'chat-meta' }, meta));
   }

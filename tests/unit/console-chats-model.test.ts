@@ -397,3 +397,35 @@ describe('message time (bubble and pin line)', () => {
     expect(m.messageTime(undefined as unknown as string, nowMs)).toBe('');
   });
 });
+
+describe('messagePieces: inline markdown in a message (console-chat-markdown)', () => {
+  const plain = (text: string) => ({ text, bold: false, italic: false, code: false, strike: false, url: null });
+  it('text with no markers comes back unchanged, line breaks and list dashes as typed', () => {
+    expect(m.messagePieces('hello there')).toEqual([plain('hello there')]);
+    expect(m.messagePieces('Plan:\n- one\n- two')).toEqual([plain('Plan:\n- one\n- two')]);
+    expect(m.messagePieces('')).toEqual([]);
+  });
+  it('bold, italic, code and strike', () => {
+    expect(m.messagePieces('**Build things.** now')).toEqual([{ ...plain('Build things.'), bold: true }, plain(' now')]);
+    expect(m.messagePieces('__b__')).toEqual([{ ...plain('b'), bold: true }]);
+    expect(m.messagePieces('an *idea* and _another_')).toEqual([plain('an '), { ...plain('idea'), italic: true }, plain(' and '), { ...plain('another'), italic: true }]);
+    expect(m.messagePieces('run `npm **test**`')).toEqual([plain('run '), { ...plain('npm **test**'), code: true }]);
+    expect(m.messagePieces('~~gone~~')).toEqual([{ ...plain('gone'), strike: true }]);
+  });
+  it('***x*** is bold and italic', () => {
+    expect(m.messagePieces('***both***')).toEqual([{ ...plain('both'), bold: true, italic: true }]);
+  });
+  it('my_file_name is not italic; an unmatched marker stays literal', () => {
+    expect(m.messagePieces('open my_file_name.txt')).toEqual([plain('open my_file_name.txt')]);
+    expect(m.messagePieces('2 * 3 = 6')).toEqual([plain('2 * 3 = 6')]);
+    expect(m.messagePieces('**not closed')).toEqual([plain('**not closed')]);
+    expect(m.messagePieces('a `tick')).toEqual([plain('a `tick')]);
+  });
+  it('web links become links; javascript: and data: stay as the typed text', () => {
+    expect(m.messagePieces('see [docs](https://example.com/x)')).toEqual([plain('see '), { ...plain('docs'), url: 'https://example.com/x' }]);
+    expect(m.messagePieces('[x](javascript:alert(1))')).toEqual([plain('[x](javascript:alert(1))')]);
+    expect(m.messagePieces('[x](data:text/html,hi)')).toEqual([plain('[x](data:text/html,hi)')]);
+    expect(m.safeMessageUrl('http://a.b')).toBe('http://a.b');
+    expect(m.safeMessageUrl('JavaScript:alert(1)')).toBeNull();
+  });
+});
