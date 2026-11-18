@@ -187,6 +187,9 @@ describe('phone taps (Face ID over the exact action line)', () => {
     expect(o.status, JSON.stringify(o.body)).toBe(200);
     expect(o.body.lanes[0].cards.map((x: { id: string }) => x.id)).toEqual([card.id]);
     expect(o.body.viewer.canTap).toBe(true);
+    // My board (work-board-my-board.md): the agent's new card waits for the owner's approval, listed once.
+    expect(o.body.myBoard.sections.find((s: { reason: string }) => s.reason === 'approval').cardIds).toEqual([card.id]);
+    expect(o.body.myBoard.sections.flatMap((s: { cardIds: string[] }) => s.cardIds)).toEqual([card.id]);
     // A phone of a person who is not the owner goes through the same shared conversation check per
     // card (both sides of that check are covered below with a controlled answer).
     const m = await send(c.app, helper, 'GET', '/mobile/work-board');
@@ -195,6 +198,9 @@ describe('phone taps (Face ID over the exact action line)', () => {
     expect(m.body.pickups).toBeUndefined();
     expect(m.body.settings).toBeUndefined();
     for (const x of m.body.lanes.flatMap((l: { cards: Array<Record<string, unknown>> }) => l.cards)) { expect(x.source).toBeUndefined(); expect(x.projectKey).toBeUndefined(); }
+    // Their My board names only cards their own lanes carry: what they may not see is not counted or named.
+    const seen = new Set(m.body.lanes.flatMap((l: { cards: Array<{ id: string }> }) => l.cards.map((x) => x.id)));
+    for (const sec of m.body.myBoard.sections) { for (const id of sec.cardIds) expect(seen.has(id)).toBe(true); expect(sec.more).toBeUndefined(); }
   });
 });
 
