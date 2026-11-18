@@ -18,6 +18,7 @@ function submitOne(drop: SecretDrop, label = 'Test Secret') {
     label,
     fields: [{ name: 'code', label: 'Code' }],
     topicId: 10873,
+    mintAuth: 'master',
   });
   const pending = drop.getPending(token);
   if (!pending) throw new Error('pending missing — test setup wrong');

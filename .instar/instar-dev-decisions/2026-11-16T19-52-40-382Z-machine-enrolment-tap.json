@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-16T19:52:40.382Z",
+  "slug": "machine-enrolment-tap",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 277,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/data/awareness/machine-enrolment-readiness.md",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/machineMaintenance/EnrolmentController.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 276,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

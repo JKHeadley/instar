@@ -26,7 +26,7 @@ export interface OwnerPauseSourceDeps {
 export type OwnerPauseSourceRefusal =
   | 'marker-malformed' | 'channel-not-supported' | 'message-unreadable'
   | 'not-found' | 'pinned-copy' | 'unverifiable' | 'unreachable' | 'removed'
-  | 'not-human' | 'owner-unknown' | 'not-owner'
+  | 'not-human' | 'owner-unknown' | 'not-owner' | 'date-mismatch'
   | 'not-inbound' | 'unproven-provenance' | 'forwarded' | 'agent-authored' | 'identity-unverified' | 'not-this-person';
 
 export type OwnerPauseSource =
@@ -57,6 +57,8 @@ export async function checkOwnerPauseSource(deps: OwnerPauseSourceDeps, marker: 
   // Telegram caps a message at 4096 characters, so a real owner message always fits the record whole.
   if (typeof row.text !== 'string' || !row.text.trim() || row.text.length > OWNER_PAUSE_QUOTE_MAX) return { ok: false, reason: 'message-unreadable' };
   const ts = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN;
+  // A marker names the logged timestamp's date (findSources slices it the same way); a different date is a misquoted citation.
+  if (Number.isFinite(ts) && (row.timestamp as string).slice(0, 10) !== ref.date) return { ok: false, reason: 'date-mismatch' };
   return { ok: true, ref, marker: raw, at: Number.isFinite(ts) ? new Date(ts).toISOString() : `${ref.date}T00:00:00.000Z`, ownerText: row.text };
 }
 

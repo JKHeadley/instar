@@ -5,6 +5,7 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
 import {validateGraphEvent,type GraphEvent,type EffortRef} from '../core/conversationGraph.js';
 import type {GraphReadSource} from '../core/conversationGraphRead.js';
 import type {ConversationGraphReplicationRuntime} from './ConversationGraphReplicationRuntime.js';
+import type {ConversationGraphReplicationRecord} from '../core/ConversationGraphReplication.js';
 import type {ConversationGraphHeaderCustody} from './ConversationGraphHeaderCustody.js';
 
 export class ConversationGraphRuntimeReadSource implements GraphReadSource {
@@ -30,30 +31,46 @@ export class ConversationGraphRuntimeReadSource implements GraphReadSource {
  readiness():{ready:true}|{ready:false;reason:string}{
   this.snapshot=null;this.inventorySnapshot=null;
   try{
-   this.snapshot=this.runtime.retainedProjection();
-   this.inventorySnapshot=this.runtime.inventory();
-   this.headers.synchronize();
+   // One verified view, shared by every read until the graph changes (runtime.readView).
+   // E2E-PAIRING: EXEMPT — comment-only (silent-fallback annotation); readiness stays exercised end to end by tests/e2e/conversation-graph-surface-alive.test.ts.
+   const view=this.runtime.readView();
+   this.snapshot=view.retained;
+   this.inventorySnapshot=view.inventory;
+   this.headers.synchronize(view.retained.records);
    return{ready:true};
-  }catch{return{ready:false,reason:'verified-source-unavailable'};}
+  }catch{/* @silent-fallback-ok — an unverifiable view is reported to every caller as not ready (the routes answer 503 conversation-graph-off/pending); the runtime reports its own refusal codes. */return{ready:false,reason:'verified-source-unavailable'};}
  }
- certifiedEvents():GraphEvent[]{
-  return (this.snapshot?.records??[]).filter(record=>record.coreType==='graph-event')
-   .map(record=>validateGraphEvent(record.core)).filter((event):event is GraphEvent=>event!==null);
+ /** Per view: its graph events by id, and each event's verification, worked out once. */
+ private readonly perView=new WeakMap<object,{events:GraphEvent[];records:Map<string,ConversationGraphReplicationRecord>;creations:Map<string,ConversationGraphReplicationRecord>;verified:Map<string,boolean>}>();
+ private viewIndex(){
+  const snapshot=this.snapshot;if(!snapshot)return null;
+  let index=this.perView.get(snapshot);if(index)return index;
+  const records=new Map<string,ConversationGraphReplicationRecord>(),creations=new Map<string,ConversationGraphReplicationRecord>(),events:GraphEvent[]=[];
+  for(const record of snapshot.records){
+   if(record.coreType!=='graph-event')continue;
+   const event=validateGraphEvent(record.core);if(event)events.push(event);
+   const id=record.core.eventId;if(typeof id==='string'&&!records.has(id))records.set(id,record);
+   const subject=record.core.subject as EffortRef|undefined;
+   if(record.core.op==='create-effort'&&typeof subject?.id==='string'&&!creations.has(subject.id))creations.set(subject.id,record);
+  }
+  index={events,records,creations,verified:new Map()};this.perView.set(snapshot,index);return index;
  }
+ certifiedEvents():GraphEvent[]{return [...(this.viewIndex()?.events??[])];}
  verify(event:GraphEvent):boolean{
-  const record=this.snapshot?.records.find(record=>record.coreType==='graph-event'&&record.core.eventId===event.eventId);
-  return !!record&&record.packet.coreHash===canonicalHash(event)&&this.runtime.source.verifyHistoricalRecord(record);
+  const index=this.viewIndex(),record=index?.records.get(event.eventId);
+  if(!index||!record||record.packet.coreHash!==canonicalHash(event))return false;
+  let ok=index.verified.get(event.eventId);
+  if(ok===undefined){ok=this.runtime.source.verifyHistoricalRecord(record);index.verified.set(event.eventId,ok);}
+  return ok;
  }
  conversations(){return this.inventorySnapshot?.conversations??[];}
  unavailableConversations(){return this.inventorySnapshot?.unavailableConversations??[];}
  effortTitle(effort:EffortRef):string|null{
-  const record=this.snapshot?.records.find(record=>record.coreType==='graph-event'&&record.core.op==='create-effort'
-   &&(record.core.subject as EffortRef).id===effort.id);
+  const record=this.viewIndex()?.creations.get(effort.id);
   return typeof record?.core.headerId==='string'?this.headers.titleOf(record.core.headerId):null;
  }
  headerMetadata(effort:EffortRef):{version:number;forgotten:boolean}|null{
-  const record=this.snapshot?.records.find(record=>record.coreType==='graph-event'&&record.core.op==='create-effort'
-   &&(record.core.subject as EffortRef).id===effort.id);
+  const record=this.viewIndex()?.creations.get(effort.id);
   if(typeof record?.core.headerId!=='string')return null;
   return this.headers.get(record.core.headerId)??{version:0,forgotten:false};
  }

@@ -3799,6 +3799,14 @@ export interface InstarConfig {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
   };
+  /** Project apps (docs/specs/project-apps.md): a project's own app one tap from its Work row and
+   *  conversation. `enabled` is dev-gated (omit it to follow the gate); it also needs the Chief of
+   *  Staff, which is where projects come from. */
+  projectApps?: {
+    enabled?: boolean;
+    /** Part 2 custom apps (docs/specs/project-apps-sandbox.md §9): dev-gated; omit to follow the gate. */
+    custom?: { enabled?: boolean };
+  };
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
    *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
    *  owner-tunable at the agent level; per-project values live on the binding. */
@@ -4247,6 +4255,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
      */
     permissionActions?: { enabled?: boolean };
+    /** Approving trust raises from a paired device (spec app-trust-approval). On for new installs; dark on the fleet until set. */
+    trustApproval?: { enabled?: boolean };
     /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent

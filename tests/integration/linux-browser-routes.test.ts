@@ -92,7 +92,8 @@ describe('Secret Drop with browserHost', () => {
 
   it('shows the host on the form and stores nothing durable', async () => {
     const app = mount();
-    const made = await request(app).post('/secrets/request').send(body).expect(201);
+    // A browser password is asked for with the agent key (a keyless request may not ask for one).
+    const made = await request(app).post('/secrets/request').set('Authorization', `Bearer ${token}`).send(body).expect(201);
     const form = await request(app).get(`/secrets/drop/${made.body.token}`).expect(200);
     expect(form.text).toContain('This will be typed into accounts.example.com.');
     const csrf = /name="_csrf"\s+value="([0-9a-f]+)"/.exec(form.text)?.[1] ?? /csrfToken['":\s=]+['"]([0-9a-f]+)/.exec(form.text)?.[1];

@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-17T01:03:22.947Z",
+  "slug": "org-recovery-copy",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 367,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OrgKeepers.ts",
+      "src/core/OrgMembers.ts",
+      "src/core/OrgRecovery.ts",
+      "src/data/awareness/org-recovery-copy.md",
+      "src/server/AgentServer.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/orgPackRoutes.ts"
+    ],
+    "addedLines": 354,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: every action is one owner-device request; finishing a staged install at start runs once"
+  },
+  "verdict": "blocked"
+}

@@ -212,6 +212,33 @@ describe('Conversations page', () => {
     expect(doc.body.textContent).toContain('2 pinned messages');
   });
 
+  it('a message from an earlier day shows its date with the year on the bubble and the pin line; today shows only the time (message dates)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const old = new Date(2025, 0, 3, 9, 5).toISOString();
+    const today = new Date().toISOString();
+    const pins = [{ messageId: 'msg-old', pinnedAt: old, pinnedBy: { name: 'Justin', role: 'owner' }, preview: 'old', source: 'app' }];
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: today, lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [{ eventId: 'e1', messageId: 'msg-old', role: 'agent', text: 'old', at: old }, { eventId: 'e2', messageId: 'msg-new', role: 'agent', text: 'new', at: today }], nextBefore: null, pins } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const oldTime = doc.querySelector('.chat-bubble[data-message-id="msg-old"] .chat-time')?.textContent ?? '';
+    expect(oldTime).toContain('2025');
+    expect(oldTime).toMatch(/\d{1,2}:05/);
+    const newTime = doc.querySelector('.chat-bubble[data-message-id="msg-new"] .chat-time')?.textContent ?? '';
+    expect(newTime).toMatch(/\d:\d\d/);
+    expect(newTime).not.toContain(String(new Date().getFullYear()));
+    (doc.querySelector('.chat-pin-all') as HTMLButtonElement).click();
+    await flush();
+    expect(doc.querySelector('.chat-pin-by')?.textContent ?? '').toContain('2025');
+  });
+
   it('a 202 in-progress answer is asked again with the same requestId, and the message shows once (live proof finding)', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');
@@ -371,5 +398,33 @@ describe('Conversations page', () => {
     for (let i = 0; i < 10; i++) await flush();
     expect(doc.body.textContent).toContain('This browser was removed.');
     expect(idb.stores.get('device')?.has('m1')).toBe(false);
+  });
+
+  it('an agent message shows its inline markdown as styling, built from elements, never markup', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const text = '**Build things.** see `npm test`, [docs](https://example.com/a) and [bad](javascript:alert(1)) <img src=x onerror=alert(1)>';
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [{ eventId: 'e1', messageId: 'msg-1', role: 'agent', text, at: new Date().toISOString() }], nextBefore: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const body = doc.querySelector('.chat-bubble.chat-left .chat-text')!;
+    expect(body).toBeTruthy();
+    expect(body.querySelector('strong')?.textContent).toBe('Build things.');
+    expect(body.textContent).not.toContain('**');
+    expect(body.querySelector('code')?.textContent).toBe('npm test');
+    const links = [...body.querySelectorAll('a')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com/a']);
+    expect(links[0].getAttribute('target')).toBe('_blank');
+    expect(links[0].getAttribute('rel')).toBe('noopener noreferrer');
+    expect(body.textContent).toContain('[bad](javascript:alert(1))');
+    expect(body.querySelector('img')).toBeNull();
+    expect(body.textContent).toContain('<img src=x onerror=alert(1)>');
   });
 });

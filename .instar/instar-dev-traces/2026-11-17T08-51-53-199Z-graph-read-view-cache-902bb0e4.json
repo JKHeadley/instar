@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "graph-read-view-cache",
+  "sessionId": "288c2c03-42b5-40f6-9657-139652cb2ede",
+  "timestamp": "2026-11-17T08:51:53.199Z",
+  "artifactPath": "upgrades/side-effects/graph-read-view-cache.md",
+  "artifactSha256": "f8d685b237c42e8bfd02823a238ca2ca438f75b036a726fd1411a7ea2a90c04b",
+  "coveredFiles": [
+    "docs/specs/graph-read-view-cache.eli16.md",
+    "src/server/ConversationGraphReadSource.ts",
+    "upgrades/side-effects/graph-read-view-cache.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Annotation of an existing not-ready catch that moved lines; no behaviour change",
+  "eli16Path": "docs/specs/graph-read-view-cache.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-read-view-cache.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

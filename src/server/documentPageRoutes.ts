@@ -312,7 +312,11 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     // The agent's own machine (localhost) counts as an own host only for a request that really
     // arrived over loopback with no forwarding header, exactly as loopback browsers are bound (§3.6).
     const loopbackOk = ownLoopbackHost(req, host, (deps.config() as { port?: unknown }).port);
-    const ownHost = (h: string): boolean => deps.isOwnHost(h) || (loopbackOk && h === host);
+    // The Mac app that created this agent on this Mac signs only from this Mac, at its exact host
+    // (mac-app-creates-agent §A): no own name counts for it, only its own loopback host.
+    const local = (d as { localBinding?: unknown; host?: string }).localBinding !== undefined;
+    if (local && !(loopbackOk && host === (d as { host?: string }).host)) return { ok: false, reason: 'local-device-off-this-mac' };
+    const ownHost = (h: string): boolean => local ? h === host : (deps.isOwnHost(h) || (loopbackOk && h === host));
     const v = verifyDocpage({ deviceId, host, docId, op, requestId, timeMs, payload, sigB64url: sig }, d.publicKey, ownHost, seen);
     if (!v.ok) return { ok: false, reason: v.reason };
     return {

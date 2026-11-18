@@ -1364,6 +1364,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-bubble.chat-right { align-self: flex-end; background: var(--accent-wash); border-color: rgb(75 168 170 / 0.35); }
 .chat-who { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 2px; }
 .chat-text { white-space: pre-wrap; color: var(--text); }
+.chat-text code.chat-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; padding: 0 0.25em; border-radius: 4px; background: color-mix(in srgb, var(--text) 10%, transparent); }
+.chat-text a { color: inherit; text-decoration: underline; }
 .chat-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 11.5px; color: var(--text-faint); }
 .chat-meta .tone-bad { color: var(--bad); }
 .chat-meta .tone-attn { color: var(--attn); }
@@ -1585,6 +1587,39 @@ a.needs-row:hover { background: var(--surface-raised); }
 .projects-section .project-chat { margin-left: var(--s-2); }
 .projects-section .projects-finished, .projects-section .projects-loose { margin-top: var(--s-3); }
 .projects-section .projects-finished > summary, .projects-section .projects-loose > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+/* Project apps (project-apps.md §3.5): Open buttons and the summary line on the collapsed row; offers, Add app, pins in the details. */
+.projects-section .project-app-line { font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.projects-section .project-app-line.app-pending { color: var(--text-muted); }
+.projects-section .project-app-line.app-unreadable, .projects-section .project-app-summary.app-unreadable { color: var(--attn); }
+.projects-section .project-app-action { margin-left: var(--s-2); min-height: 32px; }
+.projects-section .project-app-hint { font-size: 12.5px; font-weight: 600; color: var(--accent-strong, var(--accent)); }
+.projects-section .project-app-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; min-width: 0; }
+.projects-section .project-open { height: auto; min-height: 36px; padding: 4px 12px; max-width: 100%; overflow-wrap: anywhere; text-align: left; font-size: 13.5px; }
+.projects-section .project-app-buttons .btn-inline { height: auto; min-height: 36px; padding: 4px 12px; max-width: 100%; }
+.projects-section .project-apps-detail { margin: 0 0 var(--s-3); padding: var(--s-2) 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
+.projects-section .project-offer { padding: 8px 10px; border: 1px solid var(--hairline); border-left: 3px solid var(--accent); border-radius: var(--r-sm, 8px); background: var(--surface-raised, var(--surface)); min-width: 0; }
+.projects-section .project-offer p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.projects-section .project-offer-title { font-weight: 600; color: var(--text-strong); }
+.projects-section .project-offer-more > summary { cursor: pointer; list-style: none; min-height: 32px; display: inline-flex; align-items: center; }
+.projects-section .project-apps-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.projects-section .project-app { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.projects-section .project-app-name { font-weight: 600; color: var(--text-strong); }
+.projects-section .project-app-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; overflow-wrap: anywhere; }
+.projects-section .project-app-pin.tone-bad { color: var(--bad); }
+.projects-section .project-app-pin.tone-attn { color: var(--attn); }
+.projects-section .project-app-pin.tone-quiet { color: var(--text-muted); }
+.projects-section .project-add-app > summary, .projects-section .project-app-answers > summary { cursor: pointer; list-style: none; min-height: 36px; display: inline-flex; align-items: center; }
+.projects-section .project-apps-status:empty { display: none; }
+@media (max-width: 480px) { .projects-section .project-body { padding-left: 12px; } }
+/* The project's app strip in an open conversation: fixed above the messages (which scroll on their own). */
+.chat-appstrip { display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 6px 6px 6px 12px; border: 1px solid var(--hairline); border-left: 3px solid var(--accent); border-radius: var(--r-md); background: var(--surface-raised); }
+.chat-appstrip[hidden] { display: none; }
+.chat-appstrip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.chat-appstrip-title { font-size: 12px; font-weight: 600; color: var(--accent-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-appstrip-line { font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-appstrip-line.app-pending { color: var(--text-muted); }
+.chat-appstrip-line.app-unreadable { color: var(--attn); }
+.chat-appstrip-open { flex: none; height: auto; min-height: 40px; padding: 0 14px; }
 
 .dot.quiet { background: var(--text-muted); opacity: 0.6; }
 /* "N more things need you. Show all": a full-width button that keeps the strip's frame (2026-11-16). */

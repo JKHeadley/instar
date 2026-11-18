@@ -101,3 +101,9 @@ Closes the class with an allowlist, matching the existing owner-id checks. Clear
 - `tests/unit/jev-correction-shadow.test.ts`: team, forwarded, other user and unverified senders are never classified; the owner's messages are.
 - The tests fail on the old code. Correction capture and Jev unit files: 77/77.
 - The Jev integration and e2e tests (run as unit copies) now give their operator messages a verified sender id, as real owner rows have, and check the new wiring: 14/14. The other row-writer and correction-backlog lifecycle tests are unchanged and pass.
+
+## Current-main guard repair (2026-11-17)
+
+Local Verify rejected the unchanged head twice because team-guards.test.ts still pinned the previous exclusion expression. The production correction path now uses isOwnersOwnWords for both classification and the distill window; the test had not followed that stronger owner allowlist. Reproduced locally (45 passing, one failing). After merging current main, the guard now checks the shared rule is wired to both consumers and exercises team rejection plus owner acceptance. Targeted team guard, owner-word and Jev tests pass (101/101). Runtime policy is unchanged by this repair. Full three-lane verification remains with Local Verify.
+
+Fast guard verification on the branch merged with main: all 29 required fast guard/ratchet files pass (756 tests), run sequentially in six batches of at most five files. Type check passes. The new full-suite result is still required from Local Verify before merge.

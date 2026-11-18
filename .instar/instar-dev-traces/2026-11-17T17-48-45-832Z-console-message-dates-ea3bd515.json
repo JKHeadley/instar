@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-message-dates",
+  "sessionId": "87b9e3bc-ef02-4bec-b420-fa8826c50106",
+  "timestamp": "2026-11-17T17:48:45.832Z",
+  "artifactPath": "upgrades/side-effects/console-message-dates.md",
+  "artifactSha256": "63e890ed2cb98dd70ad20b438c294e4ae08a7faee83a1b947f1b4a19b50693f0",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/console-message-dates.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/console-message-dates.md",
+    "upgrades/side-effects/console-message-dates.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only date formatting on one console page; a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-message-dates.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-message-dates.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

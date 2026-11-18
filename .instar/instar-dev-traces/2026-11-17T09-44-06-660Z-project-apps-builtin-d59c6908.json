@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "project-apps-builtin",
+  "sessionId": "9fedf354-db71-4764-adc2-99986abaf297",
+  "timestamp": "2026-11-17T09:44:06.660Z",
+  "artifactPath": "upgrades/side-effects/project-apps-builtin.md",
+  "artifactSha256": "7e70799e6838fa45c3755858b8218c943c64626dec652071bf2610d3a83287eb",
+  "coveredFiles": [
+    "dashboard/console/projects.js",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/server/CapabilityIndex.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three test-conformance fixes after Local Verify (capability prefix, keep-place focus, reconciler allow-list); no behavior change.",
+  "eli16Path": "docs/specs/project-apps.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/project-apps-builtin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: registry metadata, a focus call on a user tap, and an allow-list entry."
+  }
+}

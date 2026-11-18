@@ -1646,6 +1646,9 @@ export class SlackAdapter implements MessagingAdapter {
     }
   }
 
+  /** Trust-journey account path: a DM receipt; resolves 'not-for-us' when it is not an approval message. */
+  public onTrustAccountPathReceipt: ((r: import('../../core/trustJourney/accountPath.js').Receipt) => Promise<string>) | null = null;
+
   private async _handleMessage(event: Record<string, unknown>): Promise<void> {
     const userId = event.user as string;
     const text = event.text as string ?? '';
@@ -1659,6 +1662,19 @@ export class SlackAdapter implements MessagingAdapter {
     const subtype = event.subtype as string | undefined;
     if (subtype && subtype !== 'file_share') return;
     if (!userId || !channelId) return;
+
+    // Trust-journey decision 5: a direct-message reply that arrived from Slack itself (Socket Mode
+    // or the history recovery, which never returns threaded replies) is offered to the account path
+    // as a platform receipt, keyed single-use by (channel, ts). Anything it does not claim continues.
+    if (this.onTrustAccountPathReceipt && channelId.startsWith('D') && !event.bot_id && typeof text === 'string' && text) {
+      const outcome = await this.onTrustAccountPathReceipt({
+        receiptId: `sl-${channelId}-${ts}`, adapter: 'slack', senderId: userId, chatId: channelId, chatType: 'im',
+        messageId: ts, ...(threadTs && threadTs !== ts ? { replyToMessageId: threadTs } : {}),
+        text, senderIsBot: false, forwarded: false, uniqueKey: `slack:${channelId}:${ts}`,
+        receivedAt: new Date().toISOString(), receivedBy: 'self',
+      }).catch(() => 'not-for-us');
+      if (outcome !== 'not-for-us') return;
+    }
 
     // Dedup — Socket Mode reconnections can redeliver the same event.
     // Slack message timestamps are unique per-channel and safe as dedup keys.

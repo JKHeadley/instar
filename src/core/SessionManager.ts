@@ -835,6 +835,36 @@ export function isUnplacedPeerOriginSession(session: Pick<Session, 'triggeredBy'
 export type InternalControlCommand = '/compact' | '/clear';
 export const INTERNAL_CONTROL_COMMANDS: readonly InternalControlCommand[] = ['/compact', '/clear'];
 
+/**
+ * Write a long session notification to `<tmpdir>/instar-<uid>-paste/`, a folder owned by this
+ * user with mode 0700, checked before every write (not a symlink, our owner, our mode). The
+ * file is created exclusively and never follows a link. Returns null (caller injects inline)
+ * when any check fails.
+ */
+export function writePrivatePasteFile(content: string, baseDir: string = os.tmpdir()): string | null {
+  try {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const dir = path.join(baseDir, `instar-${uid ?? 'user'}-paste`);
+    try {
+      fs.mkdirSync(dir, { mode: 0o700 });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    const st = fs.lstatSync(dir);
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error('paste folder is not a plain directory');
+    if (uid !== null && st.uid !== uid) throw new Error('paste folder is owned by another user');
+    if ((st.mode & 0o077) !== 0) throw new Error('paste folder is readable by others');
+    const filepath = path.join(dir, `paste-notify-${Date.now()}-${randomUUID().slice(0, 8)}.txt`);
+    const fd = fs.openSync(filepath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+    try { fs.writeSync(fd, content); } finally { fs.closeSync(fd); }
+    return filepath;
+  } catch (err) {
+    // @silent-fallback-ok — not silent: logged here, and the caller injects the notification inline instead, so it is never lost
+    console.error('[session] private paste file refused:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
 export class SessionManager extends EventEmitter {
   private pendingHeadlessSpawns = 0;
   private pendingScheduledSpawns = 0;
@@ -9213,13 +9243,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return notification;
     }
 
-    // Write to temp file for large notifications
-    const tmpDir = path.join('/tmp', 'instar-paste');
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const filename = `paste-notify-${Date.now()}-${randomUUID().slice(0, 8)}.txt`;
-    const filepath = path.join(tmpDir, filename);
-    fs.writeFileSync(filepath, notification);
-
+    // Write large notifications to a file in a folder only this user can use. A shared
+    // folder (the old /tmp/instar-paste) let any local user swap or pre-plant the file the
+    // session is told to read. If the folder fails its checks, inject inline instead: a
+    // notification must never be lost.
+    const filepath = writePrivatePasteFile(notification);
+    if (!filepath) {
+      this.injectMessage(tmuxSession, notification);
+      return notification;
+    }
     const ref = `[paste] Content notification saved to ${filepath} — read it to see the details.`;
     this.injectMessage(tmuxSession, ref);
     return ref;

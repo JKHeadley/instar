@@ -53,6 +53,9 @@ export interface LiveConfigOptions {
   watchPaths?: string[];
 }
 
+/** Path segments that name JavaScript's object machinery; never config settings (SEC-071). */
+const RESERVED_CONFIG_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
 export class LiveConfig extends EventEmitter {
   private stateDir: string;
   private configPath: string;
@@ -144,6 +147,9 @@ export class LiveConfig extends EventEmitter {
   set(dotPath: string, value: unknown, opts?: { stageWriteToken?: symbol; initializeDashboardPinGeneration?: boolean }): void {
     // Structural gate: the rollout stage is StageAdvancer-write-only (§Rollout).
     assertStageWriteAuthorized(dotPath, opts?.stageWriteToken);
+    // A path through JavaScript's object machinery is never a setting (SEC-071): following it
+    // writes onto every object in the process.
+    if (dotPath.split('.').some((p) => RESERVED_CONFIG_SEGMENTS.has(p))) throw new Error('config-path-reserved-segment');
 
     if (dotPath === 'dashboardPinGeneration' || dotPath.startsWith('dashboardPinGeneration.')) {
       throw new Error('dashboard-pin-generation-is-managed');
@@ -303,6 +309,8 @@ export class LiveConfig extends EventEmitter {
       if (current === null || current === undefined || typeof current !== 'object') {
         return undefined;
       }
+      // Own settings only: an inherited or reserved name is not a setting (SEC-071).
+      if (RESERVED_CONFIG_SEGMENTS.has(part) || !Object.prototype.hasOwnProperty.call(current, part)) return undefined;
       current = (current as Record<string, unknown>)[part];
     }
 

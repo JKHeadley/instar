@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -237,7 +238,8 @@ import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { ConversationListPinStore } from '../core/ConversationListPins.js';
@@ -283,6 +285,7 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
+import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -525,6 +528,8 @@ export interface LiveTestRunnerWiring {
 export class AgentServer {
   private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
+  /** Project apps part 2: the known-address inputs for the frame/wrapper origin (project-apps-sandbox §3.6). */
+  private projectAppOriginDeps: ProjectAppOriginDeps = { knownHttpsHosts: () => [] };
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
@@ -943,6 +948,12 @@ export class AgentServer {
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     windowLifecycleTick?: (() => void) | null;
     passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1374,6 +1385,7 @@ export class AgentServer {
     operationGate?: import('../core/ExternalOperationGate.js').ExternalOperationGate;
     sentinel?: import('../core/MessageSentinel.js').MessageSentinel;
     adaptiveTrust?: import('../core/AdaptiveTrust.js').AdaptiveTrust;
+    trustAccountPath?: import('../core/trustJourney/TrustJourneyRuntime.js').TrustAccountPathRuntime;
     memoryMonitor?: import('../monitoring/MemoryPressureMonitor.js').MemoryPressureMonitor;
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
@@ -1917,6 +1929,12 @@ export class AgentServer {
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -1993,6 +2011,13 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
+    this.app.use('/mobile/local-owner-device', express.json({ limit: '4kb' }));
+    // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
+    this.app.use('/org/checkin', express.json({ limit: '4kb' }));
+    this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
+    // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
+    this.app.use('/mobile/org/recover', express.json({ limit: '32mb', verify: keepRawBody }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
@@ -2014,6 +2039,14 @@ export class AgentServer {
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
+    // Project app wrapper + frame (project-apps-sandbox §3.6): the request's own origin, only when it is
+    // one of this agent's known addresses (its own port locally, the tunnel, the named tunnel host,
+    // own Tailscale/Cloudflare names). dashboardSecurityHeaders reads it from app.locals.
+    this.projectAppOriginDeps = {
+      knownHttpsHosts: () => [projectAppHostOf(options.tunnel?.url ?? null), options.config.tunnel?.hostname ?? null],
+      acceptsOwnName: (host: string) => this.mobilePairing?.ownNames?.accepts(host) === true,
+    };
+    this.app.locals.projectAppOrigin = (req: Request) => resolveProjectAppOrigin(req, this.projectAppOriginDeps);
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
     this.app.use(dashboardSecurityHeaders);
 
@@ -2127,6 +2160,25 @@ export class AgentServer {
       });
     });
 
+    // SEC-070 local-guess budget: durable when the attempt store is available, else in memory.
+    const LOCAL_PIN_KEY = 'local-direct-unmarked';
+    const LOCAL_PIN_MAX_FAILURES = 10;
+    const LOCAL_PIN_WINDOW_MS = 5 * 60 * 1000;
+    let localPinMem = { count: 0, resetAt: 0 };
+    const localPinBlocked = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.blocked(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES);
+      return now <= localPinMem.resetAt && localPinMem.count >= LOCAL_PIN_MAX_FAILURES;
+    };
+    /** Records one local failure; true when this failure reached the cap (alert once). */
+    const recordLocalPinFailure = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.recordFailure(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES) <= 0;
+      if (now > localPinMem.resetAt) localPinMem = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS };
+      localPinMem.count++;
+      return localPinMem.count === LOCAL_PIN_MAX_FAILURES;
+    };
+    const LOCAL_PIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+    let lastLocalPinAlertAt = -Infinity;
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
       if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
@@ -2152,6 +2204,30 @@ export class AgentServer {
         : (req.ip || req.socket.remoteAddress || 'unknown');
       const markerId = readPinMarker(req);
       let entry: { count: number; resetAt: number } | undefined;
+
+      // SEC-070: a local caller without a prior-unlock marker gets its OWN small budget. Other
+      // processes on this machine (including confined sessions, which share the loopback) are
+      // local too, so local must not mean unlimited. A browser that unlocked before (signed
+      // marker) is never capped, and this budget is separate from the remote one, so a stranger
+      // elsewhere can never lock the owner out at the machine.
+      const localUnmarked = isLocalDirect && !markerId;
+      if (pinThrottle && localUnmarked && localPinBlocked(now)) {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
+        });
+        return;
+      }
+      // A local browser that unlocked before is judged on its own marker, exactly like a known
+      // remote browser: its gentle backoff and the marked abuse cap apply, so a copied marker
+      // cookie is not an unlimited pass from this machine.
+      if (pinThrottle && isLocalDirect && markerId) {
+        const decision = pinThrottle.consult(ip, markerId, now);
+        if (!decision.allow) {
+          res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
+          return;
+        }
+      }
 
       if (pinThrottle) {
         if (!isLocalDirect) {
@@ -2202,11 +2278,22 @@ export class AgentServer {
               DegradationReporter.getInstance().report({
                 feature: 'DashboardPin.bruteForce',
                 primary: 'An attack on the dashboard PIN is under way',
-                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the machine still works',
+                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
                 reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
-                impact: 'To unlock, use a browser you have unlocked before, or the machine itself (the local dashboard or the paired phone app).',
+                impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
               });
             }
+          }
+          if (isLocalDirect && markerId) pinThrottle.recordFailure(ip, markerId, now);
+          if (localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+            lastLocalPinAlertAt = now;
+            DegradationReporter.getInstance().report({
+              feature: 'DashboardPin.localGuessing',
+              primary: 'Repeated wrong PINs are being entered from this machine itself',
+              fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
+              reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
+              impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
+            });
           }
           res.status(403).json({ error: 'Incorrect PIN' });
           return;
@@ -2235,6 +2322,8 @@ export class AgentServer {
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
       if (pinThrottle) {
+        // The local count is NOT reset by a success: an owner's unlock must not hand a guessing
+        // program a fresh budget (the same choice as the remote global budget).
         pinThrottle.recordSuccess(ip, markerId);
         this.pinAttemptStore?.recordSuccess(ip);
         // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
@@ -2436,6 +2525,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
+    mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
     mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken,
       // SEC-046: when the dashboard scoped-session feature is on, the console redeem mints a scoped
@@ -6315,6 +6406,7 @@ export class AgentServer {
       operationGate: options.operationGate ?? null,
       sentinel: options.sentinel ?? null,
       adaptiveTrust: options.adaptiveTrust ?? null,
+      trustAccountPath: options.trustAccountPath ?? null,
       memoryMonitor: options.memoryMonitor ?? null,
       orphanReaper: options.orphanReaper ?? null,
       coherenceMonitor: options.coherenceMonitor ?? null,
@@ -6693,6 +6785,10 @@ export class AgentServer {
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      projectAppsRuntime: options.projectAppsRuntime,
+      projectAppSandbox: options.projectAppSandbox,
+      projectAppCustom: options.projectAppCustom,
+      projectAppOrigin: this.projectAppOriginDeps,
       chiefOfStaffProtocol: options.chiefOfStaffProtocol ?? null,
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
@@ -7858,6 +7954,27 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      // Organization pack (docs/specs/org-pack-and-join.md): bearer preparation, owner-device acts.
+      {
+        const pairing = this.mobilePairing;
+        const autonomy = options.autonomyManager ?? null;
+        this.app.use(createOrgPackRouter({
+          stateDir: options.config.stateDir,
+          machineId: this.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'single-machine',
+          updateOrigin: () => pairing.origin(),
+          ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
+          agentName: () => String(options.config.projectName ?? ''),
+          principalKind: (req) => principalOf(req).kind,
+          effects: () => ({
+            currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
+            currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,
+            lowerProfile: autonomy ? (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName) : undefined,
+            restoreProfile: autonomy ? (prev, cap) => { autonomy.restoreAfterOrgPolicy(prev, cap); } : undefined,
+            clampSettings: autonomy ? (cap) => autonomy.clampForOrgPolicy(cap) : undefined,
+            restoreSettings: autonomy ? (prev, cap) => autonomy.restoreClampedSettings(prev, cap) : undefined,
+          }),
+        }));
+      }
       const pairingSvc = this.mobilePairing;
       const appStore = this.appConversations?.store ?? null;
       const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
@@ -9415,6 +9532,8 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
+        bootReadiness().markReady();
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {

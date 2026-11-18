@@ -20,9 +20,25 @@ import {
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
-  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords,
+  listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
 } from './chats-model.js';
+
+/**
+ * A message's text with its inline markdown shown as styling (bold, italic, code, strike, web links).
+ * Built from text nodes and elements only: message text is untrusted, so it never goes through HTML.
+ */
+export function messageTextNode(text) {
+  return el('div', { class: 'chat-text' }, messagePieces(text).map((p) => {
+    let n = p.code ? el('code', { class: 'chat-code', text: p.text }) : document.createTextNode(p.text);
+    if (p.strike) n = el('s', {}, n);
+    if (p.italic) n = el('em', {}, n);
+    if (p.bold) n = el('strong', {}, n);
+    if (p.url) n = el('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, n);
+    return n;
+  }));
+}
 import { chiefOfStaffNeedRows } from './needs-model.js';
+import { appStripFor, appPath, appNavigation } from './projects-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
 const TOKEN_KEY = 'instar_token';
@@ -33,6 +49,19 @@ const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.
 
 const bearer = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 const now = () => Date.now();
+
+// Project apps (docs/specs/project-apps.md §3.5): the projects read behind the conversation's app
+// strip, kept for 30 s and shared by every conversation opened meanwhile. A failed read is no strip.
+const PROJECTS_TTL_MS = 30000;
+let projectsCache = null; // { at, data } | { at, pending: Promise }
+function projectsForStrip() {
+  if (projectsCache && now() - projectsCache.at < PROJECTS_TTL_MS) return projectsCache.pending || Promise.resolve(projectsCache.data);
+  const pending = fetch('/work/projects', { headers: { Authorization: `Bearer ${bearer()}` }, cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    .then((data) => { projectsCache = data ? { at: now(), data } : null; return data; });
+  projectsCache = { at: now(), pending };
+  return pending;
+}
 
 /** The page. Self-refreshing: the console's 30 s cycle never re-runs it (§4.8 Lifecycle). */
 export function renderChats(main, ctx = {}) {
@@ -526,13 +555,37 @@ class ChatsPage {
     v.statusLine = el('p', { class: 'card-line chat-muted', role: 'status' });
     v.nodes = new Map();
     v.pinBar = this.pinBar(v);
+    v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.pinBar, v.paused, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.appStrip, v.pinBar, v.paused, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v);
+    this.loadAppStrip(v);
     this.announce();
+  }
+
+  /** The project's app strip (headline + Open), drawn when the projects read lands; never awaited. */
+  loadAppStrip(v) {
+    projectsForStrip().then((data) => {
+      if (!v.live || this.view !== v) return;
+      const s = appStripFor(data, refString(v.ref));
+      if (!s) { v.appStrip.hidden = true; return; }
+      const open = el('a', { class: 'btn-quiet btn-inline chat-appstrip-open', href: s.href, text: s.label, 'aria-label': `Open ${s.title}` });
+      open.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        fetch(appPath(s.projectKey, s.appRef, 'opened'), { method: 'POST', headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' }, body: '{}', keepalive: true }).catch(() => {});
+        const nav = appNavigation(s.href);
+        if (nav && nav.kind === 'hash') location.hash = nav.href; else if (nav) location.assign(nav.href);
+      });
+      setKids(v.appStrip,
+        el('div', { class: 'chat-appstrip-text' },
+          el('span', { class: 'chat-appstrip-title', text: s.title }),
+          el('span', { class: `chat-appstrip-line app-${s.line.state}`, text: s.line.text })),
+        open);
+      v.appStrip.hidden = false;
+    }).catch(() => {});
   }
 
   historyPath(v, { pool, before } = {}) {
@@ -648,7 +701,7 @@ class ChatsPage {
 
   bubbleNode(v, b) {
     const meta = [];
-    if (b.at) meta.push(el('span', { class: 'chat-time', text: shortTime(b.at) }));
+    if (b.at) meta.push(el('span', { class: 'chat-time', text: messageTime(b.at) }));
     if (b.delivery) meta.push(el('span', { class: `chat-delivery tone-${b.delivery.tone}`, text: b.delivery.label }));
     if (b.mark) meta.push(el('span', { class: `chat-mark tone-${b.mark.tone}`, text: b.mark.label }));
     const pinId = this.canPin(v) ? pinIdOf(v.ref.kind, b) : null;
@@ -660,7 +713,7 @@ class ChatsPage {
     }
     return el('div', { class: `chat-bubble chat-${b.side}`, 'data-id': b.id, ...(b.messageId ? { 'data-message-id': b.messageId } : {}) },
       b.who ? el('div', { class: 'chat-who', text: b.who }) : null,
-      b.text ? el('div', { class: 'chat-text', text: b.text }) : null,
+      b.text ? messageTextNode(b.text) : null,
       b.attachments.length ? el('div', { class: 'chat-files' }, b.attachments.map((a) => this.attachmentNode(v, a))) : null,
       el('div', { class: 'chat-meta' }, meta));
   }
@@ -760,7 +813,7 @@ class ChatsPage {
   pinList(v) {
     const rows = v.pins.map((p) => {
       const open = el('button', { class: 'chat-pin-row-open', type: 'button' }, el('span', { class: 'chat-pin-preview', text: p.preview || 'Pinned message' }),
-        el('span', { class: 'chat-pin-by', text: [p.who ? `Pinned by ${p.who}` : 'Pinned', p.fromTelegram ? 'in Telegram' : '', p.pinnedAt ? shortTime(p.pinnedAt) : ''].filter(Boolean).join(' · ') }));
+        el('span', { class: 'chat-pin-by', text: [p.who ? `Pinned by ${p.who}` : 'Pinned', p.fromTelegram ? 'in Telegram' : '', p.pinnedAt ? messageTime(p.pinnedAt) : ''].filter(Boolean).join(' · ') }));
       open.addEventListener('click', async () => { closeSheet(); const ok = await this.jumpTo(v, p.messageId); if (!ok) v.statusLine.textContent = 'That message is further back than the dashboard has loaded.'; });
       const kids = [open];
       if (this.canPin(v)) {

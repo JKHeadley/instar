@@ -110,7 +110,17 @@ interface PersistedState {
   lastMeasureFailedAt?: number | null;
   /** When this episode's last cycle healed the disk without a post. */
   healedAt?: number | null;
+  /**
+   * Prune runs already recorded, newest last. A finished run's `run.json` stays on disk, so
+   * every server boot collects the same result again; without this its recovery was added
+   * to a sample once per boot (Mac Mini, 2026-11-16: one 9.2 GB cleanup counted five times,
+   * turning a 10 GB/day drain into a 41 GB/day forecast of two days to the floor).
+   */
+  recordedRuns?: string[];
 }
+
+/** How many recorded run ids are kept; boots collect only the latest run, so a few suffice. */
+const RECORDED_RUNS_KEPT = 20;
 
 export interface PruneSummary {
   runId: string;
@@ -354,6 +364,12 @@ export class DiskSteward {
   }
 
   private recordPrune(r: PruneChildResult): void {
+    const seen = this.state.recordedRuns ?? (this.state.lastPrune ? [this.state.lastPrune.runId] : []);
+    if (seen.includes(r.runId)) {
+      this.deps.log({ event: 'prune-already-recorded', runId: r.runId });
+      return;
+    }
+    this.state.recordedRuns = [...seen, r.runId].slice(-RECORDED_RUNS_KEPT);
     const observed = r.statfsBefore !== null && r.statfsAfter !== null
       ? Math.max(0, Math.min(r.statfsAfter - r.statfsBefore, r.bytesFreed)) : null;
     const total = this.state.samples.at(-1)?.total ?? 0;
