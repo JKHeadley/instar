@@ -2,7 +2,7 @@
 title: "Bring your Claude and ChatGPT history into Instar"
 slug: import-from-claude-chatgpt
 author: echo
-status: draft
+status: converged
 parent-principle: "The Person Decides; the Agent Does the Rest"
 eli16-overview: import-from-claude-chatgpt.eli16.md
 ---
@@ -47,7 +47,7 @@ Each item names its file and line.
    - That new conversation replicates like any other. It carries no imported history beyond the quoted excerpt, so other machines never receive messages for a chat they don't have.
 3. **Where it can be seen.**
    - Imported chats show in the app under "Imported" (a read-only list and reader), served by the machine that holds them.
-   - When the phone is served by another of the agent's machines, the Imported section says "Your imported chats are on <machine>" and offers to open them there. Nothing silently disappears.
+   - When the phone is served by another of the agent's machines, the Imported section says "Your imported chats are on <machine>" and offers to open them there. Search results there show the same line. Nothing silently disappears.
 4. **Search.**
    - **Meaning search:** an `imported` entry joins its list of pluggable sources (telegram, app, slack; `conversationMeaningSearch.ts:59-75`), fed in the background at a low rate with progress shown ("Indexing imported chats: 30%").
    - **Keyword search** is wired straight to the app store (`mobileConversationSearchRoutes.ts:157-176`), so it gains its own imported branch, with the two result lists merged by date for paging.
@@ -64,9 +64,9 @@ Each item names its file and line.
 6. **Size.** One shown part is at most 16,000 characters. Longer messages are split into numbered parts ("1/3"). Beyond 10 parts, the full text is kept as an attachment inside `ImportedHistoryStore`, and the Imported reader shows it as "Show the full message".
 7. **Projects are kept inside `ImportedHistoryStore`,** shown by the Imported reader as a project page: its instructions, the names of its files, its chats, and a "drop these files here" step for the originals Claude's export leaves out.
    - **No Instar documents are created by the importer.** Documents replicate through the conversation graph (`ConversationGraphReplication.ts`), with no local-only option, and the fallback page can be refused (`routes.ts:29762`, documents-replace-views).
-   - A project page has a "Make this a document" button. Pressing it is the person's own choice to share it with their machines, through the normal `POST /docs`.
+   - A project page has a "Make this a document" button. Pressing it is the person's own choice to share it with their machines, through the normal `POST /docs`. Without a named tunnel (`documentRoutes.ts:186`) the button is disabled, with a one-line reason.
 
-8. **Secrets.** Every source (the export zips as well as local sessions) passes the secret scanner before splitting, so a key can't hide across a split point. That covers keys, tokens, auth headers, private keys and `.env`-style lines. Each match becomes "[removed: looked like a secret]", in chats, overflow documents and project documents alike. The preview counts redactions ("12 things that looked like passwords or keys were removed").
+8. **Secrets.** Every source (the export zips as well as local sessions) passes the secret scanner before splitting, so a key can't hide across a split point. That covers keys, tokens, auth headers, private keys and `.env`-style lines. Each match becomes "[removed: looked like a secret]", in chats, full-message attachments and project pages in `ImportedHistoryStore` alike. The preview counts redactions ("12 things that looked like passwords or keys were removed").
 9. **Memory.**
    - Proposed facts come from `memories.json` (when present), or from the person's answer to the one-prompt route.
    - A **deterministic first pass**, not a model, flags anything that reads as imperative or addressed to an AI (e.g. starting with "always", "never", "ignore", "you must", "you are", "system", or containing a URL).
@@ -105,7 +105,9 @@ Each item names its file and line.
   - re-import with a different current branch;
   - splitting long messages;
   - zip refusals (`..`, absolute path, symlink, ratio, duplicate names, a zip64 mismatch);
-  - the secret scanner, including across a split point and in documents;
+  - the secret scanner, including across a split point and in attachments and project pages;
+  - the "Make this a document" button disabled without a named tunnel;
+  - search on a machine without the imports shows the where-they-live line;
   - the deterministic fact filter;
   - the imported store never calling the replication hook;
   - the agent search route's wrapper;
@@ -137,4 +139,4 @@ Round 3 closed the round 2 items and found:
 - the fact filter now flags rather than drops;
 - the Continue excerpt is scanned, capped at 2,000 characters, and disclosed.
 
-Round 4 is pending.
+Round 4: CONCUR, with three wording fixes (no documents in the secrets section, the button needing a tunnel, the where-they-live line in search). All three are applied.
