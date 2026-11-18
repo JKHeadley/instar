@@ -29,6 +29,20 @@ export class ForwardSecretRefusedError extends Error {
   }
 }
 
+/**
+ * identity-security-piece1h: the server refused the agent key even after the lifeline re-read it
+ * (the server's own key is unreadable, or ours is still stale). Like a secret refusal it re-queues
+ * without burning replay budget; it is NOT a lifeline-secret disagreement, so it raises no
+ * "/lifeline restart" notice (the server tells the owner about its own key).
+ */
+export class ForwardKeyRefusedError extends Error {
+  readonly kind = 'key-refused' as const;
+  constructor(public readonly status: number) {
+    super(`forward refused: agent key (${status})`);
+    this.name = 'ForwardKeyRefusedError';
+  }
+}
+
 export class ForwardBadRequestError extends Error {
   readonly kind = 'bad-request' as const;
   constructor(public readonly body?: unknown) {
@@ -73,5 +87,5 @@ export type ForwardError =
 export function isTerminalForwardError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const kind = (err as { kind?: string }).kind;
-  return kind === 'version-skew' || kind === 'bad-request' || kind === 'secret-refused';
+  return kind === 'version-skew' || kind === 'bad-request' || kind === 'secret-refused' || kind === 'key-refused';
 }

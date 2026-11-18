@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-18T10:38:56.647Z",
+  "slug": "identity-security-piece1h-agent-api-key",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 541,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/fixAuth.ts",
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/data/awareness/agent-api-key.md",
+      "src/lifeline/SlackLifeline.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/forwardErrors.ts",
+      "src/server/AgentServer.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/agentKeyHealth.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 496,
+    "deletedLines": 45
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "agent-key-reread is registered in selfActionRegistry: one timer, 1-minute doubling backoff capped at 30, stop 24 hours after the first failure; the window is kept in state/agent-key-reread.json so a restart continues it; at most ~54 re-reads per unreadable-key episode, zero after the give-up."
+    }
+  },
+  "verdict": "pass"
+}

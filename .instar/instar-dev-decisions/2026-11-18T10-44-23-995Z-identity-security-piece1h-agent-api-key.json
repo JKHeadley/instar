@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T10:44:23.995Z",
+  "slug": "identity-security-piece1h-agent-api-key",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 72,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 36
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "agent-key-reread is registered in selfActionRegistry: one timer, 1-minute doubling backoff capped at 30, stop 24 hours after the first failure; the window is kept in state/agent-key-reread.json so a restart continues it; at most ~54 re-reads per unreadable-key episode, zero after the give-up."
+    }
+  },
+  "verdict": "pass"
+}

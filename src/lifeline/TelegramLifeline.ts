@@ -73,6 +73,7 @@ import {
   ForwardVersionSkewError,
   isTerminalForwardError,
   ForwardSecretRefusedError,
+  ForwardKeyRefusedError,
   type VersionSkewBody,
 } from './forwardErrors.js';
 import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
@@ -193,6 +194,25 @@ export async function readForwardRefused(response: { json?: () => Promise<unknow
     // @silent-fallback-ok: no readable body means no refusal claim; the server's gate already acted
     return false;
   }
+}
+
+/**
+ * identity-security-piece1h: set `Authorization` only for a real string key; never
+ * `Bearer undefined` (no key) or `Bearer [object Object]` (a key the secret store did not load).
+ */
+export function withAgentKey(headers: Record<string, string>, key: unknown): Record<string, string> {
+  if (typeof key === 'string' && key) headers['Authorization'] = `Bearer ${key}`;
+  else delete headers['Authorization'];
+  return headers;
+}
+
+/** A refusal of the agent key (not of the lifeline secret): 401, 403 invalid token, 503 key unavailable. */
+export async function isAgentKeyRefusal(response: Response): Promise<boolean> {
+  if (response.status !== 401 && response.status !== 403 && response.status !== 503) return false;
+  const body = (await response.clone().json().catch(() => ({}))) as { error?: string };
+  if (response.status === 401) return body.error !== 'lifeline-secret-required';
+  if (response.status === 403) return body.error === 'Invalid auth token';
+  return body.error === 'agent-credential-unavailable';
 }
 
 export class TelegramLifeline {
@@ -472,7 +492,7 @@ export class TelegramLifeline {
         if (!operationId || !secret) throw new TelegramOriginHoldError('notification-server-unavailable');
         try {
           const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/notifications/internal/classify`, {
-            method: 'POST', headers: { Authorization: `Bearer ${this.projectConfig.authToken}`, 'Content-Type': 'application/json', [LIFELINE_SECRET_HEADER]: secret },
+            method: 'POST', headers: this.withAgentKey({ 'Content-Type': 'application/json', [LIFELINE_SECRET_HEADER]: secret }),
             body: JSON.stringify({ operationId }), signal: AbortSignal.timeout(2000),
           });
           if (!response.ok) throw new Error('Notification authority unavailable');
@@ -491,7 +511,7 @@ export class TelegramLifeline {
       holdsLease: () => this.polling && shouldOwnTelegramPoll(this.projectConfig),
       diagnoseUnknown: async (originId, reason) => {
         const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/telegram/origins/diagnose`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.projectConfig.authToken}` },
+          method: 'POST', headers: this.withAgentKey({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ originId, reason }), signal: AbortSignal.timeout(30_000),
         });
         if (response.status !== 202) throw new Error('origin diagnostic server unavailable');
@@ -1682,9 +1702,7 @@ export class TelegramLifeline {
         });
         const sendCallback = (): Promise<Response> => {
           const cbHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (this.projectConfig.authToken) {
-            cbHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
-          }
+          this.withAgentKey(cbHeaders);
           this.addIngressSecretHeader(cbHeaders);
           return fetch(
             `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-callback`,
@@ -1697,6 +1715,12 @@ export class TelegramLifeline {
         // callback id, so a retried tap can never be applied twice.
         if (response.status === 401 && await this.isLifelineSecretRefusal(response)) {
           this.ingressSecret.reload();
+          response = await sendCallback();
+        }
+        // The server refused the agent key (identity-security-piece1h): it may have changed since we
+        // loaded it (the owner's "fix auth", a repaired secret store, a peer's sync). Re-read once.
+        if (await this.isAgentKeyRefusal(response)) {
+          this.reloadAgentKey();
           response = await sendCallback();
         }
         if (response.ok) this.observeStaleSecretHint(response);
@@ -1824,7 +1848,7 @@ export class TelegramLifeline {
   private async forwardTopicName(topicId: number, name: string, renamed: boolean): Promise<void> {
     if (!this.supervisor.healthy) return; // the next message in the topic carries the name again
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+    this.withAgentKey(headers);
     this.addIngressSecretHeader(headers);
     try {
       await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`, {
@@ -1837,7 +1861,7 @@ export class TelegramLifeline {
   private async forwardPin(topicId: number, pinnedMessageId: number, serviceMessageId: number, fromUserId: number, byName: string): Promise<void> {
     if (!this.supervisor.healthy) return; // a pin seen while the server is down is not replayed
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+    this.withAgentKey(headers);
     this.addIngressSecretHeader(headers);
     try {
       await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`, {
@@ -1869,7 +1893,7 @@ export class TelegramLifeline {
   private async proveIngressSecret(): Promise<void> {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+      this.withAgentKey(headers);
       this.addIngressSecretHeader(headers);
       const post = (): Promise<Response> => fetch(
         `http://127.0.0.1:${this.projectConfig.port}/internal/lifeline-proof`,
@@ -1886,6 +1910,35 @@ export class TelegramLifeline {
     } catch {
       // @silent-fallback-ok — the proof is an optimisation; the first real
       // forward carries the same secret and arms the guard just the same.
+    }
+  }
+
+  /**
+   * identity-security-piece1h: add the agent key only when it is a real string. Never
+   * `Bearer undefined` (no key) or `Bearer [object Object]` (a key the secret store did not load).
+   */
+  private withAgentKey(headers: Record<string, string>): Record<string, string> {
+    return withAgentKey(headers, this.projectConfig.authToken);
+  }
+
+  private isAgentKeyRefusal(response: Response): Promise<boolean> { return isAgentKeyRefusal(response); }
+
+  private lastAgentKeyReloadAt = 0;
+  private lastKeyRefusalLogAt = 0;
+  /**
+   * Re-read the agent key through the same merge the server uses (config file + secret store).
+   * At most once every 5 seconds, so a burst of refusals costs one read; a read that throws keeps
+   * the current value and the caller's message stays queued.
+   */
+  private reloadAgentKey(): void {
+    const now = Date.now();
+    if (now - this.lastAgentKeyReloadAt < 5_000) return;
+    this.lastAgentKeyReloadAt = now;
+    try {
+      const fresh = loadConfig(this.projectConfig.projectDir);
+      this.projectConfig.authToken = fresh.authToken;
+    } catch (err) {
+      console.warn(`[Lifeline] could not re-read the agent key: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1998,14 +2051,13 @@ export class TelegramLifeline {
       });
 
     let secretReloaded = false;
+    let keyReloaded = false;
     const doForward = async (): Promise<true> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
         const fwdHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (this.projectConfig.authToken) {
-          fwdHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
-        }
+        this.withAgentKey(fwdHeaders);
         this.addIngressSecretHeader(fwdHeaders);
         const response = await fetch(
           `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`,
@@ -2025,6 +2077,18 @@ export class TelegramLifeline {
         if (response.status === 426) {
           const body = (await response.json().catch(() => ({}))) as VersionSkewBody;
           throw new ForwardVersionSkewError(426, body);
+        }
+        // The server refused the agent key (identity-security-piece1h). Re-read it ONCE per forward and
+        // retry. Still refused after that (the server's own key is unreadable, or ours is still stale):
+        // the message is re-queued like a secret refusal, never dropped, never read as a boot, and it
+        // burns no replay budget.
+        if (await this.isAgentKeyRefusal(response)) {
+          if (!keyReloaded) {
+            keyReloaded = true;
+            this.reloadAgentKey();
+            throw new ForwardTransientError(response.status);
+          }
+          throw new ForwardKeyRefusedError(response.status);
         }
         if (response.status === 503) {
           const body = (await response.json().catch(() => ({}))) as { retryAfterMs?: number };
@@ -2110,6 +2174,14 @@ export class TelegramLifeline {
       // replay decision as a skew), and say so loudly — at most once a minute.
       if (err instanceof ForwardSecretRefusedError) {
         this.noteSecretRefusal(topicId);
+        return 'skew';
+      }
+      if (err instanceof ForwardKeyRefusedError) {
+        const nowMs = Date.now();
+        if (nowMs - this.lastKeyRefusalLogAt > 60_000) {
+          this.lastKeyRefusalLogAt = nowMs;
+          console.error(`[Lifeline] server refused the agent key after a re-read (${err.status}) — messages stay queued.`);
+        }
         return 'skew';
       }
       this.consecutiveForwardFailures++;

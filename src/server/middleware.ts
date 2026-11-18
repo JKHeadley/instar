@@ -217,8 +217,32 @@ export function isDashboardCredentialRoute(method: string, reqPath: string): boo
   return false;
 }
 
+/**
+ * identity-security-piece1h. A usable configured key is a non-empty string. A key that is present
+ * but not a string (an unloaded `{ secret: true }` placeholder) is unreadable: known-invalid, always
+ * refused and never hashed. No key at all keeps today's open behaviour, counted (enforcement there
+ * is the owner's per-agent decision).
+ */
+export function isUsableToken(token: unknown): token is string {
+  return typeof token === 'string' && token.length > 0;
+}
+export function isUnreadableToken(token: unknown): boolean {
+  return token !== undefined && token !== null && token !== '' && typeof token !== 'string';
+}
+/** Who made a request that was served only because no key is configured (umbrella section 10 observe log). */
+export interface NoKeyCaller { method: string; path: string; remote: string; userAgent: string; agentIdHeader: string; session: string }
+let onNoTokenServed: (caller: NoKeyCaller) => void = () => {};
+/** The server's hook to record requests served without a key (feature evidence, rate-limited by the server). */
+export function setNoTokenServedCounter(fn: (caller: NoKeyCaller) => void): void { onNoTokenServed = fn; }
+const NO_KEY_UNCOUNTED = new Set(['/health', '/ping']);
+function noKeyCaller(req: Request): NoKeyCaller {
+  const h = (name: string): string => { const v = req.headers[name]; return (Array.isArray(v) ? v[0] : v ?? '').toString().slice(0, 120); };
+  return { method: req.method, path: req.path.slice(0, 160), remote: req.socket?.remoteAddress ?? 'unknown',
+    userAgent: h('user-agent'), agentIdHeader: h('x-instar-agentid'), session: h('x-instar-session') };
+}
+
 export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
-  if (!authToken) return true;
+  if (!isUsableToken(authToken)) return !isUnreadableToken(authToken);
   const header = req.headers.authorization;
   if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
   const token = header.slice(7);
@@ -280,8 +304,13 @@ export function authMiddleware(
     // immediately (a getter is re-read on every request).
     const resolvedToken = typeof authToken === 'function' ? authToken() : authToken;
 
-    // Skip auth if no token configured
-    if (!resolvedToken) {
+    // No key configured (identity-security-piece1h): today's open behaviour, counted. A non-string
+    // key (an unloaded placeholder) is not skipped: every exemption below still runs with its own
+    // proof, and the refusal happens only where the key would be compared. It is never hashed.
+    if (resolvedToken === undefined || resolvedToken === null || (resolvedToken as unknown) === '') {
+      if (!NO_KEY_UNCOUNTED.has(req.path)) {
+        try { onNoTokenServed(noKeyCaller(req)); } catch { /* @silent-fallback-ok: the observe log never blocks a request */ }
+      }
       next();
       return;
     }
@@ -485,7 +514,7 @@ export function authMiddleware(
     // View routes support signed URLs for browser access (see ?sig= below)
     if (req.path.startsWith('/view/') && req.method === 'GET') {
       const sig = typeof req.query.sig === 'string' ? req.query.sig : null;
-      if (sig && verifyViewSignature(req.path, sig, resolvedToken)) {
+      if (sig && isUsableToken(resolvedToken) && verifyViewSignature(req.path, sig, resolvedToken)) {
         next();
         return;
       }
@@ -580,6 +609,14 @@ export function authMiddleware(
         return;
       }
       // Match → fall through to token validation.
+    }
+
+    // identity-security-piece1h: the key comparison point. Every credential with its own proof
+    // (device keys, view links, dashboard `dst_` and session `mps_` tokens) was judged above; an
+    // unreadable key cannot authenticate the rest. Refuse cleanly (today this hashed an object and threw).
+    if (!isUsableToken(resolvedToken)) {
+      res.status(503).json({ error: 'agent-credential-unavailable' });
+      return;
     }
 
     const token = header.slice(7);
@@ -966,6 +1003,8 @@ export function requestTimeout(
  * The signature is path-specific — sharing a signed URL only grants access to that one view.
  */
 export function signViewPath(viewPath: string, authToken: string): string {
+  // identity-security-piece1h: a key the secret store did not load signs nothing (the link is refused).
+  if (typeof authToken !== 'string' || !authToken) return '';
   return createHmac('sha256', authToken).update(viewPath).digest('hex');
 }
 
@@ -973,6 +1012,7 @@ export function signViewPath(viewPath: string, authToken: string): string {
  * Verify a signed view URL. Returns true if the sig matches the path.
  */
 function verifyViewSignature(viewPath: string, sig: string, authToken: string): boolean {
+  if (typeof authToken !== 'string' || !authToken) return false;
   const expected = createHmac('sha256', authToken).update(viewPath).digest();
   const provided = Buffer.from(sig, 'hex');
   if (expected.length !== provided.length) return false;

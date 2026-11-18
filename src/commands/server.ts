@@ -267,7 +267,8 @@ import { SessionMonitor, isForeignTopicOwner } from '../monitoring/SessionMonito
 import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { isSystemOrProxyMessage as isSystemOrProxyMessageForMonitor } from '../messaging/shared/isSystemOrProxyMessage.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
-import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { MachineIdentityManager, isRegistryEntryActive } from '../core/MachineIdentity.js';
+import { fixAuth } from './fixAuth.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClaim.js';
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
@@ -583,15 +584,13 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
   const send = (msg: string) => withNotificationEnvelope(stampResponse(), async () => (deps.telegram)!.sendToTopic(topicId, msg));
 
   if (cmd === 'fix auth') {
-    const existing = deps.liveConfig.get<string>('authToken', '');
-    if (existing) {
-      await send('Your API already has an authentication token configured. No changes needed.');
-      return true;
-    }
-    // Generate a cryptographically secure random token
-    const token = randomBytes(16).toString('hex');
-    deps.liveConfig.set('authToken', token);
-    await send(`Done! Generated and saved a new API authentication token. Your API is now protected.\n\nToken: ${token.slice(0, 8)}... (stored in config)`);
+    let otherMachines = 0;
+    try {
+      const reg = new MachineIdentityManager(deps.config.stateDir).loadRegistry();
+      const active = Object.values(reg.machines ?? {}).filter((m) => isRegistryEntryActive(m));
+      otherMachines = Math.max(0, active.length - 1);
+    } catch { /* @silent-fallback-ok: no registry means a single-machine agent */ }
+    await send(fixAuth(deps.liveConfig, deps.config, otherMachines));
     return true;
   }
 
@@ -17959,7 +17958,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (login.framework !== 'claude-code' || !login.configHome) return null;
         const raw = await defaultKeychainExec.readService(credSwapService(login.configHome));
         if (!raw) return null;
-        return createHmac('sha256', config.authToken ?? '').update(raw).digest('hex');
+        return createHmac('sha256', typeof config.authToken === 'string' ? config.authToken : '').update(raw).digest('hex');
       },
       driveLogin: new FrameworkLoginDriver({
         // Capture with `tmux capture-pane -J` so a hard-WRAPPED verification URL is
