@@ -15,7 +15,7 @@ import {
   LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
-  OUTWARD_WORDS,
+  OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf,
 } from './work-model.js';
 
 const EYEBROW = 'Work · Work board';
@@ -105,7 +105,8 @@ function cardRowNode(card, refresh, lead) {
   const status = el('p', { class: 'need-sub', role: 'status' });
   const title = el('button', { class: 'link-btn need-title work-open', type: 'button', text: r.main, 'aria-label': `Open the card: ${r.main}` });
   title.addEventListener('click', () => openCard(card, refresh));
-  return el('div', { class: lead ? 'need-card work-card' : 'need-card muted-card work-card', 'data-card': card.id },
+  const turn = turnOf(card);
+  return el('div', { class: `${lead ? 'need-card work-card' : 'need-card muted-card work-card'}${turn ? ` turn-${turn}` : ''}`, 'data-card': card.id, ...(turn ? { 'data-turn': turn } : {}) },
     title,
     r.sub ? el('p', { class: 'need-sub', text: r.sub }) : null,
     r.outward ? el('p', { class: 'need-sub', text: card.outwardWords || OUTWARD_WORDS }) : null,
@@ -122,7 +123,7 @@ function actionsNode(card, actions, status, refresh) {
   for (const a of actions) {
     if (a.action === 'answer') { kids.push(answerControl(card, status, refresh)); continue; }
     const b = el('button', { class: `${a.tone === 'primary' ? 'btn-primary' : a.tone === 'danger' ? 'btn-danger' : 'btn-quiet'} btn-inline`, type: 'button', text: a.label });
-    b.addEventListener('click', () => confirmTap(card, a.action, {}, status, refresh));
+    b.addEventListener('click', () => (CLOSE_WORDS[a.action] ? closeStep(card, a.action, status, refresh) : confirmTap(card, a.action, {}, status, refresh)));
     kids.push(b);
   }
   return el('div', { class: 'confirm-row work-actions' }, kids);
@@ -144,6 +145,31 @@ function answerControl(card, status, refresh) {
   return el('div', { class: 'confirm-row work-answer' }, input, go);
 }
 
+/** Done or Not important: the note comes first (the server refuses a close without one), then the usual confirm step. */
+function closeStep(card, action, status, refresh, { note = '', refused = '' } = {}) {
+  const words = CLOSE_WORDS[action];
+  const id = `close-note-${action}`;
+  const input = el('textarea', { class: 'reason-input work-close-note', id, rows: '3', maxlength: String(CLOSE_NOTE_MAX), 'aria-describedby': `${id}-hint` });
+  input.value = note;
+  // A refused close comes back here with the note kept, so the person can reword it (a credential, a stale card).
+  const problem = el('p', { class: 'need-sub', role: 'status', text: refused });
+  const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel', onclick: () => closeSheet() });
+  const next = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Continue' });
+  input.addEventListener('input', () => { if (input.value.trim()) problem.textContent = ''; });
+  next.addEventListener('click', () => {
+    const built = tapBody(card, action, { note: input.value });
+    if (!built.ok) { problem.textContent = built.reason; input.focus(); return; }
+    const note = input.value;
+    confirmTap(card, action, { note }, status, refresh, (words) => closeStep(card, action, status, refresh, { note, refused: words }));
+  });
+  sheet({ title: `${CLOSE_TITLES[action]}: ${String(card.title || 'Card')}` },
+    el('label', { class: 'need-title', for: id, text: words.label }),
+    el('p', { class: 'need-sub', id: `${id}-hint`, text: words.hint }),
+    input, problem,
+    el('div', { class: 'confirm-row' }, cancel, next));
+  setTimeout(() => input.focus(), 0);
+}
+
 function coversNode(lines) {
   return el('dl', { class: 'story' }, lines.flatMap((l) => [
     el('dt', { text: l.label }),
@@ -152,7 +178,7 @@ function coversNode(lines) {
 }
 
 /** Show exactly what the tap covers, then the PIN, then send it. */
-function confirmTap(card, action, extra, status, refresh) {
+function confirmTap(card, action, extra, status, refresh, onRefused = null) {
   const built = tapBody(card, action, extra);
   if (!built.ok) { status.textContent = built.reason; return; }
   const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel', onclick: () => closeSheet() });
@@ -165,6 +191,7 @@ function confirmTap(card, action, extra, status, refresh) {
     pin.pin = '';
     if (res.status === 200) { status.textContent = 'Done.'; setTimeout(refresh, 600); return; }
     status.textContent = refusalWords(res.status, res.data);
+    if (onRefused) onRefused(status.textContent);
     if (res.data && (res.data.error === 'stale-card' || res.data.error === 'question-replaced')) setTimeout(refresh, 1500);
   });
   sheet({ title: `${tapWordsTitle(action, card)}: what this covers` },
@@ -174,6 +201,8 @@ function confirmTap(card, action, extra, status, refresh) {
 
 function tapWordsTitle(action, card) {
   if (card && card.phoneOnly && action === 'withdraw-approval') return 'Stop this app';
+  if (CLOSE_TITLES[action]) return CLOSE_TITLES[action];
+  if (action === 'unarchive' && card && card.closeout) return 'Reopen';
   return { approve: 'Approve', answer: 'Answer', 'confirm-done': 'Confirm done', reopen: 'Reopen', unhold: 'Release hold', retry: 'Try again', 'withdraw-approval': 'Withdraw approval', archive: 'Archive', unarchive: 'Restore', hold: 'Put on hold', redact: 'Remove for good' }[action] || 'Confirm';
 }
 
@@ -208,6 +237,9 @@ function openCard(card, refresh) {
   const body = [...warn, el('dl', { class: 'story' }, facts.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]))];
   if (card.need) body.push(block('What is needed', needNode(card.need)));
   if (card.recommendation) body.push(block('The agent recommends', el('p', { class: 'card-line work-pre', text: String(card.recommendation) })));
+  // A person's close in force: who closed it, when, and the note (work-front-doors §6).
+  const closed = closeoutLine(card);
+  if (closed) body.push(block('Closed', el('p', { class: 'card-line work-pre', text: closed })));
 
   const items = evidenceByItem(card);
   body.push(block('Done when', items.length ? el('ul', { class: 'work-items' }, items.map((it) => el('li', {},
