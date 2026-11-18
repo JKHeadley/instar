@@ -79,8 +79,9 @@ design finding accepted at the cap with its reason and the queue it went to. -->
 
 <!--
 Plain statement: "Converged at round N. The final review round
-found nothing that changes what gets built; M items left behind. Spec is ready for user review and
-approval. To approve: edit the spec's frontmatter to set approved: true
-(or run `instar spec approve {{SPEC_SLUG}}`), then /instar-dev can
+found nothing that changes what gets built; M items left behind. Spec is ready to approve and
+build. To approve: the approver (the agent for its own spec; the operator only for a constitution
+or protected-list amendment, or what their recorded instructions reserve) edits the spec's
+frontmatter to set approved: true with approved-by naming who and why, then /instar-dev can
 proceed with implementation."
 -->
