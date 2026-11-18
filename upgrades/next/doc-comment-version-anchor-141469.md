@@ -1,0 +1,22 @@
+# Document comments stay on the version they were made on
+
+<!-- bump: patch -->
+
+## What Changed
+
+On the Instar Documents page, a comment no longer jumps to an unrelated section when the document gets a new version. Before, if the highlighted words had been removed from their passage but happened to appear once anywhere else, the comment moved there and showed that new text as its quote. Now a match must sit where the edits moved the passage, or share real surrounding text; otherwise the comment is listed under "Not in this version". Comments are placed on whichever version you are reading: on the version a comment was made on, it is highlighted exactly where it was made. The comment card always quotes the text the person originally highlighted, says "Made on version N" when you are reading a different version, shows "Now reads: …" when the passage was only reworded, and offers "Open version N" when the passage is not in the version you are reading. On a computer-size screen, cards under "Not in this version" now stay in the page flow instead of hanging off the bottom behind the Send bar. The comments read for the agent carry the original quote, the version label, and `nowReads` when reworded.
+
+## What to Tell Your User
+
+- **Comments stay put**: "A comment you leave on a document now stays on the version you left it on, and always shows the exact words you highlighted. If a later version drops that passage, the comment says so and gives you a button to open the version it was made on, instead of jumping to some other part of the document."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Comments highlighted on older versions | Pick a version in the document's version list |
+| "Open version N" on a comment whose passage is gone | Tap it on the comment card |
+
+## Evidence
+
+Owner report, Telegram topic 141469, 2026-11-18 13:31 PST: a highlight from the first version moved to an unrelated section in the new version, and the comment should keep the original text. Reproduced in tests before the fix (both new reanchor/service cases fail on main: the comment lands on the unrelated "three steps" and is marked ok). Headless Chromium against page data built by the real DocumentService and renderTree, at 1280x728 and 390x844: on version 2 only the reworded passage is highlighted, the dropped one is listed under "Not in this version" with "Made on version 1", and "Open version 1" opens version 1 with both comments highlighted at their original places.
