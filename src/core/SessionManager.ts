@@ -7,6 +7,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  * and can be monitored/reaped by the server.
  */
 
+import type { SpawnPlacementContext } from './windowAwarePlacement.js';
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
@@ -1172,7 +1173,7 @@ export class SessionManager extends EventEmitter {
    * before (the gate: this stays unset unless `subscriptionPool.pinSessionsToPool`
    * is enabled, so it is a strict no-op by default). Returns null per-call when
    * no eligible account exists. */
-  private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+  private spawnAccountResolver?: (ctx?: SpawnPlacementContext) => { configHome: string; accountId: string } | null;
   /**
    * Codex placement for a NEW headless `codex-cli` spawn (fb-39e55b95-f00): the
    * account with room to launch under, a refusal when every pool Codex account
@@ -2202,7 +2203,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
   }
 
-  setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
+  setSpawnAccountResolver(resolver: (ctx?: SpawnPlacementContext) => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
   }
 
@@ -4957,7 +4958,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = options.accountPin
       ? options.accountPin
       : headlessFramework === 'claude-code'
-        ? (this.spawnAccountResolver?.() ?? null)
+        ? (this.spawnAccountResolver?.({
+            model: launchModel ?? null,
+            modelSource: options.model ? 'explicit' : requestedModel ? 'config-default' : 'unknown',
+            sessionName: tmuxSession,
+          }) ?? null)
         : headlessFramework === 'codex-cli'
           ? this.codexHeadlessPlacement()
           : null;
@@ -5439,7 +5444,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // always claude-code, so launch under the chosen pool account's config home
     // and tag the session. No-op unless the resolver is wired + returns an account.
     // An explicit account pin (spec skill-driven-signin-repair) always wins over the resolver.
-    const pinnedAccount = options.accountPin ?? this.spawnAccountResolver?.() ?? null;
+    const pinnedAccount = options.accountPin ?? this.spawnAccountResolver?.({
+      model: launchModel ?? null,
+      modelSource: options.model ? 'explicit' : launchModel ? 'config-default' : 'unknown',
+      sessionName: tmuxSession,
+    }) ?? null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
@@ -8342,7 +8351,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //     account → default-login behavior is exactly unchanged when off.
     const explicitConfigHome = options?.configHome;
     const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
-      ? (this.spawnAccountResolver?.() ?? null)
+      ? (this.spawnAccountResolver?.({
+          model: launchDefaultModel ?? null,
+          modelSource: options?.defaultModel ? 'explicit' : launchDefaultModel ? 'config-default' : 'unknown',
+          sessionName: tmuxSession,
+        }) ?? null)
       : null;
     // Census #6: when the home comes from a pinned pool account, resolve its LIVE slot through the
     // ledger gate (an explicit caller-supplied home — the account-swap / SessionRefresh path — is a

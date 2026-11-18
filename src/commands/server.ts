@@ -17773,6 +17773,36 @@ export async function startServer(options: StartOptions): Promise<void> {
     // apart, with another account here reading clean, bench an account ON THIS MACHINE. Screens and
     // sign-in pages only ask for a fresh read or stop one repair. Dev-gated: live on a development
     // agent, off on the fleet until graduation; `subscriptionPool.codexDeviceLimit.enabled` wins.
+    // quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): window-aware account choice.
+    // One set of live inputs shared by every picker on this machine; the switch is read live per
+    // decision through the dev-agent gate, and the shadow log records one row per placement.
+    const { AccountChoiceShadowLog, shadowLogPath } = await import('../monitoring/AccountChoiceShadowLog.js');
+    let accountChoiceShadow: InstanceType<typeof AccountChoiceShadowLog> | null = null;
+    const windowAwareEnabled = () => resolveDevAgentGate(
+      (() => {
+        const v = liveConfig.get<boolean | undefined>('subscriptionPool.pacing.windowAwareChoice', config.subscriptionPool?.pacing?.windowAwareChoice);
+        return typeof v === 'boolean' ? v : undefined;
+      })(),
+      config,
+    );
+    const windowAwareDeps: import('../core/windowAwarePlacement.js').WindowAwareDeps = {
+      enabled: windowAwareEnabled,
+      requestRead: (id) => quotaPoller.requestRead(id),
+      failedReads: (id) => quotaPoller.outOfCycleFailures(id),
+      breakerOpen: (id) => quotaPoller.rereadBreakerOpen(id),
+      pollIntervalMs: () => quotaPoller.pollInterval(),
+      record: (row) => {
+        if (!config.stateDir) return;
+        if (!accountChoiceShadow) {
+          accountChoiceShadow = new AccountChoiceShadowLog({ file: shadowLogPath(config.stateDir), machineId: subscriptionPoolMachineId ?? 'local' });
+        }
+        accountChoiceShadow.record(row);
+      },
+    };
+    const windowAwareSelection = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, requestRead: windowAwareDeps.requestRead, failedReads: windowAwareDeps.failedReads, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
     let codexDeviceLimit: import('../core/codexDeviceLimitWiring.js').CodexDeviceLimitWiring | null = null;
     if (subscriptionPoolMachineId) {
       try {
@@ -17797,6 +17827,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const dlTelegram = telegram;
         codexDeviceLimit = buildCodexDeviceLimitWiring({
           pool: subscriptionPool,
+          windowAwareSelection,
           ledger: subscriptionLoginLedger ?? null,
           quotaPoller,
           machineId: subscriptionPoolMachineId,
@@ -24530,6 +24561,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       _swapAntiThrashEngine = new SwapAntiThrashEngine({
         ledger: swapLedger,
         getKnobs: antiThrashKnobsGetter,
+        // quota-pacing step 2: rolled / unknown / unread readings are invalid for proactive moves.
+        windowAware: windowAwareEnabled,
+        outOfCycleFailures: (id) => quotaPoller.outOfCycleFailures(id),
         machineId: _meshSelfId ?? 'local',
         // P17: episode-deduped attention (the engine dedupes on episodeId;
         // the id passed here is the stable per-episode dedupe key).
@@ -24986,13 +25020,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       _quotaAwareScheduler = new QuotaAwareScheduler({
         listAccounts: () => subscriptionPool.list(),
         softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct,
+        // quota-pacing step 2: window-aware selection inputs (read live; off = today's rule).
+        windowAware: {
+          enabled: windowAwareEnabled,
+          requestRead: windowAwareDeps.requestRead,
+          failedReads: windowAwareDeps.failedReads,
+          pollIntervalMs: () => quotaPoller.pollInterval(),
+        },
         // swap-continuity-antithrash — the anti-thrash observation + execute-time
         // revalidation hooks. Reactive decision behavior is untouched (I6):
         // these only OBSERVE reactive swaps (dwell clock-start, hop alerts,
         // failed rows) and revalidate PROACTIVE explicit-target calls (§3.3).
         antiThrash: _swapAntiThrashEngine
           ? {
-              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs).valid,
+              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs, { windowAware: windowAwareEnabled() }).valid,
               getKnobs: () => {
                 const k = antiThrashKnobsGetter();
                 return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
@@ -25063,6 +25104,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         );
       _usageWallRescue = new UsageWallRescue({
         readConfig: readWallRescueConfig,
+        // quota-pacing step 2: window-aware account choice (read live; off = today's rule).
+        windowAware: windowAwareDeps,
         listAccounts: () => subscriptionPool.list(),
         getSession: (name) => state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === name),
         configHomeForSession: (name) => sessionManager.configHomeForSession(name),
@@ -25134,18 +25177,35 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        const pinnedAccount = () => {
-          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
+        const { decideWindowAwarePlacement, windowAwareOn } = await import('../core/windowAwarePlacement.js');
+        const pinnedAccount = (ctx?: import('../core/windowAwarePlacement.js').SpawnPlacementContext) => {
+          const nowMs = Date.now();
+          const accounts = subscriptionPool.list();
+          const framework = 'claude-code' as const;
+          const oldPick = () => selectAccount(accounts, { nowMs, framework });
+          // quota-pacing step 2: the shared tiered score when the switch is on (shadow row per placement).
+          const acct = windowAwareOn(windowAwareDeps)
+            ? decideWindowAwarePlacement({
+                accounts,
+                framework,
+                softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct ?? 90,
+                nowMs,
+                ctx,
+                deps: windowAwareDeps,
+                caller: 'spawn-pinned',
+                oldPick,
+              })
+            : oldPick();
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         };
         sessionManager.setSpawnAccountResolver(pinnedAccount);
         // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
         // the default login, which is signed out on a machine whose logins all live in the pool.
-        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
+        configureClaudeReviewerLogin(() => pinnedAccount({ shadow: false })?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
-        sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
-        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
+        sessionManager.setSpawnAccountResolver((ctx) => wallRescue.spawnAccount(ctx));
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount({ shadow: false })?.configHome ?? null);
       }
       // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
       // never launch on a Codex account the pool reads at its wall; tag the
