@@ -58,7 +58,7 @@ Tier 2. Spec `docs/specs/identity-security-piece1e-telegram-senders.md` (two rou
 - **Allowlist writes are in memory.** On a fleet agent whose list already has entries, an approved person is added to that list in memory only. After a restart, observe mode refuses them again until the owner adds them, as mini-onboarding does today. They stay registered, and the rule admits registered people when it enforces.
 - **Join requests are capped.** After 20 strangers in a day, no further join requests are created that day.
 
-- **The owner item is upserted.** `createAttentionItem` would keep the first count, so a follow-up commit switched both wiring sites to `upsertAttentionItem`.
+- **The owner item is upserted.** `createAttentionItem` would keep the first count, so a follow-up commit switched both wiring sites to `upsertAttentionItem`. They are marked `needsUser`, so the default hub filter posts them instead of holding them as automated status.
 
 ## 3. Level-of-abstraction fit
 

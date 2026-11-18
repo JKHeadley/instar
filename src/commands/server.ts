@@ -9750,7 +9750,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         registeredIds: () => userManagerSendOnly.listUsers().map((u) => u.telegramUserId).filter((v): v is number => typeof v === 'number'),
         // upsert: the item grows with each new sender (createAttentionItem would keep the first count).
         raiseOwnerItem: async (title, body) => { await tg.upsertAttentionItem({ id: 'agent:telegram-senders',
-          title, summary: body, description: body, priority: 'NORMAL', category: 'security', sourceContext: 'telegram-senders' }); return true; },
+          title, summary: body, description: body, priority: 'NORMAL', category: 'security', sourceContext: 'telegram-senders', needsUser: true }); return true; },
       })); }
       wireTelegramJoinRequests(telegram!, config, userManagerSendOnly);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
@@ -9910,7 +9910,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         registeredIds: () => userManager.listUsers().map((u) => u.telegramUserId).filter((v): v is number => typeof v === 'number'),
         // upsert: the item grows with each new sender (createAttentionItem would keep the first count).
         raiseOwnerItem: async (title, body) => { await tg.upsertAttentionItem({ id: 'agent:telegram-senders',
-          title, summary: body, description: body, priority: 'NORMAL', category: 'security', sourceContext: 'telegram-senders' }); return true; },
+          title, summary: body, description: body, priority: 'NORMAL', category: 'security', sourceContext: 'telegram-senders', needsUser: true }); return true; },
       })); }
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)

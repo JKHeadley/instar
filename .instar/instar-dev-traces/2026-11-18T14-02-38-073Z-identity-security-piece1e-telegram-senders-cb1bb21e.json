@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1e-telegram-senders",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T14:02:38.073Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1e-telegram-senders.md",
+  "artifactSha256": "d0daaf8140a97414c809e1b710a367e6ccbe00a9521ebdfeb55543367bd7cc60",
+  "specPath": "docs/specs/identity-security-piece1e-telegram-senders.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/identity-security-piece1e-telegram-senders.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to piece 1e: the owner items are marked needsUser so the default hub filter posts them to the owner.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the owner item is upserted on a new would-refuse sender (64 a day), each caused by an inbound message"
+  }
+}
