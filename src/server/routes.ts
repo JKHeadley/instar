@@ -11938,8 +11938,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'agent worktree reaper unavailable' });
       return;
     }
-    await ctx.agentWorktreeReaper.prepare();
-    res.json(ctx.agentWorktreeReaper.snapshot());
+    // Answers from the last pass (off the event loop) when the server wired the
+    // off-thread evaluator; a synchronous re-evaluation here blocked the server ~45 s.
+    res.json(await ctx.agentWorktreeReaper.report());
   });
 
   // ── External-Hog zombie auto-kill sentinel (CMT-1901) ──
