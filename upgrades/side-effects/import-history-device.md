@@ -22,3 +22,7 @@ An independent security review concurred. It verified that the device authentica
 
 ## Confirmed facts (spec §B.9)
 `POST /imported-history/facts` and `/mobile/imported-history/facts` take `{from, facts:[string]}`. They are for the owner only, from the operator session or the app device; the agent's bearer gets 403, because the person ticks the facts in the app. Each fact is scrubbed of secrets again and stored through `SemanticMemory.remember` as a `fact`, with `source import:<from>` and private to the owner (`privacyScope: private`, ownerId being the memory owner). It answers 503 when long-term memory is off. Tests: the integration case covers the agent being refused, secrets removed, bad input and memory off; the allowlist test covers `facts`.
+
+## Device-route inventory verification
+
+The shared mobile route test now exercises all seven owner-only history operations, including selecting one imported conversation and saving confirmed facts. The mobile terminal and imported-history device-rule tests passed together (24 tests).
