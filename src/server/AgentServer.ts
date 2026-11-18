@@ -227,8 +227,9 @@ import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
-import { PinThrottle, normalizePinSource } from '../core/PinThrottle.js';
+import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
+import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
 import { setDocumentScopedSend } from './mobilePairingRoutes.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
@@ -1964,6 +1965,7 @@ export class AgentServer {
     this.dashboardSessionStore = new DashboardSessionStore(
       (this.config as { security?: { dashboardScopedToken?: Record<string, number> } }).security?.dashboardScopedToken,
     );
+    setDashboardSessionFamilyLookup((token) => this.dashboardSessionStore.familyIdForToken(token));
     // SEC-045: scheduled sweep so a dst_ family's streams close at its absolute deadline without
     // waiting for the next unlock to run prune(). Cheap no-op on an empty store; unref'd so it never
     // holds the event loop open.
@@ -2117,17 +2119,20 @@ export class AgentServer {
     // generated after AgentServer construction (first-boot timing issue).
     // Config values are checked at request time via this.config which may be
     // updated by LiveConfig/PostUpdateMigrator after construction.
-    const pinAttempts = new Map<string, { count: number; resetAt: number }>();
-    const MAX_ATTEMPTS = 5;
-    const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
     const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
-    let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
     // SEC-002: per-client throttle + known-browser (cookie) bypass + hard cap + owner alert.
     // Ships ON; `security.pinThrottle.enabled: false` restores the legacy limiter exactly.
     const pinThrottleCfg = configRef.security?.pinThrottle;
-    const pinThrottle = (pinThrottleCfg?.enabled !== false) ? new PinThrottle(pinThrottleCfg) : null;
+    // identity-security-piece1c: the throttle is always on. The old off switch is ignored (nothing
+    // sets it) and reported once, so a stale setting can never weaken PIN protection.
+    const pinThrottle: PinThrottle = new PinThrottle(pinThrottleCfg);
+    if (pinThrottleCfg?.enabled === false) {
+      DegradationReporter.getInstance().report({ feature: 'DashboardPin.throttleSetting',
+        primary: 'PIN guessing limits as configured', fallback: 'security.pinThrottle.enabled: false is ignored; the limits stay on',
+        reason: 'the legacy off switch was found in this agent\'s config', impact: 'None: PIN guessing limits stay on.', internalOnly: true });
+    }
     const markerTtlMs = pinThrottleCfg?.markerTtlMs ?? 30 * 24 * 60 * 60 * 1000;
     const tunnelHostForPin = (): string | null => {
       try { return options.tunnel?.url ? new URL(options.tunnel.url).host : null; } catch { return null; } // @silent-fallback-ok — an unparseable tunnel URL means there is no own-name tunnel host
@@ -2147,6 +2152,84 @@ export class AgentServer {
       let value: string;
       try { value = decodeURIComponent(hit.slice(PIN_MARKER_COOKIE.length + 1)); } catch { return null; } // @silent-fallback-ok — a malformed cookie is treated as no marker, never a 500
       return verifyPinMarker(configRef.authToken, value, Date.now());
+    };
+
+    // identity-security-piece1c: the public PIN budget, shared by sign-in and step-up (both are
+    // reachable without a bearer). Synchronous: admission, compare and charge happen with no await
+    // between them. One context per request; the route compares the PIN itself.
+    type PublicPinCtx = { ip: string; markerId: string | null; isLocalDirect: boolean; localUnmarked: boolean };
+    // Checked on the raw address, before normalizePinSource (which turns ::1 into a /64 key).
+    const isLoopbackSource = (a: string): boolean => a === '::1' || a.startsWith('127.') || a.startsWith('::ffff:127.') || a === 'v6/0:0:0:0';
+    const publicPinContext = (req: Request): PublicPinCtx => {
+      const host = String(req.headers.host ?? '');
+      const isLocalDirect = ownLoopbackHost(req, host, configRef.port);
+      const raw = callerAddress(req, viaOwnNameForPin(host));
+      // A loopback request that is not the machine itself and carries no own-tunnel client header is
+      // unattributable (localtunnel, relays): charged to the global budget only, never to a shared key.
+      const ip = !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
+      const markerId = readPinMarker(req);
+      return { ip, markerId, isLocalDirect, localUnmarked: isLocalDirect && !markerId };
+    };
+    /** True when the attempt may reach the compare; otherwise the 429 is already sent. */
+    const publicPinAdmit = (c: PublicPinCtx, res: Response, now: number): boolean => {
+      if (c.localUnmarked && localPinBlocked(now)) {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
+        });
+        return false;
+      }
+      if (c.isLocalDirect && !c.markerId) return true;
+      const decision = pinThrottle.consult(c.ip, c.markerId, now);
+      if (!decision.allow) {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
+        return false;
+      }
+      if (!c.isLocalDirect && !c.markerId) {
+        // Durable cross-restart backstops, never applied to a known browser: the real client's own
+        // budget, and the shared unmarked budget (a restart no longer resets it).
+        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+          res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
+            ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
+            : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
+          return false;
+        }
+      }
+      return true;
+    };
+    const publicPinFailure = (c: PublicPinCtx, now: number): void => {
+      if (!c.isLocalDirect || c.markerId) {
+        const { alert } = pinThrottle.recordFailure(c.ip, c.markerId, now);
+        if (!c.isLocalDirect && !c.markerId) {
+          if (c.ip) this.pinAttemptStore?.recordFailure(c.ip);
+          this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
+        }
+        if (alert) {
+          // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
+          DegradationReporter.getInstance().report({
+            feature: 'DashboardPin.bruteForce',
+            primary: 'An attack on the dashboard PIN is under way',
+            fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
+            reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
+            impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
+          });
+        }
+      }
+      if (c.localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+        lastLocalPinAlertAt = now;
+        DegradationReporter.getInstance().report({
+          feature: 'DashboardPin.localGuessing',
+          primary: 'Repeated wrong PINs are being entered from this machine itself',
+          fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
+          reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
+          impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
+        });
+      }
+    };
+    /** A correct PIN clears only this source's own counters, never a shared budget. */
+    const publicPinSuccess = (c: PublicPinCtx): void => {
+      pinThrottle.recordSuccess(c.ip, c.markerId);
+      if (c.ip) this.pinAttemptStore?.recordSuccess(c.ip);
     };
 
     // One rule for whether this connection may unlock, shared by the unlock route
@@ -2199,70 +2282,10 @@ export class AgentServer {
       }
 
       const now = Date.now();
-      const host = String(req.headers.host ?? '');
-      // Genuinely-local request (owner at the machine): loopback + no cf-connecting-ip + local Host.
-      // Exempt from the throttle so the hard cap never refuses the owner's out-of-band recovery.
-      const isLocalDirect = ownLoopbackHost(req, host, configRef.port);
-      // The REAL client (cf-connecting-ip only through our own cloudflared), collapsed to its /64.
-      const ip = pinThrottle
-        ? normalizePinSource(callerAddress(req, viaOwnNameForPin(host)))
-        : (req.ip || req.socket.remoteAddress || 'unknown');
-      const markerId = readPinMarker(req);
-      let entry: { count: number; resetAt: number } | undefined;
-
-      // SEC-070: a local caller without a prior-unlock marker gets its OWN small budget. Other
-      // processes on this machine (including confined sessions, which share the loopback) are
-      // local too, so local must not mean unlimited. A browser that unlocked before (signed
-      // marker) is never capped, and this budget is separate from the remote one, so a stranger
-      // elsewhere can never lock the owner out at the machine.
-      const localUnmarked = isLocalDirect && !markerId;
-      if (pinThrottle && localUnmarked && localPinBlocked(now)) {
-        res.status(429).json({
-          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
-          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
-        });
-        return;
-      }
-      // A local browser that unlocked before is judged on its own marker, exactly like a known
-      // remote browser: its gentle backoff and the marked abuse cap apply, so a copied marker
-      // cookie is not an unlimited pass from this machine.
-      if (pinThrottle && isLocalDirect && markerId) {
-        const decision = pinThrottle.consult(ip, markerId, now);
-        if (!decision.allow) {
-          res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
-          return;
-        }
-      }
-
-      if (pinThrottle) {
-        if (!isLocalDirect) {
-          const decision = pinThrottle.consult(ip, markerId, now);
-          if (!decision.allow) {
-            res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
-            return;
-          }
-          // Durable cross-restart backstop, keyed by the REAL client (not the shared loopback) and
-          // never applied to a known browser — so it cannot reintroduce the owner lockout.
-          if (!markerId && this.pinAttemptStore?.blocked(ip)) {
-            res.status(429).json({ error: 'Too many attempts. Try again later.' });
-            return;
-          }
-        }
-      } else {
-        // Legacy limiter (rollback path, security.pinThrottle.enabled=false): unchanged.
-        if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-        if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
-          || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-          res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
-          return;
-        }
-        entry = pinAttempts.get(ip);
-        if (entry && now > entry.resetAt) { pinAttempts.delete(ip); entry = undefined; }
-        if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
-          res.status(429).json({ error: 'Too many attempts. Try again later.' });
-          return;
-        }
-      }
+      // identity-security-piece1c: the public PIN budget (shared with step-up). Admission first, so
+      // a refused attempt is never compared.
+      const pinCtx = publicPinContext(req);
+      if (!publicPinAdmit(pinCtx, res, now)) return;
 
       const { pin } = req.body;
       if (!pin || typeof pin !== 'string') {
@@ -2273,46 +2296,8 @@ export class AgentServer {
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
-        if (pinThrottle) {
-          if (!isLocalDirect) {
-            const { alert } = pinThrottle.recordFailure(ip, markerId, now);
-            // Durable backstop records only unmarked (stranger) failures by real client.
-            if (!markerId) this.pinAttemptStore?.recordFailure(ip);
-            if (alert) {
-              // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
-              DegradationReporter.getInstance().report({
-                feature: 'DashboardPin.bruteForce',
-                primary: 'An attack on the dashboard PIN is under way',
-                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
-                reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
-                impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
-              });
-            }
-          }
-          if (isLocalDirect && markerId) pinThrottle.recordFailure(ip, markerId, now);
-          if (localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
-            lastLocalPinAlertAt = now;
-            DegradationReporter.getInstance().report({
-              feature: 'DashboardPin.localGuessing',
-              primary: 'Repeated wrong PINs are being entered from this machine itself',
-              fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
-              reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
-              impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
-            });
-          }
-          res.status(403).json({ error: 'Incorrect PIN' });
-          return;
-        }
-        // Legacy failure tracking (rollback path).
-        if (!entry) { entry = { count: 0, resetAt: now + WINDOW_MS }; pinAttempts.set(ip, entry); }
-        entry.count++;
-        globalPinAttempts.count++;
-        const remaining = this.pinAttemptStore?.recordFailure(ip) ?? (MAX_ATTEMPTS - entry.count);
-        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
-        res.status(403).json({
-          error: 'Incorrect PIN',
-          attemptsRemaining: remaining,
-        });
+        publicPinFailure(pinCtx, now);
+        res.status(403).json({ error: 'Incorrect PIN' });
         return;
       }
 
@@ -2326,22 +2311,14 @@ export class AgentServer {
           configRef.dashboardPin=policy.pin;configRef.dashboardPinGeneration=policy.generation;
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
-      if (pinThrottle) {
-        // The local count is NOT reset by a success: an owner's unlock must not hand a guessing
-        // program a fresh budget (the same choice as the remote global budget).
-        pinThrottle.recordSuccess(ip, markerId);
-        this.pinAttemptStore?.recordSuccess(ip);
-        // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
-        // stranger cap). Signed, httpOnly, Secure, SameSite=Strict, agent-bound, expiring.
-        if (configRef.authToken) {
-          const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
-          res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
-        }
-      } else {
-        pinAttempts.delete(ip);
-        this.pinAttemptStore?.recordSuccess(ip);
-        globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-        this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
+      // The local count and the global budget are NOT reset by a success: an owner's unlock must not
+      // hand a guessing program a fresh budget.
+      publicPinSuccess(pinCtx);
+      // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
+      // stranger cap). Signed, httpOnly, Secure, SameSite=Strict, agent-bound, expiring.
+      if (configRef.authToken) {
+        const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
+        res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
       }
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
@@ -2414,38 +2391,29 @@ export class AgentServer {
       res.json({ revoked: true, scope: 'this-agent' });
     });
     // Fresh-PIN step-up for credential operations. It verifies the LIVE PIN, so it MUST share the
-    // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It consumes the
-    // SAME per-client + global budget (pinAttempts / globalPinAttempts / durable PinAttemptStore),
-    // keyed identically to /dashboard/unlock, and is gated behind the enabled flag.
+    // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It uses the
+    // SAME public budget helpers as /dashboard/unlock (identity-security-piece1c), and is gated
+    // behind the enabled flag.
     this.app.post('/dashboard/session/step-up', (req: Request, res: Response) => {
       if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
       if (unlockRefusedHere(req)) { res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' }); return; }
       if (!configRef.dashboardPin) { res.status(503).json({ error: 'PIN authentication not yet available.' }); return; }
+      // identity-security-piece1c: step-up is reachable without a bearer (the dashboard calls it with
+      // its cookie only), so it is on the public budget, exactly as sign-in: the owner's browser is
+      // judged on its own remembered-browser cookie and strangers cannot drain it.
       const now = Date.now();
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return;
-      }
-      let entry = pinAttempts.get(ip);
-      if (entry && now > entry.resetAt) { pinAttempts.delete(ip); entry = undefined; }
-      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
-        res.status(429).json({ error: 'Too many attempts. Try again later.' }); return;
-      }
+      const pinCtx = publicPinContext(req);
+      if (!publicPinAdmit(pinCtx, res, now)) return;
       const { pin } = req.body ?? {};
       if (!pin || typeof pin !== 'string') { res.status(400).json({ error: 'Missing PIN' }); return; }
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
-        if (!entry) { entry = { count: 0, resetAt: now + WINDOW_MS }; pinAttempts.set(ip, entry); }
-        entry.count++; globalPinAttempts.count++;
-        this.pinAttemptStore?.recordFailure(ip);
-        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
+        publicPinFailure(pinCtx, now);
         res.status(403).json({ error: 'Incorrect PIN' });
         return;
       }
-      pinAttempts.delete(ip);
-      this.pinAttemptStore?.recordSuccess(ip);
+      publicPinSuccess(pinCtx);
       const proof = this.dashboardStepUpSessions.issue();
       res.json({ stepUpToken: proof.token, stepUpExpiresAt: proof.expiresAt });
     });

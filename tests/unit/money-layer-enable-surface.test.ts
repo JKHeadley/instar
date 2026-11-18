@@ -562,19 +562,16 @@ describe('the enable surface', () => {
 // real server. They are grouped so the class stays visible.
 
 describe('second-pass findings', () => {
-  it('F1 — the PIN is never comparable without the lockout counter advancing', () => {
-    const { surface } = mkSurface();
-    // config-inspect used to compare the PIN inline and return observably
-    // different fields on success, with no failure counting: an unlimited
-    // six-digit oracle for the credential that commits money and restarts the
-    // server. Every PIN-taking route now funnels through checkPin.
-    for (let i = 0; i < 5; i++) expect(surface.checkPin(false, 'config-inspect')).toBe(false);
-    // The sixth attempt is locked out — from the INSPECT route, not just commit.
-    expect(() => surface.checkPin(false, 'config-inspect')).toThrow(/locked out/);
-    // …and the lockout carries to the authority routes, so the oracle cannot be
-    // used to farm attempts that commit is then free of.
-    const plan = mkSurface();
-    void plan;
+  it('F1 — every failed PIN answer is audited; the guessing limit is the route verifier (piece 1c)', () => {
+    const { surface, audit } = mkSurface();
+    // identity-security-piece1c: the per-caller guessing limit moved to the route's owner-PIN
+    // verifier (signed-in budget, tests/unit/owner-pin-verifier.test.ts). The surface no longer
+    // keeps one shared lockout, which let any bearer holder freeze the owner out for 15 minutes,
+    // but every failed answer from any route is still audited.
+    for (let i = 0; i < 6; i++) expect(surface.checkPin(false, 'config-inspect')).toBe(false);
+    expect(surface.checkPin(true, 'config-inspect')).toBe(true);
+    const failed = audit.readAll().filter((r) => r.type === 'pin-attempt-failed');
+    expect(failed.length).toBe(6);
   });
 
   it('F2 — mirror-config is refused when there is nothing to mirror', async () => {
