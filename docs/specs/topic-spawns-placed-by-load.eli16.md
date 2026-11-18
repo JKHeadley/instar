@@ -16,6 +16,14 @@ When the agent asks to start work for a conversation and says "place this where 
 - **Later messages in that conversation** go to the computer it now lives on, the same way they do for a person's conversation.
 - **If anything is uncertain** (the other computer doesn't answer clearly), nothing is started a second time. The agent is told which computer has it, and a person is told if it still can't be confirmed after ten minutes.
 - **If the work fails to start on the other computer,** that computer posts a notice in the conversation, so it's never silently lost.
+- **The other computer reads the hand-over as a task to do now,** not as something a person said and not as a resumed conversation to wait on.
+
+## Limits
+
+- Only the computer that holds the pool's lead role hands work over, because only it is allowed to deliver a conversation's first message to another computer.
+- Only conversations nobody is running yet are moved. Many agent tasks go into conversations that already exist, so this may move fewer than the 18 sessions above. The agent now records which kind each one is, so the real effect is measured.
+- Heavy work, and requests that name a specific model or tool, stay where they are.
+- A computer moves work only to computers whose software says it understands the hand-over.
 
 ## Safeguards
 
