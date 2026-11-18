@@ -65,7 +65,16 @@ export type DispatchOutcome = typeof DISPATCH_OUTCOMES[number];
 
 /** Absolute schema ceilings (every machine must accept what any owner-raised limit allows).
  *  The owner-set per-field limits (`workBoard.limits`) are enforced at the write route. */
-export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000 } as const;
+export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000, closeNote: 2000 } as const;
+
+/**
+ * How a person closes a card (work-front-doors §6, Luna's board): "Done" with a closeout note, or "Not
+ * important" with a reason the agent learns from. Both are an `archive` tap carrying `closeAs` + `note`, so a
+ * machine on an older build still folds the card as archived (it drops the two unknown fields) instead of
+ * reading the card as unreadable; `unarchive` (naming the tap) reopens it.
+ */
+export const CLOSE_AS = ['done', 'not-important'] as const;
+export type CloseAs = typeof CLOSE_AS[number];
 
 // ── identity ────────────────────────────────────────────────────────────────
 
@@ -277,6 +286,12 @@ export const workCardRecordStoreSchema: StoreFieldSchema = {
         if (r.names !== undefined) { if (!isRecordId(r.names)) return null; out.names = r.names; }
         if (r.reopens !== undefined) { const l = vIdList(r.reopens); if (!l) return null; out.reopens = l; }
         if (r.titleHash !== undefined) { if (typeof r.titleHash !== 'string' || !SHA256_RE.test(r.titleHash)) return null; out.titleHash = r.titleHash; }
+        if (r.closeAs !== undefined || r.note !== undefined) {
+          // A close is an archive with its note: both fields together, never on another action, never an empty note.
+          if (r.action !== 'archive' || typeof r.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(r.closeAs)) return null;
+          if (!isStr(r.note, SCHEMA_MAX.closeNote) || !(r.note as string).trim()) return null;
+          out.closeAs = r.closeAs; out.note = r.note;
+        }
         const a = r.action as TapAction;
         if (a === 'approve' && !out.materialHash) return null;
         if (a === 'answer' && (!out.questionId || !out.answer)) return null;
@@ -383,12 +398,16 @@ export function materialHashOf(m: MaterialFields): string {
 export function sameValue(a: unknown, b: unknown): boolean { return canonicalJson(a) === canonicalJson(b); }
 
 /** The closed set of fields a phone presence signature covers (§4). */
-export function tapActionLine(t: { action: string; cardId: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }): string {
+export function tapActionLine(t: { action: string; cardId: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }): string {
+  // `closeAs` and `note` enter the digest only when present, so every line an existing app signs is unchanged.
+  const close = t.closeAs !== undefined || t.note !== undefined ? { closeAs: t.closeAs ?? null, note: t.note ?? null } : {};
   const digest = sha256Hex(canonicalJson({
     action: t.action, cardId: t.cardId, materialHash: t.materialHash ?? null, questionId: t.questionId ?? null,
     answer: t.answer ?? null, claimId: t.claimId ?? null, retryOf: t.retryOf ?? null, names: t.names ?? null, titleHash: t.titleHash ?? null,
+    ...close,
   }));
-  return `Work card ${t.cardId}: ${t.action} [${digest}]`;
+  const label = t.closeAs === 'done' ? 'close as done' : t.closeAs === 'not-important' ? 'close as not important' : t.action;
+  return `Work card ${t.cardId}: ${label} [${digest}]`;
 }
 
 // ── the fold ────────────────────────────────────────────────────────────────
@@ -404,7 +423,10 @@ export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-ap
 export interface QuestionState { id: string; text: string; options?: string[]; principal: Principal; state: 'open' | 'answered' | 'replaced'; replacedBy?: string; reason?: string; answer?: string; answeredBy?: string; at: string }
 export interface EvidenceState { id: string; itemId: string; text: string; attachmentIds?: string[]; materialHash: string; reopens: string[]; at: string; by: By; counts: boolean }
 export interface ClaimState { id: string; materialHash: string; reopens: string[]; evidenceIds: string[]; at: string; counts: boolean; confirmedBy?: string }
-export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string }
+export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; closeAs?: CloseAs; note?: string }
+
+/** The person's close in force (the newest archive tap still standing that carries a note). */
+export interface CloseoutState { as: CloseAs; note: string; by: By; at: string; tapId: string }
 
 export interface CardFold {
   cardId: string;
@@ -427,6 +449,8 @@ export interface CardFold {
   reopens: string[];
   holds: string[];
   archives: string[];
+  /** The newest standing archive when it was a person's Done or Not important close; null otherwise. */
+  closeout: CloseoutState | null;
   redacted: { by: By; at: string } | null;
   approvalRequired: boolean;
   approvalValid: boolean;
@@ -489,7 +513,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
     cardId, conversationKey: cardConversationKey(cardId), created: false, createdBy: null, createdAt: null,
     title: '', need: '', doneWhen: [], carrier: 'agent', outward: true, links: [], recommendation: null, due: null, projectKey: null, source: null,
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
-    evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], redacted: null,
+    evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
     unknown: [], newestRecordAt: 0, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
   };
@@ -562,7 +586,8 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         const t: TapState = { id: rec.id, action: v.action as TapAction, by, at, hlc: rec.hlc,
           ...(v.materialHash ? { materialHash: v.materialHash as string } : {}), ...(v.questionId ? { questionId: v.questionId as string } : {}),
           ...(v.answer ? { answer: v.answer as string } : {}), ...(v.claimId ? { claimId: v.claimId as string } : {}),
-          ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}) };
+          ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}),
+          ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}) };
         f.taps.push(t);
         switch (t.action) {
           case 'approve': {
@@ -607,6 +632,9 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   f.reopens.sort();
   f.holds = holdIds.filter((h) => !releasedHolds.has(h));
   f.archives = archiveIds.filter((a) => !releasedArchives.has(a));
+  // The close in force is the newest standing archive (fold order); a plain archive after a close replaces it.
+  const standing = f.archives.length ? f.taps.find((t) => t.id === f.archives[f.archives.length - 1]) : undefined;
+  f.closeout = standing?.closeAs && standing.note ? { as: standing.closeAs, note: standing.note, by: standing.by, at: standing.at, tapId: standing.id } : null;
   f.materialHash = f.created ? materialHashOf(f) : '';
   // The caller passes the policy records that apply (all of them for a read; the prefix seen so far when deriving causes).
   f.policy = opts?.policyOverride ?? policyAt(policies);
@@ -674,7 +702,9 @@ const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown'
 
 /** The lane for a viewer. Phase 1: only the team owner acts, so only the owner has "Waiting on you". */
 export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false): Lane {
-  if (status === 'removed' || status === 'archived') return 'archived';
+  if (status === 'removed') return 'archived';
+  // A person's "Done" close shows with the done cards; "Not important" and a plain archive stay archived.
+  if (status === 'archived') return f.closeout?.as === 'done' ? 'done' : 'archived';
   if (status === 'done') return 'done';
   if (viewerIsOwner) {
     if (WAITING_STATUSES.has(status) || capacityWaitSurfaced) return 'waiting-on-you';

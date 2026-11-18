@@ -19,7 +19,7 @@ import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
   materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
-  MATERIAL_FIELDS, WORK_BOARD_STORE_KEY,
+  MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
   type WorkRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal,
 } from './WorkCardStore.js';
@@ -237,6 +237,39 @@ export class WorkBoardService {
 
   lane(v: CardView, viewer: { isOwner: boolean; personKey: string | null }): Lane {
     return laneFor(v.status, viewer.isOwner, v.card, viewer.personKey, v.capacityWaitSurfaced);
+  }
+
+  /**
+   * When work on a card started (work-front-doors §6, "untouched first"): the first person tap, hand-over to
+   * the agent, evidence or done claim after its creation. An agent's own edits and questions do not start it.
+   * Null = untouched.
+   */
+  startedAt(cardId: string): string | null {
+    const v = this.view(cardId);
+    if (!v) return null;
+    // From the fold (records that passed the store's checks), plus the pickup controller's hand-over records.
+    const times: string[] = [];
+    for (const t of v.card.taps) if (t.by.kind === 'person') times.push(t.at);
+    for (const e of v.card.evidence) times.push(e.at);
+    for (const c of v.card.claims) times.push(c.at);
+    for (const r of this.recordsOf(cardId)) if (r.d.recordType === 'dispatching' && typeof r.d.at === 'string') times.push(r.d.at);
+    return times.length ? times.reduce((x, y) => (x < y ? x : y)) : null;
+  }
+
+  /**
+   * Dismissal lessons (work-front-doors §6): every card a person closed as "Not important" and that is still
+   * closed, newest first, with who said it and a pointer to the card and its tap (rule 121: rechecked on every
+   * read, so a reopened card's reason drops out). The agent reads these before it raises a new card.
+   */
+  dismissalLessons(limit = 50): Array<{ cardId: string; tapId: string; title: string; reason: string; by: By; at: string; conversationKey: string }> {
+    const out: Array<{ cardId: string; tapId: string; title: string; reason: string; by: By; at: string; conversationKey: string }> = [];
+    for (const [id, v] of this.views) {
+      const c = v.card.closeout;
+      if (!c || c.as !== 'not-important' || v.card.redacted) continue;
+      out.push({ cardId: id, tapId: c.tapId, title: v.card.title, reason: c.note, by: c.by, at: c.at, conversationKey: v.card.conversationKey });
+    }
+    out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    return out.slice(0, Math.max(0, limit));
   }
 
   /** The conversation keys of archived or removed cards (the conversation lists leave these out, §2). */
@@ -515,7 +548,7 @@ export class WorkBoardService {
    * `stale-card` (or `question-replaced`) when what they bind to is not current; restricting
    * taps are always accepted. The fold applies the same test and is the authority.
    */
-  tap(p: WorkPrincipal, cardId: string, input: { action?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown }): Result<{ recordId: string }> {
+  tap(p: WorkPrincipal, cardId: string, input: { action?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; closeAs?: unknown; note?: unknown }): Result<{ recordId: string }> {
     if (p.kind !== 'person') return refuse(403, 'person-required');
     if (!p.isOwner) return refuse(403, 'owner-required', { message: 'In this phase only the team owner taps.' });
     if (!isCardId(cardId)) return refuse(404, 'not-found');
@@ -559,7 +592,21 @@ export class WorkBoardService {
       case 'reopen':
         if (!isRecordId(input.claimId)) return refuse(400, 'claim-required');
         fields.claimId = input.claimId; break; // restricting: recorded even when not current
-      case 'hold': case 'withdraw-approval': case 'archive': case 'redact': break;
+      case 'archive': {
+        // A person's close (work-front-doors §6): "Done" needs its closeout note, "Not important" its reason.
+        if (input.closeAs === undefined && input.note === undefined) break;
+        if (typeof input.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(input.closeAs)) return refuse(400, 'unknown-close', { allowed: [...CLOSE_AS] });
+        if (typeof input.note !== 'string' || !input.note.trim()) {
+          return input.closeAs === 'done'
+            ? refuse(400, 'note-required', { message: 'Say in a line what was done before closing this card.' })
+            : refuse(400, 'reason-required', { message: 'Say why this is not important. The agent reads these reasons before it raises a new card.' });
+        }
+        if (input.note.length > SCHEMA_MAX.closeNote) return refuse(413, 'over-limit', { field: 'note', limit: SCHEMA_MAX.closeNote, length: input.note.length });
+        const kind = this.deps.detectCredential(input.note);
+        if (kind) return refuse(422, 'credential-refused', { field: 'note', credentialKind: kind, message: `The note looks like it contains a credential (${kind}). Reword it, or send the secret through Secret Drop.` });
+        fields.closeAs = input.closeAs; fields.note = input.note; break;
+      }
+      case 'hold': case 'withdraw-approval': case 'redact': break;
       default: return refuse(400, 'unknown-action');
     }
     if (typeof input.titleHash === 'string' && /^[0-9a-f]{64}$/.test(input.titleHash)) {
@@ -694,7 +741,12 @@ export function transcriptLineFor(recordType: WorkRecordType, data: Record<strin
         case 'unhold': return `Work board: hold released by ${who}`;
         case 'confirm-done': return `Work board: confirmed done by ${who} · ${when}`;
         case 'reopen': return `Work board: reopened by ${who} · ${when}`;
-        case 'archive': return `Work board: archived by ${who}`;
+        case 'archive': {
+          const n = String(data.note ?? ''); const note = n.length > 200 ? `${n.slice(0, 200)}…` : n;
+          if (data.closeAs === 'done') return `Work board: ${who} closed this as done: "${note}" · ${when}`;
+          if (data.closeAs === 'not-important') return `Work board: ${who} closed this as not important: "${note}" · ${when}`;
+          return `Work board: archived by ${who}`;
+        }
         case 'unarchive': return `Work board: restored by ${who}`;
         case 'retry': return `Work board: ${who} asked the agent to try again · ${when}`;
         case 'redact': return null; // the conversation itself is removed

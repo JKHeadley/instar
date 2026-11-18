@@ -30,7 +30,7 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
-import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS } from '../core/WorkCardStore.js';
+import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -136,7 +136,7 @@ export type PermissionAction =
   | { kind: 'accept-device'; target: string; keyFingerprint: string; disclosureHash: string };
 
 /** The fields one work-card tap binds to; the title enters the signature only through its hash. */
-export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }
+export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }
 
 export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
@@ -203,7 +203,7 @@ export const TRUST_REQUEST_ID = /^tr-[0-9a-f]{12}-[0-9A-Z]{6}$/;
 /** A device key fingerprint as `deviceFingerprint` writes one. */
 export const KEY_FINGERPRINT = /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/;
 
-export function buildAction(kind: unknown, target: unknown, extra: { keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: unknown; keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
   if (kind === 'work-card-tap') {
     if (!isCardId(target)) return { ok: false, error: 'bad-target' };
@@ -220,6 +220,14 @@ export function buildAction(kind: unknown, target: unknown, extra: { keyFingerpr
     if (!absent(extra.answer)) {
       if (typeof extra.answer !== 'string' || extra.answer.length > 8000) return { ok: false, error: 'bad-answer' };
       tap.answer = extra.answer;
+    }
+    // A Done / Not important close (work-front-doors §6): an archive with its note, both on the signed line.
+    // Refused here, before any challenge, so a missing note never costs a Face ID.
+    if (!absent(extra.closeAs) || !absent(extra.note)) {
+      if (tap.action !== 'archive' || typeof extra.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(extra.closeAs)) return { ok: false, error: 'bad-close' };
+      if (typeof extra.note !== 'string' || !extra.note.trim()) return { ok: false, error: extra.closeAs === 'done' ? 'note-required' : 'reason-required' };
+      if (extra.note.length > SCHEMA_MAX.closeNote) return { ok: false, error: 'bad-note' };
+      tap.closeAs = extra.closeAs; tap.note = extra.note;
     }
     return { ok: true, action: { kind, target, tap } };
   }
@@ -345,7 +353,7 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
 
 /** The fields one request can carry into `buildAction`. */
 function actionExtras(b: Rec): Parameters<typeof buildAction>[2] {
-  return { keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
+  return { closeAs: b.closeAs, keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
 }
 
 /** Text that holds a token, before or after cleaning: a name is not where a key goes. */
