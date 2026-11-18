@@ -826,12 +826,21 @@ describe('locked-proof runner and verdict', () => {
     const base = { unfired: [], fired: [], samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed' } } }], final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked' } }, processesGone: true } };
     const c155 = CASES.find((x: { id: string }) => x.id === '15.5');
     expect(judge(c155, { ...base, extra: {} }).reasons).toContain('not measured: relock time after the transport drop');
-    expect(judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } }).reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
+    const early = judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } });
+    expect(early.reasons).toContain('not measured: actual transport expiry relative to Enter');
+    expect(early.reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
     const timed = { ...base, grantRequestId: 'r1', grantOpenedAt: 4_000,
       fired: [{ action: 'drop-transport', at: 'before-enter', startedAt: 4_830, t: 4_830 }],
       samples: [{ dirty: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
       final: { ...base.final, markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } } };
-    expect(judge(c155, { ...timed, extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500 } }).pass).toBe(true);
+    for (const id of ['15.5', '15.6']) {
+      const row = CASES.find((x: { id: string }) => x.id === id);
+      const t = id === '15.5' ? 4_830 : 5_170;
+      const verdict = judge(row, { ...timed, fired: [{ ...row.inject[0], startedAt: t, t }],
+        extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500, transportExpiredAt: t, submissionsAfterClose: 0 } });
+      expect(verdict.pass).toBe(false);
+      expect(verdict.reasons).toEqual(['not measured: actual transport expiry relative to Enter']);
+    }
     const c159 = CASES.find((x: { id: string }) => x.id === '15.9');
     expect(judge(c159, { ...base, extra: { typistGone: true } }).reasons).toContain('not measured: password field state at the end');
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: true } }).reasons).toContain('password field left dirty at the end');

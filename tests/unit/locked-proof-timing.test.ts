@@ -29,7 +29,7 @@ describe('before-Enter timing uses exact-duty raw evidence', () => {
       const ev = evidence(c);
       ev.extra.injectMinusEnterMs = 999; ev.extra.limitMinusEnterMs = 999;
       expect(timingReasons(c, ev)).toEqual([]);
-      expect(judge(c, ev).pass).toBe(true);
+      expect(judge(c, ev).pass).toBe(c.id !== '15.5');
       expect(beforeEnterTiming(ev, c.inject[0].action)).toMatchObject({ measured: true, gap: -170, dutyKey: 'duty' });
     });
     it(`${c.id} requires the same terminal duty and Enter to remain in the final read`, () => {
@@ -50,7 +50,7 @@ describe('before-Enter timing uses exact-duty raw evidence', () => {
         expect(judge(c, ev).pass).toBe(false);
         expect(timingReasons(c, ev)[0]).toMatch(/unmeasured/);
       }
-      expect(judge(c, evidence(c)).pass).toBe(true);
+      expect(timingReasons(c, evidence(c))).toEqual([]);
     });
     it(`${c.id} never interprets absent Enter plus aborted and zero submissions as proof`, () => {
       const ev = evidence(c);

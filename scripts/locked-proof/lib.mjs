@@ -604,6 +604,8 @@ export function judge(c, ev) {
     else if (measured.lockCalls > 0) reasons.push(`${measured.lockCalls} lock call(s) during the watched interval`);
   }
   if (c.relockAfterResumeWindow) {
+    // The driver timestamps the disconnect. The server owns expiry after the resume window.
+    reasons.push('not measured: actual transport expiry relative to Enter');
     if (typeof x.relockAfterDropMs !== 'number') reasons.push('not measured: relock time after the transport drop');
     else if (x.relockAfterDropMs < RESUME_WINDOW_MS - 1_000) reasons.push(`duty closed ${x.relockAfterDropMs} ms after the drop, inside the ${RESUME_WINDOW_MS} ms resume window`);
   }
