@@ -3375,6 +3375,7 @@ export class PostUpdateMigrator {
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
     this.migrateSpecConvergeAnthropicReviewerDisclosure(result);
+    this.migrateSpecConvergeRecordingDriverRun(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
@@ -4638,6 +4639,38 @@ export class PostUpdateMigrator {
   // installed copy lacks the capability MARKER and still looks stock (fingerprint
   // guard); a customized file is left untouched and reported. Idempotent: the
   // marker check short-circuits on every later run. Custom skills are never touched.
+  /**
+   * frontier-design-review-standard §5: the /spec-converge SKILL gains the
+   * recording driver run (`--all --record`) each round. Marker-keyed one-shot of the
+   * same shape as the earlier spec-converge wording migrations: a copy that already
+   * carries the marker is left alone, a customised copy (no `# /spec-converge`
+   * heading) is skipped, otherwise the bundled copy replaces it.
+   */
+  private migrateSpecConvergeRecordingDriverRun(result: MigrationResult): void {
+    const MARKER = 'frontier-design-review:recording-driver-run';
+    const rel = ['skills', 'spec-converge', 'SKILL.md'];
+    const label = 'spec-converge SKILL (recording driver run per round)';
+    try {
+      const installed = path.join(this.config.projectDir, '.claude', ...rel);
+      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
+      const current = fs.readFileSync(installed, 'utf8');
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /spec-converge')) {
+        result.skipped.push(`${label}: customized — left untouched`);
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', ...rel);
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(installed, next);
+        result.upgraded.push(label);
+      }
+    } catch (err) {
+      result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateSpecConvergeAnthropicReviewerDisclosure(result: MigrationResult): void {
     const MARKER = 'clean-door-anthropic-review';
     const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T02:05:14.574Z",
+  "slug": "frontier-design-review-stage-4",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/design-review/SKILL.md",
+      "skills/spec-converge/SKILL.md",
+      "skills/spec-converge/scripts/cross-model-review.mjs",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/designReviewRun.ts",
+      "src/data/awareness/frontier-design-review.md"
+    ],
+    "addedLines": 63,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

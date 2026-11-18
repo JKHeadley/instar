@@ -478,22 +478,22 @@ async function runAllMode({ mod, resolvedModulePath, resolvedConfigPath, reviewe
   const report = { runId: outcome.runId, path: realSpec, fingerprint, sessionId: process.env.INSTAR_SESSION_ID || null, passes: outcome.passes };
   const summary = outcome.passes.map((p) => ({ family: p.family, status: p.status, model: p.model, verdict: p.verdict, reason: p.reason, attempts: p.attempts }));
   if (!record) {
-    process.stdout.write(JSON.stringify({ recorded: false, passes: summary, unmappedReasons: outcome.unmappedReasons }) + '\n');
+    process.stdout.write(JSON.stringify({ recorded: false, passes: summary, findings: outcome.findings, unmappedReasons: outcome.unmappedReasons }) + '\n');
     process.exit(0);
   }
   const drained = await drainSpool(url, token, agentStateDir);
   const r = await postReport(url, token, report);
   if (r.kind === 'unreachable') {
     fs.appendFileSync(spoolPath(agentStateDir), JSON.stringify({ at: new Date().toISOString(), report }) + '\n', { mode: 0o600 });
-    process.stdout.write(JSON.stringify({ recorded: false, spooled: true, passes: summary, drained }) + '\n');
+    process.stdout.write(JSON.stringify({ recorded: false, spooled: true, passes: summary, findings: outcome.findings, drained }) + '\n');
     process.exit(0);
   }
   if (r.status !== 201 && r.status !== 200) {
     console.error(`The server refused the review record (${r.status}): ${r.body?.message ?? r.body?.error ?? 'no reason given'}`);
-    process.stdout.write(JSON.stringify({ recorded: false, status: r.status, error: r.body?.error ?? null, passes: summary }) + '\n');
+    process.stdout.write(JSON.stringify({ recorded: false, status: r.status, error: r.body?.error ?? null, passes: summary, findings: outcome.findings }) + '\n');
     process.exit(1);
   }
-  process.stdout.write(JSON.stringify({ ...r.body, passes: summary, drained, unmappedReasons: outcome.unmappedReasons }) + '\n');
+  process.stdout.write(JSON.stringify({ ...r.body, passes: summary, findings: outcome.findings, drained, unmappedReasons: outcome.unmappedReasons }) + '\n');
   process.exit(0);
 }
 

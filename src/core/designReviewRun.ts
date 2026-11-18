@@ -61,7 +61,14 @@ export interface RecordingConfig extends ReviewerConfig {
 }
 
 export type RecordedReviewOutcome =
-  | { ok: true; runId: string; passes: ReviewPass[]; unmappedReasons: string[] }
+  | {
+      ok: true;
+      runId: string;
+      passes: ReviewPass[];
+      unmappedReasons: string[];
+      /** Each answering reviewer's findings, for the reviewing session to act on. Never recorded. */
+      findings: Array<{ family: string; model: string | null; findings: ReviewerResult['findings'] }>;
+    }
   | { ok: false; refused: 'live-secret'; kind: string };
 
 /** The door's default review model for the one fallback. */
@@ -108,6 +115,7 @@ export async function runRecordedDesignReview(args: RunRecordedDesignReviewArgs)
   const detectInputs: CrossModelDetectInputs = args.detectInputs ?? { enabledFrameworks };
   const standardOn = designStandardEnabled(config);
   const unmapped: string[] = [];
+  const findings: Array<{ family: string; model: string | null; findings: ReviewerResult['findings'] }> = [];
 
   const passFor = async (frameworkId: string): Promise<ReviewPass> => {
     const family = FAMILY_BY_FRAMEWORK[frameworkId] ?? frameworkId;
@@ -158,6 +166,7 @@ export async function runRecordedDesignReview(args: RunRecordedDesignReviewArgs)
       finalModel = fallback;
     }
     if (final.status === 'ok') {
+      findings.push({ family, model: final.model ?? finalModel, findings: final.findings });
       return {
         family, door: frameworkId, attempts,
         model: final.model ?? finalModel,
@@ -176,5 +185,5 @@ export async function runRecordedDesignReview(args: RunRecordedDesignReviewArgs)
   const passes = await Promise.all(frameworks.map((id) => passFor(id).catch((): ReviewPass => ({
     family: FAMILY_BY_FRAMEWORK[id] ?? id, door: id, attempts: [], model: null, modelBasis: 'requested', status: 'degraded', reason: 'call-failed',
   }))));
-  return { ok: true, runId: crypto.randomBytes(16).toString('hex'), passes, unmappedReasons: [...new Set(unmapped)] };
+  return { ok: true, runId: crypto.randomBytes(16).toString('hex'), passes, unmappedReasons: [...new Set(unmapped)], findings };
 }

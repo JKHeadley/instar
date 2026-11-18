@@ -14,7 +14,7 @@ const detectAll = (id: string) =>
     : id === 'codex-cli' ? available(id, 'gpt-6-astra')
       : id === 'gemini-cli' ? available(id, 'gemini-3.1-pro-preview')
         : available(id, 'grok-4.6');
-const ok = (framework: string, model: string, verdict: ReviewerResult['verdict'] = 'CLEAN'): ReviewerResult => ({ status: 'ok', framework: framework as never, model, verdict, flag: 'x' });
+const ok = (framework: string, model: string, verdict: ReviewerResult['verdict'] = 'CLEAN'): ReviewerResult => ({ status: 'ok', framework: framework as never, model, verdict, flag: 'x', findings: [{ reviewer: framework, verdict: verdict ?? 'CLEAN', text: 'finding text' } as never] });
 const degraded = (framework: string, model: string, reason: string): ReviewerResult => ({ status: 'degraded', framework: framework as never, model, reason, flag: 'x' });
 
 const DEV = { developmentAgent: true, enabledFrameworks: ['claude-code', 'codex-cli'] };
@@ -38,6 +38,8 @@ describe('runRecordedDesignReview', () => {
     expect(by.gemini).toMatchObject({ status: 'unavailable', reason: 'disabled', attempts: [] });
     expect(by.grok).toMatchObject({ status: 'unavailable', reason: 'disabled' });
     expect(out.runId).toMatch(/^[0-9a-f]{32}$/);
+    // The reviewers' own findings come back for the session to act on (never recorded).
+    expect(out.findings.map((f) => f.family).sort()).toEqual(['claude', 'codex']);
     // The same-door pass forces the design model even over a configured override.
     const claudeCall = review.mock.calls.find((c: any) => c[0].family === 'claude-code')![0] as any;
     expect(claudeCall.config.specConverge.reviewers.anthropic).toMatchObject({ enabled: true, model: 'claude-fable-5-2' });

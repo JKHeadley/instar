@@ -45,7 +45,7 @@ If the spawn fails, or the child ends without finishing, run the loop here. A se
 node .claude/skills/spec-converge/scripts/cross-model-review.mjs --spec <path> --all --record
 ```
 
-   It prints the record: `status`, `timesReviewed`, the `line` and its `reference`, and each reviewer's verdict. Read each reviewer's findings in `passes`. A live secret in the text stops the run before anything is sent: remove it and run again. A refusal names its cause and the next step.
+   It prints the record: `status`, `timesReviewed`, the `line` and its `reference`, and each reviewer's verdict in `passes`. Each reviewer's own findings are in `findings` (not recorded; they are for you to act on). A live secret in the text stops the run before anything is sent: remove it and run again. A refusal names its cause and the next step.
 3. **Lens passes:** spawn subagents with the reviewer templates in `.claude/skills/spec-converge/templates/` (security, scalability, adversarial, integration, decision-completeness, lessons-aware). Choose the ones that fit; lessons-aware and decision-completeness most often change a short plan. Lenses improve the design; they are not recorded.
 4. **One coherent revision** addressing every finding that changes what would be built.
 

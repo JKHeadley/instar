@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "frontier-design-review-stage-4",
+  "sessionId": "fb9f8276-4dab-40e5-8807-ab593543dac6",
+  "timestamp": "2026-11-18T02:04:48.458Z",
+  "artifactPath": "upgrades/side-effects/frontier-design-review-stage-4.md",
+  "artifactSha256": "b25dd41f6a614fe257bb3cefb846d2ec804d93187ab46beeae9c977f60360597",
+  "specPath": "docs/specs/frontier-design-review-standard.md",
+  "coveredFiles": [
+    "skills/design-review/SKILL.md",
+    "skills/spec-converge/SKILL.md",
+    "skills/spec-converge/scripts/cross-model-review.mjs",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/designReviewRun.ts",
+    "src/data/awareness/frontier-design-review.md",
+    "tests/unit/PostUpdateMigrator-recordingDriverRun.test.ts",
+    "tests/unit/designReviewRun.test.ts",
+    "upgrades/next/frontier-design-review-stage-4.md",
+    "upgrades/side-effects/frontier-design-review-stage-4.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Agent awareness and a marker-keyed skill-wording migration reaching every agent; approved converged spec, stage 4 of 4",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
