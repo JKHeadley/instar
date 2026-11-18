@@ -3,6 +3,7 @@ title: "Bring your Claude and ChatGPT history into Instar"
 slug: import-from-claude-chatgpt
 author: echo
 status: converged
+addendum: "§D rewritten 2026-11-17 for Justin's 19:4x PST correction (the agent does the export); re-review pending"
 review-convergence: "2026-11-18T00:15:00Z"
 review-iterations: 4
 approved: true
@@ -83,11 +84,22 @@ Each item names its file and line.
 - Imported history stays on the machine that imported it (§B.1). No live journal is involved, so its rate cap and rotation (`CoherenceJournal.ts:443,326`) don't apply.
 - Copying imported history to a second machine is outside this spec. Imported history lives on the machine that imported it, and the person is told which one (§B.3).
 
-## D. How the person does it
+## D. How it happens: the agent does the export
 
-1. They ask the agent ("bring over my ChatGPT history"), or tap "Import" in the Mac app's settings.
-2. The agent says exactly how to get the export, with a direct link to that app's export page. For a work account where member export is off, it gives an "ask your admin" message to forward, naming the setting.
-3. They drop the zip into the app, or the agent finds it in Downloads with their permission. The importer runs on this machine only and never uploads the zip.
+Justin, topic 143810, 2026-11-17, 19:4x PST: "the user should NOT have to manually 'give the export'. The agent should perform the process using computer use control or whatever is needed to handle it for the user."
+
+1. **The person says yes, once.** "Bring over my history from ChatGPT/Claude" in a conversation, or the app's "Bring over my history" button. Nothing else is asked of them, except signing in if the browser isn't signed in to that app already.
+2. **The agent requests the export in the person's own browser,** with its existing browser control (the signed-in browser profile; computer use when a page needs it):
+   - ChatGPT: Settings, then Data controls, then Export data, then Confirm export;
+   - Claude: Settings, then Privacy, then Export data.
+
+   It reads each page before clicking, and stops to tell the person in plain words if the page asks for something it can't do (a password, a captcha, a work account where an admin has turned export off). In the admin case it gives the person a message to forward.
+3. **The agent waits for the email.** Both apps email a download link, which can take minutes to hours. The agent watches for it: in the mail account it can already read, or by checking the app's own export page. It tells the person once that it's waiting.
+4. **The agent downloads the zip** through the same browser, into Downloads. The link is the person's and is never stored or sent anywhere.
+5. **Then the preview, then apply,** exactly as in §B.10: the person sees the plain summary and confirms. The memory facts are shown for the person to tick (§B.9), and nothing is stored that they haven't seen.
+6. **The file picker stays as the fallback:** when the browser can't be driven, or the person already has the zip. The Instar app's primary button is "Bring over my history"; "Choose an export file…" is the second option.
+
+The steps are a per-app recipe (the clicks, the email sender and subject, the download page), kept as data beside the importer so a change to either app's settings page is a one-file fix. A recipe that fails on a page it doesn't recognise stops and says so; it never clicks blindly.
 
 ## E. Safety
 
