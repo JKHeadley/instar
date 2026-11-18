@@ -13,7 +13,7 @@ import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
   LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
-  refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
+  cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   OUTWARD_WORDS,
 } from './work-model.js';
@@ -64,10 +64,11 @@ export async function renderWork(main, ctx) {
 
   const done = board.lanes.done;
   const paging = donePaging(done.total, page);
-  const doneSec = laneSection(LANES[3], done.cards, refresh, { count: done.total });
-  if (paging.line) doneSec.append(el('p', { class: 'need-sub', text: paging.line }));
+  const doneSec = laneSection(LANES[3], done.cards, refresh, { count: done.total, folded: true, open: page > 0 });
+  const doneBody = doneSec.querySelector('.work-lane-body');
+  if (paging.line) doneBody.append(el('p', { class: 'need-sub', text: paging.line }));
   const pager = [paging.prev, paging.next].filter(Boolean).map((p) => el('a', { class: 'link-btn', href: p.href, text: p.text }));
-  if (pager.length) doneSec.append(el('p', { class: 'confirm-row' }, pager));
+  if (pager.length) doneBody.append(el('p', { class: 'confirm-row' }, pager));
 
   setKids(main, el('div', { class: 'work-page' },
     head,
@@ -78,7 +79,7 @@ export async function renderWork(main, ctx) {
     laneSection(LANES[1], board.lanes['with-agent'].cards, refresh),
     laneSection(LANES[2], board.lanes['waiting-on-others'].cards, refresh),
     doneSec,
-    laneSection(LANES[4], board.lanes.archived.cards, refresh),
+    laneSection(LANES[4], board.lanes.archived.cards, refresh, { count: board.lanes.archived.total, folded: true }),
     board.settings ? settingsPanel(board, refresh) : null,
   ));
 
@@ -92,11 +93,21 @@ export async function renderWork(main, ctx) {
   }
 }
 
-function laneSection(lane, cards, refresh, { lead = false, count } = {}) {
-  const wrap = el('section', { class: 'list-section work-lane', id: `sec-${lane.id}` },
-    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: lane.label }), el('span', { class: 'list-count', text: String(count ?? cards.length) })));
-  if (!cards.length) wrap.append(el('p', { class: 'empty-line', text: lane.empty }));
-  for (const c of cards) wrap.append(cardRowNode(c, refresh, lead));
+function laneSection(lane, cards, refresh, { lead = false, count, folded = false, open = false } = {}) {
+  const bodyId = `work-lane-${lane.id}`;
+  const head = el(folded ? 'button' : 'div', {
+    class: 'list-head', type: folded ? 'button' : null,
+    'aria-expanded': folded ? String(open) : null, 'aria-controls': folded ? bodyId : null,
+  }, el('h2', { class: 'eyebrow', text: lane.label }), el('span', { class: 'list-count', text: String(count ?? cards.length) }),
+  folded ? el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }) : null);
+  const body = el('div', { class: 'work-lane-body', id: bodyId, hidden: folded && !open });
+  if (!cards.length) body.append(el('p', { class: 'empty-line', text: lane.empty }));
+  for (const c of cards) body.append(cardRowNode(c, refresh, lead));
+  if (folded) head.addEventListener('click', () => {
+    body.hidden = !body.hidden;
+    head.setAttribute('aria-expanded', String(!body.hidden));
+  });
+  const wrap = el('section', { class: 'list-section work-lane', id: `sec-${lane.id}` }, head, body);
   return wrap;
 }
 
@@ -206,6 +217,11 @@ function openCard(card, refresh) {
   ].filter(Boolean);
 
   const body = [...warn, el('dl', { class: 'story' }, facts.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]))];
+  const source = cardSourceLink(card);
+  if (source) body.push(el('p', { class: 'card-line work-source' },
+    el('span', { text: 'From: ' }), source.href
+      ? el('a', { href: source.href, text: source.label, onclick: () => closeSheet() })
+      : el('span', { text: source.label }), source.note ? el('span', { text: ` · ${source.note}` }) : null));
   if (card.need) body.push(block('What is needed', needNode(card.need)));
   if (card.recommendation) body.push(block('The agent recommends', el('p', { class: 'card-line work-pre', text: String(card.recommendation) })));
 
