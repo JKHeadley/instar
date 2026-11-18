@@ -116,6 +116,7 @@ import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { standingMay, telegramSenderStanding, type TelegramSenderAction } from '../messaging/telegramSenderAuthority.js';
 import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { UserManager } from '../users/UserManager.js';
+import { isMemberSender } from '../messaging/memberConversation.js';
 
 /** Each live message's Telegram update_id, for the server's single-use receipt key (trust-journey decision 5). */
 const lifelineUpdateIds = new WeakMap<object, number>();
@@ -1376,6 +1377,27 @@ export class TelegramLifeline {
     return true;
   }
 
+  /**
+   * identity-security-piece1f: is this sender a team member whose messages go to their own no-tools
+   * conversation (switch on)? Then the lifeline runs none of its own commands for them and downloads
+   * none of their files; the server answers them.
+   */
+  private lifelineMember(from: { id: number; is_bot?: boolean } | undefined): boolean {
+    if (!from || from.is_bot) return false;
+    const cfg = this.projectConfig as { developmentAgent?: boolean; security?: { memberConversations?: { enabled?: boolean } }; messaging?: Array<{ type: string; config?: Record<string, unknown> }> };
+    if (cfg.security?.memberConversations?.enabled === false) return false; // ships on (umbrella §10)
+    const tg = this.projectConfig.messaging?.find((m) => m.type === 'telegram')?.config as
+      { ownerUserId?: unknown; promptGate?: { ownerId?: unknown }; authorizedUserIds?: Array<number | string> } | undefined;
+    const ownerId = resolveApprovalOwner(tg?.ownerUserId ?? tg?.promptGate?.ownerId, [], []);
+    const standing = telegramSenderStanding(from.id, { ownerId: () => ownerId, allowList: () => tg?.authorizedUserIds, registeredIds: () => this.registeredTelegramIds() });
+    let viaWildcardOnly = false;
+    try {
+      const list = tg?.authorizedUserIds;
+      viaWildcardOnly = !!list?.some((v) => String(v) === '*') && !list.some((v) => String(v) === String(from.id)) && !this.registeredTelegramIds().includes(from.id);
+    } catch { viaWildcardOnly = true; /* @silent-fallback-ok: an unreadable registry admits by '*' only, never as a member */ }
+    return isMemberSender({ standing, userId: from.id, ownerId, viaWildcardOnly });
+  }
+
   private notificationInbound = new Map<number, Map<string, number>>();
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     const msg = update.message;
@@ -1433,6 +1455,12 @@ export class TelegramLifeline {
 
     // identity-security-piece1e: a stranger's photo or file is never downloaded here.
     if (((msg.photo && msg.photo.length > 0) || msg.document) && !this.senderMayHere(msg.from, 'media')) return;
+    // identity-security-piece1f: a team member's file is never downloaded. The message goes on to the
+    // server without it, whose member conversation answers in the member's own chat.
+    if (((msg.photo && msg.photo.length > 0) || msg.document) && this.lifelineMember(msg.from)) {
+      if (this.supervisor.healthy) await this.forwardToServer(msg.message_thread_id ?? 1, '', msg, {}, []);
+      return;
+    }
 
     // Handle photo messages
     if (msg.photo && msg.photo.length > 0 && !msg.text) {
@@ -1454,6 +1482,13 @@ export class TelegramLifeline {
     const text = escapeTypedPathTags(msg.text);
 
     // Handle lifeline-specific commands directly (bypass server)
+    // identity-security-piece1f: a team member gets no commands here either; the server's member
+    // conversation gives the same answer for every other slash message.
+    if ((text.startsWith('/lifeline') || text.trim().toLowerCase() === '/restart') && this.lifelineMember(msg.from)) {
+      // Not run here; the server's member conversation answers in the member's own chat.
+      if (this.supervisor.healthy) await this.forwardToServer(topicId, text, msg, {}, []);
+      return;
+    }
     if (text.startsWith('/lifeline')) {
       // identity-security-piece1e: restart/reset/doctor/queue act on the whole agent (owner only);
       // status and help are ordinary commands.

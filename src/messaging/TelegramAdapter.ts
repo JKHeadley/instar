@@ -33,6 +33,7 @@ import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { isMemberSender, type MemberMessage } from './memberConversation.js';
 import { JOIN_REQUEST_COMMAND, standingMay, telegramCommandAction, telegramSenderStanding, type TelegramSenderAction, type TelegramSenderStanding } from './telegramSenderAuthority.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
@@ -3291,9 +3292,7 @@ export class TelegramAdapter implements MessagingAdapter {
   senderMay(userId: number | string | undefined | null, action: TelegramSenderAction, opts: { path: string; legacy: boolean; proven?: boolean }): boolean {
     if (!this.senderAuthority) return opts.legacy;
     const standing = this.senderStanding(userId, opts.proven ?? true);
-    const list = this.config.authorizedUserIds;
-    const viaWildcardOnly = standing === 'authorized' && !!list?.some((v) => String(v) === '*')
-      && !list.some((v) => String(v) === String(userId)) && !(this.senderAuthority.registeredIds().some((v) => String(v) === String(userId)));
+    const viaWildcardOnly = standing === 'authorized' && this.viaWildcardOnly(userId);
     // `unknown` keeps today's answer in both modes: this rule never refuses it, and never admits it
     // past today's check either.
     if (standing === 'unknown') return opts.legacy;
@@ -3329,6 +3328,59 @@ export class TelegramAdapter implements MessagingAdapter {
     await withNotificationEnvelope(stampNotification(), async () => this.apiCall('sendMessage', { chat_id: id,
       text: `Hi! ${name} only talks with people its owner has approved. I've let the owner know you asked.` }))
       .catch(() => undefined);
+  }
+
+  /** identity-security-piece1f: the member conversation (dev-gated switch + service), wired by the server. */
+  memberConversation: { enforce: () => boolean; observe?: (userId: string) => void; service: { handle: (m: MemberMessage) => Promise<void> } } | null = null;
+
+  /** Whether `'*'` is this sender's only admission (no list entry, not registered). */
+  private viaWildcardOnly(userId: number | string | undefined | null): boolean {
+    const list = this.config.authorizedUserIds;
+    if (!list?.some((v) => String(v) === '*')) return false;
+    if (list.some((v) => String(v) === String(userId))) return false;
+    try { return !(this.senderAuthority?.registeredIds() ?? []).some((v) => String(v) === String(userId)); } catch { return true; /* @silent-fallback-ok: an unreadable registry admits by '*' only */ }
+  }
+
+  /**
+   * identity-security-piece1f: is this sender a team member whose message goes to their own
+   * conversation here? A proven, authorized sender (not via '*' alone), the owner known and not them,
+   * the switch on. Bots never.
+   */
+  isMemberHere(userId: number | string | undefined | null, isBot = false, proven = true): boolean {
+    if (isBot || !this.memberConversation || !this.senderAuthority) return false;
+    let on = false;
+    try { on = this.memberConversation.enforce(); } catch { on = false; /* @silent-fallback-ok: an unreadable switch keeps today's routing */ }
+    // The configured owner only (as the lifeline reads it): an agent with no owner configured changes nothing.
+    const member = isMemberSender({ standing: this.senderStanding(userId, proven), userId, ownerId: this.getConfiguredApprover(), viaWildcardOnly: this.viaWildcardOnly(userId) });
+    if (!on) {
+      // Observe: today's routing, plus evidence that a member reached the topic session.
+      if (member) { try { this.memberConversation.observe?.(String(userId)); } catch { /* @silent-fallback-ok: evidence only */ } }
+      return false;
+    }
+    return member;
+  }
+
+  /**
+   * identity-security-piece1f: the member turn's reply. Posted to the topic as a reply to the member's
+   * message, with its own envelope; never through sendToTopic, so it is not written to the shared log
+   * and does not touch the owner session's stall or promise tracking.
+   */
+  async sendMemberReply(where: { chatId: number | string; topicId: number }, replyToMessageId: number | undefined, text: string): Promise<void> {
+    // The reply goes back to the chat the member wrote in: a group (the main or issues group, in its
+    // topic), or their private chat with the bot. Long replies are split under Telegram's 4096 limit.
+    const inPrivate = Number(where.chatId) > 0;
+    const parts: string[] = [];
+    for (let rest = text; rest.length > 0; rest = rest.slice(4000)) parts.push(rest.slice(0, 4000));
+    for (const [i, part] of parts.entries()) {
+      await withNotificationEnvelope({ origin: 'automated', category: 'member-reply', sourceContext: 'src/messaging/TelegramAdapter.ts#sendMemberReply' }, async () => this.apiCall('sendMessage', {
+        // A group reply goes out as the main chat with the internal topic id, so the wire translation
+        // (toWireParams) picks the right group and thread, including an issues-group topic.
+        chat_id: inPrivate ? where.chatId : this.config.chatId,
+        ...(!inPrivate && where.topicId && where.topicId !== GENERAL_TOPIC_ID ? { message_thread_id: where.topicId } : {}),
+        ...(i === 0 && typeof replyToMessageId === 'number' ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}),
+        text: part,
+      }));
+    }
   }
 
   /** Today's rule, kept for observe mode: an empty list means everyone. */
@@ -6597,6 +6649,16 @@ export class TelegramAdapter implements MessagingAdapter {
           console.warn(`[telegram] pin hand-off failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      return;
+    }
+
+    // identity-security-piece1f: a team member's message goes to their own no-tools conversation and
+    // no further: no media download, commands, log, observers, prompt answers or session.
+    if (this.isMemberHere(msg.from.id, msg.from.is_bot === true)) {
+      const kind = (msg.voice || msg.photo || msg.document || typeof msg.text !== 'string') ? 'media'
+        : (typeof msg.text === 'string' && msg.text.trim().startsWith('/')) ? 'command' : 'text';
+      void this.memberConversation!.service.handle({ userId: String(msg.from.id), memberName: String(msg.from.first_name || 'a team member').slice(0, 64),
+        where: { chatId: msg.chat?.id ?? this.config.chatId, topicId: numericTopicId }, messageId: msg.message_id, text: msg.text ?? msg.caption ?? '', kind });
       return;
     }
 

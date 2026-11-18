@@ -31185,6 +31185,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // identity-security-piece1f: a team member's message goes to their own no-tools conversation and
+    // no further: no topic naming, media capture, pairing, stop, log, operator bind, a2a hook, delivery
+    // or commands. Pins and topic names are service messages and pass through as today.
+    if (!trust && ctx.telegram && senderIsBot !== true && req.body?.pinOnly !== true && req.body?.nameOnly !== true
+      && Number.isSafeInteger(Number(topicId)) && ctx.telegram.isMemberHere(fromUserId, false, ingressDecision.verified === true)) {
+      const hasMedia = Array.isArray(req.body?.media) && req.body.media.length > 0;
+      const kind = hasMedia || typeof text !== 'string' || text.length === 0 ? 'media' : text.trim().startsWith('/') ? 'command' : 'text';
+      // Where to answer. The chat is trusted only from a verified relay with a matching chat type: the
+      // member's own private chat, or the agent's group. A message with no chat information (a queued
+      // replay) is answered in the group only when it came from a forum topic; otherwise in the
+      // member's private chat, never the group's General topic.
+      const srcId = Number(req.body?.sourceChatId);
+      const srcType = typeof req.body?.sourceChatType === 'string' ? req.body.sourceChatType : '';
+      const verified = ingressDecision.verified === true;
+      const groupId = Number(ctx.telegram.getChatId());
+      const chatId = verified && srcType === 'private' && srcId === Number(fromUserId) ? srcId
+        : verified && (srcType === 'supergroup' || srcType === 'group') && Number.isSafeInteger(srcId) && srcId !== 0 ? srcId
+        : Number(topicId) > 1 ? groupId : Number(fromUserId);
+      void ctx.telegram.memberConversation!.service.handle({ userId: String(fromUserId), memberName: String(fromFirstName || 'a team member').slice(0, 64),
+        where: { chatId, topicId: Number(topicId) }, messageId: Number.isSafeInteger(Number(messageId)) ? Number(messageId) : undefined, text: typeof text === 'string' ? text : '', kind });
+      // `refused` here means "not handed to the topic session": the relay then posts no "✓ Delivered"
+      // in the group (the member is answered in their own chat by the member conversation).
+      res.json({ ok: true, forwarded: false, refused: true, reason: 'member-conversation' });
+      return;
+    }
+
     // E2E-PAIRING: EXEMPT — optional fields on an existing internal route; covered through createRoutes by tests/integration/topic-operator-autobind-route.test.ts.
     // Topic name from the lifeline (agents whose lifeline owns polling never
     // see Telegram's topic-created/renamed service messages here). Only a

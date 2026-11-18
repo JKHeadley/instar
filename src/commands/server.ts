@@ -1,4 +1,6 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { MemberConversationService, MemberConversationStore } from '../messaging/memberConversation.js';
+import { buildMemberTurnCaller, memberTurnCaller } from '../messaging/memberTurnCaller.js';
 import { addToNonEmptyTelegramAllowList } from '../messaging/telegramSenderWiring.js';
 import { createSenderAuthorityWiring } from '../messaging/telegramSenderWiring.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
@@ -9752,6 +9754,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         raiseOwnerItem: async (title, body) => { await tg.upsertAttentionItem({ id: 'agent:telegram-senders',
           title, summary: body, description: body, priority: 'NORMAL', category: 'security', sourceContext: 'telegram-senders', needsUser: true }); return true; },
       })); }
+      // identity-security-piece1f: team members talk in a no-tools conversation of their own (dev-gated).
+      telegram!.memberConversation = createMemberConversationWiring(config, telegram!);
       wireTelegramJoinRequests(telegram!, config, userManagerSendOnly);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -9912,6 +9916,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         raiseOwnerItem: async (title, body) => { await tg.upsertAttentionItem({ id: 'agent:telegram-senders',
           title, summary: body, description: body, priority: 'NORMAL', category: 'security', sourceContext: 'telegram-senders', needsUser: true }); return true; },
       })); }
+      // identity-security-piece1f: team members talk in a no-tools conversation of their own (dev-gated).
+      telegram!.memberConversation = createMemberConversationWiring(config, telegram!);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
       telegram.onGetRegistrationPolicy = () => ({
@@ -37959,5 +37965,44 @@ function wireTelegramJoinRequests(telegram: TelegramAdapter, config: InstarConfi
     }
     addToNonEmptyTelegramAllowList(config, request.telegramUserId);
     return `Approved. Telegram ID ${request.telegramUserId} can now talk to the agent on this machine.`;
+  };
+}
+
+/**
+ * identity-security-piece1f: team members talk to the agent in a no-tools conversation of their own.
+ * Dev-gated (security.memberConversations.enabled); with it off, only an hourly evidence row per member.
+ */
+function createMemberConversationWiring(config: InstarConfig, telegram: TelegramAdapter): NonNullable<TelegramAdapter['memberConversation']> {
+  // The no-tools carrier is built once, off the event loop; until then members get the plain refusal.
+  let memberCaller: ReturnType<typeof memberTurnCaller> = null;
+  let lastBuildAt = 0;
+  const rebuild = (): void => {
+    lastBuildAt = Date.now();
+    void buildMemberTurnCaller(config).then((c) => { memberCaller = c; }).catch(() => { memberCaller = null; /* @silent-fallback-ok: no carrier yet; retried below, members are told plainly */ });
+  };
+  rebuild();
+  const service = new MemberConversationService({
+    store: new MemberConversationStore(path.join(config.stateDir, 'state', 'member-conversations')),
+    // While empty (a slow probe at boot, a sign-in not ready yet), rebuilt at most every 5 minutes.
+    caller: () => { if (!memberCaller && Date.now() - lastBuildAt > 300_000) rebuild(); return memberCaller; },
+    sendReply: (where, replyTo, text) => telegram.sendMemberReply(where, replyTo, text),
+    onFirstMemberEver: () => {
+      const body = "Team members who write to me now get a conversation of their own: I can talk with them but can't act, use tools or see your conversations, and what they say stays out of your conversations and my memory. You still see their messages in Telegram, and you can bring one into a conversation with me by quoting it.";
+      void telegram.upsertAttentionItem({ id: 'agent:member-conversations', title: 'Team members now have their own conversations', summary: body, description: body,
+        category: 'security', priority: 'NORMAL', sourceContext: 'member-conversations', needsUser: true }).catch(() => undefined);
+    },
+    agentName: () => config.projectName || 'the agent',
+    ownerName: () => 'the owner',
+  });
+  return {
+    // Ships on (umbrella §10: the member routing is a security fix, not an observe-mode change); an
+    // explicit false is the owner's override.
+    enforce: () => (config as { security?: { memberConversations?: { enabled?: boolean } } }).security?.memberConversations?.enabled !== false,
+    observe: (userId) => {
+      featureEvidence.recordAtMostEvery('security.memberConversations', `member-reached-session:${userId}`, 3_600_000, {
+        kind: 'held', reason: "A team member's message reached the topic session (member conversations off)", context: { userId },
+      });
+    },
+    service,
   };
 }
