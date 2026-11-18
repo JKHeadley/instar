@@ -68,6 +68,13 @@ Round 3 (cap).
 - All three internal pairs, codex and clean-door Opus: no design finding.
 - Precision (7): listed under Left behind or folded in.
 
+## After round 3 (2026-11-18)
+
+The Chief of Staff approved the spec to build (message 23c11976, 15:27 PST) on two conditions from its constitution check. Both are met.
+
+1. The 90-minute and 3-hour numbers are stated as inherited, with their source: `MAIN_FAIR_SHARE_MS` in `src/localVerify/LocalVerifyService.ts` and `MAIN_HEALTH_LIMITS.unverifiedSuspectMs` in `src/localVerify/mainHealth.ts`, both set by `docs/specs/local-verify-merge-authority.md`. This change does not touch them, and changing them is out of scope.
+2. The round-3 edits had been applied without a re-read. A short scoped round was then run with the same three internal reviewer pairs on those edits only: no design findings; four precision notes (a stored `unknownSince` is kept on a lease flap; `load` is called three times and the restore happens once per process start; the sentence about never using now is scoped to boot and lease re-acquisition; the thresholds' source). All four are applied. The two outside models did not re-read these last edits.
+
 ## Convergence verdict
 
 Converged at round 3 of 3: the final round found nothing that changes what gets built; seven items are left behind, none a design finding. Open questions: none. The spec is ready for review and approval by the Chief of Staff; nothing is built before that approval.

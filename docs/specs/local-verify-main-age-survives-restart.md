@@ -6,7 +6,8 @@ status: draft
 date: 2026-11-18
 parent-spec: "local-verify-merge-authority"
 eli16-overview: local-verify-main-age-survives-restart.eli16.md
-approved: false
+approved: true
+approved-by: "echo-chief-of-staff (maintainer approval, message 23c11976, 2026-11-18 15:27 PST; two fold-ins applied)"
 review-convergence: "2026-11-18T23:20:25.132Z"
 review-iterations: 3
 review-completed-at: "2026-11-18T23:20:25.132Z"
@@ -55,19 +56,19 @@ Why not derive it from git history: a local git read is cheap, but the head may 
 
 ### 2. Restore at boot
 
-Restore happens in `MainHealth.load` (mainHealth.ts:347-364), which runs at boot (LocalVerifyService.ts:1111) and on lease re-acquisition in a running process (line 1298). Its own rewrite keeps the fields.
+Restore happens in `MainHealth.load` (mainHealth.ts:347-364), which is called three times: in the constructor (LocalVerifyService.ts:860), at boot (line 1111) and on lease re-acquisition in a running process (line 1298). Its own rewrite keeps the fields. The restore and the `main-age-unknown` audit line happen once per process start, not at each call.
 
 - **Own-machine branch** (lines 359-361). At boot, a finite number not in the future is restored into `mainObs.oldestUnverifiedAt`. In a running process the stored value equals the in-memory one and nothing changes.
-- **Foreign-machine or epoch-gap branch** (lines 354-358). The age becomes unknown, at boot and in a running process. It never stays a number. When this machine's own `oldestUnverifiedAt` (stored or in memory) is finite and in the past, `unknownSince = min(that, now)`, so lease flapping cannot keep pushing the 3-hour signal back. The stored `oldestUnverifiedAt` is cleared in the same write that sets `unknownSince`.
+- **Foreign-machine or epoch-gap branch** (lines 354-358). The age becomes unknown, at boot and in a running process. It never stays a number. When this machine's own `oldestUnverifiedAt` (stored or in memory) is finite and in the past, `unknownSince = min(that, now)`, so lease flapping cannot keep pushing the 3-hour signal back. The stored `oldestUnverifiedAt` is cleared in the same write that sets `unknownSince`. When the age is already unknown and a usable `unknownSince` is stored, it is kept: a lease flap never restarts it at `now`.
 
 ### 3. Unknown is due
 
-At the first observation after boot, if the head is not `lastGreenHead` and there is no usable stored value, the age is **unknown**. `now` is never substituted for it. Unknown has one encoding, in memory and on disk: `unknownSince` is present. There is no separate flag that could disagree.
+At the first observation after boot, if the head is not `lastGreenHead` and there is no usable stored value, the age is **unknown**. At boot or lease re-acquisition, `now` is never substituted for it. Unknown has one encoding, in memory and on disk: `unknownSince` is present. There is no separate flag that could disagree.
 
 - `FairShareState` (LocalVerifyService.ts:519-527) gains `oldestUnverifiedMainUnknown`. In `decideStart`, `due` is also true when the age is unknown. `main` then goes ahead of waiting pull requests at the next start, after any resumed run (lines 500-505 are unchanged).
 - It stays unknown until a `main` verify settles it. Green clears it. Red follows the existing red path. A release collapse (line 1338) clears it, as it clears the value.
 - Unknown must not silence the 3-hour signal for ever. The second optional field, `unknownSince`, is written in the same watermark: the time unknown was first observed. It has the same validation and provenance rules as `oldestUnverifiedAt` (finite, not in the future, this machine's own watermark). An unusable `unknownSince` is still unknown and due, and a fresh bound starts at `now`. It is set once, kept across boots while unknown persists, and cleared in the same write that settles the age. The real age is at least `now - unknownSince`, so the service passes `unknownSince` to `noteUnverifiedAge` (mainHealth.ts:412-418) as a lower bound, and the existing signal fires 3 hours after unknown was first seen. Wherever shown or logged it reads "at least X", never an exact age or zero. The signal detail carries `atLeast: true` while the age is unknown, so its `ageMs` is never read as an exact age.
-- One audit line per boot: `main-age-unknown` with the reason (`field-absent`, `file-unreadable`, `future`, `non-finite`, `other-machine`, `carried`).
+- One audit line per process start: `main-age-unknown` with the reason (`field-absent`, `file-unreadable`, `future`, `non-finite`, `other-machine`, `carried`).
 
 `now` is still used where the running process itself sees a head it has not verified: when the head leaves green, as today, and at the first observation after a green verify of an older head ended unknown. There the age is young by at most one verify's duration.
 
@@ -82,7 +83,9 @@ This prevents `main` starvation and does change waits:
 
 ### What does not change
 
-The 90-minute and 3-hour thresholds, the resumed-run rule, `oldestUnverifiedAfterGreen`, peers, restart behaviour, routes and config. No new file or alarm.
+The 90 minutes is `MAIN_FAIR_SHARE_MS` (src/localVerify/LocalVerifyService.ts:534) and the 3 hours is `MAIN_HEALTH_LIMITS.unverifiedSuspectMs` (src/localVerify/mainHealth.ts:66). Both were set by the parent spec, docs/specs/local-verify-merge-authority.md (lines 295 and 246). This spec inherits them unchanged, and changing them is out of scope.
+
+Also unchanged: the resumed-run rule, `oldestUnverifiedAfterGreen`, peers, restart behaviour, routes and config. No new file or alarm.
 
 ### Also amended
 
@@ -144,7 +147,7 @@ End to end: `tests/e2e/local-verify-lifecycle.test.ts` already writes `main-heal
 
 1. No new config key. It ships on. A switch's off state would be the known defect.
 2. The carrier is the existing `main-health.json`: two optional fields, same writer, version unchanged.
-3. A missing or unusable value is unknown, and unknown is due. Never `now`.
+3. A missing or unusable value is unknown, and unknown is due. Never `now` at boot or lease re-acquisition.
 4. Unknown is shown as "at least", never as an exact age. It raises the signal 3 hours after it was first seen.
 5. The cost is accepted: one `main` verify goes first per unknown episode, including the first boot on the new build.
 6. A stale stored value is kept. Early scheduling and a possibly premature signal are accepted.
@@ -164,7 +167,7 @@ Revert the commit. The older build ignores the fields and drops them at its next
 
 ## Left behind
 
-- The standards gate's repeated flag on the inherited 90-minute and 3-hour thresholds: out of scope, specified in the parent spec. A change to them is its own decision.
+- The standards gate's repeated flag on the inherited thresholds: `MAIN_FAIR_SHARE_MS` (LocalVerifyService.ts:534) and `MAIN_HEALTH_LIMITS.unverifiedSuspectMs` (mainHealth.ts:66), set by docs/specs/local-verify-merge-authority.md and inherited unchanged. Out of scope. A change to them is its own decision.
 - Frequent coordinator lease changes: PR 3460, scaling session.
 - The round-3 precision edits were applied without a further review round.
 
