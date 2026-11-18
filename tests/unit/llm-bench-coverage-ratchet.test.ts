@@ -27,7 +27,7 @@ import { LLM_BENCH_COVERAGE } from '../../src/data/llmBenchCoverage.js';
 const PENDING_BASELINE = [
   // Wave-3 only — the wave-2 set graduated to covered/exempt on 2026-07-02
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
-  'AttributionJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
+  'AttributionJudge', 'OrgPolicyJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
   'PreCompactionFlush', 'RelationshipManager',
   // spec-approval-constitution-check (Echo Bugs topic 10000002750, 2026-11-15): the B24 Work Board card judge.
