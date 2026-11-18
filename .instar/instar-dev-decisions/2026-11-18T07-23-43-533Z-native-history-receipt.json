@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-18T07:23:43.533Z",
+  "slug": "native-history-receipt",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/HistoryAcquisitionWorker.ts",
+      "src/import/nativeCaptureReceiver.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot caller-driven action: each signed same-Mac receipt request spawns one bounded reader with a single expiry timer; no retry, respawn or self-triggered loop. The tick's reconcilePublished is a one-way state check (receiving to accepted, at most once per capture), with no spawn, notify or retry; periodic acquisition work stays under the parent's registered convergence guard."
+  },
+  "verdict": "pass"
+}

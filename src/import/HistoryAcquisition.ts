@@ -53,6 +53,7 @@ export class HistoryAcquisitionStore {
           jobId TEXT PRIMARY KEY, sequence INTEGER NOT NULL, attempts INTEGER NOT NULL,
           nextAt INTEGER NOT NULL, warned INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS native_capture_jobs (jobId TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS starts (
           owner TEXT NOT NULL, machine TEXT NOT NULL, conversation TEXT NOT NULL, requestId TEXT NOT NULL,
           jobId TEXT NOT NULL, PRIMARY KEY(owner,machine,conversation,requestId)
@@ -173,6 +174,22 @@ export class HistoryAcquisitionStore {
   latest(chat: OwnerChat): Pick<AcquisitionJob, 'id' | 'phase' | 'provider' | 'expectedEmail'> | null {
     this.expire();
     return this.db.prepare('SELECT id,phase,provider,expectedEmail FROM jobs WHERE owner=@owner AND machine=@machine AND conversation=@conversation ORDER BY createdAt DESC,rowid DESC LIMIT 1').get(chat) as Pick<AcquisitionJob, 'id' | 'phase' | 'provider' | 'expectedEmail'> | undefined ?? null;
+  }
+
+  originatingStart(chat:OwnerChat,id:string):string|undefined {
+    const row = this.db.prepare(`SELECT requestId FROM starts WHERE owner=@owner AND machine=@machine AND conversation=@conversation
+      AND jobId=@id ORDER BY rowid LIMIT 1`).get({...chat,id}) as {requestId:string}|undefined;
+    return row?.requestId;
+  }
+
+  holdNativeJob(chat:OwnerChat,id:string):void {
+    const job = this.read(chat,id);
+    if (!job || !['submitting','waiting'].includes(job.phase)) throw new Error('capture-unavailable');
+    this.db.prepare('INSERT OR IGNORE INTO native_capture_jobs(jobId) VALUES(?)').run(id);
+  }
+
+  hasNativeHandoff(id:string):boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM native_capture_jobs WHERE jobId=?').get(id));
   }
 
   recoverInterruptedApplies(): void {

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T06:52:38.358Z",
+  "slug": "native-history-receipt",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 349,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/HistoryAcquisition.ts",
+      "src/import/HistoryAcquisitionWorker.ts",
+      "src/import/archiveStaging.ts",
+      "src/import/nativeCaptureReceiver.ts",
+      "src/import/nativeCaptureSource.ts",
+      "src/import/privateImportState.ts",
+      "src/server/nativeCaptureAdmission.ts"
+    ],
+    "addedLines": 343,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
