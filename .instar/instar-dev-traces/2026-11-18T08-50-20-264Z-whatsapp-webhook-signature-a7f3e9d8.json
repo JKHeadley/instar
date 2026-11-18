@@ -2,9 +2,9 @@
   "version": 2,
   "slug": "whatsapp-webhook-signature",
   "sessionId": "d6cfb2c6-e547-4efc-8a51-332115305932",
-  "timestamp": "2026-11-18T08:49:13.185Z",
+  "timestamp": "2026-11-18T08:50:20.264Z",
   "artifactPath": "upgrades/side-effects/whatsapp-webhook-signature.md",
-  "artifactSha256": "67ed5ecaceb7048280679508c3f7511cab22314d51fcd63dfa448dc4d03a4019",
+  "artifactSha256": "a16d81e274eaf8f45a9f3628bb37bef27a530041ed29634011df19d4b65756f7",
   "coveredFiles": [
     "docs/specs/whatsapp-webhook-signature.eli16.md",
     "src/cli.ts",
