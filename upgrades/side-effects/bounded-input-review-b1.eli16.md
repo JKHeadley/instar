@@ -14,4 +14,4 @@ Two more places now keep the same amount but add a clear note saying the text wa
 
 ## Safeguards
 
-No check got new power to block anything. Each one just sees more complete evidence. Everything is undone by reverting the change.
+No check got new power to block anything. Two small helper files are now also listed, with reasons, in the record of which code the message-delivery safety test covers; neither of them delivers messages. Each one just sees more complete evidence. Everything is undone by reverting the change.
