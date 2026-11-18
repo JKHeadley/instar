@@ -351,6 +351,35 @@ program
     await setClaudeKey(opts);
   });
 
+const alwaysAvailableCmd = program
+  .command('always-available')
+  .description('For the Instar Mac app\'s Always available switch: the before-login Claude sign-in and status');
+alwaysAvailableCmd
+  .command('token')
+  .description('Store a claude setup-token code (from stdin) as this agent\'s Claude sign-in, after checking its email')
+  .option('-d, --dir <path>', 'Agent directory')
+  .option('--email <email>', 'The account the code must sign in as')
+  .action(async (opts) => {
+    const { alwaysAvailableTokenCommand } = await import('./commands/alwaysAvailable.js');
+    await alwaysAvailableTokenCommand(opts);
+  });
+alwaysAvailableCmd
+  .command('token-clear')
+  .description('Undo: put the earlier Claude sign-in back if the stored code is still the one set here')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { alwaysAvailableTokenClearCommand } = await import('./commands/alwaysAvailable.js');
+    alwaysAvailableTokenClearCommand(opts);
+  });
+alwaysAvailableCmd
+  .command('status')
+  .description('FileVault on/off/unknown and whether the Always available code is in use, as JSON')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { alwaysAvailableStatusCommand } = await import('./commands/alwaysAvailable.js');
+    alwaysAvailableStatusCommand(opts);
+  });
+
 program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
