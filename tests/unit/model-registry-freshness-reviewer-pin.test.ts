@@ -20,8 +20,10 @@ const REVIEWER_PIN = {
   id: 'claude-clean-door-reviewer-default',
   door: 'claude-code',
   tier: 'capable',
-  file: 'src/core/crossModelReviewer.ts',
-  regex: "CLAUDE_REVIEWER_DEFAULT_MODEL\\s*=\\s*'((?:claude|gpt|gemini)-[^']+)'",
+  // Since 2026-11-17 the reviewer default is defined from the Claude design
+  // lane, so the live pin reads src/core/designLane.ts (frontier-design-review-standard §1).
+  file: 'src/core/designLane.ts',
+  regex: "DESIGN_LANE_CLAUDE_CODE\\s*=\\s*'((?:claude|gpt|gemini)-[^']+)'",
 };
 
 // A manifest whose claude-code door frontier set is [opus-4-8, fable-5], with ONLY
@@ -49,8 +51,8 @@ function runWithConstant(constantValue: string) {
   try {
     fs.mkdirSync(path.join(root, 'src', 'core'), { recursive: true });
     fs.writeFileSync(
-      path.join(root, 'src', 'core', 'crossModelReviewer.ts'),
-      `export const CLAUDE_REVIEWER_DEFAULT_MODEL = '${constantValue}';\n`,
+      path.join(root, 'src', 'core', 'designLane.ts'),
+      `export const DESIGN_LANE_CLAUDE_CODE = '${constantValue}';\n`,
       'utf-8',
     );
     fs.writeFileSync(manifestPath, JSON.stringify(fixtureManifest()), 'utf-8');

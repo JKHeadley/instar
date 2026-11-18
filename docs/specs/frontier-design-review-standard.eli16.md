@@ -2,7 +2,7 @@
 
 > The one-line version: every plan an agent asks you to approve has been reviewed by the strongest model it can reach and by other providers' models, and arrives with one line saying which models wrote it, which reviewed it and what each concluded — and the system enforces this instead of relying on the agent to remember.
 
-> **Approved** by Justin on 2026-11-17 at 15:32 PST (topic 144319). The build follows on its own branch, in four stages, each proven live before the next.
+> **Approved** by Justin on 2026-11-17 at 15:32 PST (topic 144319). The build follows on its own branch, in four stages, each proven live before the next. Stage 1 adds the design model to the model registry and the routing of design sessions at spawn.
 
 ## The problem in one breath
 

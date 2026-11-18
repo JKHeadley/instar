@@ -419,7 +419,9 @@ import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
-import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
+import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile, designLaneTopicLaunch } from './sessionSpawnTopicBinding.js';
+import { WORK_KINDS as DESIGN_WORK_KINDS, resolveDesignRouting, classifyDesignWork, chooseLaneAccount, designStandardEnabled, type DesignRoutingOutcome } from '../core/designRouting.js';
+import { readDesignReviewLedger, planEvidenceByAccount, designReviewMachineId } from '../core/designReviewLedger.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
@@ -13709,7 +13711,16 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight, workKind, reviewHandoff } = req.body;
+    // frontier-design-review-standard §2: the caller may declare the work kind.
+    if (workKind !== undefined && !(DESIGN_WORK_KINDS as readonly unknown[]).includes(workKind)) {
+      res.status(400).json({ error: '"workKind" must be "design", "build" or "other"' });
+      return;
+    }
+    if (reviewHandoff !== undefined && reviewHandoff !== true) {
+      res.status(400).json({ error: '"reviewHandoff" may only be true' });
+      return;
+    }
     // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
     // says so, and this machine counts it in its advertised `heavyPending`.
     if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
@@ -13831,6 +13842,78 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // Design routing (frontier-design-review-standard §2). Steps 1-4 are cheap
+    // checks; the classifier (step 5) is asked only when nothing earlier decided
+    // and no kind was declared. It can never fail or hold a spawn.
+    let designOutcome: DesignRoutingOutcome = { record: null };
+    try {
+      let escalationOverride: 'inherit' | 'suppress' | undefined;
+      if (parsedTopicId !== undefined) {
+        try {
+          escalationOverride = ctx.topicProfile?.resolver?.resolve(parsedTopicId)?.escalationOverride;
+        } catch {
+          // @silent-fallback-ok: an unresolvable profile is not a suppression; routing proceeds.
+          escalationOverride = undefined;
+        }
+      }
+      designOutcome = await resolveDesignRouting({
+        enabled: designStandardEnabled(ctx.config),
+        framework: effectiveSpawnFramework,
+        requestedModel: model,
+        targetMachineId,
+        escalationOverride,
+        declaredKind: workKind,
+        classify: () => classifyDesignWork(ctx.intelligence ?? null, prompt),
+        chooseAccount: (laneModel) => {
+          const ledger = readDesignReviewLedger(ctx.config.stateDir);
+          const evidence = planEvidenceByAccount(ledger.runs, {
+            machineId: designReviewMachineId(ctx.meshSelfId),
+            door: effectiveSpawnFramework,
+            model: laneModel,
+          });
+          return chooseLaneAccount({
+            framework: effectiveSpawnFramework,
+            model: laneModel,
+            evidence,
+            accounts: ctx.subscriptionPool ? ctx.subscriptionPool.list() : null,
+          });
+        },
+      });
+    } catch (err) {
+      // @silent-fallback-ok: routing is advisory to the launch; on an internal fault the
+      // session starts on today's model and the fault is logged.
+      console.warn(`[sessions/spawn] design routing failed, launching on today's model: ${err instanceof Error ? err.message : String(err)}`);
+      designOutcome = { record: null };
+      featureEvidence.record('frontier-design-review', { kind: 'error', reason: 'spawn-routing-fault' });
+    }
+    if (designOutcome.record) {
+      featureEvidence.record('frontier-design-review', {
+        kind: 'fired',
+        reason: `spawn-routed:${designOutcome.record.decision}`,
+        context: {
+          decision: designOutcome.record.decision,
+          refusal: designOutcome.record.reason ?? null,
+          workKind: designOutcome.workKind ?? null,
+          workKindSource: designOutcome.workKindSource ?? null,
+          classifierMs: designOutcome.classifierMs ?? null,
+        },
+      });
+    }
+    const designRoutingFields = designOutcome.record ? {
+      ...(designOutcome.workKind ? { workKind: designOutcome.workKind } : {}),
+      ...(designOutcome.workKindSource ? { workKindSource: designOutcome.workKindSource } : {}),
+      designRouting: designOutcome.record,
+    } : undefined;
+    const laneLaunch = designOutcome.launchModel
+      ? designLaneTopicLaunch({
+          resolver: parsedTopicId !== undefined ? ctx.topicProfile?.resolver : undefined,
+          topicId: parsedTopicId,
+          framework: topicSpawnProfile.framework,
+          laneModel: designOutcome.launchModel,
+        })
+      : null;
+    const launchModel = designOutcome.launchModel ?? topicSpawnProfile.model;
+
     // Owner bootstrap can publish the owned runtime after server boot. Await
     // its already-registered composition before dispatch; a stale static
     // runtime must never stand in for a held newer binding.
@@ -13843,11 +13926,11 @@ export function createRoutes(ctx: RouteContext): Router {
 
     if(targetMachineId!==undefined){
       if(jobSlug!==undefined||ultracode===true||spawnRole!==undefined){res.status(409).json({error:'remote-spawn-options-unsupported'});return;}
-      if(typeof targetMachineId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(targetMachineId)||parsedTopicId===undefined||!remoteGraphDelegation){res.status(409).json({error:'verified-remote-spawn-unavailable'});return;}
+      if(typeof targetMachineId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(targetMachineId)||parsedTopicId===undefined||!remoteGraphDelegation){res.status(409).json({error:'verified-remote-spawn-unavailable',...(designRoutingFields?{designRouting:designRoutingFields.designRouting}:{})});return;}
       try{
         const outcome=await remoteGraphDelegation.dispatch({parentBindToken:req.headers['x-instar-bind-token'],topicId:parsedTopicId,targetMachineId,
           launch:{name,prompt,model:topicSpawnProfile.model,framework:topicSpawnProfile.framework}});
-        res.status(outcome.ok?202:409).json({status:outcome.ok?'remote-launch-accepted':'remote-launch-checking',transport:outcome,graph:{state:'checking-save'}});
+        res.status(outcome.ok?202:409).json({status:outcome.ok?'remote-launch-accepted':'remote-launch-checking',transport:outcome,graph:{state:'checking-save'},...(designRoutingFields?{designRouting:designRoutingFields.designRouting}:{})});
       }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
     }
 
@@ -13865,15 +13948,40 @@ export function createRoutes(ctx: RouteContext): Router {
     };
 
     try {
-      const session = await ctx.sessionManager.spawnSession({
+      const spawnOptions: Parameters<typeof ctx.sessionManager.spawnSession>[0] = {
         name,
         prompt,
-        model: topicSpawnProfile.model,
+        model: launchModel,
         jobSlug,
-        framework: topicSpawnProfile.framework,
+        // A pinned launch must name its framework: the session manager refuses a
+        // pin whose framework it would otherwise have to infer.
+        framework: designOutcome.accountPin
+          ? (topicSpawnProfile.framework ?? (effectiveSpawnFramework as NonNullable<typeof topicSpawnProfile.framework>))
+          : topicSpawnProfile.framework,
         ultracode,
         topicId: parsedTopicId,
-      });
+        ...(designOutcome.accountPin ? { accountPin: designOutcome.accountPin } : {}),
+        ...(designRoutingFields ? { designRouting: designRoutingFields } : {}),
+      };
+      let session: Awaited<ReturnType<typeof ctx.sessionManager.spawnSession>>;
+      let laneFellBack = false;
+      try {
+        session = await ctx.sessionManager.spawnSession(spawnOptions);
+      } catch (err) {
+        // Decision 3: a design model that cannot be used never blocks work. If the
+        // session manager refuses the design-lane launch's account pin, launch once
+        // more exactly as today, and record why.
+        if (!designOutcome.accountPin || !/account-pin/.test(err instanceof Error ? err.message : String(err))) throw err;
+        laneFellBack = true;
+        featureEvidence.record('frontier-design-review', { kind: 'error', reason: 'lane-pin-refused' });
+        session = await ctx.sessionManager.spawnSession({
+          ...spawnOptions,
+          model: topicSpawnProfile.model,
+          framework: topicSpawnProfile.framework,
+          accountPin: undefined,
+          designRouting: { ...designRoutingFields, designRouting: { decision: 'lane-refused', reason: 'not-confirmed', model: null } },
+        });
+      }
       let topicOwnership: string | undefined;
       if (parsedTopicId !== undefined) {
         persistTopicBinding(parsedTopicId, session.tmuxSession);
@@ -13900,7 +14008,24 @@ export function createRoutes(ctx: RouteContext): Router {
           // continuation; the spawn itself already succeeded.
           console.warn(`[sessions/spawn] could not record spawn brief for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        if (topicSpawnProfile.applied) {
+        if (laneLaunch && !laneFellBack) {
+          try {
+            ctx.topicProfile?.orchestrator?.recordSpawnSuccess(parsedTopicId, {
+              ...laneLaunch.applied,
+              framework: (session.framework ?? laneLaunch.applied.framework) as typeof laneLaunch.applied.framework,
+            }, { launchExpectation: {
+              ...laneLaunch.launchExpectation,
+              expected: {
+                ...laneLaunch.launchExpectation.expected,
+                framework: (session.framework ?? laneLaunch.launchExpectation.expected.framework) as typeof laneLaunch.applied.framework,
+              },
+            } });
+          } catch (err) {
+            // @silent-fallback-ok: without the record the boot sweep leaves the
+            // session alone (unknown launch profile is not divergence).
+            console.warn(`[sessions/spawn] could not record design-lane launch for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else if (topicSpawnProfile.applied) {
           try {
             ctx.topicProfile?.orchestrator?.recordSpawnSuccess(parsedTopicId, {
               ...topicSpawnProfile.applied,

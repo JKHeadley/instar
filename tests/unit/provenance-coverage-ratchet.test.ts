@@ -114,6 +114,7 @@ const PENDING_BASELINE = [
   'never-silent-conversation-judge::ConversationSilenceJudge::backlog:decision-quality-enrolment',
   // spec-approval-constitution-check (Echo Bugs topic 10000002750): the B24 Work Board card judge.
   'work-board-spec-approval-judge::WorkBoardSpecApprovalJudge::backlog:decision-quality-enrolment',
+  'design-work-classifier::DesignWorkClassifier::backlog:decision-quality-enrolment', // frontier-design-review-standard §2 (2026-11-17)
   // context-budget-layered-summaries Phase 1 S8 (2026-11-10): chunk/C2 summaries; enrolment queued with the Phase 2 fold probes.
   'context-layer-chunk::ContextLayerChunk::backlog:decision-quality-enrolment',
   // context-budget-layered-summaries Phase 1 S9 (2026-11-10): H3; enrolment queued with the Phase 2 fold probes.

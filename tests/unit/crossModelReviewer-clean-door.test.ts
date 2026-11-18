@@ -105,9 +105,9 @@ describe('detectClaudeReviewer — static presence reasons only (§1.2)', () => 
 });
 
 describe('resolveClaudeReviewerModel — pinned frontier, no silent fallback (§1.3)', () => {
-  it('default pin claude-fable-5 when no override', () => {
+  it('default pin (the Claude design lane, claude-fable-5-2) when no override', () => {
     const res = resolveClaudeReviewerModel(undefined);
-    expect(res).toEqual({ ok: true, model: 'claude-fable-5' });
+    expect(res).toEqual({ ok: true, model: 'claude-fable-5-2' });
   });
 
   it('accepts a valid frontier override', () => {
@@ -122,7 +122,7 @@ describe('resolveClaudeReviewerModel — pinned frontier, no silent fallback (§
       specConverge: { reviewers: { anthropic: { model: 'claude-opus-5-5' } } },
     });
     expect(res).toEqual({ ok: true, model: 'claude-opus-5-5' });
-    expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5' });
+    expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5-2' });
   });
 
   it("accepts the operator's explicit Fable 5.2 pin (claude-fable-5-2, 2026-11-09) without changing the default", () => {
@@ -130,7 +130,7 @@ describe('resolveClaudeReviewerModel — pinned frontier, no silent fallback (§
       specConverge: { reviewers: { anthropic: { model: 'claude-fable-5-2' } } },
     });
     expect(res).toEqual({ ok: true, model: 'claude-fable-5-2' });
-    expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5' });
+    expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5-2' });
   });
 
   it('REJECTS a tier word (override-not-concrete) — never a dead reviewer', () => {
@@ -164,10 +164,10 @@ describe('claude reviewer invocation — hardened concrete-pin call (§1.4)', ()
     });
     expect(r.status).toBe('ok');
     expect(r.crossFamily).toBe(false);
-    expect(r.flag).toBe('clean-door-anthropic-review: claude-code:claude-fable-5');
+    expect(r.flag).toBe('clean-door-anthropic-review: claude-code:claude-fable-5-2');
     // the concrete pin reached evaluate, and NOT as a tier word
     const opts = provider.calls[0].options!;
-    expect(opts.reviewerHardening?.model).toBe('claude-fable-5');
+    expect(opts.reviewerHardening?.model).toBe('claude-fable-5-2');
     expect(opts.reviewerHardening?.model).not.toBe('capable');
     // the tier-word `model` option must NOT be set to a tier for the claude call
     expect(opts.model).toBeUndefined();

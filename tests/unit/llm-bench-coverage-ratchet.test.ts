@@ -34,6 +34,7 @@ const PENDING_BASELINE = [
   // Low volume (agent card writes only); its verdict is graded by its route and contract tests until a
   // bench battery is authored in the research tree, which does not live in this repo.
   'WorkBoardSpecApprovalJudge',
+  'DesignWorkClassifier', // frontier-design-review-standard §2 spawn classifier (2026-11-17); graded by its agreement with a design-model reading of sampled briefs at each rung
   // context-budget-layered-summaries §6.5 (Phase 1 S8, 2026-11-10): chunk/C2 summaries over an archived span;
   // graded by the Phase 2 fold probes until a bench task lands.
   'ContextLayerChunk',

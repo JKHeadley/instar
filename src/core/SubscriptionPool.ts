@@ -299,12 +299,19 @@ function normalizedEmail(email: unknown): string | null {
 export function accountRoom(
   a: SubscriptionAccount,
   nowMs: number = Date.now(),
+  opts: { model?: string } = {},
 ): { walled: boolean; usedPct: number | null } {
+  // Model-aware room (frontier-design-review-standard §2): asked for a model, an
+  // account that is not active has no room for it, and for a Claude Fable model
+  // the per-model Fable window is read alongside the account windows.
+  if (opts.model !== undefined && a?.status !== 'active') return { walled: true, usedPct: null };
   const q = a?.lastQuota;
   if (!q) return { walled: false, usedPct: null };
   let used: number | null = null;
   let walled = false;
-  for (const w of [q.fiveHour, q.sevenDay]) {
+  const windows = [q.fiveHour, q.sevenDay];
+  if (opts.model !== undefined && /^claude-fable-/.test(opts.model)) windows.push(q.fable);
+  for (const w of windows) {
     if (!w || typeof w.utilizationPct !== 'number' || !Number.isFinite(w.utilizationPct)) continue;
     const reset = Date.parse(w.resetsAt);
     if (Number.isFinite(reset) && reset <= nowMs) continue;

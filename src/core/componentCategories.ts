@@ -69,6 +69,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   UnjustifiedStopGate: 'gate',
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
+  DesignWorkClassifier: 'gate', // frontier-design-review-standard §2: is this spawn brief design work? Chooses the design model or today's default; never fails a spawn.
   WorkBoardSpecApprovalJudge: 'gate', // B25: does an agent-written Work Board card ask approval of a spec/design without its constitution check result?
   AttributionJudge: 'gate', // attribution-paper-trail: is this credited to a person, and do the logged words support it?
   CoherenceReviewer: 'gate',
