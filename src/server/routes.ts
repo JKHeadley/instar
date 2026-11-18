@@ -421,6 +421,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
+import { AgentSessionPlacementService, AgentSessionPlacementStore, agentSessionPlacementEnabled, decideAgentSessionPlacement, isUnresolved, setActiveAgentSessionPlacement, travelBlocker } from '../core/agentSessionPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
@@ -12996,7 +12997,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ cleaned: cleaned.length, sessionIds: cleaned, purgedFailedMessages: purgedFiles });
   });
 
-  router.get('/sessions/:name/output', (req, res) => {
+  router.get('/sessions/:name/output', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.name)) {
       res.status(400).json({ error: 'Invalid session name' });
       return;
@@ -13007,6 +13008,33 @@ export function createRoutes(ctx: RouteContext): Router {
     const output = tmuxSession === null
       ? null
       : ctx.sessionManager.captureOutput(tmuxSession, lines);
+
+    // agent-sessions-placed-by-load §1b: a helper this machine placed on a peer is read
+    // there (target resolved at call time; a forwarded read is never proxied again).
+    if (output === null && agentSessionPlacement && req.headers['x-instar-placed'] !== '1') {
+      const entry = agentSessionPlacement.deps.store.get(req.params.name);
+      if (entry && (isUnresolved(entry) || entry.state === 'gone')) {
+        const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === entry.machineId) ?? null;
+        const placedOn = { machineId: entry.machineId, nickname: ctx.machinePoolRegistry?.getCapacity(entry.machineId)?.nickname ?? null };
+        if (!peer) {
+          res.status(502).json({ error: 'placed-on-peer-unreachable', placedOn });
+          return;
+        }
+        try {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/output?lines=${lines}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
+            signal: AbortSignal.timeout(10_000),
+          });
+          // @silent-fallback-ok — an unparseable peer body still returns the peer's status with placedOn
+          const body = await r.json().catch(() => ({})) as Record<string, unknown>;
+          res.status(r.status).json({ ...body, placedOn });
+        } catch (err) {
+          // @silent-fallback-ok — not silent: the caller gets 502 placed-on-peer-unreachable naming the machine
+          res.status(502).json({ error: 'placed-on-peer-unreachable', placedOn, detail: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+    }
 
     if (output === null) {
       res.status(404).json({ error: `Session "${req.params.name}" not found or not running` });
@@ -13711,8 +13739,42 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // agent-sessions-placed-by-load Step 1: the shadow log for every agent-started spawn and
+  // opt-in live placement of topicless helpers. Built once per router; null when the
+  // feature is off (dev-gated) or there is no pool. The pool tick drives its reconciler.
+  const agentSessionPlacement: AgentSessionPlacementService | null = (() => {
+    if (!ctx.machinePoolRegistry || !agentSessionPlacementEnabled(ctx.config as never, resolveDevAgentGate as never)) return null;
+    const stateRoot = ctx.config.stateDir;
+    const peerTarget = (id: string) => (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === id) ?? null;
+    const svc = new AgentSessionPlacementService({
+      store: new AgentSessionPlacementStore(path.join(stateRoot, 'state', 'agent-session-placements.json')),
+      logPath: path.join(stateRoot, '..', 'logs', 'agent-session-placement.jsonl'),
+      readPeerSessions: async (machineId) => {
+        const peer = peerTarget(machineId);
+        if (!peer) throw new Error('no-address');
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/sessions?enrich=false', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      },
+      raiseAttention: (item) => {
+        void ctx.telegram?.createAttentionItem({ id: item.id, title: item.title, summary: item.summary, category: 'agent-session-placement', priority: 'normal', sourceContext: 'agent-session-placement', healthKey: item.id } as never)
+          .catch(() => { /* @silent-fallback-ok — best-effort; the placement store and audit log keep the state */ });
+      },
+      nickname: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+    });
+    setActiveAgentSessionPlacement(svc);
+    return svc;
+  })();
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight, placement } = req.body;
+    if (placement !== undefined && placement !== 'auto') {
+      res.status(400).json({ error: '"placement" must be "auto" (or omitted)' });
+      return;
+    }
     // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
     // says so, and this machine counts it in its advertised `heavyPending`.
     if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
@@ -13854,6 +13916,66 @@ export function createRoutes(ctx: RouteContext): Router {
       }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
     }
 
+    // agent-sessions-placed-by-load §1a/§1b. A forwarded spawn (X-Instar-Placed) is never
+    // re-placed; it was logged at its origin and is tagged `forwarded` here.
+    let localPlacement: { outcome: string; reason: string } | undefined;
+    if (agentSessionPlacement) {
+      const weight = (workWeight ?? 'standard') as 'light' | 'standard' | 'heavy';
+      if (req.headers['x-instar-placed'] === '1') {
+        agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'forwarded' });
+      } else {
+        // One start decision per name at a time, held until this response is sent, so a
+        // local start and a placement of the same name cannot race.
+        const releaseNameLock = await agentSessionPlacement.acquireNameLock(name);
+        res.once('close', releaseNameLock);
+        res.once('finish', releaseNameLock);
+        let sent = false;
+        try {
+          // A name with an unresolved placement is read-only for every request, auto or not.
+          const bound = await agentSessionPlacement.boundAnswer(name);
+          if (bound) { res.status(bound.status).json(bound.body); return; }
+          const blocker = travelBlocker(req.body ?? {}, req.headers as Record<string, unknown>);
+          const decide = () => decideAgentSessionPlacement({ capacities: ctx.machinePoolRegistry!.getCapacities(), selfMachineId: ctx.meshSelfId ?? null, workWeight: weight });
+          const runningHere = resolveActiveSessionTmux(ctx.state.listSessions(), name) !== null;
+          if (placement !== 'auto' || blocker || runningHere) {
+            const d = decide();
+            agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'shadow', self: d.self, wouldPlaceOn: d.target, wouldPlaceOnNickname: d.targetNickname, why: d.reason, blocker: blocker ?? (runningHere ? 'name-running-here' : null) });
+            if (placement === 'auto') localPlacement = { outcome: 'local', reason: blocker ?? 'name-running-here' };
+          } else {
+            const result = await agentSessionPlacement.placeLive({
+              name, weight, lockHeld: true,
+              body: { name, prompt, workWeight: weight, ...(framework !== undefined ? { framework } : {}), ...(model !== undefined ? { model } : {}) },
+              decision: decide,
+              forward: async (machineId, body) => {
+                const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId) ?? null;
+                if (!peer) return 'no-address';
+                sent = true;
+                return forwardHeavySpawn({
+                  url: peer.url,
+                  authHeader: `Bearer ${ctx.config.authToken}`,
+                  headers: { 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
+                  body,
+                  dial: (init: RequestInit) => poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/sessions/spawn', init),
+                });
+              },
+            });
+            if (result.kind === 'respond') { res.status(result.status).json(result.body); return; }
+            localPlacement = { outcome: result.outcome, reason: result.reason };
+          }
+        } catch (err) {
+          // Placement must never stop a spawn from answering. Before anything was sent to a
+          // peer, the session starts here as today; after a send, the peer may have it, so no
+          // local start (the placement record, if written, keeps the name read-only).
+          console.warn(`[sessions/spawn] agent-session placement error for "${name}": ${err instanceof Error ? err.message : String(err)}`);
+          if (sent) {
+            res.status(500).json({ error: 'placement-error-after-send', placementOutcome: 'unconfirmed', tmuxSession: name, next: 'The hand-off may have started this session on another machine. Do not start the same work again; check the pool.' });
+            return;
+          }
+          if (placement === 'auto') localPlacement = { outcome: 'local', reason: 'placement-error' };
+        }
+      }
+    }
+
     const persistTopicBinding = (boundTopicId: number, tmuxSession: string): void => {
       if (ctx.telegram?.registerTopicSession) {
         ctx.telegram.registerTopicSession(boundTopicId, tmuxSession, cleanTopicName);
@@ -13924,6 +14046,7 @@ export function createRoutes(ctx: RouteContext): Router {
         ...session,
         ...(graphDelegation ? { graphDelegation } : {}),
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
+        ...(localPlacement ? { placementOutcome: localPlacement.outcome, placementReason: localPlacement.reason } : {}),
       });
     } catch (err) {
       // resource-aware placement §6: a DEFINITE refusal is a 409 with a code, so a caller
@@ -14182,6 +14305,14 @@ export function createRoutes(ctx: RouteContext): Router {
         target = allSessions.find(s => s.tmuxSession === req.params.id) ?? null;
       }
       if (!target) {
+        // agent-sessions-placed-by-load §1b: a kill is never proxied (it carries operator
+        // provenance); a helper placed on a peer is stopped on that machine.
+        const placed = agentSessionPlacement?.deps.store.findByAnyName(req.params.id) ?? null;
+        if (placed && isUnresolved(placed[1])) {
+          const nick = ctx.machinePoolRegistry?.getCapacity(placed[1].machineId)?.nickname ?? null;
+          res.status(409).json({ error: 'placed-on-peer', placedOn: { machineId: placed[1].machineId, nickname: nick }, next: `This session runs on ${nick ?? placed[1].machineId}. Stop it there (the dashboard's remote session close carries your proof), not through this machine.` });
+          return;
+        }
         res.status(404).json({ error: `Session "${req.params.id}" not found` });
         return;
       }
@@ -27288,7 +27419,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const out = await forwardHeavySpawn({
       url,
       authHeader: `Bearer ${ctx.config.authToken}`,
-      headers: { 'X-Instar-AgentId': ctx.config.projectName },
+      headers: { 'X-Instar-AgentId': ctx.config.projectName, 'X-Instar-Placed': '1' },
       body: { name, prompt, workWeight: weight, ...(framework !== undefined ? { framework } : {}), ...(model !== undefined ? { model } : {}) },
       ...(peerTarget ? { dial: (init: RequestInit) => poolPeerFetch(ctx.recordRopeResult ?? undefined, peerTarget, '/sessions/spawn', init) } : {}),
     });

@@ -460,7 +460,7 @@ ${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}${JOB_THINKIN
 
 **Sessions** — Spawn and manage Claude Code sessions.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
-- Spawn: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/spawn -d '{"name":"task","prompt":"do something"}'\`
+- Spawn: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/spawn -d '{"name":"task","prompt":"do something"}'\` (a topicless helper can add \`"placement":"auto"\` to start on a machine with room when this one is busy; see Feature notes)
 
 ${WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port)}
 ${SCRIPT_JOBS_CLAUDEMD_SECTION(port)}
