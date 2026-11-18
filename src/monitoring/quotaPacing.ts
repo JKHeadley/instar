@@ -888,8 +888,10 @@ export function providerRunway(accounts: readonly RunwayAccount[], now: number, 
   const base = { leftOutNoIdentity, unplaceable, withRoom, counted: supply.length };
   const n = supply.length;
   const lead = `${withRoom} of ${n} ${opts.label} accounts have room`;
-  if (n === 0 || centralPaces.length === 0) {
-    const reason = n === 0 ? 'no accounts with a known identity' : 'not enough readings to tell';
+  if (n === 0 || unplaceable === n || centralPaces.length === 0) {
+    const reason = n === 0 ? 'no accounts with a known identity'
+      : unplaceable === n ? 'no account can be used from any machine'
+      : 'not enough readings to tell';
     return { ...base, verdict: 'cannot-tell', reason, scenarios: null, plain: `${lead}. Not enough readings to tell (${reason}).`, provisional: false };
   }
   const med = median(centralPaces) ?? 0;
@@ -928,8 +930,11 @@ export function providerRunway(accounts: readonly RunwayAccount[], now: number, 
   }
   if (scenarios.pessimistic.firstUnservedAt || scenarios.pessimistic.lowestRoom < PACING.TIGHT_LINE) {
     const at = parseMs(scenarios.pessimistic.firstUnservedAt ?? scenarios.pessimistic.lowestAt);
+    const startRoom = build('pessimistic').reduce((sum, a) => sum + a.room, 0);
+    const already = startRoom < PACING.TIGHT_LINE || !Number.isFinite(at) || at <= now + HOUR_MS;
+    const when = already ? 'already tight now' : `could get tight on ${fmtWhen(at)} if the busiest recent pace kept up`;
     return { ...base, verdict: 'tight', reason: null, scenarios, provisional,
-      plain: `${lead}. Fine at the current pace, but could get tight on ${fmtWhen(at)} if the busiest recent pace kept up${provisional ? ' (provisional: no reset replayed yet)' : ''}.` };
+      plain: `${lead}. Fine at the current pace, but ${when}${provisional ? ' (provisional: no reset replayed yet)' : ''}.` };
   }
   return { ...base, verdict: 'sustainable', reason: null, scenarios, provisional: false,
     plain: `${lead}. Weekly room lasts all week, even at the fastest recent pace.` };

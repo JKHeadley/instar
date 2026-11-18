@@ -22,3 +22,5 @@
 **Off switch and rollout.** One setting. It is tried first on a throwaway test agent with replayed history, then runs on Echo for about three weeks (two resets for every account). It reaches every agent only after a review of how well it predicted. The history stays on each machine; it isn't synced or backed up, and it rebuilds itself if lost.
 
 **Status.** Spec converged in three review rounds and approved; built in the same change, with unit, integration and end-to-end tests.
+
+**Pre-merge check.** A test agent fed the real usage history of the 17 November account flagged it as "will leave about half unused" about 16 hours before its reset.

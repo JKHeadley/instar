@@ -342,6 +342,19 @@ describe('the provider runway', () => {
     expect(r.verdict).toBe('tight');
   });
 
+  it('cannot-tell (not tight) when no account can be used from any machine', () => {
+    const r = providerRunway([acct('a', { pace: 0.3, high: 60 }, { machines: [] })], NOW, { label: 'Codex', replayedResets: 1 });
+    expect(r.verdict).toBe('cannot-tell');
+    expect(r.reason).toBe('no account can be used from any machine');
+    expect(r.plain).not.toMatch(/tight/);
+  });
+
+  it('says "already tight now" instead of naming the current time when room starts under the line', () => {
+    const r = providerRunway([acct('a', { used: 70, pace: 0.05, high: 72 })], NOW, { label: 'Codex', replayedResets: 1 });
+    expect(r.verdict).toBe('tight');
+    expect(r.plain).toMatch(/already tight now/);
+  });
+
   it('identity-less slots are forecast on their own but left out of supply', () => {
     const r = providerRunway([acct('a', { pace: 0.1 }), acct('n', { pace: 0.1 }, { identity: null })], NOW, { label: 'Codex', replayedResets: 1 });
     expect(r.leftOutNoIdentity).toBe(1);

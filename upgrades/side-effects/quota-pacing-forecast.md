@@ -94,6 +94,10 @@ Read-only, dev-gated measurement with no decision authority. Clear to ship once 
 
 ---
 
+## Test-agent rung (pre-merge)
+
+A throwaway agent (built from this branch, dev gate on, no messaging, a disabled pool entry) served all three route forms with 200 over 494 rows seeded from the real headley Codex usage files. Evaluated at 2026-11-17 14:20Z the account reads `will-leave-unused` (central 47%, 24-hour slope 0.24 %/h), about 16 hours before its reset; at the later 18:38Z cut the usage files hold no readings (they record only when the account is used) and the forecast correctly says it cannot tell. Fixed-window check, Codex: 0 reset moves beyond 5 minutes in a full cycle of 8,898 readings (jitter within 9 seconds). Claude: no stored reading history exists yet, so its check happens on the development agent. The rung found one wording bug (no placeable account read as "tight"; a start already under the line named the current time as future), fixed with tests in this change.
+
 ## Evidence pointers
 
 - Spec and convergence report: `docs/specs/quota-pacing-forecast.md`, `docs/specs/reports/quota-pacing-forecast-convergence.md`.
