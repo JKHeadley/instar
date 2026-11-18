@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { projectSupervisionEvidence } from '../../src/scheduler/JobSupervisionEvidence.js';
+import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_MAX_CHARS } from '../../src/scheduler/JobSupervisionEvidence.js';
 import type { JobDefinition } from '../../src/core/types.js';
 import type { ParsedScriptRun } from '../../src/scheduler/jobScriptProtocol.js';
 
@@ -49,10 +49,47 @@ describe('job-result evidence floor', () => {
       .toEqual({ ok: false, reason: 'evidence-withheld' });
   });
 
-  it('refuses an over-cap projection instead of treating its truncated tail as complete', () => {
-    const many = Array.from({ length: 100 }, () => ({ kind: 'disk-low', severity: 3 as const,
-      evidence: 'bounded', class: 'critical' as const }));
-    expect(projectSupervisionEvidence({ job, parsed: { ...parsed, anomalies: many },
-      scrubbedOutput: '', now })).toEqual({ ok: false, reason: 'evidence-over-cap' });
+  it('fits many anomalies under the cap with an explicit omitted count, never as routine-complete (CMT-1610)', () => {
+    const many = Array.from({ length: 100 }, (_, i) => ({ kind: `degradation:Component${i}`, severity: 2 as const,
+      evidence: 'bounded', class: 'recoverable' as const }));
+    const signal = { source: 'independent-monitor', independentOfSlug: 'health-check',
+      observedAt: new Date(now - 60_000).toISOString(), status: 'healthy' as const };
+    const evidence = projectSupervisionEvidence({ job, parsed: { ...parsed, anomalies: many },
+      scrubbedOutput: '', independentSignal: signal, now });
+    expect(evidence.ok).toBe(true);
+    if (evidence.ok) {
+      expect(Array.from(evidence.text).length).toBeLessThanOrEqual(SUPERVISION_EVIDENCE_MAX_CHARS);
+      const shown = evidence.text.split('\n').filter(l => l.startsWith('anomaly: ')).length;
+      expect(shown).toBeGreaterThan(0);
+      expect(evidence.text).toContain(`anomalies-omitted: ${100 - shown} of 100`);
+      expect(evidence.text).toContain('field checked: yes');
+      expect(evidence.text).toContain('independent-signal: independent-monitor');
+      expect(evidence.sufficientForRoutine).toBe(false);
+    }
+  });
+
+  it('shortens the free-text tail before dropping any anomaly (the live health-check shape)', () => {
+    const full = { ...job, triageEvidence: 'full' as const,
+      triageFields: ['disk_free_pct', 'sessions_current', 'sessions_max', 'degradations', 'llm_status'] };
+    const twelve = Array.from({ length: 12 }, (_, i) => ({ kind: `degradation:SessionManager.component${i}`,
+      severity: 2 as const, evidence: 'bounded', class: 'recoverable' as const }));
+    const fields = { disk_free_pct: '6.8', sessions_current: '25', sessions_max: '25', degradations: '17', llm_status: 'ok' };
+    const output = 'JOB_ANOMALY x '.repeat(300) + 'TAIL-END';
+    const evidence = projectSupervisionEvidence({ job: full, parsed: { ...parsed, anomalies: twelve, fields },
+      scrubbedOutput: output, now });
+    expect(evidence.ok).toBe(true);
+    if (evidence.ok) {
+      expect(Array.from(evidence.text).length).toBeLessThanOrEqual(SUPERVISION_EVIDENCE_MAX_CHARS);
+      expect(evidence.text).not.toContain('anomalies-omitted');
+      expect(evidence.text.split('\n').filter(l => l.startsWith('anomaly: '))).toHaveLength(12);
+      expect(evidence.text).toMatch(/output-tail: .*TAIL-END$/m);
+    }
+  });
+
+  it('keeps the full 1000-character tail when there is room', () => {
+    const full = { ...job, triageEvidence: 'full' as const };
+    const evidence = projectSupervisionEvidence({ job: full, parsed, scrubbedOutput: 'a'.repeat(1500), now });
+    expect(evidence.ok && evidence.text.includes(`output-tail: ${'a'.repeat(1000)}`)).toBe(true);
+    expect(evidence.ok && evidence.text.includes('a'.repeat(1001))).toBe(false);
   });
 });

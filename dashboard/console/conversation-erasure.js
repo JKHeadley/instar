@@ -12,9 +12,9 @@ export function erasureControls({ node, canErase = false, headerForgotten = fals
     let open = true, busy = false, id = previous?.requestId || null, legacy = Boolean(previous);
     const status = el('p', { class: 'need-sub', role: 'status', 'aria-live': 'polite' });
     const actions = el('div');
-    const description = note('Remove this effort’s name from graph storage. This cannot be undone. Original messages stay. Other copies and backups may take longer to verify.');
+    const description = note('Remove this group’s name from graph storage. This cannot be undone. Original messages stay. Other copies and backups may take longer to verify.');
     const close = () => { open = false; clearInterval(timer); window.removeEventListener('instar-owner-locked', locked); description.textContent = ''; status.textContent = ''; actions.replaceChildren(); };
-    const panel = sheet({ title: 'Forget effort name', onClose: close }, description, status, actions);
+    const panel = sheet({ title: 'Forget group name', onClose: close }, description, status, actions);
     panel.classList.add('conversation-correction-sheet');
     panel.addEventListener('keydown', event => {
       if (event.key !== 'Tab') return;

@@ -59,6 +59,7 @@ import {
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { autoStartRefusalReason, setLastAutoStartRefusal, withTeardownLock } from '../core/ThrowawayAgentGuard.js';
+import { alwaysAvailableRefusal } from '../core/alwaysAvailable.js';
 
 /**
  * Try allocatePort from the registry, fall back to scanning for a free port.
@@ -822,7 +823,19 @@ export function installAutoStart(
   // The check-and-write runs under the same per-agent lock as the expiry
   // teardown, so an install can never cross a teardown in progress.
   const locked = withTeardownLock(projectDir, () => {
-    const refusal = autoStartRefusalReason(projectDir, { force: opts.force });
+    // Always available (create-agent-accounts-and-always-on §B.5): while a LaunchDaemon runs this
+    // agent, its per-user LaunchAgent stays off. --force does not override this: two copies of one
+    // agent would fight over its state folder.
+    const aaRefusal = platform === 'darwin' ? alwaysAvailableRefusal(projectName) : null;
+    if (aaRefusal && opts.noStart) {
+      // An update refreshing the boot wrapper (noStart): the daemon runs that same wrapper, so it is
+      // refreshed; the per-user plist is left where the helper put it and nothing is loaded. Recovery
+      // bindings are restaged the next time the per-user start item is installed (after turn-off).
+      setLastAutoStartRefusal(null);
+      installBootWrapper(projectDir);
+      return true;
+    }
+    const refusal = aaRefusal ?? autoStartRefusalReason(projectDir, { force: opts.force });
     setLastAutoStartRefusal(refusal);
     if (refusal) return false;
     if (platform === 'darwin') {

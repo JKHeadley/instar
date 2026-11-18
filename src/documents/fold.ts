@@ -121,6 +121,10 @@ export function visibleRows(ordered: ReadonlyArray<DocRow>, reader: Reader): Set
   // Step 3: cascade — a withheld comment withholds everything that depends on it.
   const commentRow = new Map<CommentKey, RowKey>();
   for (const r of ordered) if (r.eventKind === 'comment') commentRow.set(commentKeyOf(authorKeyOf(r), r.commentId), rowKeyOf(r));
+  // Decisions (document-decisions §6): an answer is withheld when its question is, a delivery
+  // receipt when its answer is, so nothing about a hidden question reaches a reader.
+  const askRow = new Map<string, RowKey>();
+  for (const r of ordered) if (r.eventKind === 'decision-ask' && !askRow.has(r.askId)) askRow.set(r.askId, rowKeyOf(r));
   for (const r of ordered) {
     const k = rowKeyOf(r);
     if (!base.has(k)) continue;
@@ -129,6 +133,11 @@ export function visibleRows(ordered: ReadonlyArray<DocRow>, reader: Reader): Set
       const parent = commentRow.get(dep);
       if (!parent || !base.has(parent)) continue;
     }
+    if (r.eventKind === 'decision' || r.eventKind === 'decision-ask-close') {
+      const parent = askRow.get(r.askId);
+      if (!parent || !keys.has(parent)) continue;
+    }
+    if (r.eventKind === 'decision-delivered' && !keys.has(r.decisionRow)) continue;
     keys.add(k);
   }
   return keys;
@@ -191,6 +200,18 @@ export interface DocState {
   tombstoned: boolean;
   purged: boolean;
   docSaltHash: string | null;
+  /** Decision asks by askId, in fold order (docs/specs/document-decisions.md §3.1). */
+  asks: Map<string, AskState>;
+  /** Decision rows in fold order (§3.2). The current answer is derived in decisions.ts. */
+  decisions: DecisionRowState[];
+  /** Decision row key → the chat request id of the owner's delivered message (§3.4). */
+  delivered: Map<RowKey, string>;
+}
+
+export interface AskState { askId: string; questionHash: string; rowKey: RowKey; closed: boolean }
+export interface DecisionRowState {
+  rowKey: RowKey; askId: string; onVersion: string; verdict: 'approve' | 'decline'; questionHash: string;
+  noteHash?: string; supersedes?: RowKey; proof: 'telegram' | 'pin'; docDeps: Vector; stream: string; seq: number; receivedAt: string;
 }
 
 export function emptyState(docId: string): DocState {
@@ -198,6 +219,7 @@ export function emptyState(docId: string): DocState {
     docId, titleHash: null, ownerPerson: 'owner', primary: null, primaryRowKey: null, createdFrom: null,
     everSharedPrimaries: [], versions: new Map(), versionOrder: [], comments: new Map(), links: new Map(),
     sends: [], tombstoned: false, purged: false, docSaltHash: null,
+    asks: new Map(), decisions: [], delivered: new Map(),
   };
 }
 
@@ -281,6 +303,16 @@ function applyRow(s: DocState, r: DocRow): void {
     case 'purge': s.purged = true; return;
     case 'prune': for (const id of r.versionIds) { const v = s.versions.get(id); if (v) v.pruned = true; } return;
     case 'place-disclosure': case 'device-seen': return;
+    case 'decision-ask':
+      // The server mints askId; a second row with an id already seen is ignored (§3.1).
+      if (!s.asks.has(r.askId)) s.asks.set(r.askId, { askId: r.askId, questionHash: r.questionHash, rowKey: k, closed: false });
+      return;
+    case 'decision-ask-close': { const a = s.asks.get(r.askId); if (a) a.closed = true; return; }
+    case 'decision':
+      if (!s.asks.has(r.askId)) return; // an answer to an ask this reader never saw is meaningless
+      s.decisions.push({ rowKey: k, askId: r.askId, onVersion: r.onVersion, verdict: r.verdict, questionHash: r.questionHash, noteHash: r.noteHash, supersedes: r.supersedes, proof: r.proof, docDeps: r.docDeps, stream: streamOf(r), seq: r.seq, receivedAt: r.receivedAt });
+      return;
+    case 'decision-delivered': if (!s.delivered.has(r.decisionRow)) s.delivered.set(r.decisionRow, r.messageRequestId); return;
   }
 }
 
