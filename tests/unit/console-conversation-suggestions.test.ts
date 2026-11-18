@@ -87,13 +87,13 @@ describe('acceptSuggestion',()=>{
   const steps:string[]=[];
   const waiting=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
   expect(waiting).toMatchObject({done:false,kind:'waiting'});expect(waiting.text).toContain('Waiting for Laptop');
-  expect(steps[0]).toBe('Creating the effort…');
-  expect(steps).toContain('Creating the effort… Saved here. Waiting for Laptop to confirm. (5 s)');
+  expect(steps[0]).toBe('Creating the group…');
+  expect(steps).toContain('Creating the group… Saved here. Waiting for Laptop to confirm. (5 s)');
   expect(steps.some(t=>/\(0 s\)|\(3 s\)/.test(t))).toBe(false); // nothing extra for a step that is only a moment old
   mode='offline';steps.length=0;
   const offline=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
   expect(offline).toMatchObject({done:false,kind:'waiting'});expect(offline.text).toContain('The agent did not answer');
-  expect(steps).toContain('Creating the effort… The agent is not answering yet. (8 s)');
+  expect(steps).toContain('Creating the group… The agent is not answering yet. (8 s)');
   mode='refused';
   expect(await m.acceptSuggestion(s,{send,onStep:()=>{},wait:10000,sleep:async()=>{}})).toMatchObject({done:false,kind:'refused'});
   expect(await m.acceptSuggestion(s,{send:async()=>({ok:false,status:403,needsUnlock:true}),onStep:()=>{},sleep:async()=>{}})).toMatchObject({done:false,kind:'locked'});
