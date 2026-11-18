@@ -79,6 +79,24 @@ This is a Tier 2 change: it touches lock lifecycle and adds a measurement, and i
 
 The operator's outcome is "the Studio's disk stops filling with old copies". This phase stops the lock files piling up and measures the safe reclaim. It does not free the existing 70 GB, and the spec says so plainly. The operator is not asked for anything: the Chief of Staff approves the design, and the development agent decides the phase 2 step from the measured numbers.
 
+## Chief of Staff fold-ins (approval 2026-11-18, msg 5ecf7d6f)
+
+Approved to build (a maintainer approval, not a constitution change), with three fold-ins taken from the constitution check run at 18:41Z. All three are applied:
+1. **Verify the State, Not Its Symbol.** The start-time lock release no longer trusts the session record alone. It also requires that no live tmux pane is working inside the worktree. A failed tmux read keeps every lock.
+2. **Judgment Within Floors.** D's reserve is now a fixed 60 s, with its reason: D's longest bounded step is a 30 s `git` or `gh` call that may be in flight at the deadline, plus the result write and process exit.
+3. **Maturation Path.** D ships dark and dev-only, behind `monitoring.diskSteward.topicWorktreeMeasure` on the dev-agent gate, with a ladder entry that graduates it on its own numbers.
+
+## Constitution re-check after the fold-ins (2026-11-18, 18:4x Z)
+
+The re-run raised 3 flags, all applied:
+- **The startup restart race** is narrowed by the live-pane check. Both known windows are now stated.
+- **The 30 s step timeouts** are the existing reaper's defaults, reused unchanged. That is now stated.
+- **D's test-agent rung** now includes one live disk-steward run on a throwaway agent, before the development agent.
+
+A second re-run raised 2 flags. Both are accepted, with their reasons:
+- **The residual overlapping-server spawn race.** The release can only land in the moment between the lock write and the pane opening. The cost is one session's commit trailer failing to sign, and nothing is lost.
+- **The inherited 30 s per-call timeouts.** D reuses the existing reaper's timeouts unchanged, and a call that times out reads as keep or `partial`. Adaptive budgeting is left to phase 2 (CMT-1958), with D's measured call times in hand.
+
 ## Approval
 
-Pending: approval is asked of the Chief of Staff.
+Approved by the Chief of Staff, msg 5ecf7d6f, with the three fold-ins above.

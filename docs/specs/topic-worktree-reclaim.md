@@ -4,6 +4,8 @@ slug: "topic-worktree-reclaim"
 author: "echo (echo-machine-stewardship)"
 parent-principle: "Close the Loop"
 eli16-overview: "docs/specs/topic-worktree-reclaim.eli16.md"
+approved: true
+approved-by: "echo-chief-of-staff (msg 5ecf7d6f, 2026-11-18, with 3 fold-ins)"
 review-convergence: "2026-11-18T18:33:27.355Z"
 review-iterations: 6
 review-completed-at: "2026-11-18T18:33:27.355Z"
@@ -52,12 +54,15 @@ Verified on main d61d6173b and on the Studio, 2026-11-18.
   - it deletes the ending session's own lock, which may be under a minute old. That is correct: the session is over.
   - Only a deletion that succeeds, or finds the file already gone (`ENOENT`), counts as released. Any other unlink error keeps the lock in the map, is logged with its code, and is retried at the next start's orphan release.
 - **At server start, release only orphaned locks.** The release runs synchronously, directly after `initialize()` and before `setWorktreeManager`, with no `await`. No `resolve()` can run before that point, so no lock this server writes can be caught mid-spawn. The lock map is also the authority for `signTrailer()` and `heartbeat()`. Both look a lock up by `sessionId` and fencing token without checking liveness (`WorktreeManager.ts:561`). A session that survives a server restart still signs through its loaded lock, so liveness cannot decide here.
-  - Instead, once the session records are loaded, a lock is released when its `sessionId` has no persisted session record with status `running` (`<stateDir>/state/sessions/<id>.json`).
+  - Instead, a lock is released only when both of these hold:
+    - its `sessionId` has no persisted session record with status `running` (`<stateDir>/state/sessions/<id>.json`);
+    - no live tmux pane has its working directory inside the worktree. This is one `tmux list-panes -a -F '#{pane_current_path}'` read.
+  - The record alone is never enough: a live pane in the tree keeps the lock. A tmux read that fails keeps every lock.
   - That covers sessions that ended while the server was down, which fire neither event.
   - An unreadable sessions directory releases nothing. A record file that exists but will not parse counts as running, so it keeps its lock. `starting` counts as running too.
   - **Known limits:**
-    - Two server processes overlapping during a restart: the new one can release a lock the old one wrote just before recording its session.
-    - A previous server that crashed between `new-session` and `saveSession` leaves a live session with no record.
+    - Two server processes overlapping during a restart: the new one could release a lock the old one wrote just before recording its session. With the live-pane check, this needs the release to land in the moment between `resolve()` writing the lock and `tmux new-session` opening the pane in the tree, because the pane then keeps the lock.
+    - A previous server that crashed between `new-session` and `saveSession` leaves a live session with no record. Its pane is in the tree, so the live-pane check keeps its lock.
     - Both are rare. The cost is that session's commit trailer failing to sign. Nothing is lost.
   - **On session end:** an end event is not proof the session stopped. `sessionComplete` also fires when `kill-session` failed and the pane is still alive (`SessionManager.ts:3876`). So the release also checks the session's tmux session (`isSessionAlive`), and keeps the lock while it is still there. The orphan release at the next start, or a later end event, picks it up.
 - A lock from another machine is never touched.
@@ -145,7 +150,7 @@ Only `disagrees` counts against the check.
 
 **Budget.** The child's run is killed at the server's 30-minute deadline, and it writes its result file once, at the end. Measured runs on the Studio already take 13 to 19 minutes before the whole-disk walk.
 - D runs **after** the whole-disk walk, so the walk keeps exactly today's budget.
-- D's deadline is `runDeadlineAt` minus the result-writing reserve (the larger of 60 s or 10% of the run budget). With no `runDeadlineAt`, the child's own exit timer is used instead.
+- D's deadline is `runDeadlineAt` minus a 60 s reserve. Reason: D's longest single bounded step is one 30 s `git` or `gh` call that may already be in flight at the deadline. Those 30 s timeouts are not new: they are the existing reaper's per-call defaults (`SafeGitExecutor.readSync`, `defaultRunGh`), and D reuses them unchanged. Adding the result write and process exit, under 30 s, gives 60 s. The reserve is fixed because it is derived from those step timeouts, not from the run budget. With no `runDeadlineAt`, the child's own exit timer is used instead.
 - On a day with a long whole-disk walk, D gets little time and reports `partial`. Because D's rows persist per entry (below), a partial day still adds to the measured set.
 - D's rows also go to their own file, `<stateDir>/local-state/topic-worktree-plan.json`, written as each entry finishes. A run killed later still leaves D's measured entries. When the child has no `runDeadlineAt`, the deadline comes from its own exit timer. That one deadline is passed to every step: the link index, each `git` and `gh` call, the audit, the targeted lookups and `sizeOf`. Each call's timeout is the smaller of its own default and the time left. Results are written as each entry finishes, so a step cut short by the deadline leaves the rows already measured and marks the row `partial`. Entries it does not reach are counted as `not-measured`, and the row says `partial`. 
 
@@ -156,10 +161,11 @@ Each pass writes its counts into the plan row. **False-eligibility cases** are a
 | Decision point | Classification | Floor / justification |
 |---|---|---|
 | A: release a session's locks when it completes or is killed | invariant; basis: enumerable-domain; evidence: only entries whose `sessionId` equals the ended session's are removed | — |
-| A: release an orphaned lock at start | invariant; basis: enumerable-domain; evidence: only a lock whose `sessionId` has no persisted `running` session record; a running session (which may still sign) keeps its lock; an unreadable sessions directory releases nothing | — |
+| A: release an orphaned lock at start | invariant; basis: enumerable-domain; evidence: only a lock whose `sessionId` has no persisted `running` record AND whose worktree has no live tmux pane inside it; an unreadable sessions directory, malformed record or failed tmux read releases nothing | — |
 | B: a merged PR counts only when merged into the base branch | invariant; basis: external-constraint; evidence: GitHub's `baseRefName` on the merged PR; a missing field keeps the entry, as unmerged | — |
 | B: a checkout another checkout links into is in use | invariant; basis: enumerable-domain; evidence: one index over a fixed root list; a failed index scan keeps every checkout (existing behaviour) | — |
 | D: which files count as residue | invariant; basis: enumerable-domain; evidence: a closed list of files WorktreeManager itself writes; anything not on it is work; a real-directory `node_modules` is never residue, only counted in separate estimate buckets | Measuring only: no removal acts on it in this spec |
+| D: run the measurement at all | invariant; basis: external-constraint; evidence: `monitoring.diskSteward.topicWorktreeMeasure` through the dev-agent gate; dark on the fleet until graduated | — |
 | D: in scope and in use | invariant; basis: enumerable-domain; evidence: provenance from the binding history, use from session records and the existing scans, and "creating" from the absence of the file `resolve()` writes on completion; unreadable sources read as in use | — |
 
 ## Frontloaded Decisions
@@ -168,23 +174,26 @@ Each pass writes its counts into the plan row. **False-eligibility cases** are a
 - **Should dependency copies, marked or not, count as reclaimable?** That is decided in phase 2, with both estimates' byte counts in hand.
 - **Rollout:**
   - A, B and C ship on. A changes the lock lifecycle: locks are released for ended and orphaned sessions. B tightens existing eligibility checks: more links seen, and only PRs merged into the base branch count. Neither adds a way to remove a worktree. C writes one small file.
-  - D runs in the disk-steward child whenever the disk report runs. It follows that child's existing switch (`monitoring.diskSteward`) and needs no new key.
+  - D runs in the disk-steward child behind `monitoring.diskSteward.topicWorktreeMeasure`, resolved through the dev-agent gate (`resolveDevAgentGate`): live on development agents, dark on the fleet. The ladder entry graduates it on its own numbers (see Maturation plan). No `migrateConfig` write is needed, because an absent key means the gate's default.
 
 ## Maturation plan
 
-- **test-agent-live:** the unit and integration fixtures below, on a throwaway repo and agent home: every bucket, the audit table, the budget cases, the lock release on end, the orphan release at start, and the failing-unlink case.
+- **test-agent-live:** two steps on a throwaway agent.
+  - The fixtures below run on a throwaway repo and agent home.
+  - D then runs live once on a throwaway agent (`~/.instar/test-deploys/`), with `monitoring.diskSteward.topicWorktreeMeasure` set on. That agent's own disk-steward child performs a manual run over fixture worktrees made through its own WorktreeManager. The `topicWorktrees` row in its disk report is compared with the expected buckets.
+  - Only then does D go live on a development agent.
 - **dev-agent-live:** live on Echo (Studio, Mini, M5) from the release that carries it. Over one week:
   - the `topicWorktrees` row in each disk report;
   - the number of `.session.lock` files in `.instar/worktrees` before and after (it must stop growing);
   - every `falseEligibility` case, read by hand.
-- **fleet:** the same release, ungated. A, B and C change no removal decision, and D only measures, riding the disk steward's existing posture.
+- **fleet:** A, B and C ship ungated with the release: they change no removal decision. D is dark on the fleet behind `monitoring.diskSteward.topicWorktreeMeasure` (dev-agent gate) until it graduates.
 - **graduation criterion:** over the dev-agent week:
   - the lock-file count stops rising;
   - at least two measuring runs produce a `topicWorktrees` row on the Studio;
   - every `falseEligibility` case is explained, or filed as a bug.
   A week without a measuring run is not a pass; the window extends.
 - **dark-window:** none; live on release. If the criterion is not met within 14 days, the reason and a new date are recorded on CMT-1958.
-- **ladder:** not applicable: no flag, readings and lock cleanup ship live on every agent (revert is the rollback)
+- **ladder:** `monitoring.diskSteward.topicWorktreeMeasure`: dev-agent live, then fleet dark-to-on when the graduation criterion holds on the development agent. A, B and C have no flag; revert is their rollback.
 
 ## Maturation path
 
@@ -235,7 +244,7 @@ Not applicable. No notice source is added.
 ## Verify the State, Not Its Symbol
 
 - **A, on session end.** Symbol: the ended session's own end event. State claimed: that session no longer needs its lock. Corroboration: the lock's `sessionId` equals the ended session's (identity), and its tmux session is gone (termination).
-- **A, at start.** Symbol: no persisted `running` record for the lock's session. State claimed: no running session will sign through this lock. The persisted session status is the chosen reconciliation signal, not an independent proof: `signTrailer` checks only the lock and binding, and the crash and overlap windows named in A are known exceptions. Unmeasurable: an unreadable directory, or a record that will not parse, releases nothing.
+- **A, at start.** Symbol: no persisted `running` record for the lock's session. State claimed: no running session will sign through this lock. Corroboration: the live state, meaning no tmux pane working inside the tree, read independently of the record. The persisted session status is the second signal, not an independent proof on its own: `signTrailer` checks only the lock and binding, and the crash and overlap windows named in A are known exceptions. Unmeasurable: an unreadable directory, or a record that will not parse, releases nothing.
 - **D.** Symbol: "eligible". State claimed: by the checks D runs, nothing in the tree is unmerged work, and none of the use signals D reads (session records, process cwds, command lines, links to depth 3, the git index lock) shows it in use. It does not claim that no deeper link exists. This is a narrower claim than "removal is lossless": D does not see links nested deeper than the walk depth, and `could-not-verify` entries stay in their bucket, counted separately. Removal, which needs the stronger claim, is phase 2's to justify. Corroboration:
   - provenance from the binding history;
   - use from session records, the creation window, and the cwd, link and command-line scans;
