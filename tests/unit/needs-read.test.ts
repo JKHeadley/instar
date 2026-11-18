@@ -3,6 +3,7 @@
  * from exactly what Home counts, filtered per viewer, honest about what it could not check.
  */
 import path from 'node:path';
+import { summarizeHealth } from '../../src/monitoring/healthIssues.js';
 import { describe, it, expect } from 'vitest';
 import { needsViewer, teamMayReadBoard, NeedsCanary, NEEDS_CANARY_MISSES_TO_NOTICE, createNeedsComposer, consoleResult, NEED_SOURCE_LABELS, NEED_SOURCE_POSTURE, resolveConsoleDir, NEEDS_MAX_ITEMS, type NeedsSelfRead } from '../../src/server/needsRoutes.js';
 
@@ -272,4 +273,12 @@ describe('needs read: the phone rule', () => {
     // The canary's state is not a phone route.
     expect(DEVICE_ALLOWLIST.some((r) => r.re.test('/needs/canary'))).toBe(false);
   });
+});
+
+it('the shared owner read excludes a real capacity wait while retaining a real required action', async () => {
+ const body = summarizeHealth({status:'degraded',sessions:{current:25,max:25}}, [{feature:'iMessage',timestamp:new Date(NOW).toISOString(),narrative:'Disconnected'}]);
+ const res = await composer({'/mobile/health-issues':{status:200,body}}).owner();
+ expect(res.sources.find(s=>s.id==='health')?.state).toBe('ok');
+ expect(res.items.filter(i=>i.source==='health').map(i=>i.title)).toEqual(['iMessage isn’t connected']);
+ expect(res.count).toBe(1);
 });
