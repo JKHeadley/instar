@@ -62,7 +62,7 @@ Revert. Nothing depends on it.
 
 ## 7. Evidence
 
-Unit: `tests/unit/identity-piece2a-owner-record.test.ts`, 29 tests with real Ed25519 keys. They cover:
+Unit: `tests/unit/identity-piece2a-owner-record.test.ts`, 30 tests with real Ed25519 keys. They cover:
 - every-order equivalence;
 - the authority table both ways;
 - forks and merges;
@@ -78,7 +78,7 @@ An independent reviewer subagent read the code against the spec and probed it. R
 - a stored copy that could revive a revoked key's entry;
 - an order-dependent `rejected` list.
 
-All three are fixed, each with a regression test. Round 2 concurred after fuzzing 10,000 random graphs, which found no full-versus-stored difference. Speed: a 2,000-entry chain takes 0.54 s; a 2,000-entry fork takes 0.23 s. Review: `.instar/state/identity-build-144636/reviews/p2a-second-pass.md` in the agent home. For 2b, the reviewer noted that spam can grow `keep` only while the record is already `contested` or `owner-lost`. 2b handles that state by holding, with a visible forced reset.
+All three are fixed, each with a regression test. Round 2 concurred after fuzzing 10,000 random graphs, which found no full-versus-stored difference. Speed: a 2,000-entry chain takes 0.54 s; a 2,000-entry fork takes 0.23 s. Round 3 reviewed a follow-up from the 2b design review: nothing may build on a TLS entry, and only each machine's winning TLS entry is kept. It concurred after fuzzing 11,500 graphs with TLS entries mixed in. Review: `.instar/state/identity-build-144636/reviews/p2a-second-pass.md` in the agent home. For 2b, the reviewer noted that spam can grow `keep` only while the record is already `contested` or `owner-lost`. 2b handles that state by holding, with a visible forced reset.
 
 ## Class-Closure Declaration
 

@@ -273,6 +273,8 @@ export function evaluateOwnerRecord(rawEntries: unknown[], opts: EvaluateOptions
         effective.add(id); continue;
       }
       if (e.parents.some((p) => hard.has(p) || !folds.has(p))) { hard.add(id); reasons.set(id, 'parent-rejected'); continue; }
+      // TLS keys are side entries: nothing builds on one, so storage can keep only each machine's latest.
+      if (e.parents.some((p) => first(byId, p).kind === 'tls-key')) { hard.add(id); reasons.set(id, 'parent-is-tls-key'); continue; }
       const parentFolds = e.parents.map((p) => folds.get(p)!);
       const base = e.kind === 'merge' ? mergeBase(parentFolds) : parentFolds[0];
       let after = e.kind === 'merge' ? joinFolds(parentFolds, ancestry) : cloneFold(parentFolds[0]);
@@ -385,7 +387,9 @@ export function evaluateOwnerRecord(rawEntries: unknown[], opts: EvaluateOptions
   const keys = [...final.keys.values()].filter((k) => !final.revokedInst.has(k.addedBy)).sort((a, b) => (a.keyId < b.keyId ? -1 : 1));
   const revokedIds = [...final.keys.values()].filter((k) => final.revokedInst.has(k.addedBy)).map((k) => k.keyId).sort();
   const policies = Object.fromEntries([...final.policies].sort(([a], [b]) => (a < b ? -1 : 1)).map(([p, v]) => [p, v.value]));
-  const effective = [...new Set([...[...B.effective].filter((id) => first(byId, id).kind !== 'revoke-key'), ...storedRevocation.values(), ...exclusionRevocations])].sort();
+  // Only each machine's winning TLS entry is kept: a flood of TLS entries can't grow the stored record.
+  const tlsWinners = new Set([...tls.values()].map((v) => v.by));
+  const effective = [...new Set([...[...B.effective].filter((id) => { const k = first(byId, id).kind; return k !== 'revoke-key' && (k !== 'tls-key' || tlsWinners.has(id)); }), ...storedRevocation.values(), ...exclusionRevocations])].sort();
   return {
     status: keys.length === 0 ? 'no-valid-key' : ownerAdds.length > 0 && !keys.some((k) => k.type === 'owner-key') ? 'owner-lost' : contested.size > 0 ? 'contested' : 'ok', genesis: genesisId,
     contested: [...contested].sort(),

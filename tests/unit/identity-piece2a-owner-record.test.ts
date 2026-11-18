@@ -426,3 +426,19 @@ describe('regression: the code second pass', () => {
     expect(b).toEqual(a);
   });
 });
+
+describe('regression: TLS flood (2b review)', () => {
+  it('only the latest TLS entry per machine is kept, and nothing may build on a TLS entry', () => {
+    const { g, own } = enrolled();
+    const tlsEntries = Array.from({ length: 50 }, (_, i) => entry('tls-key', [own.id], { machineId: mA.id, fingerprint: `fp${i}`, seq: i }, M(mA)));
+    const onTls = entry('policy', [tlsEntries[0].id], { path: 'z', value: 1 }, O(o1));
+    const all = [g, own, ...tlsEntries, onTls];
+    const full = evaluateOwnerRecord(all.map((x) => x.entry), OPTS);
+    expect(full.tlsKeys[mA.id]).toBe('fp49');
+    expect(full.keep.filter((id) => tlsEntries.some((t) => t.id === id))).toEqual([tlsEntries[49].id]);
+    expect(full.rejected).toContainEqual({ id: onTls.id, reason: 'parent-is-tls-key' });
+    expect(full.policies.z).toBeUndefined();
+    sameState(full, storedCopy(all, full));
+    expect(storedCopy(all, full).tlsKeys).toEqual(full.tlsKeys);
+  });
+});
