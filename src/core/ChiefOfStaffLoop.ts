@@ -361,6 +361,8 @@ export interface ChiefOfStaffLoopDeps {
    *  Telegram button presses; absent elsewhere, so an ask can never be sent from a machine its tap cannot reach. */
   pauseAsk?: PauseAskDeps;
   log?: (line: string) => void;
+  /** The Chief of Staff's own Work Board cards (docs/specs/work-board-cards-appear.md §1), synced at the end of each tick. */
+  waitCards?: Pick<import('./ChiefOfStaffWaitCards.js').ChiefOfStaffWaitCards, 'sync'>;
 }
 
 /** One open ask, machine-local (it lives where the owner's callback for that exact message arrives). */
@@ -679,6 +681,12 @@ export class ChiefOfStaffLoop {
       const noteStates = new Map<string, ProjectCheckState>();
       for (const p of projects) noteStates.set(p.conversationKey, foldProjectCheckState(noteUnion, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, new Date(now), p.binding));
       await this.maybeSendNote(now, cfg, lease, noteUnion, projects, noteStates);
+      // Wait cards (work-board-cards-appear §1): mirror this tick's recorded waits onto the board. Not on the grace
+      // tick after a holder change, so the previous holder's card records have a tick to arrive. Never fails the tick.
+      if (this.d.waitCards && !graceTick) {
+        try { this.d.waitCards.sync({ union: noteUnion, projects: projects.map((p) => ({ conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, doneDefinition: p.doneDefinition })), states: noteStates }); }
+        catch (e) { /* @silent-fallback-ok: logged; the cards are re-synced next tick */ this.d.log?.(`[chief-of-staff] wait cards failed: ${(e as Error)?.message}`); }
+      }
       this.d.journal.emit(`last-tick:${this.d.machineId}`, buildLastTick(this.d.machineId, new Date(now).toISOString()));
       this.health.lastTickAt = new Date(now).toISOString(); this.health.lastTickMachine = this.d.machineId; this.health.ticks++; this.health.lastError = null;
     } catch (e) { /* @silent-fallback-ok: the failure is recorded in loop health + log and the project is re-checked next tick */

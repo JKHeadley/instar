@@ -5,7 +5,7 @@
  */
 
 import type { WorkBoardService, CardView } from './WorkBoardService.js';
-import { plainParkReason } from './WorkBoardService.js';
+import { plainParkReason, isServerOwnedCard } from './WorkBoardService.js';
 import type { Lane } from './WorkCardStore.js';
 import { sha256Hex } from './WorkCardStore.js';
 
@@ -73,7 +73,9 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
   const pending = v.pickups.filter((p) => p.status === 'pending' || p.status === 'parked');
   const out: Record<string, unknown> = {
     ...base,
-    title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, doneWhen: c.doneWhen,
+    title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, whyYou: c.whyYou, doneWhen: c.doneWhen,
+    // The Needs-you items this card is about (work-board-cards-appear §3); a server-owned card is written by the Chief of Staff itself.
+    covers: c.covers, createdAt: c.createdAt, ...(isServerOwnedCard(c) ? { serverOwned: true } : {}),
     // A phone-only card keeps `outward` in its record so it needs its own approve under every board
     // policy, but approving an app version sends nothing outside the team and spends nothing.
     carrier: principalJson(c.carrier, name), outward: c.outward && !extra?.phoneOnly,

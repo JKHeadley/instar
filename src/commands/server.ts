@@ -31090,6 +31090,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
                 rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
+                // The Chief of Staff's own Work Board cards (docs/specs/work-board-cards-appear.md §1). Dev-gated like the board:
+                // `workBoard.chiefOfStaffCards` omitted ⇒ on for a development agent, off on the fleet. The board is built earlier in boot.
+                waitCards: new (await import('../core/ChiefOfStaffWaitCards.js')).ChiefOfStaffWaitCards({
+                  enabled: () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('workBoard.chiefOfStaffCards', undefined), config),
+                  board: () => _workBoardRuntime?.svc ?? null,
+                  ensureConversation: (cardId) => _workBoardRuntime?.ensureConversation(cardId),
+                  log: (event, detail) => console.log(pc.dim(`  [chief-of-staff] ${event} ${JSON.stringify(detail)}`)),
+                }),
                 // Owner pause / resume asks (spec cos-owner-pause-record §3.2): only where the owner's button presses arrive.
                 ...(telegram ? { pauseAsk: {
                   receivesCallbacks: () => coordinator.isAwake,

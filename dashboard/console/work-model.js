@@ -411,6 +411,14 @@ export function workBoardNeedRows(wb) {
     main: String(c.title || 'A work card').slice(0, 80),
     sub: String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
+    // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
+    // person to act (no Approve, no Confirm done, no open question, nothing outward) may stand in for its rows.
+    covers: Array.isArray(c.covers) ? c.covers.filter((k) => typeof k === 'string') : [],
+    linkable: c.status === 'with-person' && !c.outward && !c.question,
+    // Only the Chief of Staff's own wait card stands in for its row; an agent session's card keeps its own row too.
+    serverOwned: c.serverOwned === true,
+    createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
+    cardId: c.id,
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
   return rows;
