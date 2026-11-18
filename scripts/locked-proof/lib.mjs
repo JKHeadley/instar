@@ -82,7 +82,7 @@ export const CASES = [
   { id: '12.15', gate: 'P12', title: 'Leave unlocked followed by a crash', password: true, inject: [{ action: 'leave-unlocked', at: 'unlocked' }, { action: 'kill-server', at: 'marker:left-unlocked' }], then: ['start-server'], final: 'left-unlocked', markerEnd: ['left-unlocked'], typistGone: true, cleanup: ['lock-now'] },
   { id: '12.16', gate: 'P12', title: 'Next grant refused until the duty ends, across agents', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'grant-other-agent', at: 'marker:watching', expectRefusal: 'relock-pending' }], final: 'locked', markerEnd: ['relocked'] },
   { id: '12.17', gate: 'P12', title: 'A stray letter at the shield leaves the grant alive', password: false, inject: [{ action: 'type-letter', at: 'now' }], final: 'locked', grantAlive: true },
-  { id: '12.18', gate: 'P12', title: 'Typing refuses without the guard acknowledgement', password: true, inject: [{ action: 'stop-new-guards', at: 'now' }], cleanup: ['cont-guards'], final: 'locked', secretRefused: 'guard-not-alive', noSubmission: true },
+  { id: '12.18', gate: 'P12', title: 'Typing refuses when the real guard cannot publish a fresh acknowledgement', password: true, afterGrant: ['block-guard-heartbeat'], inject: [], guardAckFault: true, final: 'locked', secretRefused: 'guard-not-alive', noSubmission: true },
   // ── P15: Stop tests ──
   { id: '15.1', gate: 'P15', title: 'Stop immediately before Enter', password: true, inject: [{ action: 'revoke', at: 'before-enter' }], final: 'locked', noSubmissionAfterClose: true },
   { id: '15.2', gate: 'P15', title: 'Stop immediately after Enter', password: true, inject: [{ action: 'revoke', at: 'after-enter' }], final: 'locked', noSubmissionAfterClose: true },
@@ -110,7 +110,7 @@ export function selectCases(ids) {
 export function renderExpected(cases = CASES) {
   const lines = ['| Case | Gate | What happens | Person | Mac must end | Marker must end |', '|---|---|---|---|---|---|'];
   for (const c of cases) {
-    const injections = c.inject.map(i => `${i.action} at ${i.at}`).join('; ');
+    const injections = [...(c.afterGrant ?? []).map(action => `${action} after grant, before password`), ...c.inject.map(i => `${i.action} at ${i.at}`)].join('; ');
     lines.push(`| ${c.id} | ${c.gate} | ${c.title}: ${injections} | ${c.person ? c.person.text : 'none'} | ${c.final} | ${(c.markerEnd ?? ['any terminal']).join(' or ')} |`);
   }
   return `${lines.join('\n')}\n`;
@@ -204,13 +204,24 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     evidence.grantRequestId = grant?.requestId ?? null;
     evidence.grantOpenedAt = target.now();
     evidence.grantExpiresAt = grant?.expiresAt ?? null; // the server's own end time for the grant, when the page was told it
+    for (const action of c.afterGrant ?? []) {
+      const result = await target.act(action, { case: c, grant });
+      evidence.fired.push({ action, at: 'after-grant', t: target.now(), result: result ?? null });
+    }
     if (c.password) {
       // Deadline cases aim their typing at the grant's limit instead (driver typePassword); the step
       // then fires as soon as the case starts waiting, as before.
       if (c.timing === 'deadline') ctx.beforeEnterDue = target.now();
-      void target.typePassword(c).then(
+      evidence.secretStartedAt = target.now();
+      const secret = target.typePassword(c).then(
         r => { ctx.sent = r?.sent === true; evidence.secretResult = r ?? null; },
         err => { evidence.secretResult = { error: err instanceof Error ? err.message : String(err) }; });
+      // This fault must be observed and removed before normal snapshots can delay cleanup.
+      // Await the whole attempt: no orphan secret promise outlives fixture recovery.
+      if (c.guardAckFault) {
+        await secret;
+        if (evidence.secretResult?.error) throw new Error(evidence.secretResult.error);
+      }
     }
     let deadline = target.now() + (c.timeoutMs ?? WATCH_MS + GRANT_CEILING_MS / 4);
     let personCued = false;
@@ -482,6 +493,26 @@ export function judge(c, ev) {
   if (c.typistGone && !x.typistGone) reasons.push('typist not confirmed gone');
   if (c.grantAlive && !x.grantAlive) reasons.push('the grant ended after a stray letter');
   if (c.secretRefused && ev.secretResult?.refused !== c.secretRefused) reasons.push(`expected refusal ${c.secretRefused}, got ${JSON.stringify(ev.secretResult ?? null)}`);
+  if (c.guardAckFault) {
+    const armed = (ev.fired ?? []).find(f => f.action === 'block-guard-heartbeat');
+    const fault = ev.secretResult?.guardAckFault;
+    const observed = fault?.observed;
+    const restored = fault?.restored;
+    if (armed?.result?.armed !== true || armed.result.frozen !== true
+        || !Number.isFinite(armed.result.ageMs) || !(armed.result.ageMs > 5_000)
+        || armed.result.mtimeNs !== '1000000000' || armed.result.marker !== null
+        || !Number.isFinite(ev.secretStartedAt)
+        || !(ev.secretStartedAt >= armed.t)) reasons.push('heartbeat fault was not armed before the password attempt');
+    if (!observed || observed.key !== armed?.result?.key || observed.frozen !== true
+        || !Number.isFinite(observed.ageMs) || !(observed.ageMs > 5_000) || observed.mtimeNs !== armed?.result?.mtimeNs
+        || observed.guardAlive !== true || !Number.isSafeInteger(observed.marker?.guardPid)
+        || !(observed.marker.guardPid > 0) || typeof observed.marker.guardStart !== 'string' || !observed.marker.guardStart
+        || `${observed.marker.requestId}.0` !== observed.key) reasons.push('missing real guard and unchanged stale acknowledgement evidence');
+    if (observed?.dirty !== false || observed?.marker?.enterPendingAt != null
+        || x.submissions !== 0 || x.submissionsAfterClose !== 0) reasons.push('password non-submission was not confirmed');
+    if (restored?.released !== true || restored.key !== armed?.result?.key
+        || restored.boundary !== 'revoked' || fault?.grantEnded !== true) reasons.push('heartbeat fault cleanup and grant termination were not confirmed');
+  }
   // An expectation with no measurement fails loudly: an unmeasured check is never a pass.
   if (c.noLockCall) {
     const measured = measureNativeCalls(ev, x.guardFinalPopulation);

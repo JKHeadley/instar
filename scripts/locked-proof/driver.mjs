@@ -132,6 +132,13 @@ export function parseProcessList(text) {
   return { live: rows.filter(p => !p.stat.startsWith('Z')), zombies: rows.filter(p => p.stat.startsWith('Z')).map(p => p.pid) };
 }
 
+/** Positive identity evidence, not merely a pid that happens to exist. */
+export function matchesGuardProcess(marker, row, key, owner) {
+  return owner === PROOF_USER && row.pid === marker?.guardPid
+    && row.command.split(/\s+/).includes('relock-guard') && row.command.split(/\s+/).includes(key)
+    && Date.parse(row.start) === Number(String(marker.guardStart).split('.')[0]) * 1_000;
+}
+
 export class RealTarget {
   constructor(o) {
     this.o = o;
@@ -140,13 +147,45 @@ export class RealTarget {
     this.events = new Set();
     this.pids = {};
     this.viewers = [];
-    this.stopper = null;
+    this.guardAckArmed = null;
     /** Every pid this run SIGSTOPped and has not resumed or killed. */
     this.stopped = new Set();
   }
 
   now() { return Date.now(); }
   sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  guardAckCommand(action, requestId, expiresAt) {
+    return JSON.parse(sudo(['-u', PROOF_USER, 'python3', path.join(HERE, 'guard-ack-fixture.py'),
+      '--execute', '--driver-pid', String(process.pid), action, this.store,
+      ...(requestId ? [requestId] : []), ...(expiresAt !== undefined ? [String(expiresAt)] : [])]));
+  }
+
+  async revokeGuardAck(requestId) {
+    if (this.main?.requestId !== requestId || !this.main.session) {
+      throw new Error('original fixture viewer session is unavailable; retain the fault until server expiry');
+    }
+    const ended = await this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {},
+      { 'X-Instar-Operator-Session': this.main.session });
+    if (ended.httpStatus !== 200 || ended.revoked !== true) throw new Error('fixture grant revocation was not confirmed');
+    const confirmed = this.guardAckCommand('confirm-revoked', requestId);
+    if (confirmed.grantRevoked !== true) throw new Error('fixture revocation was not durably recorded');
+  }
+
+  async restoreGuardAck({ retryRevoke = true } = {}) {
+    const receipt = this.guardAckCommand('receipt');
+    if (retryRevoke && receipt.present && receipt.secretState === 'may-be-in-flight'
+        && !receipt.grantRevoked && this.now() < receipt.expiresAt
+        && this.main?.requestId === receipt.key.slice(0, -2) && this.main?.session) {
+      await this.revokeGuardAck(this.main.requestId);
+    }
+    // The helper itself refuses release of a possibly submitted secret before exact
+    // revocation or the server's original grant deadline. Startup/CLI cannot bypass it.
+    const result = this.guardAckCommand('release');
+    if (result.released !== true) throw new Error('heartbeat fixture was not released');
+    this.guardAckArmed = null;
+    return result;
+  }
 
   agentConfig(dir) { return JSON.parse(sudo(['cat', path.join(dir, '.instar', 'config.json')])); }
 
@@ -164,6 +203,8 @@ export class RealTarget {
       assertProofTarget({ user: pid ? ownerOf(pid) : '', version: health.version });
       assertProofTarget({ user: sh('stat', ['-f', '%Su', agent.dir]).trim(), version: health.version });
     }
+    // Restore a crashed run's exact receipt before prepare() waits for an old duty.
+    await this.restoreGuardAck();
     // Read once, kept in memory only. stdout is captured, stderr discarded (it names lengths).
     const value = execFileSync(process.execPath, [path.join(this.o.agentHome, '.instar/scripts/secret-get.mjs'), VAULT_KEY],
       { cwd: this.o.agentHome, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).replace(/\n$/, '');
@@ -260,7 +301,8 @@ export class RealTarget {
     const now = this.now();
     for (const [key, m] of Object.entries(markers)) {
       if (spawnSync('sudo', ['-n', 'test', '-e', path.join(this.store, `lease-${key}`)]).status === 0) this.events.add('lease-written');
-      if (spawnSync('sudo', ['-n', 'test', '-e', path.join(this.store, `hb-${key}`)]).status === 0) this.events.add('guard-acked');
+      const beat = sudo(['stat', '-f', '%m', path.join(this.store, `hb-${key}`)], { allowFail: true }).trim();
+      if (beat && now - Number(beat) * 1_000 <= 5_000) this.events.add('guard-acked');
       if (typeof m.deadlineMs === 'number' && m.deadlineMs < now) this.events.add('deadline-passed');
       if (this.pids.firstGuard && m.guardPid && m.guardPid !== this.pids.firstGuard) this.events.add('takeover');
     }
@@ -333,6 +375,7 @@ export class RealTarget {
   async prepare(c) {
     this.observeGuards = false;
     await this.closeViewers();
+    await this.restoreGuardAck();
     this.events.clear();
     this.pids = {};
     const until = this.now() + 180_000;
@@ -361,7 +404,11 @@ export class RealTarget {
       } else if (url.includes('/desktop/')) {
         // The server states when this grant ends. The deadline cases aim from that, because the
         // moment the driver sees the grant open trails the server's start by about half a second.
-        try { const j = await r.json(); if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt; if (typeof j?.requestId === 'string') v.requestId = j.requestId; } catch { /* not JSON */ }
+        try {
+          const j = await r.json();
+          if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt;
+          if (typeof j?.requestId === 'string') v.requestId = j.requestId;
+        } catch { /* not JSON */ }
       }
     });
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
@@ -397,6 +444,40 @@ export class RealTarget {
 
   /** Types the password through the real viewer box, as an owner would. */
   async typePassword(c) {
+    if (!c.guardAckFault) return this.typePasswordInViewer(c);
+    if (!this.guardAckArmed?.armed) throw new Error('heartbeat fault is not armed');
+    let result, observed, restored;
+    let grantEnded = false;
+    try {
+      const submitting = this.guardAckCommand('begin-secret', this.main?.requestId);
+      if (submitting.submitting !== true || submitting.key !== this.guardAckArmed.key) {
+        throw new Error('possible password submission was not durably recorded');
+      }
+      result = await this.typePasswordInViewer(c);
+      observed = this.guardAckCommand('observe');
+      const marker = observed.marker;
+      const owner = marker?.guardPid ? ownerOf(marker.guardPid) : '';
+      observed.guardAlive = !!marker?.guardPid && this.processes()
+        .some(p => matchesGuardProcess(marker, p, observed.key, owner));
+    } finally {
+      // Never unfreeze a possibly in-flight secret merely because Playwright threw or
+      // closed. Both normal cleanup and recovery require the real grant boundary.
+      try {
+        const requestId = this.main?.requestId;
+        if (!requestId) throw new Error('cannot terminate the fixture request without its id');
+        await this.revokeGuardAck(requestId);
+        grantEnded = true;
+      } finally {
+        // Closing prevents future browser sends, but says nothing about a server-side
+        // prepareSecret already running. It is not permission to remove the fault.
+        try { await this.main?.context.close(); }
+        finally { restored = await this.restoreGuardAck({ retryRevoke: false }); }
+      }
+    }
+    return { ...result, guardAckFault: { observed, restored, grantEnded } };
+  }
+
+  async typePasswordInViewer(c) {
     const page = this.main.page;
     await page.waitForSelector('#lockedPassword:not([hidden])', { timeout: 30_000 });
     if (c.timing === 'deadline' && this.cal) {
@@ -477,12 +558,13 @@ export class RealTarget {
   }
 
   /**
-   * After every case, thrown or not: resume everything this run stopped, stop the
-   * guard-stopper, then lock the proof session. Errors here are collected, never thrown.
+   * After every case, thrown or not: restore the heartbeat fixture, resume everything
+   * this run stopped, then lock the proof session. Errors are collected, never thrown.
    */
   async recover() {
     const problems = [];
-    if (this.stopper) { clearInterval(this.stopper); this.stopper = null; }
+    try { await this.restoreGuardAck(); }
+    catch (err) { problems.push(`heartbeat fixture: ${err instanceof Error ? err.message : String(err)}`); }
     if (this.launchdJob) {
       try { this.endLaunchdServe(); await this.act('start-server', {}); }
       catch (err) { problems.push(`launchd job: ${err instanceof Error ? err.message : String(err)}`); }
@@ -618,16 +700,20 @@ export class RealTarget {
       case 'kill-helper': return this.kill(helper().find(p => !p.command.includes('relock-guard') && !p.command.includes('input-stream'))?.pid, 'KILL');
       case 'stop-typist': return this.kill(this.pids.stoppedTypist = helper().find(p => p.command.includes('input-stream'))?.pid, 'STOP');
       case 'cont-typist': return this.kill(this.pids.stoppedTypist, 'CONT');
-      case 'stop-new-guards':
-        this.stopper = setInterval(() => {
-          for (const p of helper().filter(x => x.command.includes('relock-guard'))) this.kill(p.pid, 'STOP');
-        }, 50);
-        return { watching: true };
-      case 'cont-guards':
-        if (this.stopper) clearInterval(this.stopper);
-        this.stopper = null;
-        for (const p of helper().filter(x => x.command.includes('relock-guard'))) this.kill(p.pid, 'CONT');
-        return { released: true };
+      case 'block-guard-heartbeat': {
+        // The response observer has the real request id before a password is submitted.
+        const until = this.now() + 5_000;
+        while ((!this.main?.requestId || !this.main?.session) && this.now() < until) await this.sleep(50);
+        if (!this.main?.requestId || !this.main?.session) throw new Error('viewer did not report its request id and original session');
+        const grant = await this.api(this.a, 'GET', `/desktop/requests/${encodeURIComponent(this.main.requestId)}`, undefined,
+          { 'X-Instar-Operator-Session': this.main.session });
+        if (grant.httpStatus !== 200 || grant.status !== 'approved' || !Number.isSafeInteger(grant.expiresAt)
+            || grant.expiresAt <= this.now() || grant.expiresAt > this.now() + 600_000) {
+          throw new Error('fresh exact-request server expiry was not confirmed');
+        }
+        this.guardAckArmed = this.guardAckCommand('arm', this.main.requestId, grant.expiresAt);
+        return this.guardAckArmed;
+      }
       case 'revoke': {
         const requestId = Object.values(this.caseMarkers()).find(m => m.requestId)?.requestId;
         if (!requestId) throw new Error('revoke: this case has no open request to revoke');
@@ -829,6 +915,7 @@ const STATUS_REASONS = [
   ['secure tunnel is up', 'tunnel-not-active'], ['kept desktop helper', 'retained-helper-required'],
   ['Password entry from a browser is off', 'browser-box-off'], ['backup connection', 'tunnel-not-first-tier'],
   ['lock screen is not ready for a password', 'shield-not-confirmed'],
+  ['relock guard is not running, so password entry is paused', 'guard-not-alive'],
   ['did not accept that', 'refused-other'],
 ];
 export function refusalFromStatus(text) {

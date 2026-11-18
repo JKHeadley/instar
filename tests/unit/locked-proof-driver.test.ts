@@ -298,6 +298,7 @@ describe('locked-proof launchd kill', () => {
 
   const realTarget = (o: Record<string, unknown>) => Object.assign(Object.create(RealTarget.prototype), {
     a: { port: 4098, dir: '/d' }, uid: '502', launchdJob: { label: 'l', plist: 'p' },
+    guardAckCommand: () => ({ released: true, present: false }),
     now: () => Date.now(), sleep: async () => {}, signalJob: () => {}, wakeDisplay: () => '', ...o,
   });
   const guardRow = { pid: 7, command: 'instar-desktop-host relock-guard' };
