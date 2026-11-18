@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-18T06:56:09.304Z",
+  "slug": "native-history-receipt",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 351,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/HistoryAcquisition.ts",
+      "src/import/HistoryAcquisitionWorker.ts",
+      "src/import/archiveStaging.ts",
+      "src/import/nativeCaptureReceiver.ts",
+      "src/import/nativeCaptureSource.ts",
+      "src/import/privateImportState.ts",
+      "src/server/nativeCaptureAdmission.ts"
+    ],
+    "addedLines": 345,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot caller-driven action: each signed same-Mac receipt request spawns one bounded reader with a single expiry timer; no retry, respawn or self-triggered loop. Periodic acquisition work stays under the parent's registered convergence guard."
+  },
+  "verdict": "pass"
+}

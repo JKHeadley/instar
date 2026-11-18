@@ -140,7 +140,15 @@ export class AcquisitionArchives {
     catch (err) { bytes.destroy(); throw err; }
   }
 
-  private async writeArchive(jobId: string, bytes: Readable, signal?: AbortSignal): Promise<Pick<ArchiveReceipt, 'size' | 'sha256'>> {
+  /** A signed native receipt must match before archive.zip can become visible to recovery. */
+  async stageReceipt(jobId: string, bytes: Readable, expected: Pick<ArchiveReceipt,'size'|'sha256'>,
+    stillAuthorized: () => boolean, signal?: AbortSignal): Promise<Pick<ArchiveReceipt,'size'|'sha256'>> {
+    try { return await this.writeArchive(jobId,bytes,signal,{expected,stillAuthorized}); }
+    catch (error) { bytes.destroy(); throw error; }
+  }
+
+  private async writeArchive(jobId: string, bytes: Readable, signal?: AbortSignal,
+    native?: {expected:Pick<ArchiveReceipt,'size'|'sha256'>; stillAuthorized:() => boolean}): Promise<Pick<ArchiveReceipt, 'size' | 'sha256'>> {
     const dir = this.jobDirectory(jobId);
     signal?.throwIfAborted();
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -173,6 +181,8 @@ export class AcquisitionArchives {
       await pipeline(bytes, count, output.createWriteStream(), { signal: controller.signal });
       controller.signal.throwIfAborted();
       if (size === 0) throw new ZipRefused('The downloaded archive is empty.');
+      const sha256 = digest.digest('hex');
+      if (native && (size !== native.expected.size || sha256 !== native.expected.sha256)) throw new Error('capture-receipt-mismatch');
       const completed = await fs.promises.open(partial, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
       try {
         if (process.platform !== 'win32') await completed.chmod(0o400);
@@ -180,6 +190,7 @@ export class AcquisitionArchives {
       } finally { await completed.close(); }
       controller.signal.throwIfAborted();
       // link is exclusive creation; same-filesystem rename would overwrite an earlier winner.
+      if (native && !native.stillAuthorized()) throw new Error('capture-authority-changed');
       fs.linkSync(partial, path.join(dir, 'archive.zip'));
       // Flush both the published name and its newly created parent entries before acknowledging it.
       if (process.platform !== 'win32') {
@@ -189,7 +200,7 @@ export class AcquisitionArchives {
         }
       }
       controller.signal.throwIfAborted();
-      return { sha256: digest.digest('hex'), size };
+      return { sha256, size };
     } finally {
       clearTimeout(timeout);
       signal?.removeEventListener('abort', abort);
