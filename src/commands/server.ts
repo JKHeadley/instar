@@ -18723,7 +18723,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const beforeJevCorrectionCb = telegram.onMessageLogged;
         telegram.onMessageLogged = (entry) => {
           if (beforeJevCorrectionCb) beforeJevCorrectionCb(entry);
-          correctionShadow.observe(entry, telegram.getVerifiedOwner()); // synchronous, never throws; the check is detached
+          correctionShadow.observe(entry, telegram.getLearningOwner()); // synchronous, never throws; the check is detached
         };
       } catch (err) {
         console.log(pc.yellow(`  Jev correction shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
@@ -19696,7 +19696,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // ~zero cost on the vast majority of messages.
               // A team member's words never become the owner's learned preferences.
               // So is forwarded text: someone else's words relayed by the owner (SEC-069).
-              const ownersWords = isOwnersOwnWords(entry, telegram?.getVerifiedOwner());
+              const ownersWords = isOwnersOwnWords(entry, telegram?.getLearningOwner());
               const verdict = ownersWords && entry.text
                 ? HumanAsDetectorLog.getInstance().classify(entry.text)
                 : null;
