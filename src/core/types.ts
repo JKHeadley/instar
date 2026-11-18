@@ -4181,6 +4181,14 @@ export interface InstarConfig {
    * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
    */
   /**
+   * Permanent agent links (docs/specs/permanent-agent-links.md): links on instar.sh that name this
+   * agent by its identity and open a page in the Instar app. Optional; absent or false = off. Read
+   * live, so turning it on needs no restart.
+   */
+  agentLinks?: {
+    enabled?: boolean;
+  };
+  /**
    * Mobile pairing links (docs/specs/mobile-pairing-link.md): one-time links that add this
    * agent to the Instar iPhone app. `enabled` is omitted by default so the developmentAgent
    * gate decides; read live by the routes.

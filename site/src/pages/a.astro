@@ -1,0 +1,53 @@
+---
+// Fallback page for permanent agent links (docs/specs/permanent-agent-links.md §4).
+// Link v1: https://instar.sh/a#v=1&i=<agent id>&t=<target>[&r=<ref>][&c=<comment key>]
+// With the Instar app installed, iOS/macOS hand the tap to the app (apple-app-site-association
+// names /a) and this page is never shown. It shows in a plain browser, or when a chat app keeps
+// the link in its own browser. It stores nothing, redirects nowhere, asks for no sign-in, and makes
+// no network request. Its script is the same-origin file /a.js, because the CSP blocks inline scripts.
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+    <title>Open in Instar</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; min-height: 100vh; background: #0a0e17; color: #e2e8f0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; align-items: center; justify-content: center; }
+      main { max-width: 420px; padding: 32px 20px; text-align: center; }
+      img.logo { width: 72px; height: 72px; }
+      h1 { font-size: 22px; margin: 16px 0 8px; }
+      p { margin: 0 0 14px; }
+      p.small { color: #94a3b8; font-size: 14px; }
+      .btn { display: inline-block; margin: 6px 4px 14px; border-radius: 10px; font-weight: 600; font-size: 16px; padding: 12px 20px; text-decoration: none; border: 0; cursor: pointer; }
+      .primary { background: #2dd4bf; color: #0a0e17; }
+      .secondary { background: #1e293b; color: #e2e8f0; }
+      a { color: #2dd4bf; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="logo" src="/logo.png" alt="Instar" />
+      <div id="ok" hidden>
+        <h1>This opens in the Instar app</h1>
+        <p>This link goes to <span id="what">a page</span> on an Instar agent. It opens in the Instar app on a phone or computer that is paired with that agent.</p>
+        <a class="btn primary" id="open" rel="noopener">Open in Instar</a>
+        <button class="btn secondary" id="copy" type="button">Copy link</button>
+        <p class="small">In the app you can also paste it under <b>Open link</b>.</p>
+        <p class="small">Not paired with this agent? Ask whoever runs it for an invite. The link holds no password or access.</p>
+        <p class="small">No app yet? <a href="https://apps.apple.com/app/instar-agents/id6829320724" rel="noopener noreferrer">Get Instar for iPhone</a>.</p>
+      </div>
+      <div id="bad" hidden>
+        <h1>This link is not valid</h1>
+        <p class="small">Ask your agent to send the link again.</p>
+      </div>
+      <noscript><p class="small">Open this link in the Instar app.</p></noscript>
+    </main>
+    <script is:inline type="module" src="/a.js"></script>
+  </body>
+</html>
