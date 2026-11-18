@@ -122,6 +122,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { startBootSlowCallbackAttributor } from '../monitoring/BootSlowCallbackAttributor.js';
 import { resolveWriteAdmissionGate } from '../core/writeAdmissionGate.js';
 import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
 import { chiefOfStaffStoreEnabled } from '../core/ChiefOfStaffStore.js';
@@ -4833,6 +4834,10 @@ function setupServerLog(stateDir: string): void {
 
 export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
+  // Boot slow-callback attributor (fb-756ec068-89d): for the first 2 min after boot, logs any
+  // callback that holds the event loop over 1 s, with the stack that scheduled it. Observation
+  // only; dev-gated (live on development agents, dark on the fleet).
+  startBootSlowCallbackAttributor(resolveDevAgentGate((config as { monitoring?: { bootSlowCallbacks?: boolean } }).monitoring?.bootSlowCallbacks, config));
   // Test-agent leak guard (docs/specs/test-agent-leak-guard.md) — FIRST, before
   // any subsystem starts. An expired throwaway tears down its own autostart and
   // exits (or idles when the unload is quarantined) without doing anything else.
