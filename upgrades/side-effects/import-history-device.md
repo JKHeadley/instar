@@ -19,3 +19,6 @@ Revert. The app's Imported section then gets 403 and shows nothing.
 
 ## Review
 An independent security review concurred. It verified that the device authenticator runs first and sets these fields, and that team devices, browser devices, notify tokens and devices with no known person are refused before the route. Its test gaps are added: the owner-device check as a tested function, and the bearer on a /mobile path still getting quoted text.
+
+## Confirmed facts (spec §B.9)
+`POST /imported-history/facts` and `/mobile/imported-history/facts` take `{from, facts:[string]}`. They are for the owner only, from the operator session or the app device; the agent's bearer gets 403, because the person ticks the facts in the app. Each fact is scrubbed of secrets again and stored through `SemanticMemory.remember` as a `fact`, with `source import:<from>` and private to the owner (`privacyScope: private`, ownerId being the memory owner). It answers 503 when long-term memory is off. Tests: the integration case covers the agent being refused, secrets removed, bad input and memory off; the allowlist test covers `facts`.

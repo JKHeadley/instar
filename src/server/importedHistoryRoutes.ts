@@ -26,7 +26,7 @@ import type { Request, Response, Router } from 'express';
 import { ImportedHistoryStore, type SearchHit } from '../import/ImportedHistoryStore.js';
 import { applyExport, previewExport, type ImportPreview } from '../import/importExport.js';
 import { ZipRefused } from '../import/safeZip.js';
-import type { ImportedMessage } from '../import/exportParsers.js';
+import { removeSecrets, type ImportedMessage } from '../import/exportParsers.js';
 
 export interface ImportedHistoryRouteDeps {
   stateDir: string;
@@ -35,6 +35,11 @@ export interface ImportedHistoryRouteDeps {
   ownerOk: (req: Request) => boolean;
   /** True when the request is signed by the owner's own app device (not a browser device). */
   deviceOwnerOk?: (req: Request) => boolean;
+  /**
+   * Stores one confirmed fact about the person in long-term memory (§B.9), private to the owner.
+   * Absent when semantic memory is off; the route then answers 503.
+   */
+  rememberFact?: (fact: { text: string; from: 'claude' | 'chatgpt' }) => string;
   log?: (entry: Record<string, unknown>) => void;
   now?: () => number;
 }
@@ -127,6 +132,22 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
       deps.log?.({ event: 'imported-history-applied', by: caller, previewId: id, ...result });
       res.json({ ok: true, result });
     } catch (err) { refused(res, err); } finally { applying = false; }
+  });
+
+  // §B.9: only facts the PERSON ticked, so only the owner's own session or app device may store them.
+  // The agent's bearer is refused: a model choosing which imported lines to keep is the injection target.
+  router.post(['/imported-history/facts', '/mobile/imported-history/facts'], (req, res) => {
+    if (who(req, res) !== 'owner') { if (!res.headersSent) res.status(403).json({ error: 'owner-only', detail: 'The person confirms these facts in the Instar app.' }); return; }
+    if (!deps.rememberFact) { res.status(503).json({ error: 'memory-off', detail: 'Long-term memory is switched off on this agent.' }); return; }
+    const body = (req.body ?? {}) as { from?: unknown; facts?: unknown };
+    if ((body.from !== 'claude' && body.from !== 'chatgpt') || !Array.isArray(body.facts) || body.facts.length === 0 || body.facts.length > 200) {
+      res.status(400).json({ error: 'bad-facts', detail: 'Send from (claude or chatgpt) and 1 to 200 facts.' }); return;
+    }
+    const facts = body.facts.filter((f): f is string => typeof f === 'string').map((f) => removeSecrets(f.trim()).text).filter((f) => f.length >= 3 && f.length <= 300);
+    if (facts.length !== body.facts.length) { res.status(400).json({ error: 'bad-facts', detail: 'Each fact is 3 to 300 characters of text.' }); return; }
+    const ids = facts.map((text) => deps.rememberFact!({ text, from: body.from as 'claude' | 'chatgpt' }));
+    deps.log?.({ event: 'imported-history-facts', stored: ids.length });
+    res.json({ ok: true, stored: ids.length });
   });
 
   router.get(['/imported-history/conversations', '/mobile/imported-history/conversations'], (req, res) => {

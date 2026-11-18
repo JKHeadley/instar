@@ -18,6 +18,7 @@ describe('imported history on the device allowlist', () => {
       ['GET', '/mobile/imported-history/search'],
       ['POST', '/mobile/imported-history/preview'],
       ['POST', '/mobile/imported-history/apply'],
+      ['POST', '/mobile/imported-history/facts'],
     ] as const) {
       const r = rule(m, p);
       expect(r, `${m} ${p}`).toBeDefined();

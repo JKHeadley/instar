@@ -24,8 +24,9 @@ const tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'inst-imp-in
 const TOKEN = 'imp-token';
 const OWNER = 'owner-session-ok';
 
-function boot() {
+function boot(opts: { memory?: boolean } = {}) {
   const stateDir = tmp();
+  const remembered: Array<{ text: string; from: string }> = [];
   const app = express();
   app.use(express.json());
   app.use(authMiddleware(() => TOKEN, 'imp-int'));
@@ -37,10 +38,11 @@ function boot() {
     ownerOk: (req) => req.headers['x-instar-operator-session'] === OWNER,
     // Stands in for the device authenticator's verdict (DEVICE_ALLOWLIST is tested in the unit test).
     deviceOwnerOk: (req) => req.headers['x-test-owner-device'] === 'yes',
+    ...(opts.memory === false ? {} : { rememberFact: (f: { text: string; from: 'claude' | 'chatgpt' }) => { remembered.push(f); return `e${remembered.length}`; } }),
     now: () => clock,
   });
   app.use(router);
-  return { app, stateDir, advance: (ms: number) => { clock += ms; } };
+  return { app, stateDir, remembered, advance: (ms: number) => { clock += ms; } };
 }
 
 const agent = (r: request.Test) => r.set('Authorization', `Bearer ${TOKEN}`).set('X-Instar-AgentId', 'imp-int');
@@ -139,6 +141,21 @@ describe('imported history routes', () => {
     const asAgent = await agent(request(app).get(`/mobile/imported-history/conversations/${encodeURIComponent('imported:claude:c1')}`));
     expect(asAgent.body.messages).toBeUndefined();
     expect(asAgent.body.quoted).toContain('<imported-history');
+  });
+
+  it('only the person stores facts: the agent is refused; secrets are removed; bad input and memory-off answer plainly', async () => {
+    const { app, remembered } = boot();
+    const facts = { from: 'claude', facts: ['I live in Portland', `My key is sk-ant-api03-${'A1b2C3d4'.repeat(12)}`] };
+    expect((await agent(request(app).post('/imported-history/facts')).send(facts)).status).toBe(403);
+    expect(remembered).toEqual([]);
+    const ok = await agent(request(app).post('/mobile/imported-history/facts')).set('x-test-owner-device', 'yes').send(facts);
+    expect(ok.body).toEqual({ ok: true, stored: 2 });
+    expect(remembered[0]).toEqual({ text: 'I live in Portland', from: 'claude' });
+    expect(remembered[1]!.text).toContain('[removed: looked like a secret]');
+    expect((await owner(request(app).post('/imported-history/facts')).send({ from: 'gemini', facts: ['x y z'] })).status).toBe(400);
+    expect((await owner(request(app).post('/imported-history/facts')).send({ from: 'claude', facts: ['x'.repeat(301)] })).status).toBe(400);
+    const off = boot({ memory: false });
+    expect((await owner(request(off.app).post('/imported-history/facts')).send({ from: 'claude', facts: ['I like tea'] })).status).toBe(503);
   });
 
   it('no credentials, no access', async () => {
