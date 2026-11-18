@@ -1,0 +1,12 @@
+# codex-cli ok gpt-6-astra SERIOUS ISSUES None
+**Verdict: SERIOUS ISSUES**
+
+Review limited to the inlined specs; referenced implementation files were not supplied. These are specification findings, not measured runtime failures.
+
+- **DESIGN — “Connection, liveness and one holder per PC”: revocation checks cover admission, not continued operation.** The spec checks freshness with the lease holder at handshake, then claims a lagging machine cannot keep a revoked PC working. An existing socket can remain healthy while its holder loses contact with replication and the lease holder. Nothing specified expires its permission to execute commands. Define renewable authorization leases, fail closed when freshness expires, and specify ordering between revocation and command dispatch. Test an established connection during a partition, followed by Remove or Lower elsewhere.
+
+- **DESIGN — “What the agent can do”: the switches overstate capability separation.** The spec says other switches limit the agent when Run commands is off, but unrestricted Type and click can open a shell and execute commands through the desktop. Files write access is already acknowledged as full control, yet that qualification is absent from the prominent switch explanation. Treat input and file-write permissions as potentially granting command execution; either present them as full-control capabilities or define an enforceable restricted operating model. Blocking only the extender’s own window does not establish that boundary.
+
+- **DESIGN — “Pairing hand-off” / “Multi-machine posture”: address failover conflicts with machine-local codes.** The Windows flow tries every agent address, while codes remain local to the minting machine. The supplied Mac spec explicitly requires redemption on that machine’s host. A reachable alternative machine therefore need not possess the code. Separate the minting machine’s redemption endpoint from the post-pairing connection origin list, or specify authenticated routing of redemption to the minting machine. Test with the first reachable origin belonging to another machine.
+
+- **DESIGN — “Pairing hand-off” versus Mac §5: the reused drop has an unaddressed payload limit.** The supplied drop endpoint caps blobs at 2,048 base64url characters. Windows adds every origin, certificate-pinning material and the machine key set without bounding their combined size. Define maximum encoded sizes and rejection behavior, or explicitly extend the drop protocol. Test the largest supported agent configuration.

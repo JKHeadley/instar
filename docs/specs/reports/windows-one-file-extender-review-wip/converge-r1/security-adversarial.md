@@ -1,0 +1,13 @@
+# Security (r1) — DESIGN 9 ; Adversarial (r1) — DESIGN 10 (merged)
+- Pairing return path missing; reuse Mac QR format + sealed drop point (r slot, k seal key, HPKE) explicitly, platform field; keep PC-side confirm of agent name + host + key fingerprint; drop or bind the short code (tech-support scam: code read over screen-share).
+- "Reused unchanged" is wrong: Mac computer = owner device (full access, can mint/approve). Need a distinct agent-assigned device class "controlled computer" fixed at MINT (phone chooses "Pair a Windows PC"), allowlist = only the /computers socket handshake; never mobile routes, mint, approve, read conversations. deviceKind/platform are client-claimed today -> must not gate.
+- PC never authenticates the agent: pin agent identity key at pairing (inside sealed link); agent answers a signed challenge at each handshake; commands agent-signed with nonce+sequence; refuse pairing without a stable origin (named tunnel); authenticated address update.
+- Switch authority inverted: PC local settings are authority, PC enforces; server copy is a mirror for display/early refusal; changes only from tray or owner Face ID.
+- "Run commands" defeats other switches/idle rule: say so on consent screen (courtesy, not containment) or make exec respect idle rule; consider exec + file write/delete default OFF; visible "agent is acting" tray indicator + Stop.
+- /computers callers too broad: only the PC owner's sessions (team standard); re-check device state + switches at the holder machine.
+- Revocation wipe on unconfirmed state: remove only on a signed ledger revocation; unknown/not-replicated -> retry.
+- No elevation in v1 (or PC shows exact command before UAC).
+- Socket holder: generation number; PC rejects commands not carrying current generation; stale holder -> pc-offline.
+- Reconnect brakes (also scalability). Signed self-update + minimum version at handshake.
+- Companion: link only capture/input classes, never Main/TcpListener; test no listening socket.
+- PRECISION: remover must delete Programs folder (delayed delete); audit redaction + length cap + which session asked; replay window (60 s) stated; SHA beside link adds nothing, Authenticode is the check; software-CNG key extractable by same-user malware (state it).
