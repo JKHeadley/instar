@@ -187,7 +187,7 @@
     },
     {
       "path": "src/templates/scripts/secret-get.mjs",
-      "sha256": "c6acba715f339c63d53a889bcea35b5e7de4b46a51de375093631189668447c4",
+      "sha256": "7525d0bfb60d452ec60fa6f1e929655a2d022efa5c0906811ac595c77365c2ea",
       "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
     },
     {
