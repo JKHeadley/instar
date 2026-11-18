@@ -382,6 +382,15 @@ describe('WorktreeMonitor', () => {
       expect(second.actions).toEqual(['Alert suppressed: findings unchanged since last announcement']);
     });
 
+    it('a burst of overlapping session ends (sharing one scan) announces an unchanged finding once', async () => {
+      createWorktree(repoDir, 'burst', { addCommits: 1 });
+      const reports = await Promise.all(Array.from({ length: 10 }, (_, i) => monitor.onSessionComplete(makeSession({ name: `job-${i}` }))));
+      expect(alerts).toHaveLength(1);
+      // Each caller gets its own report: one generated the alert, the rest were suppressed.
+      expect(reports.filter((r) => r.actions.some((a) => a.startsWith('Alert generated'))).length).toBe(1);
+      expect(reports.filter((r) => r.actions.includes('Alert suppressed: findings unchanged since last announcement')).length).toBe(9);
+    });
+
     it('announces again when a new branch appears', async () => {
       createWorktree(repoDir, 'first', { addCommits: 1 });
       await monitor.onSessionComplete(makeSession());

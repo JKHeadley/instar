@@ -102,6 +102,8 @@ export class WorktreeMonitor extends EventEmitter {
   private announced: Partial<Record<AlertKind, AnnouncedEntry>> = {};
   /** The scan in progress, shared by every caller until it settles (single-flight). */
   private scanInFlight: Promise<WorktreeReport> | null = null;
+  /** Session announce decisions run one at a time, so callers sharing a scan cannot all announce. */
+  private announceChain: Promise<void> = Promise.resolve();
 
   constructor(config: WorktreeMonitorConfig) {
     super();
@@ -140,7 +142,11 @@ export class WorktreeMonitor extends EventEmitter {
    * Called from the sessionComplete event handler.
    */
   async onSessionComplete(session: Session): Promise<WorktreeReport> {
-    const report = await this.scanWorktrees();
+    // Callers that overlap share one scan (single-flight); each gets its own copy of the
+    // report so their actions do not mix, and the announce decision below runs one caller
+    // at a time, so a burst of session ends announces an unchanged finding once.
+    const shared = await this.scanWorktrees();
+    const report: WorktreeReport = { ...shared, actions: [...shared.actions] };
 
     // Copy serendipity findings from worktrees before alerting
     for (const wt of report.worktrees) {
@@ -154,17 +160,22 @@ export class WorktreeMonitor extends EventEmitter {
       ...report.withUnmergedWork.map(d => `unmerged:${d.worktree.branch}`),
       ...report.orphanBranches.map(b => `orphan:${b}`),
     ];
-    if (items.length > 0) {
-      if (this.isAnnounceDue('session', items)) {
-        const message = this.formatSessionAlert(session, report);
-        report.actions.push(`Alert generated for session ${session.name}`);
-        if (await this.sendAlert(message)) this.markAnnounced('session', items);
+    const decide = async (): Promise<void> => {
+      if (items.length > 0) {
+        if (this.isAnnounceDue('session', items)) {
+          const message = this.formatSessionAlert(session, report);
+          report.actions.push(`Alert generated for session ${session.name}`);
+          if (await this.sendAlert(message)) this.markAnnounced('session', items);
+        } else {
+          report.actions.push('Alert suppressed: findings unchanged since last announcement');
+        }
       } else {
-        report.actions.push('Alert suppressed: findings unchanged since last announcement');
+        this.markAnnounced('session', []);
       }
-    } else {
-      this.markAnnounced('session', []);
-    }
+    };
+    const turn = this.announceChain.then(decide, decide);
+    this.announceChain = turn.then(() => undefined, () => undefined);
+    await turn;
 
     this.saveState(report);
     this.emit('scan', report);

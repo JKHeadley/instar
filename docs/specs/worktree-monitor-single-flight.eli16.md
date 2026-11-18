@@ -34,3 +34,7 @@ One small change to one file, with two new unit tests. It reaches every agent on
 ## What you actually need to decide
 
 Nothing: this is a Tier-1 load fix that a revert fully undoes.
+
+## Found in testing
+
+The first version had a side effect: when several sessions ended at the same moment, they shared one check (as intended), but then each of them sent the same notice. So the person could get ten identical "unmerged work" messages. Now each one decides in turn whether the notice is still due, and only the first sends it.

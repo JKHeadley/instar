@@ -82,6 +82,14 @@ Not applicable: no dashboard, approval page or form is touched.
 
 ---
 
+## 7b. Found in Local Verify: callers sharing a scan all announced
+
+Local Verify (Studio, 05:18Z) failed `tests/e2e/worktree-monitor-announce-lifecycle.test.ts`. The cause: with single-flight, ten overlapping `onSessionComplete` callers resumed from the same scan in one tick. Each checked `isAnnounceDue` before any of them reached `markAnnounced` (which runs after `await sendAlert`), so ten notices went out instead of one. Fixed in `onSessionComplete`:
+- each caller gets its own copy of the shared report, so actions do not mix;
+- the announce decision runs one caller at a time (`announceChain`), so later callers see the earlier `markAnnounced`.
+
+New unit test: ten concurrent session ends give exactly one alert. It fails on the previous head (10 alerts) and passes now.
+
 ## 8. Rollback cost
 
 - **Hot-fix release:** revert the commit; nothing else to undo.
@@ -100,4 +108,4 @@ Not required.
 ## Evidence pointers
 
 - `ps -Ao ppid,command | grep 'git (diff --name-only|rev-list --count)'` on the Studio at 2026-11-18 00:43Z: 3 concurrent per server (pids 94872 and 29165).
-- `tests/unit/worktree-monitor.test.ts`: 32 passed locally.
+- `tests/unit/worktree-monitor.test.ts`: 33 passed locally (incl. the concurrent-burst case, which fails on 92115afdb with 10 alerts).
