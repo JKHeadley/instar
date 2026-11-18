@@ -8,6 +8,8 @@ The retry job tried every waiting change on every run. Each try means re-checkin
 
 Now the retry job works like the one for already-confirmed changes: as soon as one change does not get through on a run, it stops trying the rest until the next run, and a change that keeps failing is retried less and less often. The lock is released quickly, the other machine's messages get through, and the backlog clears.
 
+A third, smaller fix: while checking its records, the agent re-read its list of machines and its own identity files from disk once for every record (about 550 times in a row) to confirm it was still allowed to work. It now reads them once per uninterrupted stretch and again as soon as anything else gets a turn.
+
 ## What stays the same
 
 No change is dropped; every waiting change is still retried. Changes that do get through are finished exactly as before. Saving a change yourself, for example with Accept all, does not go through this job and is not slowed down.

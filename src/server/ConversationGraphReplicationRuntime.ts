@@ -503,7 +503,17 @@ export class ConversationGraphReplicationRuntime {
    const signing=crypto.createPublicKey(this.signingKey).export({type:'spki',format:'pem'}).toString(),current=crypto.createPublicKey(this.options.identity.loadSigningKey()).export({type:'spki',format:'pem'}).toString();return signing===current&&sameKey(identity.signingPublicKey,signing)&&sameKey(identity.encryptionPublicKey,crypto.createPublicKey(this.options.identity.loadEncryptionKey()).export({type:'spki',format:'pem'}).toString());
   }catch{/* DegradationReporter internalOnly via reportUnavailable; invalid or unavailable enrollment cannot accept local private custody. */this.reportUnavailable('graph-local-enrollment-unavailable');return false;}
  }
- private alive():boolean{return !this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();}
+ /** alive() reads the machine registry and identity files and re-verifies the signed membership. The readiness
+  * pass calls it once per manifest entry, mostly in stretches with no await between entries (~565 calls per pass,
+  * 8% of the long event-loop stretches on the accept-all rig, 2026-11-18). Its answer is remembered only until the
+  * current synchronous run ends: a microtask clears it, and every await continuation runs after that microtask,
+  * so each check after an await is fresh, as before. */
+ private aliveThisRun:boolean|null=null;
+ private alive():boolean{
+  if(this.aliveThisRun!==null)return this.aliveThisRun;
+  const value=!this.stopped&&this.options.instanceLock.revalidate()&&this.trustedInstalledSet();
+  this.aliveThisRun=value;queueMicrotask(()=>{this.aliveThisRun=null;});return value;
+ }
  /**
   * May this machine serve the owner's private reads right now: alive, and the private-serving custody
   * check the owner's read view (readView) already requires. Unlike isReady() it does not need a write

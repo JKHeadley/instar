@@ -13,6 +13,8 @@ Tier 1 (scheduling of a background retry; a revert fully undoes it). One source 
 
 Both bounds now order the pass least-recently-tried first (a `tried` pass is stored on each non-finish; never-tried records first, then source order). Without that, a skipped record kept its place, and with ~40+ records that never finish (the backoff cap) some earlier record was due on every pass, so later records were never tried again (second-pass finding; the delivery bound had the same latent shape and gets the same rotation).
 
+Third commit, same theme: `alive()` (instance lock + `trustedInstalledSet`, which reads the machine registry and identity files and re-verifies the signed membership) is remembered only until the current synchronous run ends; a queued microtask clears it, and every await continuation runs after that microtask, so the first check after any await is fresh. The readiness pass called it once per manifest entry (~565 per pass, mostly with no await between entries): 8% of the long stretches on the rig after the other fixes. Within one synchronous run nothing in this process can change its answer; another process changing the registry or lock files mid-run is seen at the next run, milliseconds later, as it effectively was when checked between two synchronous iterations.
+
 ## Decision-point inventory
 
 - Background retry scheduling for uncertified records — modify — from "every record every pass" to "until the first non-finishing one, with per-record backoff". Same as the existing delivery bound.
