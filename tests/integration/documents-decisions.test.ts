@@ -45,8 +45,8 @@ function deviceKey() {
 }
 const signWith = (k: ReturnType<typeof deviceKey>, msg: string) => lowS(crypto.sign('sha256', Buffer.from(msg), { key: k.privateKey, dsaEncoding: 'der' })).toString('base64url');
 
-function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | null; delivered?: boolean } = {}) {
-  const kp = generateSigningKeyPair();
+function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | null; delivered?: boolean; peer?: boolean; kp?: ReturnType<typeof generateSigningKeyPair> } = {}) {
+  const kp = opts.kp ?? generateSigningKeyPair();
   const signer: MachineSigner = { machineId: () => 'A', signerKeyHash: () => signerKeyHashOf(kp.publicKey), sign: (p) => ({ machineId: 'A', signerKeyHash: signerKeyHashOf(kp.publicKey), sig: edSign(p, kp.privateKey) }) };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdec-int-')); tmp.push(dir);
   const assets = fs.mkdtempSync(path.join(os.tmpdir(), 'docdec-assets-')); tmp.push(assets);
@@ -56,7 +56,7 @@ function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | nu
   const store = new DocumentStore(dir, {
     signer, keyLookup: () => ({ status: 'ok', publicKeyPem: kp.publicKey }), standing: () => 'ok',
     origin: (row, used) => checkRowOrigin(row,
-      (id, kh) => id === 'owner-phone' && kh === deviceKeyHashOf(owner.raw) ? { status: 'ok', publicKey: owner.raw, role: 'owner', personKey: null, client: 'phone', mayWrite: true, approvedVia: 'telegram-dm' } : { status: 'unknown' },
+      (id, kh) => id === 'owner-phone' && kh === deviceKeyHashOf(owner.raw) ? { status: 'ok', publicKey: owner.raw, role: 'owner', personKey: null, client: 'phone', mayWrite: true, approvedVia: 'telegram-dm', ...(opts.peer ? {} : { localPresenceKey: presence.raw }) } : { status: 'unknown' },
       used, () => null),
   });
   const service = new DocumentService(store, team);
@@ -89,7 +89,7 @@ function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | nu
   });
   a.use(createDocumentRoutes(deps));
   a.use(createDocumentPageRoutes(deps));
-  return { a, owner, presence, browser, service, store, pushes, chatChecks };
+  return { a, kp, owner, presence, browser, service, store, pushes, chatChecks };
 }
 
 /** The agent (bearer) creates a document with a question. */
@@ -202,6 +202,24 @@ describe('document decisions over HTTP', () => {
     expect(r.status).toBe(200);
     expect(r.body.outcome).toBe('sent');
     expect(s.pushes.at(-1)).toBe(`press:${id}:doc-decide-press:${id}:${requestId}`);
+  });
+
+  it('SEC-088 interim: a machine without the phone\'s own enrollment shows waiting, keeps Needs-you, and applies nothing', async () => {
+    const host = setup();
+    const { id } = await docWithAsk(host);
+    expect((await decide(host, id)).status).toBe(201);
+    // The peer holds the same rows (synced), but knows the phone only from replicated fields.
+    const peer = setup({ peer: true, kp: host.kp });
+    const results = host.store.allRowsOf(id).map((r) => peer.store.ingest(r));
+    expect(results).toContain('pending');
+    const view = (await request(peer.a).get(`/docs/${id}/decision`)).body;
+    expect(view).toMatchObject({ decision: null, waitingOnOwner: true, confirmingElsewhere: true });
+    // Needs-you is not cleared on the peer.
+    expect((await request(peer.a).get('/docs/decisions/waiting')).body.documents.map((d: { id: string }) => d.id)).toEqual([id]);
+    expect(peer.service.decisionWords(id)).toMatch(/waiting for the machine that phone is paired with/);
+    // The phone's own machine shows Approved and clears it.
+    expect((await request(host.a).get(`/docs/${id}/decision`)).body).toMatchObject({ decision: { verdict: 'approve' }, waitingOnOwner: false, confirmingElsewhere: false });
+    expect((await request(host.a).get('/docs/decisions/waiting')).body.documents).toEqual([]);
   });
 
   it('the agent withdraws the question; nothing waits on the owner', async () => {

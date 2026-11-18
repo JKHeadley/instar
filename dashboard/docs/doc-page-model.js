@@ -503,6 +503,9 @@ export function decisionPanel(page, { inApp = false, appOps = null } = {}) {
     tone = dec.latest ? 'bad' : 'attn';
     headline = `Declined by ${isOwner ? 'you' : owner}${dec.at ? ` · ${shortTime(dec.at)}` : ''} · version ${dec.versionLabel ?? '?'}`;
     if (dec.note) lines.push(`Note: ${dec.note}`);
+  } else if (d.confirmingElsewhere) {
+    headline = `${isOwner ? 'You' : owner} answered on the phone · waiting for confirmation`;
+    lines.push('The answer is recorded on the machine your phone is paired with. It shows here once that machine confirms it.');
   } else {
     headline = isOwner ? `${page.agentName || 'The agent'} asks for your decision` : `Waiting for ${owner}'s decision`;
   }
@@ -514,7 +517,7 @@ export function decisionPanel(page, { inApp = false, appOps = null } = {}) {
   if (d.writesBlockedBy) lines.push(`${d.writesBlockedBy} needs the update before a decision can be recorded.`);
   let controls = 'none';
   const latestShown = !page.version || page.version.latest;
-  const canAct = isOwner && d.ask && !d.concurrentEdits && !d.writesBlockedBy;
+  const canAct = isOwner && d.ask && !d.concurrentEdits && !d.writesBlockedBy && !d.confirmingElsewhere;
   if (canAct) {
     if (!latestShown) controls = 'open-latest';
     else if (inApp) controls = appOps && appOps.includes('decide') ? 'app-buttons' : 'update-app';

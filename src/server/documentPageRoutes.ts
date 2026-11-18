@@ -33,7 +33,7 @@ import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { ownLoopbackHost } from './documentLinkRoutes.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
-import { NO_NOTE, decisionPath } from '../documents/originCheck.js';
+import { NO_NOTE, decisionPath, decisionLine } from '../documents/originCheck.js';
 import { peersUpdating, decisionAnswer } from './documentRoutes.js';
 import { decisionMessageRequestId } from '../documents/decisions.js';
 import { REQUEST_ID_PATTERN } from '../core/MobileChatRequests.js';
@@ -299,8 +299,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
   const decideChallenges = new ActionChallengeStore();
   const heldNotes = new Map<string, { blob: Blob; expiresAt: number }>();
   const HEX64 = /^[0-9a-f]{64}$/;
-  const decideLine = (docId: string, b: DecideBody): string =>
-    `docs-decision ${docId} ${b.askId} ${b.onVersion} ${b.verdict} ${b.questionHash} ${b.noteHash} ${b.supersedes ?? '-'}`;
+  const decideLine = (docId: string, b: DecideBody): string => decisionLine(docId, b);
   type DecideBody = { askId: string; onVersion: string; verdict: 'approve' | 'decline'; questionHash: string; noteHash: string; supersedes: string | null };
   const decideBody = (req: Request): DecideBody | null => {
     const b = (req.body ?? {}) as Record<string, unknown>;

@@ -12,7 +12,8 @@ import { DocumentStore } from '../../src/documents/store.js';
 import { DocumentService, type Caller } from '../../src/documents/service.js';
 import { mayDoDocument, type TeamView, type DocFacts, type Principal } from '../../src/documents/access.js';
 import { validateRow, type DocRow } from '../../src/documents/rows.js';
-import { checkRowOrigin, decisionPath, NO_NOTE, type DeviceKeyLookup } from '../../src/documents/originCheck.js';
+import { checkRowOrigin, decisionPath, decisionLine, decisionPresenceMessage, NO_NOTE, type DeviceKeyLookup } from '../../src/documents/originCheck.js';
+import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
 import { decisionView, decisionMessageRequestId, chatRecordDelivered } from '../../src/documents/decisions.js';
 import { REQUEST_ID_PATTERN } from '../../src/core/MobileChatRequests.js';
 import { blobHash, newSalt } from '../../src/documents/blobs.js';
@@ -181,15 +182,18 @@ describe('peer origin check for a decision row', () => {
     return Buffer.concat([Buffer.from([0x30, body.length]), body]);
   }
   const owner = pkey();
+  const presence = pkey();
   const DOC = '77777777-7777-4777-8777-777777777777';
-  const lookup = (over: Partial<{ role: 'owner' | 'person'; client: 'phone' | 'browser'; approvedVia: string }> = {}): DeviceKeyLookup => (id, kh) =>
+  const lookup = (over: Partial<{ role: 'owner' | 'person'; client: 'phone' | 'browser'; approvedVia: string; local: boolean }> = {}): DeviceKeyLookup => (id, kh) =>
     id === 'owner-phone' && kh === deviceKeyHashOf(owner.raw)
-      ? { status: 'ok', publicKey: owner.raw, role: over.role ?? 'owner', personKey: over.role === 'person' ? 'mara' : null, client: over.client ?? 'phone', mayWrite: true, approvedVia: over.approvedVia ?? 'telegram-dm' }
+      ? { status: 'ok', publicKey: owner.raw, role: over.role ?? 'owner', personKey: over.role === 'person' ? 'mara' : null, client: over.client ?? 'phone', mayWrite: true, approvedVia: over.approvedVia ?? 'telegram-dm', ...(over.local === false ? {} : { localPresenceKey: presence.raw }) }
       : { status: 'unknown' };
   function decisionRow(rowOver: Record<string, unknown> = {}, bodyOver: Record<string, unknown> = {}) {
     const askId = '11111111-1111-4111-8111-111111111111'; const onVersion = '22222222-2222-4222-8222-222222222222';
     const challenge = 'ch' + crypto.randomBytes(8).toString('hex');
-    const body = Buffer.from(JSON.stringify({ askId, onVersion, verdict: 'approve', questionHash: 'a'.repeat(64), noteHash: NO_NOTE, supersedes: null, challenge, presenceSig: 'ps', ...bodyOver }));
+    const line = decisionLine(DOC, { askId, onVersion, verdict: 'approve', questionHash: 'a'.repeat(64), noteHash: NO_NOTE, supersedes: null });
+    const presenceSig = lowS(crypto.sign('sha256', Buffer.from(decisionPresenceMessage('owner-phone', 'echo.example.dev', challenge, line)), { key: presence.privateKey, dsaEncoding: 'der' })).toString('base64url');
+    const body = Buffer.from(JSON.stringify({ askId, onVersion, verdict: 'approve', questionHash: 'a'.repeat(64), noteHash: NO_NOTE, supersedes: null, challenge, presenceSig, ...bodyOver }));
     const timeMs = String(Date.now() - 86_400_000);
     const sig = lowS(crypto.sign('sha256', Buffer.from(canonicalString('owner-phone', 'echo.example.dev', 'POST', decisionPath(DOC), timeMs, body)), { key: owner.privateKey, dsaEncoding: 'der' })).toString('base64url');
     return {
@@ -198,7 +202,7 @@ describe('peer origin check for a decision row', () => {
       ...rowOver,
     } as unknown as DocRow;
   }
-  it('accepts the owner phone signature over exactly this answer, on any machine, days later', () => {
+  it('accepts the owner phone signature over exactly this answer on the phone\'s own machine, days later', () => {
     expect(checkRowOrigin(decisionRow(), lookup(), new Set())).toBe('ok');
     expect(checkRowOrigin(decisionRow({ proof: 'pin' }), lookup({ approvedVia: 'dashboard-pin' }), new Set())).toBe('ok');
     // The proof label must match the device's approval on every machine.
@@ -210,6 +214,20 @@ describe('peer origin check for a decision row', () => {
     expect(checkRowOrigin(decisionRow({ onVersion: '33333333-3333-4333-8333-333333333333' }), lookup(), new Set())).toBe('denied');
     expect(checkRowOrigin(decisionRow({ questionHash: 'b'.repeat(64) }), lookup(), new Set())).toBe('denied');
     expect(checkRowOrigin(decisionRow({}, { presenceSig: undefined }), lookup(), new Set())).toBe('denied');
+  });
+  it('SEC-088 interim: holds a decision on a machine without the phone\'s own enrollment, whatever the replicated fields say', () => {
+    // A peer that knows the phone only from replicated activation: waits, never applies.
+    expect(checkRowOrigin(decisionRow(), lookup({ local: false }), new Set())).toBe('pending');
+    expect(checkRowOrigin(decisionRow({ proof: 'pin' }), lookup({ local: false, approvedVia: 'dashboard-pin' }), new Set())).toBe('pending');
+  });
+  it('re-checks the Face ID signature with this machine\'s own presence key', () => {
+    // A valid device signature with a presence signature from some other key is refused.
+    const other = pkey();
+    const forged = lowS(crypto.sign('sha256', Buffer.from('x'), { key: other.privateKey, dsaEncoding: 'der' })).toString('base64url');
+    expect(checkRowOrigin(decisionRow({}, { presenceSig: forged }), lookup(), new Set())).toBe('denied');
+  });
+  it('signs the same presence message as the route checks', () => {
+    expect(decisionPresenceMessage('d', 'Echo.Example.dev', 'c', 'l')).toBe(permissionPresenceMessage('d', 'Echo.Example.dev', 'c', 'l'));
   });
   it('refuses a person device, a browser, and agent-introduced or local-install approvals', () => {
     expect(checkRowOrigin(decisionRow(), lookup({ role: 'person' }), new Set())).toBe('denied');

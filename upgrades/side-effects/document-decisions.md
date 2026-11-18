@@ -96,3 +96,18 @@ The delivered-outcome check it flagged mid-review is now a pure function (`chatR
 Local verify on the merge with main failed four guard tests: the Needs-you source needed a fixture and a registered page (now `work/documents`; the Documents page leads with the waiting asks, owner surface only, an unreadable list leaves the page as it was); the guest-route count is 45 with its reason; the three owner-only decision routes are in the named set; three catch blocks carry `@silent-fallback-ok` (one fails closed with a 409, two answer with `fail(res, err)`). Whole unit lane (69,947 tests), the decisions integration (7) and e2e (2) files pass on the merge.
 
 Second-pass reviewer on this follow-up: CONCUR. The waiting list is owner reach only; a failed read degrades to the plain list; text goes through textContent; the guest read uses the same audience check as the summary; the three annotations are honest.
+
+## SEC-088 interim (folded in before the verify run)
+
+Decision by echo-chief-of-staff (2026-11-17 18:10 PT); design concurrence from echo-instar-security, message ce420fed-bb9c-4812-b7cc-70c47eaed3b4: "only the phone-host machine may apply approval after verifying its genuinely local owner-device enrollment, current revocation state and signed decision/presence; peer activation fields must never qualify as local proof, and other machines must show waiting without clearing Needs-you or injecting an approval." (Design concurrence, not a code audit; the peer-verifiable owner-standing proof stays tracked with SEC-088.)
+
+What changed:
+- `documentDeviceKeyNow` returns `localPresenceKey` only from this machine's own device record: key hash matches, `activeOwnerPhone` (active, not revoked in the key ledger, owner), presence key present. Never from the replicated activation ledger, and never from the revoked-since "as it stood" path.
+- `originCheck` holds (`pending`) any `decision` row without `localPresenceKey`, and on the phone's machine re-verifies the row's Face ID signature with that key over the exact decision line (`decisionLine`, `decisionPresenceMessage`, pinned to `permissionPresenceMessage` by a unit test).
+- A held row is hidden (`origin-pending`): not in the fold, so no Approved, Needs-you stays, `onApplied` never fires (no session notice). `DocumentService.decision().confirmingElsewhere` reports a held answer to the open ask on the latest version; the page says "answered on the phone · waiting for confirmation" with no buttons; the documents block says the same.
+
+1. Over-block: on a multi-machine agent, every machine except the phone's shows "waiting" for decisions indefinitely until SEC-088 ships; the decision itself, the owner's message and the session notice on the phone's machine are unaffected.
+2. Under-block: none added; this only narrows where a decision counts.
+3. Rollback: revert the commit; held rows then verify on the next recheck as before.
+
+Second-pass reviewer on the SEC-088 interim: **Concur with the review.** It checked every lookup path. Only `documentDeviceKeyNow` sets `localPresenceKey`, and only from a matching, active, unrevoked local owner phone; the revoked-since path never sets it. A held row is never applied, so no notice is sent and Needs-you stays. The presence message is byte-identical to the one the route checks, including notes and supersedes. Non-decision rows and the append path are unchanged. Its one minor note was accepted: a held row from a device unknown here also reads as "waiting".

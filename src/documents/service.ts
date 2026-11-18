@@ -374,6 +374,8 @@ export class DocumentService {
     ask: { askId: string; question: string | null; questionHash: string } | null;
     current: { rowKey: string; askId: string; verdict: 'approve' | 'decline'; versionId: string; versionLabel: number | null; latest: boolean; note: string | null; at: string; supersedes: string | null; delivered: string | null; proof: 'telegram' | 'pin' } | null;
     crossed: boolean; needsOwner: boolean; concurrentVersionLabel: number | null; latestVersionId: string | null; heads: number;
+    /** The owner answered on a phone enrolled on another machine; this machine waits for it (SEC-088 interim). */
+    confirmingElsewhere: boolean;
   } {
     const r = this.read(docId, caller);
     const v = decisionView(r.state);
@@ -387,7 +389,14 @@ export class DocumentService {
       } : null,
       crossed: v.crossed, needsOwner: v.needsOwner, concurrentVersionLabel: v.concurrentVersion?.label ?? null,
       latestVersionId: latest?.versionId ?? null, heads: versionHeads(r.state).length,
+      confirmingElsewhere: v.needsOwner && this.answeredElsewhere(docId, v.ask?.askId ?? null, latest?.versionId ?? null),
     };
+  }
+
+  /** A held decision row (not verifiable here) answers this open ask on this version. */
+  private answeredElsewhere(docId: string, askId: string | null, versionId: string | null): boolean {
+    if (!askId || !versionId) return false;
+    return this.store.heldDecisionsOf(docId).some((r) => r.askId === askId && r.onVersion === versionId);
   }
 
   /** Every document where the owner is being asked (the Needs-you source, §3.7). Owner view. */
@@ -413,7 +422,11 @@ export class DocumentService {
     if (s.asks.size === 0) return null;
     const v = decisionView(s);
     if (!v.ask) return null;
-    if (v.needsOwner) return "waiting for the owner's decision";
+    if (v.needsOwner) {
+      return this.answeredElsewhere(id, v.ask.askId, latestVersion(s)?.versionId ?? null)
+        ? "answered on the owner's phone; waiting for the machine that phone is paired with to confirm"
+        : "waiting for the owner's decision";
+    }
     const c = v.current;
     if (!c) return null;
     const label = s.versions.get(c.onVersion)?.label ?? '?';

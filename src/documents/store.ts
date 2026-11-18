@@ -164,6 +164,15 @@ export class DocumentStore {
     return winner.size === 0 ? visible : visible.filter((r) => { const rq = requestKeyOf(r); return !rq || winner.get(rq) === rowKeyOf(r); });
   }
 
+  /**
+   * A document's decision rows held here because this machine can't verify them (SEC-088 interim:
+   * only the machine holding the phone's own enrollment can). For the "waiting" state only; never read
+   * as an answer.
+   */
+  heldDecisionsOf(docId: string): Array<Extract<DocRow, { eventKind: 'decision' }>> {
+    return (this.byDoc.get(docId) ?? []).filter((r): r is Extract<DocRow, { eventKind: 'decision' }> => r.eventKind === 'decision' && this.hidden.get(rowKeyOf(r)) === 'origin-pending');
+  }
+
   /** Rows held but not readable here yet (origin not verifiable) or refused after the fact, with why. */
   hiddenRows(): Array<{ key: string; why: string }> { return [...this.hidden].map(([key, why]) => ({ key, why })); }
   docIds(): string[] { return [...this.byDoc.keys()]; }

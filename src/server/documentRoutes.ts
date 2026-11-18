@@ -551,6 +551,6 @@ export function decisionAnswer(d: ReturnType<DocumentService['decision']>): Reco
       proof: d.current.proof, by: 'owner', messageRequestId: decisionMessageRequestId(d.current.rowKey, d.current.at),
     } : null,
     crossed: d.crossed, waitingOnOwner: d.needsOwner, concurrentVersionLabel: d.concurrentVersionLabel,
-    latestVersionId: d.latestVersionId, concurrentEdits: d.heads > 1,
+    latestVersionId: d.latestVersionId, concurrentEdits: d.heads > 1, confirmingElsewhere: d.confirmingElsewhere,
   };
 }

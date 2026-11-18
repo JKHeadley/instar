@@ -10795,7 +10795,10 @@ export class AgentServer {
     // no machine can widen a guest's computer by rewriting its scope.
     const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
     const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
-    return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia };
+    // SEC-088 interim: only this machine's own, matching, active owner-phone enrollment yields the
+    // Face ID key a decision row is re-checked with; replicated activation never does.
+    const localPresenceKey = local && localKey && deviceKeyHashOf(localKey) === keyHash && local.presenceKey && activeOwnerPhone(svc, deviceId) ? local.presenceKey : undefined;
+    return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia, ...(localPresenceKey ? { localPresenceKey } : {}) };
   }
 
 

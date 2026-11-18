@@ -290,6 +290,14 @@ describe('the decision panel (document-decisions §3.3)', () => {
     expect(member.headline).toBe("Waiting for Justin's decision");
     expect(m.decisionPanel(base(null, undefined, false))!.controls).toBe('open-latest');
   });
+  it('SEC-088 interim: on a machine that waits for the phone\'s own machine, it says waiting and offers no buttons', () => {
+    const b = base(null);
+    (b.decision as Record<string, unknown>).confirmingElsewhere = true;
+    const v = m.decisionPanel(b)!;
+    expect(v.headline).toBe('You answered on the phone · waiting for confirmation');
+    expect(v.controls).toBe('none');
+    expect(v.waiting).toBe(true);
+  });
   it('an approval names the version, and a later version is said to be not approved', () => {
     const v = m.decisionPanel(base({ verdict: 'approve', versionLabel: 1, latest: false, at: '2026-11-17T18:00:00Z', delivered: true }))!;
     expect(v.tone).toBe('ok');
