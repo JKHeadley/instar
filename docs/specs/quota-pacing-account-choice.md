@@ -4,16 +4,26 @@ slug: "quota-pacing-account-choice"
 author: "echo"
 parent-principle: "Verify the State, Not Its Symbol"
 eli16-overview: "quota-pacing-account-choice.eli16.md"
-status: "draft"
-approved: false
+status: "converged"
+approved: true
+approved-by: "Echo under standing authority: Justin approves only constitution changes (Instar 1.x, 2026-10-22 08:58 PDT, memory only-constitution-changes-need-justin); this spec touches no constitution file. Request origin: Justin, topic 144201, 2026-11-17 23:03 PST."
 parent-spec: "quota-pacing-forecast.md (step 1 names these three faults as step 2, and adds the `fableUnknown` flag and the pool fan-out helper this step reads); POOL-AWARE-QUOTA-THROTTLE-SPEC.md; swap-continuity-antithrash"
 depends-on: "PR #3330 (quota-pacing-forecast, step 1) merged first: `fableUnknown` and the shared bearer pool fan-out helper"
 lessons-engaged:
   - "P20 Verify the State, Not Its Symbol: a reading from a window that has already reset is not the account's state; it becomes unmeasured, never 0"
   - "P2 Signal vs Authority: placement already has authority; this changes only the inputs and the ranking it reads, behind a dev-gated switch with a shadow log"
   - "P21 Multi-machine: placement stays per machine (credential locality); the shadow evidence is read pool-wide"
-  - "P24 Never Silently Cut the Data: shadow-log repeats are counted, drops are counted"
+  - "P24 Never Silently Cut the Data: shadow rows are not capped; buffered-row loss at an unclean stop is recorded; the review records the date range it read"
 origin: "Justin, topic 144201, 2026-11-17 23:03 PST: 'Now we need to do the actual work of ongoing token pacing as this topic was created for'. Step order from the token pacing plan, topic 141385, 2026-11-17 10:19 PST."
+review-convergence: "2026-11-18T07:36:01.488Z"
+review-iterations: 6
+review-completed-at: "2026-11-18T07:36:01.488Z"
+review-report: "docs/specs/reports/quota-pacing-account-choice-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 12
+cheap-to-change-tags: 0
+contested-then-cleared: 15
 ---
 
 # Quota pacing, step 2: account choice reads each limit window correctly
@@ -155,6 +165,7 @@ The resolver types in `SessionManager` widen to `(ctx?: { model?: string }) => â
 - **dev-agent-live:** on from merge on Echo's machines through the dev gate.
 - **fleet:** default-on for every agent is the last rung, after the review.
 - **graduation criterion:** a review on the maturation board, filed at merge, reads (a) the shadow rows pool-wide: how often each reason changed a choice; (b) for the executed picks, walls and swaps afterwards, from the existing wall and swap logs by `sessionName`, with 5-hour walls on the default spawn path counted separately; (c) the outcome this project cares about: weekly room left unused at each reset across the pool, from step 1's cycle-end rows, compared with the weeks before the switch. The old rule's picks are not executed, so the review never claims what they would have hit; it may note the old pick's next fresh reading as a labelled proxy. It promotes on judgment from that evidence.
+- **ladder:** subscriptionPool.pacing.windowAwareChoice
 - **dark-window:** the evidence minimum is two weekly resets for every Claude account, however long that takes. Separately, if the review has not happened 4 weeks after merge, the board raises the feature as dark too long; that is a reminder, not a promotion trigger.
 
 ## Safety and side effects
