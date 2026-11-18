@@ -46,6 +46,8 @@ async function boot() {
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
+  // Capacity is full, but this ordinary wait requires no person to intervene.
+  sessionManager.getCachedRunningSessions = () => ({count:1,sessions:[]});
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel });
   servers.push(server);
@@ -77,6 +79,11 @@ describe('Needs-you read — production wiring', () => {
     // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
     // "could not check", even when its 503 also says "not initialized".
     expect(first.body.couldNotCheck).not.toContain('plans');
+    const health = await auth(request(app).get('/mobile/health-issues'));
+    expect(health.status).toBe(200);
+    expect(health.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false}));
+    expect(first.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
+    expect(first.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
 
     // An owner phone, paired through the existing path, gets the same list through its own device rule.
     server.mobilePairing!.deps.fetchFn = (async (url: string) => {
@@ -107,6 +114,8 @@ describe('Needs-you read — production wiring', () => {
     const phone = await send('GET', '/mobile/needs');
     expect(phone.status, JSON.stringify(phone.body)).toBe(200);
     expect(phone.body.viewer.role).toBe('owner');
+    expect(phone.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
+    expect(phone.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
     expect(phone.body.sources.map((s: { id: string }) => s.id)).toEqual(first.body.sources.map((s: { id: string }) => s.id));
     // The phone still cannot reach the raw sources it was built from.
     expect((await send('GET', '/green-pr-automerge')).status).toBe(403);
