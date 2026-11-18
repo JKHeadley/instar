@@ -220,6 +220,7 @@ import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.j
 import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
+import { IMPORTED_HISTORY_PROJECT_PATH, IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -3386,6 +3387,7 @@ export class PostUpdateMigrator {
     this.migrateDeviceLimitProvenanceGitignore(result);
     this.migrateSkillLearningGitignore(result);
     this.migrateUsageLedgerGitignore(result);
+    this.migrateImportedHistoryGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -4336,6 +4338,25 @@ export class PostUpdateMigrator {
   // Fresh installs get both via MachineIdentity GITIGNORE_ENTRIES; existing agents
   // only here (the judgment-provenance precedent: existing files only, idempotent).
   // A legacy file git already tracks stays tracked — this never runs `git rm`.
+  /**
+   * Imported Claude/ChatGPT history (SEC-110): keep the folder out of git on
+   * existing agents, in the project .gitignore and the internal state repo's
+   * .instar/.gitignore, where each file exists. Fresh installs get it through
+   * MachineIdentity GITIGNORE_ENTRIES and GitStateManager DEFAULT_GITIGNORE;
+   * git sync refuses it independently through FileClassifier never-sync.
+   * Idempotent (addGitignoreEntry no-ops when the line is present).
+   */
+  private migrateImportedHistoryGitignore(result: MigrationResult): void {
+    const projectGitignore = path.join(this.config.projectDir, '.gitignore');
+    if (fs.existsSync(projectGitignore)) {
+      this.addGitignoreEntry(projectGitignore, IMPORTED_HISTORY_PROJECT_PATH, result, 'project .gitignore');
+    }
+    const instarGitignore = path.join(this.config.stateDir, '.gitignore');
+    if (fs.existsSync(instarGitignore)) {
+      this.addGitignoreEntry(instarGitignore, IMPORTED_HISTORY_STATE_PATH, result, '.instar/.gitignore');
+    }
+  }
+
   /** Unified usage ledger (docs/specs/unified-usage-ledger.md): keep its databases out of git, where an ignore file exists. Idempotent. */
   private migrateUsageLedgerGitignore(result: MigrationResult): void {
     const projectGitignore = path.join(this.config.projectDir, '.gitignore');

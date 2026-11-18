@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/importedHistoryPaths.ts",
+      "reason": "Three string constants naming the imported-history folder (no I/O, no state, no delivery logic), reached through FileClassifier and the gitignore lists; outside the Stage-B canaried delivery path."
+    },
+    {
       "file": "src/core/boundedInput.ts",
       "reason": "Pure string helpers (boundedHead/boundedTail) with no imports, I/O or state; reached through the excluded MessagingToneGate to bound prompt context, outside the Stage-B canaried delivery path, certified by tests/unit/bounded-judgment-input.test.ts."
     },
