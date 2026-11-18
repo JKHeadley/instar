@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "dashboard-card-source",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T02:41:00.545Z",
+  "artifactPath": "upgrades/side-effects/dashboard-card-source.md",
+  "artifactSha256": "c230cbb6861e9cc94c63509ea333e151555cfebcc35fb1e8e7b09287bc7d7463",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "src/data/awareness/work-projects.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-work-model.test.ts",
+    "upgrades/eli16/dashboard-card-source.md",
+    "upgrades/next/dashboard-card-source.md",
+    "upgrades/side-effects/dashboard-card-source.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small read-only navigation increment completing the approved card-source link; reuses signed history reads and existing source records, no new authority or server endpoint.",
+  "eli16Path": "upgrades/eli16/dashboard-card-source.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-card-source.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

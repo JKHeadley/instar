@@ -44,6 +44,10 @@ export class ConversationGraphLocalErasureFence {
  }
  private load():void{try{for(const target of this.readDisk())this.negative.denied.set(canonicalHash(target),target);}catch{this.negative.corrupt=true;}}
  async refresh():Promise<void>{this.load();if(this.negative.corrupt)throw new Error('local-erasure-fence-unavailable');}
+ /** What isDenied can answer, as one string: the root check (run now, as isDenied does), the corrupt flag
+  * and the deny-set size. Complete because the shared state only grows: a deny is never removed and
+  * corrupt never resets, so an equal string means the same answers. Read-only; for the graph verdict memo. */
+ answerSignature():string{const valid=this.rootValid();return `${valid}:${this.negative.corrupt}:${this.negative.denied.size}`;}
  isDenied(target:GraphErasureIdentity):boolean{return !this.rootValid()||!validateGraphErasureIdentity(target)||this.negative.denied.has(canonicalHash(target));}
  targets():GraphErasureIdentity[]{if(!this.rootValid())throw new Error('local-erasure-fence-unavailable');return [...this.negative.denied.values()].map(target=>({...target}));}
  /** Fresh disk validation/barrier only; shared in-memory deny is never proof
