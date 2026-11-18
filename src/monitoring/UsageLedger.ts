@@ -684,7 +684,7 @@ export class UsageLedger {
     }
     // A spawn-record session file anywhere rules the directory in, wherever its cwd is.
     let entries: string[];
-    try { entries = fs.readdirSync(dirPath); } catch { cov.listing = 'partial'; return false; }
+    try { entries = fs.readdirSync(dirPath); } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = 'partial'; return false; }
     const stmt = this.db.prepare('SELECT 1 FROM session_bindings WHERE session_id = ? LIMIT 1');
     return entries.some(e => e.endsWith('.jsonl') && stmt.get(e.slice(0, -'.jsonl'.length)) !== undefined);
   }
@@ -737,7 +737,7 @@ export class UsageLedger {
       if (dirName.startsWith(encodeClaudeProjectDir(path.resolve(h)))) return true;
     }
     let entries: string[];
-    try { entries = await fs.promises.readdir(dirPath); } catch { cov.listing = 'partial'; return false; }
+    try { entries = await fs.promises.readdir(dirPath); } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = 'partial'; return false; }
     if (this.closed) return false;
     const stmt = this.db.prepare('SELECT 1 FROM session_bindings WHERE session_id = ? LIMIT 1');
     return entries.some(e => e.endsWith('.jsonl') && stmt.get(e.slice(0, -'.jsonl'.length)) !== undefined);
@@ -757,12 +757,12 @@ export class UsageLedger {
     try {
       if (!(await fs.promises.lstat(root)).isDirectory() || !(await fs.promises.lstat(projects)).isDirectory()) { cov.listing = 'unavailable'; return out; }
       dirs = await fs.promises.readdir(projects, { withFileTypes: true });
-    } catch { cov.listing = 'unavailable'; return out; }
+    } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = 'unavailable'; return out; }
     const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
     let skippedDirs = 0, outOfWindow = 0, tooDeep = 0;
     const walk = async (dir: string, depth: number): Promise<void> => {
       let entries: fs.Dirent[];
-      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { cov.listing = 'partial'; return; }
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = 'partial'; return; }
       const files: string[] = [];
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
@@ -775,7 +775,7 @@ export class UsageLedger {
         }
       }
       const mtimes = await mapInBatches(files, async (p) => {
-        try { return (await fs.promises.stat(p)).mtimeMs; } catch { cov.listing = 'partial'; return null; }
+        try { return (await fs.promises.stat(p)).mtimeMs; } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = 'partial'; return null; }
       });
       files.forEach((p, i) => {
         const mtime = mtimes[i];
@@ -806,7 +806,7 @@ export class UsageLedger {
       try {
         const st = await fs.promises.stat(file);
         return st.ino !== cp.inode || st.size !== cp.offset;
-      } catch (error) {
+      } catch (error) { /* @silent-fallback-ok: not silent; a non-missing error marks the root partial and counts filesPending in GET /usage/coverage */
         if (!pathIsMissing(error)) { cov.listing = 'partial'; cov.filesPending++; }
         return false;
       }
@@ -954,7 +954,7 @@ export class UsageLedger {
     try {
       const st = fs.statSync(file);
       return st.ino !== cp.inode || st.size !== cp.offset;
-    } catch (error) {
+    } catch (error) { /* @silent-fallback-ok: not silent; a non-missing error marks the root partial and counts filesPending in GET /usage/coverage */
       if (cov && !pathIsMissing(error)) { cov.listing = 'partial'; cov.filesPending++; }
       return false;
     }
@@ -1384,7 +1384,7 @@ export class UsageLedger {
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (this.closed) return;
       let entries: fs.Dirent[];
-      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { cov.listing = depth === 0 ? 'unavailable' : 'partial'; return; }
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = depth === 0 ? 'unavailable' : 'partial'; return; }
       const files: string[] = [];
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
@@ -1394,7 +1394,7 @@ export class UsageLedger {
         else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) files.push(p);
       }
       const mtimes = await mapInBatches(files, async (p) => {
-        try { return (await fs.promises.stat(p)).mtimeMs; } catch { cov.listing = 'partial'; return null; }
+        try { return (await fs.promises.stat(p)).mtimeMs; } catch { /* @silent-fallback-ok: not silent; the root's coverage reads partial/unavailable in GET /usage/coverage (roots[].listing) */ cov.listing = 'partial'; return null; }
       });
       files.forEach((p, i) => {
         const mtime = mtimes[i];
@@ -1885,7 +1885,7 @@ export class UsageLedger {
     const del = this.db.prepare('DELETE FROM checkpoints WHERE path = ?');
     let n = 0;
     for (const { path: p } of rows) {
-      try { fs.statSync(p); } catch (error) {
+      try { fs.statSync(p); } catch (error) { /* @silent-fallback-ok: an unreadable file is no evidence it was removed, so its checkpoint is kept; only ENOENT drops it */
         if (pathIsMissing(error)) { del.run(p); n++; }
       }
     }
@@ -1901,7 +1901,7 @@ export class UsageLedger {
     if (this.closed) return 0;
     const rows = this.db.prepare('SELECT path FROM checkpoints').all() as { path: string }[];
     const present = await mapInBatches(rows, async ({ path: p }) => {
-      try { await fs.promises.stat(p); return true; } catch (error) {
+      try { await fs.promises.stat(p); return true; } catch (error) { /* @silent-fallback-ok: an unreadable file is no evidence it was removed, so its checkpoint is kept; only ENOENT drops it */
         // Losing read permission on an enrolled home is no evidence its file was removed.
         return !pathIsMissing(error);
       }
