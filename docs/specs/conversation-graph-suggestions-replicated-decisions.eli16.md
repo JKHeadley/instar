@@ -12,19 +12,21 @@ The agent already has a way to copy small records between its own computers: eve
 
 ## What changes
 
-1. Your three decisions (rejected, accepted, and "an Accept has started, here is its request number") become small records on that existing journal. Each record holds only the suggestion's id (a scrambled fingerprint of which chats were in it), the decision, the time, and for a started Accept the request number. No chat names or content.
-2. When any computer shows you suggestions, it combines its own memory with every record from the other computers. A Reject anywhere hides the suggestion everywhere and keeps the agent from suggesting it again. A started Accept anywhere means Continue uses the same request number, so the same group is continued, not a new one.
-3. The list of suggestions itself stays on each computer. It is advice the agent can rebuild, and keeping it local means chat names never travel just for this.
-4. Decisions you made before this update are sent across once after the update, so old Rejects are honored too.
+1. Your three decisions (rejected, accepted, and "an Accept has started") become small records on that existing journal. A record holds the suggestion's id (a scrambled fingerprint of which chats were in it), the decision and the time. A started Accept also carries the suggested group's name and which chats are in it (their ids, never their names or messages), because another computer may never have built that exact suggestion and needs it to finish the job. A finished Accept can carry what it did (which group, how many chats moved).
+2. When any computer shows you suggestions, it combines its own memory with every record from the other computers. A Reject anywhere hides the suggestion everywhere and keeps the agent from suggesting it again. A started Accept anywhere shows Continue everywhere, and its chats are kept out of new suggestions until it is done.
+3. Each Accept now has one request number worked out from the suggestion itself, so every browser and every computer asks for the same group and gets the same group. This alone stops the "second empty group" problem, even before any record travels.
+4. The list of suggestions itself stays on each computer, as you already approved on 2026-11-11. It is advice each computer rebuilds from the same shared conversations; what matters to you (what you rejected, accepted or started) is the part that now travels.
+5. Decisions you made before this update are sent across once after the update, so old Rejects are honored too.
 
 ## Safeguards
 
 - The records only hide advice. They never move, hide or send a conversation, and they never stop you from doing anything.
-- If a record fails to send, your action still works on the computer you used, the failure is logged, and the agent tries again later.
-- With only one computer, nothing changes at all.
+- Every record is checked on arrival: a started Accept's chat list must match its fingerprint, and its request number must be the one worked out from that suggestion, so a bad record cannot steer your Continue into a different group.
+- If a record fails to send, your action still works on the computer you used. The record waits in a small outbox and is sent again with your next decision, every ten minutes while it waits, and when the agent restarts.
+- With only one computer, nothing travels; you still get the single request number.
 - An older computer that has not updated yet will ignore these records and behave like today until it updates.
-- If two computers start the very same Accept within a few seconds of each other, one extra empty group can be made. That is rare and harmless, and preventing it would need a lock across computers for something that is only a suggestion.
-- There is an off switch, and turning it off or rolling back the update leaves everything as it is today; no data has to be repaired.
+- A started Accept you no longer want ends when you tap Reject on it.
+- There is an off switch. Turning it off, or rolling back the update, returns each computer to how it works today; each computer's own memory was never mixed with the others', so nothing has to be repaired.
 
 ## What needs deciding
 
