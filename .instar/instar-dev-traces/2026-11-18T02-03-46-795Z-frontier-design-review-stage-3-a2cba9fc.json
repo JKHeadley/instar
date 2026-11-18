@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "frontier-design-review-stage-3",
+  "sessionId": "fb9f8276-4dab-40e5-8807-ab593543dac6",
+  "timestamp": "2026-11-18T02:03:46.795Z",
+  "artifactPath": "upgrades/side-effects/frontier-design-review-stage-3.md",
+  "artifactSha256": "91e1966925554a5ed84a217b344650c66dd634692dfa93b9670a90e303e06edb",
+  "specPath": "docs/specs/frontier-design-review-standard.md",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/frontier-design-review-stage-3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Classify the review modules B26 brings into the Stage-B import closure; stage 3 of 4",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

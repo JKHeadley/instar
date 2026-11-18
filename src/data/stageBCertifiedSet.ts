@@ -24,6 +24,26 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/approvalRequestDefinition.ts",
+      "reason": "One shared text constant (what an approval request is) reached through the B25/B26 rules in the excluded MessagingToneGate; no I/O and no delivery logic, outside the Stage-B canaried path (frontier-design-review-standard)."
+    },
+    {
+      "file": "src/core/designApprovalEvidence.ts",
+      "reason": "Rule B26's code-computed evidence (review-record lookup and line match) reached through the excluded MessagingToneGate and the spec-approval judge; it feeds a gate prompt and never touches Codex Stage-B delivery. Certified by its own suite (tests/unit/designApprovalEvidence.test.ts)."
+    },
+    {
+      "file": "src/core/designLane.ts",
+      "reason": "The design-model pin table reached through the reviewer and B26 evidence; constants only, outside the Stage-B canaried path, and pinned by the model-registry freshness lint."
+    },
+    {
+      "file": "src/core/designReviewLedger.ts",
+      "reason": "Design review ledger reader reached through B26 evidence; reads its own JSONL file and decides nothing in Codex Stage-B delivery. Certified by tests/unit/designRouting.test.ts and the design-review route suites."
+    },
+    {
+      "file": "src/core/designReviewRecord.ts",
+      "reason": "Pure fingerprint, validation and provenance-line rendering reached through B26 evidence; no delivery logic, outside the Stage-B canaried path. Certified by tests/unit/designReviewRecord.test.ts."
+    },
+    {
       "file": "src/core/GraphDurableFileMemo.ts",
       "reason": "Process-local memo of files already flushed, reached through SecretStore. It only skips a repeat fsync of unchanged content and holds no inbound-delivery or lifecycle logic."
     },

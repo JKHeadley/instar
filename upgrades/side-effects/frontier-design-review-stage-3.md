@@ -51,6 +51,7 @@ The competing-signals point (is this a request? for which design?) is an LLM jud
 - B25 and B26 both apply to an approval request; the gate returns one rule, so when both apply the judge cites B25 and the suggestion names the one `/design-review` run that clears both (rule text).
 - The stage-1 relay skip is unchanged: a tokenless standby relaying to the lease holder is gated by the holder, which computes evidence from its own rows plus peers' (so a design reviewed on the standby is found through the peer rows).
 - The Work Board 422 for B25 alone is unchanged in shape; a B26 fire uses the new error name.
+- **Stage-B certified set.** B26 makes the outbound gate import the review modules, so they join the Codex Stage-B import closure; each is listed as excluded with its reason in `src/data/stageBCertifiedSet.ts` (no delivery logic; certified by its own suites). `stage-b-certified-fingerprint --check` passes.
 - The evidence step reads the ledger only when the text carries a reference, then one re-read per referenced own file (cached by mtime and size, skipped above 2 MB) before the gate call; no network wait. A fault in it reaches the judge as `records-unavailable` for each reference (which holds), never as "no reference".
 
 ## 6. External surfaces
