@@ -1,0 +1,14 @@
+# codex-cli gpt-6-astra ok SERIOUS ISSUES
+**Verdict: SERIOUS ISSUES**
+
+Review limited to the supplied specifications; referenced implementation files were not supplied, so implementation claims remain unverified. These are specification findings, not observed runtime failures.
+
+- **DESIGN — “Agent side / Calls from other machines.”** The spec promises that deduplication by `callId` means a retried submission “never runs a command twice,” but defines no durable acceptance record, crash recovery, or PC-side deduplication. A home-machine restart after dispatch but before recording the outcome leaves execution ambiguous. **Resolution:** specify durable call identities and lifecycle states, including endpoint deduplication and retention. After an uncertain execution, return an explicit unknown outcome rather than automatically redispatching. Test a restart between dispatch and result persistence.
+
+- **DESIGN — “What the agent can do / Look only.”** The spec refuses credential locations and the program’s own state through its file interface, but does not define whether authorization applies to the requested path or the file ultimately opened. The supplied tests likewise cover “credential folders refused” without specifying aliases or link traversal. Consequently, the stated exclusion is not yet an implementable security boundary. **Resolution:** define authorization against the resolved file target, handle Windows path aliases and reparse points, and prevent target changes between checking and opening. Add tests accessing a prohibited target through an otherwise permitted path.
+
+- **DESIGN — “Agent side / The agent’s own safety gate.”** The spec says every command and file write/delete is evaluated before transmission, yet input skips the gate while Full control explicitly recognizes typing as equivalent to command execution. Typing a destructive command into a terminal therefore provides an unevaluated route to the same operation. **Resolution:** either define the gate honestly as screening structured exec/file requests only, and align consent and decision-point claims, or extend authorization to equivalent UI-driven operations. The existing Full-control disclaimer does not establish which behavior is intended.
+
+- **PRECISION — “Frontloaded Decisions / Updates.”** This summary places the release key in the agent’s vault and says it signs the publisher allowlist; “Updates” explicitly prohibits that vault placement and compiles the allowlist into the running program. **Resolution:** replace the stale summary with the detailed update policy.
+
+The restricted extender identity and single-home topology are clearly motivated; neither requires a more elaborate distributed architecture.

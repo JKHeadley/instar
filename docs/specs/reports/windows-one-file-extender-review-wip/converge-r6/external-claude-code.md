@@ -1,0 +1,26 @@
+# claude-code claude-fable-5-2 ok SERIOUS ISSUES
+**Reviewer note:** I am a Claude model (Fable 5.2), not a GPT-tier one, so this is not the cross-family read the prompt assumes. I reviewed only the inlined text.
+
+## Verdict: SERIOUS ISSUES
+
+**1. DESIGN — Lower after Full control is not containment (§What the agent can do, "Raising", "Protecting the mode").**
+The spec says that under Look only the agent "cannot run code on the PC, so it cannot produce that signature". That holds only for a PC that was never in Full control. An agent that had Full control can leave a scheduled task running as the user, which survives a Lower. It can then sign tray raise requests with `d` and keeps acting as the user anyway. The spec admits persistence only for Remove.
+*Resolution:* once a device has been in Full control, disable tray-originated raises for that key (app-initiated only). Say in the Lower text that a real downgrade needs Connect again with a new key.
+
+**2. DESIGN — Hand-rolled channel with integrity but no confidentiality (§The PC checks the agent).**
+Frames are signed, not encrypted. With a Cloudflare named tunnel, TLS ends at Cloudflare, so commands, files and screenshots are plaintext there. The spec also never says PC-to-home frames are signed after the handshake.
+*Resolution:* run a standard Noise handshake (IK or KK) over the WebSocket with the pinned keys, which gives mutual authentication, replay protection and encryption. Otherwise state the Cloudflare exposure in the consent text.
+
+**3. DESIGN — Update trust is contradictory (§Updates vs §Frontloaded Decisions).**
+§Updates says the release key is "never in the agent's shared vault" and the publisher allowlist is compiled in. Frontloaded Decisions says "a release key in the agent's vault that signs the allowed-publisher list". Also, the Mama PC holds the release key, runs the signing step, and is the agent-driven test PC. So "neither alone can push code" reduces to one host.
+*Resolution:* fix the stale line. Either put the release key and the signing credentials on separate hosts, or drop the two-factor claim.
+
+**4. DESIGN — The likeliest field failure is antivirus (§Release gate).**
+The program takes screenshots, injects input, runs remote PowerShell and sets an HKCU Run key, which is how a remote-access trojan behaves. Cloud detections typically arrive after release, so a one-time gate on a fresh install will miss them. The download page also coaches people to click through SmartScreen, which undercuts the scam warnings.
+*Resolution:* re-scan every release on a schedule, submit each build to Microsoft, add a "blocked by security software" state in the tray and the agent, and state that managed PCs (AppLocker/WDAC) are unsupported.
+
+**PRECISION**
+- **Stale text:** Frontloaded Decisions and Decision points say "origin credential" (the body says a new per-session credential), "proposed by uptime" (the body: named tunnel, then `lastSeen`), and "per-session toast" (the body: explicitly not a toast).
+- **External Operation Gate:** it classifies arbitrary PowerShell written by the same agent it gates. Label it advisory, not a control.
+- **Look only denylist:** it misses `.git-credentials`, `.npmrc`, other browsers, password-manager databases and chat-app tokens. An allowlist of folders would be more robust.
+- **Alternatives:** OpenSSH certificates, Tailscale SSH and MeshCentral are not weighed; one sentence each would do.
