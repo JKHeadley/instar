@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "dashboard-needs-overflow",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T01:37:03.032Z",
+  "artifactPath": "upgrades/side-effects/dashboard-needs-overflow.md",
+  "artifactSha256": "5feb0f088322e50601ed74608a52dc5961bc656e520e520d3c1edf18493f71eb",
+  "coveredFiles": [
+    "dashboard/console/needs-strip.js",
+    "tests/unit/console-front-doors.test.ts",
+    "upgrades/eli16/dashboard-needs-overflow.md",
+    "upgrades/next/dashboard-needs-overflow.md",
+    "upgrades/side-effects/dashboard-needs-overflow.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible presentation correction to an existing capped read; no API, authority or state changes.",
+  "eli16Path": "upgrades/eli16/dashboard-needs-overflow.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-needs-overflow.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
