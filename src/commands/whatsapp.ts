@@ -168,7 +168,7 @@ export async function addWhatsApp(opts: AddWhatsAppOptions): Promise<void> {
   } else {
     console.log(`  Phone Number ID: ${opts.phoneNumberId}`);
     console.log(`  Webhook verify token: configured`);
-    console.log(`  Webhook signature (app secret): ${(opts.appSecret ?? process.env.WHATSAPP_APP_SECRET) ? 'configured' : pc.red('missing — incoming messages are refused until it is set')}`);
+    console.log(`  Webhook signature (app secret): ${(opts.appSecret ?? process.env.WHATSAPP_APP_SECRET) ? 'configured' : pc.yellow('missing — incoming messages arrive unverified until it is set')}`);
     console.log();
 
     console.log('Next steps:');
@@ -373,8 +373,8 @@ export async function channelDoctor(adapter: string | undefined, opts: ChannelDo
 
         checks.push({
           name: 'Webhook signature (app secret)',
-          status: apiConf?.appSecret ? 'ok' : 'fail',
-          detail: apiConf?.appSecret ? 'Configured' : 'Missing — incoming messages are refused until the Meta app secret is set',
+          status: apiConf?.appSecret ? 'ok' : 'warn',
+          detail: apiConf?.appSecret ? 'Configured' : 'Missing — incoming messages arrive unverified until the Meta app secret is set',
         });
 
         // Webhook port

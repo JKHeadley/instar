@@ -2296,7 +2296,7 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
         phoneNumberId: opts.whatsappPhoneNumberId,
         accessToken: opts.whatsappAccessToken,
         webhookVerifyToken: opts.whatsappVerifyToken ?? '',
-        // SEC-086: deliveries are accepted only when signed with this secret.
+        // SEC-086: with this secret set, only deliveries Meta signed with it are accepted.
         ...(process.env.WHATSAPP_APP_SECRET ? { appSecret: process.env.WHATSAPP_APP_SECRET } : {}),
       };
     }

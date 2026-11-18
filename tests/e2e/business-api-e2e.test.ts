@@ -511,6 +511,40 @@ describe('Phase 3: Business API — E2E', () => {
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(received).toHaveLength(0);
     });
+    it('with no app secret, deliveries still arrive (observe mode) and the owner is told once (SEC-086)', async () => {
+      const adapter = createTestAdapter(tmpDir, {});
+      const received: string[] = [];
+      adapter.onMessage(async (msg) => { received.push(msg.content); });
+      const onUnverifiedDelivery = vi.fn();
+      const backend = new BusinessApiBackend(
+        adapter,
+        { phoneNumberId: '123456789', accessToken: 'test-token', webhookVerifyToken: 'verify-secret' },
+        {
+          onConnected: vi.fn(),
+          onMessage: vi.fn(async (jid, msgId, text, senderName, timestamp) => {
+            await adapter.handleIncomingMessage(jid, msgId, text, senderName, timestamp);
+          }),
+          onButtonReply: vi.fn(), onError: vi.fn(), onStatusUpdate: vi.fn(), onUnverifiedDelivery,
+        },
+      );
+      let postHandler: (req: Request, res: Response) => Promise<void>;
+      const app = {
+        get: vi.fn(),
+        post: vi.fn((_path: string, handler: (req: Request, res: Response) => Promise<void>) => { postHandler = handler; }),
+      } as unknown as Express;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mountWhatsAppWebhooks({ app, backend });
+      for (const text of ['Unverified one', 'Unverified two']) {
+        const payload = makeTextPayload('14155552671', text);
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn().mockReturnThis(), json: vi.fn().mockReturnThis() } as unknown as Response;
+        await postHandler!({ body: payload, rawBody: Buffer.from(JSON.stringify(payload)), headers: {} } as unknown as Request, res);
+        expect((res as any).status).toHaveBeenCalledWith(200);
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(received).toEqual(['Unverified one', 'Unverified two']);
+      expect(onUnverifiedDelivery).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
   });
 
   // ── 6. Adversarial webhook payloads ──────────────────

@@ -2161,7 +2161,7 @@ This agent has WhatsApp messaging enabled. Users can interact via WhatsApp by se
 ### Business API Backend
 
 When using the Business API backend (\`backend: "business-api"\`):
-- Webhook URL: \`/webhooks/whatsapp\` (mounted before auth — no Bearer token needed; every delivery must carry Meta's signature made with \`businessApi.appSecret\`, or it is refused)
+- Webhook URL: \`/webhooks/whatsapp\` (mounted before auth — no Bearer token needed; with \`businessApi.appSecret\` set, every delivery must carry Meta's signature or it is refused; without it, deliveries arrive unverified and the owner is told once)
 - Meta sends webhook verification (GET) and message delivery (POST) to this URL
 - Template messages supported for proactive notifications
 - Interactive button messages for attention items (max 3 buttons per message)

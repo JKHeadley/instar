@@ -1,4 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   BusinessApiBackend,
@@ -1012,11 +1016,39 @@ describe('BusinessApiBackend webhook signature (SEC-086)', () => {
     expect(backend.verifyPayloadSignature(body, 'sha1=abc')).toBe('bad-signature');
   });
 
-  it('refuses everything when no app secret is configured', () => {
+  it('reports no-secret when no app secret is configured', () => {
     const { backend } = createBackend({});
     expect(backend.verifyPayloadSignature(body, sign('', body))).toBe('no-secret');
     expect(backend.hasAppSecret()).toBe(false);
     expect(backend.getStatus().webhookSignatureConfigured).toBe(false);
+  });
+
+  it('tells the owner once, not per delivery, that deliveries are unverified', () => {
+    const onUnverifiedDelivery = vi.fn();
+    const { backend } = createBackend({}, undefined, { ...createMockHandlers(), onUnverifiedDelivery });
+    backend.noteUnverifiedDelivery();
+    backend.noteUnverifiedDelivery();
+    expect(onUnverifiedDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the owner as told only after a confirmed send, and only once ever', async () => {
+    const { notifyOwnerUnverifiedOnce, UNVERIFIED_DELIVERY_NOTICE } = await import('../../src/messaging/backends/BusinessApiBackend.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-notice-'));
+    const marker = path.join(dir, 'state', 'whatsapp-unverified-notice.json');
+    try {
+      expect(await notifyOwnerUnverifiedOnce(marker, undefined)).toBe('not-sent');
+      expect(await notifyOwnerUnverifiedOnce(marker, async () => null)).toBe('not-sent');
+      expect(await notifyOwnerUnverifiedOnce(marker, async () => { throw new Error('down'); })).toBe('not-sent');
+      expect(fs.existsSync(marker)).toBe(false);
+      const send = vi.fn(async () => ({ messageId: 1 }));
+      expect(await notifyOwnerUnverifiedOnce(marker, send)).toBe('sent');
+      expect(send).toHaveBeenCalledWith(UNVERIFIED_DELIVERY_NOTICE);
+      expect(await notifyOwnerUnverifiedOnce(marker, send)).toBe('already-sent');
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(UNVERIFIED_DELIVERY_NOTICE).not.toMatch(/paste/i);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/BusinessApiBackend.test.ts:notice-once' });
+    }
   });
 
   it('verification GET still matches the verify token and refuses a wrong one', () => {

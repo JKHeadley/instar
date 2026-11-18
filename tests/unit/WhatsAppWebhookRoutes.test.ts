@@ -29,6 +29,7 @@ function createMockBackend(overrides: Partial<BusinessApiBackend> = {}) {
     verifyWebhook: vi.fn().mockReturnValue(null),
     verifyPayloadSignature: vi.fn().mockReturnValue('ok'),
     handleWebhook: vi.fn().mockResolvedValue(undefined),
+    noteUnverifiedDelivery: vi.fn(),
     ...overrides,
   } as unknown as BusinessApiBackend;
 }
@@ -276,11 +277,12 @@ describe('WhatsAppWebhookRoutes', () => {
       expect(backend.handleWebhook).not.toHaveBeenCalled();
     });
 
-    it('refuses every body when no app secret is configured (fail closed)', async () => {
+    it('with no app secret, keeps delivering (observe mode) and notes the unverified delivery', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { backend, res } = await post('no-secret');
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(backend.handleWebhook).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(backend.handleWebhook).toHaveBeenCalled();
+      expect(backend.noteUnverifiedDelivery).toHaveBeenCalledTimes(1);
       warn.mockRestore();
     });
 

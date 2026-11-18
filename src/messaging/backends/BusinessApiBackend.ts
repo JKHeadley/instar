@@ -15,6 +15,8 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { WhatsAppAdapter, BusinessApiConfig, BackendCapabilities } from '../WhatsAppAdapter.js';
 
 // ── API constants ──────────────────────────────────────
@@ -92,7 +94,7 @@ export interface BusinessApiBackendStatus {
   connected: boolean;
   phoneNumberId: string;
   webhookConfigured: boolean;
-  /** SEC-086: an app secret is set, so signed webhook POSTs can be accepted. */
+  /** SEC-086: an app secret is set, so deliveries are verified (unsigned ones refused). */
   webhookSignatureConfigured: boolean;
   lastWebhookReceived: string | null;
   messagesSent: number;
@@ -105,6 +107,11 @@ export interface BusinessApiEventHandlers {
   onButtonReply: (jid: string, messageId: string, buttonId: string, buttonTitle: string) => void;
   onError: (error: Error) => void;
   onStatusUpdate: (messageId: string, status: string) => void;
+  /**
+   * SEC-086 observe mode: a delivery was accepted without proof it came from Meta because no
+   * app secret is configured. Fired at most once per process; the caller tells the owner once.
+   */
+  onUnverifiedDelivery?: () => void;
 }
 
 // ── Backend implementation ──────────────────────────────
@@ -200,8 +207,9 @@ export class BusinessApiBackend {
   /**
    * SEC-086: is this webhook POST really from Meta? Meta signs the exact request
    * body with the app secret (X-Hub-Signature-256: sha256=<hex>). Without a configured
-   * secret nothing is accepted (fail closed): an unsigned body could name any sender,
-   * including the owner's own number.
+   * secret the answer is 'no-secret': the route keeps delivering (observe mode) and the
+   * owner is told once that deliveries are unverified. With a secret, a missing or wrong
+   * signature is 'bad-signature' and the delivery is refused.
    */
   verifyPayloadSignature(rawBody: Buffer | undefined, signatureHeader: string | undefined): 'ok' | 'no-secret' | 'bad-signature' {
     const secret = this.config.appSecret;
@@ -214,7 +222,19 @@ export class BusinessApiBackend {
     return given.length === expected.length && crypto.timingSafeEqual(given, expected) ? 'ok' : 'bad-signature';
   }
 
-  /** Whether an app secret is configured (webhook POSTs can be accepted at all). */
+  private unverifiedNoted = false;
+
+  /**
+   * SEC-086 observe mode (identity umbrella section 10): with no app secret set, deliveries keep
+   * arriving, but nothing proves they came from Meta. Tell the owner once, not per message.
+   */
+  noteUnverifiedDelivery(): void {
+    if (this.unverifiedNoted) return;
+    this.unverifiedNoted = true;
+    try { this.handlers.onUnverifiedDelivery?.(); } catch { /* a notice failure never blocks delivery */ }
+  }
+
+  /** Whether an app secret is configured (deliveries can be verified as Meta's). */
   hasAppSecret(): boolean {
     return typeof this.config.appSecret === 'string' && this.config.appSecret.length > 0;
   }
@@ -446,4 +466,26 @@ function safeEqual(a: string, b: string): boolean {
   const ha = crypto.createHash('sha256').update(a).digest();
   const hb = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(ha, hb) && a === b;
+}
+
+/** The one owner notice for SEC-086 observe mode (no app secret set). */
+export const UNVERIFIED_DELIVERY_NOTICE = 'WhatsApp Business messages are reaching me, but I cannot yet check that they really come from Meta. Until your Meta app secret is set, anyone who finds my address could fake one. Tell me "send the WhatsApp secret link" and I will send you a Secret Drop link for the App Secret; from then on I check every message.';
+
+/**
+ * SEC-086 observe mode: tell the owner once, ever, that WhatsApp Business deliveries are unverified.
+ * The marker is written only after the send is confirmed, so an owner with no reachable channel is
+ * retried on a later process, never silently marked as told. Never throws.
+ */
+export async function notifyOwnerUnverifiedOnce(markerPath: string, send: ((text: string) => Promise<unknown>) | undefined): Promise<'sent' | 'already-sent' | 'not-sent'> {
+  try {
+    if (fs.existsSync(markerPath)) return 'already-sent';
+    if (!send) return 'not-sent';
+    const result = await send(UNVERIFIED_DELIVERY_NOTICE);
+    if (result === null || result === undefined || result === false) return 'not-sent';
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, JSON.stringify({ sentAt: new Date().toISOString() }));
+    return 'sent';
+  } catch { // @silent-fallback-ok: a failed notice is retried on a later process; delivery never depends on it
+    return 'not-sent';
+  }
 }
