@@ -15,3 +15,7 @@ Parent review refinement: require finite start <= completion < Enter for non-dea
 Final targeted validation after completion-bound correction: 92/92 tests passed across the two proof driver/timing unit files. git diff --check passed.
 
 Required fast guards: all 30 files passed in six sequential batches of at most five files (802 passing tests). Batch logs: /tmp/topic138345-timing-guards-1.log through -6.log; manifest: /tmp/topic138345-timing-guards-summary.json. Main 0a7724de4 is an ancestor of the reviewed base.
+
+Final-retention correction: parent reproduced empty-final false pass and concurred with exact retained terminal record requirement. Four actual-judge regressions (15.1/3/5/7) failed before implementation; each exercises missing final/read/key, request/creation/Enter mismatch and nonterminal state, with a valid terminal control. No general proof audit or native changes.
+
+Final-retention validation: 96/96 targeted tests pass across driver and timing unit files; git diff --check passes. Logs: /tmp/topic138345-timing-retention-red.log and /tmp/topic138345-timing-retention-tests.log. Prior 30-file fast guards remain recorded; no broad rerun requested for this narrow correction.

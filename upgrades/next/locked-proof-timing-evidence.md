@@ -1,6 +1,6 @@
 ## What Changed
 
-Internal: Before-Enter locked-Mac checks now require finite, consistent timestamps from the same approved grant and duty. Non-deadline interruptions must start and finish before the recorded Enter time; deadline checks use the approved grant expiry. Missing Enter reports unmeasured, including when the UI reports an abort. Extra diagnostic fields cannot turn a late interruption into successful proof.
+Internal: Before-Enter locked-Mac checks now require finite, consistent timestamps from the same approved grant and duty. Non-deadline interruptions must start and finish before the recorded Enter time; deadline checks use the approved grant expiry. The same terminal duty and Enter timestamp must remain in the final read; historical samples cannot substitute for a missing final record. Missing Enter reports unmeasured, including when the UI reports an abort. Extra diagnostic fields cannot turn a late interruption into successful proof.
 
 ## What to Tell Your User
 
@@ -12,4 +12,4 @@ None. Existing proof checks now require sufficient raw timing evidence. No nativ
 
 ## Evidence
 
-92 targeted simulated unit tests pass across two files and cover raw identity, finite start/completion/Enter, late and equal completion, missing Enter, forged metrics, and approved grant expiry. No live Mac proof or integration/E2E execution is claimed; full verification belongs to Local Verify.
+96 targeted simulated unit tests pass across two files and cover raw identity, finite start/completion/Enter, late and equal completion, missing Enter, forged metrics, and approved grant expiry. No live Mac proof or integration/E2E execution is claimed; full verification belongs to Local Verify.

@@ -380,6 +380,10 @@ export function beforeEnterTiming(ev, expectedAction) {
       || observations.some(m => m.createdAt !== createdAt)) return unknown('missing or inconsistent duty creation');
   const enters = observations.filter(m => Object.hasOwn(m, 'enterPendingAt')).map(m => m.enterPendingAt);
   if (!enters.length || enters.some(t => !Number.isFinite(t) || t < createdAt || t !== enters[0])) return unknown('missing or inconsistent same-duty Enter');
+  // Historical timing cannot complete a proof whose final retained duty is missing.
+  const retained = ev.final?.markers?.[key];
+  if (!retained || retained.requestId !== ev.grantRequestId || retained.createdAt !== createdAt
+      || retained.enterPendingAt !== enters[0] || !TERMINAL.includes(retained.state)) return unknown('same-duty terminal Enter record not retained at the end');
   const deadline = steps[0].action === 'wait-deadline';
   // Completion is a conservative upper bound: starting a revoke before Enter does not
   // establish that its awaited response (or the transport-offline action) preceded Enter.

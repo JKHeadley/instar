@@ -71,3 +71,9 @@ No agent-authored-artifact defect — not applicable. This repairs ordinary proo
 Final targeted validation after completion-bound correction: 92/92 tests passed across the two proof driver/timing unit files. git diff --check passed.
 
 Required fast guards: all 30 files passed in six sequential batches of at most five files (802 passing tests). Batch logs: /tmp/topic138345-timing-guards-1.log through -6.log; manifest: /tmp/topic138345-timing-guards-summary.json. Main 0a7724de4 is an ancestor of the reviewed base.
+
+## Final-retention boundary correction
+
+Parent reproduced a false pass with valid historical timing but an empty final marker map, and independently concurred with the narrow correction. beforeEnterTiming now requires the exact final key/request/creation/Enter record in a terminal state. Missing, moved, mismatched or nonterminal final records remain unmeasured. This modifies only the existing measurement completeness check; no product authority, I/O, recovery, migration or external action is added. Valid retained terminal controls pass for all four cases. The four new regressions failed against the preceding commit before implementation, confirming the defect. Rollback remains a harness revert; historical packs without final retained evidence may now fail intentionally.
+
+Final-retention validation: 96/96 targeted tests pass across driver and timing unit files; git diff --check passes. Logs: /tmp/topic138345-timing-retention-red.log and /tmp/topic138345-timing-retention-tests.log. Prior 30-file fast guards remain recorded; no broad rerun requested for this narrow correction.

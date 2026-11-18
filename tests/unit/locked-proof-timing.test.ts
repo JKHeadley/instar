@@ -32,6 +32,26 @@ describe('before-Enter timing uses exact-duty raw evidence', () => {
       expect(judge(c, ev).pass).toBe(true);
       expect(beforeEnterTiming(ev, c.inject[0].action)).toMatchObject({ measured: true, gap: -170, dutyKey: 'duty' });
     });
+    it(`${c.id} requires the same terminal duty and Enter to remain in the final read`, () => {
+      const mutations = [
+        (ev: any) => { ev.final.markers = {}; },
+        (ev: any) => { delete ev.final.markers; },
+        (ev: any) => { delete ev.final; },
+        (ev: any) => { ev.final.markers.other = ev.final.markers.duty; delete ev.final.markers.duty; },
+        (ev: any) => { ev.final.markers.duty.requestId = 'other-request'; },
+        (ev: any) => { ev.final.markers.duty.createdAt++; },
+        (ev: any) => { delete ev.final.markers.duty.enterPendingAt; },
+        (ev: any) => { ev.final.markers.duty.enterPendingAt++; },
+        (ev: any) => { ev.final.markers.duty.state = 'owed'; },
+        (ev: any) => { ev.final.markers.duty.state = 'unknown'; },
+      ];
+      for (const mutate of mutations) {
+        const ev = evidence(c); mutate(ev);
+        expect(judge(c, ev).pass).toBe(false);
+        expect(timingReasons(c, ev)[0]).toMatch(/unmeasured/);
+      }
+      expect(judge(c, evidence(c)).pass).toBe(true);
+    });
     it(`${c.id} never interprets absent Enter plus aborted and zero submissions as proof`, () => {
       const ev = evidence(c);
       delete ev.samples[0].markers.duty.enterPendingAt; delete ev.final.markers.duty.enterPendingAt;
