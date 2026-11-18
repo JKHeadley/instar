@@ -26813,6 +26813,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             // client uses the agent's own token; the lease decides coordinator vs peer role.
             wiring.wireLocalVerifyPeers(svc, {
               liveConfig,
+              // SEC-113 D1: peer answers are signed with this machine's key and checked against pinned peer keys.
+              stateDir: config.stateDir,
               // Resource-aware placement §4: a full verify is heavy work — skip a peer the
               // pool cannot size, or that is below the floor, busy or unmeasured.
               peerFit: (machineId) => {
