@@ -28,8 +28,10 @@ export function stripModel(res, { expanded = false } = {}) {
   if (!items || count === null) return { show: true, state: 'unknown', badge: '?', incomplete: true, title: 'Could not check what needs you', rows: [], more: 0, line: 'The list answered in a shape this page cannot read.' };
   const missed = Array.isArray(d.couldNotCheck) ? d.couldNotCheck.filter((x) => typeof x === 'string') : [];
   const complete = d.complete === true && missed.length === 0;
-  if (count === 0 && complete) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
-  // "N more" opens the rest in place (every count needs a path to act); the read carries up to 100 items.
+  const truncated = d.truncated === true || count > items.length;
+  const omitted = Math.max(0, count - items.length);
+  if (count === 0 && complete && !truncated) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
+  // Expand only rows actually received. The server bounds each answer; name any omitted rows.
   const rows = expanded ? items : items.slice(0, STRIP_ROWS);
   return {
     show: true,
@@ -39,8 +41,12 @@ export function stripModel(res, { expanded = false } = {}) {
     incomplete: !complete,
     title: count > 0 ? `Needs you · ${count}` : 'Nothing found so far',
     rows,
-    more: Math.max(0, count - rows.length),
-    line: missed.length ? `Could not check ${list(missed)}.` : '',
+    more: Math.max(0, items.length - rows.length),
+    truncated,
+    line: [
+      missed.length ? `Could not check ${list(missed)}.` : '',
+      truncated ? `This list has ${items.length} of ${count} needs.${omitted > 0 ? ` ${omitted} more ${omitted === 1 ? 'is' : 'are'} not shown.` : ' Some needs may not be shown.'}` : '',
+    ].filter(Boolean).join(' '),
   };
 }
 
@@ -79,7 +85,7 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
   // "N more things need you." opens the rest in place; "Show fewer" closes it.
   const moreButton = (m) => {
     const b = el('button', { class: 'needs-more link-btn', type: 'button', 'aria-expanded': expanded ? 'true' : 'false',
-      text: expanded ? 'Show fewer' : (m.more === 1 ? 'One more thing needs you. Show it' : `${m.more} more things need you. Show all`) });
+      text: expanded ? 'Show fewer' : m.truncated ? `Show ${m.more} more available ${m.more === 1 ? 'item' : 'items'}` : (m.more === 1 ? 'One more thing needs you. Show it' : `${m.more} more things need you. Show all`) });
     b.addEventListener('click', () => { expanded = !expanded; paint(last); });
     return b;
   };
