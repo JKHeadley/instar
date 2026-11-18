@@ -6,7 +6,7 @@ status: draft
 approved: false
 author: echo
 created: 2026-11-18
-parent-principle: "Signal vs Authority"
+parent-principle: "Signal vs. Authority"
 supersedes: trust-journey-record-provenance (convergence failed at round 6; not built)
 ---
 
@@ -106,12 +106,41 @@ another machine wrote.
    machine recomputes the direction from `from`/`to` against its own last change for that key, and a
    peer record whose real direction is `raise` counts for nothing except being listed (decision 6). So
    a peer cannot make `lastChange` move in a way that re-validates a legacy grant upward.
-9. **Rollout ships in one step, enforcing.** No shadow ladder: the rule only removes trust from peer
-   records, every one of which is reproducible by asking the owner again. Single-machine agents see no
-   change (every record is own-written). Multi-machine agents see at most one re-ask per pending item
-   and one re-acceptance per channel on the first handover after the update. Kill switch:
-   `trustJourney.peerGrants: "fold"` restores today's behaviour (default `"ignore"`), read at boot,
-   documented in the upgrade note, and every boot with it set to `"fold"` logs a warning.
+9. **Rollout walks the maturation ladder, enforcing at each rung it reaches.** The switch is
+   `trustJourney.peerGrants`: `"ignore"` (this spec) or `"fold"` (today). It has no shadow mode: the
+   rule only removes trust from peer records, every one of which is reproducible by asking the owner
+   again, and a watch-only mode would leave the forgery open while it watches (*A Dark Feature Guards
+   Nothing*). Default by agent class (the role, never a per-agent list): test agents and development
+   agents `"ignore"` from merge; the fleet stays `"fold"` until the fleet rung below is reviewed, then
+   the default becomes `"ignore"` by a reviewed code change. Single-machine agents see no change at any
+   rung (every record is own-written). An explicit `"fold"` on any agent logs a warning at every boot.
+   Read at boot; documented in the upgrade note.
+10. **Asking again after a handover is not asking the same yes twice.** *Trust Is Earned by Work*
+    says the same yes is never asked twice. The earlier yes is recorded, but on the new holder it is
+    a record another machine wrote, which this machine cannot tell apart from a forgery; that is the
+    whole defect. So the new holder is not re-asking a yes it holds, it is asking for one it can
+    verify for the first time. The cost is bounded: one re-ask per pending item and one acceptance per
+    channel per handover, and handovers are rare. The re-ask line says plainly why it is asked. When
+    the identity work's signed owner record (piece 2) lands, an owner-signed grant verifies on any
+    machine and this re-ask goes away; that is the lift condition, tracked with the residual below.
+
+## Maturation plan
+
+- **test-agent-live:** a throwaway two-machine agent (the standing two-machine test route) with
+  `"ignore"`: the build drives a lease handover, a forged `action-approval` and a forged
+  `device-acceptance` from the non-holder, an owner reply to the old holder's open request, and a
+  hand-back; each must give the verdict the tests name, seen in `peerGrantIgnored` and the Needs-you
+  item.
+- **dev-agent-live:** `"ignore"` on the development agent's machines from merge. Evidence: rows the
+  build adds to `logs/feature-evidence.jsonl` (one per ignored peer grant, with type and writer, and one
+  per handover re-ask).
+- **fleet:** default `"ignore"` after review of the dev-agent rung.
+- **graduation criterion:** at least one real lease handover on the development agent with every
+  `peerGrantIgnored` row explained (an earlier holder's grant, never an unexplained writer) and every
+  re-ask answered without a support message; a period with zero handovers is not a pass.
+- **dark-window:** at most 21 days from merge to the fleet decision; if the criterion is not met by
+  then, the reason and a new date are recorded on the maturation track.
+- **ladder:** trustJourney.peerGrants
 
 ### Record-type table (closed: every value of `TRUST_RECORD_TYPES`)
 
@@ -141,6 +170,8 @@ another machine wrote.
 | A replicated record grants on this machine | invariant; basis: irreversible-consequence; evidence: a proceed-once runs a governed action, and a device acceptance lets a device approve raises; neither is undone before it takes effect | Authority only from this machine's own writes |
 | A replicated record narrows on this machine | invariant; basis: enumerable-domain; evidence: the closed narrowing column of the table | Refusing a narrowing would leave authority in place |
 | Writer identity of a replicated record | invariant; basis: external-constraint; evidence: the serving machine's signature on the delta response and the replica file's sender | Never a payload field |
+| Fleet default of `trustJourney.peerGrants` | judgment-candidate; floor: `"fold"` on the fleet until the reviewed change; arbiter: the recurring maturation review (two independent readings) | Maturation Path |
+| Dark window before the fleet decision (21 days) | judgment-candidate; floor: the reason and a new date are recorded if the criterion is unmet; arbiter: the maturation review | A review date, never an automatic flip |
 
 ## Multi-machine posture
 
@@ -164,9 +195,13 @@ it, because no machine can prove another machine's write was legitimate).
   git sync. The build verifies that the trust-grant-record journal is not in the git-synced set and
   adds a test that fails if it ever is.
 
+## Open questions
+
+*(none)*
+
 ## Rollback
 
-Set `trustJourney.peerGrants` to `"fold"` and restart (today's behaviour), or revert the release.
+Set `trustJourney.peerGrants` to `"fold"` and restart (today's behaviour; a boot warning says the protection is off), or revert the release.
 No record format changes: records written by this build are read by older builds unchanged, so a
 mixed-version pool replicates normally in both directions.
 
