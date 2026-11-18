@@ -91,6 +91,9 @@ describe('imported history routes', () => {
     const r = await agent(request(app).post('/imported-history/preview')).send({ path: evil });
     expect(r.status).toBe(422);
     expect(r.body.detail).toMatch(/unsafe file name/);
+    expect(r.body.detail).not.toContain('escape.json'); // a name inside the zip is export text: not shown to the agent
+    const asOwner = await owner(request(app).post('/imported-history/preview')).send({ path: evil });
+    expect(asOwner.body.detail).toContain('escape.json');
     expect((await agent(request(app).post('/imported-history/preview')).send({ path: 'relative.zip' })).status).toBe(400);
     expect((await agent(request(app).post('/imported-history/preview')).send({ path: '/nope/missing.zip' })).status).toBe(404);
   });
@@ -117,7 +120,14 @@ describe('imported history routes', () => {
     expect(asOwner.body.messages.map((m: { key: string }) => m.key)).toEqual(['m1', 'm2']);
 
     const list = await agent(request(app).get('/imported-history/conversations'));
-    expect(list.body).toMatchObject({ keptOn: 'this-machine', conversations: [{ ref: 'imported:claude:c1', title: 'Garden', messageCount: 2 }] });
+    expect(list.body).toMatchObject({ note: QUOTED_NOTE, keptOn: 'this-machine', conversations: [{ ref: 'imported:claude:c1', messageCount: 2 }] });
+    // The chat title is text from the export: the agent reads it only inside the wrapper.
+    expect(list.body.conversations[0].title).toBeUndefined();
+    expect(list.body.conversations[0].quoted.startsWith('<imported-history from="claude" title="Garden"')).toBe(true);
+    expect(asAgent.body.conversation.title).toBeUndefined();
+    expect(s.body.results[0].title).toBeUndefined();
+    const ownerList = await owner(request(app).get('/imported-history/conversations'));
+    expect(ownerList.body.conversations[0]).toMatchObject({ ref: 'imported:claude:c1', title: 'Garden' });
   });
 
   it('no credentials, no access', async () => {
