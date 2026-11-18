@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T01:21:47.604Z",
+  "slug": "origin-config-read-budget",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/OriginConfigReader.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
