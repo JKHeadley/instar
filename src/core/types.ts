@@ -6214,6 +6214,9 @@ export interface FileViewerConfig {
   /** Maximum file size for editing (bytes). Default: 204800 (200KB) */
   maxEditableFileSize: number;
 
+  /** Maximum file size to download (bytes), separate from the preview cap. Default: 1073741824 (1GB) */
+  maxDownloadSize?: number;
+
   /** File patterns that are NEVER served, even within allowed directories. */
   blockedFilenames: string[];
 }
