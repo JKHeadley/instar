@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-18T02:53:23.454Z",
+  "slug": "always-available-token",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/alwaysAvailableToken.ts matches token handling",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 326,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/alwaysAvailable.ts",
+      "src/core/CredentialIdentityOracle.ts",
+      "src/core/SessionManager.ts",
+      "src/core/alwaysAvailableToken.ts",
+      "src/core/keyMaterialPaths.ts"
+    ],
+    "addedLines": 291,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "new opt-in sign-in path; no defect closed"
+  },
+  "verdict": "pass"
+}
