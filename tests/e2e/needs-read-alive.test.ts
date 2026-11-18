@@ -12,6 +12,7 @@ import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -64,6 +65,15 @@ describe('Needs-you read — production wiring', () => {
     closers.push(listener);
     config.port = (listener.address() as { port: number }).port;
 
+    // Seed the production attention store before the first read populates the owner cache.
+    const attention = new LocalAttentionItems(config.stateDir);
+    for (let n = 1; n <= 105; n++) {
+      expect(attention.raise({
+        id: `desktop-${n}`, title: `Review desktop request ${n}`, summary: 'Review the request on the Desktop page.',
+        category: 'desktop', priority: 'HIGH', source: 'agent',
+      })).toBe(true);
+    }
+
     const first = await auth(request(app).get('/needs'));
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body).toMatchObject({ schemaVersion: 1, viewer: { role: 'owner' }, agent: { name: 'needs-e2e' } });
@@ -110,6 +120,30 @@ describe('Needs-you read — production wiring', () => {
     expect(phone.body.sources.map((s: { id: string }) => s.id)).toEqual(first.body.sources.map((s: { id: string }) => s.id));
     // The phone still cannot reach the raw sources it was built from.
     expect((await send('GET', '/green-pr-automerge')).status).toBe(403);
+
+    // Each caller obtains its own continuation through the public route and opens it
+    // through the same authenticated entry point. The two pages cover every seeded need.
+    for (const [firstPage, next] of [
+      [first.body, (cursor: string) => auth(request(app).get('/needs?cursor=' + encodeURIComponent(cursor)))],
+      [phone.body, (cursor: string) => send('GET', '/mobile/needs?cursor=' + encodeURIComponent(cursor))],
+    ] as const) {
+      expect(firstPage.items).toHaveLength(100);
+      expect(firstPage.continuation.start).toBe(0);
+      expect(typeof firstPage.continuation.nextCursor).toBe('string');
+      const more = await next(firstPage.continuation.nextCursor);
+      expect(more.status).toBe(200);
+      expect(more.body.continuation.start).toBe(100);
+      const all = [...firstPage.items, ...more.body.items];
+      expect(new Set(all.map(i => i.id)).size).toBe(all.length);
+      expect(all.filter(i => i.title.startsWith('Review desktop request '))).toHaveLength(105);
+      const desktop = more.body.items.find((i: { title: string }) => i.title.startsWith('Review desktop request '));
+      expect(desktop?.action).toMatchObject({ kind: 'href', href: expect.stringMatching(/^\/dashboard\/desktop\.html(?:\?|$)/) });
+    }
+    // A closed item changes the current list before the owner's first-page cache expires.
+    expect(attention.setStatus('desktop-1', 'DONE')).toBeDefined();
+    const stale = await send('GET', '/mobile/needs?cursor=' + encodeURIComponent(phone.body.continuation.nextCursor));
+    expect(stale.status).toBe(409);
+    expect(stale.body.items).toBeUndefined();
 
     // The canary's synthetic row exists only for its own single-use nonce: a guessed one adds nothing.
     const guessed = await auth(request(app).get('/needs?canary=cguess'));

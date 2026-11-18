@@ -2,9 +2,11 @@
  * The Needs-you read (docs/specs/work-front-doors.md decision 2, §7 stage 1): one server answer built
  * from exactly what Home counts, filtered per viewer, honest about what it could not check.
  */
+import express from 'express';
+import request from 'supertest';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { needsViewer, teamMayReadBoard, NeedsCanary, NEEDS_CANARY_MISSES_TO_NOTICE, createNeedsComposer, consoleResult, NEED_SOURCE_LABELS, NEED_SOURCE_POSTURE, resolveConsoleDir, NEEDS_MAX_ITEMS, type NeedsSelfRead } from '../../src/server/needsRoutes.js';
+import { mountNeedsRoutes, needsViewer, teamMayReadBoard, NeedsCanary, NEEDS_CANARY_MISSES_TO_NOTICE, createNeedsComposer, consoleResult, NEED_SOURCE_LABELS, NEED_SOURCE_POSTURE, resolveConsoleDir, NEEDS_MAX_ITEMS, type NeedsSelfRead } from '../../src/server/needsRoutes.js';
 
 const CONSOLE = path.resolve(__dirname, '../../dashboard/console');
 const NOW = Date.parse('2026-11-15T05:00:00Z');
@@ -166,6 +168,56 @@ describe('needs read: the owner', () => {
     expect(a.items).toHaveLength(NEEDS_MAX_ITEMS);
     expect(a.count).toBe(NEEDS_MAX_ITEMS + 5);
     expect(a.truncated).toBe(true);
+  });
+});
+
+describe('owner page navigation', () => {
+  it('shares the first page build and rechecks the ordered list for each continuation', async () => {
+    const many = Array.from({ length: 205 }, (_, i) => ({ id: `x${i}`, topicId: 1000 + i, status: 'OPEN', priority: 'HIGH', category: 'decision', title: `Decide ${i}`, updatedAt: iso(-i) }));
+    const source = '/attention?scope=pool&status=OPEN';
+    const seen: string[] = [];
+    const app = express();
+    const now = { value: NOW };
+    const canary = new NeedsCanary({ read: async (url) => {
+      const response = await request(app).get(url);
+      expect(response.body.items).toHaveLength(100);
+      expect(response.body.count).toBe(206);
+      return { status: response.status, body: response.body };
+    }, notice: () => {} });
+    mountNeedsRoutes(app, { read: reader({ [source]: attention(many) }, seen), bearerOk: () => true,
+      boardFor: () => { throw new Error('unexpected team read'); }, agentName: () => 'Echo', machineId: () => 'm1', now: () => now.value, canary });
+    const get = async (cursor?: string) => request(app).get('/needs').query(cursor === undefined ? {} : { cursor });
+    const [a, b] = await Promise.all([get(), get()]);
+    expect(a.body).toEqual(b.body);
+    expect(a.body).toMatchObject({ count: 205, continuation: { start: 0, previousCursor: null } });
+    expect(seen.filter((p) => p === source)).toHaveLength(1);
+    const malformed = await get('invalid');
+    expect(malformed.status).toBe(400);
+    expect(seen.filter((p) => p === source)).toHaveLength(1);
+    const second = await get(a.body.continuation.nextCursor);
+    const third = await get(second.body.continuation.nextCursor);
+    expect(third.body).toMatchObject({ count: 205, continuation: { start: 200, nextCursor: null } });
+    expect(third.body.items).toHaveLength(5);
+    expect(new Set([...a.body.items, ...second.body.items, ...third.body.items].map((item) => item.id)).size).toBe(205);
+    expect((await get(third.body.continuation.previousCursor)).body.items).toEqual(second.body.items);
+    expect((await get(second.body.continuation.previousCursor)).body.items).toEqual(a.body.items);
+    expect(seen.filter((p) => p === source)).toHaveLength(5);
+    expect(await canary.tick()).toBe(true);
+    expect((await get()).body.items).toEqual(a.body.items);
+    const original = a.body.items[0];
+    expect(original.action).toEqual({ kind: 'topic', topicId: 1000 });
+    many[0].topicId = 9001;
+    const stale = await get(a.body.continuation.nextCursor);
+    expect(stale.status).toBe(409);
+    const refreshed = await get();
+    expect(refreshed.body.count).toBe(205);
+    expect(refreshed.body.items[0]).toMatchObject({ id: original.id, action: { kind: 'topic', topicId: 9001 } });
+    expect(stale.body).toEqual({ error: 'needs-cursor-stale' });
+    many.splice(5);
+    now.value += 10_000;
+    const small = await get();
+    expect(small.body).toMatchObject({ count: 5, truncated: false });
+    expect(small.body).not.toHaveProperty('continuation');
   });
 });
 

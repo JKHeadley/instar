@@ -73,6 +73,8 @@ afterEach(() => { vi.useRealTimers(); });
 describe('which reads are saved', () => {
   it('saves allowlisted status reads only', () => {
     expect(isStorable('/needs', G)).toBe(true);
+    expect(isStorable('/needs?cursor=second-page', G)).toBe(false);
+    expect(isStorable('/needs?x=1&cursor=third-page', G)).toBe(false);
     expect(isStorable('/work/projects', G)).toBe(true);
     expect(isStorable('/commitments?scope=mesh', G)).toBe(true);
     expect(isStorable('/local-verify', G)).toBe(true);

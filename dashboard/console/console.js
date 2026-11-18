@@ -118,10 +118,10 @@ async function getOnce(path, timeoutMs, soft403 = false) {
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
-    if (r.status === 403 && soft403) return failure('the server answered 403');
-    if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
+    if (r.status === 403 && soft403) return { ...failure('the server answered 403'), status: r.status };
+    if (r.status === 401 || r.status === 403) { signOut(); return { ...failure('not signed in'), status: r.status }; }
     if (r.status === 503) return failure('switched off on this agent');
-    if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
+    if (!r.ok) return { ...failure(`the server answered ${r.status}`), status: r.status, retryable: r.status >= 500 };
     try { return { ok: true, data: await r.json() }; } catch { return failure('the answer was not readable'); }
   } catch (e) {
     return { ...failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached'), retryable: true };
