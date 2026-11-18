@@ -174,6 +174,8 @@ export type MeshCommand =
     }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
+  // restart-lock-continuity B: a graceful-shutdown "leave" about the sender itself. Display only.
+  | import('./MachineAway.js').MachineAwayCommand
   | { type: 'secret-share'; encrypted: string }
   // org-pack-and-join §Multi-machine: a validated organization pack change for the same agent's other machines.
   | { type: 'org-state-pull' }
@@ -658,6 +660,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'preferences-sync':
     case 'state-snapshot':
     case 'pool-view-fetch':
+    case 'machine-away':
     case 'secret-share':
     case 'org-apply':
     case 'org-forward':
@@ -723,6 +726,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // method, single-use, signed by the authenticated sender) AND the
       // holder's own per-view authorization passes. The probeOnly shape
       // discloses only existence (not the body) to a registered peer.
+      // machine-away (restart-lock-continuity B) joins it: a registered peer may say only that
+      // IT is leaving (the handler binds the record to the authenticated sender); display only.
       // state-snapshot joins it (multi-machine-replicated-store-foundation
       // §6.1/§6.3): the HOLDER serves a SINGLE-ORIGIN snapshot of a store it
       // authored to a registered same-operator peer. It is self-binding —

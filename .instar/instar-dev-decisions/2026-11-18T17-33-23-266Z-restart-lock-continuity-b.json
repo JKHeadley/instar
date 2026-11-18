@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T17:33:23.266Z",
+  "slug": "restart-lock-continuity-b",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 232,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MachineAway.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/PeerPresencePuller.ts",
+      "src/data/awareness/machine-away.md",
+      "src/server/poolEmptyState.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 231,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

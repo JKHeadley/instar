@@ -28,6 +28,7 @@ import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
 import { operatorError, storageErrorResponse } from '../core/storageMachineName.js';
+import { getActiveMachineAwayBook, describeAway } from '../core/MachineAway.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -12941,6 +12942,8 @@ export function createRoutes(ctx: RouteContext): Router {
               // trustworthy-machine-load A5: the evidence-derived state decides the
               // wording; "offline" is never said without positive evidence.
               liveness: capacity?.liveness,
+              // restart-lock-continuity B.3: a signed machine-away announcement is positive evidence for offline.
+              ...(() => { const rec = isSelf ? null : getActiveMachineAwayBook()?.get(machineId) ?? null; return rec ? { awayText: describeAway(rec, Date.now()) } : {}; })(),
               nicknameOf: (id) => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine',
             },
             nowMs,

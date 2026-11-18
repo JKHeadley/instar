@@ -347,6 +347,10 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { MachineAwayBook, parseMachineAway, setActiveMachineAwayBook, getActiveMachineAwayBook, machineAwayReason, type MachineAwayCommand } from '../core/MachineAway.js';
+
+/** This server process's start, for machine-away instance matching (restart-lock-continuity B.2). */
+const SERVER_STARTED_AT_ISO = new Date().toISOString();
 import { unreportedRegistryDegradations } from '../awareness/registry.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
@@ -13639,6 +13643,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         origin: e.origin,
       });
     });
+
+    // Machine-away announcements received from peers (restart-lock-continuity B): in memory, display only.
+    setActiveMachineAwayBook(new MachineAwayBook(Date.now, (line) => console.log(pc.dim(`  ${line}`))));
 
     // ── Boot session census (restart-lock-continuity part A) ──
     // Taken BEFORE the purge below rewrites the records of sessions that died with
@@ -30282,7 +30289,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // copy on the self beat was stamped up to 30 s ago, which would let a
               // receiver's 60 s freshness check pass a ~90 s-old report.
               const liveLoadReport = _machineLoadSampler?.read() ?? null;
-              return { ...base, serverDownRecovery:currentRecoveryStatus(), ..._appPoolStatusRows(), ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
+              return { ...base, serverStartedAt: SERVER_STARTED_AT_ISO, serverDownRecovery:currentRecoveryStatus(), ..._appPoolStatusRows(), ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
             // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md).
             // Both verbs are ALWAYS registered; with the gate off both refuse.
@@ -30406,6 +30413,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 );
                 return { ok: true, result: r };
               }
+              return { ok: true };
+            },
+            // restart-lock-continuity B.2: a peer says it is leaving, and why. Bound to the
+            // authenticated sender (a machine can only announce itself); display only.
+            'machine-away': (cmd, sender) => {
+              const away = parseMachineAway(cmd);
+              if (!away) return { ok: false, reason: 'malformed' };
+              getActiveMachineAwayBook()?.receive(sender, away);
               return { ok: true };
             },
             // session-pool-move-nudge — "pull placements from me now". Answers at once; the pull
@@ -33621,6 +33636,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .filter((m) => !m.entry.revokedAt)
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
             recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
+            // restart-lock-continuity B.2: clear machine-away records when the peer is back.
+            onPresenceResult: (machineId, ok, startedAt) => { getActiveMachineAwayBook()?.observePresence(machineId, ok, startedAt); },
             log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
             onPeerRecorded: (m) => onPeerBack(m), // ws re-arm + queued-commitment re-fire; no-op when dark
             fetchPeerCapacity: async (machineId, url) => {
@@ -37699,6 +37716,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           // down regardless; a lost resume hint costs one fresh-start conversation, never lost state.
           console.error('[shutdown] Failed to save resume UUIDs:', err);
         }
+      }
+
+      shutdownStep = 'machine-away-announce';
+      // restart-lock-continuity B.1: tell peers why this machine is leaving, before the
+      // coordinator stops. Best effort within a fixed budget; never blocks the shutdown.
+      try {
+        const sendAway = _identityMeshSend;
+        const peers = [...new Set((_resolvePeerUrls?.() ?? []).map((p) => p.machineId))].filter((id) => id && id !== _meshSelfId);
+        if (sendAway && peers.length > 0) {
+          const { readLastRestartRequest } = await import('../core/restartRequestAttribution.js');
+          const { readBootAt } = await import('../core/BootSessionCensus.js');
+          const { announceMachineAway, restartRungDispatched } = await import('../core/MachineAway.js');
+          const last = readLastRestartRequest(config.stateDir);
+          const recentRequest = !!last && Date.now() - Date.parse(last.at) < 2 * 60 * 1000;
+          const dispatched = restartRungDispatched(path.join(os.homedir(), '.instar', 'host-maintenance', 'restarts.jsonl'), readBootAt());
+          const why = machineAwayReason({ restartDispatched: dispatched, restartRequestedRecently: recentRequest });
+          const cmd: MachineAwayCommand = { type: 'machine-away', reason: why.reason, serverStartedAt: SERVER_STARTED_AT_ISO, ...(why.expectedBackInSec !== undefined ? { expectedBackInSec: why.expectedBackInSec } : {}) };
+          const budgetRaw = Number(liveConfig.get<number>('machineMaintenance.awayAnnounceBudgetMs', 2000));
+          const budgetMs = Math.min(10_000, Math.max(500, Number.isFinite(budgetRaw) ? budgetRaw : 2000));
+          await announceMachineAway({ peers, send: (id, c, t) => sendAway(id, c, t), cmd, budgetMs, log: (line) => console.log(line) });
+        }
+      } catch (err) {
+        console.warn(`[machine-away] announcement skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       registrySyncDebouncer?.stop();
