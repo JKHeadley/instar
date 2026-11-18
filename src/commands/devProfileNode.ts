@@ -13,6 +13,12 @@
  * Side effect: SIGUSR1 opens the inspector on 127.0.0.1 (localhost-only) for the
  * life of the process; it closes when the process restarts. The command says so.
  * Read-only otherwise — it samples, it never mutates the target.
+ *
+ * Hazard (darwin-arm64): V8's sampling profiler interrupts the main thread with
+ * SIGPROF. If that lands while onnxruntime runs its KleidiAI SME2 matmul kernels
+ * (the embedding model, on Apple M4+), the handler runs in SME streaming mode and
+ * hits an illegal instruction — SIGILL kills the target. So on darwin-arm64 the
+ * command refuses unless `--force` is given.
  */
 import { execFile } from 'node:child_process';
 import pc from 'picocolors';
@@ -37,7 +43,11 @@ export interface ProfileNodeDeps {
   hottestNodePid(): Promise<number | null>;
   /** Sleep (injected so tests don't actually wait). */
   sleep(ms: number): Promise<void>;
+  /** Host platform/arch (production: this process's). Absent → no host-specific gate. */
+  host?(): HostPlatform;
 }
+
+export interface HostPlatform { platform: string; arch: string; }
 
 export interface DevProfileNodeOptions {
   pid?: string;
@@ -45,6 +55,10 @@ export interface DevProfileNodeOptions {
   top?: number;
   output?: ProfileNodeOutput;
   deps?: ProfileNodeDeps;
+  /** Override the host platform/arch (defaults to `deps.host()`). */
+  host?: HostPlatform;
+  /** Profile even where the sampler is known to be able to crash the target. */
+  force?: boolean;
 }
 
 const INSPECTOR_PORTS = [9229, 9230, 9231, 9232, 9233, 9234, 9235];
@@ -93,6 +107,17 @@ export async function runDevProfileNode(opts: DevProfileNodeOptions): Promise<nu
   const deps = opts.deps ?? productionDeps();
   const durationMs = Math.max(1, opts.durationSec ?? DEFAULT_DURATION_SEC) * 1000;
   const topN = opts.top ?? DEFAULT_TOP;
+
+  const host = opts.host ?? deps.host?.();
+  if (host && host.platform === 'darwin' && host.arch === 'arm64' && !opts.force) {
+    out.error(pc.red(
+      'Refusing to CPU-profile on darwin-arm64 without --force.\n') +
+      'On Apple Silicon with SME2 (M4+), the V8 sampler\'s SIGPROF can land while onnxruntime runs\n' +
+      'SME2 matmul kernels (the embedding model) and kill the target with SIGILL. Profiling a live\n' +
+      'agent server with embeddings enabled can take it down. Re-run with --force only if the target\n' +
+      'does not load onnxruntime, or if losing the process is acceptable.\n');
+    return 1;
+  }
 
   let pid: number | null = null;
   if (opts.pid && /^\d+$/.test(opts.pid)) {
@@ -181,5 +206,6 @@ export function productionDeps(): ProfileNodeDeps {
       });
     },
     sleep(ms) { return new Promise((r) => setTimeout(r, ms)); },
+    host() { return { platform: process.platform, arch: process.arch }; },
   };
 }
