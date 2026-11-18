@@ -71,6 +71,7 @@ import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTru
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
+import { projectTapPort } from './workProjectActions.js';
 import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
@@ -3358,6 +3359,9 @@ export function createRoutes(ctx: RouteContext): Router {
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     // Project apps (docs/specs/project-apps.md §3.3): additive fields on each row, only when the feature is on.
     appsFor: (key) => { const rt = ctx.projectAppsRuntime?.() ?? null; return rt && projectAppsEnabled(ctx.config) ? rt.view(key) : null; },
+    // docs/specs/work-door-project-rows.md §3.1.4 / §3.2: whether this machine runs the checks, and "Ask for an update".
+    checkContext: () => ({ here: ctx.chiefOfStaffLoop?.checksHere() ?? false, gapMs: ctx.chiefOfStaffLoop?.requestGapMs() ?? 14 * 60_000 }),
+    ...(ctx.chiefOfStaffLoop ? { checkNow: (key: string, by: 'owner-tap' | 'chief-of-staff') => ctx.chiefOfStaffLoop!.checkNow(key, by) } : {}),
   });
   ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
   mountProjectAppsRoutes(router, {
@@ -42266,6 +42270,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
       // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
       addAccount: (input) => runAddAccountSignIn(input),
+      // The owner's project taps (docs/specs/work-door-project-rows.md §3.3–3.5): the write gate proved the owner's phone and Face ID.
+      ...(ctx.chiefOfStaffLoop ? { projects: projectTapPort(ctx.chiefOfStaffLoop, (req, key) => _projectsRoute.rowFor(req, key)) } : {}),
       // A tap on a work card (work-board-asks §4): the write gate proved the owner's phone and Face ID.
       workCardTap: async (cardId, tap) => {
         const svc = workBoardRouteDeps.enabled() ? workBoardRouteDeps.svc() : null;
