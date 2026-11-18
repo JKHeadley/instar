@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ProjectAppsRuntime, type ProjectAppsRuntimeDeps, type PinPlatformOps } from '../../src/server/ProjectAppsRuntime.js';
+import { ProjectAppsRuntime, foldRowCounts, customAppRunState, ROW_COUNTS_SHOWN, type ProjectAppsRuntimeDeps, type PinPlatformOps, type CustomAppRunState } from '../../src/server/ProjectAppsRuntime.js';
 import { projectAppRecordStoreSchema, type UnionEntry } from '../../src/core/ProjectAppStore.js';
 import { maturationSummaryFrom, MaturationSummaryProvider } from '../../src/server/projectAppSummaries.js';
 
@@ -88,6 +88,45 @@ describe('custom app offers (part 2, project-apps-sandbox)', () => {
     on = false;
     h.rt.onCommitted();
     expect(h.rt.view(CK).apps.some((a) => a.appRef === C)).toBe(false);
+  });
+});
+
+describe('custom app rows: whether the app runs, and its counts folded (part 2)', () => {
+  const C = 'custom:pa_0123456789abcdef';
+  const app = (runState?: CustomAppRunState, summary: Record<string, unknown> = { state: 'ok', headline: '3 open deals worth $34,500', counts: [], asOf: '2026-11-17T01:00:00.000Z' }) =>
+    ({ appId: 'pa_0123456789abcdef', title: 'Sales pipeline', conversationKey: CK, specOk: true, summary: summary as never, ...(runState ? { runState } : {}) });
+  const rowOf = (runState?: CustomAppRunState, summary?: Record<string, unknown>) => {
+    const h = harness({ customApp: (ref) => (ref === C ? app(runState, summary) : null) });
+    h.rt.offer(CK, C, 'why'); h.rt.answer(CK, C, 'attach', OWNER);
+    return h.rt.view(CK).apps.find((a) => a.appRef === C)!;
+  };
+  it('the row carries the run state: served, copying, off, not-approved; a builtin carries none', () => {
+    for (const st of ['served', 'copying', 'off', 'not-approved'] as const) expect(rowOf(st).state).toBe(st);
+    expect(rowOf().state).toBeUndefined();
+    const h = harness(); h.rt.answer(CK, REF, 'attach', OWNER);
+    expect(h.rt.view(CK).apps[0]).not.toHaveProperty('state');
+  });
+  it('the served-version state maps to the row state', () => {
+    expect(customAppRunState('served')).toBe('served');
+    expect(customAppRunState('copying')).toBe('copying');
+    expect(customAppRunState('disabled')).toBe('off');
+    expect(customAppRunState('none')).toBe('not-approved');
+  });
+  it('counts past three are folded into moreCounts, never cut (§3.3)', () => {
+    const counts = ['Lead', 'Qualified', 'Proposal', 'Won', 'Lost'].map((label, i) => ({ label, value: i + 1 }));
+    expect(foldRowCounts(counts)).toEqual({ counts: counts.slice(0, 3), moreCounts: counts.slice(3) });
+    expect(ROW_COUNTS_SHOWN).toBe(3);
+    expect(foldRowCounts(counts.slice(0, 2))).toEqual({ counts: counts.slice(0, 2), moreCounts: [] });
+    expect(foldRowCounts(undefined)).toEqual({ counts: [], moreCounts: [] });
+    // Malformed entries are left out, not counted; a list is bounded at the write limit (12).
+    expect(foldRowCounts([{ label: 'A', value: 1 }, null, { label: '', value: 2 }, { label: 'B', value: Number.NaN }, { label: 'C', value: '3' }])).toEqual({ counts: [{ label: 'A', value: 1 }], moreCounts: [] });
+    const many = Array.from({ length: 20 }, (_, i) => ({ label: `L${i}`, value: i }));
+    const f = foldRowCounts(many);
+    expect(f.counts.length + f.moreCounts.length).toBe(12);
+    // The row keeps the folded counts beside the three it shows.
+    const row = rowOf('served', { state: 'ok', headline: 'x', ...foldRowCounts(counts), asOf: '2026-11-17T01:00:00.000Z' });
+    expect(row.summary).toMatchObject({ counts: counts.slice(0, 3), moreCounts: counts.slice(3) });
+    expect(rowOf('served', { state: 'ok', headline: 'x', counts: counts.slice(0, 2), moreCounts: [], asOf: '2026-11-17T01:00:00.000Z' }).summary).not.toHaveProperty('moreCounts');
   });
 });
 
