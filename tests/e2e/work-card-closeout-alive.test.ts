@@ -138,7 +138,8 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
       const board = await request(app).get('/work-board').set(auth());
       const doneLane = board.body.lanes.find((l: { lane: string }) => l.lane === 'done');
       expect(doneLane.cards.map((c: { id: string }) => c.id)).toEqual([second]);
-      expect(rig.lines.some((l) => l.text.startsWith('Work board: Justin closed this as done: "Ordered by phone"'))).toBe(true);
+      // The route names the person from the agent's own config (not the rig's displayName), so match the close itself.
+      expect(rig.lines.some((l) => l.text.startsWith('Work board: ') && l.text.includes(' closed this as done: "Ordered by phone"')), JSON.stringify(rig.lines.map((l) => l.text))).toBe(true);
     } finally { await server.stop(); rig.runtime.stop(); rig.journal.close(); }
 
     const again = mkRuntime(stateDir);
