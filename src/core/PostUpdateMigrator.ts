@@ -62,7 +62,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
+import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING, CONVERSATIONS_AWARENESS_LEGACY_WORDING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER, refreshHeldReplyAdvisoryAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
@@ -9965,6 +9965,17 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + conversationsSuggestionsAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Conversations suggestions awareness');
+    }
+    // 2026-11-17: the owner chose "group" as the user-facing word for what the code calls an effort.
+    // The two sections above are install-if-missing, so their old words are rewritten here (idempotent:
+    // each old phrase is replaced once, and the new text no longer contains it).
+    let groupWording = false;
+    for (const [oldText, newText] of CONVERSATIONS_AWARENESS_LEGACY_WORDING) {
+      if (content.includes(oldText)) { content = content.replace(oldText, newText); groupWording = true; }
+    }
+    if (groupWording) {
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Conversations awareness now says "group" to the user');
     }
 
     if (!content.includes(MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING)) {
