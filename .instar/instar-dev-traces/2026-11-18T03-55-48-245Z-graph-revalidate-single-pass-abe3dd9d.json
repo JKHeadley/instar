@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "graph-revalidate-single-pass",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T03:55:48.245Z",
+  "artifactPath": "upgrades/side-effects/graph-revalidate-single-pass.md",
+  "artifactSha256": "8f56e7304b827a7a0eb777f9c258f51afe8d47fd53ae40f59973bf912f14c871",
+  "coveredFiles": [
+    "src/core/ConversationGraphSourceInventory.ts",
+    "upgrades/next/graph-revalidate-single-pass.md",
+    "upgrades/side-effects/graph-revalidate-single-pass.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Same verdicts, fewer redundant verification passes and copies in the per-observation admission check; revert undoes it",
+  "eli16Path": "docs/specs/graph-revalidate-single-pass.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-revalidate-single-pass.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

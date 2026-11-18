@@ -130,6 +130,8 @@ import { ConversationGraphOwnerGrantStore } from './ConversationGraphOwnerGrant.
 import {readConversationGraphOwnerCredential,readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../core/ConversationGraphOwnerPolicy.js';
 import {LiveConfig} from '../config/LiveConfig.js';
 import crypto from 'node:crypto';
+import { payloadHash } from '../core/MobileChatRequests.js';
+import { chatRecordDelivered } from '../documents/decisions.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
@@ -924,6 +926,8 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
+  private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
   private deliverA2aToMachine?: (input: {
     machineId: string;
     targetAgent: string;
@@ -1986,6 +1990,7 @@ export class AgentServer {
     this.poolLink = options.poolLink ?? undefined;
     this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
+    this.docPoolRegistry = options.machinePoolRegistry ?? null;
     this.deliverA2aToMachine = options.deliverA2aToMachine;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
@@ -2556,6 +2561,7 @@ export class AgentServer {
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
         mayNotifyDocument: (deviceId, docId, commentKey) => this.documentPushAllowed(deviceId, docId, commentKey),
+        mayDecideDocument: (deviceId, docId) => this.documentDecidePushAllowed(deviceId, docId),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
         // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
         badgeFor: (deviceId, conversationKey, messageId) => {
@@ -10601,6 +10607,8 @@ export class AgentServer {
         if (!b) return null;
         try { const v = JSON.parse(b.text) as unknown; return Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null; } catch { return null; } // @silent-fallback-ok — an unreadable list keeps the row hidden
       }),
+      // Document decisions (§3.5): whichever machine runs the conversation's session tells it.
+      onApplied: (row) => { if (row.eventKind === 'decision') this.documentDecisionApplied(row); },
     });
     this.documents = { store, service: new DocumentService(store, teamView(deps)) };
     // Rows waiting for a device binding or a team row are re-checked on a timer, so this works on a
@@ -10765,7 +10773,8 @@ export class AgentServer {
     if (!publicKey) return { status: 'unknown' };
     if (local && local.status === 'revoked') return { status: 'revoked' };
     const client: 'phone' | 'browser' = (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
-    const approvedVia = local?.approvedVia ?? act?.approvedVia ?? null;
+    // A local record with no approvedVia predates the field: it was approved in Telegram (MobileDeviceKeys).
+    const approvedVia = local ? (local.approvedVia ?? (isBrowserDevice(local) ? null : 'telegram-dm')) : act?.approvedVia ?? null;
     // Whose device: this machine's own record, else the replicated team binding (owner phones are
     // bound to 'owner' there too). Never inferred from a missing binding: unknown waits for it.
     const person = local ? svc.personOfDevice(local) : null;
@@ -10790,7 +10799,10 @@ export class AgentServer {
     // no machine can widen a guest's computer by rewriting its scope.
     const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
     const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
-    return { status: 'ok', publicKey, role, personKey, client, mayWrite };
+    // SEC-088 interim: only this machine's own, matching, active owner-phone enrollment yields the
+    // Face ID key a decision row is re-checked with; replicated activation never does.
+    const localPresenceKey = local && localKey && deviceKeyHashOf(localKey) === keyHash && local.presenceKey && activeOwnerPhone(svc, deviceId) ? local.presenceKey : undefined;
+    return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia, ...(localPresenceKey ? { localPresenceKey } : {}) };
   }
 
 
@@ -10837,7 +10849,11 @@ export class AgentServer {
         const id = options.telegram?.getLifelineTopicId?.();
         return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
       },
-      deviceApprovedVia: (deviceId: string) => this.mobilePairing?.devices.get(deviceId)?.approvedVia ?? null,
+      // A phone record with no approvedVia predates the field and was approved in Telegram (MobileDeviceKeys);
+      // a browser with none stays unknown, which the caller treats as PIN-approved (fail closed).
+      deviceApprovedVia: (deviceId: string) => { const d = this.mobilePairing?.devices.get(deviceId); return d ? d.approvedVia ?? (isBrowserDevice(d) ? null : 'telegram-dm') : null; },
+      decisionWritesBlockedBy: () => this.documentDecisionWritesBlockedBy(),
+      notifyDecisionAsk: (docId: string, askId: string, versionId?: string) => { void this.documentDecisionPush(docId, `doc-decide:${docId}:${askId}:${versionId ?? ''}`); },
       linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin
         ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel)
         // Test-only (documents.loopbackOrigin): a development agent with no tunnel links to its own loopback address.
@@ -10871,6 +10887,121 @@ export class AgentServer {
     return text ? text.split('\n') : null;
   }
 
+  // ── Document decisions (docs/specs/document-decisions.md) ───────────────────────────────
+
+  /**
+   * The approval root an owner device decides on (§3.2): follow `approvedBy` through this machine's
+   * own device records to the first device not approved by another phone. Refused (null) when any
+   * device on the way is a computer, a browser or missing, or the root is an agent-introduced or
+   * local-install approval, or a PIN approval on an agent that has a Telegram owner.
+   */
+  documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
+    const svc = this.mobilePairing;
+    if (!svc) return null;
+    let d = svc.devices.get(deviceId);
+    if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
+    for (let depth = 0; depth < 8 && d; depth++) {
+      if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;
+      const via = d.approvedVia ?? 'telegram-dm';
+      if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
+      if (via === 'telegram-dm') return 'telegram';
+      if (via === 'dashboard-pin') return this.documentAgentHasTelegramOwner() ? null : 'pin';
+      return null;
+    }
+    return null;
+  }
+
+  private documentAgentHasTelegramOwner(): boolean {
+    const tg = this.telegramAdapter as unknown as { getOwnerUserId?: () => unknown; getVerifiedOwner?: () => unknown } | null | undefined;
+    return !!(tg?.getVerifiedOwner?.() ?? tg?.getOwnerUserId?.());
+  }
+
+  /** A peer heard from in the last 7 days that does not read decision rows yet, by name (§6). */
+  documentDecisionWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    // An unreadable pool is treated as "not sure every machine has the update": refuse with a reason.
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: decision writes refuse until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.documentsDecisionRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** Ask the owner's deciding phones (§3.7). The push service's own answer, in words for the page. */
+  async documentDecisionPush(docId: string, dedupeKey: string, verdict?: 'approve' | 'decline'): Promise<'sent' | 'deduped' | 'unavailable' | 'no-phone'> {
+    const push = this.mobilePairing?.push;
+    if (!push) return 'unavailable';
+    // No owner phone here that may decide: say so (the page shows how to pair one), never a silent "sent".
+    const svc = this.mobilePairing;
+    if (svc && ![...svc.devices.list()].some((d) => this.documentDecisionRoot(d.id) !== null)) return 'no-phone';
+    try {
+      const r = await push.receive({ kind: 'document', itemId: docId, decide: verdict ?? true, dedupeKey, sourceMachine: this.meshSelfId ?? 'self' }, false);
+      return r === 'accepted' ? 'sent' : r === 'deduped' ? 'deduped' : 'unavailable';
+    } catch { return 'unavailable'; } // @silent-fallback-ok — the page offers opening the document in the app
+  }
+
+  /** May this phone be asked to decide on this document? Owner phones that may decide and can read it. */
+  private documentDecidePushAllowed(deviceId: string, docId: string): boolean {
+    const docs = this.documents;
+    if (!docs || !this.documentDecisionRoot(deviceId)) return false;
+    return !!docs.service.facts(docId);
+  }
+
+  /** Did this device's chat message finish delivered on this machine (§3.4)? From the chat request record. */
+  documentChatDelivered(deviceId: string, requestId: string, sendPath: string, text: string): boolean {
+    const store = this.mobilePairing?.chatRequests();
+    if (!store) return false;
+    const t = text.trim();
+    const topic = /^\/mobile\/chat\/(\d+)$/.exec(sendPath);
+    const app = /^\/mobile\/chat\/app\/([0-9a-f-]{36})$/.exec(sendPath);
+    const hash = topic ? payloadHash(Number(topic[1]), t) : app ? crypto.createHash('sha256').update(['app-send', app[1], t].join('\n')).digest('hex') : null;
+    if (!hash) return false;
+    const l = store.lookup(deviceId, requestId, hash);
+    return l.kind === 'done' && chatRecordDelivered(l.status, l.body);
+  }
+
+  private documentDecisionNoticed = new Set<string>();
+  /**
+   * A verified decision row became readable here (written here or synced in, §3.5): if this machine
+   * runs a live session for the document's conversation, give it one fixed line, once per row.
+   */
+  private documentDecisionApplied(row: import('../documents/rows.js').DocRow): void {
+    if (row.eventKind !== 'decision') return;
+    const key = `${row.origin}/${row.incarnation}#${row.seq}`;
+    if (this.documentDecisionNoticed.has(key)) return;
+    // Only fresh decisions: a restart or a late catch-up never replays old notices.
+    const at = Date.parse(row.receivedAt);
+    if (!Number.isFinite(at) || Date.now() - at > 30 * 60_000) return;
+    this.documentDecisionNoticed.add(key);
+    if (this.documentDecisionNoticed.size > 2000) this.documentDecisionNoticed.clear();
+    setImmediate(() => {
+      try {
+        const docs = this.documents;
+        const f = docs?.service.facts(row.docId);
+        if (!docs || !f) return;
+        const d = docs.service.decision(row.docId, { principal: { kind: 'bearer' }, actor: { type: 'machine' }, access: {}, reader: { kind: 'owner' } });
+        if (!d.current || d.current.rowKey !== key) return;
+        const words = row.verdict === 'approve' ? 'Approved' : 'Declined';
+        this.documentNotifySession(f.primary, `[document decision] ${words} version ${d.current.versionLabel ?? '?'} of doc ${row.docId} by the owner's phone; confirm with GET /docs/${row.docId}/decision`, this.sessionManager as never);
+      } catch { /* @silent-fallback-ok — the owner's message and the documents block also carry it */ }
+    });
+  }
+
+  /** One fixed system line to a live Telegram-topic session for this conversation on this machine (§3.5). */
+  documentNotifySession(primary: string, line: string, sm: { isSessionAlive(n: string): boolean; injectMessage(n: string, t: string, o?: { firstParty?: { source: string } }): unknown } | null): boolean {
+    if (!sm || !primary.startsWith('telegram:')) return false;
+    const topicId = Number(primary.slice(9));
+    const name = (this.telegramAdapter as unknown as { getSessionForTopic?: (id: number) => string | null } | null)?.getSessionForTopic?.(topicId) ?? null;
+    if (!name || !sm.isSessionAlive(name)) return false;
+    return sm.injectMessage(name, `[system:document-decision telegram:${topicId}] ${line}`, { firstParty: { source: 'document-decision' } }) !== false;
+  }
+
   /** May this phone get a push about an answer to this comment? Only its author's phones that can read the document. */
   private documentPushAllowed(deviceId: string, docId: string, commentKey: string): boolean {
     const svc = this.mobilePairing;
@@ -10895,6 +11026,12 @@ export class AgentServer {
   private documentPageDeps(options: { config: InstarConfig; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
     return {
       ...this.documentRouteDeps(options),
+      // Document decisions (docs/specs/document-decisions.md).
+      decisionRoot: (deviceId: string) => this.documentDecisionRoot(deviceId),
+      chatDelivered: (deviceId: string, requestId: string, sendPath: string, text: string) => this.documentChatDelivered(deviceId, requestId, sendPath, text),
+      notifyDecisionPhone: (docId: string, dedupeKey: string, verdict?: 'approve' | 'decline') => this.documentDecisionPush(docId, dedupeKey, verdict),
+      notifySession: (primary: string, line: string) => this.documentNotifySession(primary, line, this.sessionManager as never),
+      machineCaller: () => ({ principal: { kind: 'bearer' as const }, actor: { type: 'machine' as const }, access: this.mobilePairing?.teamLog()?.vector() ?? {}, reader: { kind: 'owner' as const } }),
       device: (deviceId: string) => {
         const svc = this.mobilePairing;
         if (!svc) return null;

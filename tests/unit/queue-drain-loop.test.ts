@@ -13,6 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { PendingInboundStore } from '../../src/core/PendingInboundStore.js';
 import {
   QueueDrainLoop,
+  WORK_ADMISSION_REFUSAL_REASON,
   type QueueDrainLoopDeps,
   type DrainDispatchResult,
   type DrainHandover,
@@ -483,6 +484,61 @@ describe('maxAttempts → final forced re-place (§3.3)', () => {
     expect(store.getRow(seq)?.state).toBe('expired');
     expect(store.getRow(seq)?.terminal_reason).toBe('attempts-exhausted');
     expect(deps.lossReports.some((r) => r.reason === 'attempts-exhausted')).toBe(true);
+  });
+});
+
+describe('admission-refused messages are re-placed on their first drain attempt', () => {
+  function enqueueRefused(messageId: string): number {
+    const out = loop.enqueueLive({ sessionKey: 's', messageId, payload: 'hi', senderEnvelope: { firstName: 'J' } }, WORK_ADMISSION_REFUSAL_REASON);
+    if (out.result !== 'queued') throw new Error(`enqueue failed: ${JSON.stringify(out)}`);
+    return out.seq;
+  }
+
+  it('placed on a peer at once: delivered, no local dispatch, counted', async () => {
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(deps.forceReplaceCalls).toHaveLength(1);
+    expect(deps.dispatchCalls).toHaveLength(0);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+    expect(store.getCounter('admissionRefusalReplaced')).toBe(1);
+  });
+
+  it('placement chose this machine (recovered): dispatched locally, delivered', async () => {
+    deps.forceReplaceResult = 'local';
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(deps.dispatchCalls).toHaveLength(1);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+
+  it('no machine can take it yet: released with backoff, never lost, retried later', async () => {
+    deps.forceReplaceResult = false;
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('queued');
+    expect(store.getRow(seq)?.attempts).toBe(1);
+    expect(deps.lossReports).toHaveLength(0);
+    deps.forceReplaceResult = true;
+    advance(deps.qcfg.maxBackoffMs + 1000);
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+
+  it('a sender refusal on re-place is terminal with the unified notice', async () => {
+    deps.forceReplaceResult = 'rejected';
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('sender-deauthorized');
+    expect(deps.lossReports.some((r) => r.reason === 'sender-deauthorized')).toBe(true);
+  });
+
+  it('other reasons keep the normal local-first dispatch', async () => {
+    const seq = enqueue('s', 'm2');
+    await loop.runDrainPass('test');
+    expect(deps.forceReplaceCalls).toHaveLength(0);
+    expect(deps.dispatchCalls).toHaveLength(1);
+    expect(store.getRow(seq)?.state).toBe('delivered');
   });
 });
 
