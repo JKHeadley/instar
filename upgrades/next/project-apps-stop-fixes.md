@@ -10,6 +10,12 @@ After the owner taps "Stop this app", the app's card leaves Needs-you and reads 
 
 If you stop one of the apps I made for a project, the project's row now shows it as stopped, and nothing asks you to approve it again. Turning a stopped app back on comes in a later update.
 
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| A stopped project app shows as stopped | Automatic: after "Stop this app", the row and strip show "<app> · Stopped" and no approval is asked again |
+
 ## Evidence
 
 - Whole unit lane green (69,810 tests).
