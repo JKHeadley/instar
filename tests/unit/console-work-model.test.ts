@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   readBoard, headline, cardActions, phoneOnlyLine, pinExplain, tapBody, tapCovers, cardRow, workBoardNeedRows, settingsPatch, donePaging, donePageFrom,
-  cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords,
+  cardSourceLink, cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords,
 } from '../../dashboard/console/work-model.js';
 import { NEED_SOURCES } from '../../dashboard/console/needs-model.js';
 import { NATIVE_PAGES, CONSOLE_ONLY_TABS, GROUPS, PHONE_PAGE_ALIASES, tabHref } from '../../dashboard/console/nav-model.js';
@@ -49,6 +49,22 @@ function board(waiting = [card()], over = {}) {
   };
 }
 const acts = (c, o) => cardActions(c, o).map((a) => a.action);
+
+describe('card source links', () => {
+  it('keeps the exact source identity in a safe internal link, never its label', () => {
+    expect(cardSourceLink(card({ source: { conversationKey: 'telegram:142440', messageId: '144556' } }))).toEqual({ href: '#/work/chats?c=telegram%3A142440&m=144556', label: 'Original message' });
+    const id = '0b0c0d0e-0f10-5111-8213-141516171819';
+    const link = cardSourceLink(card({ source: { conversationKey: `app:${id}`, messageId: 'event:one&two' } }));
+    expect(new URLSearchParams(link.href.split('?')[1]).get('m')).toBe('event:one&two');
+    expect(link.label).not.toContain(id);
+  });
+  it('does not infer a source and names unsupported sources without a bad link', () => {
+    expect(cardSourceLink(card())).toBeNull();
+    expect(cardSourceLink(card({ source: { conversationKey: 'javascript:alert(1)', messageId: 'x' } }))).toEqual({ href: null, label: 'The original message cannot be opened here.' });
+    expect(cardSourceLink(card({ source: { conversationKey: 'telegram:12', messageId: '' } }))).toEqual({ href: '#/work/chats?c=telegram%3A12', label: 'Original conversation', note: 'The exact message is unavailable.' });
+    expect(cardSourceLink(card({ removed: {}, source: { conversationKey: 'telegram:12', messageId: '7' } }))).toBeNull();
+  });
+});
 
 describe('readBoard', () => {
   it('reads the five lanes, the counts and the policy', () => {
@@ -295,6 +311,17 @@ describe('the page', () => {
     expect(approve && !approve.disabled).toBe(true);
     for (const t of ['With the agent', 'Waiting on others', 'Done', 'Archived', 'Settings']) expect(main.textContent).toContain(t);
     expect(main.textContent).not.toMatch(/wc_[0-9a-f]{16}/); // no internal ids on screen
+  });
+
+  it('shows the source link in the card sheet without changing its own conversation link', async () => {
+    reads['/work-board'] = ok(board([card({ source: { conversationKey: 'telegram:142440', messageId: '144556' } })]));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode(); await renderWork(main, ctx());
+    main.querySelector('.work-open').click();
+    const links = [...document.querySelectorAll('.sheet a')];
+    expect(links.find(a => a.textContent === 'Original message')?.getAttribute('href')).toBe('#/work/chats?c=telegram%3A142440&m=144556');
+    expect(links.find(a => a.textContent === 'Open its conversation')).toBeTruthy();
+    expect(document.querySelector('.sheet').textContent).not.toContain('144556');
   });
 
   it('Approve shows what it covers, then the PIN, then sends the bound body with the PIN', async () => {
