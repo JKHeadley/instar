@@ -194,8 +194,8 @@ export class RealTarget {
     const configB = this.agentConfig(this.o.proofDirB);
     const missing = setupGaps([[this.o.proofDir, configA], [this.o.proofDirB, configB]]);
     if (missing.length) throw new Error(missing.join('\n'));
-    this.a = { port: this.o.port, dir: this.o.proofDir, ...this.pick(configA) };
-    this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(configB) };
+    this.a = { port: this.o.port, dir: this.o.proofDir, ...this.pick(configA), agentId: configA.projectName };
+    this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(configB), agentId: configB.projectName };
     for (const agent of [this.a, this.b]) {
       const health = await this.api(agent, 'GET', '/health');
       // The real owner of the process answering on this port, not a constant.
@@ -290,14 +290,14 @@ export class RealTarget {
   }
 
   async snapshot() {
-    const state = this.readStore();
+    const state = this.watchEnd?.frozen ? this.readWatchStore() : this.readStore();
     const markers = this.caseMarkers(state);
     const procs = this.processes();
     const helper = procs.filter(p => p.command.includes('instar-desktop-host'));
     const guard = helper.find(p => p.command.includes('relock-guard'));
     const typist = helper.find(p => p.command.includes('input-stream'));
-    const lockState = await this.readLockState();
-    const serverLockState = await this.serverLockState();
+    const lockState = this.watchEnd?.frozen ? this.localWatchLock() : await this.readLockState();
+    const serverLockState = this.watchEnd?.frozen ? 'unknown' : await this.serverLockState();
     const now = this.now();
     for (const [key, m] of Object.entries(markers)) {
       if (spawnSync('sudo', ['-n', 'test', '-e', path.join(this.store, `lease-${key}`)]).status === 0) this.events.add('lease-written');
@@ -374,6 +374,11 @@ export class RealTarget {
 
   async prepare(c) {
     this.observeGuards = false;
+    if (this.watchEnd) {
+      if (this.watchEnd.recovery?.state !== 'recovered') throw new Error('previous watch-end recovery was not confirmed');
+      this.watchSupervisor('archive');
+      this.watchEnd = null;
+    }
     await this.closeViewers();
     await this.restoreGuardAck();
     this.events.clear();
@@ -569,6 +574,14 @@ export class RealTarget {
     const problems = [];
     try { await this.restoreGuardAck(); }
     catch (err) { problems.push(`heartbeat fixture: ${err instanceof Error ? err.message : String(err)}`); }
+    const watchFixture = !!this.watchEnd;
+    if (watchFixture) {
+      try { await this.finishWatchEnd(); }
+      catch (error) {
+        problems.push(`watch-end recovery: ${error.message}`);
+        if (!['recovered', 'recovery-failed'].includes(this.watchEnd.recovery?.state)) return problems;
+      }
+    }
     if (this.launchdJob) {
       try { this.endLaunchdServe(); await this.act('start-server', {}); }
       catch (err) { problems.push(`launchd job: ${err instanceof Error ? err.message : String(err)}`); }
@@ -576,7 +589,7 @@ export class RealTarget {
     for (const pid of [...this.stopped]) {
       try { this.kill(pid, 'CONT'); } catch (err) { problems.push(String(err instanceof Error ? err.message : err)); this.stopped.delete(pid); }
     }
-    try { if (await this.readLockState() !== 'locked-in-session') await this.act('lock-now', {}); }
+    try { if (!watchFixture && await this.readLockState() !== 'locked-in-session') await this.act('lock-now', {}); }
     catch (err) { problems.push(`lock-now: ${err instanceof Error ? err.message : String(err)}`); }
     return problems;
   }
@@ -667,6 +680,8 @@ export class RealTarget {
   async act(action, { step } = {}) {
     const helper = () => this.processes().filter(p => p.command.includes('instar-desktop-host'));
     switch (action) {
+      case 'freeze-watch-end': return this.freezeWatchEnd();
+      case 'resume-watch-end': return this.resumeWatchEnd();
       case 'stop-server': {
         const r = this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
         // tmux resumes a stopped pane process at once, so a case that believes it froze the
@@ -847,6 +862,132 @@ export class RealTarget {
 
   bootoutProofUser() { sudo(['launchctl', 'bootout', `gui/${this.uid}`]); }
 
+  watchSupervisor(action, plan) {
+    return JSON.parse(sudo(['launchctl', 'asuser', this.uid, 'sudo', '-u', PROOF_USER, '-H', 'python3',
+      path.join(HERE, 'watch-end-supervisor.py'), '--driver-pid', String(process.pid), action,
+      path.join(this.store, '.proof-watch-end')], plan ? { input: JSON.stringify(plan) } : {}));
+  }
+
+  readWatchStore() {
+    const state = JSON.parse(sudo(['cat', path.join(this.store, 'locked-state.json')]));
+    if (!state || typeof state.markers !== 'object') throw new Error('watch-end store observation unavailable');
+    return state;
+  }
+
+  localWatchLock() {
+    const own = this.consoleLock();
+    if (this.consoleOwner() !== PROOF_USER || !['locked', 'open'].includes(own)) throw new Error('proof console changed or unreadable during watch-end fault');
+    return own === 'locked' ? 'locked-in-session' : 'unlocked';
+  }
+
+  async freezeWatchEnd() {
+    if (!this.launchdJob || !this.a.agentId || !this.b.agentId || this.a.agentId === this.b.agentId) throw new Error('watch-end requires foreground A and distinct A/B agent identities');
+    for (const agent of [this.a, this.b]) {
+      const health = await this.api(agent, 'GET', '/health');
+      if (health.project !== agent.agentId) throw new Error('running proof server owner does not match configured identity');
+    }
+    const entries = Object.entries(this.caseMarkers(this.readWatchStore()));
+    if (entries.length !== 1) throw new Error('watch-end requires exactly one current duty');
+    const [key, marker] = entries[0];
+    if (marker.agentId !== this.a.agentId || marker.state !== 'watching' || !Number.isFinite(marker.watchStart)
+        || this.now() - marker.watchStart >= 80_000 || this.localWatchLock() !== 'locked-in-session') throw new Error('initial locked watch is not confirmed');
+    const serverPid = this.serverPid(this.a);
+    const guard = this.processes().find(p => p.pid === marker.guardPid && p.command.split(/\s+/).includes(key));
+    if (!serverPid || !guard) throw new Error('watch-end process identity missing');
+    const helper = guard.command.split(/\s+/)[0];
+    const prior = spawnSync('sudo', ['-n', 'test', '-e', path.join(this.store, '.proof-watch-end/receipt.json')], { timeout: 3_000 });
+    if (prior.status === 0) {
+      const old = this.watchSupervisor('status');
+      if (old.state !== 'recovered') throw new Error('prior watch-end recovery receipt needs attention');
+      this.watchSupervisor('archive');
+    } else if (prior.status !== 1) throw new Error('cannot inspect prior watch-end recovery');
+    // Track the fixture before arm: a lost reply must still trigger finish/recovery.
+    this.watchEnd = { key, watchStart: marker.watchStart, frozen: false, initialLocked: true,
+      replacements: marker.guardReplacements ?? 0, agentId: marker.agentId };
+    const armed = this.watchSupervisor('arm', { key, helper, guardPid: marker.guardPid, guardStart: marker.guardStart,
+      serverPid, driverPid: process.pid, watchStart: marker.watchStart, bootSession: marker.bootSession, loginSession: marker.loginSession });
+    if (armed.state !== 'armed' || !Number.isFinite(armed.readyAt)) throw new Error('watch-end supervisor did not ACK');
+    this.watchEnd.receipt = armed;
+    const frozen = this.watchSupervisor('freeze');
+    if (frozen.frozen !== true) throw new Error('watch-end freeze not confirmed');
+    this.watchEnd.frozen = true;
+    this.watchEnd.frozenAt = frozen.at;
+    this.assertWatchEndIdentity();
+    return { armed: true, frozen: true, key, watchStart: marker.watchStart, readyAt: armed.readyAt, frozenAt: frozen.at };
+  }
+
+  assertWatchEndIdentity() {
+    const f = this.watchEnd, receipt = this.watchSupervisor('status');
+    if (receipt.state !== 'armed' || receipt.nonce !== f.receipt.nonce) throw new Error('watch-end supervisor recovery already began');
+    const marker = this.readWatchStore().markers[f.key];
+    if (!marker || marker.watchStart !== f.watchStart || marker.guardPid !== f.receipt.guard.pid
+        || marker.guardStart !== f.receipt.guard.start || (marker.guardReplacements ?? 0) !== f.replacements) throw new Error('watch-end duty/guard was replaced');
+    return marker;
+  }
+
+  async resumeWatchEnd() {
+    const f = this.watchEnd;
+    if (!f?.frozen) throw new Error('watch-end fault was not frozen');
+    const end = f.watchStart + 120_000;
+    while (this.now() < end + 1_000) {
+      this.assertWatchEndIdentity();
+      if (this.localWatchLock() !== 'unlocked') throw new Error('test account did not remain unlocked during frozen watch');
+      await this.sleep(Math.min(250, end + 1_000 - this.now()));
+    }
+    const guard = this.watchSupervisor('resume-guard');
+    if (!guard.continued || guard.gone) throw new Error('original guard did not resume');
+    f.guardResumedAt = guard.at;
+    let marker;
+    while (this.now() < end + 9_000) {
+      marker = this.assertWatchEndIdentity();
+      if (TERMINAL.includes(marker.state)) break;
+      await this.sleep(100);
+    }
+    if (marker?.state !== 'relock-failed' || !Number.isFinite(marker.guardAt) || marker.guardAt < end
+        || this.localWatchLock() !== 'unlocked') throw new Error('watch-end setup miss: native watch-end failure was not observed');
+    f.failureAt = marker.guardAt;
+    // A stale-sweep takeover must not race a resumed guard: it is terminal first.
+    const server = this.watchSupervisor('resume-server');
+    if (!server.continued || server.gone) throw new Error('same Node server did not resume');
+    f.nodeResumedAt = server.at;
+    f.resumedServer = server.identity;
+    f.frozen = false;
+    f.sameNode = true;
+    return { key: f.key, watchStart: f.watchStart, guardResumedAt: f.guardResumedAt, failureAt: f.failureAt,
+      nodeResumedAt: f.nodeResumedAt, sameNode: true };
+  }
+
+  async finishWatchEnd() {
+    let finishError;
+    try { this.watchSupervisor('finish'); } catch (error) { finishError = error; }
+    const until = performance.now() + 15_000;
+    let receipt;
+    while (performance.now() < until) {
+      receipt = this.watchSupervisor('status');
+      if (['recovered', 'recovery-failed'].includes(receipt.state)) break;
+      await this.sleep(100);
+    }
+    this.watchEnd.recovery = receipt;
+    this.watchEnd.frozen = false;
+    if (receipt?.state !== 'recovered' || receipt.results?.lock?.locked !== true) {
+      throw new Error(`independent recovery not confirmed: ${(receipt?.recoveryProblems ?? [finishError?.message ?? 'timed out']).join('; ')}`);
+    }
+  }
+
+  watchEndRecoveryEvidence() { return this.watchEnd?.recovery ?? null; }
+
+  async waitSecurityItem(c, startedAt, failedAt) {
+    const find = async () => ((await this.api(this.a, 'GET', '/attention')).items ?? [])
+      .find(i => (c.watchEndFault ? i.id === `agent:desktop-relock-failed:${this.watchEnd?.key}` : String(i.id).startsWith('agent:desktop-relock')) && Date.parse(i.createdAt) >= startedAt);
+    let item = await find();
+    const deadline = performance.now() + 15_000;
+    while (!item && failedAt && performance.now() < deadline) {
+      await this.sleep(1_000);
+      item = await find();
+    }
+    return item;
+  }
+
   async extraEvidence(c, ev) {
     const enters = new Map();
     let closedAt = null;
@@ -874,14 +1015,17 @@ export class RealTarget {
         '--predicate', 'process == "loginwindow"'], { allowFail: true }).split('\n').filter(l => /authenticat/i.test(l)).length,
     };
     try {
-      const failedAt = ev.samples.find(s => Object.values(s.markers ?? {}).some(m => m.state === 'relock-failed'))?.t;
-      const find = async () => ((await this.api(this.a, 'GET', '/attention')).items ?? [])
-        .find(i => String(i.id).startsWith('agent:desktop-relock') && Date.parse(i.createdAt) >= ev.startedAt);
-      let item = await find();
-      // The owner is told by a 10 s sweep, so a single look right after a failed relock is too early.
-      for (const until = this.now() + 15_000; !item && failedAt && this.now() < until;) { await this.sleep(1_000); item = await find(); }
+      const failedAt = c.watchEndFault ? this.watchEnd?.failureAt
+        : ev.samples.find(s => Object.values(s.markers ?? {}).some(m => m.state === 'relock-failed'))?.t;
+      const item = await this.waitSecurityItem(c, ev.startedAt, failedAt);
       out.securityItemRaised = !!item;
       if (item && failedAt) out.securityItemMs = Date.parse(item.createdAt) - failedAt;
+      if (c.watchEndFault) out.watchEnd = { key: this.watchEnd?.key, watchStart: this.watchEnd?.watchStart,
+        receipt: this.watchEnd?.receipt, agentId: this.watchEnd?.agentId, resumedServer: this.watchEnd?.resumedServer,
+        readyAt: this.watchEnd?.receipt?.readyAt, frozenAt: this.watchEnd?.frozenAt,
+        guardResumedAt: this.watchEnd?.guardResumedAt, failureAt: this.watchEnd?.failureAt,
+        nodeResumedAt: this.watchEnd?.nodeResumedAt, sameNode: this.watchEnd?.sameNode,
+        attentionId: item?.id, attentionAt: item ? Date.parse(item.createdAt) : null };
     } catch { out.securityItemRaised = false; }
     if (c.noLockCall) {
       const finalPopulation = await this.guardPopulation();
