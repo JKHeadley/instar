@@ -201,7 +201,6 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
       evidence.guardBaseline = await target.beginGuardObservation();
     }
     const grant = await target.openGrant(c);
-    evidence.grantRequestId = grant?.requestId ?? null;
     evidence.grantOpenedAt = target.now();
     evidence.grantRequestId = grant?.requestId ?? grant?.id ?? null;
     evidence.grantExpiresAt = grant?.expiresAt ?? null; // the server's own end time for the grant, when the page was told it

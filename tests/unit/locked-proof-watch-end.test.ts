@@ -297,6 +297,7 @@ describe('watch-end proof sequencing and independent verdict', () => {
     let topologyChanges = 0;
     const t = Object.assign(Object.create(RealTarget.prototype), {
       watchEnd: { recovery: { state: 'recovering' } }, launchdJob: {},
+      restoreGuardAck: async () => {},
       finishWatchEnd: async () => { throw new Error('not confirmed'); },
       endLaunchdServe: () => { topologyChanges++; },
     });

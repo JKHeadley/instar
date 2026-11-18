@@ -520,7 +520,7 @@ describe('locked-proof launchd kill', () => {
     let clock = 0; const order: string[] = [];
     const page = { waitForSelector: async () => { order.push(`control@${clock}`); } };
     const opening = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, wakeDisplay: () => { order.push(`wake@${clock}`); return ''; },
-      viewer: async () => { order.push(`viewer@${clock}`); return { page }; }, requestGrant: async () => ({ clicked: false }) });
+      viewer: async () => { order.push(`viewer@${clock}`); return { page, requestId: '12345678-1234-1234-1234-123456789abc', expiresAt: 600_000 }; }, requestGrant: async () => ({ clicked: false }) });
     await opening.openGrant({});
     expect(order).toEqual(['viewer@0', 'control@0']);
   });

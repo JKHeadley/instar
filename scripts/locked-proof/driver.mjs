@@ -441,10 +441,13 @@ export class RealTarget {
     const v = await this.viewer(this.a);
     await this.requestGrant(v);
     await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
-    if (c.noLockCall) {
-      const until = this.now() + 5_000;
-      while (!v.requestId && this.now() < until) await this.sleep(25);
-      if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v.requestId ?? '')) throw new Error('native proof request identity missing');
+    // Control visibility and this asynchronous response listener can settle in either order.
+    // Every proof needs the exact approved request, not a later guess from the marker store.
+    const receiptDeadline = performance.now() + 5_000;
+    while (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v.requestId ?? '')
+        || !Number.isSafeInteger(v.expiresAt) || v.expiresAt <= this.now()) {
+      if (performance.now() >= receiptDeadline) throw new Error('approved grant identity/expiry receipt missing or expired');
+      await this.sleep(25);
     }
     this.main = v;
     this.mainOpenedAt = this.now();

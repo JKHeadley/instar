@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error plain script
 import { beforeEnterTiming, CASES, judge, runCase } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error plain script
@@ -127,6 +127,45 @@ describe('before-Enter timing uses exact-duty raw evidence', () => {
 
 
 describe('viewer timing identity receipt', () => {
+  it('does not return visible control before its deferred approved identity receipt resolves', async () => {
+    let response: any, release!: (body: any) => void;
+    const body = new Promise(resolve => { release = resolve; });
+    const id = '12345678-1234-1234-1234-123456789abc';
+    const page = {
+      on: (_: string, handler: any) => { response = handler; },
+      goto: async () => { void response({ url: () => `http://127.0.0.1:1/desktop/requests/${id}`,
+        request: () => ({ method: () => 'GET' }), ok: () => true, json: () => body }); },
+      fill: async () => {}, click: async () => {}, isVisible: async () => true,
+      waitForSelector: async () => {},
+    };
+    const target = Object.assign(Object.create(RealTarget.prototype), {
+      browser: { newContext: async () => ({ newPage: async () => page }) }, viewers: [],
+      a: { port: 1, pin: '000000' }, now: () => 1_000,
+      sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+    });
+    let returned = false;
+    const opening = target.openGrant({}).then((grant: any) => { returned = true; return grant; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const returnedBeforeReceipt = returned;
+    release({ status: 'approved', expiresAt: 9_000 });
+    const grant = await opening;
+    expect(returnedBeforeReceipt).toBe(false);
+    expect(grant).toMatchObject({ requestId: id, expiresAt: 9_000 });
+  });
+  it.each([{}, { requestId: '12345678-1234-1234-1234-123456789abc', expiresAt: 999 }])('refuses missing or expired grant receipts after a bounded wait: %j', async receipt => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      const target = Object.assign(Object.create(RealTarget.prototype), {
+        viewer: async () => ({ ...receipt, page: { waitForSelector: async () => {} } }),
+        requestGrant: async () => {}, now: () => 1_000,
+        sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+      });
+      const result = target.openGrant({}).then(() => 'unexpected-success', (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await result).toBe('approved grant identity/expiry receipt missing or expired');
+      expect(target.main).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
   it('binds expiry to an approved successful exact request GET, not adjacent responses', async () => {
     let response: any;
     const page = { on: (_: string, handler: any) => { response = handler; }, goto: async () => {},
