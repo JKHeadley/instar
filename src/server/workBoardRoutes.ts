@@ -6,6 +6,7 @@
  *     GET  /work-board/cards/:id
  *     POST /work-board/cards                create (agent)
  *     POST /work-board/cards/:id/records    edited | waiting-on | evidence | claimed-done
+ *     GET  /work-board/lessons              "Not important" reasons, read before raising a card (bearer only)
  *   Team owner from the console (dashboard PIN):
  *     POST /work-board/cards                create (person-written)
  *     POST /work-board/cards/:id/records    edited (person-written)
@@ -250,7 +251,9 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     catch (err) { /* @silent-fallback-ok: logged; the card exists and its chat is created at the next write or boot (the key is derived) */ deps.log?.('work-board-conversation-create-failed', { cardId: r.cardId, error: (err as Error)?.message }); }
     const v = svc.view(r.cardId)!;
     deps.controller()?.poke();
-    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}) });
+    // The agent sees the owner's recent "Not important" reasons at the moment it raises a card (work-front-doors §6).
+    const lessons = p.kind === 'agent' ? { lessons: lessonsJson(svc, deps.displayName, 10) } : {};
+    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}), ...lessons });
   });
 
   router.post('/work-board/cards/:id/records', async (req, res) => {
@@ -320,6 +323,14 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     await applyTap(svc, req, res, { kind: 'person', personKey: owner, proof: 'pin', isOwner: true });
   });
 
+  // ── dismissal lessons (work-front-doors §6): the agent's own read; a phone or a scoped session gets none ──
+  router.get('/work-board/lessons', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    if (deps.caller(req).kind !== 'bearer') { res.status(403).json({ error: 'not-available-to-this-caller' }); return; }
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(req.query?.limit ?? '50'), 10) || 50));
+    res.json({ lessons: lessonsJson(svc, deps.displayName, limit) });
+  });
+
   // ── graduation (Maturation plan): the pilot's own measurement, written by the scheduled job ──
   router.get('/work-board/graduation', (req, res) => {
     const svc = gate(res); if (!svc) return;
@@ -376,6 +387,14 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     if (Object.keys(patch).length && !deps.saveSettings(patch)) { res.status(500).json({ error: 'settings-not-saved' }); return; }
     res.json({ settings: deps.settings(), policy: svc.policy(), ...(policyResult ? { policyChange: policyResult } : {}) });
   });
+}
+
+/** The dismissal lessons as the agent reads them: the reason, who gave it, and where it came from. */
+export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => string, limit: number): Array<Record<string, unknown>> {
+  return svc.dismissalLessons(limit).map((l) => ({
+    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, tapId: l.tapId, conversationKey: l.conversationKey,
+    by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
+  }));
 }
 
 /**
