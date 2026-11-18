@@ -152,6 +152,26 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   });
 
   describe('codex-cli', () => {
+    // 2026-11-18: a swap onto a Codex account tagged the session with that account
+    // while Codex ran on the server's default login (~/.codex), because this builder
+    // dropped configHome. The account a session is tagged with must be its CODEX_HOME.
+    it('launches under the account home it is given (CODEX_HOME), fresh or resumed', () => {
+      const bin = fakeCodexBinary(false);
+      const fresh = buildInteractiveLaunch('codex-cli', { binaryPath: bin, configHome: '/Users/x/.codex-followme-justin-gmail' });
+      expect(fresh.envOverrides.CODEX_HOME).toBe('/Users/x/.codex-followme-justin-gmail');
+      expect(fresh.envOverrides.CLAUDE_CONFIG_DIR).toBeUndefined();
+      const resumed = buildInteractiveLaunch('codex-cli', {
+        binaryPath: bin, configHome: '/Users/x/.codex-followme-justin-gmail', resumeSessionId: '01a1ec19-77d5-7870-8e3c-e20adced3374',
+      });
+      expect(resumed.envOverrides.CODEX_HOME).toBe('/Users/x/.codex-followme-justin-gmail');
+      expect(resumed.argv.slice(1, 3)).toEqual(['resume', '01a1ec19-77d5-7870-8e3c-e20adced3374']);
+    });
+
+    it('sets no CODEX_HOME without a configHome (inherits the default login, unchanged)', () => {
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: fakeCodexBinary(false) });
+      expect(spec.envOverrides.CODEX_HOME).toBeUndefined();
+    });
+
     it('reports the same concrete default model the interactive builder launches', () => {
       expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-6-sol');
       expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-6-sol');

@@ -137,6 +137,8 @@ import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
+import { placeCodexResumeRollout, type CodexRolloutPlacement } from './codexResumeRollout.js';
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 import {
   InboundDeliveryStore,
   InboundDeliveryStoreUnavailableError,
@@ -1179,6 +1181,9 @@ export class SessionManager extends EventEmitter {
    * is at its wall, or null for the default login as before. Unset → today.
    */
   private codexSpawnAccountResolver?: () => { configHome: string; accountId: string } | { refused: string } | null;
+  /** Every Codex account home the pool knows. A Codex conversation relaunched under one
+   *  account's home is looked for in these (and the default home) first. Unset → default home only. */
+  private codexAccountHomesResolver?: () => string[];
   /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
   private memoryPrivacyWiring?: {
     privacy: MemoryPrivacy;
@@ -2208,6 +2213,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
     this.codexSpawnAccountResolver = resolver;
+  }
+
+  setCodexAccountHomesResolver(resolver: () => string[]): void {
+    this.codexAccountHomesResolver = resolver;
   }
 
   /**
@@ -8401,6 +8410,40 @@ rm()  { "${shimRunner}" rm  "$@"; }
         });
       }
     }
+    // The Codex half of Resume Follows the Account. `codex resume <thread>` reads the
+    // conversation only from the CODEX_HOME it runs under, so before relaunching a
+    // Codex conversation under an account's home, place the freshest copy there.
+    // Without it the launch below (which now honours the home) would stop at
+    // "no rollout found"; the earlier code avoided that only by ignoring the home
+    // and running on the default login under another account's name (2026-11-18).
+    if (
+      options?.resumeSessionId &&
+      framework === CODEX_CLI_FRAMEWORK &&
+      explicitConfigHome &&
+      isSafeSessionRef(options.resumeSessionId)
+    ) {
+      let outcome: CodexRolloutPlacement | 'error';
+      try {
+        const sources = [process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), ...(this.codexAccountHomesResolver?.() ?? [])];
+        outcome = (await placeCodexResumeRollout(options.resumeSessionId, explicitConfigHome, sources)).outcome;
+      } catch (err) {
+        // @silent-fallback-ok — reported below; the session launches fresh instead of failing.
+        console.warn(`[SessionManager] Codex resume placement failed for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+        outcome = 'error';
+      }
+      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${options.resumeSessionId}, home=${explicitConfigHome})`);
+      if (outcome === 'not-found' || outcome === 'error') {
+        resumeReopenFailed = true;
+        options = { ...options, resumeSessionId: undefined };
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.codexResumePlacement',
+          primary: 'Place the Codex conversation in the account home the session launches under',
+          fallback: 'The session launched without its earlier conversation',
+          reason: `Why: Codex resume placement outcome ${outcome}`,
+          impact: 'The session starts from recent topic messages instead of the full conversation',
+        });
+      }
+    }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
@@ -8415,8 +8458,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // when resuming) so eviction mid-thread falls back to --resume losslessly.
       ...(options?.sessionId && !options?.resumeSessionId ? { sessionId: options.sessionId } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
-      // Subscription & Auth Standard P1.3: per-account config home (claude-only,
-      // ignored by other builders) → CLAUDE_CONFIG_DIR for the launched session.
+      // Subscription & Auth Standard P1.3: per-account config home → CLAUDE_CONFIG_DIR
+      // (claude-code) or CODEX_HOME (codex-cli) for the launched session.
       // effectiveConfigHome = explicit caller home, else the resolver-pinned one.
       ...(effectiveConfigHome ? { configHome: effectiveConfigHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).

@@ -124,6 +124,65 @@ describe('interactive session pinning (B1) — unit', () => {
     expect(hasConfigDir()).toBe(false);
   });
 
+  // 2026-11-18: the account-swap path passes an explicit Codex account home. The
+  // session was tagged with that account but launched without CODEX_HOME, so it
+  // ran on the default login. Tag and launch home must agree.
+  it('an explicit codex configHome launches under CODEX_HOME and tags the same account', async () => {
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-swap', {
+      framework: 'codex-cli', configHome: '/h/.codex-followme-justin-gmail', subscriptionAccountId: 'codex-justin-gmail',
+    });
+
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('codex-justin-gmail');
+    expect(newSessionArgs()).toContain('CODEX_HOME=/h/.codex-followme-justin-gmail');
+    expect(hasConfigDir()).toBe(false);
+  });
+
+  it('a resumed codex conversation is copied into the account home before launch, then resumed there', async () => {
+    const thread = '01a1ec19-77d5-7870-8e3c-e20adced3374';
+    const oldHome = path.join(dir, 'codex-default');
+    const newHome = path.join(dir, 'codex-headley');
+    const rel = path.join('sessions', '2026', '11', '17', `rollout-2026-11-17T16-40-54-${thread}.jsonl`);
+    fs.mkdirSync(path.dirname(path.join(oldHome, rel)), { recursive: true });
+    fs.writeFileSync(path.join(oldHome, rel), '{"type":"session_meta"}\n');
+    manager.setCodexAccountHomesResolver(() => [oldHome, newHome]);
+
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-swap-resume', {
+      framework: 'codex-cli', configHome: newHome, subscriptionAccountId: 'codex-justin-gmail', resumeSessionId: thread,
+    });
+
+    expect(fs.readFileSync(path.join(newHome, rel), 'utf8')).toBe('{"type":"session_meta"}\n');
+    expect(fs.existsSync(path.join(oldHome, rel))).toBe(true); // never moved or deleted
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${newHome}`);
+    expect(newSessionArgs().join(' ')).toContain(`resume ${thread}`);
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('codex-justin-gmail');
+  });
+
+  it('a codex conversation found in no home launches fresh in the account home instead of a dead resume', async () => {
+    const thread = '01a1ec19-0000-7000-8000-000000000000';
+    const newHome = path.join(dir, 'codex-headley-empty');
+    manager.setCodexAccountHomesResolver(() => [newHome]);
+
+    await manager.spawnInteractiveSession(undefined, 'codex-swap-missing', {
+      framework: 'codex-cli', configHome: newHome, subscriptionAccountId: 'codex-justin-gmail', resumeSessionId: thread,
+    });
+
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${newHome}`);
+    expect(newSessionArgs().join(' ')).not.toContain('resume');
+  });
+
+  it('a codex placement that throws launches fresh in the account home (reported, never a dead resume)', async () => {
+    const newHome = path.join(dir, 'codex-headley-throws');
+    manager.setCodexAccountHomesResolver(() => { throw new Error('pool unreadable'); });
+
+    await manager.spawnInteractiveSession(undefined, 'codex-swap-throws', {
+      framework: 'codex-cli', configHome: newHome, subscriptionAccountId: 'codex-justin-gmail',
+      resumeSessionId: '01a1ec19-77d5-7870-8e3c-e20adced3374',
+    });
+
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${newHome}`);
+    expect(newSessionArgs().join(' ')).not.toContain('resume');
+  });
+
   // ── WS5.2 Step 6 census #5/#6: pinned spawn home re-routes through the ledger gate ──
 
   const gateWith = (stateDir: string, enabled: boolean, slot?: string, accountId?: string): CredentialLocationGate => {

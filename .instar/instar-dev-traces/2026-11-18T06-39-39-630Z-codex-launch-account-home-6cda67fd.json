@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "codex-launch-account-home",
+  "sessionId": "1c90c221-a1d9-4e81-a903-f2dea8869ce5",
+  "timestamp": "2026-11-18T06:39:39.630Z",
+  "artifactPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "artifactSha256": "01eb4dc9ef9ca1810503696f670cd3e36c7cab370459001c5891090ced56dc2c",
+  "coveredFiles": [
+    "docs/specs/codex-launch-account-home.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/codexResumeRollout.ts",
+    "src/core/frameworkSessionLaunch.ts",
+    "tests/unit/codexResumeRollout.test.ts",
+    "tests/unit/frameworkSessionLaunch.test.ts",
+    "tests/unit/interactive-session-pin.test.ts",
+    "upgrades/next/codex-launch-account-home.md",
+    "upgrades/side-effects/codex-launch-account-home.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Makes the interactive Codex launch honour the account home it is already given (as Claude's does) and copies the resume rollout into it; no new authority, no credential handled, a revert fully undoes it. Session-lifecycle path, so an independent second-pass review ran; its one concern (hook trust) is resolved with live evidence in the artifact.",
+  "eli16Path": "docs/specs/codex-launch-account-home.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

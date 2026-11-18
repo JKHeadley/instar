@@ -25151,6 +25151,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       // session with one that has room, or refuse when none does. Same switch
       // and walled predicate as the rescue; no Codex accounts → unchanged.
       sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
+      // A Codex conversation moved onto an account's home is looked for in every
+      // Codex account home, so its resume finds the conversation there.
+      sessionManager.setCodexAccountHomesResolver(() => subscriptionPool.list()
+          .filter((a) => a.framework === CODEX_CLI_FRAMEWORK && typeof a.configHome === 'string' && a.configHome.length > 0)
+        .map((a) => a.configHome));
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
