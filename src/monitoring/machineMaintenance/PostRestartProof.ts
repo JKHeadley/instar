@@ -23,7 +23,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../../core/hostSemaphoreCore.js';
 import type { HostMaintenanceStore, RestartLedgerRow } from './HostMaintenanceStore.js';
-import { isPeerBooting } from '../../server/BootReadiness.js';
 
 const MIN = 60_000;
 /** A boot time this close to the last one is the same boot (clock read jitter). */
@@ -245,9 +244,14 @@ export class PostRestartProof {
  * is unknown, so the next attempt reads it again; past the proof's bound an unknown row fails
  * the proof with this reason. Any other answer, or none, fails.
  */
-export function serverHealthFromResponse(res: { status: number; headers?: { get(name: string): string | null } | null; body?: unknown } | null): CheckResult {
+// `isBooting` is BootReadiness.isPeerBooting, handed in by server.ts so this watch-only folder never imports
+// the server (machine-maintenance-watch-only.test.ts holds its imports to an allowlist).
+export function serverHealthFromResponse(
+  res: { status: number; headers?: { get(name: string): string | null } | null; body?: unknown } | null,
+  isBooting: (res: { status: number; headers?: { get(name: string): string | null } | null }) => boolean,
+): CheckResult {
   if (!res) return { state: 'fail', reason: 'health-unreachable' };
-  if (isPeerBooting(res)) return { state: 'unknown', reason: 'server-still-starting' };
+  if (isBooting(res)) return { state: 'unknown', reason: 'server-still-starting' };
   if (res.status !== 200) return { state: 'fail', reason: `health-${res.status}` };
   const boot = (res.body as { bootReadiness?: { state?: unknown } } | null | undefined)?.bootReadiness?.state;
   if (boot === 'ready') return { state: 'pass', reason: 'health-200-ready' };

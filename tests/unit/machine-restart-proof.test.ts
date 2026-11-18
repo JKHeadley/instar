@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { isPeerBooting } from '../../src/server/BootReadiness.js';
 import { HostMaintenanceStore } from '../../src/monitoring/machineMaintenance/HostMaintenanceStore.js';
 import {
   BASELINE_EVERY_MS, PROOF_ATTEMPT_GAP_MS, PostRestartProof, runChecks, serverHealthFromResponse, type Baseline, type ProofReaders, type RestartProofRecord,
@@ -192,17 +193,17 @@ describe('PostRestartProof lifecycle', () => {
 describe('server row: back only when /health says it finished starting', () => {
   const hdr = (v: string | null) => ({ get: (n: string) => (n === 'x-instar-boot-state' ? v : null) });
   it('200 with bootReadiness ready passes', () => {
-    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: { bootReadiness: { state: 'ready' } } })).toEqual({ state: 'pass', reason: 'health-200-ready' });
+    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: { bootReadiness: { state: 'ready' } } }, isPeerBooting)).toEqual({ state: 'pass', reason: 'health-200-ready' });
   });
   it('the boot beacon 503 and a 200 still starting are unknown, read again next attempt', () => {
-    expect(serverHealthFromResponse({ status: 503, headers: hdr('starting'), body: {} })).toEqual({ state: 'unknown', reason: 'server-still-starting' });
-    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: { bootReadiness: { state: 'starting' } } }).state).toBe('unknown');
-    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: {} })).toEqual({ state: 'unknown', reason: 'boot-state-unread' });
+    expect(serverHealthFromResponse({ status: 503, headers: hdr('starting'), body: {} }, isPeerBooting)).toEqual({ state: 'unknown', reason: 'server-still-starting' });
+    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: { bootReadiness: { state: 'starting' } } }, isPeerBooting).state).toBe('unknown');
+    expect(serverHealthFromResponse({ status: 200, headers: hdr(null), body: {} }, isPeerBooting)).toEqual({ state: 'unknown', reason: 'boot-state-unread' });
   });
   it('any other 503, another status or no answer fails', () => {
-    expect(serverHealthFromResponse({ status: 503, headers: hdr(null), body: {} })).toEqual({ state: 'fail', reason: 'health-503' });
-    expect(serverHealthFromResponse({ status: 500, body: null })).toEqual({ state: 'fail', reason: 'health-500' });
-    expect(serverHealthFromResponse(null)).toEqual({ state: 'fail', reason: 'health-unreachable' });
+    expect(serverHealthFromResponse({ status: 503, headers: hdr(null), body: {} }, isPeerBooting)).toEqual({ state: 'fail', reason: 'health-503' });
+    expect(serverHealthFromResponse({ status: 500, body: null }, isPeerBooting)).toEqual({ state: 'fail', reason: 'health-500' });
+    expect(serverHealthFromResponse(null, isPeerBooting)).toEqual({ state: 'fail', reason: 'health-unreachable' });
   });
   it('in the proof: still starting keeps it running, ready then passes; still starting at the bound fails', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-proof-boot-'));
@@ -211,7 +212,7 @@ describe('server row: back only when /health says it finished starting', () => {
       const lifeline = { lifelineAt: null as number | null };
       const readers = healthyReaders({ serverHealth: async () => serverHealthFromResponse(ready
         ? { status: 200, headers: hdr(null), body: { bootReadiness: { state: 'ready' } } }
-        : { status: 503, headers: hdr('starting'), body: {} }) }, lifeline);
+        : { status: 503, headers: hdr('starting'), body: {} }, isPeerBooting) }, lifeline);
       const p = new PostRestartProof({
         agentName: 'echo', store: new HostMaintenanceStore({ dir: path.join(dir, 'host'), now: () => clock }), readBootAt: async () => bootAt,
         isMaintainer: () => true, readers, baselinePath: path.join(dir, 'b.json'), proofPath: path.join(dir, 'p.json'),

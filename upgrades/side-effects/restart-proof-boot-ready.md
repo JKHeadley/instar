@@ -76,3 +76,7 @@ The restart proof no longer calls a server "back" while it is still starting. Cl
 
 - **Defect class:** `unbounded-self-action`
 - **Closure:** `guard` — no self-action added; the proof only reads (`src/testing/selfActionRegistry.ts`, proven by `tests/unit/self-action-convergence.test.ts`, enforcement: ratchet).
+
+## Second pass: the watch-only folder stays sealed
+
+Local Verify failed `tests/unit/machine-maintenance-watch-only.test.ts`: PostRestartProof.ts imported `src/server/BootReadiness.js`, which is outside that folder's import allowlist (BootReadiness also reads files and holds the boot tracker). The fix does not widen the allowlist. `serverHealthFromResponse` now takes the boot check as an argument, and `server.ts` passes `isPeerBooting`; the tests pass the same real function. Behaviour is unchanged.

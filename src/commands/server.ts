@@ -27576,7 +27576,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
             readers: {
               // Back only when /health answers 200 and says it finished starting; still starting reads again next attempt.
-              serverHealth: async () => serverHealthFromResponse(await getJson('/health', false)),
+              serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),
               lifelineProofAt,
               relay: async () => {
                 const r = await getJson('/threadline/health');

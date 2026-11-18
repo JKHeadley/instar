@@ -27,6 +27,7 @@ import { buildMachineCarePage } from '../../dashboard/console/machine-care-model
 import { StateManager } from '../../src/core/StateManager.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { serverHealthFromResponse } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
+import { isPeerBooting } from '../../src/server/BootReadiness.js';
 
 const AUTH = 'e2e-token';
 const auth = { Authorization: `Bearer ${AUTH}` };
@@ -122,10 +123,10 @@ describe('machine maintenance lifecycle', () => {
     await full.stop();
     expect(res.status).toBe(200);
     expect(res.body.bootReadiness?.state).toBe('ready');
-    expect(serverHealthFromResponse({ status: res.status, headers: { get: (n: string) => res.headers[n.toLowerCase()] ?? null }, body: res.body }))
+    expect(serverHealthFromResponse({ status: res.status, headers: { get: (n: string) => res.headers[n.toLowerCase()] ?? null }, body: res.body }, isPeerBooting))
       .toEqual({ state: 'pass', reason: 'health-200-ready' });
     const src = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
-    expect(src).toContain("serverHealth: async () => serverHealthFromResponse(await getJson('/health', false)),");
+    expect(src).toContain("serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),");
   });
 
   it('reaches a fresh agent and an updated one through one shared section', () => {
