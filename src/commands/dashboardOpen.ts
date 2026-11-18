@@ -104,6 +104,18 @@ export async function dashboardOpen(opts: DashboardOpenOptions): Promise<number>
     console.log(`Forward with: ssh -L 127.0.0.1:${browserPort}:127.0.0.1:${a.port} <this computer>\n`);
     return 0;
   }
+  // identity-security-piece1g: inside WSL, print the link for the owner's Windows browser. It arrives
+  // through WSL's localhost forwarding (loopback) or a Windows port forward (the WSL gateway).
+  if (process.platform === 'linux' && runningUnderWsl()) {
+    if (!process.stdout.isTTY) { console.error('This needs a terminal, so the link is never written to a log.'); return 1; }
+    const browserPort = opts.port === undefined ? a.port : Number(opts.port);
+    if (!Number.isInteger(browserPort) || browserPort < 1 || browserPort > 65535) { console.error('--port needs the Windows-side port number.'); return 1; }
+    const m = await mintLink(a, browserPort);
+    if (!m.ok) { console.error(m.message); return 1; }
+    console.log(`\nOpen this in your Windows browser (private, works once, for 15 minutes):\n\n  ${m.origin}${LOCAL_ACCESS_PREFIX}/open#${m.id}.${m.secret}\n`);
+    console.log('If your Windows machine forwards this port to other computers, they can reach the page but not without this link.\n');
+    return 0;
+  }
   if (process.platform !== 'darwin') {
     console.error(`Opening a browser from here is not supported on this system yet. Over SSH use --print --port <forwarded port>, or sign in at ${signIn}.`);
     return 1;
@@ -126,4 +138,10 @@ export async function dashboardOpen(opts: DashboardOpenOptions): Promise<number>
   });
   console.log('Opening your dashboard in the browser. The link works once and for 15 minutes; you still enter your PIN.');
   return 0;
+}
+
+/** identity-security-piece1g: whether this process runs inside WSL. */
+export function runningUnderWsl(env: NodeJS.ProcessEnv = process.env, read: (f: string) => string = (f) => fs.readFileSync(f, 'utf8')): boolean {
+  if (env.WSL_DISTRO_NAME) return true;
+  try { return /microsoft/i.test(read('/proc/version')); } catch { return false; /* @silent-fallback-ok: not provably WSL */ }
 }

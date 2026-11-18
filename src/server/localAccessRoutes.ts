@@ -16,6 +16,7 @@ import path from 'node:path';
 import express, { type Application, type Request, type Response } from 'express';
 import type { AddressInfo } from 'node:net';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { wslGatewayPeer } from '../core/wslLocalPeer.js';
 import { hasForwardingHeaders, verifyP256 } from './mobileBrowserDevices.js';
 import { parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
 import {
@@ -100,6 +101,8 @@ export function verifiedLocalBudgetKey(machineId: string | null | undefined, pin
 }
 
 export interface LocalAccessDeps {
+  /** identity-security-piece1g: the WSL gateway rule (a test seam; production reads /proc and the interfaces). */
+  wslGatewayPeer?: (socket: { remoteAddress?: string; localAddress?: string }) => boolean;
   stateDir: string;
   agentName: () => string;
   /** The resolved switch (dev-gated), read live. */
@@ -125,7 +128,32 @@ export function localPeer(req: Pick<Request, 'socket' | 'headers'>): boolean {
   return isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>);
 }
 
+// E2E-PAIRING: EXEMPT — identity-security-piece1g adds no route: it widens the existing local-access
+// routes' peer rule only under WSL in NAT mode, which a booted E2E on macOS or Linux CI cannot
+// exercise. Covered by the mounted-route unit tests (tests/unit/identity-piece1g-wsl-local-link.test.ts)
+// and a live socket check on a Windows + WSL machine (.instar/state/identity-build-144636/p1g-live-check.md).
+/** identity-security-piece1g: gateway requests per minute (the gateway only, never loopback). */
+export const WSL_GATEWAY_PER_MINUTE = 30;
+
 export class LocalAccessService {
+  private gatewayHits: number[] = [];
+
+  /**
+   * identity-security-piece1g: a local peer for REDEEMING the link (and the unlock check): piece 1a's
+   * loopback rule, or, under WSL in confirmed NAT mode, the exact Windows gateway on WSL's own
+   * default-route address with no forwarding header, rate-limited. Minting stays loopback-only.
+   */
+  redeemPeer(req: Pick<Request, 'socket' | 'headers'>): boolean {
+    if (localPeer(req)) return true;
+    if (hasForwardingHeaders(req.headers as Record<string, unknown>)) return false;
+    if (!(this.deps.wslGatewayPeer ?? wslGatewayPeer)(req.socket)) return false;
+    const now = this.now();
+    this.gatewayHits = this.gatewayHits.filter((t) => now - t < 60_000);
+    if (this.gatewayHits.length >= WSL_GATEWAY_PER_MINUTE) return false;
+    this.gatewayHits.push(now);
+    return true;
+  }
+
   private store: LocalAccessStore | null = null;
   private key: Buffer | null = null;
   private storeError: string | null = null;
@@ -266,7 +294,7 @@ export class LocalAccessService {
       const la = (req.body as { localAccess?: unknown } | undefined)?.localAccess as { credentialId?: unknown; challenge?: unknown; signature?: unknown } | undefined;
       if (!la || typeof la !== 'object') return false;
       if (typeof la.credentialId !== 'string' || typeof la.challenge !== 'string') return false;
-      if (!localPeer(req)) return false;
+      if (!this.redeemPeer(req)) return false;
       const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
       if (!origin || `http://${requestHost(req)}` !== origin) return false;
       const store = this.store;
@@ -285,9 +313,11 @@ export class LocalAccessService {
     const json = express.json({ limit: MAX_REQUEST_BYTES });
     const P = LOCAL_ACCESS_PREFIX;
     const notFound = (res: Response): void => { res.status(404).json({ error: 'not-found' }); };
-    const guard = (req: Request, res: Response): boolean => {
+    // Minting is loopback-only (only a program inside this machine or WSL may create a secret); every
+    // other route also takes the WSL gateway peer (identity-security-piece1g).
+    const guard = (req: Request, res: Response, allowGateway = true): boolean => {
       res.setHeader('Cache-Control', 'no-store');
-      if (!this.deps.enabled() || !localPeer(req)) { notFound(res); return false; }
+      if (!this.deps.enabled() || !(allowGateway ? this.redeemPeer(req) : localPeer(req))) { notFound(res); return false; }
       return true;
     };
     /** Host and Origin must name the ticket's origin; returns the origin or null. */
@@ -300,7 +330,7 @@ export class LocalAccessService {
     const jsonOnly = (req: Request): boolean => (req.headers['content-type'] ?? '').toString().toLowerCase().startsWith('application/json');
 
     app.post(`${P}/mint`, json, (req, res) => {
-      if (!guard(req, res)) return;
+      if (!guard(req, res, false)) return;
       const why = this.unavailableReason();
       if (why) { res.status(503).json({ error: 'unavailable', reason: why }); return; }
       const port = req.socket.localPort ?? 0;
