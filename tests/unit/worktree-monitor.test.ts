@@ -292,6 +292,29 @@ describe('WorktreeMonitor', () => {
       expect(report.orphanBranches).toHaveLength(1);
       expect(report.orphanBranches[0]).toBe('worktree-orphaned');
     });
+
+    it('shares one in-flight scan between overlapping callers (no pile-up)', async () => {
+      createWorktree(repoDir, 'busy', { addCommits: 1 });
+
+      // A periodic tick and a session end arriving together must not start two scans.
+      const [first, second] = await Promise.all([monitor.scanWorktrees(), monitor.scanWorktrees()]);
+      expect(second).toBe(first);
+      expect(first.withUnmergedWork).toHaveLength(1);
+
+      // Once the scan settles, the next caller gets a fresh scan.
+      const later = await monitor.scanWorktrees();
+      expect(later).not.toBe(first);
+      expect(later.withUnmergedWork).toHaveLength(1);
+    });
+
+    it('lets a new scan start after a failed one', async () => {
+      const failing = vi.spyOn(monitor as unknown as { runScan: () => Promise<unknown> }, 'runScan')
+        .mockRejectedValueOnce(new Error('git exploded'));
+      await expect(monitor.scanWorktrees()).rejects.toThrow('git exploded');
+      failing.mockRestore();
+      const report = await monitor.scanWorktrees();
+      expect(report.worktrees).toEqual([]);
+    });
   });
 
   // ── Post-Session Scan ────────────────────────────────────────

@@ -100,6 +100,8 @@ export class WorktreeMonitor extends EventEmitter {
   private lastReport: WorktreeReport | null = null;
   private announcedFile: string;
   private announced: Partial<Record<AlertKind, AnnouncedEntry>> = {};
+  /** The scan in progress, shared by every caller until it settles (single-flight). */
+  private scanInFlight: Promise<WorktreeReport> | null = null;
 
   constructor(config: WorktreeMonitorConfig) {
     super();
@@ -279,8 +281,23 @@ export class WorktreeMonitor extends EventEmitter {
 
   /**
    * Core scan: list all worktrees and analyze their state.
+   *
+   * Single-flight: a scan runs two git commands per worktree, so on a home with
+   * hundreds of worktrees one scan can outlast the 5-minute interval, and every
+   * session end starts another. Overlapping scans then pile up (measured: about
+   * three at once per server on a busy Studio). A caller that arrives while a
+   * scan is running gets that scan's report instead of starting a second one.
    */
-  async scanWorktrees(): Promise<WorktreeReport> {
+  scanWorktrees(): Promise<WorktreeReport> {
+    if (this.scanInFlight) return this.scanInFlight;
+    const scan = this.runScan().finally(() => {
+      if (this.scanInFlight === scan) this.scanInFlight = null;
+    });
+    this.scanInFlight = scan;
+    return scan;
+  }
+
+  private async runScan(): Promise<WorktreeReport> {
     const report: WorktreeReport = {
       timestamp: new Date().toISOString(),
       worktrees: [],
