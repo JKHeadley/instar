@@ -100,6 +100,7 @@ export interface AgentMessage {
 export type DeliveryPhase =
   | 'created'        // Message constructed, not yet sent
   | 'sent'           // Written to sender's store
+  | 'relaying'       // messages-reach-renamed-sessions §D: queued for its one cross-machine pass
   | 'received'       // Target server acknowledged receipt
   | 'queued'         // Received but awaiting delivery (editor active, session unavailable)
   | 'undelivered'    // SpawnRequestManager queued but process is disposing; hand off to DeliveryRetryManager
@@ -138,6 +139,12 @@ export interface DeliveryState {
   resolvedVia?: 'exact' | 'topic' | 'name' | 'prefix';
   /** Written just before the text is typed; a crash after this is never retyped. */
   typingStartedAt?: string;
+  /** §D.2: a relayed message stored here and not yet at a terminal delivery outcome. */
+  deliveryPending?: boolean;
+  /** §D.2: when this machine stored the relayed message (its own clock). */
+  arrivedAt?: string;
+  /** §D.3: the freshness cut-off for this envelope (ms), when it differs from createdAt. */
+  asOf?: number;
   /** §C: a sender notice is waiting in its 60s group / has been sent. */
   noticePending?: boolean;
   noticeSentAt?: string;
@@ -171,6 +178,10 @@ export interface BroadcastState {
 export const VALID_TRANSITIONS: ReadonlyArray<[DeliveryPhase, DeliveryPhase]> = [
   ['created', 'sent'],
   ['sent', 'received'],
+  // messages-reach-renamed-sessions §D: one cross-machine pass per envelope.
+  ['sent', 'relaying'],
+  ['relaying', 'received'],
+  ['relaying', 'failed'],
   ['received', 'queued'],
   ['received', 'delivered'],
   ['queued', 'delivered'],
@@ -207,7 +218,18 @@ export interface SignedPayload {
   originServer: string;
   nonce: string;
   timestamp: string;
+  /**
+   * messages-reach-renamed-sessions §D.3: how old the message was (ms, sender's clock)
+   * when this attempt was signed. Included ONLY when present, so older envelopes
+   * keep verifying byte-for-byte.
+   */
+  age?: number;
 }
+
+/** messages-reach-renamed-sessions §D.1: the one cross-machine relay path (sender and route). */
+export const RELAY_MACHINE_PATH = '/api/messages/relay-machine';
+/** The pre-August path older senders still post to; kept as a machine-auth alias. */
+export const RELAY_MACHINE_LEGACY_PATH = '/messages/relay-machine';
 
 /** Transport metadata — carried by every message envelope */
 export interface TransportMetadata {
@@ -225,6 +247,8 @@ export interface TransportMetadata {
   hmacBy?: string;
   /** Nonce for replay prevention (format: `{UUIDv4}:{ISO timestamp}`) */
   nonce: string;
+  /** §D.3: message age at signing (ms, sender's clock); covered by the signature. */
+  age?: number;
   /** ISO timestamp — validated per transport type (see Clock Skew Tolerance) */
   timestamp: string;
   /**

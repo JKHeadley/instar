@@ -383,6 +383,7 @@ import type { TmuxOperations } from '../messaging/MessageDelivery.js';
 import { MessageRouter } from '../messaging/MessageRouter.js';
 import { resolveSessionTarget } from '../messaging/sessionAddressResolver.js';
 import { SenderNotifier } from '../messaging/SenderNotifier.js';
+import { DEFAULT_TTL as MESSAGE_DEFAULT_TTL } from '../messaging/types.js';
 import { generateAgentToken } from '../messaging/AgentTokenManager.js';
 import { pickupDroppedMessages } from '../messaging/DropPickup.js';
 import { createAgentLocalEnvelopeSigner, resolveLocalRouteSignatureMode } from '../threadline/localEnvelopeSignature.js';
@@ -21445,6 +21446,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       // §C: a terminal failure tells the proven sender session once.
       onDeliveryFailure: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
       undeliveredCounts: () => Object.fromEntries(senderNotifier.undelivered),
+      // §D.3: guarded relay addresses, read at call time (the mesh block below sets them up).
+      peerAddresses: (machineId: string) => {
+        const peer = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+        if (!peer) return [];
+        const allow = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        const ropes = (peer.ropes ?? []).filter((r) => isPeerUrlAllowedForCredentials({ url: r.url, kind: r.kind }, allow).ok).map((r) => r.url);
+        return [...new Set([...ropes, ...(peer.url ? [peer.url] : [])])];
+      },
     }, crossMachineDeps);
     // Generate/persist agent token for cross-agent auth (idempotent — reuses existing token)
     const agentToken = generateAgentToken(config.projectName);
@@ -21524,7 +21533,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
       isPinnedSessionLive: (tmuxSession, sessionId) =>
         sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
-      onDeadLetter: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
+      onDeadLetter: (envelope, reason) => { messageRouter.reportTerminalFailure(envelope, reason); },
+      // §D.6: the origin copy of a cross-machine message stays open for a late notice.
+      holdForRemoteNotice: (envelope) => {
+        const m = envelope.message.to.machine;
+        if (!m || m === 'local' || m === machineId || envelope.delivery.phase !== 'received') return false;
+        const created = Date.parse(envelope.message.createdAt);
+        return Number.isFinite(created) && Date.now() - created < MESSAGE_DEFAULT_TTL['delivery-notice'] * 60_000;
+      },
       onEscalate: (envelope, reason) => {
         notify('IMMEDIATE', 'messaging', `Message escalation: ${reason}\n  From: ${envelope.message.from.agent}\n  Subject: ${envelope.message.subject}`);
       },
@@ -37049,6 +37065,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     bootReadiness().mark('sessions');
     wireTeamChecks(server);
     await server.start();
+    // messages-reach-renamed-sessions §D: the mesh block above has set up peer addresses;
+    // start the relay queue, give any envelope still `relaying` its pass, and finish or
+    // report relayed messages this machine stored but did not finish before it stopped.
+    void messageRouter.startRelayQueue().then(() => messageRouter.recoverPendingRelayed())
+      .catch((err) => console.warn(`[message-router] relay boot steps failed: ${err instanceof Error ? err.message : err}`));
     // After the port is bound: installs the Linux Chrome driver's packages on a new agent. All
     // asynchronous and detached, so it cannot delay or fail this boot.
     {

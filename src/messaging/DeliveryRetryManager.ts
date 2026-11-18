@@ -237,7 +237,8 @@ export class DeliveryRetryManager {
 
       // ── TTL Expiry Check ──────────────────────────────────
       if (this.isExpired(envelope)) {
-        if (this.config.holdForRemoteNotice?.(envelope) ?? false) continue;
+        // §D.5: the relay queue ends its own envelopes after one pass.
+        if (phase === 'relaying' || (this.config.holdForRemoteNotice?.(envelope) ?? false)) continue;
         if (phase !== 'read' && phase !== 'dead-lettered' && phase !== 'failed' && phase !== 'expired') {
           await this.store.deadLetter(messageId, 'TTL expired');
           expired++;

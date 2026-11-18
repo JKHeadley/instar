@@ -45,7 +45,8 @@ import type {
   MessagingStats,
   SignedPayload,
 } from './types.js';
-import { DEFAULT_TTL, VALID_TRANSITIONS, CLOCK_SKEW_TOLERANCE, THREAD_STALE_MINUTES } from './types.js';
+import { DEFAULT_TTL, VALID_TRANSITIONS, CLOCK_SKEW_TOLERANCE, THREAD_STALE_MINUTES, RELAY_MACHINE_PATH } from './types.js';
+import { CrossMachineRelayQueue, type RelayPassOutcome } from './CrossMachineRelayQueue.js';
 import type { MessageStore } from './MessageStore.js';
 import type { MessageDelivery } from './MessageDelivery.js';
 import { getAgentToken, computeDropHmac } from './AgentTokenManager.js';
@@ -85,6 +86,11 @@ export interface MessageRouterConfig {
   onDeliveryFailure?: (envelope: MessageEnvelope, reason: string) => void;
   /** §C: failures with no session to tell, by `target|reason`, for GET /messages/stats. */
   undeliveredCounts?: () => Record<string, number>;
+  /**
+   * §D.3: guarded relay addresses for a machine (late-bound; the mesh is set up after
+   * the router). Absent ⇒ cross-machine session messages fail with no address.
+   */
+  peerAddresses?: (machineId: string) => string[];
 }
 
 /** What the target's server said to a same-machine relay POST. */
@@ -133,6 +139,213 @@ export class MessageRouter implements IMessageRouter {
     this.delivery = delivery;
     this.config = config;
     this.crossMachine = crossMachine ?? null;
+    if (this.crossMachine) {
+      const cm = this.crossMachine;
+      this.relayQueue = new CrossMachineRelayQueue({
+        localMachine: config.localMachine,
+        addressesFor: (m) => { try { return this.config.peerAddresses?.(m) ?? []; } catch { return []; } }, // @silent-fallback-ok: an unreadable list is no address; the envelope fails with that reason
+        resignForAttempt: (env) => {
+          // The receiver requires relayChain[0] = signer; set it on every attempt so an
+          // envelope re-queued from disk after a restart is signed the same way.
+          env.transport.relayChain = [config.localMachine];
+          const created = Date.parse(env.message.createdAt);
+          env.transport.timestamp = new Date().toISOString();
+          env.transport.age = Number.isFinite(created) ? Math.max(0, Date.now() - created) : 0;
+          this.signEnvelope(env);
+        },
+        signRequestHeaders: (body) => signRequest(config.localMachine, cm.signingKeyPem, body, this.machineSequence++) as unknown as Record<string, string>,
+        peerPublicKey: (m) => cm.identityManager.getSigningPublicKeyPem(m) ?? null,
+        onOutcome: (env, outcome) => this.onRelayOutcome(env, outcome),
+        log: (line) => console.warn(line),
+      });
+    }
+  }
+
+  /** §D.5: the per-machine relay queue (null without cross-machine deps). */
+  private relayQueue: CrossMachineRelayQueue | null = null;
+
+  /** Start the relay queue and give every envelope still `relaying` its one pass. */
+  async startRelayQueue(): Promise<void> {
+    if (!this.relayQueue) return;
+    this.relayQueue.start();
+    try {
+      const all = await this.store.queryInbox(this.config.localAgent);
+      for (const env of all) {
+        if (env.delivery.phase === 'relaying' && env.message.from.machine === this.config.localMachine) this.relayQueue.enqueue(env);
+      }
+    } catch (err) {
+      console.warn(`[message-router] relay queue boot sweep failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  private async setPhase(env: MessageEnvelope, to: MessageEnvelope['delivery']['phase'], reason: string, extra: Partial<MessageEnvelope['delivery']> = {}): Promise<void> {
+    const now = new Date().toISOString();
+    env.delivery = {
+      ...env.delivery,
+      ...extra,
+      phase: to,
+      transitions: [...env.delivery.transitions, { from: env.delivery.phase, to, at: now, reason }],
+      ...(to === 'failed' ? { failureReason: reason } : {}),
+    };
+    await this.store.updateDelivery(env.message.id, env.delivery);
+  }
+
+  private async onRelayOutcome(env: MessageEnvelope, outcome: RelayPassOutcome): Promise<void> {
+    // A notice or ack may already have moved it (relaying→failed by a remote notice).
+    const current = await this.store.get(env.message.id).catch(() => null);
+    if (current && current.delivery.phase !== 'relaying') return;
+    if (outcome.kind === 'received') {
+      await this.setPhase(env, 'received', `relayed to machine ${env.message.to.machine} via ${outcome.via} (signed ack)`);
+      return;
+    }
+    const reason = outcome.kind === 'refused' ? `refused on ${env.message.to.machine}: ${outcome.code}` : outcome.reason;
+    await this.setPhase(env, 'failed', reason);
+    if (env.message.type !== 'delivery-notice') this.reportTerminalFailure(env, reason);
+  }
+
+  /**
+   * §C/§D.6: a same-agent message reached a terminal failure on THIS machine. A message
+   * that came from another of this agent's machines is reported back to that machine
+   * (signed notice); one sent from here goes to the local sender notifier.
+   */
+  reportTerminalFailure(envelope: MessageEnvelope, reason: string): void {
+    if (envelope.message.type === 'delivery-notice') return;
+    const signer = envelope.transport.signedBy;
+    if (signer && signer !== this.config.localMachine && envelope.message.from.machine === signer) {
+      void this.sendRemoteNotice(envelope, reason, signer);
+      return;
+    }
+    try { this.config.onDeliveryFailure?.(envelope, reason); } catch { /* @silent-fallback-ok: notice is best-effort; the failure is recorded on the envelope */ }
+  }
+
+  private async sendRemoteNotice(about: MessageEnvelope, reason: string, originMachine: string): Promise<void> {
+    if (!this.relayQueue) return;
+    const now = new Date().toISOString();
+    const notice: MessageEnvelope = {
+      schemaVersion: about.schemaVersion,
+      message: {
+        id: crypto.randomUUID(),
+        from: { agent: this.config.localAgent, session: 'instar-server', machine: this.config.localMachine },
+        to: { agent: this.config.localAgent, session: about.message.from.session, machine: originMachine },
+        type: 'delivery-notice',
+        priority: 'low',
+        subject: 'Delivery notice',
+        body: JSON.stringify({ aboutMessageId: about.message.id, reason }),
+        createdAt: now,
+        ttlMinutes: DEFAULT_TTL['delivery-notice'],
+      },
+      transport: { relayChain: [this.config.localMachine], originServer: this.config.serverUrl, nonce: `${crypto.randomUUID()}:${now}`, timestamp: now },
+      delivery: { phase: 'relaying', transitions: [{ from: 'sent', to: 'relaying', at: now, reason: `delivery notice for ${about.message.id}` }], attempts: 0 },
+    } as MessageEnvelope;
+    try { await this.store.save(notice); } catch { /* @silent-fallback-ok: the queue still carries it; the store copy is the record only */ }
+    this.relayQueue.enqueue(notice);
+  }
+
+  /**
+   * §D.2: a relayed envelope arrived from another of this agent's machines. Checks run
+   * BEFORE storing or acknowledging; a duplicate is answered only after they pass.
+   * `requestSigner` is the machine-auth middleware's verified machine id.
+   */
+  async relayFromMachine(envelope: MessageEnvelope, requestSigner: string): Promise<{ outcome: 'stored' | 'duplicate' } | { outcome: 'refused'; code: string }> {
+    const m = envelope?.message;
+    if (!m?.id || !this.crossMachine) return { outcome: 'refused', code: 'relay-cross-machine-disabled' };
+    if (isRelayChainLoop(envelope, this.config.localMachine)) return { outcome: 'refused', code: 'relay-loop' };
+    if (m.to?.machine !== this.config.localMachine) return { outcome: 'refused', code: 'relay-wrong-machine' };
+    if (m.from?.agent !== this.config.localAgent) return { outcome: 'refused', code: 'relay-wrong-agent' };
+    const signer = envelope.transport?.signedBy;
+    if (!signer || m.from.machine !== signer || envelope.transport.relayChain?.[0] !== signer || requestSigner !== signer) {
+      return { outcome: 'refused', code: 'relay-sender-mismatch' };
+    }
+    const verified = this.verifyEnvelopeSignature(envelope);
+    if (!verified.valid) {
+      this.crossMachine.securityLog.append({ event: 'relay_signature_invalid', reason: verified.reason, messageId: m.id, signedBy: signer });
+      return { outcome: 'refused', code: 'relay-signature-invalid' };
+    }
+    const created = Date.parse(m.createdAt);
+    const ttlMs = (m.ttlMinutes ?? DEFAULT_TTL[m.type] ?? 30) * 60_000;
+    const rawAge = typeof envelope.transport.age === 'number' ? envelope.transport.age : null;
+    if (rawAge !== null && rawAge > ttlMs) return { outcome: 'refused', code: 'expired' };
+    if (await this.store.exists(m.id) || (await this.store.isDeadLettered?.(m.id))) return { outcome: 'duplicate' };
+
+    // A delivery notice about a message this machine sent: apply it, never type it.
+    if (m.type === 'delivery-notice') {
+      await this.applyRemoteNotice(envelope, signer);
+      return { outcome: 'stored' };
+    }
+
+    const arrivedAt = Date.now();
+    const age = rawAge === null ? 0 : Math.min(Math.max(0, rawAge), ttlMs);
+    const W = CLOCK_SKEW_TOLERANCE['relay-machine'] ?? 5 * 60_000;
+    const nowIso = new Date(arrivedAt).toISOString();
+    envelope.delivery = {
+      phase: 'received',
+      transitions: [...(envelope.delivery?.transitions ?? []), { from: envelope.delivery?.phase ?? 'sent', to: 'received', at: nowIso, reason: `relayed from ${signer}` }],
+      attempts: 0,
+      deliveryPending: !!m.to.session && m.to.session !== 'best',
+      arrivedAt: nowIso,
+      asOf: arrivedAt - age - 2 * W,
+    };
+    const claimed = await this.store.saveIfAbsent(envelope);
+    if (!claimed) return { outcome: 'duplicate' };
+    if (m.threadId) {
+      try { await this.updateThread(m.threadId, m); } catch { /* @silent-fallback-ok: thread aggregate is observability */ }
+    }
+    if (envelope.delivery.deliveryPending) {
+      // The ack goes back before typing; delivery runs after the answer.
+      setImmediate(() => { void this.deliverRelayed(envelope); });
+    }
+    return { outcome: 'stored' };
+  }
+
+  private async deliverRelayed(envelope: MessageEnvelope): Promise<void> {
+    try {
+      await this.deliverSameAgentLocal(envelope);
+    } finally {
+      try {
+        // Once delivery reached delivered/queued/failed, boot recovery no longer owns it:
+        // a queued message belongs to the retry manager (held to its pinned session).
+        const cur = await this.store.get(envelope.message.id);
+        if (cur && cur.delivery.deliveryPending && cur.delivery.phase !== 'received') {
+          cur.delivery.deliveryPending = false;
+          await this.store.updateDelivery(cur.message.id, cur.delivery);
+        }
+      } catch { /* @silent-fallback-ok: boot recovery reads the marker; a stale true is resolved there */ }
+    }
+  }
+
+  /** Boot (§D.2): relayed envelopes this machine stored but did not finish. */
+  async recoverPendingRelayed(): Promise<void> {
+    let all: MessageEnvelope[] = [];
+    try { all = await this.store.queryInbox(this.config.localAgent); } catch { return; } // @silent-fallback-ok: nothing readable to recover; each envelope still expires by TTL
+    for (const env of all) {
+      // Only messages that never left 'received' are recovery's; anything further along
+      // (delivered, queued, failed) is owned by its terminal state or the retry manager.
+      if (!env.delivery.deliveryPending || env.delivery.phase !== 'received') continue;
+      if (env.delivery.typingStartedAt) {
+        const reason = 'outcome unknown: the machine stopped while delivering';
+        await this.setPhase(env, 'failed', reason, { deliveryPending: false });
+        this.reportTerminalFailure(env, reason);
+        continue;
+      }
+      void this.deliverRelayed(env);
+    }
+  }
+
+  private async applyRemoteNotice(notice: MessageEnvelope, signer: string): Promise<void> {
+    let about = '';
+    let reason = 'not delivered';
+    try {
+      const parsed = JSON.parse(notice.message.body) as { aboutMessageId?: unknown; reason?: unknown };
+      if (typeof parsed.aboutMessageId === 'string') about = parsed.aboutMessageId;
+      if (typeof parsed.reason === 'string') reason = parsed.reason.slice(0, 500);
+    } catch { return; } // @silent-fallback-ok: an unparseable notice names nothing; there is nothing to apply
+    const orig = about ? await this.store.get(about).catch(() => null) : null;
+    if (!orig) return;
+    if (orig.message.to.machine !== signer || orig.message.from.machine !== this.config.localMachine) return;
+    if (orig.delivery.phase !== 'relaying' && orig.delivery.phase !== 'received') return;
+    const why = `refused on ${signer}: ${reason}`;
+    await this.setPhase(orig, 'failed', why);
+    try { this.config.onDeliveryFailure?.(orig, why); } catch { /* @silent-fallback-ok: notice is best-effort */ }
   }
 
   /** Attach a summary sentinel for intelligent routing (session: "best") */
@@ -533,7 +746,8 @@ export class MessageRouter implements IMessageRouter {
     if (this.config.resolveSession) {
       let res: ResolveResult;
       try {
-        const asOf = Date.parse(envelope.message.createdAt);
+        // §D.3: a relayed message carries its own cut-off (arrival − age − 2W).
+        const asOf = typeof envelope.delivery.asOf === 'number' ? envelope.delivery.asOf : Date.parse(envelope.message.createdAt);
         res = this.config.resolveSession(requested, Number.isFinite(asOf) ? asOf : Date.now());
       } catch (err) {
         res = { kind: 'none', reason: 'no-session-holds-this-role' };
@@ -601,9 +815,7 @@ export class MessageRouter implements IMessageRouter {
       // leaves it at 'sent' (today's behaviour) and is logged, never thrown.
       console.warn(`[message-router] same-agent delivery phase write failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
     }
-    if (to === 'failed') {
-      try { this.config.onDeliveryFailure?.(envelope, reason); } catch { /* @silent-fallback-ok: notice is best-effort; the failure is recorded on the envelope */ }
-    }
+    if (to === 'failed') this.reportTerminalFailure(envelope, reason);
   }
 
   private async routeCrossAgentLocal(envelope: MessageEnvelope): Promise<void> {
@@ -788,6 +1000,10 @@ export class MessageRouter implements IMessageRouter {
 
     // Verify target machine is paired and active
     if (!identityManager.isMachineActive(targetMachine)) {
+      if (envelope.message.type !== 'delivery-notice' && envelope.message.to.agent === this.config.localAgent) {
+        // (falls through to the existing failed write below; the sender is told after it)
+        queueMicrotask(() => this.reportTerminalFailure(envelope, `target machine ${targetMachine} not active or unknown`));
+      }
       const now = new Date().toISOString();
       envelope.delivery = {
         ...envelope.delivery,
@@ -799,6 +1015,21 @@ export class MessageRouter implements IMessageRouter {
         failureReason: `target machine ${targetMachine} not active or unknown`,
       };
       await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+      return;
+    }
+
+    // §D.5: a same-agent message for a session on another machine gets one queued
+    // pass over that machine's guarded addresses; it never goes to the outbound folder.
+    if (this.relayQueue && envelope.message.to.agent === this.config.localAgent && envelope.message.to.session && envelope.message.to.session !== 'best') {
+      // The receiver requires from.machine = signer = relayChain[0] (§D.2).
+      if (!envelope.message.from.machine || envelope.message.from.machine === 'local') {
+        envelope.message.from = { ...envelope.message.from, machine: this.config.localMachine };
+        await this.store.updateEnvelope(envelope);
+      }
+      envelope.transport.relayChain = [this.config.localMachine];
+      await this.store.updateEnvelope(envelope);
+      await this.setPhase(envelope, 'relaying', `queued for one pass to machine ${targetMachine}`);
+      this.relayQueue.enqueue(envelope);
       return;
     }
 
@@ -848,15 +1079,7 @@ export class MessageRouter implements IMessageRouter {
   private signEnvelope(envelope: MessageEnvelope): void {
     if (!this.crossMachine) return;
 
-    const signedPayload: SignedPayload = {
-      message: envelope.message,
-      relayChain: envelope.transport.relayChain,
-      originServer: envelope.transport.originServer,
-      nonce: envelope.transport.nonce,
-      timestamp: envelope.transport.timestamp,
-    };
-
-    const canonical = canonicalJSON(signedPayload);
+    const canonical = canonicalJSON(signedPayloadOf(envelope));
     envelope.transport.signature = sign(canonical, this.crossMachine.signingKeyPem);
     envelope.transport.signedBy = this.config.localMachine;
   }
@@ -910,15 +1133,7 @@ export class MessageRouter implements IMessageRouter {
     }
 
     // Reconstruct and verify the SignedPayload
-    const signedPayload: SignedPayload = {
-      message: envelope.message,
-      relayChain: envelope.transport.relayChain,
-      originServer: envelope.transport.originServer,
-      nonce: envelope.transport.nonce,
-      timestamp: envelope.transport.timestamp,
-    };
-
-    const canonical = canonicalJSON(signedPayload);
+    const canonical = canonicalJSON(signedPayloadOf(envelope));
     try {
       const isValid = verify(canonical, envelope.transport.signature, publicKeyPem);
       if (!isValid) {
@@ -949,7 +1164,7 @@ export class MessageRouter implements IMessageRouter {
         sequence,
       );
 
-      const url = `${targetUrl}/messages/relay-machine`;
+      const url = `${targetUrl}${RELAY_MACHINE_PATH}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -1026,6 +1241,22 @@ export class MessageRouter implements IMessageRouter {
  * - Arrays preserve element order
  * - Primitive values use standard JSON serialization
  */
+/**
+ * The signed fields of an envelope. `age` (messages-reach-renamed-sessions §D.3) is
+ * included only when present, so an envelope signed without it verifies unchanged.
+ */
+export function signedPayloadOf(envelope: MessageEnvelope): SignedPayload {
+  const payload: SignedPayload = {
+    message: envelope.message,
+    relayChain: envelope.transport.relayChain,
+    originServer: envelope.transport.originServer,
+    nonce: envelope.transport.nonce,
+    timestamp: envelope.transport.timestamp,
+  };
+  if (typeof envelope.transport.age === 'number') payload.age = envelope.transport.age;
+  return payload;
+}
+
 export function canonicalJSON(value: unknown): string {
   if (value === null || value === undefined) {
     return 'null';
