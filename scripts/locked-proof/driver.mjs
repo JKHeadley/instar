@@ -79,12 +79,37 @@ export function ownerOf(pid) { return sh('ps', ['-o', 'user=', '-p', String(pid)
  * vanish, so a person was never told and the case simply timed out; now the
  * refusal is in person-steps.jsonl and on stderr for whoever is watching the run.
  */
-export function recordPersonStep(o, text, send) {
-  const result = o.notifyTopic ? send() : null;
-  const sent = result ? result.status === 0 : false;
-  const row = { at: new Date().toISOString(), text, topic: o.notifyTopic ?? null, sent };
+/** The wrapper deliberately exits zero for some unknown/not-sent outcomes. */
+export function classifyPersonReceipt(result, topic) {
+  const stdout = String(result?.stdout ?? '').trim();
+  const stderr = String(result?.stderr ?? '').trim();
+  const both = `${stdout}\n${stderr}`;
+  if (/Only part of it reached Telegram|partially-delivered/i.test(both)) return 'partial';
+  if (/AMBIGUOUS|MAY ALREADY BE DELIVERED|outcome unknown/i.test(both)) return 'ambiguous';
+  if (/NOT SENT|NOT DELIVERED|HELD —|Queued for recovery/i.test(both)) return 'refused-or-held';
+  if (result?.status !== 0 || result?.error || result?.signal) return 'unconfirmed';
+  const ordinary = stdout.match(/^Sent ([1-9]\d*) chars to topic ([1-9]\d*)$/);
+  const fallback = stdout.match(/^Delivered to topic ([1-9]\d*)(?: \(message id [1-9]\d*(?:,[1-9]\d*)*\))?; receipt not fully recorded — do not resend$/);
+  if (ordinary && ordinary[2] === String(topic)) return 'confirmed';
+  if (fallback && fallback[1] === String(topic) && /^DELIVERED — Telegram accepted this message/m.test(stderr)) return 'confirmed';
+  return 'unconfirmed';
+}
+
+export function recordPersonStep(o, text, send, cue = {}) {
+  let result = null;
+  if (o.notifyTopic) {
+    try { result = send(); }
+    catch (error) { result = { status: null, error }; }
+  }
+  const outcome = o.notifyTopic ? classifyPersonReceipt(result, o.notifyTopic) : 'console-only';
+  const sent = outcome === 'confirmed';
+  const completedAt = typeof o.now === 'function' ? o.now() : Date.now();
+  const row = { at: new Date(completedAt).toISOString(), completedAt, text, topic: o.notifyTopic ?? null,
+    channel: o.notifyTopic ? 'telegram' : 'console', sent, outcome,
+    ...cue, ...(Number.isFinite(cue.validUntil) ? { validity: completedAt < cue.validUntil ? 'within-window' : 'expired' } : {}),
+    ...(sent ? { receipt: String(result.stdout).trim() } : {}) };
   fs.appendFileSync(path.join(o.out, 'person-steps.jsonl'), `${JSON.stringify(row)}\n`);
-  if (o.notifyTopic && !sent) process.stderr.write(`[locked-proof] person step NOT delivered to topic ${o.notifyTopic}: ${text}\n`);
+  if (o.notifyTopic && !sent) process.stderr.write(`[locked-proof] person step delivery unconfirmed (${outcome}) for topic ${o.notifyTopic}; do not resend\n`);
   return row;
 }
 
@@ -622,11 +647,20 @@ export class RealTarget {
     }
   }
 
-  async askPerson(text) {
+  async askPerson(text, cue) {
+    if (!Number.isFinite(cue?.validUntil) || cue.validUntil - this.now() < 5_000) {
+      throw new Error('no safe start window remains for the person cue');
+    }
     process.stdout.write(`\n>>> PERSON STEP: ${text}\n\n`);
-    recordPersonStep(this.o, text, () => spawnSync('bash',
-      [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
-      { encoding: 'utf8', input: `Locked-Mac proof: ${text}`, timeout: 30_000 }));
+    const row = recordPersonStep({ ...this.o, now: () => this.now() }, text, () => this.sendPersonStep(text), cue);
+    if (this.o.notifyTopic && !row.sent) throw new Error(`person cue delivery unconfirmed: ${row.outcome}; retained messages may still arrive, do not resend`);
+    if (this.now() >= cue.validUntil) throw new Error('person cue receipt arrived after its start-by deadline');
+    return row;
+  }
+
+  sendPersonStep(text) {
+    return spawnSync('bash', [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
+      { encoding: 'utf8', input: `Locked-Mac proof: ${text}`, timeout: 30_000 });
   }
 
   async logoutProofUser() {

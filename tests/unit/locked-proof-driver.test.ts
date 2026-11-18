@@ -56,7 +56,7 @@ class FakeTarget {
     this.lockState = this.broken ? 'unlocked' : (this.c.final === 'unlocked-accepted-risk' ? 'unlocked' : 'locked-in-session');
     return { done: true };
   }
-  async askPerson(text: string) { this.asked.push(text); }
+  async askPerson(text: string) { this.asked.push(text); return { channel: 'console', outcome: 'console-only', sent: false }; }
   async recover() { this.recovered++; return []; }
   settled(snap: { markers: Record<string, Marker> }) { return Object.values(snap.markers).every(m => TERMINAL.includes(m.state)) && !this.typist; }
   async extraEvidence() { return { submissions: 0, submissionsAfterClose: 0, guardReplaced: true, producerGone: true, oldGuardGone: true, typistGone: true, grantAlive: true, securityItemMs: 2_000, securityItemRaised: true }; }
@@ -223,7 +223,7 @@ describe('locked-proof person steps', () => {
 
   it('records a delivered send, and a run with no topic never calls the sender', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-person-'));
-    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0 })).sent).toBe(true);
+    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0, stdout: 'Sent 4 chars to topic 138345' })).sent).toBe(true);
     expect(recordPersonStep({ out }, 'two', () => { throw new Error('must not send'); }).sent).toBe(false);
     expect(rows(out).map(row => row.topic)).toEqual([138345, null]);
     rm(out);
@@ -600,6 +600,21 @@ describe('locked-proof runner and verdict', () => {
   it('cues the person, records the security item, and never puts the password in evidence', async () => {
     const c = CASES.find((x: { id: string }) => x.id === '12.8');
     const target = new FakeTarget(c);
+    const act = target.act.bind(target);
+    target.act = async action => {
+      const result = await act(action);
+      if (action === 'stop-viewer') { target.markers.k.state = 'watching'; target.lockState = 'locked-in-session'; }
+      return result;
+    };
+    const snapshot = target.snapshot.bind(target);
+    let personReads = 0;
+    target.snapshot = async () => {
+      if (target.asked.length) {
+        target.lockState = 'unlocked';
+        if (++personReads > 1) target.markers.k.state = 'relock-failed';
+      }
+      return snapshot();
+    };
     const ev = await runCase(c, target, { pollMs: 50 });
     expect(target.asked).toHaveLength(1);
     expect(ev.verdict.pass).toBe(true);
@@ -620,7 +635,7 @@ describe('locked-proof runner and verdict', () => {
     const target = new FakeTarget(c);
     const realAsk = target.askPerson.bind(target);
     let reads = 0;
-    target.askPerson = async (text: string) => { await realAsk(text); reads = 1; target.lockState = 'unlocked'; };
+    target.askPerson = async (text: string) => { const result = await realAsk(text); reads = 1; target.lockState = 'unlocked'; return result; };
     const snapshot = target.snapshot.bind(target);
     target.snapshot = async () => {
       const snap = await snapshot();

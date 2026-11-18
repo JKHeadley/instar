@@ -9,11 +9,12 @@ import { RealTarget } from '../../scripts/locked-proof/driver.mjs';
 const byId = (id: string) => CASES.find((c: { id: string }) => c.id === id);
 const KEY = 'request.0';
 const BASE = 1_000_000;
-function world(id: string, options: { away?: number; back?: number; unknown?: [number, number]; transit?: [number, number]; watchDelay?: number; preCueUnlock?: boolean; noWatch?: boolean; lateUnlock?: number } = {}) {
+function world(id: string, options: { away?: number; back?: number; unknown?: [number, number]; transit?: [number, number]; watchDelay?: number; preCueUnlock?: boolean; noWatch?: boolean; lateUnlock?: number; repeatFirstUnlock?: number; neverWatching?: boolean } = {}) {
   let now = BASE;
   let stopAt: number | undefined;
   let cueAt: number | undefined;
   let logoutAt: number | undefined;
+  let serverRestarted = false;
   const actions: Array<{ action: string; t: number }> = [];
   const cues: Array<{ text: string; t: number }> = [];
   const samples: any[] = [];
@@ -23,11 +24,12 @@ function world(id: string, options: { away?: number; back?: number; unknown?: [n
     typePassword: async () => ({ sent: true }), calibration: () => null,
     act: async (action: string) => {
       actions.push({ action, t: now });
-      if (action === 'stop-viewer' || action === 'revoke') stopAt = now;
+      if (action === 'stop-viewer' || action === 'revoke' || action === 'kill-server') stopAt = now;
+      if (action === 'start-server') serverRestarted = true;
       if (action === 'logout-proof-user') { logoutAt = now; now += 1_000; return { departed: true, departedAt: now, producersGone: true }; }
       return {};
     },
-    askPerson: async (text: string) => { cueAt = now; cues.push({ text, t: now }); },
+    askPerson: async (text: string) => { cueAt = now; cues.push({ text, t: now }); return { channel: 'console', outcome: 'console-only', sent: false }; },
     snapshot: async () => {
       now += 10; // Each read is genuinely later than the cue/action it follows.
       const elapsed = cueAt === undefined ? -1 : now - cueAt;
@@ -39,6 +41,18 @@ function world(id: string, options: { away?: number; back?: number; unknown?: [n
       let state = stopAt === undefined ? 'owed' : now < watchStart() ? 'executing' : now < watchStart() + 120_000 ? 'watching' : 'relocked';
       if ((id === '12.12' && elapsed >= (options.away ?? 1_000)) || (id === '12.13' && logoutAt !== undefined)) state = 'closed-not-applicable';
       let lockState = 'locked';
+      if (id === '12.8' || id === '12.11') {
+        lockState = stopAt === undefined || now < watchStart() || options.neverWatching ? 'unlocked' : 'locked';
+        if (options.neverWatching) state = 'owed';
+        const firstUnlock = options.repeatFirstUnlock ?? 1_000;
+        if (cueAt !== undefined && elapsed >= firstUnlock) {
+          // Four separate open intervals; the fourth leaves the Mac open and closes failed.
+          const cycle = Math.floor((elapsed - firstUnlock) / 10_000);
+          if (cycle >= 3) { state = 'relock-failed'; lockState = 'unlocked'; }
+          else if ((elapsed - firstUnlock) % 10_000 < 2_000) lockState = 'unlocked';
+        }
+        if (serverRestarted) lockState = 'locked';
+      }
       if (options.preCueUnlock && cueAt === undefined && now >= watchStart() + 30_000) lockState = 'unlocked';
       if (id.startsWith('15.') && cueAt !== undefined && elapsed >= (options.lateUnlock ?? 500)
           && (id === '15.11' || elapsed < (options.lateUnlock ?? 500) + 1_500)) lockState = 'unlocked';
@@ -48,8 +62,8 @@ function world(id: string, options: { away?: number; back?: number; unknown?: [n
       samples.push(snap);
       return snap;
     },
-    settled: (snap: any) => ['closed-not-applicable', 'relocked'].includes(snap.markers[KEY].state),
-    extraEvidence: async () => ({}), // No invented lock-call measurement, even in successful human timelines.
+    settled: (snap: any) => ['closed-not-applicable', 'relocked', 'relock-failed'].includes(snap.markers[KEY].state),
+    extraEvidence: async () => ({ securityItemMs: 2_000, securityItemRaised: true }), // No invented lock-call measurement, even in successful human timelines.
     recover: async () => [],
   };
   return { target, actions, cues, samples, run: () => runCase(byId(id), target, { pollMs: 500 }) };
@@ -93,6 +107,24 @@ describe('human proof timelines', () => {
     const ev = await w.run();
     expect(ev.error).toContain('before the login cue');
     expect(w.cues).toHaveLength(0);
+  });
+  it('rejects a late replacement away bout after an unknown interval erased incomplete dwell', async () => {
+    const ev = await world('12.12', { away: 1_000, back: 70_000, unknown: [10_000, 35_000] }).run();
+    expect(ev.verdict.pass).toBe(false);
+    expect(ev.error).toContain('human action was not observed before the start-by deadline');
+    expect(ev.person.actionAt).toBeUndefined();
+  });
+  it('accepts a new timely away bout after unknown readings, with a complete later dwell', async () => {
+    const ev = await world('12.12', { away: 1_000, back: 55_000, unknown: [10_000, 20_000] }).run();
+    expect(ev.person.awayAt).toBeGreaterThanOrEqual(ev.person.cuedAt + 20_000);
+    expect(ev.person.awayAt).toBeLessThan(ev.person.validUntil);
+    expect(ev.person.dwellCompletedAt - ev.person.awayAt).toBeGreaterThanOrEqual(30_000);
+    expect(ev.person.doneAt).toBe(ev.person.returnedAt);
+    expect(ev.verdict.reasons).toEqual(['not measured: lock calls against another session (no observable source yet)']);
+    const altered = structuredClone(ev);
+    altered.person.awayAt = altered.person.validUntil + 1;
+    altered.person.actionAt = ev.person.cuedAt + 1_000;
+    expect(judge(byId('12.12'), altered).reasons).toContain('required human action was not observed before the start-by deadline');
   });
   it('stops the grant before waiting for watch and logout, then requires a fresh return', async () => {
     const w = world('12.13');
@@ -142,6 +174,35 @@ describe('human proof timelines', () => {
     const ev = await world('15.10', { lateUnlock: 100_000 }).run();
     expect(ev.verdict.pass).toBe(false);
     expect(ev.verdict.reasons.join(' ')).toContain('required side of the watch');
+  });
+  it.each(['12.12', '12.13', '15.10', '15.11'])('rejects a first human action after START BY in %s', async id => {
+    const w = world(id, { away: 40_000, back: id === '12.13' ? 40_000 : 80_000, lateUnlock: 40_000 });
+    const ev = await w.run();
+    expect(ev.verdict.pass).toBe(false);
+    expect(ev.verdict.reasons).toContain('required human action was not observed before the start-by deadline');
+  });
+  it.each(['12.8', '12.11'])('waits for the initial locked watch before cueing repeated unlocks in %s', async id => {
+    const w = world(id, { watchDelay: 35_000 });
+    const ev = await w.run();
+    expect(w.cues).toHaveLength(1);
+    expect(ev.person.cuedAt).toBeGreaterThanOrEqual(w.actions[0].t + 35_000);
+    expect(ev.person.unlockAt).toBeGreaterThan(ev.person.cueCompletedAt);
+    expect(ev.person.unlockAt).toBeLessThan(ev.person.validUntil);
+    expect(ev.person.watchReadyAt).toBeDefined();
+    expect(ev.verdict).toEqual({ pass: true, reasons: [] });
+    expect(ev.person).not.toHaveProperty('manualUnlockCount');
+  });
+  it('does not cue the person while killed Node leaves the original session unlocked and no watch is confirmed', async () => {
+    const w = world('12.11', { neverWatching: true });
+    const ev = await w.run();
+    expect(w.cues).toHaveLength(0);
+    expect(ev.verdict.pass).toBe(false);
+  });
+  it.each(['12.8', '12.11'])('rejects no timely fresh unlock in %s even if a failure outcome could arrive later', async id => {
+    const ev = await world(id, { repeatFirstUnlock: 40_000 }).run();
+    expect(ev.error).toContain('human action was not observed');
+    expect(ev.person.sawUnlock).toBeUndefined();
+    expect(ev.verdict.pass).toBe(false);
   });
   it('the verdict independently rejects removed departure or delayed-unlock evidence', async () => {
     const ev = await world('15.11').run();

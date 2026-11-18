@@ -51,3 +51,19 @@ Targeted timeline regressions exercise successful and incomplete console round t
 No prompt/config/hook/skill defect or self-triggered production controller. Not applicable. New regressions cover the observed stale-evidence and incorrectly timed human-cue defects.
 
 Final validation: parent independently ran113/113 targeted tests including proof build checks. Author timeline+driver run102/102 passed. Independent reviewer verified early-return rejection, mandatory actor identity and completed-dwell preservation. No live proof, no inferred lockCalls zero. Fast guards and normal commit/push hooks are recorded with the PR; full verification belongs to Local Verify.
+
+## Delivery follow-up review
+
+The canonical relay wrapper uses exit0 for ambiguous transport outcomes and preflight advisories, and shares a delivered stdout shape with partial delivery. The previous harness therefore recorded false delivery. The new classifier accepts only complete topic-matching receipts with no refusal/ambiguity/partial indication. Known accepted fallback also requires its positive acceptance diagnostic. Missing output or thrown sender is unconfirmed; askPerson records the outcome and throws. The runner requires an explicit confirmed-Telegram or console-only result and completion before the validity deadline.
+
+Over-block: wrapper-output drift can conservatively fail a proof cue. The source-contract test pins its current branches. Under-block/remaining limit: START BY text is human-visible validity, not queue cancellation. Held or ambiguous sends may still arrive after abort, including before the short validity deadline. There is no automatic resend. No global relay policy, queue, API or six-hour transport deadline changes. This does not claim stale-cue prevention; stronger prevention needs transport-level per-message expiry/cancellation.
+
+Every prompt carries case/run identity, local and UTC START BY time, and an explicit instruction to ignore late or stopped-run cues. Ordinary window30seconds; inside-watch validity is capped one second before watch end. Less than five seconds remaining refuses before calling the sender. Receipt time and within-window/expired classification are recorded even if a positive delivery arrives too late. The tests never call the actual relay.
+
+## START BY action boundary and repeated-unlock readiness
+
+Review found receipt timing alone did not bound the person's action. The runner and verdict now require the first relevant observed action before validity ends: switch departure, post-logout return/login, or first unlock. Missing/late observation fails even when a message receipt was timely. The completed switch dwell may extend past START BY; the departure must precede it. Login observation is deliberately conservative: an unfinished login at the deadline does not count as timely.
+
+Cases12.8/11 wait for a marker positively watching with a finite watchStart and a locked reading before cueing. This prevents a Node-kill case's still-unlocked original session being counted as the human's unlock. After cue, the first fresh unlock must arrive by START BY; the terminal relock-failed result remains required. The harness does not assert a count of four physical manual unlocks: repeated-action completion rests on that failure outcome. Tests use a delayed initial relock and separate open intervals, plus never-watching and late-first-action cases. No native or relay changes.
+
+Final delivery/action review: independent reviewer confirmed the receipt and action-boundary design, then reproduced a mixed-dwell-bout false pass. The correction resets incomplete-bout action evidence and judges the accepted bout departure. Parent independently verified the final code and147/147 targeted tests across driver, human timelines, delivery and proof build.136/136 author targeted tests pass. No live messages or Mac actions. Full verification remains Local Verify.
