@@ -10,14 +10,14 @@ This spec describes one small program, "Instar Connect". It is the same file for
 
 First, the PC is a new, restricted kind of device. The agent can drive it, but the PC has no power over the agent: it cannot approve anything, read conversations or add devices.
 
-Second, each PC belongs to the one agent machine that paired it. Sessions on the agent's other computers reach the PC by asking that machine. This removed a whole family of problems the earlier drafts had with several machines talking to one PC. If that machine is off or retired, the owner moves the PC to another of the agent's machines with one Face ID tap in the app; the agent cannot move it alone. It works with the free addresses every agent already has, so nothing has to be bought.
+Second, each PC belongs to the one agent machine that paired it. Sessions on the agent's other computers reach the PC by asking that machine. This removed a whole family of problems the earlier drafts had with several machines talking to one PC. The app suggests the machine that is most reliably on, and the person can pick another. If that machine is retired, the person presses "Connect again" on the PC and scans once to move it. The agent tells the owner if the PC is unreachable because its machine is off.
 
 ## The safeguards, plainly
 
 - The file is harmless on its own: a copy only ever connects to the agent of whoever approves it on their own phone.
 - The PC checks that every command really comes from the machine it paired with.
-- Moving from "Look only" up to "Full control" needs Face ID on the owner's phone, checked by the PC itself, so the agent cannot raise its own access. Lowering works from the PC, the phone or the web console.
-- Only the owner's own conversations with the agent can use the PC. Scheduled jobs cannot, so a hostile email a job reads cannot turn into a command on the PC.
+- Moving from "Look only" up to "Full control" needs Face ID on the owner's phone, checked by the PC itself, and each approval can be used only once, so the agent cannot raise its own access or replay an old yes. Lowering works from the PC, the phone or the web console.
+- Only the owner's own conversations with the agent are let through to the PC; scheduled jobs are turned away. This is a filter, not a wall: all the agent's sessions run as one computer user, so under "Full control" the agent as a whole can reach the PC. The window says so, and "Look only" is there for anyone who does not want that. "Look only" also keeps the agent out of the usual places passwords and keys are saved, unless the person allows it.
 - Against scammers: a warning and a wait before Connect, a stronger warning and longer wait if a remote-control program is running, a notice at every Windows sign-in saying who is connected with a one-click Disconnect, and a pop-up whenever a new agent session starts using the PC.
 - It never asks for administrator rights. A tray icon shows when the agent is working, with a Stop button. Every action is logged. Removing it is one click on the PC, the normal Windows uninstall, or removing it from the phone, and it deletes everything it created.
 
