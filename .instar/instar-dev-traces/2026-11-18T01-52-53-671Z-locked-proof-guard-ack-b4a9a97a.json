@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "locked-proof-guard-ack",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T01:52:53.671Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-guard-ack.md",
+  "artifactSha256": "a51da8e8aad75e005bc54e3acc67574065b12da2e444ace3e076e3061a2a8362",
+  "coveredFiles": [
+    "docs/specs/locked-proof-guard-ack.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/guard-ack-fixture.py",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-guard-ack.test.ts",
+    "upgrades/next/locked-proof-guard-ack.md",
+    "upgrades/side-effects/locked-proof-guard-ack.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible dedicated proof-account harness correction. No production controller, signed native helper, permissions, API or rollout changes; durable scoped fixture replaces a racy test injection.",
+  "eli16Path": "docs/specs/locked-proof-guard-ack.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-guard-ack.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}
