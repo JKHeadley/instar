@@ -610,9 +610,10 @@ export class RealTarget {
         await this.main.page.click('#stopButton').catch(() => {});
         const v = await this.viewer(this.a);
         await this.requestGrant(v);
-        await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 }).catch(() => {});
+        await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
+        if (!await v.page.isVisible('#control')) throw new Error('the next grant was not confirmed open');
         this.events.add('next-grant-open');
-        return { opened: await v.page.isVisible('#control') };
+        return { opened: true };
       }
       case 'logout-proof-user': {
         const out = sudo(['launchctl', 'bootout', `gui/${this.uid}`], { allowFail: true });
