@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "always-available-combined",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-18T03:52:18.919Z",
+  "artifactPath": "upgrades/side-effects/always-available-combined.md",
+  "artifactSha256": "7e57ccf2dd7cd7ef376097dd80cbfd9a1bc3bb32137ea0ed2661d5f0d0ea60a1",
+  "specPath": "docs/specs/create-agent-accounts-and-always-on.md",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/cli.ts",
+    "src/commands/alwaysAvailable.ts",
+    "src/commands/install.ts",
+    "src/commands/server.ts",
+    "src/commands/setup.ts",
+    "src/core/CredentialIdentityOracle.ts",
+    "src/core/SessionManager.ts",
+    "src/core/alwaysAvailable.ts",
+    "src/core/alwaysAvailableToken.ts",
+    "src/core/keyMaterialPaths.ts",
+    "src/core/localOwnerTicket.ts",
+    "src/recovery/RecoveryEngine.ts",
+    "src/server/mobileLocalOwnerDevice.ts",
+    "src/templates/scripts/instar-watchdog.sh"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "combination of three reviewed PRs"
+  }
+}

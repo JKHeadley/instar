@@ -73,6 +73,8 @@ export function blobHashesOf(r: DocRow): string[] {
     case 'send': return [r.coveredHash];
     case 'link': return r.reasonHash ? [r.reasonHash] : [];
     case 'title': return [r.titleHash];
+    case 'decision-ask': return [r.questionHash];
+    case 'decision': return [r.questionHash, ...(r.noteHash ? [r.noteHash] : [])];
     default: return [];
   }
 }

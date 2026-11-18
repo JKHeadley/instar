@@ -59,7 +59,7 @@ let dom: JSDOM;
 let calls: Call[];
 const flush = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
-async function boot(handler: (c: Call) => { status: number; body?: unknown } | undefined, hash = '#/work/chats', idb = fakeIndexedDB()) {
+async function boot(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash = '#/work/chats', idb = fakeIndexedDB()) {
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
@@ -72,7 +72,7 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
     const base: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } }, '/dashboard/unlock-check': { accepted: true },
     };
-    const out = handler(c) ?? (base[url] !== undefined ? { status: 200, body: base[url] } : { status: 404, body: {} });
+    const out = await handler(c) ?? (base[url] !== undefined ? { status: 200, body: base[url] } : { status: 404, body: {} });
     return { ok: out.status >= 200 && out.status < 300, status: out.status, json: async () => JSON.parse(JSON.stringify(out.body ?? {})), headers: new dom.window.Headers() } as unknown as Response;
   };
   vi.resetModules();
@@ -426,5 +426,95 @@ describe('Conversations page', () => {
     expect(body.textContent).toContain('[bad](javascript:alert(1))');
     expect(body.querySelector('img')).toBeNull();
     expect(body.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+});
+
+
+describe('card source message navigation', () => {
+  async function sourcePage(history: (c: Call) => any, target = 'source-event') {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const page = await boot(c => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Project planning' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return history(c);
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}&m=${encodeURIComponent(target)}`, idb);
+    return { ...page, publicKey };
+  }
+  const message = (eventId: string) => ({ eventId, role: 'agent', text: eventId === 'source-event' ? 'The original request' : 'Later discussion', at: '2026-11-17T12:00:00Z' });
+  const reply = (ids: string[], nextBefore: string | null = null) => ({ status: 200, body: { conversationKey: UUID, messages: ids.map(message), nextBefore } });
+
+  it('finds an event id on a later page through signed reads, with explicit continued search', async () => {
+    const { doc, publicKey } = await sourcePage(c => {
+      const cursor = new URL(c.url, 'http://localhost').searchParams.get('before');
+      const n = cursor ? Number(cursor) : 0;
+      return n === 7 ? reply(['source-event']) : reply([`event-${n}`], String(n + 1));
+    });
+    await vi.waitFor(() => expect(doc.querySelector('.chat-source-target')?.textContent).toContain('More history is available'));
+    expect(calls.filter(c => c.url.includes('/messages?'))).toHaveLength(6);
+    (doc.querySelector('.chat-source-target button') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(doc.querySelector('[data-id="source-event"]')?.classList.contains('chat-flash')).toBe(true));
+    expect(doc.querySelector('.chat-source-target')?.textContent).toContain('Original message');
+    for (const call of calls.filter(c => c.url.includes('/messages?'))) expect(verifySigned(call, publicKey).ok).toBe(true);
+  });
+
+  it.each(['exhausted', 'failed', 'stalled'])('distinguishes %s history without retrying it silently', async kind => {
+    const { doc } = await sourcePage(c => {
+      if (!c.url.includes('before=')) return reply(['new'], kind === 'exhausted' ? null : '1');
+      return kind === 'failed' ? { status: 500 } : reply(['new'], '1');
+    });
+    const expected = kind === 'exhausted' ? 'not in the available history' : 'Could not read earlier messages';
+    await vi.waitFor(() => expect(doc.querySelector('.chat-source-target')?.textContent).toContain(expected));
+    expect(calls.filter(c => c.url.includes('/messages?'))).toHaveLength(kind === 'exhausted' ? 1 : 2);
+    expect((doc.querySelector('.chat-source-target button') as HTMLButtonElement).hidden).toBe(kind === 'exhausted');
+  });
+
+  it('finds a target even if the response repeats its history cursor', async () => {
+    const { doc } = await sourcePage(c => c.url.includes('before=') ? reply(['source-event'], '1') : reply(['new'], '1'));
+    await vi.waitFor(() => expect(doc.querySelector('[data-id="source-event"]')?.classList.contains('chat-flash')).toBe(true));
+    expect(doc.querySelector('.chat-source-target')?.textContent).not.toContain('Could not read');
+  });
+
+  it('does not mistake a manual history request for a failed source read', async () => {
+    let finish: ((value: any) => void) | undefined;
+    let olderCalls = 0;
+    const { doc } = await sourcePage(c => {
+      if (!c.url.includes('before=')) return reply(['new'], '1');
+      return ++olderCalls === 1 ? new Promise(resolve => { finish = resolve; }) : reply(['other-message'], '2');
+    });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    // Dispatch represents navigation arriving while the source read is still in flight.
+    doc.querySelector('.chat-earlier')!.dispatchEvent(new dom.window.Event('click'));
+    await vi.waitFor(() => expect(doc.querySelector('[data-id="other-message"]')).toBeTruthy());
+    finish!(reply(['source-event'])); await flush(50);
+    expect(doc.querySelector('.chat-source-target')?.textContent).toContain('navigation paused');
+    expect(doc.querySelector('[data-id="source-event"]')).toBeNull();
+    expect(doc.querySelector('.chat-source-target')?.textContent).not.toContain('Could not read');
+  });
+
+  it('keeps the draft and ignores a superseded source read on the same conversation', async () => {
+    let finish: ((value: any) => void) | undefined;
+    const { doc } = await sourcePage(c => c.url.includes('before=') ? new Promise(resolve => { finish = resolve; }) : reply(['new-target'], '1'));
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const composer = doc.querySelector('.chat-compose textarea') as HTMLTextAreaElement || doc.querySelector('textarea') as HTMLTextAreaElement;
+    expect(composer).toBeTruthy(); composer.value = 'Keep this unsent draft';
+    dom.window.location.hash = `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}&m=new-target`;
+    await vi.waitFor(() => expect(doc.querySelector('[data-id="new-target"]')?.classList.contains('chat-flash')).toBe(true));
+    finish!(reply(['source-event'])); await flush(50);
+    expect(doc.querySelector('textarea')).toBe(composer);
+    expect(composer.value).toBe('Keep this unsent draft');
+    expect(doc.querySelector('[data-id="source-event"]')).toBeNull();
+    expect(calls.filter(c => c.url.includes('/messages?') && !c.url.includes('before='))).toHaveLength(1);
+  });
+
+  it('honors the signed reader refusal instead of presenting source content', async () => {
+    const { doc } = await sourcePage(() => ({ status: 404 }));
+    await vi.waitFor(() => expect(doc.body.textContent).toContain('This conversation is not here any more.'));
+    expect(doc.querySelector('.chat-bubble')).toBeNull();
+    expect((doc.querySelector('.chat-source-target') as HTMLElement).hidden).toBe(true);
   });
 });

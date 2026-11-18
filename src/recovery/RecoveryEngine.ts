@@ -1,4 +1,5 @@
 import { restoreRecoveryMainBindings, validateRecoveryMainBindings, type RecoveryMainBindingSnapshot } from './RecoveryMainBindings.js';
+import { agentNameFromLabel, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -139,6 +140,10 @@ export class LaunchdRecoveryControl implements RecoveryServiceControl {
     return /Could not find service|No such process|No such file or directory/.test(String((error as {stderr?:string})?.stderr??''));
   }
   async start(): Promise<void> {
+    // Always available (§B.5): a system service runs this agent; reloading its per-user job would
+    // start a second copy.
+    const aaAgent=agentNameFromLabel(this.config.serviceLabel);
+    if(aaAgent&&daemonRunsAgent(aaAgent))throw new Error('recovery-always-available-daemon');
     if(this.config.serviceLabel.startsWith('ai.instar.'))verifyRecoveryMainService(this.config);
     await this.assertRepairAllowed();
     if(this.config.serviceLabel.startsWith('ai.instar.')&&(this.config.mainBindings||this.config.runtimeSlot))restoreRecoveryMainBindings(this.config);

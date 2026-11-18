@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "document-decisions",
+  "sessionId": "3779854c-1b0a-4462-a013-b7f272eba2c2",
+  "timestamp": "2026-11-18T00:27:34.982Z",
+  "artifactPath": "upgrades/side-effects/document-decisions.md",
+  "artifactSha256": "3d992bd650deb298004f59540d0a924d24e5ebe26bdd952f0c611c7d50a7f7e7",
+  "specPath": "docs/specs/document-decisions.md",
+  "coveredFiles": [
+    "dashboard/console/documents.js",
+    "dashboard/console/needs-model.js",
+    "src/server/AgentServer.ts",
+    "src/server/documentPageRoutes.ts",
+    "src/server/documentRoutes.ts",
+    "tests/unit/console-needs-first-screen.test.ts",
+    "tests/unit/mobile-app-people-roles.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/document-decisions.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

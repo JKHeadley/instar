@@ -78,7 +78,7 @@ describe('jev-correction-shadow — migration parity and awareness', () => {
     expect(DEV_GATED_FEATURES.filter((f) => f.configPath === 'intelligence.jevCorrectionShadow.enabled')).toHaveLength(1);
     const src = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
     expect(src).toMatch(/installJevCorrectionShadow\(correctionShadow\)/);
-    expect(src).toMatch(/if \(beforeJevCorrectionCb\) beforeJevCorrectionCb\(entry\);\s*correctionShadow\.observe\(entry\)/);
+    expect(src).toMatch(/if \(beforeJevCorrectionCb\) beforeJevCorrectionCb\(entry\);\s*correctionShadow\.observe\(entry, telegram\.getVerifiedOwner\(\)\)/);
   });
 });
 
@@ -106,7 +106,7 @@ describe('jev-correction-shadow — alive on a development agent, dark on the fl
     const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, e.stateDir);
     const before = adapter.onMessageLogged;
     adapter.onMessageLogged = (entry) => { if (before) before(entry); shadow.observe(entry); };
-    adapter.logInboundMessage({ messageId: 77, topicId: 5, text: 'From now on always give me the direct link, never point me at an email.', timestamp: new Date().toISOString() });
+    adapter.logInboundMessage({ messageId: 77, telegramUserId: 4242, forwarded: false, topicId: 5, text: 'From now on always give me the direct link, never point me at an email.', timestamp: new Date().toISOString() });
     await getJevCorrectionShadow()!.lastCheck;
     const srv = await serve(e.stateDir);
     const res = await fetch(`${srv.url}/jev-correction/summary`);
@@ -165,9 +165,9 @@ describe('jev-correction live feed (jev-correction-live.md) — production facto
     getJevCorrectionShadow()!.setSentinelFeed((s) => fed.push(s.text));
     const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, e.stateDir);
     adapter.onMessageLogged = (entry) => shadow.observe(entry);
-    adapter.logInboundMessage({ messageId: 88, topicId: 5, text: PREF, timestamp: new Date().toISOString() });
+    adapter.logInboundMessage({ messageId: 88, telegramUserId: 4242, forwarded: false, topicId: 5, text: PREF, timestamp: new Date().toISOString() });
     await getJevCorrectionShadow()!.lastCheck;
-    adapter.logInboundMessage({ messageId: 89, topicId: 5, text: 'From e2e (desk), not from the operator: slow down.', timestamp: new Date().toISOString() });
+    adapter.logInboundMessage({ messageId: 89, telegramUserId: 4242, forwarded: false, topicId: 5, text: 'From e2e (desk), not from the operator: slow down.', timestamp: new Date().toISOString() });
     await getJevCorrectionShadow()!.lastCheck;
     return { fed, summary: shadow.summary(), fetchImpl };
   }

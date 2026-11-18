@@ -13,7 +13,8 @@ export interface GraphHistorySource {
   machine?: string | null;
 }
 export interface ConversationGraphHistoryDeps {
-  /** Actual boot/catch-up/witness/member proof, never merely a feature flag. */
+  /** Actual runtime state, never merely a feature flag: the graph runtime is alive and may serve private
+   *  reads (the same gate as the owner's read view that resolved this source). */
   ready(): boolean;
   /** Both ordinary bearer and this machine's live owner operator proof. */
   verifyOwner(req: Request): boolean;

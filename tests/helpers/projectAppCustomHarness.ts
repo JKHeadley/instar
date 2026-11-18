@@ -84,6 +84,8 @@ export function makeHarness(opts: { limits?: ConstructorParameters<typeof Projec
     advance: (ms) => { clock += ms; },
     rebuild: (o = {}) => new ProjectAppCustomSource({ ...base, ...o }),
   };
+  // As server.ts wires it: a stopped app's serve card reads as settled on the board.
+  svc.setStoppedAppCardCheck((cardId) => h.source.stoppedServeCard(cardId));
   return h;
 }
 

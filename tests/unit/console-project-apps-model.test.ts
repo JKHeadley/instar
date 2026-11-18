@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  appsView, summaryLine, pinLine, appStripFor, conversationRefOf, safeHash, safeAppHref, appNavigation, appPath, projectsView,
+  appsView, summaryLine, pinLine, appStripFor, conversationRefOf, safeHash, safeAppHref, appNavigation, appPath, projectsView, notRunningLine,
 } from '../../dashboard/console/projects-model.js';
 import { NEED_EXEMPT } from '../../dashboard/console/needs-model.js';
 
@@ -120,6 +120,38 @@ describe('appsView: the Work row', () => {
       expect.stringMatching(/^You removed Feature maturation board on .+ \(phone\)$/),
       expect.stringMatching(/^You said no to Feature maturation board on .+ \(desktop app\)$/),
     ]);
+  });
+});
+
+describe('a custom app that does not run (part 2: state off / not-approved)', () => {
+  const custom = (over = {}) => app({ appRef: 'custom:pa_0123456789abcdef', title: 'Sales pipeline', openHref: '/dashboard/project-app/?app=pa_0123456789abcdef', nativeScreen: undefined,
+    summary: { headline: '3 open deals worth $34,500', counts: [], asOf: '2026-11-16T19:40:00Z' }, ...over });
+  it('off: "Sales pipeline · Stopped", no Open, the old headline not shown', () => {
+    const v = appsView(row({ apps: [custom({ state: 'off' })] }), NOW);
+    expect(v.buttons).toEqual([]);
+    expect(v.headline).toEqual({ text: 'Sales pipeline · Stopped', state: 'off' });
+    expect(v.apps[0]).toMatchObject({ href: null, line: { text: 'Stopped', state: 'off' }, notRunning: 'off' });
+    expect(JSON.stringify(v)).not.toContain('34,500');
+  });
+  it('not-approved: "Waiting for your approval", no Open', () => {
+    const v = appsView(row({ apps: [custom({ state: 'not-approved', summary: null, summaryState: 'pending' })] }), NOW);
+    expect(v.buttons).toEqual([]);
+    expect(v.headline).toEqual({ text: 'Sales pipeline · Waiting for your approval', state: 'not-approved' });
+  });
+  it('served (and copying, and a builtin with no state) stay as they are: the headline and Open', () => {
+    for (const a of [custom({ state: 'served' }), custom({ state: 'copying' }), custom()]) {
+      const v = appsView(row({ apps: [a] }), NOW);
+      expect(v.buttons.map((b) => b.label)).toEqual(['Open Sales pipeline']);
+      expect(v.headline.text).toMatch(/^3 open deals worth \$34,500/);
+    }
+    expect(notRunningLine(app())).toBeNull();
+  });
+  it('the conversation strip says it plainly with nothing to open', () => {
+    const data = { projects: [row({ apps: [custom({ state: 'off' })] })] };
+    expect(appStripFor(data, 'telegram:128732', NOW)).toMatchObject({ title: 'Sales pipeline', href: null, label: null, line: { text: 'Stopped', state: 'off' } });
+    // A running app is still preferred for the strip.
+    const both = { projects: [row({ apps: [custom({ state: 'off' }), app()] })] };
+    expect(appStripFor(both, 'telegram:128732', NOW)).toMatchObject({ appRef: 'builtin:maturation-board', label: 'Open' });
   });
 });
 
@@ -240,6 +272,16 @@ describe('the rendered Projects section (jsdom)', () => {
     expect(body.requestId).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
     // The section re-reads the projects and redraws in place.
     await vi.waitFor(() => expect(document.querySelector('.project-offer')).toBeNull());
+  });
+
+  it('a stopped custom app draws "Sales pipeline · Stopped" with no Open button', async () => {
+    const { projectsSection } = await import('../../dashboard/console/projects.js');
+    const sec = projectsSection({ couldNotCheck: [], projects: [row({ apps: [app({ appRef: 'custom:pa_0123456789abcdef', title: 'Sales pipeline', openHref: '/dashboard/project-app/?app=pa_0123456789abcdef', nativeScreen: undefined, state: 'off' })] })] });
+    document.querySelector('main').append(sec);
+    expect(sec.querySelector('.project-summary .project-app-line').textContent).toBe('Sales pipeline · Stopped');
+    expect(sec.querySelector('.project-open')).toBeNull();
+    expect(sec.querySelector('.project-app .project-app-summary').textContent).toBe('Stopped');
+    expect([...sec.querySelectorAll('.project-app button')].map((b) => b.textContent)).toEqual(['Remove']);
   });
 
   it('a row without app fields draws exactly as before (no apps block, no buttons)', async () => {

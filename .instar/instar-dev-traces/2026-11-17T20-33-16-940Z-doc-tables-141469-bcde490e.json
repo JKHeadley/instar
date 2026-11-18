@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "doc-tables-141469",
+  "sessionId": "75ef3575-c550-4785-8dfd-a2c869a42b2f",
+  "timestamp": "2026-11-17T20:33:16.940Z",
+  "artifactPath": "upgrades/side-effects/doc-tables-141469.md",
+  "artifactSha256": "a5b2d7494c6b11169f2dcaf05af1f3f35655c88de28d9898fe6c211f697cdfb4",
+  "coveredFiles": [
+    "dashboard/docs/doc-page.css",
+    "dashboard/docs/doc-page.js",
+    "src/documents/render.ts",
+    "tests/unit/documents-render.test.ts",
+    "upgrades/next/doc-tables-141469.md",
+    "upgrades/side-effects/doc-tables-141469.eli16.md",
+    "upgrades/side-effects/doc-tables-141469.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "presentation-only fix on a dark-gated page, additive optional fields, a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/doc-tables-141469.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/doc-tables-141469.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

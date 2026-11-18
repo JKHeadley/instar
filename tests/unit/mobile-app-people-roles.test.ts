@@ -409,7 +409,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 44: work-front-doors stage 2a opened GET /mobile/work/projects to guests; only the owner gets project names.
     // 45: permanent-agent-links §2a opened GET /mobile/agent-link/identity to guests; it returns only the agent's
     //     public id and key and a proof bound to that phone, so every paired person's app can open links.
-    expect(open).toBe(45);
+    // 46: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
+    expect(open).toBe(46);
   });
 
   it.each([
