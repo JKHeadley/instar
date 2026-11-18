@@ -727,6 +727,24 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
   label=$(basename "$plist" .plist)
   # Don't watchdog the watchdog
   [ "$label" = "ai.instar.watchdog" ] && continue
+  # Always available (create-agent-accounts-and-always-on §B.5): a system service runs this agent;
+  # reloading its per-user job would start a second copy.
+  # Same rule as src/core/alwaysAvailable.ts: only a clearly absent record is off; a record whose
+  # daemon is false (FileVault on) is off; anything unclear (unreadable folder or file) is on.
+  aa_dir="${INSTAR_ALWAYS_AVAILABLE_DIR:-/Library/Application Support/Instar/always-available}"
+  aa_record="$aa_dir/${label#ai.instar.}.json"
+  if [ -d "$aa_dir" ] && [ ! -x "$aa_dir" ]; then
+    continue
+  fi
+  if [ -e "$aa_record" ]; then
+    aa_off=0
+    if grep -q '"daemon"[[:space:]]*:[[:space:]]*false' "$aa_record" 2>/dev/null \
+      && grep -q '"version"[[:space:]]*:[[:space:]]*1[^0-9]' "$aa_record" 2>/dev/null \
+      && grep -qF "\"${label#ai.instar.}\"" "$aa_record" 2>/dev/null; then
+      aa_off=1
+    fi
+    [ "$aa_off" -eq 1 ] || continue
+  fi
   checked=$((checked + 1))
   project_dir=$(get_project_dir "$plist")
   if ! recovery_begin_rule "$project_dir" "$label"; then
