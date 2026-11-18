@@ -482,3 +482,75 @@ describe('reopen', () => {
     expect(review.reopen(a.id, 'try again please')).toEqual({ ok: false, error: 'not-review-closed' });
   });
 });
+
+describe('promise keeping actions (docs/specs/promise-keeping-before-the-deadline.md §3.7)', () => {
+  const hist: Array<{ text: string; timestamp: string }> = [];
+  const stopped: Array<{ topicId: number; text: string }> = [];
+  beforeEach(() => {
+    hist.length = 0;
+    stopped.length = 0;
+    review = new PromiseReview({
+      tracker: t, stateDir, projectDir,
+      config: () => resolvePromiseReviewConfig(cfg, cfg.enabled === true),
+      topicHistory: () => hist,
+      sendStoppedLine: async (topicId, text) => { stopped.push({ topicId, text }); },
+    });
+  });
+  const inHours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+
+  it('set-time: applied only when the quoted line is in the conversation and the time is ≥ 30 min away', async () => {
+    const c = mk();
+    hist.push({ text: 'You will have the plan by 5 PM tomorrow.', timestamp: new Date().toISOString() });
+    const bad = await review.apply('r1', [{ id: c.id, action: 'set-time', softDeadlineAt: inHours(20), evidence: 'by 9 PM tonight' }]);
+    expect(bad.results[0]).toMatchObject({ outcome: 'refused', refusal: 'set-time-quote-not-in-conversation' });
+    const soon = await review.apply('r2', [{ id: c.id, action: 'set-time', softDeadlineAt: inHours(0.1), evidence: 'the plan by 5 PM tomorrow' }]);
+    expect(soon.results[0]).toMatchObject({ outcome: 'refused', refusal: 'set-time-needs-future-time' });
+    const ok = await review.apply('r3', [{ id: c.id, action: 'set-time', softDeadlineAt: inHours(20), evidence: 'the plan by 5 PM tomorrow' }]);
+    expect(ok.results[0]).toMatchObject({ outcome: 'applied' });
+    const row = t.get(c.id)!;
+    expect(row.softDeadlineAt).toBeDefined();
+    expect(row.firstPromisedAt).toBe(row.softDeadlineAt);
+    expect(row.timeSource).toBe('review');
+  });
+
+  it('set-time and pick-up never touch a row that already has a time, a behavioral row, or a Slack row', async () => {
+    const timed = mk({ softDeadlineAt: inHours(3) } as never);
+    const slack = mk({ topicId: -3 });
+    const r = await review.apply('r4', [
+      { id: timed.id, action: 'pick-up', reason: 'still owed and stalled' },
+      { id: slack.id, action: 'pick-up', reason: 'still owed and stalled' },
+    ]);
+    expect(r.results.map((x) => x.refusal)).toEqual(['already-has-a-time', 'promise-keeping-not-applicable']);
+  });
+
+  it('pick-up: needs a reason, at most 5 per run, sets pickupRequestedAt', async () => {
+    const rows = Array.from({ length: 7 }, () => mk());
+    const r = await review.apply('r5', rows.map((c) => ({ id: c.id, action: 'pick-up' as const, reason: 'still owed and stalled' })));
+    expect(r.results.filter((x) => x.outcome === 'applied')).toHaveLength(5);
+    expect(r.results.filter((x) => x.outcome === 'capped')).toHaveLength(2);
+    expect(t.get(rows[0].id)!.pickupRequestedAt).toBeDefined();
+    const short = await review.apply('r6', [{ id: mk().id, action: 'pick-up', reason: 'meh' }]);
+    expect(short.results[0]).toMatchObject({ refusal: 'pick-up-needs-reason' });
+  });
+
+  it('archiving a promise whose last resort was sent says so to the person, once', async () => {
+    const c = mk({ priority: 'normal', priorityReason: 'real work I own' });
+    (t as unknown as { mutateSync: (id: string, fn: (c: Commitment) => Commitment) => Commitment })
+      .mutateSync(c.id, (x) => ({ ...x, lateNoticeFor: '2026-11-01T00:00:00.000Z', parkReviewHandedAt: new Date().toISOString() }));
+    const r = await review.apply('r7', [{ id: c.id, action: 'archive', kind: 'obsolete', reason: 'the person cancelled the trial yesterday' }]);
+    expect(r.results[0].outcome).toBe('applied');
+    expect(stopped).toHaveLength(1);
+    expect(stopped[0].text).toContain("I've stopped working on");
+    expect(stopped[0].text).toContain('the person cancelled the trial yesterday');
+  });
+
+  it('a parked row handed to the review is due at the front of the queue', () => {
+    const plain = mk();
+    const parked = mk();
+    (t as unknown as { mutateSync: (id: string, fn: (c: Commitment) => Commitment) => Commitment })
+      .mutateSync(parked.id, (x) => ({ ...x, parkReviewHandedAt: new Date().toISOString() }));
+    const q = review.queue(10);
+    expect(q.items[0].id).toBe(parked.id);
+    void plain;
+  });
+});

@@ -436,9 +436,11 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, canonicalDecisionPoint, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
-import { buildDateMissingHint } from '../monitoring/lateNoticeCore.js';
+import { buildDateMissingHint, formatPromisedTime } from '../monitoring/lateNoticeCore.js';
 import { detectPromisedTime } from '../monitoring/promisedUpdateDetector.js';
-import { makeHandOffPromise, makeLateEpochStore } from '../monitoring/promiseHandoff.js';
+import { makePickUp, makeLateEpochStore, isReleasablePromiseWork, type PromiseWorkRuntime } from '../monitoring/promiseHandoff.js';
+import { RESCHEDULE_INTENT_MAX_MS, SHORT_SLIP_MAX_MS, hasGivenTime, isOnOverduePath, anchorMs, agentMessageSince, GIVEN_TIME_PATCH_REFUSAL, DELIVER_NEEDS_MESSAGE_REFUSAL } from '../monitoring/promiseKeepingCore.js';
+import { promiseKeepingGateLive } from '../monitoring/promiseKeepingGate.js';
 import { CheckInReminderTicker, resolveCheckInTickIntervalMs } from '../monitoring/CheckInReminderTicker.js';
 import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
@@ -2324,6 +2326,13 @@ export interface RouteContext {
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
+  /** Promise keeping (docs/specs/promise-keeping-before-the-deadline.md §3.1): the server-owned start runtime. */
+  promiseWork?: (PromiseWorkRuntime & {
+    findAttemptSession: (attemptId: string) => { session: string } | null;
+    workingPromiseSessions: () => number;
+    maxSessions: () => number;
+    listPromiseWorkSessions: () => Array<{ tmuxSession: string; commitmentIds: string[]; idleSince?: string }>;
+  }) | null;
   /**
    * native-conversation-any-machine-access §3d: send one signed mesh command to a peer and return
    * its answer. Throws on a transport error or timeout. Null/absent: no mesh on this machine, and
@@ -38923,6 +38932,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const at = Date.parse(hit.timestamp);
           return Number.isFinite(at) ? { at, fromAgent: hit.fromUser === false && !!hit.sessionName } : null;
         } : undefined,
+        // promise-keeping §3.7: set-time's quote must appear in the conversation itself.
+        topicHistory: ctx.telegram ? (topicId) => ctx.telegram!.getTopicHistory(topicId, 500) : undefined,
+        sendStoppedLine: (topicId, text, commitmentId) => sendPromiseNotice(topicId, text, { kind: 'promise-stopped', commitmentId }),
       });
     }
     return promiseReview;
@@ -39024,6 +39036,114 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Live, so tickEnabled and dryRun take effect without a restart: ctx.config is the boot snapshot.
   const checkInReminderConfig = () => ctx.liveConfig?.get?.<CheckInReminderConfig | undefined>('commitments.checkInReminder', undefined)
     ?? ((ctx.config as Record<string, any>).commitments?.checkInReminder as CheckInReminderConfig | undefined);
+  /**
+   * DETERMINISTIC promise-notice delivery (check-in reminders, the promise-keeping
+   * last resort, and reschedule messages): the promise-notice envelope, the durable
+   * content dedup, and the origin service's automation reply keyed by `identity`.
+   */
+  const sendPromiseNotice = async (topicId: number, text: string, identity: unknown): Promise<unknown> => {
+    const telegram = ctx.telegram;
+    if (!telegram) throw new Error('no-delivery-transport');
+    // The origin boundary owns the reservation for the private
+    // reminder scope below; legacy delivery reserves here instead.
+    const originOwnsContent = !!ctx.telegramOrigin;
+    // Route the send through the SAME durable content dedup the
+    // /telegram/reply route uses.
+    //
+    // This is load-bearing and was nearly a false claim: the reconciler
+    // sends first and stamps after, so a crash in between re-sends on
+    // the next pass. The spec justified that by saying "the relay
+    // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
+    // and `sendToTopic` bypasses it entirely. Asserting the mitigation
+    // without wiring it would have been a safety property that existed
+    // only in the comment. (Caught in review round 2, 2026-07-25.)
+    //
+    // A duplicate is treated as SUCCESS-equivalent: the user already has
+    // this exact reminder, so the send is complete and the caller may
+    // stamp. Treating it as a failure would retry-loop until the window
+    // expired and then genuinely double-send.
+    if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
+      return { ok: true, suppressedDuplicate: true } as unknown;
+    }
+    if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
+      return { ok: true, suppressedDuplicate: true } as unknown;
+    }
+    try {
+      // A promise-notice envelope, not this module's 'uncategorized' one: under that, the
+      // notification policy filed every reminder in the Notifications feed (CMT-1951).
+      const send = () => withNotificationEnvelope(stampPromiseNotice(), async () => (telegram)!.sendToTopic(topicId, text));
+      let r;
+      if (ctx.telegramOrigin) {
+        const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
+        service.registerAutomationProducer(producerId);
+        // A retry after send-before-stamp replays only this reminder's
+        // accepted receipt. Unknown acceptance remains held, never
+        // success-equivalent merely because its content is reserved.
+        const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+        const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
+        r = await service.runWithAutomationReply(token, topicId, body, send);
+      } else r = await send();
+      // A held (quiet) send is not delivered: release, so the retry is not taken for a duplicate.
+      if (!originOwnsContent) { if (isQuietReceipt(r)) outboundContentDedup.releaseReservation(topicId, text); else outboundContentDedup.record(topicId, text); }
+      return r;
+    } catch (err) {
+      // Release so a genuine transport failure is retried rather than
+      // suppressed as a "duplicate" on the next pass.
+      if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
+      throw err;
+    }
+  };
+
+  /**
+   * Resolve an open reschedule intent (docs/specs/promise-keeping-before-the-deadline.md §3.4):
+   * send its stored body under the intent's own key (the origin service replays rather than
+   * re-sends a repeated key), and move the time only on a confirmed delivery.
+   */
+  const resolveRescheduleIntent = async (c: import('../monitoring/CommitmentTracker.js').Commitment): Promise<'moved' | 'not-delivered' | 'unknown'> => {
+    const intent = c.rescheduleIntent;
+    if (!intent || typeof c.topicId !== 'number' || !ctx.commitmentTracker) return 'unknown';
+    let outcome: 'delivered' | 'not-delivered' | 'unknown';
+    let messageId: number | undefined;
+    try {
+      const r = await sendPromiseNotice(c.topicId, intent.body, { kind: 'reschedule', commitmentId: c.id, intentId: intent.id });
+      if (isQuietReceipt(r as never)) outcome = 'not-delivered';
+      else {
+        outcome = 'delivered';
+        const mid = (r as { messageId?: unknown; message_id?: unknown } | null)?.messageId ?? (r as { message_id?: unknown } | null)?.message_id;
+        if (typeof mid === 'number') messageId = mid;
+      }
+    } catch (err) {
+      const name = err instanceof Error ? err.name : '';
+      outcome = name === 'QuietRecordedError' || /held-not-delivered|quiet/i.test(String(err)) ? 'not-delivered' : 'unknown';
+    }
+    const now = Date.now();
+    const age = now - Date.parse(intent.at);
+    if (outcome === 'unknown' && age >= RESCHEDULE_INTENT_MAX_MS) outcome = 'delivered'; // §3.4: unknown past the bound is treated as told
+    if (outcome === 'delivered') {
+      await ctx.commitmentTracker.mutate(c.id, (cur) => {
+        if (cur.rescheduleIntent?.id !== intent.id) return cur;
+        const prevMs = Date.parse(cur.softDeadlineAt ?? '');
+        const afterMiss = Number.isFinite(prevMs) && prevMs <= now;
+        return {
+          ...cur,
+          softDeadlineAt: intent.newTime,
+          firstPromisedAt: cur.firstPromisedAt ?? cur.softDeadlineAt ?? intent.newTime,
+          lastTimeMoveAt: new Date(now).toISOString(),
+          timeMovesAfterMiss: (cur.timeMovesAfterMiss ?? 0) + (afterMiss ? 1 : 0),
+          rescheduleIntent: undefined,
+          ...(messageId !== undefined ? { toldMessageId: messageId } : {}),
+          graceUntil: undefined,
+        };
+      });
+      return 'moved';
+    }
+    if (outcome === 'not-delivered') {
+      await ctx.commitmentTracker.mutate(c.id, (cur) => (cur.rescheduleIntent?.id === intent.id ? { ...cur, rescheduleIntent: undefined } : cur));
+      return 'not-delivered';
+    }
+    return 'unknown';
+  };
+
   const runCheckInReminderPass = async ({ quiet }: { quiet: boolean }) => {
     const cfg = checkInReminderConfig();
     const tracker = ctx.commitmentTracker;
@@ -39037,17 +39157,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       {
         tracker,
         ...(quiet ? { log: () => {} } : {}),
-        // Overdue-promise follow-through (docs/specs/overdue-promise-follow-through.md):
-        // the backlog epoch, the agent's zone for the late text, and a handoff that
-        // only ever injects into a RUNNING session as a system notice.
+        // Promise keeping (docs/specs/promise-keeping-before-the-deadline.md):
+        // the backlog epoch, the agent's zone for the texts, and a pickup that
+        // notifies the topic's running session or LAUNCHES a start through the
+        // direct spawn path (never the inbound pipeline) on the lease holder.
         lateEpoch: makeLateEpochStore(ctx.config.stateDir),
         timeZone: ctx.liveConfig?.get?.<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) ?? null,
-        ...(telegram && ctx.sessionManager ? {
-          handOffPromise: makeHandOffPromise({
-            getSessionForTopic: (topicId) => telegram.getSessionForTopic(topicId),
-            isSessionAlive: (session) => ctx.sessionManager!.isSessionAlive(session),
-            injectObserved: (session, text) => ctx.sessionManager!.injectPasteNotificationObserved(session, text),
-          }),
+        ...(ctx.promiseWork ? {
+          pickUp: makePickUp(ctx.promiseWork),
+          findAttemptSession: (attemptId: string) => ctx.promiseWork!.findAttemptSession(attemptId),
+          workingPromiseSessions: () => ctx.promiseWork!.workingPromiseSessions(),
+          maxSessions: ctx.promiseWork.maxSessions(),
+          listPromiseWorkSessions: () => ctx.promiseWork!.listPromiseWorkSessions(),
+          hasLiveSession: (topicId: number) => { const b = ctx.promiseWork!.getSessionForTopic(topicId); return !!b && ctx.promiseWork!.isSessionAlive(b); },
+          releaseIfAllowed: (tmux: string) => (isReleasablePromiseWork(ctx.promiseWork!, tmux) ? (ctx.promiseWork!.release?.(tmux) ?? false) : false),
         } : {}),
         // Promised update overdue (docs/specs/promised-update-capture.md): after
         // the honest line is out, hand the promise to the topic's session the
@@ -39073,57 +39196,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             } as never)).catch((err: unknown) => console.warn(`[check-in-reminder] could not hand ${c.id} back to ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`));
           },
         } : {}),
-        send: async (topicId, text, identity) => {
-          if (!telegram) throw new Error('no-delivery-transport');
-          // The origin boundary owns the reservation for the private
-          // reminder scope below; legacy delivery reserves here instead.
-          const originOwnsContent = !!ctx.telegramOrigin;
-          // Route the send through the SAME durable content dedup the
-          // /telegram/reply route uses.
-          //
-          // This is load-bearing and was nearly a false claim: the reconciler
-          // sends first and stamps after, so a crash in between re-sends on
-          // the next pass. The spec justified that by saying "the relay
-          // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
-          // and `sendToTopic` bypasses it entirely. Asserting the mitigation
-          // without wiring it would have been a safety property that existed
-          // only in the comment. (Caught in review round 2, 2026-07-25.)
-          //
-          // A duplicate is treated as SUCCESS-equivalent: the user already has
-          // this exact reminder, so the send is complete and the caller may
-          // stamp. Treating it as a failure would retry-loop until the window
-          // expired and then genuinely double-send.
-          if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
-            return { ok: true, suppressedDuplicate: true } as unknown;
-          }
-          if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
-            return { ok: true, suppressedDuplicate: true } as unknown;
-          }
-          try {
-            // A promise-notice envelope, not this module's 'uncategorized' one: under that, the
-            // notification policy filed every reminder in the Notifications feed (CMT-1951).
-            const send = () => withNotificationEnvelope(stampPromiseNotice(), async () => (telegram)!.sendToTopic(topicId, text));
-            let r;
-            if (ctx.telegramOrigin) {
-              const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
-              service.registerAutomationProducer(producerId);
-              // A retry after send-before-stamp replays only this reminder's
-              // accepted receipt. Unknown acceptance remains held, never
-              // success-equivalent merely because its content is reserved.
-              const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-              const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
-              r = await service.runWithAutomationReply(token, topicId, body, send);
-            } else r = await send();
-            // A held (quiet) send is not delivered: release, so the retry is not taken for a duplicate.
-            if (!originOwnsContent) { if (isQuietReceipt(r)) outboundContentDedup.releaseReservation(topicId, text); else outboundContentDedup.record(topicId, text); }
-            return r;
-          } catch (err) {
-            // Release so a genuine transport failure is retried rather than
-            // suppressed as a "duplicate" on the next pass.
-            if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
-            throw err;
-          }
-        },
+        send: sendPromiseNotice,
+        resolveRescheduleIntent: (c: import('../monitoring/CommitmentTracker.js').Commitment) => resolveRescheduleIntent(c),
       },
       {
         enabled: true,
@@ -40054,6 +40128,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { nextUpdateDueAt, softDeadlineAt, hardDeadlineAt, cadenceMs, beaconEnabled, priority, priorityReason } = req.body ?? {};
+    // promise-keeping §3.4: a time the person was given moves only through reschedule.
+    if ('softDeadlineAt' in (req.body ?? {}) && promiseKeepingGateLive(ctx.liveConfig, ctx.config) && hasGivenTime(existing)) {
+      res.status(409).json({ error: GIVEN_TIME_PATCH_REFUSAL, refusedBy: 'promise-keeping-given-time' });
+      return;
+    }
 
     // Reject unknown keys to surface typos early.
     const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled', 'autoExpiryHold', 'priority', 'priorityReason']);
@@ -40124,6 +40203,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...prev,
         ...(nextUpdateDueAt !== undefined ? { nextUpdateDueAt } : {}),
         ...(softDeadlineAt !== undefined ? { softDeadlineAt } : {}),
+        ...(softDeadlineAt && !prev.firstPromisedAt ? { firstPromisedAt: softDeadlineAt } : {}),
         // A promised time IS follow-through: the opt-out no longer describes the row.
         ...(softDeadlineAt ? { followThroughOptOutReason: undefined } : {}),
         ...(hardDeadlineAt !== undefined ? { hardDeadlineAt } : {}),
@@ -40155,6 +40235,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'mutate failed' });
     }
+  });
+
+  /**
+   * POST /commitments/:id/reschedule — move a time the person was given
+   * (docs/specs/promise-keeping-before-the-deadline.md §3.4). The server sends
+   * `message` plus its own "New time:" line to the promise's topic and moves the
+   * time only once that send is delivered, so a time never moves silently.
+   * `{grace: true, minutes}` instead takes the one-off grace (≤ 15 min, no message).
+   */
+  router.post('/commitments/:id/reschedule', async (req, res) => {
+    if (!ctx.commitmentTracker) { res.status(404).json({ error: 'CommitmentTracker not configured' }); return; }
+    const origin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const route = await resolveCommitmentRoute(req.params.id, origin);
+    if (route === 'ambiguous') { res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` }); return; }
+    if (typeof route === 'object') {
+      res.status(409).json({ error: 'This promise is owned by another machine. Reschedule it from a session on that machine.', ownerMachineId: route.forward.owner });
+      return;
+    }
+    const cur = ctx.commitmentTracker.get(req.params.id);
+    if (!cur) { res.status(404).json({ error: `Commitment ${req.params.id} not found` }); return; }
+    if (cur.status !== 'pending') { res.status(409).json({ error: `Commitment ${req.params.id} is ${cur.status}; nothing to reschedule` }); return; }
+    if (typeof cur.topicId !== 'number' || cur.topicId <= 0) { res.status(409).json({ error: 'Reschedule is available for Telegram conversations only' }); return; }
+    if (cur.rescheduleIntent) { res.status(409).json({ error: 'A reschedule for this promise is still being delivered; try again in a minute' }); return; }
+    const now = Date.now();
+    const body = req.body ?? {};
+    if (body.grace === true) {
+      const minutes = Number(body.minutes ?? 15);
+      const t = Date.parse(cur.softDeadlineAt ?? '');
+      if (!Number.isFinite(t) || t > now) { res.status(409).json({ error: 'The grace is only for a time that has already passed' }); return; }
+      if (cur.graceUsed) { res.status(409).json({ error: 'The one-off grace for this promise is already used; reschedule with a message instead' }); return; }
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes * 60_000 > SHORT_SLIP_MAX_MS) { res.status(400).json({ error: 'minutes must be between 1 and 15' }); return; }
+      const updated = await ctx.commitmentTracker.mutate(cur.id, (c) => ({ ...c, graceUntil: new Date(now + minutes * 60_000).toISOString(), graceUsed: true, timeMovesAfterMiss: (c.timeMovesAfterMiss ?? 0) + 1 }));
+      res.json({ grace: true, graceUntil: updated.graceUntil });
+      return;
+    }
+    const { newTime, message } = body as { newTime?: unknown; message?: unknown };
+    if (typeof newTime !== 'string' || !Number.isFinite(Date.parse(newTime)) || Date.parse(newTime) <= now) { res.status(400).json({ error: 'newTime must be a future ISO 8601 time' }); return; }
+    if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'message is required: tell the person what was missed or what changed, and what you are doing' }); return; }
+    if (refuseIfCredential(message, res)) return;
+    const when = formatPromisedTime(newTime, ctx.liveConfig?.get?.<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) ?? null) || newTime;
+    const full = `${message.trim()}\n\nNew time: ${when}`;
+    if (full.length > 3500) { res.status(400).json({ error: 'message is too long for one Telegram message; keep it under 3400 characters' }); return; }
+    const intent = { id: `rs-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`, newTime, at: new Date(now).toISOString(), body: full };
+    const withIntent = await ctx.commitmentTracker.mutate(cur.id, (c) => (c.rescheduleIntent ? c : { ...c, rescheduleIntent: intent }));
+    if (withIntent.rescheduleIntent?.id !== intent.id) { res.status(409).json({ error: 'A reschedule for this promise is already in flight' }); return; }
+    const result = await resolveRescheduleIntent(withIntent);
+    if (result === 'moved') { res.json({ rescheduled: true, softDeadlineAt: newTime }); return; }
+    if (result === 'not-delivered') { res.status(409).json({ error: 'The message was not delivered (held as a quiet notification or refused), so the time was not moved. Try again shortly.' }); return; }
+    res.status(202).json({ rescheduled: 'pending', detail: 'Delivery is not confirmed yet; the time moves once it is (checked again within 30 minutes).' });
   });
 
   /**
@@ -40273,6 +40402,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const args = { ...(deliveryMessageId ? { deliveryMessageId } : {}), ...(evidence ? { evidence } : {}) };
       await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'deliver', Object.keys(args).length ? args : undefined));
       return;
+    }
+    // promise-keeping §3.4: past its time, delivery cites the message that gave the person the result.
+    {
+      const cur = ctx.commitmentTracker.get(req.params.id);
+      if (cur && cur.status === 'pending' && promiseKeepingGateLive(ctx.liveConfig, ctx.config) && isOnOverduePath(cur, Date.now())) {
+        const mid = Number(deliveryMessageId);
+        const since = anchorMs(cur);
+        const hist = typeof cur.topicId === 'number' && cur.topicId > 0 ? ctx.telegram?.getTopicHistory?.(cur.topicId, 500) : null;
+        if (!Number.isFinite(mid) || !agentMessageSince(hist as never, mid, since)) {
+          res.status(409).json({ error: DELIVER_NEEDS_MESSAGE_REFUSAL, refusedBy: 'promise-keeping-deliver-evidence' });
+          return;
+        }
+      }
     }
     const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId, evidence);
     if (!updated) {

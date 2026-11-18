@@ -167,3 +167,28 @@ describe('PendingMutationLedger — durable intent queue (§3.4 rule 3)', () => 
     expect(fs.readdirSync(path.dirname(file)).some((n) => n.includes('.corrupt-'))).toBe(true);
   });
 });
+
+describe('promise keeping record rules on the owner (docs/specs/promise-keeping-before-the-deadline.md §3.4)', () => {
+  it('a forwarded PATCH cannot move a given time while the gate is live; it can while dark', async () => {
+    const t = makeTracker();
+    const c = t.record({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: 9, softDeadlineAt: new Date(Date.now() + 3600_000).toISOString(), beaconEnabled: true } as never);
+    const move = payload({ id: c.id, op: 'patch-beacon', args: { softDeadlineAt: new Date(Date.now() + 7200_000).toISOString() } });
+    expect((await applyOwnerMutation(t, move, { promiseKeepingLive: () => true })).verdict).toBe('invalid-transition');
+    expect((await applyOwnerMutation(t, { ...move, opKey: 'k2' }, { promiseKeepingLive: () => false })).verdict).toBe('applied');
+  });
+  it('a forwarded deliver past the time gets the SAME message check as the local route', async () => {
+    const t = makeTracker();
+    const c = t.record({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: 9, softDeadlineAt: new Date(Date.now() - 3600_000).toISOString(), beaconEnabled: true } as never);
+    const verify = (_row: unknown, id: number) => id === 77;
+    const live = { promiseKeepingLive: () => true, verifyDeliveryMessage: verify };
+    expect((await applyOwnerMutation(t, payload({ id: c.id, op: 'deliver' }), live)).verdict).toBe('invalid-transition');
+    expect((await applyOwnerMutation(t, payload({ id: c.id, op: 'deliver', opKey: 'k4', args: { deliveryMessageId: 'whatever' } }), live)).verdict).toBe('invalid-transition');
+    expect((await applyOwnerMutation(t, payload({ id: c.id, op: 'deliver', opKey: 'k5', args: { deliveryMessageId: 12 } }), live)).verdict).toBe('invalid-transition');
+    expect((await applyOwnerMutation(t, payload({ id: c.id, op: 'deliver', opKey: 'k3', args: { deliveryMessageId: 77 } }), live)).verdict).toBe('applied');
+  });
+  it('a Slack promise past its time can still be delivered (no Telegram history to cite)', async () => {
+    const t = makeTracker();
+    const c = t.record({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: -9, softDeadlineAt: new Date(Date.now() - 3600_000).toISOString(), beaconEnabled: true } as never);
+    expect((await applyOwnerMutation(t, payload({ id: c.id, op: 'deliver' }), { promiseKeepingLive: () => true })).verdict).toBe('applied');
+  });
+});
