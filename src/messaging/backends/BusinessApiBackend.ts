@@ -14,6 +14,7 @@
  * Meta Cloud API docs: https://developers.facebook.com/docs/whatsapp/cloud-api
  */
 
+import crypto from 'node:crypto';
 import type { WhatsAppAdapter, BusinessApiConfig, BackendCapabilities } from '../WhatsAppAdapter.js';
 
 // ── API constants ──────────────────────────────────────
@@ -91,6 +92,8 @@ export interface BusinessApiBackendStatus {
   connected: boolean;
   phoneNumberId: string;
   webhookConfigured: boolean;
+  /** SEC-086: an app secret is set, so signed webhook POSTs can be accepted. */
+  webhookSignatureConfigured: boolean;
   lastWebhookReceived: string | null;
   messagesSent: number;
   messagesReceived: number;
@@ -186,10 +189,34 @@ export class BusinessApiBackend {
    * Returns the challenge string if the verify token matches.
    */
   verifyWebhook(mode: string, token: string, challenge: string): string | null {
-    if (mode === 'subscribe' && token === this.config.webhookVerifyToken) {
+    const expected = this.config.webhookVerifyToken;
+    if (mode === 'subscribe' && typeof expected === 'string' && expected.length > 0
+      && typeof token === 'string' && safeEqual(token, expected)) {
       return challenge;
     }
     return null;
+  }
+
+  /**
+   * SEC-086: is this webhook POST really from Meta? Meta signs the exact request
+   * body with the app secret (X-Hub-Signature-256: sha256=<hex>). Without a configured
+   * secret nothing is accepted (fail closed): an unsigned body could name any sender,
+   * including the owner's own number.
+   */
+  verifyPayloadSignature(rawBody: Buffer | undefined, signatureHeader: string | undefined): 'ok' | 'no-secret' | 'bad-signature' {
+    const secret = this.config.appSecret;
+    if (typeof secret !== 'string' || secret.length === 0) return 'no-secret';
+    if (!rawBody || typeof signatureHeader !== 'string') return 'bad-signature';
+    const m = /^sha256=([0-9a-f]{64})$/i.exec(signatureHeader.trim());
+    if (!m) return 'bad-signature';
+    const expected = crypto.createHmac('sha256', secret).update(rawBody).digest();
+    const given = Buffer.from(m[1], 'hex');
+    return given.length === expected.length && crypto.timingSafeEqual(given, expected) ? 'ok' : 'bad-signature';
+  }
+
+  /** Whether an app secret is configured (webhook POSTs can be accepted at all). */
+  hasAppSecret(): boolean {
+    return typeof this.config.appSecret === 'string' && this.config.appSecret.length > 0;
   }
 
   /**
@@ -401,6 +428,7 @@ export class BusinessApiBackend {
       connected: this.connected,
       phoneNumberId: this.config.phoneNumberId,
       webhookConfigured: !!this.config.webhookVerifyToken,
+      webhookSignatureConfigured: this.hasAppSecret(),
       lastWebhookReceived: this.lastWebhookReceived,
       messagesSent: this.messagesSent,
       messagesReceived: this.messagesReceived,
@@ -411,4 +439,11 @@ export class BusinessApiBackend {
   isConnected(): boolean {
     return this.connected;
   }
+}
+
+/** Constant-time string comparison (lengths may differ). */
+function safeEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash('sha256').update(a).digest();
+  const hb = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(ha, hb) && a === b;
 }

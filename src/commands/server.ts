@@ -10395,7 +10395,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         if (backendType === 'business-api') {
           const { BusinessApiBackend } = await import('../messaging/backends/BusinessApiBackend.js');
-          const businessApiConf = waConf.businessApi as { phoneNumberId: string; accessToken: string; webhookVerifyToken: string; webhookPort?: number };
+          const businessApiConf = waConf.businessApi as { phoneNumberId: string; accessToken: string; webhookVerifyToken: string; appSecret?: string; webhookPort?: number };
           whatsappBusinessBackend = new BusinessApiBackend(
             whatsappAdapter,
             businessApiConf,
@@ -10415,6 +10415,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           );
           await whatsappBusinessBackend.connect();
           console.log(pc.green(`  WhatsApp Business API: webhook routes at /webhooks/whatsapp`));
+          if (!whatsappBusinessBackend.hasAppSecret()) {
+            // SEC-086: without the app secret no delivery can be proven to come from Meta, so all are refused.
+            console.warn(pc.yellow('  WhatsApp Business API: no app secret configured; incoming messages are refused until it is set.'));
+          }
         } else {
           // Baileys backend
           const { BaileysBackend } = await import('../messaging/backends/BaileysBackend.js');

@@ -51,6 +51,11 @@ export interface BusinessApiConfig {
   accessToken: string;
   /** Webhook verify token */
   webhookVerifyToken: string;
+  /**
+   * Meta App Secret (SEC-086). Every webhook POST must carry an X-Hub-Signature-256
+   * HMAC of its exact body under this secret; without it no inbound message is accepted.
+   */
+  appSecret?: string;
   /** Webhook port (if different from Instar server port) */
   webhookPort?: number;
 }

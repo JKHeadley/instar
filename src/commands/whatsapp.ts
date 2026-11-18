@@ -46,6 +46,8 @@ interface AddWhatsAppOptions {
   phoneNumberId?: string;
   accessToken?: string;
   webhookVerifyToken?: string;
+  /** Meta App Secret (SEC-086); also read from WHATSAPP_APP_SECRET so it need not sit in argv. */
+  appSecret?: string;
   webhookPort?: number;
 }
 
@@ -117,6 +119,7 @@ export async function addWhatsApp(opts: AddWhatsAppOptions): Promise<void> {
       phoneNumberId: opts.phoneNumberId,
       accessToken: opts.accessToken,
       webhookVerifyToken: opts.webhookVerifyToken,
+      ...((opts.appSecret ?? process.env.WHATSAPP_APP_SECRET) && { appSecret: opts.appSecret ?? process.env.WHATSAPP_APP_SECRET }),
       ...(opts.webhookPort && { webhookPort: opts.webhookPort }),
     };
   }
@@ -164,7 +167,8 @@ export async function addWhatsApp(opts: AddWhatsAppOptions): Promise<void> {
     console.log(`  2. Restart the server: ${pc.cyan('instar server stop && instar server start')}`);
   } else {
     console.log(`  Phone Number ID: ${opts.phoneNumberId}`);
-    console.log(`  Webhook verify token: ${opts.webhookVerifyToken}`);
+    console.log(`  Webhook verify token: configured`);
+    console.log(`  Webhook signature (app secret): ${(opts.appSecret ?? process.env.WHATSAPP_APP_SECRET) ? 'configured' : pc.red('missing — incoming messages are refused until it is set')}`);
     console.log();
 
     console.log('Next steps:');
@@ -365,6 +369,12 @@ export async function channelDoctor(adapter: string | undefined, opts: ChannelDo
           name: 'Webhook verify token',
           status: apiConf?.webhookVerifyToken ? 'ok' : 'fail',
           detail: apiConf?.webhookVerifyToken ? 'Configured' : 'Missing — required for webhook verification',
+        });
+
+        checks.push({
+          name: 'Webhook signature (app secret)',
+          status: apiConf?.appSecret ? 'ok' : 'fail',
+          detail: apiConf?.appSecret ? 'Configured' : 'Missing — incoming messages are refused until the Meta app secret is set',
         });
 
         // Webhook port
