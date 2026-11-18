@@ -134,8 +134,13 @@ approval flow asks the owner again the next time the action is attempted.
     the same yes is never asked twice. On the new holder the earlier yes is a record another machine
     wrote, which it cannot tell apart from a forgery; it is asking for a yes it can verify for the
     first time. The cost is bounded to the list in decision 6, and handovers are rare (hand-back is
-    off by default). Lift condition: the identity work's signed owner record (piece 2, topic 144636)
-    lets an owner-signed grant verify on any machine; this re-ask then goes away.
+    off by default). The person chooses it: on a multi-machine agent, the existing acceptance
+    statement for each channel gains one sentence, "If another of my computers takes over approvals,
+    it will ask you again before acting on your earlier approvals", so accepting is the person's choice
+    to be asked again in that one case (single-machine agents' statement is unchanged). Lift condition:
+    the identity work's signed owner record (piece 2, topic 144636) lets an owner-signed grant verify on
+    any machine; this re-ask then goes away. The approver sees this tension named in the convergence
+    report.
 11. **Rollout and switch.** `trustJourney.peerGrants`: `"ignore"` (this spec) or `"fold"` (today).
     Resolved through `resolveDevAgentGate` with no config default written by the migrator: development
     and throwaway agents resolve `"ignore"` from merge; the fleet resolves `"fold"` until the fleet
