@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T14:56:53.642Z",
+  "slug": "skill-learning-owner-only",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/skillLearning/wire.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

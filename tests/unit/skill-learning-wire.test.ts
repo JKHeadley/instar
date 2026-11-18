@@ -98,11 +98,49 @@ describe('startSkillLearning', () => {
   it('answers "not operator" while the topic-operator store is absent, and delegates once present', () => {
     let store: { asVerifiedOperator(t: number | string): { uid: string } | null } | null = null;
     let seen: Parameters<Parameters<typeof startSkillLearning>[1]>[0] | null = null;
-    startSkillLearning(baseInput({ operatorStore: () => store }), (deps) => { seen = deps; return { start() {}, stop() {} } as never; });
+    startSkillLearning(baseInput({ operatorStore: () => store, learningOwner: () => 42 }), (deps) => { seen = deps; return { start() {}, stop() {} } as never; });
     expect(seen!.topicOperatorStore.asVerifiedOperator('139880')).toBeNull();
     store = { asVerifiedOperator: (t) => (String(t) === '139880' ? { uid: '42' } : null) };
     expect(seen!.topicOperatorStore.asVerifiedOperator('139880')).toEqual({ uid: '42' });
     expect(seen!.topicOperatorStore.asVerifiedOperator('1')).toBeNull();
+  });
+
+  // SEC-109: a topic's verified operator is whoever first wrote there from an allowed account. On an agent several
+  // people can message, that is another person on their own topics; only the learning owner's topics may teach.
+  describe('owner-only operator (SEC-109)', () => {
+    const store = { asVerifiedOperator: (t: number | string) => (String(t) === '7' ? { uid: '42' } : String(t) === '8' ? { uid: '99' } : String(t) === '9' ? { uid: ' 42 ' } : null) };
+    const wire = (learningOwner?: () => number | undefined) => {
+      let seen: Parameters<Parameters<typeof startSkillLearning>[1]>[0] | null = null;
+      startSkillLearning(baseInput({ operatorStore: () => store, ...(learningOwner ? { learningOwner } : {}) }), (deps) => { seen = deps; return { start() {}, stop() {} } as never; });
+      return seen!.topicOperatorStore;
+    };
+    it("admits the owner's own topic and refuses a topic another allowed person operates", () => {
+      const ops = wire(() => 42);
+      expect(ops.asVerifiedOperator('7')).toEqual({ uid: '42' });
+      expect(ops.asVerifiedOperator('8')).toBeNull();
+      expect(ops.asVerifiedOperator('9')).toEqual({ uid: '42' }); // compared and returned trimmed, so the filter's exact sender match holds
+    });
+    it('fails closed with no owner: no resolver, an undefined owner, or a throwing resolver', () => {
+      expect(wire().asVerifiedOperator('7')).toBeNull();
+      expect(wire(() => undefined).asVerifiedOperator('7')).toBeNull();
+      expect(wire(() => { throw new Error('boom'); }).asVerifiedOperator('7')).toBeNull();
+    });
+    it('reads the owner live: a later owner change moves who teaches', () => {
+      let owner: number | undefined = 99;
+      const ops = wire(() => owner);
+      expect(ops.asVerifiedOperator('7')).toBeNull();
+      expect(ops.asVerifiedOperator('8')).toEqual({ uid: '99' });
+      owner = 42;
+      expect(ops.asVerifiedOperator('7')).toEqual({ uid: '42' });
+      expect(ops.asVerifiedOperator('8')).toBeNull();
+    });
+    it('ownerOnlyOperator: a throwing store and a malformed binding are "not the operator"', async () => {
+      const { ownerOnlyOperator } = await import('../../src/monitoring/skillLearning/wire.js');
+      expect(ownerOnlyOperator(() => { throw new Error('x'); }, () => 42)).toBeNull();
+      expect(ownerOnlyOperator(() => ({ uid: 42 } as never), () => 42)).toBeNull();
+      expect(ownerOnlyOperator(() => null, () => 42)).toBeNull();
+      expect(ownerOnlyOperator(() => ({ uid: '042' }), () => 42)).toBeNull();
+    });
   });
 
   it('never throws: a failing create() leaves the feature dark and reports a degradation', () => {
@@ -184,6 +222,16 @@ describe('skillLearningEnv', () => {
     expect(env.clearAttentionCondition!({ conditionKey: 'k' }, 'r', { reconcile: true })).toBe(2);
     expect(calls).toEqual(['create:{"title":"t"}', 'clear:k']);
     expect(env.slack).toEqual({ onMessageLogged: null });
+    expect(env.learningOwner).toBeUndefined(); // an adapter without the resolver names no owner (SEC-109)
+  });
+  it("forwards the adapter's learning owner, read live, and none without Telegram (SEC-109)", () => {
+    expect(skillLearningEnv({ config, identity: null, telegram: null, slack: undefined, sharedIntelligence: undefined, topicMemory: undefined }).learningOwner).toBeUndefined();
+    let owner: number | undefined = 5;
+    const telegram = { createAttentionItem: () => 1, clearAttentionCondition: () => 2, getLearningOwner: () => owner };
+    const env = skillLearningEnv({ config, identity: null, telegram, slack: undefined, sharedIntelligence: undefined, topicMemory: undefined });
+    expect(env.learningOwner!()).toBe(5);
+    owner = undefined;
+    expect(env.learningOwner!()).toBeUndefined();
   });
 });
 

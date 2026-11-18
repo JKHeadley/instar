@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "skill-learning-owner-only",
+  "sessionId": "3b3bc367-b47f-4ea1-bb0b-64ca44b39a4e",
+  "timestamp": "2026-11-18T14:57:22.415Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-owner-only.md",
+  "artifactSha256": "c0221fd81a6ef43caf2911dd4c53e5ac1a4ee7db8cc48f116c843621e86fb01f",
+  "coveredFiles": [
+    "docs/specs/skill-learning-owner-only.eli16.md",
+    "src/monitoring/skillLearning/wire.ts",
+    "tests/unit/skill-learning-wire.test.ts",
+    "upgrades/next/skill-learning-owner-only.md",
+    "upgrades/side-effects/skill-learning-owner-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows skill learning's Telegram admission from the topic operator to the learning owner (SEC-109, stacked on SEC-105); signal-only dark feature, fail closed, reversible by revert, no stored data; independently reviewed.",
+  "eli16Path": "docs/specs/skill-learning-owner-only.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/skill-learning-owner-only.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: this change only narrows which inbound Telegram rows skill learning admits (an owner check on a read); it adds no action, retry, timer or loop"
+  }
+}
