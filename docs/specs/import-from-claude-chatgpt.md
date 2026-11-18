@@ -81,7 +81,7 @@ Each item names its file and line.
 ## C. Machines
 
 - Imported history stays on the machine that imported it (§B.1). No live journal is involved, so its rate cap and rotation (`CoherenceJournal.ts:443,326`) don't apply.
-- A follow-up spec adds "sync imported history" so a second machine can hold a checked copy (pulled against the manifest). Until then the person is told where it lives (§B.3).
+- A follow-up spec adds "sync imported history" so a second machine can hold a checked copy (pulled against the manifest). <!-- tracked: topic-143810 --> Until then the person is told where it lives (§B.3).
 
 ## D. How the person does it
 
