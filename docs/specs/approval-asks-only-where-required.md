@@ -303,7 +303,7 @@ deterministic prediction of GitHub's own rule. Parts 1 and 2 are instruction tex
 - **fleet:** on by default with the release. It is a bug fix restoring the operator's stated rule. It changes nothing for repositories without a code-owner rule, and `prLinkReviewRequest.requestWhenNotRequired: true` restores the old behaviour per agent.
 - **graduation criterion:** over 14 days on Echo: every logged fact for a governed PR matches what safe-merge did at merge (no `not-required` PR refused with `refused:approval-required`), and the operator makes no correction about being asked to approve something nothing required. A refused merge on a `not-required` fact is a failed graduation and reopens this spec.
 - **dark-window:** none. The change only removes a false ask and corrects instruction text, and the switch is the rollback.
-- **ladder:** prLinkReviewRequest
+- **ladder:** not applicable: on by default as a bug fix to the existing PR-link review request, with no switched-off flag to climb; `requestWhenNotRequired` is a rollback preference that defaults off, not a staged rollout
 
 ## Frontloaded Decisions
 

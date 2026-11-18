@@ -56,7 +56,8 @@ it, and a check can be designed then.
   tool still asks for the review when GitHub refuses.
 - **Uncertainty keeps the old behaviour.** A rule the helper cannot read, or one it does not recognise,
   never removes a review request.
-- **A switch restores the old helper behaviour** without a new release.
+- **A switch restores the old helper behaviour** without a new release. The fix is on for everyone from the
+  release, so it has no staged rollout and no maturation-ladder entry.
 - **No new stored data.** Undoing it means reverting one pull request.
 
 ## What you need to decide
