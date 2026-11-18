@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSource } from './exportParsers.js';
 
 export interface ConversationSummary {
@@ -71,6 +72,51 @@ export class ImportedHistoryStore {
     fs.mkdirSync(path.join(this.dir, 'conversations'), { recursive: true, mode: 0o700 });
     fs.mkdirSync(path.join(this.dir, 'attachments'), { recursive: true, mode: 0o700 });
     this.manifest = this.readManifest();
+  }
+
+  /** A fresh reader observes later imports and creates nothing when this machine has no history. */
+  static openIfPresent(stateDir: string): ImportedHistoryStore | null {
+    return fs.existsSync(path.join(stateDir, 'imported-history', 'manifest.json')) ? new ImportedHistoryStore(stateDir) : null;
+  }
+
+  hasConversations(): boolean {
+    return Object.keys(this.manifest.conversations).length > 0;
+  }
+
+  hasConversation(ref: string): boolean {
+    return Object.hasOwn(this.manifest.conversations, ref);
+  }
+
+  /** A bounded keyword scan reads one local JSONL row at a time. False means some rows were not searched. */
+  async visitSearchMessages(only: string | null, visit: (conversation: ConversationSummary, message: ImportedMessage) => void): Promise<boolean> {
+    const conversations = only ? (this.hasConversation(only) ? [this.manifest.conversations[only]!] : []) : this.listConversations();
+    const deadline = Date.now() + 1500;
+    let rows = 0;
+    let files = 0;
+    let complete = true;
+    for (const conversation of conversations) {
+      if (++files > 2000 || Date.now() > deadline) return false;
+      const input = fs.createReadStream(this.convPath(fileFor(conversation.ref)), { encoding: 'utf8' });
+      const lines = createInterface({ input, crlfDelay: Infinity });
+      try {
+        for await (const line of lines) {
+          if (++rows > 5000 || Date.now() > deadline) return false;
+          if (!line) continue;
+          let message: ImportedMessage;
+          try { message = JSON.parse(line) as ImportedMessage; }
+          catch { complete = false; continue; } // A torn row must not hide the remaining history.
+          if (typeof message?.text !== 'string' || typeof message.key !== 'string') { complete = false; continue; }
+          visit(conversation, message);
+        }
+      } catch (err) {
+        if (!(err instanceof Error && 'code' in err)) throw err;
+        complete = false; // An unreadable file leaves the other conversations searchable.
+      } finally {
+        lines.close();
+        input.destroy();
+      }
+    }
+    return complete;
   }
 
   private readManifest(): Manifest {

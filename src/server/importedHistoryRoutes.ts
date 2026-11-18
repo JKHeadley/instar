@@ -30,6 +30,8 @@ import { removeSecrets, type ImportedMessage } from '../import/exportParsers.js'
 
 export interface ImportedHistoryRouteDeps {
   stateDir: string;
+  machineId?: string;
+  privateSearchOwner?: (req: Request) => boolean;
   bearerOk: (req: Request) => boolean;
   /** True when the request carries the owner's verified operator session (dashboard or desktop console). */
   ownerOk: (req: Request) => boolean;
@@ -45,7 +47,7 @@ export interface ImportedHistoryRouteDeps {
 }
 
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
-const REF_RE = /^imported:(claude|chatgpt):[A-Za-z0-9_.:-]{1,200}$/;
+export const IMPORTED_REF_RE = /^imported:(claude|chatgpt):[A-Za-z0-9_.:-]{1,200}$/;
 
 /**
  * The owner's own app device, as the device authenticator marks it: a `device` principal (not a
@@ -151,6 +153,13 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
   });
 
   router.get(['/imported-history/conversations', '/mobile/imported-history/conversations'], (req, res) => {
+    if (req.query.view === 'location') {
+      if (!deps.privateSearchOwner?.(req)) { res.status(403).json({ error: 'owner-device-required' }); return; }
+      const local = ImportedHistoryStore.openIfPresent(deps.stateDir);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ available: local?.hasConversations() ?? false, machineId: deps.machineId ?? null });
+      return;
+    }
     if (!who(req, res)) return;
     res.json({ conversations: getStore().listConversations(), keptOn: 'this-machine' });
   });
@@ -163,7 +172,7 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
   router.get(['/imported-history/conversations/:ref', '/mobile/imported-history/conversations/:ref'], (req, res) => {
     const caller = who(req, res); if (!caller) return;
     const ref = String(req.params.ref ?? ''); // Express has already decoded it
-    if (!REF_RE.test(ref)) { res.status(400).json({ error: 'bad-ref' }); return; }
+    if (!IMPORTED_REF_RE.test(ref)) { res.status(400).json({ error: 'bad-ref' }); return; }
     const s = getStore();
     const messages = s.readMessages(ref);
     if (!messages) { res.status(404).json({ error: 'not-found' }); return; }
