@@ -19,7 +19,8 @@ import {
 } from './work-model.js';
 
 const EYEBROW = 'Work · Work board';
-let openedFromLink = null; // a ?card= link opens its card once, not on every refresh
+const workLinkVisits = new WeakMap(); // once per navigation, not on every periodic refresh
+const workRenders = new WeakMap();
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -35,6 +36,14 @@ async function send(path, body) {
 function queryOf() { const h = location.hash || ''; const i = h.indexOf('?'); return i >= 0 ? h.slice(i + 1) : ''; }
 
 export async function renderWork(main, ctx) {
+  let visit = workLinkVisits.get(window);
+  if (!visit) {
+    visit = { opened: null };
+    workLinkVisits.set(window, visit);
+    window.addEventListener('hashchange', () => { visit.opened = null; });
+  }
+  const run = {};
+  workRenders.set(main, run);
   const { get } = ctx;
   const refresh = () => renderWork(main, ctx);
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the work board' })));
@@ -84,11 +93,21 @@ export async function renderWork(main, ctx) {
 
   // A link to one card (Home's row) opens it once.
   const want = cardFromQuery(query);
-  if (want && openedFromLink !== want) {
-    openedFromLink = want;
+  if (want && visit.opened !== want) {
     const all = LANES.flatMap((l) => board.lanes[l.id].cards);
-    const c = all.find((x) => x.id === want);
-    if (c) openCard(c, refresh);
+    let c = all.find((x) => x.id === want);
+    if (!c) {
+      const result = await get(`/work-board/cards/${encodeURIComponent(want)}`);
+      if (workRenders.get(main) !== run || queryOf() !== query || !main.isConnected) return;
+      if (result.ok && result.data?.card?.id === want && typeof result.data.card.title === 'string') c = result.data.card;
+      else {
+        main.prepend(note(result.status === 404 ? 'This card is no longer available here.' : 'This card could not be loaded. Try again.'));
+        main.prepend(el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: refresh }));
+        return;
+      }
+    }
+    visit.opened = want;
+    openCard(c, refresh);
   }
 }
 
