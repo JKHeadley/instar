@@ -558,6 +558,9 @@ export async function runOrgCheck(ctx: OrgCheckContext, evidence: Evidence | nul
 export function appendMessageNote(stateDir: string, conversation: string, note: string): void {
   const file = path.join(stateDir, 'org', 'message-notes.jsonl');
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  // Bounded when no session starts for a long time: past 1 MB the file rotates into one kept segment
+  // (the reader shows only the latest 200 notes anyway). Declared in the state-coherence registry.
+  try { if (fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, `${file}.1`); } catch { /* @silent-fallback-ok — first note */ }
   fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), conversation, note })}\n`, { mode: 0o600 });
 }
 

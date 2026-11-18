@@ -125,6 +125,18 @@ describe('evidence after review', () => {
     appendMessageNote(dir, 'c2', 'second');
     expect(takeMessageNotes(dir)).toEqual([{ conversation: 'c2', note: 'second' }]);
   });
+
+  it('message notes stay bounded when no session starts: past 1 MB the file rotates into one kept segment', () => {
+    const dir = tmp();
+    const big = 'n'.repeat(4096);
+    for (let i = 0; i < 700; i++) appendMessageNote(dir, 'c', big);
+    const file = path.join(dir, 'org', 'message-notes.jsonl');
+    const total = fs.statSync(file).size + fs.statSync(`${file}.1`).size;
+    expect(fs.statSync(file).size).toBeLessThanOrEqual(1024 * 1024 + 8192);
+    expect(total).toBeLessThanOrEqual(2 * (1024 * 1024 + 8192));
+    expect(fs.readdirSync(path.join(dir, 'org')).filter((n) => n.startsWith('message-notes')).sort()).toEqual(['message-notes.jsonl', 'message-notes.jsonl.1']);
+    expect(takeMessageNotes(dir).length).toBeGreaterThan(0);
+  });
 });
 
 describe('the judge', () => {

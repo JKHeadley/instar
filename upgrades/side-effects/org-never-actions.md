@@ -127,3 +127,13 @@ llm-routing-nature-ratchet: a routing nature may only be cited for a bench-cover
 ## Main merge 2 (after #3270 and #3309, 2026-11-17)
 
 Merged origin/main (28681efc9): one import in AgentServer.ts kept on both sides. Two follow-on fixes: the test POLICY fixtures drop their trailing newline (main's #3309 accepts a published policy only in the standard form), and the PATCH /config orgPolicy guard now runs before the generic allowed-keys check, which main made answer 400 first, so the refusal keeps its plain reason (403 org-policy-cap). Independent review concurred. Org unit tests 117/117; integration org-never-actions 3/3.
+
+## Retention fix (2026-11-18): the message-notes file is bounded and the registry declares the limits
+
+Found by the M5 integration lane (`store-growth-burst-invariant`): the new `org-action-checks` registry entry declared retention class A without a byte limit, which that invariant refuses. Fix: `message-notes.jsonl` now rotates at 1 MB into one kept segment (it previously grew without bound if no session started), and the entry declares `access: streamed`, `maxBytes: 5242880` (the existing 5 MB rotation of `action-checks.jsonl`), `keepSegments: 1`.
+
+- Over-block: none; a note older than the kept segment is dropped, and the reader already showed only the latest 200.
+- Under-block: none new.
+- Signal vs authority: no decision logic changed.
+- Multi-machine: unchanged, machine-local.
+- Rollback: revert the commit.
