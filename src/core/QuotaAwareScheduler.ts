@@ -202,7 +202,7 @@ export type RefreshFn = (opts: {
   accountId: string;
   /** Work-gate caller class (swap-continuity-antithrash §4.2) — server-internal only (I11). */
   callerClass?: 'proactive-swap' | 'reactive-swap';
-}) => Promise<boolean | { ok: boolean; code?: string }>;
+}) => Promise<boolean | { ok: boolean; code?: string; conversationPreserved?: boolean }>;
 
 export interface SwapResult {
   swapped: boolean;
@@ -381,7 +381,7 @@ export class QuotaAwareScheduler {
       }
     }
 
-    let refreshOutcome: boolean | { ok: boolean; code?: string };
+    let refreshOutcome: boolean | { ok: boolean; code?: string; conversationPreserved?: boolean };
     try {
       refreshOutcome = await this.cfg.refreshFn({
         sessionName,
@@ -427,9 +427,16 @@ export class QuotaAwareScheduler {
       }
       return { swapped: false, toAccountId: next.id, reason: code ?? 'refresh-failed' };
     }
-    this.cfg.logger?.log(
-      `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,
-    );
+    const preserved = typeof refreshOutcome === 'boolean' ? undefined : refreshOutcome.conversationPreserved;
+    if (preserved === false) {
+      this.cfg.logger?.warn(
+        `[QuotaAwareScheduler] ${sessionName}: moved to ${next.id} (was ${exhaustedAccountId}) — earlier conversation NOT carried over; original brief re-delivered where on record`,
+      );
+    } else {
+      this.cfg.logger?.log(
+        `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,
+      );
+    }
     if (!isProactive) {
       this.cfg.antiThrash?.onReactiveExecuted?.({
         session: sessionName,
