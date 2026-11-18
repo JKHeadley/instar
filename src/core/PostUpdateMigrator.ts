@@ -6,6 +6,7 @@ import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdat
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 import { ACCOUNT_ACTION_SAFETY, ACCOUNT_ACTION_SAFETY_HEADING } from '../data/accountActionSafety.js';
+import { PROBLEM_FIRST_FEEDBACK_CLAUSE } from '../data/builtinSkillContent.js';
 const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
 const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
 const SCHEDULER_REPORT_CHOICE_HEADING = "## Who sees this job's reports";
@@ -3381,6 +3382,7 @@ export class PostUpdateMigrator {
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateFractalEightyTwentyTriage(result);
+    this.migrateBugFixConstitutionalReview(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
@@ -3984,6 +3986,72 @@ export class PostUpdateMigrator {
   // Dimension: marker-sniffed, fingerprint-guarded, customized files untouched,
   // idempotent. Runs AFTER the posture migration so an agent that takes both in
   // one update converges on the current bundled file either way.
+  /** Deliver allowlisted clauses and support files to canonical and both
+   * renderings. Append to known built-ins; never replace unrelated custom text.
+   * Spec: docs/specs/bug-fix-constitutional-review.md. */
+  private migrateBugFixConstitutionalReview(result: MigrationResult): void {
+    const bundledRoot = path.resolve(__dirname, '..', '..');
+    const roots = ['.instar', '.claude', '.agents'];
+    const skills = [
+      { name: 'instar-dev', marker: 'INSTAR:ALL-TIER-CONSTITUTION-REVIEW', heading: '## Constitutional assessment for every development tier', fingerprint: '# /instar-dev' },
+      { name: 'feedback', marker: 'INSTAR:PROBLEM-FIRST-BUG-REPORTS', heading: '## Report observations before remedies', fingerprint: '# /feedback', clause: PROBLEM_FIRST_FEEDBACK_CLAUSE },
+      { name: 'instar-feedback', marker: 'INSTAR:PROBLEM-FIRST-BUG-REPORTS', heading: '## Report observations before remedies', fingerprint: '# instar-feedback', clause: PROBLEM_FIRST_FEEDBACK_CLAUSE },
+    ];
+    for (const skill of skills) {
+      const bundled = path.join(bundledRoot, 'skills', skill.name, 'SKILL.md');
+      try {
+        let clause = skill.clause;
+        if (!clause) {
+          if (!fs.existsSync(bundled)) { result.errors.push(`constitutional review: bundled ${skill.name} missing`); continue; }
+          const full = fs.readFileSync(bundled, 'utf8');
+          const start = full.indexOf(skill.heading);
+          if (start < 0) { result.errors.push(`constitutional review: bundled ${skill.name} clause missing`); continue; }
+          clause = full.slice(start).trim();
+        }
+        for (const root of roots) {
+          const directory = path.join(this.config.projectDir, root, 'skills', skill.name);
+          const target = path.join(directory, 'SKILL.md');
+          if (!fs.existsSync(target)) continue;
+          const current = fs.readFileSync(target, 'utf8');
+          if (!current.includes(skill.fingerprint)) { result.skipped.push(`constitutional review: custom ${root}/skills/${skill.name} preserved`); continue; }
+          if (!current.includes(skill.marker)) {
+            let next = current.trimEnd() + '\n\n' + clause + '\n';
+            const bodyHash = skillBodyHash(next);
+            if (bodyHash && root !== '.instar') next = stampSkillRendering(next.replace(/^x-instar-stamp:[^\n]*\n/gm, ''), bodyHash) ?? next;
+            fs.writeFileSync(target, next);
+            result.upgraded.push(`constitutional review: ${root}/skills/${skill.name} guidance`);
+          }
+          if (skill.name !== 'instar-dev') continue;
+          for (const name of ['constitutional-review.mjs', 'write-trace.mjs']) {
+            const source = path.join(bundledRoot, 'skills/instar-dev/scripts', name);
+            const destination = path.join(directory, 'scripts', name);
+            const incoming = fs.readFileSync(source);
+            if (fs.existsSync(destination)) {
+              const existing = fs.readFileSync(destination);
+              if (existing.equals(incoming)) continue;
+              const sha = crypto.createHash('sha256').update(existing).digest('hex');
+              // Exact shipped defaults, including the versions actually still
+              // installed on existing agents. Unknown/custom bytes stay owned.
+              const knownWriters = new Set([
+                '7b7357a5dbd6c85f211fc03fd0d89b14ee42be5c4679a4aeee151cb0cc8f62dd', // e347506c4
+                'e3848c4ab226d30fffc3c746b9ef35639c8c92c62c4cb59565bb7db263a7023f', // 204426ef5
+                '769a9b2974ef03d50339cefe461704df5e209f5dfa72b2692004e68a36260294', // 4b274ef7d
+                'fa4ebd9ab2f9b42434999e53e5ac06473a25de7b48b02e4ed632406abeeb5f0c', // 7d0d6036c
+                'b166b5f44bb83e35354e251012b5a80831c16fad6dd8e748aa0a17e103c589ec', // d0fe838db
+              ]);
+              if (name !== 'write-trace.mjs' || !knownWriters.has(sha)) {
+                result.skipped.push(`constitutional review: customized ${destination} preserved`); continue;
+              }
+            }
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.writeFileSync(destination, incoming);
+            result.upgraded.push(`constitutional review: ${root}/skills/instar-dev/scripts/${name}`);
+          }
+        }
+      } catch (err) { result.errors.push(`constitutional review migration ${skill.name}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+  }
+
   private migrateConformanceGateAutoInvoke(result: MigrationResult): void {
     const MARKER = 'Standards-Conformance Gate auto-invocation';
     try {

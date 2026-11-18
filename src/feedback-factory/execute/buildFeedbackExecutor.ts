@@ -24,7 +24,8 @@ import type { FeedbackTriageRouteContext } from '../triage/buildFeedbackTriage.j
 import type { AttentionInput } from '../triage/FeedbackTriageService.js';
 import { FeedbackExecuteStore } from './FeedbackExecuteStore.js';
 import { FeedbackExecutorService, type ConfinedSessionPort, type ExecutorAdmission, type FeedbackExecutorServiceOptions, type IndependentReviewPort } from './FeedbackExecutorService.js';
-import { runCrossModelReview, resolveReviewerTimeoutMs, type ReviewerConfig } from '../../core/crossModelReviewer.js';
+import { runCrossModelReview, resolveReviewerTimeoutMs, CONTEXT_BUDGET_BYTES, type ReviewerConfig } from '../../core/crossModelReviewer.js';
+import { resolveGoverningConstitution, type GoverningConstitution } from '../../core/standardsRegistryPath.js';
 import { CLAUDE_REVIEWER, CROSS_FAMILY_REVIEWERS, toReviewerOutcome } from './independentReview.js';
 import { resolveExecuteConfig } from './executePolicy.js';
 import { SandboxRuntimeRunner } from './ConfinedRunner.js';
@@ -144,10 +145,21 @@ export function installedSafeMergeScript(moduleUrl: string = import.meta.url): s
 }
 
 /** Production reviewer wiring, with only the external model call replaceable in tests. */
-export function buildFeedbackReviewPort(config: ReviewerConfig, invoke: typeof runCrossModelReview = runCrossModelReview): IndependentReviewPort {
+export function buildFeedbackReviewPort(config: ReviewerConfig, invoke: typeof runCrossModelReview = runCrossModelReview, governingSource: () => GoverningConstitution = resolveGoverningConstitution): IndependentReviewPort {
   return {
     async run({ prompt, lead }) {
-      const assembled = { promptText: prompt, truncated: false, bytes: Buffer.byteLength(prompt, 'utf8'), omittedLoadBearing: [], undeliverableLoadBearing: [] };
+      const governing = governingSource(); // trusted installed package, never the candidate tree
+      const complete = governing.usable ? `TRUSTED GOVERNING CONTEXT — source ${governing.identity}\n${governing.markdown}\n\nThe master governs retained 1.x wording. Rules bind; Values guide judgment. Source status headers are preserved; source hashes alone establish no ratification.\n\n${prompt}` : '';
+      const contextFits = governing.usable && Buffer.byteLength(complete, 'utf8') <= CONTEXT_BUDGET_BYTES;
+      const constitutionalReview = contextFits && governing.usable
+        ? { context: 'supplied' as const, sourceIdentity: governing.identity }
+        : { context: 'unavailable' as const, reason: governing.usable ? 'complete-context-too-large' : governing.reason };
+      // Retain the FULL original safety input when added constitutional context
+      // cannot fit. Never truncate either the pair or the existing safety review.
+      const promptText = contextFits ? complete : `Constitutional context unavailable: ${constitutionalReview.reason}. Perform the existing safety review; do not claim constitutional approval.\n\n${prompt}`;
+      const bytes = Buffer.byteLength(promptText, 'utf8');
+      const assembled = { promptText, truncated: bytes > CONTEXT_BUDGET_BYTES, bytes,
+        omittedLoadBearing: bytes > CONTEXT_BUDGET_BYTES ? ['complete-original-safety-input'] : [], undeliverableLoadBearing: [] };
       const out = [];
       const families = lead === 'opus' ? [CLAUDE_REVIEWER, ...CROSS_FAMILY_REVIEWERS] : [...CROSS_FAMILY_REVIEWERS, CLAUDE_REVIEWER];
       for (const family of families) {
@@ -160,7 +172,7 @@ export function buildFeedbackReviewPort(config: ReviewerConfig, invoke: typeof r
           ...(family === 'codex-cli' ? { codexModelOverride: lead === 'opus' ? 'sol' as const : 'astra' as const } : {}),
         }).catch((error: unknown) => ({
           status: 'degraded' as const, reason: error instanceof Error ? error.name : 'reviewer-threw', flag: '', crossFamily: CROSS_FAMILY_REVIEWERS.includes(family) }));
-        out.push(toReviewerOutcome(family, result));
+        out.push({ ...toReviewerOutcome(family, result), constitutionalReview });
       }
       return out;
     },

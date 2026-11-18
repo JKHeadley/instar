@@ -312,6 +312,18 @@ function readDuplicateBuildCheck() {
 }
 const duplicateBuildCheck = readDuplicateBuildCheck();
 
+// Every tier prepares the same advisory. Reuse successful evidence for unchanged
+// source; unavailable stays unknown and never prevents a trace being written.
+let constitutionalReview;
+try {
+  const { prepareConstitutionReview, printConstitutionReview } = await import('./constitutional-review.mjs');
+  constitutionalReview = await prepareConstitutionReview(ROOT, { specPath: spec, eli16Path, artifactPath: artifact });
+  printConstitutionReview(constitutionalReview);
+} catch {
+  constitutionalReview = { status: 'unavailable', reason: 'advisory-helper-unavailable', checkedAt: new Date().toISOString() };
+  console.error('[constitution advisory] helper unavailable; independent constitutional assessment is still needed. Work is not blocked.');
+}
+
 const trace = {
   version: toolchain ? 3 : 2, // v3 only when enriched; readers ignore unknown fields either way
   // Stable work-item identity. The pre-commit decision audit consumes this;
@@ -333,6 +345,7 @@ const trace = {
   ...(isTier1 ? { eli16Path, sideEffectsPath } : {}),
   secondPass,
   reviewerConcurred,
+  constitutionalReview,
   ...(toolchain ? { toolchain } : {}),
   // Duplicate-build guard §3.4 — omitted when no stub exists so pre-guard
   // traces round-trip byte-identically.

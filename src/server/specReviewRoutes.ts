@@ -222,7 +222,7 @@ export function createSpecReviewRoutes(deps: {
   });
 
   router.get('/spec/conformance-metrics', (_req: Request, res: Response) => {
-    res.json({ metrics: loadMetrics(metricsFile) });
+    res.json({ metrics: loadMetrics(metricsFile), context: reviewer.describeContext(deps.registryResolution.usable ? parseStandardsRegistry(deps.registryResolution.markdown) : []) });
   });
 
   return router;

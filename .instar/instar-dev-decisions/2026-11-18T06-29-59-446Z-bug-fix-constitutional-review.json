@@ -1,0 +1,58 @@
+{
+  "ts": "2026-11-18T06:29:59.446Z",
+  "slug": "bug-fix-constitutional-review",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/builtinSkillContent.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 8
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Migration keyed only latest writer bytes and optional standalone instar-feedback; actual installed historical defaults and the inline feedback initializer were missed. Actual consumer inventory identifies the precise gap."
+  },
+  "constitutionalReview": {
+    "status": "unavailable",
+    "reason": "governing-context-unavailable",
+    "inputSha256": "e2cb5017c3027a2c4afea404aa45c52e9f4c252cb7e7233d7a4be25a3bcc978a",
+    "sourceIdentity": null,
+    "checkerIdentity": null,
+    "findings": null
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/PostUpdateMigrator-constitutionalReview.test.ts",
+      "howCaught": "Calls the real fresh installer and migration across3roots; captured actual old writer bytes with preexistingguidance must upgrade, while customized writers stay unchanged. Detects claimed delivery to unused aliases or missing real defaults."
+    },
+    "abVerdict": {
+      "runId": "echo-bug-constitution-20261118-ab",
+      "routes": [
+        "codex-cli"
+      ],
+      "cases": 3,
+      "fixed": 0,
+      "regressed": 0,
+      "unchangedCorrect": 3,
+      "evidence": "docs/specs/reports/bug-fix-constitutional-review-runtime.json",
+      "note": "Same problem-first clause; this followup corrects its real delivery and olddefault recognition, not its meaning."
+    }
+  },
+  "verdict": "pass"
+}

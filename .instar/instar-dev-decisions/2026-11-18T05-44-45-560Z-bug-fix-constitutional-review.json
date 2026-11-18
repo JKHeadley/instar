@@ -1,0 +1,80 @@
+{
+  "ts": "2026-11-18T05:44:45.560Z",
+  "slug": "bug-fix-constitutional-review",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1195,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/check-constitution-pairing.mjs",
+      "scripts/generate-standards-registry-asset.mjs",
+      "scripts/instar-dev-precommit.js",
+      "skills/instar-dev/SKILL.md",
+      "skills/instar-dev/scripts/constitutional-review.mjs",
+      "skills/instar-dev/scripts/write-trace.mjs",
+      "skills/instar-feedback/SKILL.md",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/reviewers/standards-conformance.ts",
+      "src/core/standardsRegistryPath.ts",
+      "src/data/awareness/bug-fix-constitutional-review.md",
+      "src/data/constitution/purpose.md",
+      "src/data/constitution/rules.md",
+      "src/data/constitution/sources.json",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/execute/executorSession.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/server/specReviewRoutes.ts"
+    ],
+    "addedLines": 1172,
+    "deletedLines": 23
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Constitution review attached to full-spec ceremony rather than shared all-tier trace and feedback safety consumers; reporter remedies could anchor implementation before independent judgment. No specific introducing PR claimed."
+  },
+  "constitutionalReview": {
+    "status": "unavailable",
+    "reason": "sensitive-input",
+    "inputSha256": "f3271b881ed9553c841a7f0172b0ab7fcd3bb1b2bfd5c32a2a9be20b1b8b64e1",
+    "sourceIdentity": null,
+    "checkerIdentity": null,
+    "findings": null
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Only matched emit is the bounded child spawn in isolated constitutional-trace integration test. No runtime self-action controller is introduced.",
+    "relatedClosure": {
+      "defectClass": "claim-vs-evidence",
+      "closure": "guard",
+      "countedAsRegistryDeclaration": false,
+      "guardEvidence": {
+        "enforcementType": "ratchet",
+        "citation": "tests/integration/constitutional-trace-review.test.ts",
+        "howCaught": "Actual Tier1/2 trace writer reaches the HTTP consumer and builder, preserves unavailable outcomes and excludes recursive evidence. Unit regressions catch secret input/response/path metadata retention and stale cached identity."
+      }
+    },
+    "abVerdict": {
+      "runId": "echo-bug-constitution-20261118-ab",
+      "routes": [
+        "codex-cli"
+      ],
+      "cases": 3,
+      "fixed": 0,
+      "regressed": 0,
+      "unchangedCorrect": 3,
+      "evidence": "docs/specs/reports/bug-fix-constitutional-review-runtime.json"
+    }
+  },
+  "verdict": "pass"
+}

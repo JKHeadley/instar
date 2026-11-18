@@ -30,6 +30,10 @@ export const REGISTRY_ASSET_INPUTS = [
   'docs/STANDARDS-REGISTRY.md',
   'docs/standards-registry-floor.json',
   'package.json',
+  'src/data/constitution/purpose.md',
+  'src/data/constitution/rules.md',
+  'src/data/constitution/sources.json',
+  'scripts/generate-standards-registry-asset.mjs',
 ] as const;
 
 /**

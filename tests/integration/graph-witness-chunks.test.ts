@@ -64,7 +64,9 @@ describe('bounded witness transfer over actual HTTP',()=>{
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/membership/0`,{value:f.request.memberships[0]})).ok).toBe(true);
   const {revalidations,stateTransferReceipts,sourceManifest,...rest}=f.request.recovery;
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/control/0`,{value:{...rest,sourceManifest:{...sourceManifest,entries:[]}}})).ok).toBe(true);
-  const corrupt=structuredClone(f.request.operations[0]);corrupt.encryptedSourceBundle!.ciphertext='A'+corrupt.encryptedSourceBundle!.ciphertext.slice(1);
+  const corrupt=structuredClone(f.request.operations[0]);const originalCiphertext=corrupt.encryptedSourceBundle!.ciphertext;
+  corrupt.encryptedSourceBundle!.ciphertext=(originalCiphertext[0]==='A'?'B':'A')+originalCiphertext.slice(1);
+  expect(corrupt.encryptedSourceBundle!.ciphertext).not.toBe(originalCiphertext);
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/operation/0`,{value:corrupt})).ok).toBe(false);
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/operation/0`,{value:f.request.operations[0]})).ok).toBe(true);
   expect((await f.post(`/bootstrap-transfers/${transferId}/finish`,{})).status).toBe(409);

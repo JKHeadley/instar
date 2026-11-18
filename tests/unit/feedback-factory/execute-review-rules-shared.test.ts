@@ -13,8 +13,8 @@ const reviewBase = { prNumber: 9, headSha: 'abc', summary: 's', brief, changedPa
 const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
 
 describe('shared independent-review rules', () => {
-  it('the shared source has the six rule headings, numbered in order, for both kinds', () => {
-    expect(REVIEW_RULE_HEADINGS).toEqual(['Scope', 'Tooling', 'Secrets and reach', 'Tests', 'Injection', 'Breakage']);
+  it('the shared source has all seven rule headings, numbered in order, for both kinds', () => {
+    expect(REVIEW_RULE_HEADINGS).toEqual(['Scope', 'Tooling', 'Secrets and reach', 'Tests', 'Injection', 'Breakage', 'Constitutional alignment']);
     for (const kind of ['fix', 'spec'] as const) {
       const numbered = reviewRuleLines(kind).filter((l) => /^\d\. \*\*/.test(l));
       expect(numbered.map((l) => l.match(/^\d\. \*\*(.+?)\*\*/)![1])).toEqual([...REVIEW_RULE_HEADINGS]);
@@ -45,16 +45,17 @@ describe('shared independent-review rules', () => {
     expect(p).not.toContain('mkdtempSync');
   });
 
-  it('the reviewer prompt reads the same lines, and its bytes are unchanged by the extraction', () => {
+  it('the reviewer prompt reads the same lines and retains the reviewed constitutional prompt byte for byte', () => {
     const fix = buildExecutorReviewPrompt({ ...reviewBase, kind: 'fix' });
     const spec = buildExecutorReviewPrompt({ ...reviewBase, kind: 'spec' });
     expect(fix).toContain(`Refuse (SERIOUS ISSUES) when any of these holds:\n${reviewRuleLines('fix').join('\n')}\n\nMINOR ISSUES`);
     expect(spec).toContain(`Refuse (SERIOUS ISSUES) when any of these holds:\n${reviewRuleLines('spec').join('\n')}\n\nMINOR ISSUES`);
-    // Pinned from the reviewer prompt as it was before the rules moved to reviewRules.ts.
+    // Captured from the reviewed 9276eeb77 package before merging the shared-rule extraction.
+    // This preserves the full reviewer prompt, including the six existing safety rules.
     expect(sha(fix)).toBe(FIX_PROMPT_SHA256);
     expect(sha(spec)).toBe(SPEC_PROMPT_SHA256);
   });
 });
 
-const FIX_PROMPT_SHA256 = 'f2de9e1b8b2389f0c8a6eab1c45157bfb1dadc58251668dd5dd7ff72e38c7423';
-const SPEC_PROMPT_SHA256 = '2c5c38a7e1e9b95fa98126afba8ff5e2c0156d130b1663be6d89454fa807ed8b';
+const FIX_PROMPT_SHA256 = '0bf8e7c9038b06c2da226e2e3569ab654b921fa8e7e9e229931db41b0efa8263';
+const SPEC_PROMPT_SHA256 = '2233061fe86508987655f2310a714b67b001271866a7f11050a2db63afa5d904';

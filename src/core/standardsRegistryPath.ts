@@ -29,6 +29,53 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseStandardsRegistryDetailed } from './StandardsRegistryParser.js';
 
+export interface GoverningSource {
+  schema: 1;
+  repo: 'JKHeadley/instar-2';
+  commit: string;
+  documents: Array<{ key: 'purpose' | 'rules'; path: string; file: string; sha256: string }>;
+}
+
+export type GoverningConstitution =
+  | { usable: true; source: GoverningSource; identity: string; markdown: string; documents: Array<{ key: string; markdown: string; status: string }> }
+  | { usable: false; reason: 'missing-source' | 'invalid-source' | 'integrity-mismatch' };
+
+export function standardsReviewBuildVersion(): string | null { return readRunningPackageVersion(); }
+
+/** Complete, pinned master pair. Integrity is package self-consistency; upstream
+ * standing is checked separately against protected main at snapshot refresh/review.
+ * The retained registry is supporting context and cannot substitute for this pair.
+ * Spec: docs/specs/bug-fix-constitutional-review.md. */
+export function resolveGoverningConstitution(directory = fileURLToPath(new URL('../data/constitution/', import.meta.url))): GoverningConstitution {
+  let source: GoverningSource;
+  try { source = JSON.parse(fs.readFileSync(pathJoin(directory, 'sources.json'), 'utf8')); }
+  catch { return { usable: false, reason: 'missing-source' }; }
+  const expected = [
+    ['purpose', 'docs/00-the-purpose.md', 'purpose.md'],
+    ['rules', 'docs/01-the-rules.md', 'rules.md'],
+  ];
+  if (!source || typeof source !== 'object' || Array.isArray(source) || source.schema !== 1 || source.repo !== 'JKHeadley/instar-2' || !/^[a-f0-9]{40}$/.test(source.commit ?? '') ||
+      !Array.isArray(source.documents) || source.documents.length !== 2 ||
+      !expected.every(([key, remote, file], i) => source.documents[i]?.key === key && source.documents[i]?.path === remote && source.documents[i]?.file === file && /^[a-f0-9]{64}$/.test(source.documents[i]?.sha256 ?? ''))) {
+    return { usable: false, reason: 'invalid-source' };
+  }
+  const documents = [];
+  for (const doc of source.documents) {
+    let raw: Buffer;
+    try { raw = fs.readFileSync(pathJoin(directory, doc.file)); }
+    catch { return { usable: false, reason: 'missing-source' }; }
+    if (crypto.createHash('sha256').update(raw).digest('hex') !== doc.sha256) return { usable: false, reason: 'integrity-mismatch' };
+    const markdown = raw.toString('utf8');
+    documents.push({ key: doc.key, markdown, status: markdown.match(/^\*\*Status:[^\n]*/m)?.[0] ?? 'status not declared' });
+  }
+  return {
+    usable: true, source,
+    identity: crypto.createHash('sha256').update(JSON.stringify(source)).digest('hex'),
+    documents,
+    markdown: documents.map((d, i) => `--- GOVERNING ${d.key.toUpperCase()}: ${source.repo}@${source.commit}/${source.documents[i].path} ---\n${d.markdown}`).join('\n\n'),
+  };
+}
+
 /** Generated source-tree artifacts; this module alone names the registry asset. */
 export const GENERATED_STANDARDS_REGISTRY_OUTPUTS = [
   'src/data/standards-registry.md',
