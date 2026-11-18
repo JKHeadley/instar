@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1 (performance only, a revert fully undoes it). 3 source files + 1 test file, about 40 changed lines.
+Tier 1 (performance only, a revert fully undoes it). 3 source files + 1 test file, about 50 changed lines.
 
 The Studio server's event loop stalled for 8-35 s (live log, 2026-11-17) and for 2-5 s uninterrupted on the two-machine accept-all rig. A CPU profile of the rig during a real Accept all (6 windows of 75 s, 2026-11-18 00:46-00:55Z) put `GraphSourceObservationRecoveryCoordinator.revalidate` at 34% of all busy time. `revalidate` is synchronous and verified the whole source collection three times per call: (1) `verifyHistoricalRecord` on every row to find pending rows, (2) `certifiedUnion`, which verifies every row again, and (3) `verifyHistoricalRecord` again on every union row. `validatedContinuation` calls it once per record being continued, so Accept all stacked these passes back to back. The checkpoint (`sweep`) branch also scanned every union row once per checkpoint entry with `find` and `some`, recomputing `nodeKey` each time, which is quadratic.
 
@@ -17,6 +17,8 @@ The change, in `src/core/ConversationGraphReplication.ts` and `src/core/Conversa
 - Pass (1) tests the cheap terminal flags first, so only still-pending rows are verified. `&&` over pure predicates: the same rows enter the set.
 - Pass (3) skips re-verification for rows in `verifiedEventIds`. No await separates `certifiedUnion` from the check, so the row was verified moments earlier in the same pass against the same writer.
 - `sweep` indexes union rows by `sourceId` (keeping the first match, as `find` did) and keeps the highest `producerSequence` per producer machine and subject, so "a newer observation exists" is a lookup instead of a scan.
+
+Second commit (same theme): `assertGraphSourceObservationAdmission` in `src/core/ConversationGraphSourceInventory.ts`, run once per local observation (per accepted item in Accept all), had the same shape: its pending filter verified every row before the cheap terminal flags, it deep-copied all rows twice (`recordsForRepair()` before and after `certifiedUnion`), and it re-verified matching rows the union had just verified. It now copies once (the union is synchronous and does not change stored rows, so the second copy was identical), tests flags first, and skips re-verification for ids in `union.verifiedEventIds`. In the rig profile this function was 30% of a 7 s stall.
 
 No decision changes: every row that was verified before is still verified (once instead of up to three times), and every returned verdict is the same.
 

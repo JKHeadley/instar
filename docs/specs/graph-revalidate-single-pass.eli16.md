@@ -8,6 +8,8 @@ When Accept all saves several projects, the agent re-checks some earlier backgro
 
 Now each re-check goes through the records once. It looks at quick facts first ("is this record already final?") and only fully checks the few records that need it. Records the confirmed-set step just checked are not checked again a moment later. Two lookups that scanned the whole list for every entry, which grew with the square of the record count, became direct lookups.
 
+The same fix applies to the check that runs each time the agent records that a conversation exists on this machine (once per project Accept all saves): it made two full copies of all records and checked each one before looking at the quick facts. It now makes one copy, looks at the quick facts first, and does not re-check records it checked a moment earlier.
+
 ## What stays the same
 
 Every record that was checked before is still checked, and every answer is the same. The only records skipped on the third pass are ones fully checked a moment earlier in the same step, against the same signer. A record the agent rebuilt in that moment (its own record with a removal attached) is still checked again.
