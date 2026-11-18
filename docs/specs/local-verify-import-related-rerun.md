@@ -23,7 +23,9 @@ contested-then-cleared: 1
 
 # A failed test file that imports a changed file may be re-run alone when the same test has already failed and passed on main
 
-Draft v5.1, written 2026-11-18 after review round 6 (the round cap). Not approved. Line numbers refer to `origin/main` at `269f6e532` (release 1.3.1894).
+Draft v5.2, written 2026-11-18. Review was capped at 6 rounds; the items still open at the cap are listed in "Left behind". A security read after the cap found 2 blocking and 2 should-fix items; all four are folded in here (S1 to S4 below), were not re-reviewed by the six lenses, and their confirmation by the security session is pending. Not approved. Line numbers refer to `origin/main` at `269f6e532` (release 1.3.1894).
+
+**Build order.** This change is built after PR 3451 (SEC-113) merges, on top of it (see "Build order and SEC-113").
 
 v5 is a cut. Evidence is one thing only: a named test that failed and then passed alone, by name, on a `main` verify. The seed from old audit lines, title-only matching, the file-level fallback and `notCleanOnGreenMain` as evidence are all removed.
 
@@ -58,7 +60,7 @@ What `main` had already shown about those three files, read from the Studio's au
 | `tests/unit/CodexCliIntelligenceProvider.test.ts` | "reaps a plain-mode child that ignores SIGTERM before releasing the call" | 16 November, the same test and assertion | yes |
 | `tests/unit/job-portable-bundle.test.ts` | reported as `spawnSync python3 ETIMEDOUT`; that run's detail is not in the Studio's log | 16 and 17 November, "updates a full-size owned file and restores it if journal commit fails", assertion errors | not shown; a timeout in a different shape |
 
-**What this spec would have done for PR 3430, said honestly.** On the first day after install: nothing. The evidence store starts empty and none of the three false reds would have been saved. After a week of collection: the two whose same test had flaked on `main` would have been re-run; the third would not. That is the price of evidence that cannot be manufactured, and the review measures it.
+**What this spec would have done for PR 3430, said honestly.** On the first day after install: nothing. The evidence store starts empty and none of the three false reds would have been saved. After a week of collection: the two whose same test had flaked on `main` would have been re-run; the third would not. That is the price of evidence that cannot be produced without a merged change on `main`, and cannot be borrowed by a renamed or generated test because the file's set of test names must match. The review measures it.
 
 ## Rule today
 
@@ -85,7 +87,7 @@ With the switch on, on a PR verify:
 1. Each failed file is put in exactly one class, checked in this order:
    - **unavailable**: rule (c). Ineligible, unchanged.
    - **edited**: rule (a). Ineligible, unchanged.
-   - **import-related with main evidence**: rule (b) holds, and EVERY test that failed in this lane run for the file is, by full name, in the list of main-flaky tests the coordinator sent for that file.
+   - **import-related with main evidence**: rule (b) holds, EVERY test that failed in this lane run for the file is, by full name, in the list of main-flaky tests the coordinator sent for that file, and none of the "always ineligible" conditions below applies.
    - **import-related without**: rule (b) holds and at least one failed test is not on that list. Ineligible, as today.
    - **plain**: everything else. One solo run, unchanged.
 2. If any failed file in the lane is ineligible, nothing in the lane re-runs, as today (`related-to-change`).
@@ -95,18 +97,29 @@ With the switch on, on a PR verify:
 
 Always ineligible under the new rule, each by one line:
 
-- **A file-level failure in the PR run** (an import or hook error, which the parser counts with no failed test, `laneReport.ts:95-98`): there is no name to match.
-- **More than 20 failed tests in the file**: a break, not a flake.
+- **Any file-level failure in the PR run (S3).** An import or hook error, or a file-level message, whether alone or alongside named test failures. The parser counts a file-level failure only when the file had no assertion failure (`laneReport.ts:95-98`), so a hook error can hide behind a named flaky failure. The build makes the parser report it in both cases, and the file is also ineligible whenever its failed count is larger than its number of named failed tests.
+- **The named failures are not the whole truth (S4).** At decision time the number of named failed tests must equal the file's true failed count and be at least 1. A name left out for length, or a set that is empty, never passes vacuously.
+- **A failed name that is not unique (S1a).** If any failed test's full name occurs more than once in the PR's lane report for that file, counted across all shards, the file is ineligible (`duplicateTestName`).
+- **The file's set of test names changed (S1b).** Main evidence carries a hash of the file's full test names, in the order the report lists them (definition order), from the `main` run that produced it. The order is part of the hash on purpose: two names swapped by a changed imported value keep the same set and stay unique, but change the sequence, so the swap is caught. If the PR lane run's hash for that file differs from the hash stored with the evidence it would use, the file is ineligible (`testSetChanged`).
+- **More than 20 failed tests in the file.** The record keeps at most 20 names, and the coordinator's check of a peer's clear must see every cleared name.
 - **A failed test whose name is over 300 characters, or that fell off a cut list**: it is not on the list.
-- **A renamed test**: renaming edits the file, which is rule (a).
+
+**Why S1.** A test's name can change without its file being edited. An import-related file is one that imports code the PR changed, and names are often built from imported values: a template-literal title, `describe(imported.name)`, `it.each(importedTable)`. So "renaming a test edits the file" does not hold here, and a PR could make the test it breaks carry the name of a test `main` has shown flaky. The two checks close that: a borrowed name either duplicates an existing one (S1a) or changes the file's set of names (S1b). Renaming a test by editing its file is still rule (a).
+
+**What S1b costs, said honestly.** A PR whose imports legitimately change a parametrized test list in that file (a new row in an imported table) changes the set, so that file loses eligibility for that PR even when its failure is an old flake. The same happens for every open PR when a merged change adds or renames a test in the file, until the test next flakes on `main` and fresh evidence is written with the new hash.
 
 There is no limit on how often one PR can have the same file cleared, and no file-level fallback of any kind.
 
 ### The evidence, and how it is collected
 
-The only evidence is: a named test that failed in a lane of a `main` verify and was reported passed by name when its file ran alone in that same verify, within the last 7 days. Runs of other PRs never count: an author could open decoy PRs, stacked and re-opened PRs share commits, and a `main` verify cannot be produced by an unmerged PR. `notCleanOnGreenMain` is not evidence for import-related files; it keeps its existing role for plain files untouched.
+The only evidence is: a named test that failed in a lane of a `main` verify and was reported passed by name when its file ran alone in that same verify, within the last 7 days, where that `main` verify was run by the coordinator itself and ended `success` (S2). Runs of other PRs never count: an author could open decoy PRs, stacked and re-opened PRs share commits, and such a `main` verify cannot be produced by an unmerged PR. `notCleanOnGreenMain` is not evidence for import-related files; it keeps its existing role for plain files untouched.
 
 One such pass is enough, and the count is one for a reason, not by tuning: it is an existence proof that this test fails without this PR.
+
+**Only local, only green (S2).** Two kinds of `main` record write no evidence:
+
+- A `main` record returned by a peer. On `origin/main` a peer's `main` record reaches `noteFlaky` through `completeMain` (`LocalVerifyService.ts:2404`, `:3462`), a `main` dispatch carries no offered list (`parsePeerRunRequest` refuses `isolation` on a `main` request, `peer.ts:166`), so nothing bounds what such a record names. A lying or impersonating peer could otherwise make any test eligible for 7 days. Arbitration answers (SEC-113's `main-arbitration`) never reach `noteFlaky` and must not.
+- A `main` verify that did not end `success`. Otherwise a merged regression that only fails under load would seed evidence for the very tests it breaks.
 
 **Collecting.** This spec changes what a `main` verify RECORDS, not what it accepts: `main`'s own pass rule (the file passes alone, once) is unchanged. When a `main` solo run passes, the same by-name check is applied to it, and only the names that failed in the lane AND are reported passed in the solo run are recorded as evidence. A file that passes alone on `main` while its failed test was skipped contributes no name.
 
@@ -115,16 +128,17 @@ One such pass is enough, and the count is one for a reason, not by tuning: it is
 - For failed files only: `failedTests`, each `{ name, line }`, where `name` is the full test name and `line` the first line of its failure message.
 - For solo-run reports only: `passedTests` (names).
 - The full name is `fullName` when it is a non-empty string, otherwise `ancestorTitles` joined with `title`. **Build check:** confirm on a real report from the pinned vitest that `fullName` is present and that a still-running test is reported as `pending`; the fallback and the existing "unknown status counts as failed" rule cover the case where they are not.
-- A name occurring more than once is matched as many times as it failed.
+- For every file with a failure: `testSetHash`, the sha256 of the file's full test names in report (definition) order, not sorted, and whether any failed name occurs more than once. The parser holds all of a file's names only while it computes these; only the hash and the flag are kept.
+- Lanes run as several shards, and a lane's report is the union of its shards' reports (`orchestrator.ts:665-680`). Name lists, the name set behind the hash and the duplicate check are taken per file path over that union, the way counts are. Checked in code: a file reported by two shards already makes the whole lane report untrusted (`file-in-multiple-shards`, `orchestrator.ts:673-679`), so in a report that is used each file's names come from exactly one shard. The per-path rule is stated so it stays true if that changes.
 - The names stay in the run child. They are never written to `file-durations.json` or the run result; only the bounded fields in Recording leave the run.
 
 **The store.** `FlakyHistory` (`LocalVerifyService.ts:111-115`) is `files: Record<file, { seen: string[]; escalatedAt: string | null }>`: timestamps only, PR and `main` runs mixed. The entry gains one optional field:
 
-`mainSeen?: Array<{ test: string; at: string; line: string }>`
+`mainSeen?: Array<{ test: string; at: string; line: string; lineCut?: true; setHash: string; runLog: string }>`
 
-One entry per distinct test name with its newest time, kept 7 days, at most 40 per file (newest kept). `noteFlaky` (`:3734`) writes it only for a record with `kind: 'main'`, from that record's `soloPassedByName`. Confirmed: the `main` completion path calls `noteFlaky(record)` at `:3462` for every finished `main` verify, and a peer-run `main` verify reaches the same path on the coordinator (`:2404`). When a name is dropped for the cap of 40 or for being over 300 characters, the file is marked `mainSeenCut` (a time, kept 7 days). `seen`, `escalatedAt`, `v: 1` and `decideFlakyEscalation` do not change.
+One entry per distinct test name with its newest time, kept 7 days, at most 40 per file (newest kept). `noteFlaky` (`:3734`) writes it only for a record with `kind: 'main'` and outcome `success` that this machine ran itself (after SEC-113: the `source === 'local'` path of `completeMain`), from that record's `soloPassedByName`. `setHash` is the file's `testSetHash` in that run and `runLog` points at that run's log (Recording). When a name is dropped for the cap of 40 or for being over 300 characters, the file is marked `mainSeenCut` (a time, kept 7 days). `seen`, `escalatedAt`, `v: 1` and `decideFlakyEscalation` do not change.
 
-**The first days, said honestly.** There is no seed. Eligibility starts empty and fills as named tests flake on `main`. Measured on the Studio, 10 to 17 November: 8 to 20 `main` verifies a day, of which 2 to 9 carried at least one re-run pass; 34 distinct files re-run-passed on `main` in 7 days. So some tests become eligible within hours, but a particular test only after it next flakes on `main`, which for the incident files was once or twice a week. Expect the full effect after about 7 days.
+**The first days, said honestly.** There is no seed. Eligibility starts empty and fills as named tests flake on `main`. Measured on the Studio, 10 to 17 November: 8 to 20 `main` verifies a day, of which 2 to 9 carried at least one re-run pass; 34 distinct files re-run-passed on `main` in 7 days. Those figures count every `main` verify, red ones and peer-run ones included, so they are an upper bound: only green verifies the coordinator ran itself write evidence, and with `mainOnPeers` on, local `main` runs are rarer. Evidence therefore fills more slowly than these figures suggest, which only tightens. So some tests become eligible within hours, but a particular test only after it next flakes on `main`, which for the incident files was once or twice a week. Expect the full effect after about 7 days.
 
 ### Why three, and why no one-clear-per-PR rule
 
@@ -140,7 +154,7 @@ An earlier draft allowed one clear per file per PR. It is not in this spec: with
 
 ### Shape of the code change (for the build, not built here)
 
-- `isolationInput()` (`LocalVerifyService.ts:3796`) returns two more fields: `importRelatedRerun` (the switch) and `flakyOnMain: Array<{ file: string; tests: Array<{ test, at, line }>; namesCut?: true }>` (empty when the switch is off).
+- `isolationInput()` (`LocalVerifyService.ts:3796`) returns two more fields: `importRelatedRerun` (the switch) and `flakyOnMain: Array<{ file: string; tests: Array<{ test, at, line, lineCut?, setHash, runLog }>; namesCut?: true }>` (empty when the switch is off).
 - `ineligibleFor()` returns `ineligible` and `importRelated` (import-related, and every lane-failed test on the file's list). Switch off or list empty: the second set is empty and the first is today's result exactly.
 - `decideIsolationRerun` takes an optional `importRelated` set and returns the files needing three passes. Its reasons and their order do not change.
 - `isolationRerun()` gains an inner loop of 1 or 3 runs per file, the by-name check, and the detail-only mode. Each run computes its own deadline, gets a fresh `TMPDIR` and `TMUX_TMPDIR`, and writes its own report files (`<lane>-rerun-<k>-<n>.json`).
@@ -167,12 +181,22 @@ An earlier draft allowed one clear per file per PR. It is not in this spec: with
 
 - The coordinator builds its isolation input at dispatch and sends it with every PR dispatch (`:2204-2207`). It copies two named fields today; both new fields must be added to that copy or they are dropped.
 - `parsePeerRunRequest` (`src/localVerify/peer.ts:150-172`) checks `allowed` and `notCleanOnGreenMain` and does not reject other keys inside `isolation`. It is extended: `importRelatedRerun` must be a boolean; `flakyOnMain` an array of at most 200 entries, each with a `file` of 1 to 300 characters, a `tests` array of at most 40 entries (`test` 1 to 300 characters, `at` a timestamp, `line` at most 400 characters) and an optional `namesCut: true`. A body that fails is refused whole.
+- **Strict keys inside `isolation`.** The parser checks no key list inside `isolation` today. It gains one, applied only when `importRelatedRerun` is present in the block: then exactly `allowed`, `notCleanOnGreenMain`, `importRelatedRerun` and `flakyOnMain` are accepted and any other key is refused. A block without `importRelatedRerun` is parsed as today. That handles a staggered install without a flag day, and machines on different builds do not exchange runs anyway (`verifier-mismatch`).
 - The peer stores the block as `peerIsolation` (`:1935`) and uses it for that run (`:3184`). Peer entries are never persisted, a restarted peer tombstones the attempt, and the coordinator always sends `isolation` on a PR dispatch, so the `?? this.isolationInput()` fallback is reached only by local runs.
 
 **Peer safety, two checks.**
 
 1. The peer applies the rule only if its own switch also reads on when it builds the child input. Otherwise it passes the rule off and an empty list.
 2. The coordinator checks what the peer cleared against what it offered. It computes the list once, before the attempt's `RemoteMarker` (`peer.ts:18-26`) is created and persisted (`LocalVerifyService.ts:2180`), stores on the marker the file paths and the offered test names for those files (names only, without failure lines: at most 200 files x 40 names x 300 characters, about 2.4 MB worst case per reserved attempt), and sends that same list. The field sits beside `dispatched`, not inside it: `dispatched` is spread into the request body (`:2206`) and the peer refuses unknown top-level keys. A restored marker (`isRemoteMarker`, `:593-601`, used at `:3658`) whose list is missing or malformed reads as empty. `importRefusal()` (`peer.ts:178-202`) gains one check: an entry with `importRelated: true` whose file was not offered, or one of whose `failedTests` names was not offered for that file, returns `import-related-not-offered`. The caller (`:2368-2373`) audits `peer-record-rejected`, abandons the attempt and the PR is verified again. This is a consistency check between two machines on the same build, not a security boundary.
+
+**Build order and SEC-113.** PR 3451 (SEC-113) edits the same places: `completeMain` / `noteFlaky`, the PR dispatch block, `RemoteMarker` and `isRemoteMarker`, `parsePeerRunRequest`, and `isolationInput()`. It lands first. This change then:
+
+- writes `mainSeen` only on SEC-113's `source === 'local'` path of `completeMain`;
+- puts the offered-list field on SEC-113's marker (which adds `requestDigest`) instead of on today's marker. SEC-113 digests the whole peer request, and `flakyOnMain` travels inside `isolation`, so the offered list is covered by that digest;
+- extends `parsePeerRunRequest` after the `main-arbitration` branch, keeping `isolation` refused for both `main` kinds;
+- keeps SEC-113's `origin: 'local'` gate in `isolationInput()` when adding the two fields.
+
+The line numbers in this spec are `origin/main` before SEC-113 and are re-read at build.
 
 **Verifier hash.** The changed files are in the verifier's import graph, so there is a new `verifierVersion`. A peer refuses a run on a different `verifierVersion` or `policyHash` (`:1896`), so machines on different builds do not exchange runs. The switch and the list are not part of any hash. Records under the old version are re-verified once at boot, as with every verifier change.
 
@@ -185,16 +209,24 @@ An earlier draft allowed one clear per file per PR. It is not in this spec: with
 - `failedTests: string[]`: full names of the tests that failed in the lane run, at most 20, each at most 300 characters. A longer name is left out, never shortened, so a stored name is always the whole name and names are compared exactly.
 - `failedTestsTotal: number`: the true count, so a shorter list is disclosed.
 - `soloPassedByName: string[]`: the subset of `failedTests` reported passed by name in the solo run (for a three-pass clear: in all three).
+- `testSetHash: string`: sha256 of the file's full test names in report (definition) order in the lane run. The build confirms on the pinned vitest that the JSON report lists a file's tests in definition order under shuffled or concurrent execution; if it does not, the key becomes name plus location (`includeTaskLocation`).
 
 **Clearance fields, allowed only with `importRelated: true`:**
 
 - `soloPasses: 3`,
 - `soloSeconds: number[]` (three numbers),
-- `evidence: Array<{ test, mainAt, mainLine, prLine }>`: for each cleared test, when `main` showed it flaky and the first line of the failure message on `main` and in this PR run. Lines are bounded with `boundedHead(text, 400)` (`src/core/boundedInput.ts:161`), which discloses a cut inside the value. This is the carrier for the by-hand "same test, different failure" comparison.
+- `evidence: Array<{ test, mainAt, mainLine, prLine, mainLineCut?, prLineCut?, mainRunLog }>`: for each cleared test, when `main` showed it flaky and the first line of the failure message on `main` and in this PR run. Lines are bounded with `boundedHead(text, 400)` (`src/core/boundedInput.ts:161`), which discloses a cut inside the value. `mainLine` and `prLine` are the distinguishing error line of each side: the first line of the failure message that names an error (for example `AssertionError: …` or `Error: mac-desktop-host-timeout`), not merely its first 400 characters. When a stored line was cut, `mainLineCut` or `prLineCut` is `true`, so the reader knows to open the full output.
+
+**Pointers to the full failure output (C2).** The comparison must not rest on an excerpt alone. Checked in code, nothing holds the full output after a run today: the lane report files are deleted at cleanup (`orchestrator.ts:1042`), the result file is removed at exit (`LocalVerifyService.ts:3691-3695`), and the audit line carries only the 400-character message. The one file that survives is the run log, `state/local-verify/runs/<token>.log` (`:3177`), which holds the child's log events, not test output. So the build does two things:
+
+- the child writes one log event per named failed test of an entry that carries name fields: `failure-full` with file, test and the whole failure message bounded with `boundedTail(text, 8000)`;
+- the service puts `runLog` (the log's file name) on the `main-record` and `run-detail` audit lines. That is the PR side's pointer; `mainRunLog` on the evidence entry is the `main` side's, copied from the offered list.
+
+Run logs are per machine, so a pointer is opened on the machine that ran that verify. Their retention is an open defect this spec has to fix to rely on them: the registry calls them transient (`state-coherence-registry.json`, category `local-verify-inflight`), but nothing removes them, and the Studio holds 2,044 of them back to 22 October. The build gives them a declared retention of 30 days (covering the review's 14-day windows) and amends the registry entry.
 
 `validateRecord` (`record.ts:169-176`) rules:
 
-- Shared: `failedTests` at most 20 names of 1 to 300 characters; `failedTestsTotal >= failedTests.length`; `soloPassedByName` a subset of `failedTests`.
+- Shared: `failedTests` at most 20 names of 1 to 300 characters; `failedTestsTotal >= failedTests.length`; `soloPassedByName` a subset of `failedTests`; `testSetHash` 64 hex characters.
 - Clearance: refused without `importRelated: true`. With it: `soloPasses === 3`, three `soloSeconds`, `failedTestsTotal === failedTests.length` and at least 1, `soloPassedByName` equal to `failedTests`, and one `evidence` entry per name.
 
 `runDetail` (`LocalVerifyService.ts:132`) already carries `flakyRetried` whole, so the `run-detail` audit line and the routes show all of this, with file and PR, without further change.
@@ -203,7 +235,7 @@ An earlier draft allowed one clear per file per PR. It is not in this spec: with
 
 Inherited sites this spec does not touch: the bare slices at `laneReport.ts:92` and `:100` and `firstMessage.slice(0, 400)` at `orchestrator.ts:880`. They are not on `docs/bounded-judgment-input-baseline.json` (22 sites, all in files that call a model, none in Local Verify), so nothing tracks them today.
 
-**Run log.** `isolation-rerun` gains, for an import-related file: `importRelated`, `run`, `of`, `detailOnly`, `seconds`, and the outcome `failed-test-not-passed`. `isolation-rerun-ineligible` gains two lists beside `files`: `noMainEvidence` (the file is not on the list at all) and `noMainEvidenceForTest` (the file is on the list but a failed test is not), each entry with the test name and `namesCut: true` when the file's list was cut, so a cut is distinguishable from true absence. The run log is not what the review reads, so both lists also go on the PR's `run-detail` audit line: `noMainEvidence` and `noMainEvidenceForTest`, each at most 10 entries with its true count beside it (`noMainEvidenceCount`, `noMainEvidenceForTestCount`). A PR run that failed writes that line already (`LocalVerifyService.ts:3337-3340`).
+**Run log.** `isolation-rerun` gains, for an import-related file: `importRelated`, `run`, `of`, `detailOnly`, `seconds`, and the outcome `failed-test-not-passed`. `isolation-rerun-ineligible` gains two lists beside `files`: `noMainEvidence` (the file is not on the list at all) and `noMainEvidenceForTest` (the file is on the list but a failed test is not), plus the reasons `testSetChanged`, `duplicateTestName`, `fileLevelFailure` and `namedCountMismatch`, each entry with the test name and `namesCut: true` when the file's list was cut, so a cut is distinguishable from true absence. The run log is not what the review reads, so both lists also go on the PR's `run-detail` audit line: `noMainEvidence` and `noMainEvidenceForTest`, each at most 10 entries with its true count beside it (`noMainEvidenceCount`, `noMainEvidenceForTestCount`). A PR run that failed writes that line already (`LocalVerifyService.ts:3337-3340`).
 
 **Audit.** No new event for clears; `run-detail` is the carrier. The build adds `finishedAt` to `main-record` and to every `run-detail` line (see the review).
 
@@ -213,16 +245,18 @@ Inherited sites this spec does not touch: the bare slices at `laneReport.ts:92` 
 
 | Number | Status | Basis |
 |---|---|---|
-| 3 failed files per verify | inherited (`policy.ts:58`) | more than 3 is a real break |
+| 3 failed files per verify | inherited (parent spec, `policy.ts:58`) | more than 3 failed files is a real break; the reason is argued in the parent spec |
 | Lane deadlines 40 / 45 / 60 min, 120 min total | inherited (`policy.ts:36-37`) | hang limits, about twice the measured normal |
-| 200 files, 300 characters per path, on the wire | inherited (`peer.ts:160-161`) | the parser's existing refusal thresholds; the coordinator truncates before sending so no run is refused. Longest path under `tests/` today: 98 characters |
+| 200 files on the wire, 300 characters per path | inherited (`peer.ts:160-161`) | the parser's existing refusal thresholds; the coordinator truncates before sending so no run is refused. Longest path under `tests/` today: 98 characters |
 | 7-day retention | inherited store bound (`FLAKY_REPEAT`) | older evidence is not stored; the test is then not eligible (today's outcome) and re-enters on its next `main` flake |
 | 500 files in the history | inherited store bound (`LocalVerifyService.ts:3777`) | an evicted file is not eligible; it re-enters on its next `main` flake |
 | One by-name pass on `main` | new, not tuned | an existence proof that the test fails without this PR |
-| Three consecutive solo passes | new | "Why three" |
-| 20 failed test names per entry | new | more failing tests in one file is a break, and such a file is ineligible |
-| 40 main-flaky names per file, 300 characters per name | new | far above what is seen (one or two names per file today); a cut is marked and only tightens |
-| Review thresholds: 10 clears; a rate that at least doubles with at least 3 events after; 1 in 4 | new | enough cases to mean something; three events so one unlucky run cannot trip it |
+| Three consecutive solo passes | new | a weak second check behind the evidence ("Why three"); reviewed at day 7, moved by the number of sequences that failed on run 2 or 3 after passing run 1 |
+| 20 failed test names per entry, and a file with more is ineligible | new | the record keeps 20 names and the coordinator's check of a peer's clear must see every cleared name; S4 already requires named count = true count, so this is only the record bound |
+| 40 main-flaky names per file | new | twice the 20 a single run can contribute, so two runs' worth fit; one or two names per file are seen today; a cut is marked and only tightens |
+| 300 characters per test name | inherited | the bound the peer parser already applies to each path string (`peer.ts:161`). The longest real test name was not measured: no lane report survives a run to read it from. A longer name is omitted and that test is ineligible |
+| 8,000 characters per full failure message in the run log; 30 days of run logs | new | long enough for a stack and a diff; 30 days covers the review's two 7-day windows twice |
+| Review thresholds: 10 clears; a rate that at least doubles with at least 3 events after; at least 5 observations per window; 1 in 4 | new | 10 clears so one file cannot decide promotion; 3 events so one unlucky run cannot trip a switch-off; 5 observations so a rate is not computed from one or two runs; 1 in 4 as the point below which the rule helps too rarely to carry its cost. All four are the owner's starting values and are restated in the review's report |
 
 **Sizes.** History worst case: 500 files x 40 names x about 750 characters (name, time, line) is about 15 MB; today it would be 34 files with one or two names each, a few kilobytes. Wire worst case: 200 files x 40 names x about 750 characters is about 6 MB, under the server's 12 MB body limit (`AgentServer.ts:2048`). The counts above are in characters, and a body limit is in bytes, so the coordinator also bounds the serialized isolation input by UTF-8 byte length: 8 MB, which with the rest of the request stays under the 12 MB limit. Over it, evidence entries are dropped oldest first, the affected files are marked `namesCut`, and the cut is logged in the same audit line as below. That only tightens. The parser REFUSES an over-long list today (`peer.ts:158-162`), so the coordinator bounds the list when it builds it: over 200 files it keeps the 200 with the newest evidence and logs the cut (audit `flaky-on-main-bounded`).
 
@@ -246,11 +280,18 @@ Loss of state only tightens. There is no fallback that a missing list or a missi
 | A regression that reproduces when the file runs alone | Without evidence: no re-run. With it: fails a solo run. |
 | A regression that needs order, shared state or load, in a test `main` has shown flaky | It can pass three solo runs and merge. Accepted and stated; the review's rate is the check. |
 | A PR makes an already-flaky test flakier | Same: it can clear. Visible in the record; the review's rate is the check. |
+| A generated or template test name is made to equal a name `main` showed flaky | Ineligible: the name is then duplicated (`duplicateTestName`) or the file's name set changed (`testSetChanged`). |
+| A PR legitimately changes a parametrized test list in the file | `testSetChanged`: the file is ineligible for that PR. The stated cost of S1b. |
+| A merged change adds or renames a test in a file with main evidence | Every open PR's hash for that file differs from the stored one until the test next flakes on `main`. Stricter. |
+| A hook or file-level error beside a named flaky failure | Ineligible (`fileLevelFailure`). |
+| A failed name was dropped for length, or the named set is empty | Ineligible (`namedCountMismatch`); no vacuous pass. |
+| A peer returns a `main` record naming flaky tests | It writes no `mainSeen`. |
+| `main` is red and a file passes alone there | It writes no `mainSeen`. |
 | A solo run is green but did not run the failed test | Not a pass (`failed-test-not-passed`). |
-| Same test, different failure than on `main` | It can clear. `evidence` carries both first lines; read by hand at the review. |
+| Same test, different failure than on `main` | It can clear. `evidence` carries both distinguishing error lines, a `cut` marker when one was shortened, and pointers to both full outputs; read by hand at the review. |
 | A test name generated from data (`it.each`) | It matches only when the generated name is identical. Names that collide across different cases are on the hand-read list. |
 | The evidence is stale (the flake was fixed on `main` five days ago) | The test stays eligible up to 7 days. Accepted. Dropping a test after N clean `main` runs is not built: clean runs write no per-file line today, and the review's rate decides whether it is needed. |
-| The two-step path: merge a PR that makes a test flaky on `main`, then use that evidence | Possible. It costs a merged, attributable flaky commit on `main` that every other PR also hits. On the hand-read list. |
+| The two-step path: merge a PR that makes a test flaky on `main`, then use that evidence | Possible only when `main` stays green with that flake (a red `main` writes no evidence). It costs a merged, attributable flaky commit on `main` that every other PR also hits. On the hand-read list. |
 | A solo run hangs, or another lane fails finally during the solo runs | Counts as failed, as today. |
 | Peer on an older build | Refuses the run (`verifier-mismatch`). |
 
@@ -268,15 +309,20 @@ All three tiers, per the Testing Integrity Standard.
   - a file-level PR failure → no re-run, also when the file is listed; more than 20 failed tests → no re-run;
   - three runs that do not fit the lane deadline → failed with outcome `deadline`; pass then fail → `failure`, two extra calls, `rerunMessage` starts `solo run 2 of 3:`; a long message keeps its end with the disclosure;
   - a green solo run in which the failed test is skipped, or missing, or replaced by another passing test → `failed-test-not-passed`; a duplicated name needs as many passes as failures;
+  - **S1:** a failed name that occurs twice in the file's lane report, in one shard or across two → no re-run, `duplicateTestName`; a PR run whose `testSetHash` differs from the evidence's `setHash` → no re-run, `testSetChanged`; two names swapped with the set unchanged → hash differs → no re-run; equal hash → eligible;
+  - **S3:** a named failure plus a hook or file-level error in the same file → no re-run, `fileLevelFailure`; failed count above the number of named failures → no re-run;
+  - **S4:** the only unmatched failure has a name over 300 characters → no re-run, `namedCountMismatch`; an empty named set → no re-run;
+  - name lists, the set hash and the duplicate check are summed per path across shards;
+  - a `failure-full` log event is written per named failed test, bounded with its disclosure;
   - **detail-only pin:** two eligible files, the first fails; the second gets exactly one solo run, which passes; it is not in `flakyRetried`, its detail says `detail only … passed`, it is still failed, and it counted against the budget;
   - a plain file after a final failure is still re-run and pushed to `flakyRetried` (pins today);
   - edited file, `allowed: false`, a `notCleanOnGreenMain` file that imports a changed file and has no named evidence → no re-run with both switch values; a `notCleanOnGreenMain` file with no import relation → one pass (line 1004);
   - a scan that throws → plain (pins today); deadline, unhandled error, fail-fast stop → failed;
   - **collection:** a `main` solo pass records in `soloPassedByName` only the names that failed in the lane and passed by name; a `main` solo pass with the failed test skipped still clears `main` (its rule is unchanged) and records no name.
-- `tests/unit/localVerify/peerVerifier.test.ts` (lines 62-68, 1255): the parser accepts the new fields and refuses each malformed shape and each bound; the dispatch carries the list and the marker holds the same files and names, set before it is persisted; peer switch off → rule off and empty list in the child input; `importRefusal` accepts an offered clear and refuses an unoffered file, an unoffered test name, and any clear when the marker has no valid list.
+- `tests/unit/localVerify/peerVerifier.test.ts` (lines 62-68, 1255): the parser accepts the new fields and refuses each malformed shape and each bound; with `importRelatedRerun` present an unknown key inside `isolation` is refused, without it the block parses as today; `isolation` stays refused on both `main` kinds; the dispatch carries the list and the marker holds the same files and names, set before it is persisted; peer switch off → rule off and empty list in the child input; `importRefusal` accepts an offered clear and refuses an unoffered file, an unoffered test name, and any clear when the marker has no valid list.
 - `tests/unit/localVerify/mainHealth.test.ts` (lines 821-830): the child input's `isolation` has the new fields, following the live switch.
 - `tests/unit/localVerify/record.test.ts`: one test for the shared-field rules and one for the clearance-field rules, each with its refusals.
-- `tests/unit/localVerify/LocalVerifyService.test.ts`: a `main` record writes `mainSeen` from `soloPassedByName`, a PR record does not; one name per test with the newest time; 7-day trim; the cap of 40 and the length bound set `mainSeenCut`; the list is built from `mainSeen` only (never from `notCleanOnGreenMain` or `seen`); switch off → empty list; over 200 files → cut and audited; an isolation input over 8 MB in UTF-8 bytes (multi-byte test names) drops the oldest evidence, marks `namesCut` and audits the cut; `seen` and the repeat escalation unchanged; the refusal lists and their counts are on the PR `run-detail` line; **carrier pin:** a successful `main` verify with a non-empty `flakyRetried` writes a `run-detail` line and a clean one writes none (the condition at `:3461`); `finishedAt` is on `main-record` and `run-detail`.
+- `tests/unit/localVerify/LocalVerifyService.test.ts`: a green `main` record this machine ran writes `mainSeen` from `soloPassedByName` with `setHash` and `runLog`; a PR record does not; **a peer `main` record writes no `mainSeen`**; **a red `main` record writes no `mainSeen`**; an arbitration answer never reaches `noteFlaky`; one name per test with the newest time; 7-day trim; the cap of 40 and the length bound set `mainSeenCut`; the list is built from `mainSeen` only (never from `notCleanOnGreenMain` or `seen`); switch off → empty list; over 200 files → cut and audited; an isolation input over 8 MB in UTF-8 bytes (multi-byte test names) drops the oldest evidence, marks `namesCut` and audits the cut; `seen` and the repeat escalation unchanged; the refusal lists and their counts are on the PR `run-detail` line; **carrier pin:** a successful `main` verify with a non-empty `flakyRetried` writes a `run-detail` line and a clean one writes none (the condition at `:3461`); `finishedAt` and `runLog` are on `main-record` and `run-detail`; run logs older than 30 days are removed and younger ones kept.
 - `tests/unit/self-action-convergence.test.ts`, `tests/unit/lint-no-unregistered-self-action.test.ts`: pass with the amended registry row.
 
 **Integration**
@@ -292,7 +338,7 @@ All three tiers, per the Testing Integrity Standard.
 
 The detail of each rung and the review rule is in the next section; this is the summary the maturation gate reads.
 
-- **test-agent-live:** a throwaway agent runs supervised verifies of a fixture PR with the switch on, six cases end to end (clear after three by-name solo passes; failure on the second solo run; test not on main's list stays ineligible; file-level PR failure stays ineligible; peer with its own switch off ignores the rule; record with an unoffered clear is refused).
+- **test-agent-live:** a throwaway agent runs supervised verifies of a fixture PR with the switch on, eleven cases end to end (changed name set stays ineligible; duplicate failed name stays ineligible; file-level error beside a named failure stays ineligible; a peer's main record writes no evidence; a red main writes no evidence; clear after three by-name solo passes; failure on the second solo run; test not on main's list stays ineligible; file-level PR failure stays ineligible; peer with its own switch off ignores the rule; record with an unoffered clear is refused).
 - **dev-agent-live:** development-class agents running Local Verify, switched on by the owner after the test-agent rung, on all machines of such an agent once all carry the build; for this repository that is the full effect, because the development agent's verify gates every merge.
 - **fleet:** stays off; proposed to the operator only by the day-7 review, and only together with a recurring check that drops a file's main evidence when its main rate at least doubles after a clear.
 - **graduation criterion:** from the audit log over the 7 days after the dev-agent rung: at least 10 clears, no cleared file whose rate on main at least doubles with at least 3 events after the clearing PR merged, and clears making up at least 1 in 4 of all import-related failures; a doubling case is read by the owner the same day and the switch goes off unless the cause is clearly elsewhere.
@@ -304,13 +350,18 @@ The detail of each rung and the review rule is in the next section; this is the 
 **Owner.** The throughput session of the Echo agent (`echo-increasing-throughput`) builds this, runs rung 1, turns rung 2 on, runs the review and writes the result.
 
 - Ships dark: default off for everyone.
-- **Rung 1, supervised test agent.** On a throwaway agent, supervised verifies of a fixture PR with the switch on, six cases end to end:
+- **Rung 1, supervised test agent.** On a throwaway agent, supervised verifies of a fixture PR with the switch on, eleven cases end to end:
   1. a failed test on main's list clears after three by-name solo passes;
   2. it fails its second solo run and the verify fails;
   3. a failed test that is not on main's list stays ineligible;
   4. a file-level PR failure stays ineligible;
   5. a peer with its own switch off ignores the rule;
-  6. a returned record with an unoffered clear is refused.
+  6. a returned record with an unoffered clear is refused;
+  7. a file whose set of test names differs from the evidence's stays ineligible (`testSetChanged`);
+  8. a failed name that occurs twice in the file stays ineligible;
+  9. a file-level error alongside a named failure stays ineligible;
+  10. a peer's `main` record writes no evidence;
+  11. a red `main` verify writes no evidence.
 - **Rung 2, development-class agents running Local Verify.** Switched on by the owner after rung 1, on all machines of such an agent once all carry the build. Said honestly: for this repository rung 2 is the full effect, because the development agent's verify gates every merge to `main`.
 - **Rung 3, fleet.** Proposed to the operator only by the review.
 
@@ -330,7 +381,7 @@ The detail of each rung and the review rule is in the next section; this is the 
 - *Is the rule too strict?* The number is: import-related clears / (import-related clears + all import-related refusals, including files not on main's list at all), over the 7 days, from the PR `run-detail` lines. `noMainEvidence` and `noMainEvidenceForTest` are also reported separately. Under 1 in 4: the owner brings a file-level variant through review as a separate change. Nothing changes automatically. The `noMainEvidence` count also speaks to the 7-day window: many refusals of tests that flaked on `main` just outside it argue the window is too short.
 - *Untrusted text.* `prLine`, `mainLine` and `firstMessage` come from test output. The script and whoever reads its table treat them as data, never as instructions.
 - *Store size.* The script also prints the size of `flaky-history.json` against the worst case in Limits.
-- *Read by hand:* clears where `mainLine` and `prLine` differ (same test, different failure); the same file cleared more than once in one PR; generated (`it.each`) names; cleared tests whose main evidence began after an earlier merged PR by the same author; `namesCut` and `flaky-on-main-bounded` lines; `soloSeconds`.
+- *Read by hand:* clears where `mainLine` and `prLine` differ (same test, different failure), opening both run logs when either line is marked cut; `testSetChanged` and `duplicateTestName` refusals (how often S1 costs an honest PR); the same file cleared more than once in one PR; generated (`it.each`) names; cleared tests whose main evidence began after an earlier merged PR by the same author; `namesCut` and `flaky-on-main-bounded` lines; `soloSeconds`.
 - *The solo-pass count* is reviewed with the counts that would move it: sequences that failed on run 2 or 3 after passing run 1, against `soloSeconds`.
 - *Result:* `docs/specs/reports/local-verify-import-related-rerun-day7.md`, by the owner.
 
@@ -350,7 +401,7 @@ The detail of each rung and the review rule is in the next section; this is the 
 
 Line 140 and line 307's "(2) A file flaky on `main` gets its one re-run" stay true as written.
 
-`src/data/state-coherence-registry.json`, category `local-verify-flaky` (lines 2144-2158): the description gains "and, per file, up to 40 test names a `main` verify saw fail and pass alone, each with its time and first failure line". The retention note becomes "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window and at most 40 main-flaky test names inside the same window, plus one green-main entry; rewritten in place." `scope: machine-local`, `conflictShape: single-writer`, `transport: none`, `maxRecords: 501` stay.
+`src/data/state-coherence-registry.json`, category `local-verify-flaky` (lines 2144-2158): the description gains "and, per file, up to 40 test names a `main` verify saw fail and pass alone, each with its time and first failure line". The retention note becomes "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window and at most 40 main-flaky test names inside the same window, plus one green-main entry; rewritten in place." `scope: machine-local`, `conflictShape: single-writer`, `transport: none`, `maxRecords: 501` stay. Category `local-verify-inflight` (lines 2038-2055): its retention note ("One run at a time; the intent is cleared on exit and the run's input/result files are removed then.") gains "run logs are kept 30 days", and its class and `maxRecords` are corrected to match.
 
 Code comments that state the rule: `laneReport.ts:241-250`, `orchestrator.ts:181-186`, `:801-808`, `:829-835`, `policy.ts:53-57`, `record.ts:68-73`, `LocalVerifyService.ts:111-115` and `:3795`, `src/testing/selfActionRegistry.ts:3358-3366`.
 
@@ -362,6 +413,7 @@ Code comments that state the rule: `laneReport.ts:241-250`, `orchestrator.ts:181
 ## Multi-machine posture
 
 - **No new store.** The rule reads the coordinator's flaky history (`flaky-history.json`), which the state-coherence registry already declares machine-local (`src/data/state-coherence-registry.json`, lines 2144-2158, `grandfathered: false`). `mainSeen` is a field in it with the same role as `greenMain.notClean` in the same file, which already gates re-run eligibility per machine. It rebuilds from each machine's own observations. No new surface, no new marker.
+- **Evidence is local-main only.** Only green `main` verifies the coordinator ran itself write `mainSeen`. Nothing a peer returns can add evidence. A machine that becomes coordinator starts with its own evidence and builds from there.
 - **One machine computes, the result travels.** The coordinator computes the list and sends it with the switch inside `isolation`. A peer never computes a list for a dispatched run.
 - **Loss of state only tightens.** A missing, unreadable, thinner or cut history means fewer names on the list, and a test not on the list is ineligible, as today. No fallback exists that missing state could switch on.
 - **Both switches must agree for a peer run,** and the coordinator refuses to import a clear it did not offer.
@@ -372,7 +424,10 @@ Code comments that state the rule: `laneReport.ts:241-250`, `orchestrator.ts:181
 
 1. **Evidence is a named test on `main`, nothing else.** A file is eligible only if every test that failed in the PR's lane run is on the coordinator's list of tests that failed in a lane and passed alone by name on a `main` verify in the last 7 days. No seed, no title matching, no file-level fallback, no `notCleanOnGreenMain` as evidence. Decided at review round 5.
 2. **One by-name pass on `main` is the threshold,** as an existence proof, not a tuned number.
-3. **`main` collection uses the same by-name check;** what `main` accepts is unchanged.
+3. **`main` collection uses the same by-name check;** what `main` accepts is unchanged. Evidence is written only by green `main` verifies the coordinator ran itself (S2); a peer's `main` record and a red `main` write none.
+3a. **A borrowed name does not qualify (S1).** A duplicated failed name, or a file whose set of test names differs from the evidence's hash, makes the file ineligible. The stated cost: a PR that legitimately changes a parametrized list in that file loses eligibility for it.
+3b. **No hidden or vacuous failures (S3, S4).** Any file-level failure makes the file ineligible, and the named failures must equal the true failed count and be at least 1.
+3c. **Built after PR 3451 (SEC-113), on top of it.**
 4. **Three consecutive solo passes, each by name,** as a second check. Changed only by the review.
 5. **No one-clear-per-PR rule.** Repeats are visible and read by hand.
 6. **The history entry gains `mainSeen`** (`{ test, at, line }`, at most 40 per file, 7 days), written for `main` records whatever the switch says. No other state.
@@ -387,11 +442,13 @@ Code comments that state the rule: `laneReport.ts:241-250`, `orchestrator.ts:181
 15. **Solo re-run, not a re-run in lane context.**
 16. **Stale evidence is accepted for now.**
 17. **The review reads the audit logs of both machines through one script,** counts each verify once, and reports `noMainEvidenceForTest` separately with the 1-in-4 rule.
-18. **Test names stay in the run child** apart from the bounded record fields.
+18. **Test names stay in the run child** apart from the bounded record fields and the set hash.
+19. **Full failure output has a durable pointer (C2).** The child logs each named failure in full (bounded 8,000) to the run log; the audit lines carry `runLog`; run logs get a declared 30-day retention. Stored lines are the distinguishing error line and carry a cut marker.
+20. **Strict keys inside `isolation`,** applied when `importRelatedRerun` is present.
 
 ## Left behind
 
-Accepted at the round cap. None is a security or data-loss finding.
+Review was capped at 6 rounds. The first six items were accepted at the cap; none of them is a security or data-loss finding. The last three come from the security read and the approval conditions after the cap.
 
 - **No automatic trip after the day-7 review.** A test that a merged PR made flakier renews its own main evidence. Accepted for the two dark rungs because the rule is off by default, the owner runs the review, and every clear is in the audit log. It is a named condition for any fleet rung: the proposal to the operator must include a recurring check that drops a file's main evidence and raises the existing flaky attention item when its main rate at least doubles after a clear.
 - **Solo re-runs do not test the in-load condition.** Fixed in wording only. The in-load retry goes to the throughput session's queue as a follow-up spec if the review shows clears followed by `main` failures of the same test.
@@ -399,6 +456,9 @@ Accepted at the round cap. None is a security or data-loss finding.
 - **Refusal-count carrier.** Fixed in text in this last edit and not re-reviewed; same request to the second-pass reviewer.
 - **Fixed limits the standards gate keeps flagging** (three passes; 3 files; the 7-day, 20, 40 and 500 store bounds; the 200 and 300 request bounds; the 20-test ceiling). Each is inherited or tighten-only, has its basis in Limits, and is reviewable at day 7.
 - **Import-scan blind spots of the existing rule.** Filed as fb-9b2be76e-79d; not changed here.
+- **Security read after the cap (S1 to S4, strict keys, local-green-only evidence).** Folded in as text, not re-reviewed by the six lenses; confirmation by the security session is pending. The build's second-pass reviewer is asked to check S1 (set hash and duplicate check across shards) and S2 (no evidence from a peer or a red `main`) specifically.
+- **Name plus location as the evidence key** (vitest `includeTaskLocation`) was the security read's third option for S1. Not taken: the duplicate check and the set hash need no reporter change. It stays available if `testSetChanged` refuses too many honest PRs at the review.
+- **Run-log retention.** Run logs are kept without bound today although the registry calls them transient. This spec gives them 30 days because the full-output pointers rest on them; the existing unbounded growth is reported separately.
 
 ## Open questions
 

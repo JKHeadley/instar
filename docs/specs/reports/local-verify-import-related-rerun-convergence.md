@@ -2,7 +2,7 @@
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real outside (GPT-tier) review ran through the agent's codex CLI in rounds 2, 4, 5 and 6. Rounds 1 and 3 degraded (round 1: the installed reviewer script asked for a retired model; round 3: timeout on the longer text). A second, clean-door Claude review (claude-opus-5-5) ran in rounds 4, 5 and 6; it is not a cross-family opinion and says so itself.
+Review was capped at 6 rounds with open items (see Verdict). A real outside (GPT-tier) review ran through the agent's codex CLI in rounds 2, 4, 5 and 6. Rounds 1 and 3 degraded (round 1: the installed reviewer script asked for a retired model; round 3: timeout on the longer text). A second, clean-door Claude review (claude-opus-5-5) ran in rounds 4, 5 and 6; it is not a cross-family opinion and says so itself.
 
 ## ELI10 Overview
 
@@ -102,6 +102,16 @@ Round 6 (v5, cap).
 - Codex, DESIGN x2: rate denominator; byte bound. Fixed in the last edit; listed under Left behind.
 - Clean-door Opus, DESIGN x2: solo rationale; no check after day 7. First fixed in wording, second accepted with a condition; both under Left behind.
 
-## Convergence verdict
+## After the cap (2026-11-18, same day)
 
-Converged at the round cap (round 6 of 6) with five design findings recorded under Left behind as the process requires: three fixed in the final edit without a further review round, one corrected in wording, and one accepted with a condition on any wider rollout. None concerns security or data loss. Open questions: none. The spec is ready for review and approval by the Chief of Staff; nothing is built before that approval.
+Three things happened after round 6, none of them a further review round by the six lenses.
+
+1. **Approval with conditions.** The Chief of Staff approved the spec to build (message 871a3deb, 20:52Z) on three conditions from its own constitution check: every numeric limit carries a stated reason or goes; the main-versus-PR failure comparison must not rest on a 400-character excerpt alone (a pointer to the full output, and a cut marker); and this report must not claim convergence when it stopped at the cap. All three are folded into the spec; the verdict below is reworded.
+2. **Security read.** The security session read the spec (its notes: `.instar/drafts/security-read-pr3455.md` on the M5) and found two blocking and two should-fix items. S1: a test name built from imported values can borrow main's evidence without the test file being edited. S2: a helper machine's main record could invent evidence until PR 3451 (SEC-113) lands. S3: a file-level error can hide behind named failures. S4: "every failed test is on the list" could pass over an empty or cut set. All four are folded in, each as a tightening: a duplicate failed name or a changed sequence of test names makes the file ineligible; evidence comes only from green main verifies the coordinator ran itself; a file-level error beside named failures makes the file ineligible; named failures must equal the true failed count and be at least one. The build is ordered after PR 3451 and on top of it.
+3. **Constitution check re-run** on the folded-in text (21:13Z): 3 flags. Two repeat the fixed-limit and bound questions answered in the spec's Limits section. One was new and correct: two existing test names could be swapped by a changed import while the set of names and their uniqueness stayed the same. Fixed in text: the hash covers the names in definition order, so a swap changes it; the build confirms the report order on the pinned test runner and otherwise keys on name plus location.
+
+These fold-ins were not re-reviewed by the six lenses. Confirmation of S1 to S4 by the security session is requested; the build's second-pass reviewer is asked to check each of them and the three last-edit fixes named under Left behind.
+
+## Verdict
+
+Capped at 6 rounds; not converged in the strict sense. Open items at the cap: five design findings, listed under Left behind (three fixed in the final edit without a further round, one corrected in wording, one accepted with a condition on any wider rollout). After the cap: three approval conditions and four security findings folded in as text, and one further gap closed after a re-run of the constitution check. None of the items left open concerns security or data loss; the security findings themselves were all taken. Open questions for the operator: none. Approved to build by the Chief of Staff, after PR 3451 merges.
