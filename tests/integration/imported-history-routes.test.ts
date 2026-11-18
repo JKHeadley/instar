@@ -35,6 +35,8 @@ function boot() {
     stateDir,
     bearerOk: (req) => req.headers.authorization === `Bearer ${TOKEN}`,
     ownerOk: (req) => req.headers['x-instar-operator-session'] === OWNER,
+    // Stands in for the device authenticator's verdict (DEVICE_ALLOWLIST is tested in the unit test).
+    deviceOwnerOk: (req) => req.headers['x-test-owner-device'] === 'yes',
     now: () => clock,
   });
   app.use(router);
@@ -118,6 +120,25 @@ describe('imported history routes', () => {
 
     const list = await agent(request(app).get('/imported-history/conversations'));
     expect(list.body).toMatchObject({ keptOn: 'this-machine', conversations: [{ ref: 'imported:claude:c1', title: 'Garden', messageCount: 2 }] });
+  });
+
+  it('the owner\'s app reaches the same routes under /mobile and reads raw', async () => {
+    const { app } = boot();
+    const zip = claudeExport();
+    const device = (r: request.Test) => agent(r).set('x-test-owner-device', 'yes');
+    const pv = await device(request(app).post('/mobile/imported-history/preview')).send({ path: zip });
+    expect(pv.status).toBe(200);
+    expect((await device(request(app).post('/mobile/imported-history/apply')).send({ previewId: pv.body.previewId })).body.ok).toBe(true);
+    const list = await device(request(app).get('/mobile/imported-history/conversations'));
+    expect(list.body.conversations).toHaveLength(1);
+    const one = await device(request(app).get(`/mobile/imported-history/conversations/${encodeURIComponent('imported:claude:c1')}`));
+    expect(one.body.messages.map((m: { key: string }) => m.key)).toEqual(['m1', 'm2']);
+    const found = await device(request(app).get('/mobile/imported-history/search').query({ q: 'garden' }));
+    expect(found.body.hits).toHaveLength(1);
+    // The agent's bearer on a /mobile path is still the agent: quoted history, never raw.
+    const asAgent = await agent(request(app).get(`/mobile/imported-history/conversations/${encodeURIComponent('imported:claude:c1')}`));
+    expect(asAgent.body.messages).toBeUndefined();
+    expect(asAgent.body.quoted).toContain('<imported-history');
   });
 
   it('no credentials, no access', async () => {
