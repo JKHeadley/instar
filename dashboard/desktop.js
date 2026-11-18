@@ -538,6 +538,10 @@ function clearFrame() {
   $('screen').removeAttribute('src');
   $('screen').hidden = false;
 }
+function showMachinePicker() {
+  $('request').hidden = false;
+  $('retryButton').hidden = ![...$('machine').options].some(option => option.disabled);
+}
 function leave(message) {
   streamEpoch++;
   inputEnabled = false;
@@ -572,7 +576,7 @@ function leave(message) {
   if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   document.body.classList.remove('desktop-live', 'trackpad');
   $('control').hidden = true;
-  if (token) $('request').hidden = false;
+  if (token) showMachinePicker();
   status(message);
 }
 function unexpectedDisconnect(streamSocket) {
@@ -582,6 +586,7 @@ function unexpectedDisconnect(streamSocket) {
   // Stop remains reachable while the target decides whether this interruption
   // may resume. The browser cannot create a new grant on its own.
   $('request').hidden = true;
+  $('retryButton').hidden = true;
   $('control').hidden = false;
   document.body.classList.add('desktop-live');
   syncVisualViewport();
@@ -713,7 +718,7 @@ async function leaveExplained(message) {
     if (superseded()) return;
     const ended = (targets.machines || []).find(target => target.machineId === endedMachineId);
     if (!ended || ended.ready || !ended.unavailableReason) return;
-    await loadTargetsAndMaybeOpen({ open: false });
+    await loadTargetsAndMaybeOpen({ open: false, targets });
     if (superseded()) return;
     status(ended.unavailableReason);
   } catch { /* @silent-fallback-ok — the generic line above already says the session ended. */ }
@@ -796,8 +801,8 @@ async function loadDesktopPage(options) {
   await refreshSetup();
 }
 
-async function loadTargetsAndMaybeOpen({ open = true } = {}) {
-  const targets = await api('/desktop/targets');
+async function loadTargetsAndMaybeOpen({ open = true, targets } = {}) {
+  targets ??= await api('/desktop/targets');
   const machines = targets.machines || [];
   $('machine').replaceChildren();
   $('machineNotes')?.replaceChildren();
@@ -846,13 +851,12 @@ async function loadTargetsAndMaybeOpen({ open = true } = {}) {
     status(reason || 'This machine’s desktop is not available right now.');
     return;
   }
-  $('retryButton').hidden = true;
   if (open && (hasPreferredMachine || (machines.length === 1 && ready.length === 1))) {
     if (!hasPreferredMachine) $('machine').value = ready[0].value;
     status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
     await requestDesktop();
   } else {
-    $('request').hidden = false;
+    showMachinePicker();
     status('Choose a machine to open.');
   }
 }
@@ -882,14 +886,20 @@ $('unlockButton').addEventListener('click', async () => {
 
 $('retryButton').addEventListener('click', async () => {
   $('retryButton').disabled = true;
+  const openWasDisabled = $('requestButton').disabled;
+  $('requestButton').disabled = true;
   try { await loadDesktopPage(); }
   catch (error) {
     if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
-    else status(error.message || 'Could not check this machine.');
+    else {
+      $('requestButton').disabled = openWasDisabled;
+      status(error.message || 'Could not check this machine.');
+    }
   } finally { $('retryButton').disabled = false; }
 });
 
 async function requestDesktop() {
+  $('retryButton').hidden = true;
   reconnectAttempts = 0;
   resumeTransportFailures = 0;
   stopping = false;
@@ -948,7 +958,7 @@ async function requestDesktop() {
     if (/dashboard operator session|dashboard PIN session/i.test(message)) {
       requirePinAgain();
     } else {
-      $('request').hidden = false;
+      showMachinePicker();
       status(message);
     }
   }

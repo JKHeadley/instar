@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import { JSDOM } from 'jsdom';
 
@@ -25,7 +25,7 @@ function viewer() {
     <button id="stopButton"></button><input id="typeText">
     <button id="unlockButton"></button><button id="retryButton"></button><button id="requestButton"></button>
     <div id="status"></div><div id="liveStatus"></div><div id="control"></div><div id="request"></div>
-    <div id="unlock"></div><select id="machine"></select>
+    <div id="unlock"></div><select id="machine"></select><ul id="machineNotes"></ul>
   </body>`, { url: 'https://instar.example/dashboard/desktop', runScripts: 'outside-only' });
   const { window } = dom;
   Object.defineProperty(window, 'matchMedia', { value: () => ({ matches: true }) });
@@ -165,10 +165,72 @@ describe('desktop target selection', () => {
     expect((v.window as unknown as { __opened?: boolean }).__opened).toBeUndefined();
     expect((v.window.document.getElementById('request') as HTMLDivElement).hidden).toBe(false);
     const options = [...(v.window.document.getElementById('machine') as HTMLSelectElement).options];
+    expect((v.window.document.getElementById('retryButton') as HTMLButtonElement).hidden).toBe(false);
     expect(options.map(option => [option.textContent, option.disabled])).toEqual([
       ['Mama PC — Windows companion is not running.', true], ['Mac Studio', false],
     ]);
     expect((v.window.document.getElementById('machine') as HTMLSelectElement).value).toBe('m_studio');
+    v.dom.window.close();
+  });
+
+  it('rechecks an unanswered Mac alongside a ready machine and enables it after a successful reply', async () => {
+    const v = viewer();
+    const doc = v.window.document;
+    const peer = { machineId: 'peer', label: 'Mac Mini', targetSigningPublicKey: 'peer-key' };
+    const local = { machineId: 'local', label: 'Mac Studio', ready: true, targetSigningPublicKey: 'local-key' };
+    const reason = 'Could not check this machine’s desktop. Select Check again to retry.';
+    const targets = vi.fn()
+      .mockResolvedValueOnce({ machines: [local, { ...peer, ready: false, unavailableReason: reason }] })
+      .mockRejectedValueOnce(new Error('The check timed out.'))
+      .mockResolvedValueOnce({ machines: [local, { ...peer, ready: true }] });
+    Object.assign(v.window, { targets });
+    v.window.eval('api = window.targets; refreshLockedCard = () => {}; refreshSetup = async () => {};');
+    await v.window.eval('loadTargetsAndMaybeOpen()');
+    const machine = doc.querySelector<HTMLSelectElement>('#machine')!;
+    const retry = doc.querySelector<HTMLButtonElement>('#retryButton')!;
+    expect(machine.options[1].disabled).toBe(true);
+    expect(machine.options[1].textContent).toContain(reason);
+    expect(doc.querySelector('#machineNotes')!.textContent).toContain(reason);
+    expect(machine.value).toBe(local.machineId);
+    expect(retry.hidden).toBe(false);
+    retry.click();
+    await vi.waitFor(() => expect(doc.querySelector('#status')!.textContent).toBe('The check timed out.'));
+    expect(retry.disabled).toBe(false);
+    expect(machine.options[1].disabled).toBe(true);
+    expect(doc.querySelector<HTMLButtonElement>('#requestButton')!.disabled).toBe(false);
+    retry.click();
+    await vi.waitFor(() => expect(machine.options[1].disabled).toBe(false));
+    expect(targets.mock.calls).toEqual([['/desktop/targets'], ['/desktop/targets'], ['/desktop/targets']]);
+    expect(machine.options[1].textContent).toBe(peer.label);
+    expect(doc.querySelector('#machineNotes')!.textContent).toBe('');
+    expect(retry.hidden).toBe(true);
+    v.dom.window.close();
+  });
+
+  it.each(['manual', 'deep link'])('hides retry while a %s open is pending and restores it on failure', async mode => {
+    const v = viewer();
+    const doc = v.window.document;
+    const retry = doc.querySelector<HTMLButtonElement>('#retryButton')!;
+    if (mode === 'deep link') v.window.history.replaceState({}, '', '?machineId=ready');
+    let failOpen!: (error: Error) => void;
+    const pending = new Promise((_, reject) => { failOpen = reject; });
+    Object.defineProperty(v.window.crypto, 'subtle', { value: { generateKey: () => pending } });
+    v.window.eval(`api = async () => ({ machines: [
+      { machineId: 'ready', label: 'Mac Studio', ready: true, targetSigningPublicKey: 'key' },
+      { machineId: 'unknown', label: 'Mac Mini', ready: false, unavailableReason: 'Could not check.' }
+    ] }); refreshLockedCard = () => {};`);
+    const loading = v.window.eval('loadTargetsAndMaybeOpen()');
+    if (mode === 'manual') {
+      await loading;
+      expect(retry.hidden).toBe(false);
+      doc.querySelector<HTMLButtonElement>('#requestButton')!.click();
+    }
+    await vi.waitFor(() => expect(doc.querySelector<HTMLButtonElement>('#requestButton')!.disabled).toBe(true));
+    expect(retry.hidden).toBe(true);
+    failOpen(new Error('Fixture open failed'));
+    await loading;
+    await vi.waitFor(() => expect(doc.querySelector('#status')!.textContent).toBe('Fixture open failed'));
+    expect(retry.hidden).toBe(false);
     v.dom.window.close();
   });
 
