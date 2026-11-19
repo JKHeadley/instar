@@ -43,6 +43,7 @@ export async function placeCodexResumeRollout(
   targetHome: string,
   sourceHomes: readonly string[],
 ): Promise<{ outcome: CodexRolloutPlacement; from?: string }> {
+  if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId.includes('..')) return { outcome: 'not-found' };
   const target = path.resolve(targetHome);
   const seen = new Set<string>([target]);
   const sources: Copy[] = [];
@@ -61,11 +62,18 @@ export async function placeCodexResumeRollout(
   const rel = path.relative(path.join(newest.home, 'sessions'), newest.file);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return { outcome: 'not-found' };
   const dest = existing ? existing.file : path.join(target, 'sessions', rel);
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  // Copy under a name Codex ignores, then swap it in: a copy cut off partway never
+  // sits at the real name looking like the newest copy, and the old copy is moved
+  // aside only once the new one is complete. A failed copy is left under its
+  // ignored name (this module never deletes).
+  const partial = `${dest}.partial-${process.pid}-${Date.now()}`;
+  await fs.copyFile(newest.file, partial);
   if (existing) {
     await fs.rename(existing.file, `${existing.file}.set-aside-${Date.now()}`);
   }
-  await fs.mkdir(path.dirname(dest), { recursive: true });
-  await fs.copyFile(newest.file, dest);
+  await fs.rename(partial, dest);
   invalidateRolloutLookup(threadId, targetHome);
+  if (target !== targetHome) invalidateRolloutLookup(threadId, target);
   return { outcome: existing ? 'replaced' : 'copied', from: newest.home };
 }

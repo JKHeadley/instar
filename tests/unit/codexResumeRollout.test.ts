@@ -86,4 +86,21 @@ describe('placeCodexResumeRollout', () => {
     const r = await placeCodexResumeRollout(THREAD, home('headley'), [home('headley')]);
     expect(r.outcome).toBe('present');
   });
+
+  it('leaves no partial copy behind: only the real name and the set-aside name remain', async () => {
+    write(home('headley'), 'stale\n', 1_000);
+    write(home('default'), 'newer\n', 2_000);
+    await placeCodexResumeRollout(THREAD, home('headley'), [home('default')]);
+    const dayDir = path.dirname(path.join(home('headley'), REL));
+    expect(fs.readdirSync(dayDir).filter((n) => n.includes('.partial-'))).toEqual([]);
+  });
+
+  it('refuses a thread id that could leave the sessions tree, and writes nothing', async () => {
+    write(home('default'), 'x\n', 1_000);
+    for (const bad of ['../etc', 'a/b', '']) {
+      const r = await placeCodexResumeRollout(bad, home('headley'), [home('default')]);
+      expect(r.outcome).toBe('not-found');
+    }
+    expect(fs.existsSync(home('headley'))).toBe(false);
+  });
 });

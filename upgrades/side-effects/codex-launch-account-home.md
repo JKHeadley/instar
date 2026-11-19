@@ -80,6 +80,13 @@ The tag and the login now agree for interactive Codex launches, and a moved Code
 
 The reviewer confirmed that the tag and `CODEX_HOME` now agree on both callers that pass a home (Telegram respawn and Slack respawner), that no default launch changes, and that placement is sound. Concern: hook trust is armed only in the default home, so swapped sessions could run with gates off. Resolution: instar launches the installed codex with `--dangerously-bypass-hook-trust`, which runs instar's hooks regardless of stored trust. A live stop hook is verified running under the account home with stale hashes (see Interactions). The no-bypass-flag case is stated as accepted. Added from the review: a test for placement throwing, and the lookup cost note.
 
+**Third read (2026-11-19, independent subagent given both diffs, not my conclusions): two should-fix findings, both fixed in this PR.**
+
+1. *A cut-off copy could look like the newest one.* Placement used to move the old target copy aside and then `copyFile` straight to the real name. A copy that failed partway would leave a truncated `.jsonl` with a fresh mtime, and the next placement would answer `present` and resume it. Now the copy is written under a `.partial-…` name (which Codex and instar lookups ignore), the old copy is moved aside only after that copy is complete, and the copy is then renamed into place. Test: no `.partial-` file remains.
+2. *A relaunch on the default login could resume a stale copy.* Copies are never moved, so after an A→B swap the default home still holds the older rollout, and the resume maps (`TopicResumeMap`, `ThreadResumeMap`) find it there. A later relaunch with no account home (default login) would resume that stale copy and silently drop every turn taken on B. Placement now also runs for a Codex resume with no account home, with the default home as the target, whenever the pool's Codex homes are wired. There, a conversation found nowhere (or a placement error) keeps today's behaviour and still attempts the resume, because the default home is where it was always looked for. Tests: the newer copy is brought back into the default home, and a resolver that throws still resumes.
+
+Also from that read: `placeCodexResumeRollout` now refuses a thread id that is not a plain file-name token (defence in depth beside the caller's `isSafeSessionRef`), and the lookup cache is invalidated under both the raw and the resolved home path. Noted and not changed: codex older than 0.133 lacks the hook-trust bypass flag (see above), and the Codex log readers still read the default home for swapped sessions. That is observability only, it existed for the claude side before `codexHomeForTmuxSession`, and it is not the reported failure.
+
 ---
 
 ## Evidence pointers

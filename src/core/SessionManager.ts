@@ -8438,23 +8438,30 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Without it the launch below (which now honours the home) would stop at
     // "no rollout found"; the earlier code avoided that only by ignoring the home
     // and running on the default login under another account's name (2026-11-18).
+    // A relaunch WITHOUT an account home runs on the default login, and is placed
+    // too: after a swap the conversation continued in the account's home, and the
+    // default home holds only the older copy, so resuming there would silently drop
+    // every turn taken on the account. There, a conversation found nowhere keeps
+    // today's behaviour (the default home is where it was always looked for).
+    const defaultCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const codexPlacementHome = explicitConfigHome ?? defaultCodexHome;
     if (
       options?.resumeSessionId &&
       framework === CODEX_CLI_FRAMEWORK &&
-      explicitConfigHome &&
+      (explicitConfigHome || this.codexAccountHomesResolver) &&
       isSafeSessionRef(options.resumeSessionId)
     ) {
       let outcome: CodexRolloutPlacement | 'error';
       try {
-        const sources = [process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), ...(this.codexAccountHomesResolver?.() ?? [])];
-        outcome = (await placeCodexResumeRollout(options.resumeSessionId, explicitConfigHome, sources)).outcome;
+        const sources = [defaultCodexHome, ...(this.codexAccountHomesResolver?.() ?? [])];
+        outcome = (await placeCodexResumeRollout(options.resumeSessionId, codexPlacementHome, sources)).outcome;
       } catch (err) {
         // @silent-fallback-ok — reported below; the session launches fresh instead of failing.
         console.warn(`[SessionManager] Codex resume placement failed for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
         outcome = 'error';
       }
-      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${options.resumeSessionId}, home=${explicitConfigHome})`);
-      if (outcome === 'not-found' || outcome === 'error') {
+      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${options.resumeSessionId}, home=${codexPlacementHome})`);
+      if (explicitConfigHome && (outcome === 'not-found' || outcome === 'error')) {
         resumeReopenFailed = true;
         options = { ...options, resumeSessionId: undefined };
         DegradationReporter.getInstance().report({
