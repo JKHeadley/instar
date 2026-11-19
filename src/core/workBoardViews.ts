@@ -110,6 +110,8 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
   const out: Record<string, unknown> = {
     ...base,
     title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, whyYou: c.whyYou, doneWhen: c.doneWhen,
+    // A server-owned card's structured summary (display only; older clients keep reading `need`). Absent when none.
+    ...(c.brief ? { brief: c.brief } : {}),
     // The Needs-you items this card is about (work-board-cards-appear §3); a server-owned card is written by the Chief of Staff itself.
     covers: c.covers, createdAt: c.createdAt, ...(isServerOwnedCard(c) ? { serverOwned: true } : {}),
     // A phone-only card keeps `outward` in its record so it needs its own approve under every board

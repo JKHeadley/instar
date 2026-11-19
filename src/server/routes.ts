@@ -6479,6 +6479,10 @@ export function createRoutes(ctx: RouteContext): Router {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        // Memory held outside the V8 heap (native addons' C++ objects, Buffers),
+        // so resident size can be split without attaching a profiler.
+        external: Math.round(mem.external / 1024 / 1024),
+        arrayBuffers: Math.round(mem.arrayBuffers / 1024 / 1024),
       };
       if (ctx.autoUpdater) {
         const auto = ctx.autoUpdater.getStatus();

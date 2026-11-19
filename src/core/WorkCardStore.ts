@@ -48,7 +48,7 @@ export type WorkRecordType = typeof WORK_RECORD_TYPES[number];
 
 export const MATERIAL_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links'] as const;
 export type MaterialField = typeof MATERIAL_FIELDS[number];
-const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror'] as const;
+const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
 export type EditableField = typeof EDITABLE_FIELDS[number];
 
 export const PERMITTING_TAPS = ['approve', 'answer', 'confirm-done', 'unhold', 'retry', 'unarchive'] as const;
@@ -117,6 +117,18 @@ export type Carrier = 'agent' | { personKey: string };
 export type Principal = 'agent' | 'none' | { personKey: string };
 export type By = { kind: 'person'; personKey: string; proof: 'pin' | 'presence' } | { kind: 'agent' } | { kind: 'system' };
 export interface CardMirror { ref: string; hlc: HlcTimestamp; waitSince?: string; note?: string; waitRef?: string; cleared?: boolean }
+
+/** A done-when item's state as a card's brief shows it. */
+export const BRIEF_CHECK_STATUSES = ['passes', 'needs-you', 'unknown', 'fails'] as const;
+export type BriefCheckStatus = typeof BRIEF_CHECK_STATUSES[number];
+/**
+ * The structured, plain-text summary a server-owned card carries next to its prose `need` (a Chief of Staff wait
+ * card: what is asked, the goal, the done-when items with their state, the check's own words, when the wait
+ * started). Display only and NOT material: it is outside the material hash, so writing or changing it voids no
+ * approval, evidence or finish. Only the server's own writer sets it.
+ */
+export interface CardBrief { ask: string; goal?: string; checks?: Array<{ text: string; status: BriefCheckStatus }>; chiefSaid?: string; waitingSince?: string }
+export const BRIEF_MAX = { ask: 2000, goal: 8000, checks: 256, chiefSaid: 8000 } as const;
 
 const isStr = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
 const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_RE.test(v);
@@ -190,6 +202,27 @@ function vIdList(v: unknown, max = 256): string[] | null {
   return [...new Set(v as string[])].sort();
 }
 
+function vBrief(v: unknown): CardBrief | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const b = v as Record<string, unknown>;
+  if (!isStr(b.ask, BRIEF_MAX.ask)) return null;
+  const out: CardBrief = { ask: b.ask };
+  if (b.goal !== undefined) { if (!isStr(b.goal, BRIEF_MAX.goal)) return null; out.goal = b.goal; }
+  if (b.checks !== undefined) {
+    if (!Array.isArray(b.checks) || b.checks.length > BRIEF_MAX.checks) return null;
+    const checks: NonNullable<CardBrief['checks']> = [];
+    for (const raw of b.checks) {
+      const c = raw as Record<string, unknown> | null;
+      if (!c || typeof c !== 'object' || !isStr(c.text, SCHEMA_MAX.doneItemText) || !(BRIEF_CHECK_STATUSES as ReadonlyArray<string>).includes(c.status as string)) return null;
+      checks.push({ text: c.text, status: c.status as BriefCheckStatus });
+    }
+    out.checks = checks;
+  }
+  if (b.chiefSaid !== undefined) { if (!isStr(b.chiefSaid, BRIEF_MAX.chiefSaid)) return null; out.chiefSaid = b.chiefSaid; }
+  if (b.waitingSince !== undefined) { if (!isIso(b.waitingSince)) return null; out.waitingSince = b.waitingSince; }
+  return out;
+}
+
 /** Validates the editable-field subset present on a `created` / `edited` record. */
 function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
@@ -230,6 +263,11 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
       out.mirror = { ref: m.ref, hlc: { physical: h.physical, logical: h.logical, node: h.node }, ...(m.waitSince !== undefined ? { waitSince: m.waitSince } : {}), ...(m.note !== undefined ? { note: m.note } : {}), ...(m.waitRef !== undefined ? { waitRef: m.waitRef } : {}), ...(m.cleared === true ? { cleared: true } : {}) };
     } else out.mirror = null;
   }
+  if (has('brief')) {
+    // Display only (not material). Null clears it. An older machine drops the unknown field and keeps the record.
+    if (raw.brief === null) out.brief = null;
+    else { const b = vBrief(raw.brief); if (!b) return null; out.brief = b; }
+  }
   return out;
 }
 
@@ -238,7 +276,7 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
 const KNOWN_FIELDS = [
   'recordType', 'cardId', 'by', 'at',
   'title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'conversationKey',
-  'whyYou', 'covers', 'mirror',
+  'whyYou', 'covers', 'mirror', 'brief',
   'principal', 'question', 'supersedes', 'reason',
   'action', 'materialHash', 'questionId', 'answer', 'claimId', 'retryOf', 'names', 'titleHash', 'policy',
   'itemId', 'text', 'attachmentIds', 'reopens', 'evidenceIds',
@@ -472,6 +510,8 @@ export interface CardFold {
   covers: string[];
   /** The source record a server-owned card mirrors (§1 Fencing); null on every other card. */
   mirror: CardMirror | null;
+  /** A server-owned card's structured summary (display only, not material); null on every other card. */
+  brief: CardBrief | null;
   waitingOn: Principal;
   materialHash: string;
   lastWriter: Record<MaterialField, 'person' | 'agent'>;
@@ -547,7 +587,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const f: CardFold = {
     cardId, conversationKey: cardConversationKey(cardId), created: false, createdBy: null, createdAt: null,
     title: '', need: '', doneWhen: [], carrier: 'agent', outward: true, links: [], recommendation: null, due: null, projectKey: null, source: null,
-    whyYou: null, covers: [], mirror: null,
+    whyYou: null, covers: [], mirror: null, brief: null,
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
     evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
@@ -914,7 +954,7 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
 export function redactedView(f: CardFold, name: string): Partial<CardFold> & { removedBy: string } {
   return {
     cardId: f.cardId, conversationKey: f.conversationKey, redacted: f.redacted, removedBy: name,
-    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, questions: [], openQuestion: null, evidence: [], claims: [],
+    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [],
   };
 }
 

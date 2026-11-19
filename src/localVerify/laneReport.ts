@@ -227,6 +227,13 @@ export interface LaneRunInput {
   exitCode?: number | null;
   /** Stopped by fail-fast after another lane failed: no report, and its files are not "not run" failures. */
   stoppedEarly?: boolean;
+  /**
+   * Cut short after its first part (spec local-verify-likely-failing-first.md C): `report` covers
+   * only the files that ran. The lane's other files are "not run: the lane was stopped", never
+   * `file-not-run`, and such a lane can never be part of a pass (`lane-stopped-early`, or
+   * `lane-stopped-without-failure` when nothing else failed). Only meaningful with a report.
+   */
+  cutShort?: boolean;
 }
 
 export interface LaneTotals {
@@ -301,6 +308,12 @@ export function evaluateRun(
       totals.push(t);
       continue;
     }
+    if (run.cutShort) {
+      // Cut short after its first part: the report is counted for the files that ran, the rest
+      // of the lane's files are marked stopped below, and the run can never be a pass.
+      stoppedLanes.add(def.name);
+      if (def.gating) stopped.push(`lane-stopped-early:${def.name}`);
+    }
     for (const [p, c] of run.report.files) {
       t.files++;
       t.passed += c.passed;
@@ -312,7 +325,8 @@ export function evaluateRun(
     }
     if (def.gating) {
       if (t.failed > 0) reasons.push(`lane-failed:${def.name}:${t.failed}`);
-      if (t.passed === 0) reasons.push(`lane-zero-passed:${def.name}`);
+      // A lane cut short after its first part is judged on what ran; "nothing passed" needs the whole lane.
+      if (t.passed === 0 && !run.cutShort) reasons.push(`lane-zero-passed:${def.name}`);
       if (t.failed === 0 && run.exitCode != null && run.exitCode !== 0) {
         reasons.push(`lane-exit-nonzero:${def.name}:${run.exitCode}`);
       }
@@ -438,12 +452,18 @@ export function decideIsolationRerun(i: {
   ineligible?: ReadonlySet<string>;
   /** Eligible failed files that need three passes instead of one. Absent ⇒ none. */
   importRelated?: ReadonlySet<string>;
+  /**
+   * Files of the SAME lane that already failed in its first part (spec
+   * local-verify-likely-failing-first.md C): "more than maxFiles failed files" counts the lane's
+   * failures so far, as it would have if the lane had run in one piece. Absent ⇒ 0.
+   */
+  priorFailed?: number;
 }): IsolationRerunDecision {
   if (!i.report) return { rerun: [], reason: 'no-report' };
   const failed = [...i.report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f).sort();
   if (failed.length === 0) return { rerun: [], reason: 'no-failures' };
   if (i.unhandledErrors !== undefined && i.unhandledErrors !== 0) return { rerun: [], reason: 'unhandled-errors' };
-  if (failed.length > i.maxFiles) return { rerun: [], reason: 'too-many-failures' };
+  if (failed.length + (i.priorFailed ?? 0) > i.maxFiles) return { rerun: [], reason: 'too-many-failures' };
   for (const f of i.laneFiles) {
     const c = i.report.files.get(f);
     if (!c) return { rerun: [], reason: 'other-failure' }; // file-not-run

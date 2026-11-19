@@ -336,6 +336,10 @@ describe('E: progress judgment (pure)', () => {
     expect(stallWindowMs(prog(), lanes)).toBe(10 * MIN);
     expect(stallWindowMs(prog({ slowdown: 1.5 }), lanes)).toBe(15 * MIN);
     expect(stallWindowMs(prog({ running: [{ file: 'u.test.ts', seconds: 1, lane: 'unit', recordedMs: null }] }), lanes)).toBe(2 * lanes.unit);
+    // A raw lane key from a peer (a first part, a shard) still finds its lane's deadline.
+    expect(stallWindowMs(prog({ running: [{ file: 'e.test.ts', seconds: 1, lane: 'e2e-first', recordedMs: null }] }), lanes)).toBe(2 * lanes.e2e);
+    expect(stallWindowMs(prog({ running: [{ file: 'i.test.ts', seconds: 1, lane: 'integration-2', recordedMs: null }] }), lanes)).toBe(2 * lanes.integration);
+    expect(stallWindowMs(prog({ running: [{ file: 'x.test.ts', seconds: 1, lane: 'nope', recordedMs: null }] }), lanes)).toBeNull();
     expect(stallWindowMs(prog({ running: [] }), lanes)).toBeNull();
     expect(runSlowdown([])).toBe(1);
     expect(runSlowdown([0.5, 0.7])).toBe(1); // never below 1
@@ -362,6 +366,10 @@ describe('E: progress judgment (pure)', () => {
     expect(parsePeerProgress(null)).toBeNull();
     expect(laneOfKey('integration-2')).toBe('integration');
     expect(laneOfKey('unit')).toBe('unit');
+    // A lane's first part (likely-failing files first) reads as its lane.
+    expect(laneOfKey('e2e-first')).toBe('e2e');
+    expect(laneOfKey('unit-first')).toBe('unit');
+    expect(laneOfKey('first')).toBe('first');
   });
 });
 
@@ -787,7 +795,7 @@ describe('E: the peer judges its own attempt on its own progress files', () => {
     const p = verifyPaths(agentHome, sha('a'));
     fs.mkdirSync(p.reportsDir, { recursive: true });
     fs.writeFileSync(p.durationsPath, JSON.stringify({ 'tests/integration/x.test.ts': 5 * MIN }));
-    const write = (finishedFiles: number, running: Array<{ file: string; startedAt: number }>) => fs.writeFileSync(path.join(p.reportsDir, 'integration-1.progress.json'),
+    const write = (finishedFiles: number, running: Array<{ file: string; startedAt: number }>, key = 'integration-1') => fs.writeFileSync(path.join(p.reportsDir, `${key}.progress.json`),
       JSON.stringify({ v: 1, writtenAt: h.clock.t, finishedFiles, running: running.map((r) => ({ ...r, file: path.join(p.runDir, r.file) })) }));
     return { h, write };
   }
@@ -801,6 +809,20 @@ describe('E: the peer judges its own attempt on its own progress files', () => {
       await h.svc.tick();
     }
     expect(h.svc.peerResult(ATT)).toMatchObject({ state: 'running', progress: { finishedFiles: 62, running: [{ file: 'tests/integration/x.test.ts', lane: 'integration', recordedMs: 5 * MIN }] } });
+    expect(h.audits('peer-attempt-judged').at(-1)).toMatchObject({ side: 'peer', verdict: 'progressing' });
+    expect(h.audits('peer-attempt-self-cancelled')).toEqual([]);
+  });
+
+  it('a first part with no recorded durations is judged on its lane (not unknown) past the review point', async () => {
+    // docs/specs/local-verify-likely-failing-first.md: a lane's first part writes `<lane>-first.progress.json`.
+    const { h, write } = await peerRunning();
+    write(0, [{ file: 'tests/e2e/new.test.ts', startedAt: h.clock.t }], 'e2e-first');
+    for (let i = 1; i <= 62; i++) {
+      h.advance(MIN);
+      write(i, [{ file: 'tests/e2e/new.test.ts', startedAt: h.clock.t - 30_000 }], 'e2e-first');
+      await h.svc.tick();
+    }
+    expect(h.svc.peerResult(ATT)).toMatchObject({ state: 'running', progress: { finishedFiles: 62, running: [{ file: 'tests/e2e/new.test.ts', lane: 'e2e', recordedMs: null }] } });
     expect(h.audits('peer-attempt-judged').at(-1)).toMatchObject({ side: 'peer', verdict: 'progressing' });
     expect(h.audits('peer-attempt-self-cancelled')).toEqual([]);
   });

@@ -15,6 +15,7 @@ import type { MachineSignature } from '../core/AppRecordSignatures.js';
 import { ATTEMPT_ID_RE, MAIN_VERIFY_PR, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
 import type { FailureDetail, IsolationInput } from './orchestrator.js';
 import { IMPORT_RELATED_RERUN } from './policy.js';
+import { parseLikelyFailingWire, type FirstPartGroup, type LikelyFailingWire } from './firstPart.js';
 
 /** The coordinator's durable reservation of one queue entry for one peer attempt. */
 export interface RemoteMarker {
@@ -85,6 +86,14 @@ export interface PeerRunRequest extends DispatchedInputs {
   isolation?: IsolationInput;
   /** Coordinator attests that its watcher can rediscover this candidate after lease movement. */
   preflightRediscoverable?: boolean;
+  /**
+   * PR verifies (spec local-verify-likely-failing-first.md B): the coordinator's likely-failing
+   * list in use and the change's previous failures, at most 100 paths of at most 300 characters.
+   * Sent only when not empty; a peer never builds its own list.
+   */
+  likelyFailing?: LikelyFailingWire;
+  /** PR verifies: the coordinator's assignment of this pull request for the first-part trial. */
+  firstPartGroup?: FirstPartGroup;
 }
 
 export type PeerRefusal =
@@ -169,8 +178,13 @@ export function parsePeerProgress(v: unknown): PeerProgress | null {
 
 export type PeerAttemptVerdict = 'progressing' | 'stalled' | 'unknown' | 'backstop';
 
-/** A lane key (`unit`, `integration-2`, `e2e-1`) → its lane name. */
-export function laneOfKey(key: string): string { return key.replace(/-\d+$/, ''); }
+/**
+ * A lane key (`unit`, `integration-2`, `e2e-1`, and a lane's first part `e2e-first`,
+ * docs/specs/local-verify-likely-failing-first.md) → its lane name. A first part must read as its
+ * lane: a running file with no recorded duration takes its lane's hang deadline as its stall window,
+ * and an unknown lane name would make a healthy first part unmeasurable at the review point.
+ */
+export function laneOfKey(key: string): string { return key.replace(/-(?:\d+|first)$/, ''); }
 
 /**
  * Same spec, E: the stall window for a running attempt. Twice the longest recorded duration among the
@@ -180,7 +194,8 @@ export function laneOfKey(key: string): string { return key.replace(/-\d+$/, '')
 export function stallWindowMs(p: PeerProgress, laneDeadlines: Readonly<Record<string, number>>): number | null {
   let longest = -1;
   for (const r of p.running) {
-    const d = r.recordedMs ?? laneDeadlines[r.lane] ?? null;
+    // The lane is read through laneOfKey here too: a peer may report a raw key (`e2e-first`, `integration-2`).
+    const d = r.recordedMs ?? laneDeadlines[r.lane] ?? laneDeadlines[laneOfKey(r.lane)] ?? null;
     if (d !== null && Number.isFinite(d) && d > longest) longest = d;
   }
   if (longest < 0) return null;
@@ -302,7 +317,10 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   const b = body as Record<string, unknown>;
   const keys = ['attemptId', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'coordinatorMachineId', 'leaseEpoch'];
   const extra = Object.keys(b).filter((k) => !keys.includes(k));
-  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind')) return null;
+  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind' && k !== 'likelyFailing' && k !== 'firstPartGroup')) return null;
+  // The likely-failing field is bounded and strict: a malformed one refuses the whole request.
+  if (b.likelyFailing !== undefined && parseLikelyFailingWire(b.likelyFailing) === null) return null;
+  if (b.firstPartGroup !== undefined && b.firstPartGroup !== 'with' && b.firstPartGroup !== 'without') return null;
   if (b.kind !== undefined && b.kind !== 'main' && b.kind !== 'main-arbitration') return null;
   if (b.preflightRediscoverable !== undefined && typeof b.preflightRediscoverable !== 'boolean') return null;
   if (b.isolation !== undefined) {
@@ -316,7 +334,8 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   if (typeof b.attemptId !== 'string' || !ATTEMPT_ID_RE.test(b.attemptId)) return null;
   if (b.kind === 'main' || b.kind === 'main-arbitration') {
     // A `main` verify (or a SEC-113 arbitration of one): no PR, the head is its own base, and nothing PR-shaped rides along.
-    if (b.pr !== MAIN_VERIFY_PR || b.headSha !== b.baseSha || b.baseRefName !== 'main' || b.preflightRediscoverable !== undefined || b.isolation !== undefined) return null;
+    if (b.pr !== MAIN_VERIFY_PR || b.headSha !== b.baseSha || b.baseRefName !== 'main' || b.preflightRediscoverable !== undefined || b.isolation !== undefined
+      || b.likelyFailing !== undefined || b.firstPartGroup !== undefined) return null;
   } else if (typeof b.pr !== 'number' || !Number.isSafeInteger(b.pr) || b.pr <= 0) return null;
   if (!SHA_LIKE(b.headSha) || !SHA_LIKE(b.baseSha)) return null;
   if (typeof b.baseRefName !== 'string' || !/^[A-Za-z0-9._/-]{1,200}$/.test(b.baseRefName)) return null;
