@@ -229,6 +229,24 @@ export function credentialAwareJsonParser(deps: BodyBudgetDeps, fullLimitBytes: 
   };
 }
 
+/**
+ * SEC-118-R1: a refused request whose body was never read is not drained. When a response with an
+ * error status (4xx/5xx) finishes and the request still has unread body bytes, Node would read and
+ * discard the rest to keep the connection alive (a stranger could stream to an auth-refused route
+ * until the request timeout). This closes the socket instead. Successful responses are untouched.
+ * Mounted first, so it covers every refusal (auth gate, rate limits, route checks) in one place.
+ */
+export function closeUnreadBodyOnError(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (hasBody(req)) {
+      res.once('finish', () => {
+        if (res.statusCode >= 400 && !req.complete) req.socket?.destroy();
+      });
+    }
+    next();
+  };
+}
+
 const lastLogged = new Map<string, number>();
 
 /**
