@@ -14,6 +14,7 @@
  */
 
 import { ExecutionJournal } from './ExecutionJournal.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from './boundedInput.js';
 import { PatternAnalyzer } from './PatternAnalyzer.js';
 import type { PatternReport } from './PatternAnalyzer.js';
 import type {
@@ -62,6 +63,19 @@ export interface JobReflectorConfig {
   agentId?: string;
 }
 
+/**
+ * Per-step bound on a recorded command in the reflection prompt. The commands
+ * are EVIDENCE of what the job actually ran, and the reflection judges what
+ * went wrong from them; the old bare 100-char head cut long commands with no
+ * sign, so the model reflected on a fragment as if it were the command.
+ * Derived: the 100 characters a step always showed (program + leading args, the
+ * part that identifies the step), plus disclosure room. So any command up to
+ * ~335 characters now appears whole, and a longer one keeps its head and says
+ * it was cut. Disclose rather than refuse: a reflection is advisory and a
+ * partial command is still informative.
+ */
+const JOB_STEP_COMMAND_CHARS = 100 + BOUNDED_INPUT_MIN_CHARS;
+
 // ─── Prompt Template ─────────────────────────────────────────────────────────
 
 function buildReflectionPrompt(
@@ -88,7 +102,7 @@ function buildReflectionPrompt(
   } else {
     for (const step of record.actualSteps) {
       const src = step.source === 'hook' ? '[hook]' : '[agent]';
-      const cmd = step.command ? ` — ${step.command.slice(0, 100)}` : '';
+      const cmd = step.command ? ` — ${boundedHead(step.command, JOB_STEP_COMMAND_CHARS)}` : '';
       lines.push(`  ${src} ${step.step}${cmd}`);
     }
   }

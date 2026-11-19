@@ -22,6 +22,7 @@ const SAMPLE: Record<string, Record<string, unknown>> = {
   reanchor: { docId: DOC, commentKey: 'owner:y', onVersion: crypto.randomUUID(), start: 0, end: 5 },
   send: { docId: DOC, batchId: rid(), commentKeysHash: 'd'.repeat(64), primaryRow: 'A:12', messageRequestId: rid() },
   open: { docId: DOC },
+  'decide-on-phone': { docId: DOC, askId: crypto.randomUUID(), verdict: 'approve' },
 };
 
 describe('instar-docpage-v1 string', () => {
@@ -263,5 +264,54 @@ describe('opening on a phone (fb-54b4d850-0de: the QR screen on the phone that w
     expect(m.prefersAppOpen({ inApp: false, coarsePointer: false, canHover: true })).toBe(false);
     expect(m.prefersAppOpen({ inApp: false, coarsePointer: true, canHover: true })).toBe(false); // touch laptop
     expect(m.prefersAppOpen({ inApp: true, coarsePointer: true, canHover: false })).toBe(false);
+  });
+});
+
+describe('the decision panel (document-decisions §3.3)', () => {
+  const ask = { askId: crypto.randomUUID(), question: 'Ship it?', questionHash: 'a'.repeat(64) };
+  const base = (decision: unknown, me: Record<string, unknown> = { isOwner: true, canAskPhone: true }, latest = true) => ({
+    agentName: 'Echo', primary: { name: 'Security' }, version: { id: 'v', label: 2, latest }, versions: [{ id: 'v1', label: 1 }, { id: 'v', label: 2 }],
+    me, decision: { ask, decision, waitingOnOwner: decision === null, crossed: false, concurrentVersionLabel: null, concurrentEdits: false, ownerName: 'Justin', writesBlockedBy: null },
+  });
+  it('a computer shows Approve and Decline on the document, confirmed on the phone', () => {
+    const v = m.decisionPanel(base(null))!;
+    expect(v.controls).toBe('phone-buttons');
+    expect(v.headline).toBe('Echo asks for your decision');
+    expect(v.question).toBe('Ship it?');
+  });
+  it('in the app the buttons hand off to the app, and an older app says to update', () => {
+    expect(m.decisionPanel(base(null), { inApp: true, appOps: ['reply', 'decide'] })!.controls).toBe('app-buttons');
+    expect(m.decisionPanel(base(null), { inApp: true, appOps: null })!.controls).toBe('update-app');
+  });
+  it('a PIN-only browser gets the path to the app, a member sees status only, an older version says open the latest', () => {
+    expect(m.decisionPanel(base(null, { isOwner: true, canAskPhone: false }))!.controls).toBe('open-in-app');
+    const member = m.decisionPanel(base(null, { isOwner: false }))!;
+    expect(member.controls).toBe('none');
+    expect(member.headline).toBe("Waiting for Justin's decision");
+    expect(m.decisionPanel(base(null, undefined, false))!.controls).toBe('open-latest');
+  });
+  it('SEC-088 interim: a held answer is a note only and never takes the owner\'s buttons away', () => {
+    const b = base(null);
+    const plain = m.decisionPanel(base(null))!;
+    (b.decision as Record<string, unknown>).confirmingElsewhere = true;
+    const v = m.decisionPanel(b)!;
+    expect(v.headline).toBe(plain.headline);
+    expect(v.lines.join(' ')).toMatch(/unconfirmed answer is waiting for confirmation by the machine your phone is paired with.*You can still answer here\./);
+    expect(v.controls).toBe(plain.controls);
+    expect(v.controls).not.toBe('none');
+    expect(v.waiting).toBe(true);
+  });
+  it('an approval names the version, and a later version is said to be not approved', () => {
+    const v = m.decisionPanel(base({ verdict: 'approve', versionLabel: 1, latest: false, at: '2026-11-17T18:00:00Z', delivered: true }))!;
+    expect(v.tone).toBe('ok');
+    expect(v.headline).toMatch(/^Approved by you · .* · version 1$/);
+    expect(v.lines).toContain('Version 2 is not approved (approved: version 1).');
+    expect(v.lines).toContain('Sent to Security.');
+  });
+  it('the phone-ask words never leave the owner at a dead end', () => {
+    expect(m.phoneAskWords('sent', 'approve')).toMatch(/^Confirm on your phone/);
+    expect(m.phoneAskWords('no-phone')).toMatch(/Pair your phone/);
+    expect(m.phoneAskWords('unavailable')).toMatch(/Open this document in the Instar app/);
+    expect(m.decisionPollDelays().reduce((a: number, b: number) => a + b, 0)).toBeLessThanOrEqual(600_000);
   });
 });

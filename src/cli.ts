@@ -351,6 +351,35 @@ program
     await setClaudeKey(opts);
   });
 
+const alwaysAvailableCmd = program
+  .command('always-available')
+  .description('For the Instar Mac app\'s Always available switch: the before-login Claude sign-in and status');
+alwaysAvailableCmd
+  .command('token')
+  .description('Store a claude setup-token code (from stdin) as this agent\'s Claude sign-in, after checking its email')
+  .option('-d, --dir <path>', 'Agent directory')
+  .option('--email <email>', 'The account the code must sign in as')
+  .action(async (opts) => {
+    const { alwaysAvailableTokenCommand } = await import('./commands/alwaysAvailable.js');
+    await alwaysAvailableTokenCommand(opts);
+  });
+alwaysAvailableCmd
+  .command('token-clear')
+  .description('Undo: put the earlier Claude sign-in back if the stored code is still the one set here')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { alwaysAvailableTokenClearCommand } = await import('./commands/alwaysAvailable.js');
+    alwaysAvailableTokenClearCommand(opts);
+  });
+alwaysAvailableCmd
+  .command('status')
+  .description('FileVault on/off/unknown and whether the Always available code is in use, as JSON')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { alwaysAvailableStatusCommand } = await import('./commands/alwaysAvailable.js');
+    alwaysAvailableStatusCommand(opts);
+  });
+
 program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
@@ -411,6 +440,7 @@ program
   .option('--for-app', 'The Instar Mac app is running this install and will connect itself')
   .option('--app-ticket', 'Write a fresh setup ticket for the Instar app (finished app installs only)')
   .option('--key <publicKey>', 'The Instar app\'s device key, with --app-ticket')
+  .option('--replace-app-key', 'With --app-ticket: replace the key this Mac\'s own Instar app enrolled earlier (the app lost it)')
   .action(async (opts) => {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (major < 20 || (major === 20 && minor < 12)) {
@@ -1888,7 +1918,11 @@ lifelineCmd
     const baseline = readStartupMarker(config.stateDir);
     const baselinePid = baseline?.pid ?? null;
 
+    const { daemonRunsAgent } = await import('./core/alwaysAvailable.js');
     try {
+      // Always available: a system service runs the lifeline, so the per-user job isn't loaded. Signal
+      // the recorded lifeline below; the service's KeepAlive starts it again (no second copy).
+      if (process.platform === 'darwin' && daemonRunsAgent(config.projectName)) throw new Error('Always available is on: the system service restarts the lifeline');
       const uid = process.getuid?.() ?? 0;
       execFileSync('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], { stdio: 'inherit' });
     } catch (err) {
@@ -1908,7 +1942,10 @@ lifelineCmd
       // it. A keyword check on the command line is no better: a reused pid can
       // belong to such a builder. Legacy records without a start time are
       // never signalled.
-      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
+      const aaOn = err instanceof Error && err.message.startsWith('Always available is on');
+      console.warn(pc.yellow(aaOn
+        ? 'Always available is on: signalling the recorded lifeline processes; the system service starts the lifeline again'
+        : `launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
       const { provenLifelineRecords } = await import('./lifeline/lifelineLock.js');
       const { checkRecordedProcess } = await import('./core/processIdentity.js');
       const targets = provenLifelineRecords(path.join(config.stateDir, 'lifeline.lock'), baseline);

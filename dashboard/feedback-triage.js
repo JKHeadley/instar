@@ -26,9 +26,13 @@ export function triageStatusLine(p) {
 }
 
 /** The POST body for an approve (create/replace/restore) or revoke of the triage authority. */
-export function triageAuthorityRequest(action, pin, operatorDecisionRef) {
+export function triageAuthorityRequest(action, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
-  if (action === 'create' || action === 'replace') body.useProposal = true;
+  if (action === 'create' || action === 'replace') {
+    body.useProposal = true;
+    // The server refuses the approval if its proposal no longer names this model.
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
+  }
   return body;
 }
 

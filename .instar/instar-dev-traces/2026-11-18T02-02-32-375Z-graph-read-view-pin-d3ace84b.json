@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "graph-read-view-pin",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T02:02:32.375Z",
+  "artifactPath": "upgrades/side-effects/graph-read-view-pin.md",
+  "artifactSha256": "48ce211085648296adbb2fab2dc7786be3196daa3674872fd9efd1ac4ee06216",
+  "coveredFiles": [
+    "docs/specs/graph-read-view-pin.eli16.md",
+    "src/core/conversationGraphRead.ts",
+    "src/server/ConversationGraphReadSource.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/integration/conversation-graph-read-view-cache.test.ts",
+    "tests/unit/conversation-graph-read.test.ts",
+    "upgrades/next/graph-read-view-pin.md",
+    "upgrades/side-effects/graph-read-view-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read path only: one synchronous read reuses the view it built; no decision point; revert fully undoes it",
+  "eli16Path": "docs/specs/graph-read-view-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-read-view-pin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

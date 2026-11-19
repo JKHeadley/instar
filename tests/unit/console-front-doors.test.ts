@@ -150,6 +150,31 @@ describe('the Needs-you strip', () => {
     expect(src).toContain('more things need you. Show all');
   });
 
+  it('counts only available rows in the expansion and names a truncated response', () => {
+    const items = Array.from({ length: 100 }, (_, i) => item(`need ${i}`));
+    const response = answer({ count: 105, items, truncated: true });
+    const closed = stripModel(response);
+    expect(closed.more).toBe(97);
+    expect(closed.truncated).toBe(true);
+    expect(closed.line).toContain('100 of 105');
+    expect(closed.line).toContain('5 more');
+    const open = stripModel(response, { expanded: true });
+    expect(open.rows).toHaveLength(100);
+    expect(open.more).toBe(0);
+    expect(open.badge).toBe('105'); // source count is known; the row list is capped
+    expect(open.line).toBe(closed.line);
+  });
+
+  it('names missing rows even without the flag and retains failed-source warnings', () => {
+    const m = stripModel(answer({ count: 2, items: [item('one')], complete: false, couldNotCheck: ['accounts'] }));
+    expect(m.truncated).toBe(true);
+    expect(m.more).toBe(0);
+    expect(m.line).toContain('1 of 2');
+    expect(m.line).toContain('1 more');
+    expect(m.line).toContain('Could not check accounts.');
+    expect(m.badge).toBe('2+?');
+  });
+
   it('stays while loading, and when the read failed or answered in an unreadable shape', () => {
     expect(stripModel(null)).toMatchObject({ show: true, state: 'loading', incomplete: true });
     expect(stripModel({ ok: false, reason: 'the server answered 404' })).toMatchObject({ show: true, incomplete: true, badge: '?' });

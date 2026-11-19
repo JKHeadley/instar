@@ -74,6 +74,71 @@ describe('SessionWatchdog pipeline guard', () => {
     });
   });
 
+  describe('undecided verdicts are re-checked until the hard ceiling (bounded-input review)', () => {
+    const longCmd = `python3 -c "${'x = 1; '.repeat(400)}"`; // over the judge's command bound
+
+    it('a command too long to judge is NOT excluded below the ceiling, and IS interrupted once past it', async () => {
+      const evaluate = vi.fn().mockResolvedValue('stuck');
+      (watchdog as any).intelligence = { evaluate };
+      (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
+
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([{ pid: 55555, command: longCmd, elapsedMs: 4 * 60_000 }]);
+      await (watchdog as any).checkSession('test-session');
+      expect(evaluate).not.toHaveBeenCalled();
+      expect((watchdog as any).signalIfIdentityMatches).not.toHaveBeenCalled();
+      expect((watchdog as any).temporaryExclusions.has(55555)).toBe(false); // deferred, not excluded for good
+      expect((watchdog as any).undecidedPids.has(55555)).toBe(true);
+
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([{ pid: 55555, command: longCmd, elapsedMs: 31 * 60_000 }]);
+      await (watchdog as any).checkSession('test-session');
+      expect(evaluate).not.toHaveBeenCalled();
+      expect((watchdog as any).signalIfIdentityMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 55555 }),
+        'SIGINT',
+      );
+    });
+
+    it('an undecided command does not hide a stuck SIBLING: the next poll judges and interrupts the sibling', async () => {
+      const evaluate = vi.fn().mockResolvedValue('stuck');
+      (watchdog as any).intelligence = { evaluate };
+      (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
+      (watchdog as any).isProcessAlive = vi.fn().mockReturnValue(true);
+      const kids = [
+        { pid: 66661, command: longCmd, elapsedMs: 5 * 60_000 },        // undecided (too long), listed first
+        { pid: 66662, command: 'make all', elapsedMs: 4 * 60_000 },     // the judge will call this stuck
+      ];
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue(kids);
+      await (watchdog as any).checkSession('test-session');            // poll 1: picks 66661, undecided, deferred
+      expect((watchdog as any).signalIfIdentityMatches).not.toHaveBeenCalled();
+      await (watchdog as any).checkSession('test-session');            // poll 2: skips 66661, reaches 66662
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(String(evaluate.mock.calls[0][0])).toContain('Command: make all');
+      expect((watchdog as any).signalIfIdentityMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 66662 }),
+        'SIGINT',
+      );
+    });
+
+    it('a judge ERROR below the ceiling defers the PID to the ceiling instead of excluding it for good', async () => {
+      (watchdog as any).intelligence = { evaluate: vi.fn().mockRejectedValue(new Error('rate limited')) };
+      (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([{ pid: 55556, command: 'make all', elapsedMs: 4 * 60_000 }]);
+      await (watchdog as any).checkSession('test-session');
+      expect((watchdog as any).signalIfIdentityMatches).not.toHaveBeenCalled();
+      expect((watchdog as any).temporaryExclusions.has(55556)).toBe(false);
+      expect((watchdog as any).undecidedPids.has(55556)).toBe(true);
+    });
+
+    it('a stdin consumer reached "stuck" only by the ceiling (judge errored) is NOT interrupted', async () => {
+      (watchdog as any).intelligence = { evaluate: vi.fn().mockRejectedValue(new Error('circuit open')) };
+      (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([{ pid: 55557, command: 'tail -40', elapsedMs: 31 * 60_000 }]);
+      await (watchdog as any).checkSession('test-session');
+      expect((watchdog as any).signalIfIdentityMatches).not.toHaveBeenCalled();
+      expect((watchdog as any).temporaryExclusions.has(55557)).toBe(true);
+    });
+  });
+
   describe('checkSession integration — tail piped from producer should not escalate', () => {
     it('skips escalation when stuck child is `tail -N` with active producer sibling', async () => {
       // Simulate a session where claude has `tail -40` as its direct child

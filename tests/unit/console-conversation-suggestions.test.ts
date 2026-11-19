@@ -87,13 +87,13 @@ describe('acceptSuggestion',()=>{
   const steps:string[]=[];
   const waiting=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
   expect(waiting).toMatchObject({done:false,kind:'waiting'});expect(waiting.text).toContain('Waiting for Laptop');
-  expect(steps[0]).toBe('Creating the effort…');
-  expect(steps).toContain('Creating the effort… Saved here. Waiting for Laptop to confirm. (5 s)');
+  expect(steps[0]).toBe('Creating the group…');
+  expect(steps).toContain('Creating the group… Saved here. Waiting for Laptop to confirm. (5 s)');
   expect(steps.some(t=>/\(0 s\)|\(3 s\)/.test(t))).toBe(false); // nothing extra for a step that is only a moment old
   mode='offline';steps.length=0;
   const offline=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
   expect(offline).toMatchObject({done:false,kind:'waiting'});expect(offline.text).toContain('The agent did not answer');
-  expect(steps).toContain('Creating the effort… The agent is not answering yet. (8 s)');
+  expect(steps).toContain('Creating the group… The agent is not answering yet. (8 s)');
   mode='refused';
   expect(await m.acceptSuggestion(s,{send,onStep:()=>{},wait:10000,sleep:async()=>{}})).toMatchObject({done:false,kind:'refused'});
   expect(await m.acceptSuggestion(s,{send:async()=>({ok:false,status:403,needsUnlock:true}),onStep:()=>{},sleep:async()=>{}})).toMatchObject({done:false,kind:'locked'});
@@ -241,5 +241,27 @@ describe('a project page lists its proposed cards (work-front-doors stage 2b)',(
   expect(withCards.proposed.map((i:any)=>i.title)).toEqual(['Pick the date']);
   expect(withCards.children.map((i:any)=>i.title)).toEqual(['Shop']);
   expect(m.nodeModel(body({})).proposed).toEqual([]);
+ });
+});
+
+// Accept all round 4 part 5: with a busy machine a change took 1-2 minutes to confirm. The page waited 60 s per change
+// and stopped after two still-waiting projects in a row, so a working run stopped at "10 of 14".
+describe('Accept all patience',()=>{
+ it('waits 2.5 minutes for each change to be confirmed by default',async()=>{
+  const m=await boot();expect(m.ACCEPT_CHANGE_CONFIRM_WAIT_MS).toBe(150000);
+  const s={id:'sg-0123456789abcdef0124',title:'Slow confirm',reason:'',members:[]};let polls=0,slept=0;
+  const send=async(path:string)=>{if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0002'});polls++;return ok({state:'recorded-local',waitingMachines:[{name:'Mac M5 Pro'}]},202);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async(ms:number)=>{slept+=ms;}});
+  expect(out).toMatchObject({done:false,kind:'waiting'});expect(slept).toBeGreaterThanOrEqual(150000);expect(slept).toBeLessThan(160000);expect(polls).toBeGreaterThan(50);
+ });
+ it('stops only after three projects in a row are still waiting; a finished or refused one resets the count',async()=>{
+  const m=await boot();const waiting={done:false,kind:'waiting'},done={ok:true},refused={done:false,kind:'refused'};
+  let w=0,r:any;
+  r=m.acceptAllStep(w,waiting);expect(r).toEqual({waits:1,stop:false});w=r.waits;
+  r=m.acceptAllStep(w,waiting);expect(r).toEqual({waits:2,stop:false});w=r.waits;
+  r=m.acceptAllStep(w,done);expect(r).toEqual({waits:0,stop:false});w=r.waits;
+  r=m.acceptAllStep(w,waiting);w=r.waits;r=m.acceptAllStep(w,refused);expect(r).toEqual({waits:0,stop:false});w=r.waits;
+  for(const expected of [1,2])({waits:w}=m.acceptAllStep(w,waiting)),expect(w).toBe(expected);
+  expect(m.acceptAllStep(w,waiting)).toEqual({waits:3,stop:true});
  });
 });

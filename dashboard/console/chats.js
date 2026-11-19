@@ -10,17 +10,19 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
-import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession } from './ui.js';
+import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
 } from './browser-device.js';
 import {
-  parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
+  parseConversationRef, refString, refFromQuery, messageFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
+  LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
+  effortMembers, trackedProjects, projectsForGroups, groupSections,
 } from './chats-model.js';
 
 /**
@@ -46,6 +48,8 @@ const POLL_LOCK = 'instar-chat-poll';
 const CHANNEL = 'instar-chat';
 const OWN_KEY = 'instar_chat_own:';
 const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.';
+// The hierarchy is read again at most this often (the list itself refreshes every 30 s).
+const HIERARCHY_TTL_MS = 60000;
 
 const bearer = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 const now = () => Date.now();
@@ -94,6 +98,13 @@ class ChatsPage {
     this.union = [];
     this.scheduler = createScheduler();
     this.retries401 = 0;
+    // The list grouped by the conversation hierarchy: null until (and unless) the hierarchy read answers.
+    this.hierarchy = null;
+    this.hierarchyAt = 0;
+    this.hierarchyLoading = false;
+    this.groupProjects = new Map(); // effort key → the tracked project it is (Chief of Staff projects); empty → plain groups
+    this.listView = (() => { try { return listViewFrom(localStorage.getItem(LIST_VIEW_KEY)); } catch { return 'grouped'; } })();
+    this.openGroups = new Set();
   }
 
   // ── lifecycle ──
@@ -372,6 +383,10 @@ class ChatsPage {
     this.moreBtn.addEventListener('click', () => this.loadList(true));
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
+    // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
+    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'All' }) };
+    for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
+    this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
     newBtn.addEventListener('click', () => this.newConversation());
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
@@ -383,7 +398,7 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
+        this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
@@ -416,6 +431,56 @@ class ChatsPage {
     const meta = listMeta(data);
     this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
     this.paintList();
+    if (!more) void this.loadHierarchy();
+  }
+
+  /**
+   * The conversation hierarchy behind the grouped list: every node (view=all), read signed by this
+   * browser; with a PIN unlock already in this page, the dashboard route is tried when the signed read
+   * is refused. Refused / missing / off (403, 404, 503) → no hierarchy: the list is flat, exactly as
+   * before. Any other failure keeps the last answer, so a blip never reshuffles the list.
+   */
+  async loadHierarchy(force = false) {
+    if (this.hierarchyLoading || (!force && now() - this.hierarchyAt < HIERARCHY_TTL_MS)) return;
+    this.hierarchyLoading = true;
+    try {
+      let r = await this.readHierarchy((path) => this.call('GET', `/mobile${path}`));
+      if (!this.live || r.gone) return;
+      if (!r.ok && r.status === 403 && operatorSession()) r = await this.readHierarchy((path) => dashboardRead(path));
+      if (!this.live) return;
+      this.hierarchyAt = now();
+      if (r.ok) {
+        this.hierarchy = hierarchyIndex(r.pages);
+        // Which groups are tracked projects: a failed projects read leaves every group plain.
+        const projects = this.hierarchy ? trackedProjects(await projectsForStrip()) : null;
+        if (!this.live) return;
+        this.groupProjects = projectsForGroups(this.hierarchy ? effortMembers(r.pages) : null, projects);
+      } else if ([403, 404, 503].includes(r.status)) { this.hierarchy = null; this.groupProjects = new Map(); }
+      this.paintList();
+    } finally { this.hierarchyLoading = false; }
+  }
+  async readHierarchy(get) {
+    this.spent();
+    const pages = [];
+    let cursor = null;
+    for (let i = 0; i < HIERARCHY_MAX_PAGES; i++) {
+      const r = await get(`/conversation-graph/roots?view=all${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      if (!this.live || r.gone) return { ok: false, gone: true };
+      if (!r.ok) return { ok: false, status: r.status };
+      pages.push(r.data);
+      cursor = r.data && typeof r.data.nextCursor === 'string' && r.data.nextCursor ? r.data.nextCursor : null;
+      if (!cursor) break;
+    }
+    return { ok: true, pages };
+  }
+  setListView(view) {
+    this.listView = listViewFrom(view);
+    try { localStorage.setItem(LIST_VIEW_KEY, this.listView); } catch { /* blocked: the choice lasts for this page */ }
+    this.paintList();
+  }
+  toggleGroup(key) {
+    if (this.openGroups.has(key)) this.openGroups.delete(key); else this.openGroups.add(key);
+    this.paintList();
   }
   paintList() {
     if (!this.listEl) return;
@@ -423,6 +488,12 @@ class ChatsPage {
     if (this.view && this.view.titleEl) {
       const row = this.rows.find((r) => r.key === open);
       if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
+    }
+    // Grouped | All: the toggle shows only when the hierarchy answered; without it the list is the full flat list.
+    const grouped = Boolean(this.hierarchy) && this.listView === 'grouped';
+    if (this.viewToggleEl) {
+      this.viewToggleEl.hidden = !this.hierarchy;
+      for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
     }
     if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
@@ -446,9 +517,49 @@ class ChatsPage {
       if (pinned.length) {
         kids.push(el('div', { class: 'chat-group-label chat-pinned-group', text: 'Pinned' }));
         for (const r of pinned) kids.push(rowEl(r, true));
-        kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
+        if (!grouped) kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
       }
-      for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+      if (grouped) {
+        const { lead, groups, ungrouped } = groupRows(rest, this.hierarchy, this.pinnedKey);
+        if (lead) kids.push(rowEl(lead, false));
+        // Two sections, as on the iPhone: "Projects" (groups linked to a tracked project) and "Groups" (plain groups).
+        // A group with no conversations is never shown; an empty section has no header.
+        const sections = groupSections(groups, this.groupProjects);
+        const groupEl = (g) => {
+          // The group holding the open conversation stays open, so the row on screen is never hidden.
+          const expanded = this.openGroups.has(g.key) || g.rows.some((r) => r.key === open);
+          // A tracked project (Chief of Staff) gets the project mark and its status chip; a plain group keeps the folder and count.
+          const project = g.project;
+          const label = [project ? `Project ${g.displayTitle}` : `Group ${g.displayTitle}`, project && project.status ? project.status.label : null, groupCountWords(g.count), g.unread > 0 ? `${g.unread} unread` : null].filter(Boolean).join(', ');
+          const head = el('button', { class: `chat-effort-row${project ? ' chat-project-row' : ''}${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false', 'aria-label': label },
+            el('span', { class: `chat-group-icon${project ? ' chat-group-icon-project' : ''}`, icon: project ? 'flag' : 'folder' }),
+            el('span', { class: 'chat-row-main' },
+              el('span', { class: 'chat-row-top' },
+                el('span', { class: 'chat-row-title', text: g.displayTitle }),
+                project && project.status ? el('span', { class: `chat-project-status tone-${project.status.tone}`, text: project.status.label }) : null),
+              el('span', { class: 'chat-row-preview', text: groupCountWords(g.count) })),
+            el('span', { class: 'chat-row-side' },
+              g.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(g.lastActivity) }) : null,
+              g.unread > 0 ? el('span', { class: 'chat-unread', text: String(g.unread), 'aria-label': `${g.unread} unread` }) : null),
+            el('span', { class: 'chat-effort-chev', 'aria-hidden': 'true', text: '›' }));
+          head.addEventListener('click', () => this.toggleGroup(g.key));
+          kids.push(head);
+          if (expanded) {
+            if (project) kids.push(el('a', { class: 'link-btn chat-open-project', href: project.href, text: 'Open project' }));
+            for (const r of g.rows) kids.push(rowEl(r, false));
+          }
+        };
+        if (sections.projects.length) kids.push(el('div', { class: 'chat-group-label chat-projects-label', text: 'Projects' }));
+        for (const g of sections.projects) groupEl(g);
+        if (sections.groups.length) kids.push(el('div', { class: 'chat-group-label chat-groups-label', text: 'Groups' }));
+        for (const g of sections.groups) groupEl(g);
+        if (ungrouped.length) {
+          kids.push(el('div', { class: 'chat-group-label chat-ungrouped-label' },
+            el('span', { text: 'Not in a group yet' }),
+            el('a', { class: 'chat-review-suggestions', href: '#/work/conversations?view=suggestions', text: 'Review suggestions' })));
+          for (const r of ungrouped) kids.push(rowEl(r, false));
+        }
+      } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
       setKids(this.listEl, kids);
     }
     this.moreBtn.hidden = !this.meta.nextCursor;
@@ -515,11 +626,19 @@ class ChatsPage {
     if (!this.pageEl) return;
     const ref = refFromQuery(query);
     const cur = this.view ? refString(this.view.ref) : '';
-    if (ref && refString(ref) === cur) return;
+    const target = messageFromQuery(query);
+    if (ref && refString(ref) === cur) {
+      if (this.view.sourceTarget !== target) {
+        this.view.sourceTarget = target;
+        this.view.sourceGeneration++;
+        if (this.view.historyReady) this.findSource(this.view);
+      }
+      return;
+    }
     if (this.view) this.closeView();
     this.pageEl.classList.toggle('has-open', Boolean(ref));
     if (!ref) { setKids(this.viewEl, el('p', { class: 'chat-pick', text: 'Pick a conversation.' })); this.paintList(); this.announce(); return; }
-    this.openView(ref);
+    this.openView(ref, target);
   }
 
   closeView() {
@@ -532,11 +651,11 @@ class ChatsPage {
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
   }
 
-  openView(ref) {
+  openView(ref, sourceTarget = null) {
     const row = this.rows.find((r) => r.key === refString(ref));
-    const v = { ref, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
+    const v = { ref, sourceTarget, sourceGeneration: 0, historyReady: false, earlierLoadSeq: 0, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
     this.view = v;
-    const title = el('h2', { class: 'chat-title', text: row ? row.title : (ref.kind === 'telegram' ? `Topic ${ref.id}` : 'Conversation') });
+    const title = el('h2', { class: 'chat-title', text: row ? row.title : 'Conversation' });
     // Opened from a link before the list arrived: the real title is filled in when the list paints.
     v.titleEl = row ? null : title;
     const back = el('a', { class: 'btn-quiet chat-back', href: '#/work/chats', 'aria-label': 'Back to conversations', text: '‹' });
@@ -550,15 +669,19 @@ class ChatsPage {
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
-    v.earlier.addEventListener('click', () => this.loadEarlier(v));
+    v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
     v.statusLine = el('p', { class: 'card-line chat-muted', role: 'status' });
+    v.sourceText = el('span', { text: 'Opening the original conversation…' });
+    v.sourceMore = el('button', { class: 'btn-quiet', type: 'button', text: 'Keep looking', hidden: true });
+    v.sourceMore.addEventListener('click', () => this.findSource(v));
+    v.sourceNotice = el('div', { class: 'card-line chat-source-target', role: 'status', hidden: !sourceTarget }, v.sourceText, v.sourceMore);
     v.nodes = new Map();
     v.pinBar = this.pinBar(v);
     v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.appStrip, v.pinBar, v.paused, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v);
@@ -572,8 +695,9 @@ class ChatsPage {
       if (!v.live || this.view !== v) return;
       const s = appStripFor(data, refString(v.ref));
       if (!s) { v.appStrip.hidden = true; return; }
-      const open = el('a', { class: 'btn-quiet btn-inline chat-appstrip-open', href: s.href, text: s.label, 'aria-label': `Open ${s.title}` });
-      open.addEventListener('click', (ev) => {
+      // A stopped or unapproved app has nothing to open: the strip says so with no Open button.
+      const open = s.href ? el('a', { class: 'btn-quiet btn-inline chat-appstrip-open', href: s.href, text: s.label, 'aria-label': `Open ${s.title}` }) : null;
+      if (open) open.addEventListener('click', (ev) => {
         ev.preventDefault();
         fetch(appPath(s.projectKey, s.appRef, 'opened'), { method: 'POST', headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' }, body: '{}', keepalive: true }).catch(() => {});
         const nav = appNavigation(s.href);
@@ -611,11 +735,13 @@ class ChatsPage {
     this.spent();
     const r = await this.call('GET', this.historyPath(v, { pool: true }));
     if (!v.live || r.gone) return;
-    if (r.status === 404) { v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
+    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
+    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
     this.applyHistory(v, r.data, { replace: true });
     this.resumeUnfinished(v);
     this.scrollToEnd(v, true);
+    v.historyReady = true;
+    this.findSource(v);
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
@@ -771,6 +897,7 @@ class ChatsPage {
   }
   /** Scroll to a message and flash it, loading up to 5 earlier pages to find it. */
   async jumpTo(v, messageId) {
+    this.pauseSource(v);
     for (let i = 0; i <= 5 && v.live; i++) {
       const b = v.list.find((x) => x.messageId === messageId);
       const n = b ? v.nodes.get(b.id) : null;
@@ -835,16 +962,73 @@ class ChatsPage {
       rows.length ? el('ul', { class: 'chat-pin-list' }, rows) : el('p', { class: 'confirm-text', text: 'Nothing is pinned here.' }));
   }
 
-  async loadEarlier(v) {
+  async loadEarlier(v, current = () => v.live) {
+    const seq = ++v.earlierLoadSeq;
     v.earlier.disabled = true;
     const before = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
     this.spent();
     const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack', before }));
-    v.earlier.disabled = false;
-    if (!v.live || r.gone || !r.ok) return;
+    if (seq === v.earlierLoadSeq) v.earlier.disabled = false;
+    if (!v.live || !current() || seq !== v.earlierLoadSeq) return 'stale';
+    if (r.gone || !r.ok) return 'failed';
     this.applyHistory(v, r.data, { earlier: true });
     v.msgs.scrollTop = v.msgs.scrollHeight - keep;
+    const after = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
+    return !v.earlier.hidden && after === before ? 'stalled' : 'loaded';
+  }
+
+  pauseSource(v) {
+    if (!v.sourceTarget) return;
+    v.sourceGeneration++;
+    v.sourceText.textContent = 'Original message navigation paused. ';
+    v.sourceMore.textContent = 'Return to original message';
+    v.sourceMore.hidden = false;
+  }
+
+  /** Same five-page search batch as pin navigation; further history stays explicitly reachable. */
+  async findSource(v) {
+    const target = v.sourceTarget;
+    const generation = ++v.sourceGeneration;
+    const current = () => v.live && v.sourceGeneration === generation;
+    v.sourceNotice.hidden = !target;
+    v.sourceMore.hidden = true;
+    if (!target) return;
+    v.sourceText.textContent = 'Looking for the original message…';
+    for (let page = 0; page <= 5 && current(); page++) {
+      const row = v.list.find(b => b.messageId === target || b.id === target);
+      const node = row ? v.nodes.get(row.id) : null;
+      if (node) {
+        node.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        node.classList.add('chat-flash');
+        this.later(() => node.classList.remove('chat-flash'), 1600);
+        v.sourceText.textContent = 'Original message';
+        return;
+      }
+      if (v.earlier.hidden) {
+        v.sourceText.textContent = 'The original message is not in the available history.';
+        return;
+      }
+      if (page === 5) {
+        v.sourceText.textContent = 'The original message has not been found. More history is available. ';
+        v.sourceMore.textContent = 'Keep looking'; v.sourceMore.hidden = false;
+        return;
+      }
+      const result = await this.loadEarlier(v, current);
+      if (!current()) return;
+      // A response can contain the target even when its continuation cursor is stuck.
+      if (result === 'stalled' && v.list.some(b => b.messageId === target || b.id === target)) continue;
+      if (result === 'stale') {
+        v.sourceText.textContent = 'The original message has not been located yet. ';
+        v.sourceMore.textContent = 'Keep looking'; v.sourceMore.hidden = false;
+        return;
+      }
+      if (result !== 'loaded') {
+        v.sourceText.textContent = 'Could not read earlier messages. ';
+        v.sourceMore.textContent = 'Try again'; v.sourceMore.hidden = false;
+        return;
+      }
+    }
   }
 
   async rename(v, titleEl) {
@@ -1279,6 +1463,15 @@ class ChatsPage {
 }
 
 // ── small helpers ──
+/** A hierarchy read on the dashboard route with this page's PIN unlock (never asks for the PIN). */
+async function dashboardRead(path) {
+  const proof = operatorSession();
+  if (!proof) return { ok: false, status: 403 };
+  try {
+    const r = await fetch(path, { headers: { Authorization: `Bearer ${bearer()}`, 'X-Instar-Operator-Session': proof }, cache: 'no-store' });
+    return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+  } catch { return { ok: false, status: 0 }; }
+}
 function shortTime(isoText) {
   const t = Date.parse(isoText);
   if (!Number.isFinite(t)) return '';

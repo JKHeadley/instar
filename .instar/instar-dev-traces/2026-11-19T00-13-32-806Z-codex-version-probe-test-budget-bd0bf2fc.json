@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "codex-version-probe-test-budget",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T00:13:32.806Z",
+  "artifactPath": "upgrades/side-effects/codex-version-probe-test-budget.md",
+  "artifactSha256": "ed7a0da16ef7c5167b05e9be30e80d8c586a243bec25394de88d6cc82fcad1f1",
+  "coveredFiles": [
+    "src/core/codexCapabilities.ts",
+    "tests/unit/CodexCliIntelligenceProvider.test.ts",
+    "tests/unit/codexCapabilities.test.ts",
+    "upgrades/next/codex-gpt-6-2-default.md",
+    "upgrades/side-effects/codex-version-probe-test-budget.eli16.md",
+    "upgrades/side-effects/codex-version-probe-test-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A test-time knob on the Codex version probe deadline; production default is unchanged and a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/codex-version-probe-test-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-version-probe-test-budget.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -71,7 +71,19 @@ async function node(send, ref) {
  * waiting for. Resolves to { done:true, moved, skipped } or { done:false, text, kind } where kind is
  * 'locked', 'waiting' (still saving or the agent did not answer), 'refused' or 'retry'.
  */
-export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+/** How long one change waits for the other machines to confirm before its project counts as still waiting.
+ *  60 s was too short when a busy machine took 1-2 minutes to confirm (accept-all round 4 part 5). */
+export const ACCEPT_CHANGE_CONFIRM_WAIT_MS = 150000;
+/** Accept all stops only after this many projects in a row are still waiting (recorded, not yet confirmed). */
+export const ACCEPT_ALL_STOP_AFTER_WAITING = 3;
+/** Accept all's stop rule: given the consecutive still-waiting count before this project and this project's
+ *  outcome, the new count and whether to stop. A finished or refused project resets the count. */
+export function acceptAllStep(waits, out) {
+  if (out && out.ok) return { waits: 0, stop: false };
+  const next = out && out.kind === 'waiting' ? waits + 1 : 0;
+  return { waits: next, stop: next >= ACCEPT_ALL_STOP_AFTER_WAITING };
+}
+export async function acceptSuggestion(s, { send, onStep, wait = ACCEPT_CHANGE_CONFIRM_WAIT_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const p = readProgress(s.id);
   const save = () => writeProgress(s.id, p);
   const locked = () => ({ done: false, kind: 'locked', text: 'Unlock again to continue.' });
@@ -103,7 +115,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
   }
   // 1. The effort.
   if (!p.effort) {
-    say('Creating the effort…');
+    say('Creating the group…');
     const started = await send(`${SUGGESTIONS}/${encodeURIComponent(s.id)}/start`, {});
     if (started.needsUnlock) return locked();
     if (noAnswer(started)) return silent();
@@ -112,7 +124,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     p.createId = createId; save();
     const r = await runChange({ send, id: createId, change: { kind: 'create-effort', projectScope: [] }, wait, sleep, onWait });
     if (!r.ok) return stop(r);
-    if (r.data.effort?.kind !== 'effort') return retry('The effort was created but could not be opened. Refresh and try again.');
+    if (r.data.effort?.kind !== 'effort') return retry('The group was created but could not be opened. Refresh and try again.');
     p.effort = r.data.effort; save();
   }
   // 2. Its name.
@@ -121,7 +133,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     const effort = await node(send, p.effort);
     if (effort?.locked) return locked();
     if (effort?.unreachable) return silent();
-    if (!effort || !Number.isSafeInteger(effort.correction?.headerVersion)) return retry('The new effort is not readable yet. Tap Continue in a moment.');
+    if (!effort || !Number.isSafeInteger(effort.correction?.headerVersion)) return retry('The new group is not readable yet. Tap Continue in a moment.');
     // Named already (by another tab, or before a reload lost this tab's progress): keep that name.
     if (effort.correction.headerVersion === 0) {
       p.nameId = p.nameId || requestId(); save();
@@ -169,7 +181,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
       const conv = await node(send, s.frontDoor);
       if (effort?.locked || conv?.locked) return locked();
       if (effort?.unreachable || conv?.unreachable) return silent();
-      if (!effort || !conv?.correction) return retry('The new effort is not readable yet. Tap Continue in a moment.');
+      if (!effort || !conv?.correction) return retry('The new group is not readable yet. Tap Continue in a moment.');
       const already = effort.node.frontDoor && encodeNodeRef(effort.node.frontDoor) === frontKey;
       if (!already) {
         p.frontDoorId = p.frontDoorId || requestId(); save();
@@ -287,10 +299,10 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
             if (!current()) return;
             if (out.ok) { waits = 0; continue; }
             if (out.kind === 'locked') { again(`Stopped at ${i + 1} of ${total}. Unlock again, then tap Continue.`); unlock(); return; }
-            // One project that cannot finish does not hold up the rest; two in a row that are still
+            // One project that cannot finish does not hold up the rest; several in a row that are still
             // waiting means the machines are not confirming, so going on would only wait again.
-            waits = out.kind === 'waiting' ? waits + 1 : 0;
-            if (waits >= 2) {
+            const step = acceptAllStep(waits, out); waits = step.waits;
+            if (step.stop) {
               const why = out.unreachable ? 'your agent is not answering right now' : 'changes are not being confirmed right now';
               again(`Stopped at ${i + 1} of ${total}: ${why}. ${accepted()} of ${total} accepted. Tap Continue to try again; nothing is lost.`);
               return;
@@ -355,8 +367,8 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
       }
       if (out.done) {
         finished = true;
-        words.textContent = out.skipped ? `Done. ${out.moved} moved; ${out.skipped} could not be moved and stayed where they were.` : `Done. ${out.moved} conversations are in this effort.`;
-        box.append(el('a', { class: 'btn-quiet btn-inline', href: openEffort(out.effort), text: s.frontDoor ? 'Open project' : 'Open effort' }));
+        words.textContent = out.skipped ? `Done. ${out.moved} moved; ${out.skipped} could not be moved and stayed where they were.` : `Done. ${out.moved} conversations are in this group.`;
+        box.append(el('a', { class: 'btn-quiet btn-inline', href: openEffort(out.effort), text: s.frontDoor ? 'Open project' : 'Open group' }));
         return { ok: true };
       }
       words.textContent = out.text; accept.textContent = 'Continue'; accept.disabled = false; reject.disabled = Boolean(readProgress(s.id).effort);

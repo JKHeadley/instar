@@ -76,9 +76,12 @@ export function resolveModelForFramework(
     // full rationale + the live-probe record).
     // 2026-09-23: light → gpt-6-luna, medium → gpt-6-sol (live-probed on codex
     // CLI 0.156.1; older CLIs refuse both — see models.ts header).
+    // 2026-11-17: medium → gpt-6.2-sol, heavy → gpt-6.2-astra (CLI >= 0.166.0;
+    // SessionManager.resolveCodexLaunchModel swaps in gpt-6-sol / gpt-6-astra on
+    // an older CLI). No gpt-6.2-luna exists, so light stays gpt-6-luna.
     if (key === 'fast' || key === 'haiku') return 'gpt-6-luna';      // light tier
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-6-sol';  // medium
-    if (key === 'capable' || key === 'opus') return 'gpt-6-astra';  // heavy — frontier; gpt-5.5 retired 2026-09-09
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-6.2-sol';  // medium
+    if (key === 'capable' || key === 'opus') return 'gpt-6.2-astra';  // heavy — frontier
     return modelOrTier;
   }
   if (framework === 'gemini-cli') {
@@ -141,7 +144,7 @@ export function resolveInteractiveLaunchModel(
     if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
     // No configured model → the `balanced` tier, looked up rather than
     // hardcoded so the default can never drift from the tier map.
-    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6-sol';
+    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6.2-sol';
   }
   if (framework === 'gemini-cli') {
     return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
@@ -1148,7 +1151,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6-sol');
+    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6.2-sol');
   const argv: string[] = [
     options.binaryPath,
     'exec',

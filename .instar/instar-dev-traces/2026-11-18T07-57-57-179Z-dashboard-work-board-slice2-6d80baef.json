@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dashboard-work-board-slice2",
+  "sessionId": "7b04db19-7829-4fc9-8492-204d8ce4c5af",
+  "timestamp": "2026-11-18T07:57:57.179Z",
+  "artifactPath": "upgrades/side-effects/dashboard-work-board-slice2.md",
+  "artifactSha256": "55edfc93373544015f16e27757fc8c9d4675918d38d91732055afbd084d65385",
+  "coveredFiles": [
+    "dashboard/console/needs-strip.js",
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "tests/unit/console-work-slice2.test.ts",
+    "upgrades/eli16/dashboard-work-board-slice2.md",
+    "upgrades/next/dashboard-work-board-slice2.md",
+    "upgrades/side-effects/dashboard-work-board-slice2.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Console display of the slice 2 card fields and Needs-you card links; no server or authority change.",
+  "eli16Path": "upgrades/eli16/dashboard-work-board-slice2.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-work-board-slice2.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
