@@ -35,6 +35,16 @@ import type { CompletionEvaluator } from '../core/CompletionEvaluator.js';
 import type { ThreadlineClient } from '../threadline/client/ThreadlineClient.js';
 import type { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
+
+/**
+ * How much of the original ask a re-drive nudge quotes to the peer agent, who
+ * decides from it what is still owed. Derived: the 240 characters it always
+ * quoted (enough to recognise the thread) plus disclosure room, so a cut ask
+ * says it is partial instead of ending in a bare "…" the peer may read as the
+ * whole request.
+ */
+const REDRIVE_ASK_CHARS = 240 + BOUNDED_INPUT_MIN_CHARS;
 import { isEncryptToPinnedSendError } from '../threadline/encryptToPinned.js';
 import { featureEvidence } from './FeatureEvidenceLog.js';
 
@@ -479,7 +489,7 @@ export class CollaborationRedriveEngine {
 
   private buildNudge(c: Commitment, attemptNumber: number): string {
     const peer = c.relatedAgent ?? 'there';
-    const ask = c.userRequest.length > 240 ? `${c.userRequest.slice(0, 240)}…` : c.userRequest;
+    const ask = boundedHead(c.userRequest, REDRIVE_ASK_CHARS);
     const opener = attemptNumber === 1
       ? `Hi ${peer} — checking in on our open thread.`
       : `Hi ${peer} — second follow-up; the thread has been quiet for a while.`;

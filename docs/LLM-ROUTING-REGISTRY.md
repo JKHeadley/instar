@@ -184,6 +184,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | TaskClassifier / OverrideDetector / AutoApprover / IntegrationGate / PromptGate | src/providers/uxConfirm/* | classification / approval verdicts | A | OC(fast) | ⚠ mostly nature A |
 | DiscoveryEvaluator | src/core/DiscoveryEvaluator.ts:467 | surface a feature discovery? | A | OC(fast) | ⚠ |
 | IntentLlmJudge / LlmIntentClassifier / AmbientContributionGate | src/core/IntentTestHarness.ts:246; src/permissions/* | intent-vs-org / permission intent / speak? | B·gating (explicit category) | OC(fast) | ✅ explicit-category, correct |
+| OrgPolicyJudge | src/core/IntentTestHarness.ts:318 | does this action or message break the organization's never rules? (org-never-actions) | B·gating (explicit category) | OC(fast) | ✅ explicit-category; observe by default, blocking only per org-never-actions block mode |
 | RelationshipAnomalyScorer | src/permissions/RelationshipAnomalyScorer.ts:387 | voice match vs principal | A·gating (explicit) | OC(fast) | ✅ |
 | **ResumeValidator** ⚠ | src/core/ResumeValidator.ts:211 | resume UUID matches topic? | A | **AD(fast) → Claude** | ❌ not in map |
 
