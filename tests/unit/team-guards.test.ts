@@ -318,7 +318,10 @@ describe('a session id reported by a hook', () => {
     expect(resumes.length).toBeGreaterThan(0);
     expect((src.match(/isSafeSessionRef\(options\.resumeSessionId\)/g) ?? []).length).toBeGreaterThanOrEqual(resumes.length + 1);
     const manager = fs.readFileSync(path.join(process.cwd(), 'src/core/SessionManager.ts'), 'utf8');
-    expect(manager.match(/isSafeSessionRef\(options\.resumeSessionId\)/g) ?? []).toHaveLength(2);
+    // Pinned exactly, so a check that disappears is noticed. Three: the headless spawn's
+    // --resume, the triage session's --resume, and the interactive Codex rollout placement
+    // (codex-launch-account-home: the thread id names a file copied between homes before launch).
+    expect(manager.match(/isSafeSessionRef\(options\.resumeSessionId\)/g) ?? []).toHaveLength(3);
   });
 });
 
