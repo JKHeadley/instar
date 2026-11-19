@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "locked-proof-combined-grant-receipt",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T03:34:47.288Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-combined-grant-receipt.md",
+  "artifactSha256": "9fe3de0e7f83c4cf6c9cffb6bcadddb3f57559fffe49d631feaf7b9cc29eec7a",
+  "specPath": "docs/specs/desktop-locked-screen.md",
+  "coveredFiles": [
+    "docs/specs/locked-proof-combined-grant-receipt.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-timing.test.ts",
+    "tests/unit/locked-proof-watch-end.test.ts",
+    "upgrades/next/locked-proof-combined-grant-receipt.md",
+    "upgrades/side-effects/locked-proof-combined-grant-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Combined P12/P15 native and proof recovery integration with independently reviewed receipt-boundary fix.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

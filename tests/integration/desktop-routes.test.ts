@@ -63,6 +63,25 @@ describe('remote desktop HTTP routes', () => {
     expect(JSON.stringify(response.body)).toContain('will not fix itself');
   });
 
+  it('reports a failed peer check and accepts a fresh result on retry', async () => {
+    const remoteId = `m_${'a'.repeat(32)}`;
+    const desktopProbePeer = vi.fn()
+      .mockRejectedValueOnce(new Error('timeout'))
+      .mockResolvedValueOnce({ machineId: remoteId, label: 'Mac', ready: true });
+    const { server } = app(fakeAccess(), {
+      listPoolMachines: () => [{ machineId: remoteId, nickname: 'Mac' }],
+      desktopMeshBroker: {} as RouteContext['desktopMeshBroker'],
+      desktopProbePeer,
+    });
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-Operator-Session': 'operator-proof' };
+    const first = await request(server).get('/desktop/targets').set(headers).expect(200);
+    expect(first.body.machines[1]).toMatchObject({ machineId: remoteId, ready: false,
+      unavailableReason: expect.stringContaining('Could not check') });
+    const retry = await request(server).get('/desktop/targets').set(headers).expect(200);
+    expect(retry.body.machines[1]).toMatchObject({ machineId: remoteId, ready: true });
+    expect(retry.body.machines[1]).not.toHaveProperty('unavailableReason');
+  });
+
   it('permits only explicit enabled-state rollout through the config API', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-config-'));
     const stateDir = path.join(root, '.instar');

@@ -1,0 +1,12 @@
+<!-- bump: patch -->
+## What Changed
+
+Needs you supports bounded pages on the dashboard and the existing mobile read. The dashboard opens with three rows and offers page controls when more than 100 needs are available.
+
+## What to Tell Your User
+
+Expand Needs you and choose Next page to reach an item beyond the first hundred. The range tells you where you are. If the list changes while you are reading, choose Reload current list.
+
+## Summary of New Capabilities
+
+The existing `GET /needs` and `GET /mobile/needs` return optional continuation cursors for the current viewer. Each page carries up to 100 rows. Each continuation checks current access and the ordered list of visible actions.
