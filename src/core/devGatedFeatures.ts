@@ -56,6 +56,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
   },
   {
+    name: 'usageLedgerServedAccount',
+    configPath: 'usage.ledger.servedAccount',
+    description: 'Spend by served account (docs/specs/quota-pacing-spend-by-account.md): each usage-ledger row records the account that actually served it (from the transcript folder and the recorded identity checks, with its basis), and GET /usage/accounts, /usage/accounts/size and /usage/account-mismatches report spend by login, the size of a point and tagged-vs-served disagreements; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only measurement: it adds nullable columns to the ledger\'s own raw-row table and two small state logs (identity checks, switch history), changes no placement, swap, shedding or model choice, and sends no notice. enabled:false writes rows as basis "off" and the three routes answer 503; the columns stay inert.',
+  },
+  {
     name: 'contextBudgetLayers',
     configPath: 'contextBudget.enabled',
     description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',

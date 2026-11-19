@@ -329,6 +329,9 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { ServedAccountResolver, type ServedLedgerView } from '../monitoring/servedAccount.js';
+import { IdentityCheckLog } from '../monitoring/IdentityCheckLog.js';
+import { ServedSwitchHistory } from '../monitoring/servedAccountReport.js';
 import { UsagePoolPuller } from '../monitoring/UsagePoolPuller.js';
 import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
@@ -984,6 +987,7 @@ export class AgentServer {
   private tokenLedger: TokenLedger | null = null;
   private usageLedger: UsageLedger | null = null;
   private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private identityCheckLog: IdentityCheckLog | null = null;
   private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
   private usageRouteDeps: import('./usageRoutes.js').UsageRouteDeps | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
@@ -3016,7 +3020,27 @@ export class AgentServer {
           otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
         } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
         const subscriptionPool = options.subscriptionPool;
+        // quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): which account served each
+        // row. Dev-gated separately; the column migration runs regardless (additive, idempotent).
+        const servedStateDir = options.config.stateDir;
+        const servedEnabled = () => resolveDevAgentGate(options.config.usage?.ledger?.servedAccount, options.config);
+        const servedSwitch = new ServedSwitchHistory(servedStateDir);
+        servedSwitch.note(servedEnabled());
+        const identityChecks = new IdentityCheckLog({ stateDir: servedStateDir });
+        options.quotaPoller?.setIdentityCheckLog?.(identityChecks);
+        this.identityCheckLog = identityChecks;
+        const credLedger = options.subscriptionEmailBinding as unknown as ServedLedgerView | undefined;
+        const servedPoolAccounts = () => (subscriptionPool?.list() ?? []).map(a => ({
+          id: a.id, framework: a.framework, configHome: a.configHome, provider: a.provider, email: a.email ?? null,
+        }));
+        const servedResolver = new ServedAccountResolver({
+          pool: servedPoolAccounts,
+          ledger: () => (credLedger && typeof credLedger.getAssignment === 'function' ? credLedger : null),
+          checks: identityChecks,
+          pollIntervalMs: 15 * 60_000,
+        });
         const ledger = new UsageLedger({
+          servedAccount: { enabled: () => { const on = servedEnabled(); servedSwitch.note(on); return on; }, resolver: servedResolver },
           dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
           machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
           agentId: options.config.projectName ?? path.basename(projectDir),
@@ -3105,6 +3129,13 @@ export class AgentServer {
           },
           fromPeer: (machineId, route) => peerGet(machineId, route),
           bearerOk: () => true,
+          servedAccount: {
+            enabled: servedEnabled,
+            switchHistory: servedSwitch,
+            fanOut: { config: options.config, resolvePeerUrls: options.resolvePeerUrls, recordRopeResult: options.recordRopeResult } as import('./poolFanOut.js').FanOutCtx,
+            history: () => this.quotaPacingLedger ?? null,
+            poolAccounts: servedPoolAccounts,
+          },
         } as import('./usageRoutes.js').UsageRouteDeps;
         // The listing of every transcript file runs off the event loop (scanTickAsync):
         // done synchronously here it held the main thread for over a minute on a
@@ -3117,10 +3148,13 @@ export class AgentServer {
           onTick: (rep, tickMs) => {
             if (tickMs > 60_000) console.warn(`[instar] usage-ledger tick took ${Math.round(tickMs / 1000)} s (files read ${rep.filesRead}, pending ${rep.pending})`);
             featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending, tickMs } });
+            // Ladder evidence (feature-ladders.json → usage.ledger.servedAccount): attribution ran this hour.
+            if (servedEnabled()) featureEvidence.recordAtMostEvery('usage.ledger.servedAccount', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'served-attribution-tick', context: { rowsCounted: rep.rowsCounted } });
           },
           onError: (err) => { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
             featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+            if (servedEnabled()) featureEvidence.recordAtMostEvery('usage.ledger.servedAccount', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
           },
           onStuck: (skipped, runningMs) => {
             console.warn(`[instar] usage-ledger tick has been running ${Math.round(runningMs / 60000)} min; ${skipped} ticks skipped behind it`);
@@ -10269,6 +10303,7 @@ export class AgentServer {
       this.revertDetector = null;
     }
     if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    try { this.identityCheckLog?.flushAll(); } catch { /* @silent-fallback-ok: at worst the last 15 minutes of confirmations read as unconfirmed */ }
     this.usagePuller?.stop(); this.usagePuller = null;
     if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.

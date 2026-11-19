@@ -4320,6 +4320,11 @@ export interface InstarConfig {
     ledger?: {
       /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
       enabled?: boolean;
+      /**
+       * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): record which account
+       * actually served each request. OMITTED so the dev-agent gate decides (LIVE-dev / DARK-fleet).
+       */
+      servedAccount?: boolean;
     };
   };
   routingSpend?: {

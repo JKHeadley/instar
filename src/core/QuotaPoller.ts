@@ -32,6 +32,8 @@
  * poller runs hermetically with zero credentials and zero network in tests.
  */
 
+import type { IdentityCheckLog } from '../monitoring/IdentityCheckLog.js';
+import { identityKey } from '../monitoring/quotaPacing.js';
 import { createHash } from 'node:crypto';
 import type { CodexDeviceLimitTripwire } from './CodexDeviceLimitTripwire.js';
 import type { QuotaHistorySink } from '../monitoring/QuotaHistoryLedger.js';
@@ -582,6 +584,18 @@ export class QuotaPoller {
     return value;
   }
 
+  private identityCheckLog: IdentityCheckLog | null = null;
+
+  /**
+   * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md §1): record every identity
+   * check per slot so the usage ledger can judge, at a row's own time, which login the slot held.
+   */
+  setIdentityCheckLog(log: IdentityCheckLog | null): void { this.identityCheckLog = log; }
+
+  private noteIdentityCheck(slot: string, check: { result: 'confirmed' | 'drifted' | 'unavailable'; identity: string | null }): void {
+    try { this.identityCheckLog?.record(slot, check); } catch { /* @silent-fallback-ok: a measurement record; the poll result is unchanged */ }
+  }
+
   /** Credential mutations must invalidate observations made before the write. */
   invalidateIdentityCache(slots: string[]): void {
     for (const slot of slots) {
@@ -601,8 +615,14 @@ export class QuotaPoller {
     this.attributionByExpected.set(expected.id, expected.id);
     if (expected.framework !== 'claude-code') return expected;
     const identity = await this.identityForSlot(slot);
-    if (!identity || 'unavailable' in identity) return expected; // uncertainty never mutates truth
+    if (!identity || 'unavailable' in identity) {
+      this.noteIdentityCheck(slot, { result: 'unavailable', identity: null });
+      return expected; // uncertainty never mutates truth
+    }
     const actual = this.pool.get(identity.accountId);
+    this.noteIdentityCheck(slot, identity.accountId === expected.id
+      ? { result: 'confirmed', identity: identityKey(expected.provider, expected.email) }
+      : { result: 'drifted', identity: identityKey(actual?.provider ?? expected.provider, actual?.email ?? identity.email ?? null) });
     const nowIso = new Date(this.now()).toISOString();
     if (identity.accountId === expected.id) {
       if (expected.identityDrifted) {
