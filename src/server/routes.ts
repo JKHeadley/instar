@@ -28,6 +28,7 @@ import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
 import { operatorError, storageErrorResponse } from '../core/storageMachineName.js';
+import { getActiveMachineAwayBook, describeAway } from '../core/MachineAway.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -12242,6 +12243,95 @@ export function createRoutes(ctx: RouteContext): Router {
   // Bearer-auth (router-level middleware). A wedged drainer is detectable
   // from lastTickAt + paused + breaker state in the GET.
 
+  // Boot session census (restart-lock-continuity A.3): served whether or not the
+  // resume queue exists. `?since=<bootAt>` lists every retained census after it.
+  router.get('/sessions/boot-census', async (req, res) => {
+    try {
+      const { getActiveBootSessionCensus, bootCensusDeps } = await import('../core/BootSessionCensus.js');
+      const { activeAutonomousJobs } = await import('../core/AutonomousSessions.js');
+      const census = getActiveBootSessionCensus();
+      const sinceRaw = typeof req.query.since === 'string' ? Number(req.query.since) : NaN;
+      // restart-lock-continuity A.4 follow-up: ?scope=pool adds every peer's own census
+      // (read-only, the same bounded fan-out as /sessions/reaper; each unreachable machine named).
+      const withPool = async (local: Record<string, unknown>): Promise<void> => {
+        if (req.query.scope !== 'pool') { res.json(local); return; }
+        reaperPoolLimiter(req, res, async () => {
+          try {
+          const peerPath = `/sessions/boot-census${Number.isFinite(sinceRaw) ? `?since=${sinceRaw}` : ''}`;
+          const { peers, failed, peersQueried } = await readReaperPoolPeers(peerPath, (b) => Array.isArray(b.boots) || typeof b.unavailable === 'string');
+          res.json({ ...local, pool: { ...reaperPoolHealth(peers, failed, peersQueried), machines: peers.map((p) => ({ ...p.body, machineId: p.machineId, nickname: p.nickname })) } });
+          } catch (err) {
+            res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+          }
+        });
+      };
+      if (!census || census.bootAt == null) {
+        await withPool({ unavailable: census ? 'boot time unreadable' : 'census not started on this server' });
+        return;
+      }
+      const livCfg = ctx.config.monitoring?.autonomousLivenessReconciler ?? {};
+      const deps = bootCensusDeps({
+        state: ctx.state, sessionManager: ctx.sessionManager,
+        commitmentTracker: ctx.commitmentTracker ?? { getActiveByTopicId: () => { throw new Error('commitment tracker unavailable'); } },
+        ownMachineId: ctx.meshSelfId ?? undefined,
+        activeAutonomousTopics: () => new Set(activeAutonomousJobs(ctx.config.stateDir).filter((j) => j.active && j.topic).map((j) => String(j.topic))),
+        reconcilerEnabled: resolveDevAgentGate(livCfg.enabled, ctx.config) && livCfg.dryRun === false,
+        serverStartedAt: census.serverStartedAt,
+      });
+      const { files, unreadable } = census.listFiles();
+      const chosen = Number.isFinite(sinceRaw) ? files.filter((f) => f.bootAt > sinceRaw) : [census.current()].filter((f): f is NonNullable<typeof f> => !!f);
+      const gap = Number.isFinite(sinceRaw) && files.length > 0 && files[0].bootAt > sinceRaw && files[0].reviewedAt
+        ? `files before ${new Date(files[0].bootAt).toISOString()} were reviewed and removed` : null;
+      await withPool({
+        bootAt: census.bootAt,
+        boots: chosen.map((f) => ({ bootAt: f.bootAt, writtenAt: f.writtenAt, reviewedAt: f.reviewedAt ?? null, noticeSentAt: f.noticeSentAt ?? null, sessions: census.classify(f, deps) })),
+        ...(gap ? { gap } : {}),
+        ...(unreadable.length ? { unreadable } : {}),
+      });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
+  router.post('/sessions/boot-census/reviewed', async (req, res) => {
+    try {
+      const bootAt = Number(req.body?.bootAt);
+      if (!Number.isFinite(bootAt)) { res.status(400).json({ error: 'bootAt (number) required' }); return; }
+      // A mark for another machine's census is forwarded to that machine (its files are its own).
+      const target = typeof req.body?.machineId === 'string' ? req.body.machineId : null;
+      if (target && target !== ctx.meshSelfId) {
+        const known = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === target);
+        const url = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p.url])).get(target) ?? known?.lastKnownUrl ?? null;
+        if (!url) { res.status(404).json({ ok: false, error: 'no-known-url', machineId: target }); return; }
+        if (ctx.machinePoolRegistry?.getCapacity(target)?.online === false) { res.status(503).json({ ok: false, error: 'offline', machineId: target }); return; }
+        const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        if (!isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, extraAllowlist).ok) { res.status(502).json({ ok: false, error: 'url-rejected', machineId: target }); return; }
+        let r: Response;
+        try {
+          r = await fetch(`${url}/sessions/boot-census/reviewed`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bootAt }),
+          signal: AbortSignal.timeout(REAPER_POOL_TIMEOUT_MS),
+          });
+        } catch (err) {
+          const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+          res.status(timedOut ? 504 : 502).json({ ok: false, bootAt, machineId: target, error: timedOut ? 'timeout' : 'unreachable' });
+          return;
+        }
+        res.status(r.status === 404 ? 404 : r.ok ? 200 : 502).json({ ok: r.ok, bootAt, machineId: target, ...(r.ok ? {} : { error: r.status === 404 ? 'route-missing-or-unknown-boot' : `peer answered ${r.status}` }) });
+        return;
+      }
+      const { getActiveBootSessionCensus } = await import('../core/BootSessionCensus.js');
+      const census = getActiveBootSessionCensus();
+      if (!census) { res.status(503).json({ error: 'census not started on this server' }); return; }
+      const ok = census.markReviewed(bootAt);
+      res.status(ok ? 200 : 404).json({ ok, bootAt });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
   router.get('/sessions/resume-queue', (_req, res) => {
     if (!ctx.resumeQueue) {
       res.status(503).json({ error: 'resume-queue not available on this agent' });
@@ -12993,6 +13083,8 @@ export function createRoutes(ctx: RouteContext): Router {
               // trustworthy-machine-load A5: the evidence-derived state decides the
               // wording; "offline" is never said without positive evidence.
               liveness: capacity?.liveness,
+              // restart-lock-continuity B.3: a signed machine-away announcement is positive evidence for offline.
+              ...(() => { const rec = isSelf ? null : getActiveMachineAwayBook()?.get(machineId) ?? null; return rec ? { awayText: describeAway(rec, Date.now()) } : {}; })(),
               nicknameOf: (id) => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine',
             },
             nowMs,
@@ -16505,7 +16597,10 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      res.json(await reader.read());
+      // The lock watch's own state (restart-lock-continuity C.1), including a pause after repeated probe failures.
+      const { getActiveLockWatch } = await import('../monitoring/LockWatch.js');
+      const watch = getActiveLockWatch();
+      res.json({ ...(await reader.read()), lockWatch: watch ? watch.status() : null });
     } catch (err) {
       res.status(500).json({ error: 'lock-state read failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }

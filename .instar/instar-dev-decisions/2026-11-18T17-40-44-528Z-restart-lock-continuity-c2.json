@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T17:40:44.528Z",
+  "slug": "restart-lock-continuity-c2",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/machineMaintenance/WedgeMonitor.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

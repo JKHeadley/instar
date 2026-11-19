@@ -74,6 +74,11 @@ export interface WedgeSettings {
 export type GentleResumeMode = 'off' | 'dry-run' | 'on';
 /** At most this many launches are resumed in one sample. */
 export const GENTLE_MAX_PER_SAMPLE = 20;
+/** restart-lock-continuity C.2: how long canary results are logged after an unlock. */
+export const POST_UNLOCK_WINDOW_MS = 30 * 60 * 1000;
+/** C.2: the extra sample runs this soon after the sample that saw the unlock. */
+export const UNLOCK_RESAMPLE_DELAY_MS = 1000;
+
 /** A launch that is stopped again after this many resumes is left to the later rungs. */
 export const GENTLE_MAX_PER_PROCESS = 2;
 
@@ -240,6 +245,11 @@ export class WedgeMonitor {
   private readonly now: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private first: ReturnType<typeof setTimeout> | null = null;
+  /** restart-lock-continuity C.2: the last definite lock reading, and the post-unlock diagnostic window's end. */
+  private lastLockState: 'locked' | 'unlocked' | null = null;
+  private postUnlockUntil = 0;
+  private unlockResample: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
   private sampling = false;
   private role: 'maintainer' | 'observer' | 'unknown' | 'off' = 'unknown';
   private maintainer: string | null = null;
@@ -271,6 +281,7 @@ export class WedgeMonitor {
 
   /** Heartbeat every 60 s; samples when due. */
   start(tickMs = 60_000): void {
+    this.stopped = false;
     if (this.timer) return;
     this.first = setTimeout(() => { void this.tick(); }, 45_000);
     this.first.unref?.();
@@ -281,8 +292,11 @@ export class WedgeMonitor {
   stop(): void {
     if (this.first) clearTimeout(this.first);
     if (this.timer) clearInterval(this.timer);
+    if (this.unlockResample) clearTimeout(this.unlockResample);
+    this.stopped = true;
     this.first = null;
     this.timer = null;
+    this.unlockResample = null;
   }
 
   async tick(): Promise<void> {
@@ -296,6 +310,9 @@ export class WedgeMonitor {
       if (!claim.self) {
         // Another agent on this login samples. Drop any window this agent held: it must not bridge a gap later.
         if (this.role === 'maintainer') { this.window = emptyWindow(); this.families = this.freshFamilies(); this.lastSample = null; }
+        // C.2: a lock reading from before this observer period must not pair with a later unlock.
+        this.lastLockState = null;
+        this.postUnlockUntil = 0;
         this.role = 'observer';
         this.maintainer = claim.maintainer;
         this.generation = null;
@@ -441,6 +458,11 @@ export class WedgeMonitor {
       const gentle = await this.gentleRung(this.now(), mode);
       if (gentle) { this.lastGentle = gentle; this.audit({ type: 'wedge-gentle', ...gentle }); }
     }
+    // C.2: the first unlocked reading after a locked one, while F1 has not passed this boot,
+    // opens a 30-minute diagnostic window and brings the next sample forward to now.
+    const unlockTriggered = canary && this.lastLockState === 'locked' && lockState === 'unlocked' && !this.durable.f1PassedThisBoot;
+    if (unlockTriggered) this.postUnlockUntil = at + POST_UNLOCK_WINDOW_MS;
+    if (lockState === 'locked' || lockState === 'unlocked') this.lastLockState = lockState;
     const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState, consoleSession, canaryLeftover });
     if (f1.reading.detail && (reapedBefore || reapedAfter)) f1.reading.detail = { ...f1.reading.detail, canariesEnded: (reapedBefore ?? 0) + (reapedAfter ?? 0) };
     if (f1.passed) this.durable.f1PassedThisBoot = true;
@@ -458,6 +480,24 @@ export class WedgeMonitor {
       this.audit({ type: 'wedge-sample', results: sample.results, reasons: { F1: f1.reading.reason, F2: f2.reading.reason, F4: f4.reason } });
     }
     this.nextSampleAt = at + nextSampleDelay(sample);
+    if (canary && at <= this.postUnlockUntil) {
+      this.audit({
+        type: 'post-unlock-canary',
+        trigger: unlockTriggered ? 'unlock' : 'follow-up',
+        openOk: f1Probe ? f1Probe.ok : null,
+        openCode: f1Probe ? f1Probe.code ?? null : null,
+        openTimedOut: f1Probe ? f1Probe.timedOut : null,
+        canaryFoundStopped: canaryLeftover === undefined || canaryLeftover === null ? null : canaryLeftover.stopped > 0,
+        f1: f1.reading.result,
+      });
+    }
+    if (unlockTriggered) {
+      // One extra sample at once, after this one finishes (tick() skips while sampling).
+      this.nextSampleAt = at;
+      if (this.unlockResample) clearTimeout(this.unlockResample);
+      this.unlockResample = this.stopped ? null : setTimeout(() => { this.unlockResample = null; void this.tick(); }, UNLOCK_RESAMPLE_DELAY_MS);
+      this.unlockResample?.unref?.();
+    }
     const cond = this.durable.condition;
     if (cond && cond.pair.split('+').some((f) => sample.results[f as CandidateFamily] === 'negative')) {
       this.audit({ type: 'wedge-cleared', pair: cond.pair, openedAt: cond.openedAt, results: sample.results });

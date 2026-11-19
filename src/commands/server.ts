@@ -350,6 +350,10 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { MachineAwayBook, parseMachineAway, setActiveMachineAwayBook, getActiveMachineAwayBook, machineAwayReason, type MachineAwayCommand } from '../core/MachineAway.js';
+
+/** This server process's start, for machine-away instance matching (restart-lock-continuity B.2). */
+const SERVER_STARTED_AT_ISO = new Date().toISOString();
 import { unreportedRegistryDegradations } from '../awareness/registry.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
@@ -13820,11 +13824,76 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     });
 
+    // Machine-away announcements received from peers (restart-lock-continuity B): in memory, display only.
+    setActiveMachineAwayBook(new MachineAwayBook(Date.now, (line) => console.log(pc.dim(`  ${line}`))));
+
+    // ── Boot session census (restart-lock-continuity part A) ──
+    // Taken BEFORE the purge below rewrites the records of sessions that died with
+    // the previous boot. Once per OS boot; a server restart in the same boot keeps
+    // the first census. Lists, marks open work, and notifies once; never revives
+    // (revival is phase 2, CMT-1940). Runs whether or not machine maintenance is on.
+    try {
+      const { BootSessionCensus, readBootAt, setActiveBootSessionCensus } = await import('../core/BootSessionCensus.js');
+      const census = new BootSessionCensus({ stateDir: config.stateDir, bootAt: readBootAt() });
+      setActiveBootSessionCensus(census);
+      const captured = census.capture(state.listSessions());
+      console.log(`[boot-census] ${captured.written ? 'written' : 'not written'}: ${captured.reason}`);
+      const pruned = census.prune();
+      if (pruned.backlog) {
+        DegradationReporter.getInstance().report({
+          feature: `boot-census.unreviewed-backlog:${config.projectName}`,
+          primary: 'Boot census files are reviewed by the daily stewardship pass and then removed after 30 days',
+          fallback: 'All unreviewed census files are kept; nothing is dropped',
+          reason: `${pruned.unreviewed} unreviewed boot census files (limit 200)`,
+          impact: 'The list of sessions ended by restarts is growing unread',
+        });
+      }
+    } catch (err) {
+      console.warn(`[boot-census] census unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Fast startup purge — remove session records for dead tmux sessions BEFORE
     // monitoring starts. Prevents the death spiral where stale sessions overwhelm
     // the health endpoint (synchronous tmux has-session calls) and cause the
     // lifeline to restart the server in a tight loop.
     await sessionManager.purgeDeadSessions();
+
+    // Boot census notice (restart-lock-continuity A.5): 15 minutes after start, one
+    // report per boot when ended sessions with open work have not come back.
+    {
+      const bootCensusServerStartedAt = Date.now();
+      const bootCensusTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const { getActiveBootSessionCensus, bootCensusDeps, buildOpenWorkNotice } = await import('../core/BootSessionCensus.js');
+            const census = getActiveBootSessionCensus();
+            const file = census?.current();
+            if (!census || !file || file.noticeSentAt) return;
+            const livCfg = config.monitoring?.autonomousLivenessReconciler ?? {};
+            const deps = bootCensusDeps({
+              state, sessionManager, commitmentTracker,
+              ownMachineId: _meshSelfId ?? undefined,
+              activeAutonomousTopics: () => new Set(activeAutonomousJobs(config.stateDir).filter((j) => j.active && j.topic).map((j) => String(j.topic))),
+              reconcilerEnabled: resolveDevAgentGate(livCfg.enabled, config) && livCfg.dryRun === false,
+              serverStartedAt: bootCensusServerStartedAt,
+            });
+            const notice = buildOpenWorkNotice(census.classify(file, deps));
+            if (!notice) return;
+            if (!census.markNoticeSent()) return;
+            DegradationReporter.getInstance().report({
+              feature: `boot-census.open-work-ended:${config.projectName}:${file.bootAt}`,
+              primary: 'Sessions with open work continue after a restart',
+              fallback: 'They resume when their topic gets its next message',
+              reason: notice,
+              impact: 'Work that was in progress when the machine restarted is waiting',
+            });
+          } catch (err) {
+            console.warn(`[boot-census] notice check failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
+      }, 15 * 60 * 1000);
+      bootCensusTimer.unref?.();
+    }
 
     // ── A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md) ──
     // Opened HERE, at the inbound-queue sweep's boot site and BEFORE
@@ -27075,6 +27144,56 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(pc.dim(`  local-verify enabled in config but inert (${built.reason})`));
         }
       }
+      // Lock watch (restart-lock-continuity C.1): runs whether or not machine
+      // maintenance is enabled. The lock reader is created here, outside the
+      // maintenance gate (it spawns nothing until read); the gate reuses it.
+      try {
+        const { MachineLockStateReader, setActiveMachineLockStateReader, getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        const { readEnrolment, defaultDoNotMaintainPath } = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+        const { LockWatch, setActiveLockWatch } = await import('../monitoring/LockWatch.js');
+        const { readBootAt } = await import('../core/BootSessionCensus.js');
+        if (!getActiveMachineLockStateReader()) setActiveMachineLockStateReader(new MachineLockStateReader());
+        const lvSvc = localVerifyService;
+        const enrolledSelfCare = (): boolean => { const e = readEnrolment(); return !!e && (e.mode === 'unattended' || e.mode === 'proving'); };
+        if (lvSvc || enrolledSelfCare()) {
+          const lockWatch = new LockWatch({
+            hostDir: path.join(os.homedir(), '.instar', 'host-maintenance'),
+            read: async () => {
+              const reader = getActiveMachineLockStateReader();
+              return reader ? (await reader.read()).lockState : 'unknown';
+            },
+            scope: () => {
+              if (fs.existsSync(defaultDoNotMaintainPath())) return { watched: false, interruptsWork: false, lockOnly: true };
+              const selfCare = enrolledSelfCare();
+              const peerOnly = !!lvSvc && lvSvc.isPeerOnly();
+              let interruptsWork = false;
+              if (lvSvc && !peerOnly) {
+                // Work waiting now; LockWatch also remembers work seen at any reading in the episode.
+              try { const snap = lvSvc.snapshot(); interruptsWork = snap.queue.length > 0 || snap.inFlight !== null; } catch { interruptsWork = false; }
+              }
+              return { watched: selfCare || !!lvSvc, interruptsWork, lockOnly: selfCare || peerOnly };
+            },
+            report: (r) => {
+              DegradationReporter.getInstance().report({
+                feature: r.feature,
+                primary: 'This machine is unlocked so it can run tests and maintain itself',
+                fallback: 'Work that needs the screen waits until someone unlocks it',
+                reason: `${coordinator.identity?.name ?? os.hostname()} has been locked since ${new Date(r.firstLockedAt).toLocaleString()}`,
+                impact: 'Tests on this machine can fail while its screen is locked. Unlock it at its console.',
+              });
+            },
+            machineId: lvMachineId,
+            agentName: config.projectName,
+            bootAt: readBootAt(),
+            holdMs: Math.min(60 * 60 * 1000, Math.max(60 * 1000, Number(liveConfig.get<number>('machineMaintenance.lockReportAfterMs', 10 * 60 * 1000)) || 10 * 60 * 1000)),
+            log: (line) => console.log(line),
+          });
+          setActiveLockWatch(lockWatch);
+          lockWatch.start();
+        }
+      } catch (err) {
+        console.warn(`[lock-watch] not started: ${err instanceof Error ? err.message : String(err)}`);
+      }
       // The status reconcile loop (§3). Built on any instar source checkout with the
       // agent's GitHub login: the Actions-floor mirror must stay on whenever GitHub
       // requires the check, independent of monitoring.localVerify.enabled (with the
@@ -28021,8 +28140,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
 
         // Honest lock reading (Part A): a read of the session, never the flag alone.
-        const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
-        setActiveMachineLockStateReader(new MachineLockStateReader());
+        const { MachineLockStateReader, setActiveMachineLockStateReader, getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        // Usually already created at startup for the lock watch (restart-lock-continuity C.1); reuse it.
+        if (!getActiveMachineLockStateReader()) setActiveMachineLockStateReader(new MachineLockStateReader());
 
         // Browser care (Part B), watch-only: the sweep records what it WOULD close and has
         // no way to close anything. Only the macOS normal-Chrome helpers keep a ledger.
@@ -30414,7 +30534,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // copy on the self beat was stamped up to 30 s ago, which would let a
               // receiver's 60 s freshness check pass a ~90 s-old report.
               const liveLoadReport = _machineLoadSampler?.read() ?? null;
-              return { ...base, serverDownRecovery:currentRecoveryStatus(), ..._appPoolStatusRows(), ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
+              return { ...base, serverStartedAt: SERVER_STARTED_AT_ISO, serverDownRecovery:currentRecoveryStatus(), ..._appPoolStatusRows(), ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
             // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md).
             // Both verbs are ALWAYS registered; with the gate off both refuse.
@@ -30538,6 +30658,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 );
                 return { ok: true, result: r };
               }
+              return { ok: true };
+            },
+            // restart-lock-continuity B.2: a peer says it is leaving, and why. Bound to the
+            // authenticated sender (a machine can only announce itself); display only.
+            'machine-away': (cmd, sender) => {
+              const away = parseMachineAway(cmd);
+              if (!away) return { ok: false, reason: 'malformed' };
+              getActiveMachineAwayBook()?.receive(sender, away);
               return { ok: true };
             },
             // session-pool-move-nudge — "pull placements from me now". Answers at once; the pull
@@ -33762,6 +33890,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .filter((m) => !m.entry.revokedAt)
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
             recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
+            // restart-lock-continuity B.2: clear machine-away records when the peer is back.
+            onPresenceResult: (machineId, ok, startedAt) => { getActiveMachineAwayBook()?.observePresence(machineId, ok, startedAt); },
             log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
             onPeerRecorded: (m) => onPeerBack(m), // ws re-arm + queued-commitment re-fire; no-op when dark
             fetchPeerCapacity: async (machineId, url) => {
@@ -37844,6 +37974,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           // down regardless; a lost resume hint costs one fresh-start conversation, never lost state.
           console.error('[shutdown] Failed to save resume UUIDs:', err);
         }
+      }
+
+      shutdownStep = 'machine-away-announce';
+      // restart-lock-continuity B.1: tell peers why this machine is leaving, before the
+      // coordinator stops. Best effort within a fixed budget; never blocks the shutdown.
+      try {
+        const sendAway = _identityMeshSend;
+        const peers = [...new Set((_resolvePeerUrls?.() ?? []).map((p) => p.machineId))].filter((id) => id && id !== _meshSelfId);
+        if (sendAway && peers.length > 0) {
+          const { readLastRestartRequest } = await import('../core/restartRequestAttribution.js');
+          const { readBootAt } = await import('../core/BootSessionCensus.js');
+          const { announceMachineAway, restartRungDispatched } = await import('../core/MachineAway.js');
+          const last = readLastRestartRequest(config.stateDir);
+          const recentRequest = !!last && Date.now() - Date.parse(last.at) < 2 * 60 * 1000;
+          const dispatched = restartRungDispatched(path.join(os.homedir(), '.instar', 'host-maintenance', 'restarts.jsonl'), readBootAt());
+          const why = machineAwayReason({ restartDispatched: dispatched, restartRequestedRecently: recentRequest });
+          const cmd: MachineAwayCommand = { type: 'machine-away', reason: why.reason, serverStartedAt: SERVER_STARTED_AT_ISO, ...(why.expectedBackInSec !== undefined ? { expectedBackInSec: why.expectedBackInSec } : {}) };
+          const budgetRaw = Number(liveConfig.get<number>('machineMaintenance.awayAnnounceBudgetMs', 2000));
+          const budgetMs = Math.min(10_000, Math.max(500, Number.isFinite(budgetRaw) ? budgetRaw : 2000));
+          await announceMachineAway({ peers, send: (id, c, t) => sendAway(id, c, t), cmd, budgetMs, log: (line) => console.log(line) });
+        }
+      } catch (err) {
+        console.warn(`[machine-away] announcement skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       registrySyncDebouncer?.stop();
