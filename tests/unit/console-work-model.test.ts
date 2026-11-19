@@ -358,7 +358,8 @@ describe('the page', () => {
     expect(lead).toBeTruthy();
     expect(lead.textContent).toContain('Waiting on you');
     expect(lead.textContent).toContain('Renew the domain');
-    expect(lead.textContent).toContain('Needs your approval before the agent starts');
+    // The tile's status chip (the redesigned tile: chip, title, ask, one main button).
+    expect(lead.querySelector('.wc-chip-you').textContent).toBe('Needs your approval');
     expect(lead.textContent).toContain('You replied; the agent has not updated the card');
     expect(lead.textContent).toContain('2 more waiting');
     const approve = [...lead.querySelectorAll('button')].find((b) => b.textContent === 'Approve');
@@ -374,7 +375,7 @@ describe('the page', () => {
     main.querySelector('.work-open').click();
     const links = [...document.querySelectorAll('.sheet a')];
     expect(links.find(a => a.textContent === 'Original message')?.getAttribute('href')).toBe('#/work/chats?c=telegram%3A142440&m=144556');
-    expect(links.find(a => a.textContent === 'Open its conversation')).toBeTruthy();
+    expect(links.find(a => a.textContent === 'Open full conversation')).toBeTruthy();
     expect(document.querySelector('.sheet').textContent).not.toContain('144556');
   });
 
@@ -431,7 +432,7 @@ describe('the page', () => {
     (main.querySelector('.work-open') as any).click();
     const s = document.querySelector('.sheet').textContent;
     for (const t of ['This may already have been handed over', 'This card may have changed on m-studio', 'Paid, order 77', 'Replaced: asked the wrong thing', 'Justin, proved by the console PIN', 'One year is enough.', 'Approval covers this address, not what it serves later', 'Confirm done', 'Remove for good']) expect(s).toContain(t);
-    const conv = [...document.querySelectorAll('.sheet a')].find((a) => a.textContent === 'Open its conversation');
+    const conv = [...document.querySelectorAll('.sheet a')].find((a) => a.textContent === 'Open full conversation');
     expect(conv.getAttribute('href')).toBe('#/work/chats?c=app%3A0b0c0d0e-0f10-5111-8213-141516171819');
   });
 

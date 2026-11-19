@@ -128,7 +128,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     claim: c.currentClaim ? { id: c.currentClaim.id, evidenceIds: c.currentClaim.evidenceIds, needsConfirm: c.needsConfirm, confirmedBy: c.currentClaim.confirmedBy ?? null, at: c.currentClaim.at } : null,
     done: c.done, doneByAgentOwnEvidence: c.doneByAgentOwnEvidence, reopens: c.reopens, holds: c.holds, archives: c.archives,
     // A person's Done / Not important close in force; `unarchive` naming `tapId` reopens the card.
-    closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId } : null,
+    closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId, title: c.closeout.title } : null,
     conversation: conversationRef(c.conversationKey),
     carrierTrail: c.carrierTrail.map((t) => ({ carrier: principalJson(t.carrier, name), by: byJson(t.by, name), at: t.at })),
     taps: c.taps.map((t) => ({ id: t.id, action: t.action, at: t.at, by: byJson(t.by, name) })),
