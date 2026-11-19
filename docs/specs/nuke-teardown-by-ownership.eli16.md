@@ -24,3 +24,5 @@ The command can only ever do less than it does today, never more. The one deleti
 ## What needs deciding
 
 Nothing now. The design comes to the Chief of Staff for approval before it is built.
+
+This draft was replaced by the narrower spec nuke-teardown-narrowing, which is the one being built. It has no on/off switch and no maturation ladder.

@@ -36,3 +36,5 @@ The wider hardening is a separate spec, already queued by the Chief of Staff:
 ## What needs deciding
 
 Nothing now. Approved by the Chief of Staff at 01:44 PT, to be built.
+
+This spec has no on/off switch, so it has no maturation ladder; it ships on, because it only narrows what removal touches.

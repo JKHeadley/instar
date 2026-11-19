@@ -236,7 +236,7 @@ No test may reach the live `ai.instar.echo` entry or the real registry.
 - **fleet:** ships on; it only narrows.
 - **graduation criterion:** the dev run removes exactly the target's sessions, entry and folder, and every other session still runs.
 - **dark-window:** none.
-- **ladder:** none (no flag; a narrowing safety fix).
+- **ladder:** not applicable: no flag; a narrowing safety fix.
 
 ## Rollout
 

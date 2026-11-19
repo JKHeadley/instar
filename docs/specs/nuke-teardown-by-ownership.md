@@ -210,7 +210,7 @@ Every step's outcome is collected: each delete, each restore and each session st
 - **fleet:** ships on; it only narrows what nuke touches.
 - **graduation criterion:** the dev run removes exactly the target's sessions, launch entry and folder, and leaves every other agent's sessions running.
 - **dark-window:** none; it ships on.
-- **ladder:** none (no flag; a command-safety fix that only narrows behaviour).
+- **ladder:** not applicable: no flag; superseded draft (see nuke-teardown-narrowing).
 
 ## Rollout
 
