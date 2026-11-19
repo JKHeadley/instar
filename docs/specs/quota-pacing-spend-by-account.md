@@ -53,11 +53,13 @@ A new column `served_account_id` (TEXT, nullable) and `served_basis` (TEXT) are 
 
 **Why the root is evidence:** Claude Code and Codex write a session's transcript into the config home of the login that ran it (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). A file's folder records which login the process used. The tag records only which login it was asked to use. This is the check that would have caught the 2026-11-17 mix-up in the ledger.
 
+**Which login, when:** a folder proves which config home the work used, not which login was signed in there at that moment; a home can be signed out and signed in as someone else. So the served account is the **login identity** in force for that home at the request's time, taken from step 1's reading history (`QuotaHistoryLedger` rows carry the identity each reading saw). A request between two readings with the same identity gets that identity. A request in an interval where the identity changed, or with no reading for that home within the step 1 freshness window on both sides, gets `served_basis: 'identity-unconfirmed'` and a null account. The slot id is kept as `served_slot_id` either way.
+
 **When the root is not evidence:** a home shared by two pool accounts, or a home that is a symlink to another, gives `served_basis: 'ambiguous-root'`. The account is then null, never one of the candidates. The root registration resolves symlinks with `fs.realpathSync` before comparing homes.
 
 ### 2. Mismatch signal
 
-A row where both accounts are known and differ is a **mismatch**. The ledger keeps a per-machine count by `(session_id, tagged, served)` and exposes it in `/usage/coverage` as `accountMismatches: [{ sessionId, tagged, served, requests, firstTs, lastTs }]` (top 50 by requests, plus a total). This is a signal only. Placement already has its own fix (PR #3390); this makes a recurrence visible within one scan.
+A row where both accounts are known and differ is a **mismatch**. The ledger keeps a per-machine count by `(session_id, tagged, served)` and exposes it in `/usage/coverage` as an `accountMismatches` total plus `GET /usage/account-mismatches?since=&limit=&cursor=` listing every mismatch `{ sessionId, tagged, served, requests, firstTs, lastTs }`, newest first, paged. This is a signal only. Placement already has its own fix (PR #3390); this makes a recurrence visible within one scan.
 
 ### 3. Reads by account
 
@@ -71,16 +73,12 @@ For each account and each **closed** weekly cycle in step 1's history (`QuotaHis
 
 - `pointsUsed`: the cycle's last valid reading (a lower bound when that reading is censored, as step 1 defines),
 - `tokensServed`: the sum of tokens with `served_account_id` = that account and `ts` inside the cycle, by part, and the list-equivalent cost,
-- `coverage`: the share of the cycle's requests on that account's machines whose served account was known.
+- `unattributedCost`: the list-equivalent cost, in the same cycle, of rows on that login's machines whose served account is null, an upper bound on what this account might be missing,
+- `retentionComplete`: whether the whole cycle lies inside every contributing machine's ledger window.
 
 Reported as `GET /usage/accounts/size?account=&cycles=` (and inside `/usage/accounts` as the latest closed cycle). The figure is `costPerPoint = cost / pointsUsed`. List-equivalent cost is used because the providers meter by price-weighted usage, not raw token counts.
 
-It is reported **only** when:
-- `pointsUsed ≥ 5`,
-- coverage is at least 0.9, and
-- every machine that holds that login's transcripts answered.
-
-Otherwise the result is `cannot-tell` with the reason. This is evidence for a later step to weigh, never an input to any decision in this one.
+It is reported **only** when the cycle is retention-complete and every machine that holds that login's transcripts answered; otherwise `cannot-tell` with the reason. Alongside the figure it always shows `pointsUsed` and `unattributedCost`, and it carries a `quality` label: `low` when `pointsUsed < 5` or `unattributedCost` exceeds 10% of the account's attributed cost, else `ok`. A low-quality figure is still shown, labelled, so the reviewer can weigh it. This is evidence for a later step to weigh, never an input to any decision in this one.
 
 ### 5. Switch and rollout
 
@@ -92,7 +90,7 @@ Otherwise the result is `cannot-tell` with the reason. This is evidence for a la
 - **test-agent-live:** before merge, a throwaway agent boots the real server with two seeded pool homes and a transcript written under each, plus one session tagged with home A whose transcript sits in home B. `/usage/accounts` reports each account's tokens; the coverage view lists the mismatch; `/usage/tree?by=account` groups correctly; with the switch off the routes answer 503.
 - **dev-agent-live:** on from merge on Echo's machines.
 - **fleet:** last rung, after the review.
-- **graduation criterion:** a review on the maturation board reads, after two weekly resets per account, the unknown share, the mismatch counts (any mismatch after PR #3390 is a placement bug to file), and whether `costPerPoint` is stable enough across cycles to replace step 1's equal-size assumption. It promotes on judgment from that evidence.
+- **graduation criterion:** a review on the maturation board reads, after two weekly resets for most accounts (a newly enrolled account is reported as not yet sized and does not block), the unknown share, the mismatch counts (any mismatch after PR #3390 is a placement bug to file), and whether `costPerPoint` is stable enough across cycles to replace step 1's equal-size assumption. It promotes on judgment from that evidence.
 - **ladder:** usage.ledger.servedAccount
 - **dark-window:** the evidence minimum is two closed weekly cycles per account; a reminder at 4 weeks after merge if the review has not happened.
 
@@ -101,7 +99,7 @@ Otherwise the result is `cannot-tell` with the reason. This is evidence for a la
 - **Authority:** none. Nothing reads these numbers to decide anything in this step.
 - **Write path:** two extra columns set from data already in hand at scan time (the root being read). No new file reads.
 - **Migration:** additive columns, guarded, idempotent; old rows untouched.
-- **Privacy:** account slot ids and identity hashes, never emails or tokens; bearer-only routes.
+- **Privacy and team access:** account slot ids and identity hashes, never emails or tokens. The new routes sit under `/usage` and inherit exactly the access rule the existing `/usage/*` routes have (agent bearer, and on a team agent the owner tier), so no person sees spend they cannot already see.
 - **Unknown is not zero:** rows with no served account are shown as their own bucket with a share, never folded into an account.
 
 ## Tests (three tiers)
@@ -121,14 +119,15 @@ Otherwise the result is `cannot-tell` with the reason. This is evidence for a la
 |---|---|---|
 | The transcript's root folder decides the served account | invariant; basis: external-constraint; evidence: Claude Code and Codex write transcripts into the config home the process ran with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so the folder is the provider-side record of the login used | The tag is kept beside it, never overwritten. |
 | Shared or symlinked homes give `ambiguous-root` (null), never a guess | invariant; basis: enumerable-domain; evidence: a folder used by two accounts cannot say which one wrote a file | |
-| Size of a point reported only at ≥5 points, ≥0.9 coverage, all machines answered | judgment-candidate; floor: failing any condition gives `cannot-tell` with the reason, never a number; arbiter: the graduation review, from how often each condition fails | Starting values; display only. |
-| Top 50 mismatches listed, total always given | judgment-candidate; floor: the total is never cut, only the listed detail; arbiter: the graduation review | |
+| Size of a point withheld only when the cycle is not retention-complete or a contributing machine did not answer; otherwise shown with a `quality` label (low under 5 points or over 10% unattributed cost) | judgment-candidate; floor: an incomplete sum is never shown as whole, and a low-quality figure is labelled, never hidden; arbiter: the graduation review, from how often each label fires | The 5-point and 10% marks only label; they withhold nothing. |
+| Served account = login identity in force for the home at the request time; changed or unconfirmed identity gives null | invariant; basis: external-constraint; evidence: a config home can be re-signed to another login, and only a reading taken from that home records which identity was there | |
+| Mismatch list is paged, never cut | invariant; basis: enumerable-domain; evidence: every mismatch is a row the review must be able to read | |
 
 ## Multi-machine posture
 
 - **Ledger rows:** unchanged posture: each machine records what it read, merged on read by the existing `/usage/*` pool fan-out. `/usage/accounts` uses the same fan-out and names machines that did not answer.
 - **Root-to-account mapping:** per machine. machine-local-justification: physical-credential-locality — a config home is a folder on this machine's disk holding that login's credentials and transcripts.
-- **Switch:** per machine. machine-local-justification: physical-credential-locality — it governs only this machine's attribution of its own transcript folders.
+- **Switch:** per machine. machine-local-justification: physical-credential-locality — it governs only this machine's attribution of its own transcript folders. A machine with the switch off reports its rows as `served_basis: 'off'` in the pool views, so a partial rollout is visible, never silent.
 - Accounts are merged across machines by login identity, so one login on two machines is counted once.
 
 ## Frontloaded Decisions
