@@ -1733,6 +1733,21 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(s.svc.snapshot().mergeLine).toMatchObject({ enabled: true, handoffs: 1 });
   });
 
+  it.each(['not-mergeable-unknown', 'not-mergeable-conflicting', 'held'])('counts only UNKNOWN mergeability refusals with re-check off: %s', async (reason) => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setMergeHandoff(async () => ({
+      acted: false, reason: `handoff-not-eligible:${reason}`,
+      firstMergeable: reason === 'not-mergeable-conflicting' ? 'CONFLICTING' : 'UNKNOWN',
+      recheckEntered: false, recheckReads: 0, recheckSeconds: 0,
+    }));
+    await s.svc.request(1);
+    await s.finish(0, ok(record()));
+    expect(s.svc.mergeLine()).toMatchObject({
+      unknownHandoffs: reason === 'not-mergeable-unknown' ? 1 : 0,
+      recoveredHandoffs: 0,
+    });
+  });
+
   it('a watcher answer after the hold timed out does not reopen the hold; a late merge still makes the next start re-read its base', async () => {
     const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
     let base = sha('b');
@@ -1750,10 +1765,15 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, lastOutcome: 'timeout', merged: 0 });
     base = sha('e');
     s.advance(1_000);
-    answer({ acted: true, reason: 'merged' }); // late
+    answer({ acted: true, reason: 'merged', firstMergeable: 'UNKNOWN', recheckEntered: true, recheckReads: 2, recheckSeconds: 15 }); // late
     await s.flush();
     expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, lastOutcome: 'timeout', merged: 0 });
-    expect(auditLines(s).some((l) => l.event === 'merge-handoff-late-answer' && l.acted === true)).toBe(true);
+    expect(s.svc.mergeLine()).toMatchObject({ unknownHandoffs: 1, recoveredHandoffs: 0 });
+    const late = auditLines(s).find((l) => l.event === 'merge-handoff-late-answer');
+    const timeout = auditLines(s).find((l) => l.event === 'merge-handoff-result' && l.outcome === 'timeout');
+    expect(late).toMatchObject({ acted: true, recovered: false, firstMergeable: 'UNKNOWN', recheckEntered: true, recheckReads: 2, recheckSeconds: 15, handoffStartedAt: timeout!.handoffStartedAt });
+    s.timers[0]();
+    expect(s.svc.mergeLine()).toMatchObject({ unknownHandoffs: 1, recoveredHandoffs: 0 });
     await s.finish(1, ok(record({ pr: 2, headSha: sha('c'), outcome: 'failure' })));
     await s.flush();
     expect(inputOf(s, 2)).toMatchObject({ pr: 3, baseSha: sha('e') }); // the late merge moved main: PR 3 re-read its base
@@ -1861,7 +1881,7 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     await s.svc.request(1);
     await s.svc.request(2);
     await s.finish(0, ok(record()));
-    expect(calls).toEqual([{ pr: 1, ctx: { baseIsCurrentMain: null, currentMainHead: null } }]);
+    expect(calls).toEqual([{ pr: 1, ctx: { baseIsCurrentMain: null, currentMainHead: null, handoffStartedAt: expect.any(Number) } }]);
     expect(s.spawned).toHaveLength(1); // PR 2 waits behind the hold
     expect(s.svc.snapshot().inFlight).toBeNull();
     expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: { pr: 1, headSha: sha('a') }, handoffs: 1, merged: 0, lastPr: 1 });
@@ -1889,7 +1909,7 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     s.svc.noteMainHead(sha('b'));
     await s.svc.settle();
     await s.finish(0, ok(record()));
-    expect(ctxs).toEqual([{ baseIsCurrentMain: true, currentMainHead: sha('b') }]);
+    expect(ctxs).toEqual([{ baseIsCurrentMain: true, currentMainHead: sha('b'), handoffStartedAt: expect.any(Number) }]);
   });
 
   it('a refused hand-off releases the hold with no retry; failure, error and main records are never offered; a second green record during a hold is left to the watcher', async () => {
@@ -1905,6 +1925,7 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(await s.svc.request(3)).toMatchObject({ ok: true, status: 'recorded' });
     expect(calls).toEqual([1]);
     expect(auditLines(s).some((l) => l.event === 'merge-handoff-skipped' && l.pr === 3 && l.reason === 'hold-active')).toBe(true);
+    expect(s.svc.mergeLine().holdActiveSkips).toBe(1);
     answer({ acted: false, reason: 'handoff-not-eligible:held' });
     await s.flush();
     expect(calls).toEqual([1]); // no retry inside the line

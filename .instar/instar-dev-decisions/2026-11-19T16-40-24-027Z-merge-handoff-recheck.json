@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-19T16:40:24.027Z",
+  "slug": "merge-handoff-recheck",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 468,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/data/awareness/merge-handoff-recheck.md",
+      "src/data/feature-ladders.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts"
+    ],
+    "addedLines": 308,
+    "deletedLines": 160
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

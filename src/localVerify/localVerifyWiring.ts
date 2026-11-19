@@ -19,7 +19,7 @@ import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
+import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState, type MergeHandoffResult } from './LocalVerifyService.js';
 import { parsePeerMainRun, type PeerClient, type PeerResult, type PeerRunAnswer, type PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
@@ -260,7 +260,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
 
 /** The watcher surface the merge line drives (GreenPrAutoMerger.tick with a hand-off). */
 export interface MergeLineWatcher {
-  tick(opts: { handoff: { pr: number; head: string } }): Promise<{ acted: boolean; reason: string }>;
+  tick(opts: { handoff: { pr: number; head: string; startedAt?: number } }): Promise<MergeHandoffResult>;
 }
 
 /** The status-loop surface the merge line reads before a hand-off. */
@@ -298,7 +298,7 @@ export function wireMergeLine(opts: MergeLineWiringOpts): { wired: boolean; reas
   const watcher = opts.watcher;
   // The switch is read by the service BEFORE a hold opens (so `mergeLine()` reports it and a
   // disabled line books no hold, counter or audit); the check here is the belt.
-  opts.service.setMergeHandoff(async (record) => {
+  opts.service.setMergeHandoff(async (record, ctx) => {
     if (!opts.enabled()) return { acted: false, reason: 'disabled' };
     const st = opts.status;
     if (st) {
@@ -311,7 +311,7 @@ export function wireMergeLine(opts: MergeLineWiringOpts): { wired: boolean; reas
       // Live posting: GitHub must hold `success` for the head, or the merge would be refused and burn a ladder attempt.
       if (st.postingLive() && state !== 'success') return { acted: false, reason: `status-${state ?? 'absent'}` };
     }
-    return watcher.tick({ handoff: { pr: record.pr, head: record.headSha } });
+    return watcher.tick({ handoff: { pr: record.pr, head: record.headSha, ...(ctx.handoffStartedAt !== undefined ? { startedAt: ctx.handoffStartedAt } : {}) } });
   }, { enabled: opts.enabled });
   return { wired: true, reason: null };
 }

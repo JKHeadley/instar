@@ -44,6 +44,7 @@
  * `onMainHealthChange` (event-driven withdrawal), `signal` (main-red, main-unverified).
  */
 
+import type { HandoffRecheckResult } from '../monitoring/GreenPrAutoMerger.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -449,12 +450,14 @@ export const MERGE_LINE = Object.freeze({
 
 /** What the service hands the watcher for a green PR record. */
 export interface MergeHandoffContext {
+  /** Milliseconds since epoch, shared by all rows for this hand-off. */
+  handoffStartedAt?: number;
   /** Whether the record's base is the `main` head the reconcile loop last observed; null when unknown or not a `main` PR. */
   baseIsCurrentMain: boolean | null;
   currentMainHead: string | null;
 }
 
-export type MergeHandoffResult = { acted: boolean; reason: string };
+export type MergeHandoffResult = { acted: boolean; reason: string } & Partial<HandoffRecheckResult>;
 
 /** The late-bound merge watcher: one attempt for exactly this (pr, head), through every existing gate. */
 export type MergeHandoff = (record: LocalVerifyRecord, ctx: MergeHandoffContext) => Promise<MergeHandoffResult>;
@@ -905,7 +908,7 @@ export class LocalVerifyService {
   /** A PR entry re-reading its base head right before it starts (pump starts nothing meanwhile). */
   private starting: QueueEntry | null = null;
   private mainMovedAt: number | null = null;
-  private readonly mergeLineStats = { handoffs: 0, merged: 0, lastOutcome: null as string | null, lastPr: null as number | null };
+  private readonly mergeLineStats = { handoffs: 0, merged: 0, unknownHandoffs: 0, recoveredHandoffs: 0, holdActiveSkips: 0, lastOutcome: null as string | null, lastPr: null as number | null };
   /** Main-red hold (CMT-1033): the last failed `main` verify's failing files, the live switch, and the once-per-episode bookkeeping. */
   private mainFailure: MainFailureDetail | null = null;
   private mainRedHoldEnabled: (() => boolean) | null = null;
@@ -1224,7 +1227,7 @@ export class LocalVerifyService {
   }
 
   /** The merge line's state: wired or not, the live switch, the open hold, and the hand-off counters (`merged` counts acted hand-offs). */
-  mergeLine(): { wired: boolean; enabled: boolean; hold: { pr: number; headSha: string; since: string } | null; handoffs: number; merged: number; lastOutcome: string | null; lastPr: number | null } {
+  mergeLine(): { wired: boolean; enabled: boolean; hold: { pr: number; headSha: string; since: string } | null; handoffs: number; merged: number; unknownHandoffs: number; recoveredHandoffs: number; holdActiveSkips: number; lastOutcome: string | null; lastPr: number | null } {
     const h = this.mergeHold;
     return {
       wired: this.mergeHandoff !== null,
@@ -3824,12 +3827,15 @@ export class LocalVerifyService {
    * attempt settles (or `MERGE_LINE.handoffMaxMs`), so the next verify starts on top of
    * the merge. One hand-off per record; one hold at a time; every merge gate (lease,
    * latches, breaker, holds, code owners, independent review, safe-merge) stays the
-   * watcher's. A hand-off never retries: a refused merge waits for the watcher's tick.
+   * watcher's. The opt-in UNKNOWN re-check repeats only bounded mergeability reads.
    */
   private offerMerge(record: LocalVerifyRecord): void {
     const d = decideMergeHandoff({ outcome: record.outcome, kind: record.kind, wired: this.mergeHandoff !== null, enabled: this.mergeLineOn(), stopped: this.stopped, holdOpen: this.mergeHold !== null });
     if (!d.handoff) {
-      if (d.skip === 'hold-active') this.audit({ event: 'merge-handoff-skipped', pr: record.pr, headSha: record.headSha, reason: d.skip, holdPr: this.mergeHold?.pr });
+      if (d.skip === 'hold-active') {
+        this.mergeLineStats.holdActiveSkips++;
+        this.audit({ event: 'merge-handoff-skipped', pr: record.pr, headSha: record.headSha, reason: d.skip, holdPr: this.mergeHold?.pr });
+      }
       return;
     }
     const fn = this.mergeHandoff!;
@@ -3840,18 +3846,31 @@ export class LocalVerifyService {
     this.writeMergeHold('handoff'); // a planned restart waits (bounded) for this merge attempt
     this.mergeLineStats.handoffs++;
     this.mergeLineStats.lastPr = record.pr;
-    this.audit({ event: 'merge-handoff', pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, baseIsCurrentMain, currentMainHead });
+    this.audit({ event: 'merge-handoff', handoffStartedAt: hold.since, pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, baseIsCurrentMain, currentMainHead });
     let settled = false;
-    const finish = (outcome: string, acted: boolean) => {
+    let countedUnknown = false;
+    const finish = (outcome: string, acted: boolean, result?: MergeHandoffResult) => {
+      const metrics = {
+        firstMergeable: result?.firstMergeable,
+        recheckEntered: result?.recheckEntered ?? false,
+        recheckReads: result?.recheckReads ?? 0,
+        recheckSeconds: result?.recheckSeconds ?? 0,
+      };
+      if ((metrics.recheckEntered || (metrics.firstMergeable === 'UNKNOWN' && outcome === 'handoff-not-eligible:not-mergeable-unknown')) && !countedUnknown) {
+        countedUnknown = true;
+        this.mergeLineStats.unknownHandoffs++;
+      }
       if (settled) {
         // The watcher answered after the hold timed out (a long in-flight wait plus its own merge).
         // The hold is gone, but a landed merge still moves main: the next start re-reads its base.
         if (outcome !== 'timeout') {
           if (acted) this.mainMovedAt = this.now();
-          this.audit({ event: 'merge-handoff-late-answer', pr: record.pr, headSha: record.headSha, outcome, acted, heldMs: this.now() - hold.since, inFlight: this.inFlight?.entry.pr ?? null });
+          this.audit({ event: 'merge-handoff-late-answer', handoffStartedAt: hold.since, ...metrics, recovered: false, pr: record.pr, headSha: record.headSha, outcome, acted, heldMs: this.now() - hold.since, inFlight: this.inFlight?.entry.pr ?? null });
         }
         return;
       }
+      const recovered = metrics.recheckEntered && acted && outcome === 'merged' && this.mergeHold === hold;
+      if (recovered) this.mergeLineStats.recoveredHandoffs++;
       settled = true;
       if (this.mergeHold === hold) { this.mergeHold = null; this.clearMergeHold(); }
       this.mergeLineStats.lastOutcome = outcome;
@@ -3859,15 +3878,15 @@ export class LocalVerifyService {
         this.mergeLineStats.merged++;
         this.mainMovedAt = this.now(); // the next PR verify re-reads its base: it is tested on top of this merge
       }
-      this.audit({ event: 'merge-handoff-result', pr: record.pr, headSha: record.headSha, outcome, acted, heldMs: this.now() - hold.since });
+      this.audit({ event: 'merge-handoff-result', handoffStartedAt: hold.since, ...metrics, recovered, pr: record.pr, headSha: record.headSha, outcome, acted, heldMs: this.now() - hold.since });
       this.pump();
     };
     const setTimer = this.seams.setTimer ?? ((f: () => void, ms: number) => { const t = setTimeout(f, ms); t.unref?.(); });
     setTimer(() => finish('timeout', false), MERGE_LINE.handoffMaxMs);
     Promise.resolve()
-      .then(() => fn(record, { baseIsCurrentMain, currentMainHead }))
+      .then(() => fn(record, { baseIsCurrentMain, currentMainHead, handoffStartedAt: hold.since }))
       .then(
-        (r) => finish(r && typeof r.reason === 'string' ? r.reason : 'unknown', r?.acted === true),
+        (r) => finish(r && typeof r.reason === 'string' ? r.reason : 'unknown', r?.acted === true, r),
         (e) => finish(`error:${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`, false),
       );
   }
