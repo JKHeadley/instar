@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process';
 import {
   WorktreeMonitor,
   FILES_CHANGED_KEPT,
+  MAX_SAVED_REPORT_BYTES,
   type Worktree,
   type WorktreeMonitorConfig,
 } from '../../src/monitoring/WorktreeMonitor.js';
@@ -142,6 +143,29 @@ describe('WorktreeMonitor', () => {
   afterEach(() => {
     monitor.stop();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/worktree-monitor.test.ts:137' });
+  });
+
+  describe('saved report at boot', () => {
+    const reportPath = () => path.join(stateDir, 'worktree-monitor', 'last-report.json');
+    it('does not parse a saved report over the size bound (OOM at boot, 2026-11-19)', () => {
+      fs.mkdirSync(path.dirname(reportPath()), { recursive: true });
+      const fd = fs.openSync(reportPath(), 'w');
+      fs.ftruncateSync(fd, MAX_SAVED_REPORT_BYTES + 1); // sparse: cheap on disk, over the bound
+      fs.closeSync(fd);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const restarted = new WorktreeMonitor({ projectDir: repoDir, stateDir, pollIntervalMs: 0, alertCallback: async () => {} });
+      expect(restarted.getLastReport()).toBeNull();
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('not loaded'))).toBe(true);
+      warn.mockRestore();
+      restarted.stop();
+    });
+    it('still loads a saved report under the bound', () => {
+      fs.mkdirSync(path.dirname(reportPath()), { recursive: true });
+      fs.writeFileSync(reportPath(), JSON.stringify({ timestamp: 'x', worktrees: [], orphanBranches: [], alerts: [] }));
+      const restarted = new WorktreeMonitor({ projectDir: repoDir, stateDir, pollIntervalMs: 0, alertCallback: async () => {} });
+      expect(restarted.getLastReport()).toMatchObject({ timestamp: 'x' });
+      restarted.stop();
+    });
   });
 
   // ── Worktree Listing ─────────────────────────────────────────

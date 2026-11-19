@@ -40,7 +40,7 @@ import {
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, filesNamingTest, relativeImports, shq, testNamePattern, vitestPassedTestCount, vitestFailureKeys, failuresAllPreexisting, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
-import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
+import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, extractNonceVerdict, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, newVerdictNonce, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
 import type { RestartHold } from '../../core/UpdateGate.js';
@@ -1842,12 +1842,17 @@ export class FeedbackExecutorService {
     else {
       const triage = this.opts.triageStore.get(row.initiativeId);
       const lead = feedbackReviewLead({ severity: triage?.severity ?? null, effort: triage?.effort ?? null, needsSpec: triage?.needsSpec ?? null, changedPaths: reviewed.files });
+      // SEC-097: a fresh verdict code per review; only the reviewer's own line carrying it counts.
+      const verdictNonce = newVerdictNonce();
       const prompt = buildExecutorReviewPrompt({
         kind: row.needsSpec ? 'spec' : 'fix', prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: reviewed.files, diff,
-        omittedEvidence: reviewed.omitted,
+        omittedEvidence: reviewed.omitted, verdictNonce,
       });
       let reviewers: ReviewerOutcome[];
-      try { reviewers = await this.opts.review.run({ prompt, lead }); } catch (error) {
+      try {
+        reviewers = (await this.opts.review.run({ prompt, lead }))
+          .map((r) => (r.status === 'ok' ? { ...r, verdict: extractNonceVerdict(r.body ?? '', verdictNonce) } : r));
+      } catch (error) {
         // A throwing reviewer port is a degraded reviewer (every family, the cross-family one
         // included), never an aborted tick for every later row.
         reviewers = [{ family: 'review-port', model: null, status: 'degraded', verdict: null, crossFamily: true, reason: error instanceof Error ? error.name : 'threw', body: null }];

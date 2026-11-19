@@ -73,6 +73,8 @@ describe('AgentServer', () => {
       expect(typeof res.body.memory.rss).toBe('number');
       expect(typeof res.body.memory.heapUsed).toBe('number');
       expect(typeof res.body.memory.heapTotal).toBe('number');
+      expect(typeof res.body.memory.external).toBe('number');
+      expect(typeof res.body.memory.arrayBuffers).toBe('number');
       // Memory values should be in MB (positive integers)
       expect(res.body.memory.rss).toBeGreaterThan(0);
       expect(res.body.memory.heapUsed).toBeGreaterThan(0);
