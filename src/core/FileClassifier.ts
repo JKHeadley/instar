@@ -200,6 +200,14 @@ const DEFAULT_GENERATED_PATTERNS = [
   // history. Merged live on read through GET /quota-pacing, so syncing it would only create
   // conflicts; it is derived telemetry and rebuilds after a restore.
   '.instar/state/quota-history/',
+  // Source-tree guard runtime-state scope (docs/specs/guard-runtime-state-scope.md §4): each
+  // machine's own difference ledger, dispositions, incomplete marker and archive. The evidence
+  // is per machine (each machine's switch flips on its own ledger); GET /source-tree-guard/scope
+  // ?scope=pool reads every machine live.
+  '.instar/state/guard-scope-diff.jsonl',
+  '.instar/state/guard-scope-diff.incomplete',
+  '.instar/state/guard-scope-dispositions.jsonl',
+  '.instar/state/guard-scope-diff/',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [

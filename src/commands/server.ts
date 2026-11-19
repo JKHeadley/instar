@@ -5293,6 +5293,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       agentName: config.projectName,
       instarVersion: startupVersion,
     });
+    // Source-tree guard runtime-state scope (docs/specs/guard-runtime-state-scope.md §4): the
+    // mode and the ledger's home. `report` (default) keeps today's verdict and records differences.
+    {
+      const { configureGuardRuntimeScope } = await import('../core/guardRuntimeScope.js');
+      configureGuardRuntimeScope({
+        mode: (config.safety as { sourceTreeGuard?: { runtimeStateScope?: unknown } } | undefined)?.sourceTreeGuard?.runtimeStateScope ?? 'report',
+        stateDir: config.stateDir,
+      });
+    }
     // An awareness entry (src/data/awareness/) that failed its checks is left out of the agent's instructions: say so once.
     for (const event of unreportedRegistryDegradations()) degradationReporter.report(event);
 
@@ -25974,6 +25983,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
       path.join(config.stateDir, 'state', 'worktree-enumeration-failures.json'),
     );
+    const { AgentWorktreeReclaimRunner } = await import('../monitoring/agentWorktreeReclaimRunner.js');
+    const _agentWorktreeReclaimRunner = new AgentWorktreeReclaimRunner({
+      stateDir: path.join(config.stateDir, 'state', 'agent-worktree-reclaim'),
+      processName: 'agentWorktreeReclaimMain',
+      mainScript: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'monitoring', 'agentWorktreeReclaimMain.js'),
+      nodePath: process.execPath,
+      agentHome: path.dirname(config.stateDir),
+      projectDir: config.projectDir,
+      worktreesDir: _agentWorktreesDir,
+      configPath: path.join(config.stateDir, 'config.json'),
+      githubMergeCheck: () => config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+      maxReaps: () => config.monitoring?.agentWorktreeReaper?.maxReapsPerPass ?? 20,
+    });
+    // Adopt a run that survived a restart (asynchronous; never blocks boot).
+    void _agentWorktreeReclaimRunner.recover().catch(() => undefined); // @silent-fallback-ok — an unresolved recovery is retried by the next startRun, which refuses to start while ownership is unknown
     const agentWorktreeReaper = new AgentWorktreeReaper(
       {
         ...makeAgentWorktreeReaperDeps({
@@ -25991,6 +26015,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           worktreesDir: _agentWorktreesDir,
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
         }),
+        // Live removal runs in its own child process (docs/specs/reaper-removal-out-of-process.md):
+        // with dryRun false a pass does no git, lsof or ps here and starts at most one child.
+        reclaimRunner: _agentWorktreeReclaimRunner,
       },
       config.monitoring?.agentWorktreeReaper,
     );

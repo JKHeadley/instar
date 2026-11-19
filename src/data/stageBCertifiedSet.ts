@@ -164,6 +164,14 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "cross-cutting host-memory reader shared far beyond Codex delivery (reaper, revival, load report), certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
     {
+      "file": "src/core/guardRuntimeScope.ts",
+      "reason": "Source-tree guard runtime-state scope policy, ancestor classifier and mode (spec guard-runtime-state-scope); reached through SafeFsExecutor, in report mode it only records a shadow verdict and never changes Stage-B canaried delivery; certified by tests/unit/guard-runtime-scope-*.test.ts and tests/integration/guard-runtime-scope.test.ts"
+    },
+    {
+      "file": "src/core/guardScopeLedger.ts",
+      "reason": "Append-only would-deny/would-allow ledger for the guard's report mode (write-only observation, deduplicated per day); gates nothing in Stage-B canaried delivery; certified by tests/unit/guard-runtime-scope-modes-ledger.test.ts and guard-runtime-scope-review-fixes.test.ts"
+    },
+    {
       "file": "src/core/mergeDefaults.ts",
       "reason": "Pure shallow defaults-merge helper (no I/O, no state, no delivery logic) reached only through the excluded SessionLivenessOracle.ts; outside Stage-B canaried delivery behavior and covered by its own unit tests (tests/unit/core/mergeDefaults.test.ts)"
     },

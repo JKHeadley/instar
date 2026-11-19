@@ -354,7 +354,9 @@ export class Retirer {
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.logger ?? (() => {});
     this.rename = deps.rename ?? ((from, to) => fs.renameSync(from, to));
-    this.removeDir = deps.removeDir ?? ((dir, operation) => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation }));
+    // learnedSkillScope: a rendering folder directly under .claude/skills/ or .agents/skills/ (spec
+    // guard-runtime-state-scope §3); the retired-archive side is under .instar/ and needs no scope.
+    this.removeDir = deps.removeDir ?? ((dir, operation) => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation, learnedSkillScope: { projectDir: deps.projectDir } }));
   }
 
   /** Late binding of the sentinel-owned seams (reviewer fns need families + provenance that exist only on the sentinel). */

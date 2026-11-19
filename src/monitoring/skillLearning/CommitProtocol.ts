@@ -345,11 +345,11 @@ export class CommitProtocol implements CommitProtocolLike {
     const state: LearnedCanonicalState = op === 'retire' ? 'retired' : ((learnedStateOf(raw) ?? 'active') as LearnedCanonicalState);
     this.d.versions.append(name, { txId, version, fileHash, bodyHash: fileHashOf(body), epoch: fence.epoch, fence: fence.fence, op, state });
     try {
-      moveDirectory(fromAbs, toAbs, `skill-learning:${op}-move`);
+      moveDirectory(fromAbs, toAbs, `skill-learning:${op}-move`, { projectDir: this.d.projectDir });
     } catch (err) {
       const detail = `move failed: ${err instanceof Error ? err.message : String(err)}`;
       // Whatever landed is reversed by the same rule recovery applies; the row is void.
-      try { completeOrReverseMove(fromAbs, toAbs, `skill-learning:${op}-move-reverse`); } catch { /* @silent-fallback-ok — recovery on the next boot sees the open prepare and finishes the same decision */ }
+      try { completeOrReverseMove(fromAbs, toAbs, `skill-learning:${op}-move-reverse`, { projectDir: this.d.projectDir }); } catch { /* @silent-fallback-ok — recovery on the next boot sees the open prepare and finishes the same decision */ }
       this.d.versions.markVoid(name, txId, detail);
       this.journal({ op: 'move-void', txId, name, commitOp: op, detail });
       return { ok: false, reason: 'invalid', detail };
@@ -467,7 +467,7 @@ export class CommitProtocol implements CommitProtocolLike {
     };
     if (fs.existsSync(to) && fs.existsSync(from)) {
       // A half-done archive: the same completion/reversal rule as every move.
-      const decision = completeOrReverseMove(from, to, 'skill-learning:reject-archive-recovery');
+      const decision = completeOrReverseMove(from, to, 'skill-learning:reject-archive-recovery', { projectDir: this.d.projectDir });
       if (decision === 'completed') { ensureRow(); close('recovered: archive completed'); out.finished += 1; return; }
       if (decision === 'lost') { this.log(`[CommitProtocol] ${name}: archive ${to} holds foreign bytes — left in place, prepare deferred`); out.deferred += 1; return; }
     }
@@ -483,7 +483,7 @@ export class CommitProtocol implements CommitProtocolLike {
     if (onDisk === p.newHash) {
       const fence = this.d.fence.acquireFence();
       if (!fence.ok && fence.reason === 'aborted-unreachable') { out.deferred += 1; return; }
-      try { this.journal({ op: 'move-prepare', txId: moveTx, name, commitOp: 'reject', from, to, newHash: p.newHash, epoch: p.epoch, fence: p.fence, detail: 'recovered' }); moveDirectory(from, to, 'skill-learning:reject-archive-recovery'); }
+      try { this.journal({ op: 'move-prepare', txId: moveTx, name, commitOp: 'reject', from, to, newHash: p.newHash, epoch: p.epoch, fence: p.fence, detail: 'recovered' }); moveDirectory(from, to, 'skill-learning:reject-archive-recovery', { projectDir: this.d.projectDir }); }
       catch (err) {
         this.journal({ op: 'move-void', txId: moveTx, name, commitOp: 'reject', from, to, detail: `recovered: archive failed: ${err instanceof Error ? err.message : String(err)}` });
         out.deferred += 1;
@@ -517,10 +517,10 @@ export class CommitProtocol implements CommitProtocolLike {
     const moveTx = `${txId}.move`;
     this.journal({ op: 'move-prepare', txId: moveTx, name, commitOp: 'reject', from, to, epoch: fence.epoch, fence: fence.fence });
     try {
-      moveDirectory(from, to, 'skill-learning:reject-archive');
+      moveDirectory(from, to, 'skill-learning:reject-archive', { projectDir: this.d.projectDir });
     } catch (err) {
       const detail = `archive failed: ${err instanceof Error ? err.message : String(err)}`;
-      try { completeOrReverseMove(from, to, 'skill-learning:reject-archive-reverse'); } catch { /* @silent-fallback-ok — recovery on the next boot sees the open prepare and finishes the same decision */ }
+      try { completeOrReverseMove(from, to, 'skill-learning:reject-archive-reverse', { projectDir: this.d.projectDir }); } catch { /* @silent-fallback-ok — recovery on the next boot sees the open prepare and finishes the same decision */ }
       this.journal({ op: 'move-void', txId: moveTx, name, commitOp: 'reject', from, to, detail });
       return { ok: false, detail };
     }
@@ -532,7 +532,7 @@ export class CommitProtocol implements CommitProtocolLike {
     // A Retirer archive move (slice 3B) carries no version row: completed/reversed by the same rule, never a tombstone.
     const archive = p.commitOp === 'archive-rendering';
     if (!p.from || !p.to) { out.voided += 1; this.journal({ op: 'move-void', txId: p.txId, name: p.name, commitOp: p.commitOp, detail: 'recovered: prepare row carried no paths' }); return; }
-    const decision = completeOrReverseMove(p.from, p.to, `skill-learning:${p.commitOp}-move-recovery`);
+    const decision = completeOrReverseMove(p.from, p.to, `skill-learning:${p.commitOp}-move-recovery`, { projectDir: this.d.projectDir });
     if (decision === 'lost' && fs.existsSync(p.from) && fs.existsSync(p.to)) {
       this.log(`[CommitProtocol] ${p.name}: destination ${p.to} holds foreign bytes — left in place, prepare deferred`);
       out.deferred += 1;
@@ -666,7 +666,7 @@ export function dirsByteIdentical(a: string, b: string): boolean {
 }
 
 /** rename, or (cross-filesystem) copy → verify bytes → safeRmSync the source under an operation label. */
-export function moveDirectory(from: string, to: string, operation: string): void {
+export function moveDirectory(from: string, to: string, operation: string, scope?: { projectDir: string }): void {
   fs.mkdirSync(path.dirname(to), { recursive: true });
   try {
     fs.renameSync(from, to);
@@ -676,7 +676,7 @@ export function moveDirectory(from: string, to: string, operation: string): void
   }
   copyDirRecursive(from, to);
   if (!dirsByteIdentical(from, to)) throw new Error(`cross-filesystem copy of ${from} → ${to} did not verify byte-for-byte`);
-  SafeFsExecutor.safeRmSync(from, { recursive: true, force: true, operation });
+  SafeFsExecutor.safeRmSync(from, { recursive: true, force: true, operation, ...(scope ? { learnedSkillScope: scope } : {}) });
 }
 
 /** Every file under `partial` exists under `full` with identical bytes (a prefix of a copy in flight). */
@@ -706,17 +706,17 @@ export function dirIsPartialCopyOf(partial: string, full: string): boolean {
  *   - source present, destination absent                       → reversed (never happened);
  *   - neither present                                          → 'lost' (reported; nothing to do).
  */
-export function completeOrReverseMove(from: string, to: string, operation: string): 'completed' | 'reversed' | 'lost' {
+export function completeOrReverseMove(from: string, to: string, operation: string, scope?: { projectDir: string }): 'completed' | 'reversed' | 'lost' {
   const fromExists = fs.existsSync(from);
   const toExists = fs.existsSync(to);
   if (toExists && !fromExists) return 'completed';
   if (toExists && fromExists) {
     if (dirsByteIdentical(from, to)) {
-      SafeFsExecutor.safeRmSync(from, { recursive: true, force: true, operation });
+      SafeFsExecutor.safeRmSync(from, { recursive: true, force: true, operation, ...(scope ? { learnedSkillScope: scope } : {}) });
       return 'completed';
     }
     if (dirIsPartialCopyOf(to, from)) {
-      SafeFsExecutor.safeRmSync(to, { recursive: true, force: true, operation });
+      SafeFsExecutor.safeRmSync(to, { recursive: true, force: true, operation, ...(scope ? { learnedSkillScope: scope } : {}) });
       return 'reversed';
     }
     return 'lost';

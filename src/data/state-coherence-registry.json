@@ -2308,6 +2308,28 @@
       }
     },
     {
+      "category": "guard-scope-diff-ledger",
+      "description": "Source-tree guard runtime-state scope difference ledger (docs/specs/guard-runtime-state-scope.md section 4): one append-only row per distinct difference per day between today's guard verdict and the scoped rule (direction, verb, reason, caller, operation, target shape and class, one sample path), the dispositions given to them, the incomplete marker created when the cap is hit, and the reviewed-reset archive. Written with O_APPEND single-line writes by the server, the CLI and out-of-process children. Per machine: each machine's enforce switch is decided on its own ledger; GET /source-tree-guard/scope?scope=pool reads every machine.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/guard-scope-diff.jsonl",
+        "state/guard-scope-diff.incomplete",
+        "state/guard-scope-dispositions.jsonl",
+        "state/guard-scope-diff/archive"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-byte-ceiling",
+        "access": "streamed",
+        "maxBytes": 52428800,
+        "keepSegments": 0,
+        "note": "Never rolled or rewritten: a writer that finds the ledger at 50 MB appends nothing and creates the incomplete marker (O_EXCL), which blocks enforce until a reviewed reset archives the ledger and starts a fresh window. Rows are deduplicated per process per day, so growth is bounded by distinct differences. Read by streaming, never whole."
+      }
+    },
+    {
       "category": "quota-pacing-ticks",
       "description": "Quota pacing hourly tick row per machine (accounts, accounts with history, stale reasons, ledger write failures, malformed and dropped rows, verdict counts): the durable evidence the feature ladder reads.",
       "scope": "machine-local",

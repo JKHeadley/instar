@@ -20,6 +20,7 @@ import path from 'node:path';
 import { loadRegistry } from './AgentRegistry.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { reportGuardedDeleteFailure } from './guardRefusalDegradation.js';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -733,7 +734,8 @@ export function acquireWorktreeCreateLock(agentHome: string): { release: () => v
 /** Keep full checkout growth bounded before git creates another source tree. */
 export function assertWorktreeCapacity(worktreesDir: string, limit = 500): void {
   const directories = fs.readdirSync(worktreesDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    // `.trash` holds the reaper's renamed-away checkouts, never a live worktree.
+    .filter((entry) => entry.isDirectory() && entry.name !== '.trash')
     .map((entry) => entry.name);
   if (directories.length >= limit) {
     throw new Error(
@@ -924,12 +926,21 @@ function cloneNodeModules(source: string, target: string): boolean {
     // timeout: the caller falls back to the previous symlink behavior.
     try {
       if (fs.existsSync(staging)) {
-        SafeFsExecutor.safeRmSync(staging, { recursive: true, force: true, operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules' });
+        SafeFsExecutor.safeRmSync(staging, {
+          recursive: true, force: true, operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules',
+          nodeModulesCloneStagingScope: { worktreeRoot: path.dirname(target) },
+        });
       }
-    } catch { /* @silent-fallback-ok — leftover staging folder is inert */ }
+    } catch (err) {
+      // @silent-fallback-ok — a leftover staging folder is inert; a refusal is recorded, not swallowed.
+      reportGuardedDeleteFailure(err, { operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules', target: staging });
+    }
     return false;
   }
 }
+
+/** @internal tests (spec guard-runtime-state-scope: a refused staging delete records a degradation). */
+export { cloneNodeModules as _cloneNodeModulesForTesting };
 
 export function ensureHuskyHooksActive(worktreePath: string): void {
   const packageJsonPath = path.join(worktreePath, 'package.json');

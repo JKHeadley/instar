@@ -112,6 +112,12 @@ for (const key of Object.keys(process.env)) {
 // loudly. Callers of certifiedUnion often degrade errors to held/partial, so a divergence is also counted on
 // globalThis and asserted zero after every test. Set after the strip loop above, which would delete it.
 process.env.INSTAR_GRAPH_VERDICT_MEMO_CHECK = '1';
+
+// The source-tree guard's runtime-state difference ledger (docs/specs/guard-runtime-state-scope.md §4)
+// defaults to <cwd>/.instar/state. Under the test runner cwd is the checkout, so point it at a
+// per-run temp folder: a test's deletes must never append to a real agent's ledger.
+// The folder is created only if a row is ever written.
+process.env.INSTAR_GUARD_SCOPE_LEDGER_DIR = path.join(os.tmpdir(), `instar-guard-scope-ledger-${process.pid}`);
 const assertNoGraphVerdictMemoDivergence = (where: string) => {
   const divergences = Number((globalThis as Record<string, unknown>).__instarGraphVerdictMemoDivergences ?? 0);
   if (divergences !== 0) {

@@ -358,6 +358,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'sourceTreeGuardScope',
+    prefixes: ['/source-tree-guard'],
+    description: 'Source-tree guard runtime-state scope (docs/specs/guard-runtime-state-scope.md) — read-only. The old rule allowed any delete whose path held `/.instar/` anywhere, so on an agent home (under ~/.instar/agents/) it allowed source files too; the scoped rule allows only an enclosing instar checkout\'s own `.instar/` folder plus named scopes. GET /source-tree-guard/scope returns the configured and effective mode (`report` by default: today\'s verdict runs and differences are recorded; `enforce` only after the Chief of Staff decides and never while the ledger is marked incomplete), the difference-ledger counts by direction (would-deny / would-allow) and class (source-file / checkout-root / other), and the distinct differences still without a disposition. ?scope=pool lists every machine and names one that did not answer. When asked "is the guard protecting the agent home?" or "what would enforce refuse?" → read this.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /source-tree-guard/scope'],
+    }),
+  },
+  {
     key: 'quotaPacing',
     prefixes: ['/quota-pacing'],
     description: 'Quota pacing (docs/specs/quota-pacing-forecast.md) — a forecast, not an instruction: where each subscription account\'s weekly (and Claude Fable) window lands at its reset (central forecast plus a range from the slowest to the fastest recent pace) and whether each provider\'s group of accounts keeps weekly room for the next 7 days (runs-dry / tight / sustainable / cannot-tell, with account verdicts used-up / will-hit-limit / will-leave-unused / on-track / unknown). GET /quota-pacing merges every machine (?scope=local is this machine only; ?account=ID&history=1 returns this machine\'s rows). Lead with the pool ("9 of 14 accounts have room"), never one account\'s number; never hold, shed or add work because of it. Dev-gated (subscriptionPool.pacing.enabled); 503 quota-pacing-off when off. When asked "will an account\'s quota expire unused?" or "will Claude or Codex run out this week?" → read this, don\'t guess.',

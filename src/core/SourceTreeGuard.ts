@@ -416,3 +416,155 @@ export function _resolveRootForTesting(dir: string): {
   const { worktreeRoot, dotGitPath, dotGitIsFile } = findGitRoot(canonicalStart);
   return { canonicalStart, worktreeRoot, dotGitPath, dotGitIsFile };
 }
+
+// ── Three-way evidence (docs/specs/guard-runtime-state-scope.md §1) ──
+//
+// `isInstarSourceTree` collapses an unreadable layer to false and an
+// uncanonicalisable path to true. The runtime-state rule needs neither: it
+// needs to know, per folder, whether the evidence says "instar", says
+// "not instar", or could not be read. These readers reuse the same layers
+// (marker, package signature, canonical origin remote) and keep every read
+// error instead of dropping it.
+
+/** One piece of evidence: it matched, it did not, or it could not be read. */
+export type EvidenceRead = 'yes' | 'no' | 'error';
+
+export interface SourceTreeEvidence {
+  dir: string;
+  marker: EvidenceRead;
+  signature: EvidenceRead;
+  remote: EvidenceRead;
+  /** What `<dir>/.git` is: a folder, a worktree pointer file, absent, or unreadable. */
+  dotGit: 'dir' | 'file' | 'none' | 'error';
+  /** Each failed read, as `<what>: <code>`. */
+  errors: string[];
+}
+
+export type SourceTreeAncestorKind = 'instar' | 'ordinary' | 'indeterminate';
+
+function isAbsentCode(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+function errCode(err: unknown): string {
+  return (err as NodeJS.ErrnoException | undefined)?.code ?? (err instanceof Error ? err.message : String(err));
+}
+
+/** lstat-based existence: true, false (absent), or the error. */
+function presence(p: string, follow: boolean): boolean | { error: string } {
+  try {
+    if (follow) fs.statSync(p); else fs.lstatSync(p);
+    return true;
+  } catch (err) {
+    // @silent-fallback-ok — not swallowed: absence is a real answer, and any other error is returned to the caller, which records it as indeterminate evidence
+    if (isAbsentCode(err)) return false;
+    return { error: errCode(err) };
+  }
+}
+
+function readMarkerEvidence(dir: string, errors: string[]): EvidenceRead {
+  const p = presence(path.join(dir, MARKER_FILENAME), false);
+  if (p === true) return 'yes';
+  if (p === false) return 'no';
+  errors.push(`marker: ${p.error}`);
+  return 'error';
+}
+
+function readSignatureEvidence(dir: string, errors: string[]): EvidenceRead {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(dir, 'package.json'), 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (isAbsentCode(err) || code === 'EISDIR') return 'no';
+    errors.push(`package.json: ${errCode(err)}`);
+    return 'error';
+  }
+  let pkg: { name?: unknown };
+  try { pkg = JSON.parse(text); } catch { return 'no'; } // readable, and not an instar package
+  if (!pkg || typeof pkg !== 'object' || pkg.name !== 'instar') return 'no';
+  let hits = 0;
+  let failed = false;
+  for (const rel of SIGNATURE_FILES) {
+    const p = presence(path.join(dir, rel), true);
+    if (p === true) { hits++; if (hits >= 2) return 'yes'; }
+    else if (p !== false) { failed = true; errors.push(`signature ${rel}: ${p.error}`); }
+  }
+  return failed ? 'error' : 'no';
+}
+
+function readRemoteEvidence(dir: string, dotGit: 'dir' | 'file', errors: string[]): EvidenceRead {
+  const dotGitPath = path.join(dir, '.git');
+  let configPath: string;
+  if (dotGit === 'dir') {
+    configPath = path.join(dotGitPath, 'config');
+  } else {
+    let contents: string;
+    try { contents = fs.readFileSync(dotGitPath, 'utf8'); } catch (err) {
+      if (isAbsentCode(err)) return 'no';
+      errors.push(`.git file: ${errCode(err)}`);
+      return 'error';
+    }
+    const match = contents.match(/^\s*gitdir:\s*(.+?)\s*$/m);
+    if (!match || !match[1].trim()) return 'no';
+    const raw = match[1].trim();
+    let gitdir = path.isAbsolute(raw) ? raw : path.resolve(dir, raw);
+    try { gitdir = fs.realpathSync(gitdir); } catch (err) {
+      if (isAbsentCode(err)) return 'no'; // a stale pointer: no repository to read
+      errors.push(`gitdir: ${errCode(err)}`);
+      return 'error';
+    }
+    const parent = path.dirname(gitdir);
+    if (path.basename(parent) !== 'worktrees') return 'no';
+    configPath = path.join(path.dirname(parent), 'config');
+  }
+  let configText: string;
+  try { configText = fs.readFileSync(configPath, 'utf8'); } catch (err) {
+    if (isAbsentCode(err)) return 'no';
+    errors.push(`git config: ${errCode(err)}`);
+    return 'error';
+  }
+  const rawUrl = parseOriginUrlFromGitConfig(configText);
+  if (rawUrl == null) return 'no';
+  return NORMALIZED_CANONICAL_REMOTES.includes(normalizeRemoteUrl(rawUrl)) ? 'yes' : 'no';
+}
+
+/**
+ * Read the source-tree evidence of ONE folder (no walking), keeping every
+ * read error. `dir` should already be canonical.
+ */
+export function readSourceTreeEvidence(dir: string): SourceTreeEvidence {
+  const errors: string[] = [];
+  const marker = readMarkerEvidence(dir, errors);
+  const signature = readSignatureEvidence(dir, errors);
+  let dotGit: SourceTreeEvidence['dotGit'];
+  try {
+    const st = fs.lstatSync(path.join(dir, '.git'));
+    dotGit = st.isDirectory() ? 'dir' : 'file';
+  } catch (err) {
+    if (isAbsentCode(err)) dotGit = 'none';
+    else { dotGit = 'error'; errors.push(`.git: ${errCode(err)}`); }
+  }
+  const remote: EvidenceRead = dotGit === 'dir' || dotGit === 'file'
+    ? readRemoteEvidence(dir, dotGit, errors)
+    : dotGit === 'error' ? 'error' : 'no';
+  return { dir, marker, signature, remote, dotGit, errors };
+}
+
+/**
+ * Classify one folder: `instar` when any evidence matches, otherwise
+ * `indeterminate` when any read failed, otherwise `ordinary`. A failed read is
+ * never collapsed to `ordinary`.
+ */
+export function classifySourceTreeAncestor(dir: string): { kind: SourceTreeAncestorKind; evidence: SourceTreeEvidence } {
+  const evidence = readSourceTreeEvidence(dir);
+  if (evidence.marker === 'yes' || evidence.signature === 'yes' || evidence.remote === 'yes') return { kind: 'instar', evidence };
+  if (evidence.errors.length > 0 || evidence.marker === 'error' || evidence.signature === 'error' || evidence.remote === 'error' || evidence.dotGit === 'error') {
+    return { kind: 'indeterminate', evidence };
+  }
+  return { kind: 'ordinary', evidence };
+}
+
+/** The walk cap `isInstarSourceTree` uses, shared with the runtime-state classifier. */
+export const SOURCE_TREE_MAX_WALK_LEVELS = MAX_WALK_LEVELS;

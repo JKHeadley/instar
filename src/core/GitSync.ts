@@ -416,8 +416,8 @@ export class GitSyncManager {
             console.warn(`[GitSync] rebase --abort failed, cleaning up rebase state manually: ${abortErr}`);
             const rebaseMerge = path.join(this.projectDir, '.git', 'rebase-merge');
             const rebaseApply = path.join(this.projectDir, '.git', 'rebase-apply');
-            if (fs.existsSync(rebaseMerge)) SafeFsExecutor.safeRmSync(rebaseMerge, { recursive: true, force: true, operation: 'src/core/GitSync.ts:346' });
-            if (fs.existsSync(rebaseApply)) SafeFsExecutor.safeRmSync(rebaseApply, { recursive: true, force: true, operation: 'src/core/GitSync.ts:348' });
+            if (fs.existsSync(rebaseMerge)) SafeFsExecutor.safeRmSync(rebaseMerge, { recursive: true, force: true, operation: 'src/core/GitSync.ts:346', gitRebaseStateScope: { projectDir: this.projectDir } });
+            if (fs.existsSync(rebaseApply)) SafeFsExecutor.safeRmSync(rebaseApply, { recursive: true, force: true, operation: 'src/core/GitSync.ts:348', gitRebaseStateScope: { projectDir: this.projectDir } });
           }
           const beforeHead = this.gitHead();
           // Use merge (not rebase) to avoid recreating the same stuck rebase

@@ -238,6 +238,7 @@ import { standingCheck, teamStateAt, teamView, type TeamDeps } from '../document
 import { tierOfRole } from '../permissions/TeamAccess.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { createQuotaPacingRoutes } from './quotaPacingRoutes.js';
+import { createSourceTreeGuardScopeRoutes } from './sourceTreeGuardScopeRoutes.js';
 import { QuotaHistoryLedger, buildLocalSummaries, isQuotaPacingEnabled } from '../monitoring/QuotaHistoryLedger.js';
 import { mergeLogins as mergeQuotaLogins, assembleProviders as assembleQuotaProviders } from '../monitoring/quotaPacing.js';
 import { createSkillLearningRoutes } from './skillLearningRoutes.js';
@@ -7684,6 +7685,9 @@ export class AgentServer {
     // (dev-gated through subscriptionPool.pacing.enabled; 503 quota-pacing-off when it resolves off).
     this.startQuotaPacing(options);
     this.app.use(createQuotaPacingRoutes({ ...routeCtx, quotaPacing: () => this.quotaPacingLedger }));
+    // Source-tree guard runtime-state scope (docs/specs/guard-runtime-state-scope.md §4): read-only
+    // mode + difference-ledger counts, `?scope=pool` for every machine.
+    this.app.use(createSourceTreeGuardScopeRoutes(routeCtx));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({

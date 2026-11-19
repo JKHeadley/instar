@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "guard-scope-dark-gate-map",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T15:52:56.917Z",
+  "artifactPath": "upgrades/side-effects/guard-scope-dark-gate-map.md",
+  "artifactSha256": "cc5725af09bf77b7a2ff6366521a78d068168363c3de04e474a89f16b1af1780",
+  "coveredFiles": [
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "upgrades/side-effects/guard-scope-dark-gate-map.eli16.md",
+    "upgrades/side-effects/guard-scope-dark-gate-map.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only hand-kept line map shift; no runtime change",
+  "eli16Path": "upgrades/side-effects/guard-scope-dark-gate-map.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/guard-scope-dark-gate-map.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

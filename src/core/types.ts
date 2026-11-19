@@ -6660,6 +6660,11 @@ export interface SafetyConfig {
    * These are catastrophic, irreversible operations that no self-check can undo.
    */
   alwaysBlock?: string[];
+  /** Source-tree guard settings (docs/specs/guard-runtime-state-scope.md). */
+  sourceTreeGuard?: {
+    /** `report` (default): today's verdict executes, differences are recorded. `enforce`: the scoped rule decides. */
+    runtimeStateScope?: 'report' | 'enforce';
+  };
 }
 
 export interface PublishingConfig {

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "guard-scope-stageb-and-note",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T11:14:14.735Z",
+  "artifactPath": "upgrades/side-effects/guard-scope-stageb-and-note.md",
+  "artifactSha256": "55fbf74f8602f15a8607094a46d29d2c2b7b74e341f0796ed1eb7231f10b0fe8",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/next/guard-runtime-state-scope.md",
+    "upgrades/side-effects/guard-scope-stageb-and-note.eli16.md",
+    "upgrades/side-effects/guard-scope-stageb-and-note.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "data-only stage-B exclusion entries and a release-note fragment; no runtime change",
+  "eli16Path": "upgrades/side-effects/guard-scope-stageb-and-note.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/guard-scope-stageb-and-note.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
