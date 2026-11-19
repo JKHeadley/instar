@@ -4,14 +4,24 @@ slug: "quota-pacing-spend-by-account"
 author: "echo"
 parent-principle: "Verify the State, Not Its Symbol"
 eli16-overview: "quota-pacing-spend-by-account.eli16.md"
-status: "draft"
-approved: false
+status: "converged"
+approved: true
+approved-by: "Echo under standing authority: Justin approves only constitution changes (Instar 1.x, 2026-10-22 08:58 PDT, memory only-constitution-changes-need-justin); this spec touches no constitution file. Request origin: Justin, topic 144201, 2026-11-18 22:04 PST."
 parent-spec: "quota-pacing-forecast.md (step 1 lists 'spend by account in the usage ledger' as step 3 and labels account size an assumption); unified usage ledger (UsageLedger.ts); quota-pacing-account-choice.md (step 2)"
 lessons-engaged:
   - "P20 Verify the State, Not Its Symbol: a session's account tag is a label; the folder the provider wrote the transcript into is the evidence"
   - "P2 Signal vs Authority: read-only measurement; nothing here places, moves or sheds work"
   - "P24 Never Silently Cut the Data: rows with no resolvable account are counted and shown, never dropped or guessed"
 origin: "Justin, topic 144201, 2026-11-18 22:04 PST: 'I want to make sure that we have a continuous effort to optimize our use of tokens for all accounts'. Step order from the token pacing plan, topic 141385, 2026-11-17 10:19 PST."
+review-convergence: "2026-11-19T06:18:42.657Z"
+review-iterations: 3
+review-completed-at: "2026-11-19T06:18:42.657Z"
+review-report: "docs/specs/reports/quota-pacing-spend-by-account-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 5
+cheap-to-change-tags: 0
+contested-then-cleared: 10
 ---
 
 # Quota pacing, step 3: spend by account
