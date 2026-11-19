@@ -77,3 +77,7 @@ The registry's own rules make a pending article advisory and never build-failing
 Justin, 19:04 PST in topic 145097: *"Yes, to all"*, answering the request that set out both articles' exact wording. Both articles are now marked ratified and each carries a `Ratified by` line.
 
 The first version of this change failed CI: the registry checker only accepts section labels on a fixed list, and it rejected `Balanced by the floors` and `Enforcement state — PARTIAL`. The words of those sections are unchanged; they now sit inside the `Rule` and `In practice` fields, which the checker knows. No source file changes. Side effects: none beyond the registry text; the generated registry asset now counts 102 articles.
+
+## Addendum (2026-11-18 19:30 PST): family review
+
+Adding an article makes its family's audit record stale, so Building and Interaction were re-read by an independent reviewer (report `docs/specs/reports/safeguard-benefit-and-standalone-docs-family-review-2026-11-18.md`, audit `docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json`, ledger `docs/standards-registry-area-audits.json`). Nine findings, all resolved in the text; four of them add sentences to the wording Justin approved, and were put to him in topic 145097 before his review was recorded. The ratchet test's pinned article count moves 100 to 102. `skills/spec-converge/templates/reviewer-lessons-aware.md` gains the fourth floor (the operator channel) in one sentence. No runtime code changes; no decision point is added or changed.

@@ -140,7 +140,7 @@ These are DESIGN-class findings:
 - a practice-only or shadow phase with no stated end (runs, days, or evidence);
 - a narrow restriction made redundant by a stronger one in the same design that still costs benefit.
 
-Do not weaken a constitutional floor (security, data loss, the owner's machine) to recover benefit. Say when the honest benefit is near zero because of the design's target rather than its walls, and recommend changing the target.
+Do not weaken a constitutional floor (security, data loss, the owner's machine, the operator channel) to recover benefit. Say when the honest benefit is near zero because of the design's target rather than its walls, and recommend changing the target.
 
 **Self-contained documents.** Read the spec's ELI16 overview as a reader with no context. It must explain:
 - what the system is;

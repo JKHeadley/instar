@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "benefit-must-survive",
+  "sessionId": "416bfb4e-d1e1-477b-9962-f4d4f517af36",
+  "timestamp": "2026-11-19T03:24:59.240Z",
+  "artifactPath": "upgrades/side-effects/benefit-must-survive.md",
+  "artifactSha256": "19bab79b5ff1dce11f64d68427e66fc8cb6471e64aadbc33caaeea911e1c7efd",
+  "coveredFiles": [
+    "docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
+    "docs/specs/reports/safeguard-benefit-and-standalone-docs-family-review-2026-11-18.md",
+    "docs/standards-registry-area-audits.json",
+    "skills/spec-converge/templates/reviewer-lessons-aware.md",
+    "upgrades/side-effects/benefit-must-survive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "constitution articles ratified by the operator; docs, audit records and one reviewer-template sentence; no runtime code",
+  "eli16Path": "docs/specs/benefit-must-survive.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/benefit-must-survive.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
