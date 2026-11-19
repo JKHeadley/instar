@@ -49,7 +49,7 @@ A guided setup discovers your environment, connects a way to talk to your agent 
 
 Most AI forgets you the moment the chat ends. Agents built on it fail the same ways: *"My agent forgot what I told it three sessions ago." "It contradicted its own past decisions." "It broke when the framework updated."*
 
-Instar is what was left after a year of finding the ways an agent fails when nobody is watching, and making each fix part of the system so it does not depend on the agent remembering. It grew out of [**Dawn**](https://dawn.bot-me.ai), an AI that has run continuously since January 2026 and has talked with about 2,000 people, about 800 of them more than once. Every Instar agent starts from that foundation.
+Instar is what was left after most of a year of finding the ways an agent fails when nobody is watching, and making each fix part of the system so it does not depend on the agent remembering. It grew out of [**Dawn**](https://dawn.bot-me.ai), an AI that has run continuously since January 2026 and has talked with about 2,000 people, about 800 of them more than once. Every Instar agent starts from that foundation.
 
 | Agents without structure | Your Instar agent |
 |---|---|
@@ -62,7 +62,7 @@ Instar is what was left after a year of finding the ways an agent fails when nob
 | Live on one machine. | One agent and one memory across all your computers. |
 | Never learn from correction. | Turns repeated corrections into lasting preferences. <br/>*(Correction & Preference Learning, Evolution System)* |
 
-> The rule behind Instar is **structure over willpower**: every correction became a check that runs every time, because a lesson that lives only in notes is forgotten after the next restart. And honesty comes before polish.
+> The rule behind Instar is **structure over willpower**: a correction should become a check that runs every time, because a lesson that lives only in notes is forgotten after the next restart. And honesty comes before polish.
 
 ## How It Works
 

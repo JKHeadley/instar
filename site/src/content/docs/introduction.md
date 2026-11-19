@@ -19,7 +19,7 @@ Most AI forgets you the moment the chat ends. Agents built on it fail in the sam
 - *"It broke when the framework updated."*
 - *"It could do anything, and nobody had decided what it should be allowed to do."*
 
-These are not bad prompts or wrong models. They are the same architectural failure: an agent with no structure for staying coherent. No memory across boundaries, no accountability for what an earlier session did, no way to learn from its corrections. Instar is what was left after a year of finding the ways an agent fails when nobody is watching, and making each fix part of the system so it does not depend on the agent remembering.
+These are not bad prompts or wrong models. They are the same architectural failure: an agent with no structure for staying coherent. No memory across boundaries, no accountability for what an earlier session did, no way to learn from its corrections. Instar is what was left after most of a year of finding the ways an agent fails when nobody is watching, and making each fix part of the system so it does not depend on the agent remembering.
 
 ## The Solution
 
