@@ -6,7 +6,7 @@ tier: 2
 parent-principle: "A Dark Feature Guards Nothing"
 parent-principle-fit: "The guard's runtime-state rule allows any path containing `/.instar/` anywhere. Agent homes live at `~/.instar/agents/<name>/`, so on every agent home the rule allows every path, including source files. The source-tree guard exists there but guards nothing (fb-abdf2088-f27)."
 eli16-overview: "docs/specs/guard-runtime-state-scope.eli16.md"
-review-convergence: "2026-11-19T09:11:00.000Z"
+review-convergence: "operator-approved-at-cap (NOT converged; Chief of Staff msg 30c7f163, 2026-11-19 01:11 PT)"
 review-iterations: 7
 review-convergence-note: "Written by hand, not by write-convergence-tag.mjs: the spec did not converge within the 6-round cap. A 7th confirmation round was approved by the Chief of Staff and still found design items; the spec was then split, and spec A was reviewed once more and approved as watch-only (msgs 550f6db5, deabf75a, 30c7f163). See the report."
 review-completed-at: "2026-11-19T09:11:00.000Z"
