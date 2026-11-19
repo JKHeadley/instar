@@ -96,8 +96,8 @@ The queue and the waiting list are the coordinator's; a peer runs what it is han
 - **dev-agent-live:** the development agent's line, switched on by the session that operates the line.
 - **graduation criterion:** from the audit rows (which survive restarts), over 7 days with the switch on, against the days with it off before: no out-of-order admission (with the switch off, a labelled admission that takes an aged waiter's last place is one), and the rule seen at work at least once (a request refused as `waiting-behind-aged`, followed by the admission of the waiter it waited behind); a week in which no place was contested proves nothing and the count goes on; merges per day not lower than the 7 days before; fewer than 1 admission in 50 marked `admitted-to-avoid-idle` (the mark is set only when the reservation would otherwise have refused; more means the reservation is fighting the line); the minutes per day in which a verifier was idle while changes waited not higher than in the 7 days before. Reported beside it, not as the criterion, because it depends on capacity as much as on this rule: the oldest live waiter's age, daily maximum (26 hours when measured).
 - **fleet:** off by default until the 7-day report; then proposed as the default with the numbers.
-- **dark-window:** from merge until the operating session turns it on.
-- **owner:** echo (scaling session, topic 145097). Review 7 days after it is switched on. If it is not switched on 30 days after merge, the owner raises that with the session that operates the line, and again every 30 days.
+- **dark-window:** from merge until the operating session turns it on. The admission rows give a baseline with the switch off; 3 days after it is installed the owner sends the operating session the baseline (out-of-order admissions, the oldest waiter's age) and asks for the switch.
+- **owner:** echo (scaling session, topic 145097). Review 7 days after it is switched on. If it is not switched on 14 days after merge, the owner raises it with the Chief of Staff, with the count of hand fronts made in that time, for a decision to switch it on or remove it: the starvation it answers is happening now, and a fix left dark answers nothing.
 
 ## Tests
 
@@ -108,7 +108,7 @@ The queue and the waiting list are the coordinator's; a peer runs what it is han
 ## Risks
 
 - **Labelled changes wait longer** while there is a backlog of aged waiters. That is the intent; the operator's front remains for a change that must go now (5 places).
-- **A place stands unused for up to 30 minutes** when its waiter has gone quiet (normally one watcher round, about 10 minutes). No machine idles for it: with nothing waiting to start, nothing is reserved.
+- **A place stands unused for up to 30 minutes** when its waiter has gone quiet (normally one watcher round, about 10 minutes). At the moment a change asks, no machine is left idle for it: with nothing the free verifier may start, the reservation is set aside. The one sequence part B names (a verifier that becomes free after a refusal) is not covered and is measured.
 - **A waiter that can never pass** (it fails every time) takes its turn each time it ages. It is admitted once per head: a failed head is recorded and not offered again, as today.
 
 ## Frontloaded Decisions
