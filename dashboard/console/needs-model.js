@@ -188,19 +188,33 @@ const failedRead = (res) => sourceState(res) === 'failed';
 
 /** Plain words a linked row shows for its card: fixed, never the agent's own title (work-board-cards-appear §3). */
 export const HAS_CARD_LABEL = 'Has a card on the work board';
+/** The fixed label of a row that IS its card (needs-one-list): the card opens from the row itself. */
+export const IS_CARD_LABEL = 'Opens its card on the work board';
+/** The fixed words of the source's own link kept on a row that became its card. */
+export const ALSO_OPENS_LABEL = 'Open the project conversation';
+/** The covers namespace only the server writes (work-board-cards-appear §2: reserved `cos:`). */
+const SERVER_COVERS = /^cos:/;
 
 /**
- * Each need once (docs/specs/work-board-cards-appear.md §3). A card in the owner's shown "Waiting on you" slice that
- * says it is about other rows (`covers`) and only waits on the person to act (with the person, no Approve, no Confirm done,
- * no open question, nothing outward) stands in for itself through them:
- * each covered row keeps its own words, source and action and gains `card`; a server-owned card's own row is dropped
- * (an agent session's card keeps its own row too).
- * Two cards on one row: the older card (creation time, then id) links it. A card none of whose rows is present, or
- * that asks for Approve, an answer or something outward, keeps its own row. Pure: returns new rows, mutates none.
+ * Each need once (docs/specs/work-board-cards-appear.md §3, as amended 2026-11-18 "One row per Chief of Staff wait"). A card in the owner's shown
+ * "Waiting on you" slice that says it is about other rows (`covers`) stands in for them in one of two ways:
+ *
+ * - The Chief of Staff's own wait card (server-owned, covering a row in the server-only `cos:` namespace) BECOMES that
+ *   row: one row, with the card's title and words, whose action opens the card, whatever the card asks (an open wait or
+ *   a Confirm done). The row keeps its key and source; the source's own action stays on it as `alsoOpens`. The card's
+ *   own row is dropped. Both texts are the server's, so no agent text replaces a source's words.
+ * - Any other card that only waits on the person to act (with the person, no Approve, no Confirm done, no open question,
+ *   nothing outward) links the rows it covers: each keeps its own words, source and action and gains `card`. An agent
+ *   session's card keeps its own row too, so an agent's card can never take over another source's button.
+ *
+ * Two cards on one row: the older card (creation time, then id) takes it. A card none of whose rows is present, or
+ * that asks for Approve, an answer or something outward (other than the Chief of Staff's own), keeps its own row.
+ * Pure: returns new rows, mutates none.
  */
 export function linkCoveredRows(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  const cards = list.filter((r) => r && r.board && r.board.linkable && r.board.covers.length)
+  const becomes = (c, k) => !!(c.board.serverOwned && SERVER_COVERS.test(k));
+  const cards = list.filter((r) => r && r.board && Array.isArray(r.board.covers) && r.board.covers.length && (r.board.linkable || r.board.serverOwned))
     .sort((a, b) => String(a.board.createdAt).localeCompare(String(b.board.createdAt)) || String(a.board.cardId).localeCompare(String(b.board.cardId)));
   if (!cards.length) return list;
   // The plans source keys its rows `plan:` + the plan model's own key, which already reads `plan:<id>`; a card names `plan:<id>`.
@@ -210,7 +224,12 @@ export function linkCoveredRows(rows) {
   const standsIn = new Set();
   for (const c of cards) {
     let any = false;
-    for (const k of c.board.covers) { if (present.has(k) && !linkedBy.has(k)) { linkedBy.set(k, c); any = true; } }
+    for (const k of c.board.covers) {
+      if (!present.has(k) || linkedBy.has(k)) continue;
+      // A card that asks for more than the person's own act links a row only when it is the Chief of Staff's own mirror of it.
+      if (!c.board.linkable && !becomes(c, k)) continue;
+      linkedBy.set(k, c); any = true;
+    }
     // Only a server-owned card (the Chief of Staff's mirror of its own row) drops its own row; an agent session's
     // card keeps its row, so an ask can never be made less visible by covering another item.
     if (any && c.board.serverOwned) standsIn.add(c);
@@ -219,8 +238,16 @@ export function linkCoveredRows(rows) {
   const out = [];
   for (const r of list) {
     if (standsIn.has(r)) continue;
-    const c = r && !r.board ? linkedBy.get(keyOf(r)) : null;
-    out.push(c ? { ...r, card: { id: c.board.cardId, href: c.board.href, label: HAS_CARD_LABEL } } : r);
+    const k = r && !r.board ? keyOf(r) : null;
+    const c = k ? linkedBy.get(k) : null;
+    if (!c) { out.push(r); continue; }
+    if (becomes(c, k)) {
+      // Only a link to the project's own conversation is kept (a malformed key falls back to the chats list, which is not it).
+      const src = r.action && r.action.kind === 'href' && typeof r.action.href === 'string' && /^#\/work\/chats\?c=/.test(r.action.href) ? r.action.href : null;
+      out.push({ ...r, main: c.main || r.main, sub: c.sub || r.sub, action: { kind: 'href', href: c.board.href },
+        card: { id: c.board.cardId, href: c.board.href, label: IS_CARD_LABEL },
+        ...(src && src !== c.board.href ? { alsoOpens: { href: src, label: ALSO_OPENS_LABEL } } : {}) });
+    } else out.push({ ...r, card: { id: c.board.cardId, href: c.board.href, label: HAS_CARD_LABEL } });
   }
   return out;
 }
