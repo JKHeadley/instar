@@ -511,7 +511,9 @@ export function decideStart(
   if (fs.mainHealthy) {
     // Healthy: `main` goes first once its oldest unverified merge is old enough that waiting
     // longer would approach the unverified alarm; until then waiting PRs go first.
-    const due = fs.oldestUnverifiedMainAt !== null && i.now - fs.oldestUnverifiedMainAt >= limits.mainFairShareMs;
+    // An UNKNOWN age (a restart or a lease change lost it) is due: the merge may be older than the limit.
+    const due = fs.oldestUnverifiedMainUnknown === true
+      || (fs.oldestUnverifiedMainAt !== null && i.now - fs.oldestUnverifiedMainAt >= limits.mainFairShareMs);
     return { kind: 'start', index: due ? mainIdx : prIdx };
   }
   // Suspect or red: `main` keeps priority (the repair path), but at most every other start.
@@ -525,6 +527,11 @@ export interface FairShareState {
   mainRed?: boolean;
   /** When the oldest `main` merge not yet covered by a green verify was first seen; null if none. */
   oldestUnverifiedMainAt: number | null;
+  /**
+   * That time is unknown (no usable stored value after a restart, or another machine held the
+   * lease): treated as due. Absent ⇒ known.
+   */
+  oldestUnverifiedMainUnknown?: boolean;
   /** Whether the last verify started was a `main` verify. */
   lastStartWasMain: boolean;
 }
@@ -875,6 +882,8 @@ export class LocalVerifyService {
       audit: (e) => this.audit(e),
     });
     this.health.load(); // the watermark decides from the start (boot() re-reads it)
+    // The age of the oldest unverified merge is restored once, here (it used to start again at every boot).
+    this.mainObs.oldestUnverifiedAt = this.health.unverifiedAge().oldestUnverifiedAt;
     this.waiting = new WaitingList(path.join(this.lvStateDir, 'waiting.json'), this.now, (e) => this.audit(e));
   }
 
@@ -1091,6 +1100,15 @@ export class LocalVerifyService {
       peers: this.peersInfo(),
       waiting: this.waiting.list(),
     };
+  }
+
+  /**
+   * The age of the oldest `main` merge with no green verify after it. `atLeast`: the age is
+   * unknown and `since` is only a lower bound, so it reads "at least", never an exact age or zero.
+   */
+  mainUnverifiedAge(): { since: number | null; atLeast: boolean } {
+    const a = this.health.unverifiedAge();
+    return a.unknownSince !== null ? { since: a.unknownSince, atLeast: true } : { since: this.mainObs.oldestUnverifiedAt, atLeast: false };
   }
 
   /** Main health (the machine state, not whether an attention item is open). */
@@ -1313,6 +1331,8 @@ export class LocalVerifyService {
    */
   onLeaseAcquired(opts: { foreignHolder: boolean; epoch?: number | null }): void {
     this.health.load({ foreignHolder: opts.foreignHolder, epoch: opts.epoch });
+    // Own machine: unchanged. A different holder in between: the age is now unknown (null here, due in decideStart).
+    this.mainObs.oldestUnverifiedAt = this.health.unverifiedAge().oldestUnverifiedAt;
     this.mainObs.immediate = true;
     this.mainObs.handled = null;
   }
@@ -1334,7 +1354,10 @@ export class LocalVerifyService {
     // A head different from the last one observed: queued PR entries resolved before now re-read their base at start.
     if (o.head !== null && o.head !== sha) this.mainMovedAt = now;
     noteHeadSuperseded(this.mainSupersededAt, o.head, sha, now);
-    if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
+    // The age of the oldest unverified merge lives in the main-health watermark (it survives a restart).
+    // The first unverified head after a boot with no usable stored value makes it unknown, never `now`.
+    this.health.noteHeadObserved(sha);
+    o.oldestUnverifiedAt = this.health.unverifiedAge().oldestUnverifiedAt;
     // SEC-113 D2.2: the second clock starts at the first head this machine has not verified itself.
     if (!this.cfg.peerOnly) {
       const t = this.trust();
@@ -1360,7 +1383,7 @@ export class LocalVerifyService {
           if (parent === null) { this.enqueueMain(sha, 'head-changed'); return; }
           this.releaseAlias.set(sha, parent);
           if (this.releaseAlias.size > 50) this.releaseAlias.delete(this.releaseAlias.keys().next().value as string);
-          if (parent === this.health.snapshot().lastGreenHead && this.mainObs.head === sha) this.mainObs.oldestUnverifiedAt = null;
+          if (parent === this.health.snapshot().lastGreenHead && this.mainObs.head === sha) { this.health.clearUnverifiedAge(); this.mainObs.oldestUnverifiedAt = null; }
           if (!this.cfg.peerOnly && parent === this.trust().anchor?.head && this.mainObs.head === sha) { this.trust().notLocallyVerifiedAt = null; this.saveTrust(); }
           this.audit({ event: 'main-release-collapsed', headSha: sha, into: parent });
         });
@@ -2801,7 +2824,12 @@ export class LocalVerifyService {
     this.checkStarved();
     if (!this.cfg.peerOnly) this.checkTrustHolding();
     // SEC-113 D2.2: the older of the two clocks; peers can never move the second one.
-    this.health.noteUnverifiedAge(olderClock(this.mainObs.oldestUnverifiedAt, this.cfg.peerOnly ? null : this.trust().notLocallyVerifiedAt));
+    // An unknown age is at least as old as the moment it became unknown: that bound feeds the same 3-hour signal.
+    const age = this.health.unverifiedAge();
+    this.health.noteUnverifiedAge(
+      olderClock(age.unknownSince ?? this.mainObs.oldestUnverifiedAt, this.cfg.peerOnly ? null : this.trust().notLocallyVerifiedAt),
+      { atLeast: age.unknownSince !== null },
+    );
     if (!this.cfg.peerOnly) this.maybeEnqueueLocalCorroboration();
     if (!this.cfg.peerOnly) await this.pollPeers().catch((e) => this.audit({ event: 'peer-poll-error', detail: e instanceof Error ? e.message : String(e) }));
     if (!this.cfg.peerOnly) await this.pollArbitration().catch((e) => this.audit({ event: 'peer-arbitration-error', detail: e instanceof Error ? e.message : String(e) }));
@@ -3341,7 +3369,7 @@ export class LocalVerifyService {
   }
 
   private fairShareState(): FairShareState {
-    return { mainHealthy: this.health.isHealthy(), mainRed: this.health.snapshot().state === 'main-red', oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain };
+    return { mainHealthy: this.health.isHealthy(), mainRed: this.health.snapshot().state === 'main-red', oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, oldestUnverifiedMainUnknown: this.health.unverifiedAge().unknownSince !== null, lastStartWasMain: this.lastStartWasMain };
   }
 
   private reconcileSuitePriority(): void {
@@ -3868,7 +3896,8 @@ export class LocalVerifyService {
       this.saveTrust();
     }
     this.mainRunOnCurrentHead = null;
-    const work = this.health.onVerify(head, record.outcome, detail).then(async (action) => {
+    // A green verify hands the age over, so it is written in the same watermark write as the green head (and ends an unknown age).
+    const work = this.health.onVerify(head, record.outcome, detail, record.outcome === 'success' ? { oldestUnverifiedAt: this.mainObs.oldestUnverifiedAt } : undefined).then(async (action) => {
       if (this.health.isHealthy()) this.clearMainFailure();
       // SEC-113 D2.4: this machine's own red on a head a peer called green (after the two-strike rerun).
       if (source === 'local' && record.outcome === 'failure' && !this.cfg.peerOnly) {

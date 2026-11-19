@@ -29,3 +29,7 @@ If `main` really has gone more than three hours unchecked, the existing warning 
 ## What stays the same
 
 The 90 minute rule, the three hour warning, how restarts work, and everything about checking proposed changes. There is no new setting. If the change causes trouble, we undo the code change and the extra line in the note is ignored.
+
+## How you can tell it is working
+
+Each time the program starts and cannot tell how long `main` has waited, it writes one line in its log saying why: nothing was stored, the stored time was unusable, or another computer had the job in between. If there is no such line after a start, the time was read from the note and the count carried on.
