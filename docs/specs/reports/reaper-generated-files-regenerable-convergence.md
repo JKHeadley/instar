@@ -40,4 +40,4 @@ The cleanup still only reports. Real removal is a separate decision, made with t
 
 ## Approval
 
-Waiting for the Chief of Staff (plan approved, msg 366ce3fe).
+Approved by the Chief of Staff, 2026-11-18 19:04 PT (msg 8a629537), as a maintainer decision rather than a constitution change. It is to be built report-only. The recorded condition for the later live-removal decision: the synchronous process scans move off the main thread, or the per-pass cap drops, first.
