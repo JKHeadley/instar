@@ -2,6 +2,8 @@
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { APPROVAL_WHERE_REQUIRED_SKILL_TEXT, applySkillSentenceChanges } from './approvalWhereRequiredSkillText.js';
+import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -144,7 +146,7 @@ import {
   APPROVAL_NOT_CHORE_TRAP,
   APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
-import { generateClaudeMd } from '../scaffold/templates.js';
+import { generateClaudeMd, RETIRED_DOC_DELIVERY_ROWS, RETIRED_AGENT_PRINCIPLE_WORDING, PRIVATE_VIEWS_SENTENCE } from '../scaffold/templates.js';
 import {
   CLAUDE_MD_DIFFERING_LINES_REL,
   CLAUDE_MD_LEGACY_BACKUP_REL,
@@ -1163,6 +1165,16 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
 - **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:\${port}/attribution/status\` → mode, budgets, hook timeouts, \`unchecked\` counts, judge error rate, and the daily report. Zero refusals with a healthy count means it is working; check the counts before reading silence as success. 503 means the feature is dark on this agent; say so. \`POST /attribution/audit\` runs the report now.
 - **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
 - **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
+
+/** First version of the PR-link section body (Echo Bugs 10000002537); reworded in place by migrateClaudeMd. */
+export const PR_LINK_REVIEW_SECTION_BODY_V1 = `When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.`;
+/**
+ * The PR-link section body (Echo Bugs 10000002791: a review request only where an
+ * approval may be needed). src/scaffold/templates.ts emits the same text; a test pins them equal.
+ */
+export const PR_LINK_REVIEW_SECTION_BODY = `When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so. It asks only where an approval may be needed: when the repository's rules name a code-owner review and show that nobody's approval is required for that PR (no rule requires a review, no code-owned file touched), no review is requested, because a review request is itself an ask.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory, and never ask them to approve a PR nothing requires them to approve. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`; \`prLinkReviewRequest.requestWhenNotRequired: true\` requests on every PR again.`;
 
 /**
  * "Every ask carries its links." — named clause under Agent Proposes, Operator
@@ -3305,6 +3317,7 @@ export class PostUpdateMigrator {
 
     this.migrateHooks(result);
     this.migrateClaudeMd(result);
+    this.migrateAgentMdReportDelivery(result);
     this.migrateFrameworkShadowCapabilities(result);
     this.migrateScripts(result);
     this.migrateSecretExternalizationSurvivability(result);
@@ -3381,6 +3394,7 @@ export class PostUpdateMigrator {
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateFractalEightyTwentyTriage(result);
+    this.migrateApprovalWhereRequired(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
@@ -4004,6 +4018,60 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`spec-converge SKILL (conformance auto-invoke): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Approval only where required (Echo Bugs topic 10000002791, spec
+  // docs/specs/approval-asks-only-where-required.md): the instar-dev and spec-converge
+  // skills told build sessions the repository needed a human approval for every merge
+  // and that approval was "the user's step". Replace ONLY those exact sentences
+  // (APPROVAL_WHERE_REQUIRED_SKILL_TEXT) in the canonical copy and both renderings, so
+  // an agent's own edits elsewhere survive. A rendering whose stamp matched the old
+  // canonical body is re-stamped with the new one, so the parity rule sees no drift.
+  // A sentence found in neither form (customized) is left alone and reported.
+  // Idempotent: once replaced, no prior sentence remains.
+  private migrateApprovalWhereRequired(result: MigrationResult): void {
+    const root = this.config.projectDir;
+    for (const entry of APPROVAL_WHERE_REQUIRED_SKILL_TEXT) {
+      const canonical = path.join(root, '.instar', 'skills', entry.skill, 'SKILL.md');
+      const renderings = [
+        path.join(root, '.claude', 'skills', entry.skill, 'SKILL.md'),
+        path.join(root, '.agents', 'skills', entry.skill, 'SKILL.md'),
+      ];
+      try {
+        const canonicalRaw = readUtf8OrNull(canonical);
+        const oldHash = canonicalRaw === null ? null : skillBodyHash(canonicalRaw);
+        let newHash: string | null = null;
+        if (canonicalRaw !== null) {
+          const r = applySkillSentenceChanges(canonicalRaw, entry.changes);
+          if (r.changed > 0) {
+            fs.writeFileSync(canonical, r.text);
+            result.upgraded.push(`${entry.skill} skill (canonical): approval only where required (${r.changed} sentence(s))`);
+          }
+          if (r.missing.length) result.skipped.push(`${entry.skill} skill (canonical): customized, ${r.missing.length} approval sentence(s) left untouched`);
+          newHash = skillBodyHash(r.text);
+        }
+        for (const file of renderings) {
+          const raw = readUtf8OrNull(file);
+          if (raw === null) continue;
+          const r = applySkillSentenceChanges(raw, entry.changes);
+          let next = r.text;
+          const stamp = next.match(SKILL_STAMP_LINE_RE)?.[1] ?? null;
+          // Re-stamp whenever the stamp named the old canonical body: an in-sync rendering stays in
+          // sync, and a user-edited one still reads as user-edit-conflict (body != stamp), which the
+          // parity rule refuses to overwrite. A stale stamp would instead invite a re-render.
+          if (stamp && oldHash && newHash && stamp === oldHash && newHash !== oldHash) {
+            next = next.replace(SKILL_STAMP_LINE_RE, `${SKILL_STAMP_KEY}: ${newHash}`);
+          }
+          if (next !== raw) {
+            fs.writeFileSync(file, next);
+            result.upgraded.push(`${path.relative(root, file)}: approval only where required (${r.changed} sentence(s))`);
+          }
+          if (r.missing.length) result.skipped.push(`${path.relative(root, file)}: customized, ${r.missing.length} approval sentence(s) left untouched`);
+        }
+      } catch (err) {
+        result.errors.push(`${entry.skill} skill approval wording: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -8475,6 +8543,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      // Organization never rules checking actions (docs/specs/org-never-actions.md §A): always overwritten.
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/org-policy-gate.sh + .js (organization never rules check)');
+    } catch (err) {
+      result.errors.push(`org-policy-gate: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'action-claim-followthrough.js'), this.getActionClaimFollowthroughHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/action-claim-followthrough.js (action-claim follow-through sentinel, signal-only)');
     } catch (err) {
@@ -9575,6 +9652,32 @@ setTimeout(() => process.exit(0), 2000);
    * Patch CLAUDE.md with any new sections that don't exist yet.
    * Only adds — never modifies or removes existing content.
    */
+  /**
+   * fb-3bc8a879-2c7: AGENT.md principles 6 and 9 and the Private Viewing line sent
+   * reports to the Private Viewer only. Replace each retired wording verbatim;
+   * wording the agent rewrote is left alone. Idempotent.
+   */
+  private migrateAgentMdReportDelivery(result: MigrationResult): void {
+    const agentMdPath = path.join(this.config.stateDir, 'AGENT.md');
+    if (!fs.existsSync(agentMdPath)) return;
+    try {
+      let content = fs.readFileSync(agentMdPath, 'utf-8');
+      let changed = false;
+      for (const [retired, current] of [...RETIRED_AGENT_PRINCIPLE_WORDING, ...RETIRED_DOC_DELIVERY_ROWS]) {
+        if (content.includes(retired)) {
+          content = content.replace(retired, () => current);
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(agentMdPath, content);
+        result.upgraded.push('AGENT.md: reports for a person go to a document, not a GitHub link');
+      }
+    } catch (err) {
+      result.errors.push(`AGENT.md report delivery: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateClaudeMd(result: MigrationResult): void {
     const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
     if (!fs.existsSync(claudeMdPath)) {
@@ -10572,6 +10675,17 @@ setTimeout(() => process.exit(0), 2000);
         content = content.replace(marker, `${paragraph}\n\n${marker}`);
         patched = true;
         result.upgraded.push('CLAUDE.md: added held script route guidance');
+      }
+    }
+    // fb-3bc8a879-2c7: the shipped report-delivery rows pointed only at the
+    // Private Viewer (which refuses while documents serve), so a session wrote a
+    // repo file and sent a GitHub link. Replace each retired row verbatim; a row
+    // the agent has edited is left alone.
+    for (const [retired, current] of RETIRED_DOC_DELIVERY_ROWS) {
+      if (content.includes(retired)) {
+        content = content.replace(retired, () => current);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reports for a person go to a document, not a GitHub link');
       }
     }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
@@ -15758,7 +15872,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - Update: \`curl -X PUT http://localhost:${port}/view/VIEW_ID -H 'Content-Type: application/json' -d '{"title":"Updated","markdown":"# New content"}'\`
 - Delete: \`curl -X DELETE http://localhost:${port}/view/VIEW_ID\`
 
-**Use private views for sensitive content. Use Telegraph for public content.**
+${PRIVATE_VIEWS_SENTENCE}
 
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl http://localhost:${port}/tunnel\`
@@ -17330,13 +17444,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // PR-link reviewer check (src/messaging/prLinkReviewRequest.ts, Echo Bugs 10000002537).
     // OWN sniff key; the template emits the same section for new agents.
     if (!content.includes('## PR links ask for the review on GitHub too')) {
-      content += '\n\n' + `## PR links ask for the review on GitHub too
-
-When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
-- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.
-`;
+      content += '\n\n' + `## PR links ask for the review on GitHub too\n\n${PR_LINK_REVIEW_SECTION_BODY}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added PR links ask for the review section');
+    }
+    // Only where an approval may be needed (Echo Bugs 10000002791): reword the first
+    // version in place. Idempotent: the old body is gone once replaced.
+    if (content.includes(PR_LINK_REVIEW_SECTION_BODY_V1)) {
+      content = content.split(PR_LINK_REVIEW_SECTION_BODY_V1).join(PR_LINK_REVIEW_SECTION_BODY);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: PR links request a review only where an approval may be needed');
     }
 
     // MUST STAY THE LAST STEP (docs/specs/awareness-entry-registry.md). New awareness text is
@@ -18520,6 +18637,20 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.upgraded.push('.claude/settings.json: added PreToolUse MCP matcher (external operation gate)');
     } else {
       result.skipped.push('.claude/settings.json: PreToolUse MCP matcher already present');
+    }
+
+    // Organization never rules check (org-never-actions §A): its own entries, found by command content,
+    // not by matcher (the external-operation gate already owns an mcp__.* entry).
+    for (const matcher of ['Bash', 'mcp__.*']) {
+      const has = preToolUse.some(e => e.matcher === matcher && JSON.stringify(e.hooks ?? []).includes('org-policy-gate'));
+      if (!has) {
+        preToolUse.push({
+          matcher,
+          hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/org-policy-gate.sh"', blocking: true, timeout: 12 }],
+        });
+        patched = true;
+        result.upgraded.push(`.claude/settings.json: added PreToolUse ${matcher} organization policy check`);
+      }
     }
 
     // Add PostToolUse Write/Edit matcher for the working-set artifact recorder
@@ -25206,6 +25337,8 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Token-less standby hold-and-retry version (#3095), before the org-policy 422 branch (org-never-actions).
+    '1636ee1ed4eb4441843383d8085b7489d61add84ebf3f154f81448ac37cac295',
     // Native-conversation-base 3b version (PR #3092), before this PR's token-less
     // forward change. Shipped through v1.3.1795.
     '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',

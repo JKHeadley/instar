@@ -83,6 +83,30 @@ describe('needs read: the owner', () => {
     expect(a.couldNotCheck).toContain('the attention queue');
   });
 
+  it('a Chief of Staff wait and its wait card are one item that opens the card, counted once (needs-one-list)', async () => {
+    const cos = { status: 200, body: { lease: { live: true, expiresAt: iso(60 * 24 * 5) }, projects: [
+      { conversationKey: 'telegram:134088', title: 'Instar App', lastVerdict: 'waiting-on-user' },
+      { conversationKey: 'telegram:555', title: 'No card yet', lastVerdict: 'waiting-on-user' },
+    ] } };
+    const wb = board([]);
+    wb.lanes[0].cards = [{ id: 'wc_a02a192893e38e60', title: 'Instar App looks done and needs your OK', needLine: 'Yours to do', lane: 'waiting-on-you', status: 'with-person', covers: ['cos:waiting:telegram:134088'], serverOwned: true, createdAt: iso(-30) } as never];
+    const a = await composer({
+      '/attention?scope=pool&status=OPEN': attention([]), '/commitments?scope=mesh': { status: 200, body: { commitments: [] } },
+      '/chief-of-staff': cos, '/work-board': { status: 200, body: wb },
+    }).owner();
+    expect(a.count).toBe(2);
+    const app = a.items.find((i) => i.id === 'need:cos:waiting:telegram:134088')!;
+    expect(app).toMatchObject({ source: 'chief-of-staff', title: 'Instar App looks done and needs your OK',
+      action: { kind: 'href', href: '#/work/board?card=wc_a02a192893e38e60' },
+      card: { id: 'wc_a02a192893e38e60', href: '#/work/board?card=wc_a02a192893e38e60' },
+      alsoOpens: { href: '#/work/chats?c=telegram%3A134088' } });
+    expect(a.items.find((i) => i.source === 'workBoard')).toBeUndefined();
+    const plain = a.items.find((i) => i.id === 'need:cos:waiting:telegram:555')!;
+    expect(plain).toMatchObject({ title: 'No card yet is waiting on you', action: { kind: 'href', href: '#/work/chats?c=telegram%3A555' } });
+    expect(plain.card).toBeUndefined();
+    expect(plain.alsoOpens).toBeUndefined();
+  });
+
   it('carries queue items, work cards and promises, each once, with an action and a reason', async () => {
     const a = await composer({
       '/attention?scope=pool&status=OPEN': attention([{ id: 'x1', status: 'OPEN', priority: 'HIGH', source: 'agent', category: 'decision', title: 'Pick a logo', updatedAt: iso(-5), topicId: 4242 }]),

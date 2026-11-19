@@ -2512,6 +2512,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Not in BROWSER_ROUTES, so a browser device (key not hardware-held) is refused.
     { method: 'POST', re: /^\/mobile\/org\/(publish|join|leave|update-accept)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 5, bucket: 'org-acts' },
     { method: 'GET', re: /^\/mobile\/org\/status$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    // Never rules checking actions (org-never-actions §C): the app's allow-once card and the mode switch.
+    { method: 'GET', re: /^\/mobile\/org\/pending-checks$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'POST', re: /^\/mobile\/org\/(allow-once|actions-mode)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 10, bucket: 'org-acts' },
     // Work agents page, departure and keepers (org-members-and-keepers §B–D).
     { method: 'GET', re: /^\/mobile\/org\/current-bundle$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
     { method: 'GET', re: /^\/mobile\/org\/members$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
@@ -2709,6 +2712,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Projects on the Work door (work-front-doors stage 2a): read-only, its own bucket; the handler gives project
     // names to the owner only and an empty answer to anyone else (spec §4.4). Team tier in TEAM_ROUTE_TIERS (guest).
     { method: 'GET', re: /^\/mobile\/work\/projects$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'projects-reads' },
+    // The owner's project actions (docs/specs/work-door-project-rows.md §3.2–3.5): Ask for an update (device-signed, its own
+    // bucket), and Pause / Resume, Mark checked and Finish (Face ID over the exact project line, the owner-presence bucket).
+    // Owner phones only; not in TEAM_ROUTE_TIERS.
+    { method: 'POST', re: /^\/mobile\/work\/projects\/check$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'projects-checks' },
+    { method: 'POST', re: /^\/mobile\/work\/projects\/(pause|done-item|finish)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.

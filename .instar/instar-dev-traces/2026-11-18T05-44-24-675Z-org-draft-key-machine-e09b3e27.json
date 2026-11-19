@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "org-draft-key-machine",
+  "sessionId": "6cc87cce-98d7-4197-be47-c071ff3410b0",
+  "timestamp": "2026-11-18T05:44:24.675Z",
+  "artifactPath": "upgrades/side-effects/org-draft-key-machine.md",
+  "artifactSha256": "534fe3741e563d5fe273eb711688c7d67e62660959995abdaa6eb88c949c9735",
+  "specPath": "docs/specs/org-members-and-keepers.md",
+  "coveredFiles": [
+    "src/data/awareness/org-members-and-keepers.md",
+    "src/server/orgPackRoutes.ts",
+    "tests/e2e/org-multimachine-alive.test.ts",
+    "tests/integration/org-multimachine.test.ts",
+    "tests/unit/org-multimachine.test.ts",
+    "upgrades/next/org-draft-key-machine.md",
+    "upgrades/side-effects/org-draft-key-machine.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The existing authenticated draft and signed publish interfaces enforce approved placement under the two converged organization specifications.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

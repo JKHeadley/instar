@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mac-helper-test-budget",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T00:38:11.236Z",
+  "artifactPath": "upgrades/side-effects/mac-helper-test-budget.md",
+  "artifactSha256": "08551d5f7a64138c805ddf41682e70c7e30c4d2bb0bfbae1d5298a577790fcd8",
+  "coveredFiles": [
+    "src/core/MacDesktopHelperBudget.ts",
+    "src/core/MacDesktopHost.ts",
+    "tests/unit/MacDesktopHostCapture.test.ts",
+    "tests/unit/mac-desktop-helper-budget.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/side-effects/mac-helper-test-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the independent second-pass review of the already-reviewed Mac helper test budget change; no source or test file changes in this commit.",
+  "eli16Path": "docs/eli16/mac-helper-test-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-helper-test-budget.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
