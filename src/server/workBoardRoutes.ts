@@ -392,7 +392,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
 /** The dismissal lessons as the agent reads them: the reason, who gave it, and where it came from. */
 export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => string, limit: number): Array<Record<string, unknown>> {
   return svc.dismissalLessons(limit).map((l) => ({
-    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, tapId: l.tapId, conversationKey: l.conversationKey,
+    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, ...(l.currentTitle !== undefined ? { cardTitleNow: l.currentTitle, retitledAfterClose: true } : {}), ...(l.titleUnconfirmed ? { titleUnconfirmed: true } : {}), tapId: l.tapId, conversationKey: l.conversationKey,
     by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
   }));
 }
