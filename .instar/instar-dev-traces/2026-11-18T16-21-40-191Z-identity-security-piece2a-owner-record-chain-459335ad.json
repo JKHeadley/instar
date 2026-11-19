@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2a-owner-record-chain",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T16:21:40.191Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2a-owner-record-chain.md",
+  "artifactSha256": "729ea5e209d25261b53825d80976ef3a4fe2dc4931ffa877d2d0ee8f6ad0f0b5",
+  "specPath": "docs/specs/identity-security-piece2a-owner-record-chain.md",
+  "coveredFiles": [
+    "src/core/ownerRecord.ts",
+    "tests/unit/identity-piece2a-owner-record.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "follow-up to the owner record evaluator: TLS side entries keep only the winner",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a pure library with no callers and no self-triggered action"
+  }
+}

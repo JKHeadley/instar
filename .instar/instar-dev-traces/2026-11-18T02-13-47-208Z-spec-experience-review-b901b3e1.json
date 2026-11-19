@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "spec-experience-review",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T02:13:47.208Z",
+  "artifactPath": "upgrades/side-effects/spec-experience-review.md",
+  "artifactSha256": "5c8837e2f097a3fc06400ca11bc3f813044ef60fffabc3e90c1f954cf9f985c0",
+  "coveredFiles": [
+    "skills/spec-converge/SKILL.md",
+    "skills/spec-converge/templates/report.md",
+    "skills/spec-converge/templates/reviewer-lessons-aware.md",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/spec-review-experience-migration.test.ts",
+    "upgrades/eli16/spec-experience-review.md",
+    "upgrades/next/spec-experience-review.md",
+    "upgrades/side-effects/spec-experience-review.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow existing reviewer instruction correction and installed-skill delivery, applying approved principles without new authority, routes or constitution changes.",
+  "eli16Path": "upgrades/eli16/spec-experience-review.md",
+  "sideEffectsPath": "upgrades/side-effects/spec-experience-review.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

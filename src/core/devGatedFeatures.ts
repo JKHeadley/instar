@@ -44,6 +44,18 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'agentSessionPlacement',
+    configPath: 'multiMachine.placement.agentSessions.enabled',
+    description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',
+    justification: 'The shadow log only writes an audit line and never changes where a session starts. Live placement is opt-in per request (no caller sends placement:"auto" by default), starts through the peer\'s own /sessions/spawn so its caps and admission apply, never starts a name twice from one origin (durable placement record written before the send, unresolved names read-only, no local start after an ambiguous hand-off), never proxies a kill, and no eligible peer means local exactly as today. enabled:false and a restart restore today\'s behaviour; placed sessions keep running where they are.',
+  },
+  {
+    name: 'crossTopicConfirm',
+    configPath: 'security.crossTopicConfirm.enabled',
+    description: 'A change to one conversation confirmed by the owner in another (identity-security-creation-provenance v5: the topic-profile propose lane\'s confirmIn); omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
@@ -141,6 +153,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Outbound tone-gate representation rules resolve as overridable nudges (with a recorded reason) instead of terminal blocks; the self-stop family and the deterministic credential wall stay hard.',
     justification:
       'Takes LESS action, not more — it removes blocking authority rather than adding it, and is self-limiting: the advisory disposition is withdrawn back to a block whenever the override could not be recorded. No external action, no spend, and the rollback is a config flag.',
+  },
+  {
+    name: 'toneGateWaitingAskLinks',
+    configPath: 'toneGate.waitingAskLinks.enabled',
+    description:
+      'Outbound rule B26: a reply that refers to something the agent is waiting on the person for is handed back unless it carries the link to the ask and a plain restatement with the settling reply.',
+    justification:
+      'An advisory nudge only: a reasoned override always sends, so it can delay a message but never hold or drop it. It reads local facts (link shapes, the local message log, the local Work Board) inside a 750 ms allowance, makes no external call and writes no state; the rollback is this flag.',
   },
   {
     name: 'feedbackFactoryDrain',
@@ -952,6 +972,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'queuePace.enabled',
     description: 'Queue pace: an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items), with a plain verdict and the reason a queue is behind (GET /queue-pace, the console Pace card).',
     justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
+  },
+  {
+    name: 'quotaPacing',
+    configPath: 'subscriptionPool.pacing.enabled',
+    description: 'Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable, bounded history of every subscription quota reading and a read-only forecast of where each account lands at its reset and whether each provider keeps weekly room (GET /quota-pacing).',
+    justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
   },
   {
     name: 'ecosystemIdeas',

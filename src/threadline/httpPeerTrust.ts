@@ -64,7 +64,7 @@ export function decideHttpPeerAdmission(input: {
  * `setup-default` (written when a stranger's message was merely recorded) and any
  * source added later, is not a grant on this path until it is listed here.
  */
-const DECIDED_TRUST_SOURCES: ReadonlySet<string> = new Set(['user-granted', 'paired-machine-granted', 'mutual-verified']);
+const DECIDED_TRUST_SOURCES: ReadonlySet<string> = new Set(['user-granted', 'paired-machine-granted', 'mutual-verified', 'agent-proposal']);
 
 /**
  * The sender's verdict on this path. The trust manager decides, through the SAME

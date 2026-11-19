@@ -10,6 +10,15 @@ Instar is an npm package that wraps the Claude Code CLI with infrastructure for 
 
 Named after the developmental stages between molts in arthropods, where each instar is more developed than the last.
 
+## Apps
+
+- iPhone: "Instar Agents" on the App Store -- https://apps.apple.com/app/id6829320724 (public beta on TestFlight: https://testflight.apple.com/join/Z5921URm)
+- Mac: newest signed build at https://instar.sh/download/mac (macOS 14 or later)
+- Android: coming soon to Google Play (in testing)
+- Windows: in progress
+
+All downloads: https://instar.sh/#download
+
 ## Install
 
 ```bash
@@ -119,10 +128,3 @@ Instar runs Claude Code with --dangerously-skip-permissions. Security lives in b
 
 Extracted from the Dawn/Portal project -- a production AI system where a human and AI have been building together for months. The infrastructure patterns were earned through real experience, refined through real failures and growth.
 
-## Comparison: Instar vs OpenClaw
-
-OpenClaw is infrastructure for **capability** -- 22+ channels, voice, device apps, 28 model providers, 5,400+ community skills, Docker sandboxing. If breadth and ecosystem scale matter most, OpenClaw is remarkable.
-
-Instar is infrastructure for **coherence** -- identity enforced through hooks (not just loaded), values that evolve, relationships with depth, consistency tracked across sessions, decision journaling and drift detection. Built on real Claude Code sessions with full extended thinking.
-
-OpenClaw gives agents amazing hands. Instar gives agents a mind.

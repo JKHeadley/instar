@@ -23,6 +23,16 @@
  * (a PR that cannot even be read is only logged — it may be someone else's), so the operator is never told
  * "please approve" with a link that silently does not ask him.
  *
+ * ONLY WHERE AN APPROVAL IS REQUIRED (Echo Bugs topic 10000002791, spec
+ * docs/specs/approval-asks-only-where-required.md): a review request is itself an
+ * ask for approval. PR #3326 touched no code-owned file on a repository whose rules
+ * require no review, yet its link made the operator a requested reviewer seconds
+ * after it opened. So before requesting, the repository's own rules are read
+ * (prApprovalFact.ts); when they show nobody's approval is required the request is
+ * skipped (`skipped-no-approval-required`). Every other answer (required, a
+ * repository with no code-owner rule, anything unread) keeps the request.
+ * `prLinkReviewRequest.requestWhenNotRequired: true` restores always-request.
+ *
  * Never blocks a reply: GitHub being down must not cost the operator a message
  * (the relay is mandatory). Skipped: closed/merged PRs, PRs someone else
  * authored, a reviewer who is the PR author (GitHub refuses those), and a
@@ -31,8 +41,24 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthenticatedGhExec } from '../core/githubRuntime.js';
+import { readPrApprovalFact, type PrApprovalFact } from './prApprovalFact.js';
 
 export interface PrRef { owner: string; repo: string; number: number }
+
+/**
+ * The approval-fact reads get at most this long, so the request, its read-back and
+ * the existing steps still fit in PR_LINK_BUDGET_MS. Unanswered → 'unknown', which
+ * keeps the request (today's behaviour).
+ */
+export const APPROVAL_FACT_BUDGET_MS = 6_000;
+
+async function withinFactBudget(p: Promise<PrApprovalFact>, ms: number): Promise<PrApprovalFact> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<PrApprovalFact>(resolve => {
+    timer = setTimeout(() => resolve({ requirement: 'unknown', reason: 'GitHub did not answer the approval reads in time' }), ms);
+  });
+  try { return await Promise.race([p, timeout]); } finally { if (timer) clearTimeout(timer); }
+}
 
 /** At most this many distinct PR links are checked per message. */
 export const MAX_PR_LINKS = 5;
@@ -61,10 +87,12 @@ export type PrLinkOutcome =
   | 'already-requested' | 'requested' | 'failed'
   | 'skipped-not-open' | 'skipped-not-agent-pr' | 'skipped-no-reviewer'
   | 'skipped-reviewer-is-author' | 'skipped-approved-at-head'
+  /** The repository's rules require nobody's approval for this PR, so a review request would be a false ask. */
+  | 'skipped-no-approval-required'
   /** The PR could not be read, so whether it is the agent's own is unknown: logged, no note (a link to someone else's PR must not gain one). */
   | 'unreadable';
 
-export interface PrLinkResult { pr: PrRef; outcome: PrLinkOutcome; reviewer: string | null; reason?: string }
+export interface PrLinkResult { pr: PrRef; outcome: PrLinkOutcome; reviewer: string | null; reason?: string; approval?: PrApprovalFact }
 
 export interface EnsureDeps {
   gh: AuthenticatedGhExec;
@@ -72,6 +100,12 @@ export interface EnsureDeps {
   selfLogin: () => Promise<string | null>;
   /** Configured reviewer; absent → the repository owner when the owner is a user. */
   reviewer?: string | null;
+  /** true → request even when the repository requires no approval (the pre-2026-11-17 behaviour). */
+  requestWhenNotRequired?: boolean;
+  /** Test seam; defaults to {@link APPROVAL_FACT_BUDGET_MS}. */
+  factBudgetMs?: number;
+  /** Test seam; defaults to {@link readPrApprovalFact}. */
+  approvalFact?: (ref: PrRef, base: string | null | undefined, gh: AuthenticatedGhExec) => Promise<PrApprovalFact>;
 }
 
 interface PullView {
@@ -79,7 +113,7 @@ interface PullView {
   user?: { login?: string };
   head?: { sha?: string };
   requested_reviewers?: Array<{ login?: string }>;
-  base?: { repo?: { owner?: { login?: string; type?: string } } };
+  base?: { ref?: string; repo?: { owner?: { login?: string; type?: string } } };
 }
 
 const lower = (s: string | null | undefined) => (s ?? '').toLowerCase();
@@ -121,6 +155,15 @@ export async function ensureReviewerOnPr(ref: PrRef, deps: EnsureDeps, progress:
     if (!reviewer) return { pr: ref, outcome: 'skipped-no-reviewer', reviewer: null };
     if (lower(reviewer) === lower(author)) return { pr: ref, outcome: 'skipped-reviewer-is-author', reviewer };
     progress.agentPr = true;
+    // Start the approval-fact reads now, alongside the checks below, so they share the
+    // hook's budget instead of adding to it (Echo Bugs 10000002791). Read-only.
+    const factPromise: Promise<PrApprovalFact> | null = deps.requestWhenNotRequired === true
+      ? null
+      : withinFactBudget(
+        (deps.approvalFact ?? readPrApprovalFact)(ref, view.base?.ref, deps.gh)
+          // @silent-fallback-ok: an approval-fact failure is an unread input; 'unknown' keeps the request (today's behaviour)
+          .catch((err: unknown): PrApprovalFact => ({ requirement: 'unknown', reason: `approval read failed: ${err instanceof Error ? err.message.slice(0, 80) : 'error'}` })),
+        deps.factBudgetMs ?? APPROVAL_FACT_BUDGET_MS);
 
     if ((view.requested_reviewers ?? []).some(u => lower(u.login) === lower(reviewer))) {
       return { pr: ref, outcome: 'already-requested', reviewer };
@@ -136,11 +179,21 @@ export async function ensureReviewerOnPr(ref: PrRef, deps: EnsureDeps, progress:
       }
     }
 
+    // A review request asks for an approval: make it only when the repository's
+    // rules may require one. Only an exact 'not-required' skips it.
+    let approval: PrApprovalFact | undefined;
+    if (factPromise) {
+      approval = await factPromise;
+      if (approval.requirement === 'not-required') {
+        return { pr: ref, outcome: 'skipped-no-approval-required', reviewer, reason: approval.reason, approval };
+      }
+    }
+
     const post = await deps.gh(['api', '-X', 'POST', `${base}/requested_reviewers`, '-f', `reviewers[]=${reviewer}`]);
     const now = await requestedLogins(deps.gh, ref);
-    if (now?.includes(lower(reviewer))) return { pr: ref, outcome: 'requested', reviewer };
+    if (now?.includes(lower(reviewer))) return { pr: ref, outcome: 'requested', reviewer, ...(approval ? { approval } : {}) };
     const reason = post.code !== 0 ? `GitHub refused the request (${shortReason(post.stderr)})` : 'the request did not show up on the PR';
-    return { pr: ref, outcome: 'failed', reviewer, reason };
+    return { pr: ref, outcome: 'failed', reviewer, reason, ...(approval ? { approval } : {}) };
   } catch (err) {
     return { pr: ref, outcome: progress.agentPr ? 'failed' : 'unreadable', reviewer: null, reason: err instanceof Error ? err.message.slice(0, 120) : 'unexpected error' };
   }
@@ -194,6 +247,8 @@ export function createSelfLoginReader(gh: AuthenticatedGhExec): () => Promise<st
 export interface PrLinkMiddlewareDeps {
   enabled: () => boolean;
   reviewer: () => string | null;
+  /** Read per call: true restores always-request (prLinkReviewRequest.requestWhenNotRequired). */
+  requestWhenNotRequired?: () => boolean;
   gh: () => AuthenticatedGhExec | null;
   selfLogin: () => Promise<string | null>;
   log?: (line: string) => void;
@@ -226,9 +281,13 @@ export function prLinkReviewMiddleware(deps: PrLinkMiddlewareDeps, maxLength: nu
         deps.log?.('[pr-link-review] gh unavailable; PR links sent without a reviewer check');
         next(); return;
       }
-      const out = await applyPrLinkReviewRequests(text, { gh, selfLogin: deps.selfLogin, reviewer: deps.reviewer(), maxLength });
+      const out = await applyPrLinkReviewRequests(text, {
+        gh, selfLogin: deps.selfLogin, reviewer: deps.reviewer(), maxLength,
+        requestWhenNotRequired: deps.requestWhenNotRequired?.() === true,
+      });
       for (const r of out.results) {
-        deps.log?.(`[pr-link-review] ${r.pr.owner}/${r.pr.repo}#${r.pr.number}: ${r.outcome}${r.reviewer ? ` (${r.reviewer})` : ''}${r.reason ? ` — ${r.reason}` : ''}`);
+        const fact = r.approval && r.outcome !== 'skipped-no-approval-required' ? ` [approval: ${r.approval.requirement} — ${r.approval.reason}]` : '';
+        deps.log?.(`[pr-link-review] ${r.pr.owner}/${r.pr.repo}#${r.pr.number}: ${r.outcome}${r.reviewer ? ` (${r.reviewer})` : ''}${r.reason ? ` — ${r.reason}` : ''}${fact}`);
       }
       if (out.text !== text) req.body.text = out.text;
     } catch (err) {

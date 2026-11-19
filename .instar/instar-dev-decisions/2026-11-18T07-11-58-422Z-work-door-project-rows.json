@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-18T07:11:58.422Z",
+  "slug": "work-door-project-rows",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 781,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/data/awareness/work-door-project-rows.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workProjectActions.ts",
+      "src/server/workProjectsRoutes.ts"
+    ],
+    "addedLines": 736,
+    "deletedLines": 45
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

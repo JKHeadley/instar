@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "worktree-monitor-skip-oversize-report",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T08:34:03.611Z",
+  "artifactPath": "upgrades/side-effects/worktree-monitor-skip-oversize-report.md",
+  "artifactSha256": "b7d6de8ecbde8ee29e66637d67bca3a87954d41bb213b0ef281cbb1bf036a41d",
+  "coveredFiles": [
+    "src/monitoring/WorktreeMonitor.ts",
+    "tests/unit/worktree-monitor.test.ts",
+    "upgrades/next/worktree-monitor-skip-oversize-report.md",
+    "upgrades/side-effects/worktree-monitor-skip-oversize-report.eli16.md",
+    "upgrades/side-effects/worktree-monitor-skip-oversize-report.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "boot-time read guard on one state file; no deletes or authority; revert restores old read",
+  "eli16Path": "upgrades/side-effects/worktree-monitor-skip-oversize-report.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-monitor-skip-oversize-report.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

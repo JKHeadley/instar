@@ -1020,11 +1020,45 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 **Earned from:** 2026-08-22 (topic 52224). The cross-model reviewer's context budget was 60 KB — smaller than an ordinary spec — so every referenced document was dropped in FULL on every review the machinery had ever run. Six rounds on `placement-real-capacity-scoring` were conducted with no reviewer ever seeing the parent design, the standards registry, or the lessons doc, and were reported as review. The operator named the general pattern before the cause was found: *"you tend to default to truncating data in an effort to be more data efficient — however, often it just cuts off very critical information."* The converging audit then found the same defect in its purest form in two more places only a second search angle could see: a summarizer that selected the newest 20 messages then kept the oldest of them, and a stuck-prompt detector that took the terminal's last 20 lines then cut from the top — able to discard the very prompt it exists to find and report nothing was wrong.
 
+### P25. A Safeguard Must Leave a Benefit (every wall names its cost; something useful must survive all of them)
+
+**Statement:** Every restriction a design adds (a gate, a sandbox rule, an allowlist, a practice-only phase, a staged ladder, a cap) must name the benefit it costs, and the design must show that a real benefit survives once all of its restrictions are in place. A design whose walls together leave no benefit is not finished, however safe it is. The fix is to keep the walls that protect at low cost, and to cut or shorten the ones whose protection another wall already provides.
+
+**Source:** Justin, 2026-11-18 17:44 PST, topic 145097, on the borrowed-machines design: *"I want to make sure we don't fall into the trap of overengineering or being over-secure to the point where we get no benefit from the plan. This should be a global instar awareness."*
+
+**Translation:**
+- For each restriction, write three things side by side: what it protects, what benefit it costs, and whether another wall already gives the same protection.
+- Prefer one strong, cheap wall (for example, a sealed sandbox) over many overlapping narrow ones. A narrow wall inside a strong one usually costs benefit and adds no protection.
+- A practice-only or shadow phase needs an end: a stated number of runs or days, and the evidence that ends it. "Later, in another design" is not an end.
+- State the expected benefit as a number, and say plainly when it is near zero. If the honest number is near zero, change the design's target, not just its walls.
+- The constitution's floors (security, data loss, the owner's machine, the operator channel) still hold. This principle is about walls beyond the floor, not the floor itself.
+
+**Enforcement (structural):** `skills/spec-converge/templates/reviewer-lessons-aware.md` Q6 ("Benefit survives the walls") asks this of every spec in every round, and a design with no surviving benefit is a DESIGN-class finding. This is a reviewer judgment, so enforcement is partial: no gate measures surviving benefit.
+
+**Earned from:** The borrowed-machines design (`docs/specs/local-verify-borrowed-unit-slices.md`, 2026-11-18). Six review rounds added sound walls one at a time: shadow only, merged code only, unit tests only, a 20-run ladder, a literal-scan floor, and a sealed sandbox. No reviewer asked what benefit was left. The sandbox alone made most of the other walls redundant, and together they left a system that could not speed anything up. The operator saw it in one read.
+
+### P26. Documents Stand on Their Own (written for a reader with no context)
+
+**Statement:** Every spec, plain-language overview, report and message meant for a decision is written so a reader with no prior context can follow it. It says what the system is, what exists today, what changes and why, in plain words, before any detail. It defines each term the first time, and it never relies on earlier conversation, internal names, or "as discussed".
+
+**Source:** Justin, 2026-11-18 17:44 PST, topic 145097: *"We need to improve our doc/spec style. Right now it is written assuming the reader knows the context. It should stay plain language but be more self-explanatory."*
+
+**Translation:**
+- Open with the situation in two or three sentences a newcomer understands: what this part of the system does, and what is wrong or wanted.
+- Name things by what they do before naming them by their internal identifier. Give an identifier only when the reader needs it to act.
+- Say what already exists before what is new.
+- Every number has its unit and its comparison: "23 minutes, against 38 on the other machine", not "23".
+- Read it back as if you had just arrived. Anything that only makes sense from the session's history gets rewritten.
+
+**Enforcement (structural):** `skills/instar-dev/templates/eli16-overview.md` opens with this rule, and the lessons-aware reviewer's Q6 checks the overview against it. This is a template rule plus a reviewer judgment, so enforcement is partial; reports and approval asks have no check.
+
+**Earned from:** The same 2026-11-18 design. Its documents were plain but assumed the reader had followed the session: lanes, shadow, rungs and helpers were used without saying what they are.
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P23):
+For each Part 1 principle (P1-P26):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -1045,6 +1079,7 @@ Output: structured findings per category, with citations to this index. Findings
 ## Maintenance log
 
 - 2026-08-22 — Added P24 (*Never Silently Cut the Data a Decision Depends On*), pending operator ratification; source article + converged audit `docs/audits/truncated-judgment-input.md`.
+- 2026-11-18 — Added P25 (*A Safeguard Must Leave a Benefit*) and P26 (*Documents Stand on Their Own*), at Justin's direct request in topic 145097 (17:44 PST). Enforced through the lessons-aware reviewer's Q6 and the ELI16 template.
 
 | Date | Change |
 |---|---|

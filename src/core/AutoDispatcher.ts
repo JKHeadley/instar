@@ -88,6 +88,8 @@ export function formatApprovalNotification(dispatches: Dispatch[]): string {
   const describe = (d: Dispatch): string => {
     const label = TYPE_LABEL[d.type] || d.type;
     const raw = (d.content || '').trim().replace(/\s+/g, ' ');
+    // bounded-input-reviewed: the reader is the operator in a Telegram approval message, not a model.
+    // The trailing "…" tells a human the preview is cut, and the footer offers the full text of any one before they approve.
     const preview = raw.length > PREVIEW_LIMIT
       ? `${raw.slice(0, PREVIEW_LIMIT).trimEnd()}…`
       : raw;
@@ -101,7 +103,7 @@ export function formatApprovalNotification(dispatches: Dispatch[]): string {
 
   const items = dispatches.map(describe).join('\n\n');
 
-  const footer = `Just tell me which ones to approve or reject and I'll handle it.`;
+  const footer = `Just tell me which ones to approve or reject and I'll handle it. If a preview is cut short, ask me to show that one in full first.`;
 
   return `${header}\n\n${items}\n\n${footer}`;
 }
