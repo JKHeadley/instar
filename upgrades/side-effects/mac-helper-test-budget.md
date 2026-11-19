@@ -3,7 +3,7 @@
 **Version / slug:** `mac-helper-test-budget`
 **Date:** `2026-11-18`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required by the skill's list (no gate, sentinel or session lifecycle); an independent read of the diff is arranged by the requesting session before the PR`
+**Second-pass reviewer:** an independent reviewer agent read the commit cold on 2026-11-18 and concurred; see the Second-pass review section at the end. The merge gate requires it because the change edits the shared test setup file.
 
 ## Summary of the change
 
@@ -65,3 +65,17 @@ Machine-local by design: a per-process, in-memory test setting. Nothing is store
 ## 8. Rollback cost
 
 Revert the commit. No data, config or agent state to repair.
+
+## Second-pass review
+
+**Reviewer:** independent reviewer agent (a separate general-purpose agent with no part in writing the change), started by the session echo-increasing-throughput on 2026-11-18
+
+**Verdict:** Concur with the review. Nothing blocking.
+
+What the reviewer read: the commit 50f9a968e in full (the new budget module, every call site in MacDesktopHost.ts, the test setup change, both test files) and this note.
+
+Its findings, as recorded in the pull request description at the time:
+
+A separate reviewer read the commit cold and concurred, nothing blocking. It confirmed production equivalence per call site, that nothing but the test setup can raise the scale, and that a wait can never be shortened. Two wording points it raised about the side-effects note, recorded here instead of changing the commit: the note says a hung stand-in still fails with the named error because the test timeout is 120 s, but the push configuration uses 10 s, so there it fails as a plain test timeout; and the note says five places where there are six timers behind five wrapped expressions.
+
+This section was added after the first Local Verify pass, when the merge was refused for lack of a recorded second pass: the review had been done and written into the pull request description, but not into this note or the trace. No source or test file changed in this commit.
