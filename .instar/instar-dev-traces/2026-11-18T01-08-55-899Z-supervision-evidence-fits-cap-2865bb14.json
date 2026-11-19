@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "supervision-evidence-fits-cap",
+  "sessionId": "c98ed51d-f099-438c-846b-bea82da38fb7",
+  "timestamp": "2026-11-18T01:08:55.899Z",
+  "artifactPath": "upgrades/side-effects/supervision-evidence-fits-cap.md",
+  "artifactSha256": "5dd445e14aef20d4f2ef9d49639e59395f0a202e51ce0e86142329e5c2e7da99",
+  "coveredFiles": [
+    "upgrades/next/supervision-evidence-fits-cap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note fragment for the same narrow fix.",
+  "eli16Path": "docs/specs/supervision-evidence-fits-cap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/supervision-evidence-fits-cap.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

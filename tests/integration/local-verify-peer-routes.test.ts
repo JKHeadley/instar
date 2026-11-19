@@ -6,6 +6,8 @@
  * and gh are fakes.
  */
 
+import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
+import { signerKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -90,6 +92,15 @@ const runBody = () => ({
   policyHash: computePolicyHash(), coordinatorMachineId: 'coord', leaseEpoch: 7,
 });
 
+/** SEC-113 D1: peer1's machine key, used by the peer to sign and pinned on the coordinator. */
+const TEST_PEER_KEYS = generateSigningKeyPair();
+const TEST_PEER_HASH = signerKeyHashOf(TEST_PEER_KEYS.publicKey);
+const TEST_PEER_SIGNER: MachineSigner = {
+  machineId: () => 'peer1', signerKeyHash: () => TEST_PEER_HASH,
+  sign: (payload) => ({ machineId: 'peer1', signerKeyHash: TEST_PEER_HASH, sig: edSign(payload, TEST_PEER_KEYS.privateKey) }),
+};
+const TEST_PEER_PINS: MachineKeyLookup = (_m, hash) => (hash === TEST_PEER_HASH ? { status: 'ok', publicKeyPem: TEST_PEER_KEYS.publicKey } : { status: 'unknown' });
+
 describe('peer verifier routes (integration, real HTTP)', () => {
   it('refuses a new peer attempt over HTTP while installed bytes still await a restart', async () => {
     const p = peerService();
@@ -159,6 +170,7 @@ describe('peer verifier routes (integration, real HTTP)', () => {
   });
   it('dispatches over real HTTP while an unrelated suite occupies the coordinator slot', async () => {
     const p = peerService();
+    p.svc.setPeerWiring({ signer: TEST_PEER_SIGNER }); // SEC-113 D1: the peer signs, and reports its key in peer-status
     const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
     const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeercoord-')));
     dirs.push(stateDir);
@@ -178,6 +190,7 @@ describe('peer verifier routes (integration, real HTTP)', () => {
     svc.setPeerWiring({
       peers: () => [{ machineId: 'peer1', url }], client: makePeerClient(AUTH, 'echo'),
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
+      keyLookupFactory: () => TEST_PEER_PINS, // SEC-113 D1: the coordinator has peer1's key pinned
     });
     expect((await svc.request(3)).ok).toBe(true);
     for (let i = 0; i < 200 && svc.snapshot().peers.reserved[0]?.state !== 'accepted'; i++) {
@@ -206,6 +219,29 @@ describe('peer verifier routes (integration, real HTTP)', () => {
     expect(await client.result(peer, 'd'.repeat(32))).toEqual({ state: 'unknown' });
     await client.cancel(peer, ATT);
     expect(await client.run(peer, runBody())).toEqual({ ok: false, reason: 'attempt-cancelled' });
+  });
+
+  it('a main verify travels the same routes: accepted in its exact shape, started as a main run, refused when malformed', async () => {
+    const p = peerService();
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const client = makePeerClient(AUTH, 'echo');
+    const peer = { machineId: 'peer1', url };
+    // The peer's own read of main is sha('b') (the harness's baseHead): that is the head to verify.
+    const mainBody = { ...runBody(), pr: 0, headSha: sha('b'), baseSha: sha('b'), kind: 'main' as const };
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'echo' };
+    // A main body with a PR number, or a PR body with number 0, is not a request at all.
+    expect((await request(url).post('/local-verify/peer-run').set(headers).send({ ...mainBody, pr: 3 })).status).toBe(400);
+    expect((await request(url).post('/local-verify/peer-run').set(headers).send({ ...runBody(), pr: 0 })).status).toBe(400);
+    // A head main does not contain is refused before anything starts.
+    expect(await client.run(peer, { ...mainBody, attemptId: 'e'.repeat(32), headSha: sha('9'), baseSha: sha('9') })).toEqual({ ok: false, reason: 'head-moved' });
+    expect(p.children).toHaveLength(0);
+    expect(await client.run(peer, mainBody)).toEqual({ ok: true, attemptId: ATT });
+    expect(p.children).toHaveLength(1);
+    const input = JSON.parse(fs.readFileSync(p.children[0], 'utf-8'));
+    expect(input).toMatchObject({ pr: 0, kind: 'main', headSha: sha('b'), baseSha: sha('b'), attempt: { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 } });
+    expect(await client.status(peer)).toMatchObject({ inFlight: { attemptId: ATT, pr: 0 }, slotBusy: true });
+    expect(await client.result(peer, ATT)).toEqual({ state: 'running' });
+    p.svc.shutdown();
   });
 
   it('the lease holder refuses peer-run; a malformed body is a 400; a bad attempt id is a 400', async () => {

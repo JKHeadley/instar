@@ -1,3 +1,5 @@
+import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
+
 // Work board page: pure view-model (docs/specs/work-board-asks.md §4, §5, §7).
 // No DOM, no fetch, no timers. work.js renders these; tests/unit/console-work-model.test.ts
 // checks them. The server's card JSON (src/core/workBoardViews.ts cardJson/boardJson) is the
@@ -134,7 +136,7 @@ export function cardActions(card, { inSheet = false } = {}) {
   // A phone-only card (a project app's version card, project-apps-sandbox §3.4): the server refuses
   // every console tap on it except withdraw-approval, which only stops the app. So no Approve here
   // (phoneOnlyLine says where to approve) and, once approved, one "Stop this app".
-  if (card.phoneOnly) return card.approved && card.status !== 'archived' ? [{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }] : [];
+  if (card.phoneOnly) return card.approved && !card.appStopped && card.status !== 'archived' ? [{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }] : [];
   const out = [];
   const add = (action, tone = 'quiet') => { if (!out.some((x) => x.action === action)) out.push({ action, label: actionLabel(action), tone }); };
   const approved = Boolean(card.approved);
@@ -163,6 +165,8 @@ export function cardActions(card, { inSheet = false } = {}) {
 /** What a phone-only card says in place of an Approve button, or null for any other card. */
 export function phoneOnlyLine(card) {
   if (!card || !card.phoneOnly || card.removed || card.status === 'removed') return null;
+  // A stopped app's card has nothing to approve (its need line says it was stopped).
+  if (card.appStopped) return null;
   return card.approved ? null : 'Approve this on your phone';
 }
 
@@ -266,7 +270,7 @@ export function tapCovers(card, action, extra = {}) {
     case 'reopen': lines.push({ label: 'Reopening', text: 'The card is not finished. From now on every finish of this card needs your sign-off.' }); break;
     case 'hold': lines.push({ label: 'Putting on hold', text: 'The agent stops work on this card until you release it. This always goes through.' }); break;
     case 'withdraw-approval': lines.push(card.phoneOnly
-      ? { label: 'Stopping this app', text: 'The app stops running. Running it again needs your approval on your phone. This always goes through.' }
+      ? { label: 'Stopping this app', text: 'The app stops running. Turning it back on comes in a later update. This always goes through.' }
       : { label: 'Withdrawing approval', text: 'The agent stops and waits for your approval again. This always goes through.' }); break;
     case 'archive': lines.push({ label: 'Archiving', text: 'The card leaves the board. You can restore it later.' }); break;
     case 'redact': lines.push({ label: 'Removing for good', text: 'The card’s text is hidden from every read and its conversation is deleted. This cannot be undone.' }); break;
@@ -411,7 +415,25 @@ export function workBoardNeedRows(wb) {
     main: String(c.title || 'A work card').slice(0, 80),
     sub: String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
+    // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
+    // person to act (no Approve, no Confirm done, no open question, nothing outward) may stand in for its rows.
+    covers: Array.isArray(c.covers) ? c.covers.filter((k) => typeof k === 'string') : [],
+    linkable: c.status === 'with-person' && !c.outward && !c.question,
+    // Only the Chief of Staff's own wait card stands in for its row; an agent session's card keeps its own row too.
+    serverOwned: c.serverOwned === true,
+    createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
+    cardId: c.id,
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
   return rows;
+}
+
+/** Source is already viewer-filtered by the board read. Never infer it from placement. */
+export function cardSourceLink(card) {
+  if (!card || card.removed || !card.source) return null;
+  const ref = parseConversationRef(card.source.conversationKey);
+  const target = messageTarget(card.source.messageId);
+  if (!ref) return { href: null, label: 'The original message cannot be opened here.' };
+  if (!target) return { href: hashFor(ref), label: 'Original conversation', note: 'The exact message is unavailable.' };
+  return { href: `${hashFor(ref)}&m=${encodeURIComponent(target)}`, label: 'Original message' };
 }

@@ -177,15 +177,21 @@ describe('CodexCliIntelligenceProvider — fenced triage launch', () => {
     const call = provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true,
       requiredRoute: { framework: 'codex-cli', modelId: 'gpt-6-astra' },
       accountOverride: { accountId: 'pool-1', configHome: tmpDir }, signal: controller.signal });
-    for (let n = 0; n < 100 && !fs.existsSync(pidFile); n++) {
+    // Wait for the pid itself, not for the file: writeFileSync creates the file before it writes, so a
+    // reader on a busy machine can see it empty. Number('') is 0, and process.kill(0, 0) signals this
+    // test's own process group and never throws, which made the last assertion fail by chance.
+    const readPid = (): number => {
+      try { return Number(fs.readFileSync(pidFile, 'utf8')); } catch { return 0; }
+    };
+    for (let n = 0; n < 300 && !(readPid() > 0); n++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(fs.existsSync(pidFile)).toBe(true);
-    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    const pid = readPid();
+    expect(pid).toBeGreaterThan(0);
     controller.abort();
     await expect(call).rejects.toThrow('aborted');
     expect(() => process.kill(pid, 0)).toThrow();
-  }, 5_000);
+  }, 8_000);
 
   it('pins file-backed credentials for the same auth.json used by quota admission', async () => {
     const argsFile = path.join(tmpDir, 'fenced-triage-args');

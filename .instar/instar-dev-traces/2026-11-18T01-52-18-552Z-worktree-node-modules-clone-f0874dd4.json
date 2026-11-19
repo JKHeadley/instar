@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "worktree-node-modules-clone",
+  "sessionId": "700d79a1-8d87-4459-bd0a-115993fa6b7d",
+  "timestamp": "2026-11-18T01:52:18.552Z",
+  "artifactPath": "upgrades/side-effects/worktree-node-modules-clone.md",
+  "artifactSha256": "c710d866c81bda9b604fd64ddceea635bacf0fd75dce470564a7fd04e29a196c",
+  "coveredFiles": [
+    "docs/specs/worktree-node-modules-clone.eli16.md",
+    "src/commands/worktree.ts",
+    "src/core/InstarWorktreeManager.ts",
+    "tests/integration/instar-worktree-create.test.ts",
+    "upgrades/next/worktree-node-modules-clone.md",
+    "upgrades/side-effects/worktree-node-modules-clone.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One function in CLI worktree creation; any failure falls back to the existing symlink; no block/allow surface; a revert fully undoes it.",
+  "eli16Path": "docs/specs/worktree-node-modules-clone.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-node-modules-clone.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

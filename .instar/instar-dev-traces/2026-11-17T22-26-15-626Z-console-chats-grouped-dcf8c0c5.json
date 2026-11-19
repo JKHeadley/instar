@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-chats-grouped",
+  "sessionId": "8d848839-63d1-417d-ad1d-769adac726e8",
+  "timestamp": "2026-11-17T22:26:15.626Z",
+  "artifactPath": "upgrades/side-effects/console-chats-grouped.md",
+  "artifactSha256": "bac82a18ec0be343d82f9b12df8a7597a0f38920b675045e13edff832d535d44",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/console-chats-grouped.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/console-chats-grouped.md",
+    "upgrades/side-effects/console-chats-grouped.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Owner wording follow-up on the same display-only change: labels say project instead of effort; a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-chats-grouped.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-chats-grouped.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

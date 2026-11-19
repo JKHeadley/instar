@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
@@ -130,6 +131,8 @@ import { ConversationGraphOwnerGrantStore } from './ConversationGraphOwnerGrant.
 import {readConversationGraphOwnerCredential,readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../core/ConversationGraphOwnerPolicy.js';
 import {LiveConfig} from '../config/LiveConfig.js';
 import crypto from 'node:crypto';
+import { payloadHash } from '../core/MobileChatRequests.js';
+import { chatRecordDelivered } from '../documents/decisions.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
@@ -234,6 +237,9 @@ import { DocumentService } from '../documents/service.js';
 import { standingCheck, teamStateAt, teamView, type TeamDeps } from '../documents/teamAdapter.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createQuotaPacingRoutes } from './quotaPacingRoutes.js';
+import { QuotaHistoryLedger, buildLocalSummaries, isQuotaPacingEnabled } from '../monitoring/QuotaHistoryLedger.js';
+import { mergeLogins as mergeQuotaLogins, assembleProviders as assembleQuotaProviders } from '../monitoring/quotaPacing.js';
 import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
@@ -286,6 +292,7 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -924,6 +931,8 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
+  private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
   private deliverA2aToMachine?: (input: {
     machineId: string;
     targetAgent: string;
@@ -1027,6 +1036,9 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Quota pacing (docs/specs/quota-pacing-forecast.md): the reading history, attached to the poller. */
+  private quotaPacingLedger: QuotaHistoryLedger | null = null;
+  private quotaPacingPoller: import('../core/QuotaPoller.js').QuotaPoller | null = null;
   /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
   private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
@@ -1984,6 +1996,7 @@ export class AgentServer {
     this.poolLink = options.poolLink ?? undefined;
     this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
+    this.docPoolRegistry = options.machinePoolRegistry ?? null;
     this.deliverA2aToMachine = options.deliverA2aToMachine;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
@@ -1995,13 +2008,25 @@ export class AgentServer {
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
     const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
+    // SEC-103: one credential check (before any body is read) for every parser above 64 KB.
+    const bodyBudgetDeps: BodyBudgetDeps = {
+      authToken: () => this.config.authToken,
+      dashboardSessionValid: (token) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && this.dashboardSessionStore.verify(token),
+      memorySessionValid: options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) !== null : undefined,
+      activeDevice: (id) => this.mobilePairing?.enabled() === true && this.mobilePairing.devices.get(id)?.status === 'active',
+      activeMachine: (id) => this.machineRouteContext?.authDeps.identityManager.loadRegistry().machines[id]?.status === 'active',
+      selfMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
+      verify: keepRawBody,
+    };
     this.app.use('/completion-claim/observe', express.json({ limit: '96kb', verify: keepRawBody }));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
     // PostCompact record route (context-budget-layered-summaries §14 body cap):
     // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
-    this.app.use('/hooks/post-compact', express.json({ limit: '2mb' }));
+    this.app.use('/hooks/post-compact', credentialAwareJsonParser({ ...bodyBudgetDeps, verify: undefined }, 2 * 1024 * 1024));
     // Native hook events: admission (loopback, no forwarding headers, bearer,
     // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
     // 4 MB parser — both ahead of the global parser, which runs before
@@ -2017,7 +2042,7 @@ export class AgentServer {
     this.app.use('/org/checkin', express.json({ limit: '4kb' }));
     this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
     // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
-    this.app.use('/mobile/org/recover', express.json({ limit: '32mb', verify: keepRawBody }));
+    this.app.use('/mobile/org/recover', credentialAwareJsonParser(bodyBudgetDeps, 32 * 1024 * 1024));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
@@ -2034,7 +2059,9 @@ export class AgentServer {
         runtime.admissionGuard()(req,res,()=>express.json({limit:'4mb'})(req,res,()=>runtime.router(req,res,next)));
       });
     }
-    this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
+    // SEC-103: the general parser reads 12 MB only for a caller with a credential it can check
+    // before the body; a public peer route gets 2 MB, anyone else 64 KB (src/server/bodyBudget.ts).
+    this.app.use(credentialAwareJsonParser(bodyBudgetDeps));
     this.app.locals.stateDir = options.config.stateDir;
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -2554,6 +2581,7 @@ export class AgentServer {
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
         mayNotifyDocument: (deviceId, docId, commentKey) => this.documentPushAllowed(deviceId, docId, commentKey),
+        mayDecideDocument: (deviceId, docId) => this.documentDecidePushAllowed(deviceId, docId),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
         // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
         badgeFor: (deviceId, conversationKey, messageId) => {
@@ -7649,6 +7677,10 @@ export class AgentServer {
     // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
     // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
     this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
+    // Quota pacing (docs/specs/quota-pacing-forecast.md): reading history + read-only forecast
+    // (dev-gated through subscriptionPool.pacing.enabled; 503 quota-pacing-off when it resolves off).
+    this.startQuotaPacing(options);
+    this.app.use(createQuotaPacingRoutes({ ...routeCtx, quotaPacing: () => this.quotaPacingLedger }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -7965,6 +7997,9 @@ export class AgentServer {
           ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
           agentName: () => String(options.config.projectName ?? ''),
           principalKind: (req) => principalOf(req).kind,
+          intelligence: () => options.intelligence ?? null,
+          config: () => options.config,
+          journal: orgDecisionJournal(options.config.stateDir),
           effects: () => ({
             currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
             currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,
@@ -10274,6 +10309,11 @@ export class AgentServer {
     }
     for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
     this.queuePaceTimers = [];
+    if (this.quotaPacingLedger) {
+      try { this.quotaPacingPoller?.setHistoryLedger(null); } catch { /* @silent-fallback-ok: detaching a sink at shutdown */ }
+      try { await this.quotaPacingLedger.stop(); } catch { /* @silent-fallback-ok: shutdown flush of observational history; a lost tail row is one 5-minute reading */ }
+      this.quotaPacingLedger = null;
+    }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
@@ -10597,6 +10637,8 @@ export class AgentServer {
         if (!b) return null;
         try { const v = JSON.parse(b.text) as unknown; return Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null; } catch { return null; } // @silent-fallback-ok — an unreadable list keeps the row hidden
       }),
+      // Document decisions (§3.5): whichever machine runs the conversation's session tells it.
+      onApplied: (row) => { if (row.eventKind === 'decision') this.documentDecisionApplied(row); },
     });
     this.documents = { store, service: new DocumentService(store, teamView(deps)) };
     // Rows waiting for a device binding or a team row are re-checked on a timer, so this works on a
@@ -10761,7 +10803,8 @@ export class AgentServer {
     if (!publicKey) return { status: 'unknown' };
     if (local && local.status === 'revoked') return { status: 'revoked' };
     const client: 'phone' | 'browser' = (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
-    const approvedVia = local?.approvedVia ?? act?.approvedVia ?? null;
+    // A local record with no approvedVia predates the field: it was approved in Telegram (MobileDeviceKeys).
+    const approvedVia = local ? (local.approvedVia ?? (isBrowserDevice(local) ? null : 'telegram-dm')) : act?.approvedVia ?? null;
     // Whose device: this machine's own record, else the replicated team binding (owner phones are
     // bound to 'owner' there too). Never inferred from a missing binding: unknown waits for it.
     const person = local ? svc.personOfDevice(local) : null;
@@ -10786,7 +10829,10 @@ export class AgentServer {
     // no machine can widen a guest's computer by rewriting its scope.
     const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
     const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
-    return { status: 'ok', publicKey, role, personKey, client, mayWrite };
+    // SEC-088 interim: only this machine's own, matching, active owner-phone enrollment yields the
+    // Face ID key a decision row is re-checked with; replicated activation never does.
+    const localPresenceKey = local && localKey && deviceKeyHashOf(localKey) === keyHash && local.presenceKey && activeOwnerPhone(svc, deviceId) ? local.presenceKey : undefined;
+    return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia, ...(localPresenceKey ? { localPresenceKey } : {}) };
   }
 
 
@@ -10833,7 +10879,11 @@ export class AgentServer {
         const id = options.telegram?.getLifelineTopicId?.();
         return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
       },
-      deviceApprovedVia: (deviceId: string) => this.mobilePairing?.devices.get(deviceId)?.approvedVia ?? null,
+      // A phone record with no approvedVia predates the field and was approved in Telegram (MobileDeviceKeys);
+      // a browser with none stays unknown, which the caller treats as PIN-approved (fail closed).
+      deviceApprovedVia: (deviceId: string) => { const d = this.mobilePairing?.devices.get(deviceId); return d ? d.approvedVia ?? (isBrowserDevice(d) ? null : 'telegram-dm') : null; },
+      decisionWritesBlockedBy: () => this.documentDecisionWritesBlockedBy(),
+      notifyDecisionAsk: (docId: string, askId: string, versionId?: string) => { void this.documentDecisionPush(docId, `doc-decide:${docId}:${askId}:${versionId ?? ''}`); },
       linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin
         ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel)
         // Test-only (documents.loopbackOrigin): a development agent with no tunnel links to its own loopback address.
@@ -10867,6 +10917,121 @@ export class AgentServer {
     return text ? text.split('\n') : null;
   }
 
+  // ── Document decisions (docs/specs/document-decisions.md) ───────────────────────────────
+
+  /**
+   * The approval root an owner device decides on (§3.2): follow `approvedBy` through this machine's
+   * own device records to the first device not approved by another phone. Refused (null) when any
+   * device on the way is a computer, a browser or missing, or the root is an agent-introduced or
+   * local-install approval, or a PIN approval on an agent that has a Telegram owner.
+   */
+  documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
+    const svc = this.mobilePairing;
+    if (!svc) return null;
+    let d = svc.devices.get(deviceId);
+    if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
+    for (let depth = 0; depth < 8 && d; depth++) {
+      if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;
+      const via = d.approvedVia ?? 'telegram-dm';
+      if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
+      if (via === 'telegram-dm') return 'telegram';
+      if (via === 'dashboard-pin') return this.documentAgentHasTelegramOwner() ? null : 'pin';
+      return null;
+    }
+    return null;
+  }
+
+  private documentAgentHasTelegramOwner(): boolean {
+    const tg = this.telegramAdapter as unknown as { getOwnerUserId?: () => unknown; getVerifiedOwner?: () => unknown } | null | undefined;
+    return !!(tg?.getVerifiedOwner?.() ?? tg?.getOwnerUserId?.());
+  }
+
+  /** A peer heard from in the last 7 days that does not read decision rows yet, by name (§6). */
+  documentDecisionWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    // An unreadable pool is treated as "not sure every machine has the update": refuse with a reason.
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: decision writes refuse until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.documentsDecisionRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** Ask the owner's deciding phones (§3.7). The push service's own answer, in words for the page. */
+  async documentDecisionPush(docId: string, dedupeKey: string, verdict?: 'approve' | 'decline'): Promise<'sent' | 'deduped' | 'unavailable' | 'no-phone'> {
+    const push = this.mobilePairing?.push;
+    if (!push) return 'unavailable';
+    // No owner phone here that may decide: say so (the page shows how to pair one), never a silent "sent".
+    const svc = this.mobilePairing;
+    if (svc && ![...svc.devices.list()].some((d) => this.documentDecisionRoot(d.id) !== null)) return 'no-phone';
+    try {
+      const r = await push.receive({ kind: 'document', itemId: docId, decide: verdict ?? true, dedupeKey, sourceMachine: this.meshSelfId ?? 'self' }, false);
+      return r === 'accepted' ? 'sent' : r === 'deduped' ? 'deduped' : 'unavailable';
+    } catch { return 'unavailable'; } // @silent-fallback-ok — the page offers opening the document in the app
+  }
+
+  /** May this phone be asked to decide on this document? Owner phones that may decide and can read it. */
+  private documentDecidePushAllowed(deviceId: string, docId: string): boolean {
+    const docs = this.documents;
+    if (!docs || !this.documentDecisionRoot(deviceId)) return false;
+    return !!docs.service.facts(docId);
+  }
+
+  /** Did this device's chat message finish delivered on this machine (§3.4)? From the chat request record. */
+  documentChatDelivered(deviceId: string, requestId: string, sendPath: string, text: string): boolean {
+    const store = this.mobilePairing?.chatRequests();
+    if (!store) return false;
+    const t = text.trim();
+    const topic = /^\/mobile\/chat\/(\d+)$/.exec(sendPath);
+    const app = /^\/mobile\/chat\/app\/([0-9a-f-]{36})$/.exec(sendPath);
+    const hash = topic ? payloadHash(Number(topic[1]), t) : app ? crypto.createHash('sha256').update(['app-send', app[1], t].join('\n')).digest('hex') : null;
+    if (!hash) return false;
+    const l = store.lookup(deviceId, requestId, hash);
+    return l.kind === 'done' && chatRecordDelivered(l.status, l.body);
+  }
+
+  private documentDecisionNoticed = new Set<string>();
+  /**
+   * A verified decision row became readable here (written here or synced in, §3.5): if this machine
+   * runs a live session for the document's conversation, give it one fixed line, once per row.
+   */
+  private documentDecisionApplied(row: import('../documents/rows.js').DocRow): void {
+    if (row.eventKind !== 'decision') return;
+    const key = `${row.origin}/${row.incarnation}#${row.seq}`;
+    if (this.documentDecisionNoticed.has(key)) return;
+    // Only fresh decisions: a restart or a late catch-up never replays old notices.
+    const at = Date.parse(row.receivedAt);
+    if (!Number.isFinite(at) || Date.now() - at > 30 * 60_000) return;
+    this.documentDecisionNoticed.add(key);
+    if (this.documentDecisionNoticed.size > 2000) this.documentDecisionNoticed.clear();
+    setImmediate(() => {
+      try {
+        const docs = this.documents;
+        const f = docs?.service.facts(row.docId);
+        if (!docs || !f) return;
+        const d = docs.service.decision(row.docId, { principal: { kind: 'bearer' }, actor: { type: 'machine' }, access: {}, reader: { kind: 'owner' } });
+        if (!d.current || d.current.rowKey !== key) return;
+        const words = row.verdict === 'approve' ? 'Approved' : 'Declined';
+        this.documentNotifySession(f.primary, `[document decision] ${words} version ${d.current.versionLabel ?? '?'} of doc ${row.docId} by the owner's phone; confirm with GET /docs/${row.docId}/decision`, this.sessionManager as never);
+      } catch { /* @silent-fallback-ok — the owner's message and the documents block also carry it */ }
+    });
+  }
+
+  /** One fixed system line to a live Telegram-topic session for this conversation on this machine (§3.5). */
+  documentNotifySession(primary: string, line: string, sm: { isSessionAlive(n: string): boolean; injectMessage(n: string, t: string, o?: { firstParty?: { source: string } }): unknown } | null): boolean {
+    if (!sm || !primary.startsWith('telegram:')) return false;
+    const topicId = Number(primary.slice(9));
+    const name = (this.telegramAdapter as unknown as { getSessionForTopic?: (id: number) => string | null } | null)?.getSessionForTopic?.(topicId) ?? null;
+    if (!name || !sm.isSessionAlive(name)) return false;
+    return sm.injectMessage(name, `[system:document-decision telegram:${topicId}] ${line}`, { firstParty: { source: 'document-decision' } }) !== false;
+  }
+
   /** May this phone get a push about an answer to this comment? Only its author's phones that can read the document. */
   private documentPushAllowed(deviceId: string, docId: string, commentKey: string): boolean {
     const svc = this.mobilePairing;
@@ -10891,6 +11056,12 @@ export class AgentServer {
   private documentPageDeps(options: { config: InstarConfig; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
     return {
       ...this.documentRouteDeps(options),
+      // Document decisions (docs/specs/document-decisions.md).
+      decisionRoot: (deviceId: string) => this.documentDecisionRoot(deviceId),
+      chatDelivered: (deviceId: string, requestId: string, sendPath: string, text: string) => this.documentChatDelivered(deviceId, requestId, sendPath, text),
+      notifyDecisionPhone: (docId: string, dedupeKey: string, verdict?: 'approve' | 'decline') => this.documentDecisionPush(docId, dedupeKey, verdict),
+      notifySession: (primary: string, line: string) => this.documentNotifySession(primary, line, this.sessionManager as never),
+      machineCaller: () => ({ principal: { kind: 'bearer' as const }, actor: { type: 'machine' as const }, access: this.mobilePairing?.teamLog()?.vector() ?? {}, reader: { kind: 'owner' as const } }),
       device: (deviceId: string) => {
         const svc = this.mobilePairing;
         if (!svc) return null;
@@ -11047,9 +11218,48 @@ export class AgentServer {
       });
       // A pass can be up to six hours away; the numbers should not read empty until then.
       setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: logged; the ladder stays null and its route reports it unavailable
       console.warn('[maturation-ladder] init failed (non-fatal):', err);
       this.maturationLadder = null;
+    }
+  }
+
+  /**
+   * Build the quota-history ledger (docs/specs/quota-pacing-forecast.md) when the switch resolves
+   * on and this machine has a subscription pool, attach it to the quota poller, and start its
+   * unref'd maintenance timer (bucket flush, hourly compaction + tick row, daily retire sweep).
+   */
+  private startQuotaPacing(options: { config: InstarConfig; subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool; quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller }): void {
+    const config = options.config;
+    if (!config.stateDir || !options.subscriptionPool || !isQuotaPacingEnabled(config)) return;
+    try {
+      const pool = options.subscriptionPool;
+      const machineId = this.meshSelfId ?? 'local';
+      const ledger = new QuotaHistoryLedger({
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        machineId,
+        pool,
+        enabled: () => isQuotaPacingEnabled(config),
+      });
+      ledger.setTickSource(async () => {
+        const now = Date.now();
+        const { summaries } = await buildLocalSummaries(ledger, pool, { machineId, pollIntervalMs: 15 * 60_000, now });
+        const stale: Record<string, number> = {};
+        const verdicts: Record<string, number> = {};
+        for (const s of summaries) if (!s.fresh && s.staleReason) stale[s.staleReason] = (stale[s.staleReason] ?? 0) + 1;
+        for (const p of assembleQuotaProviders(mergeQuotaLogins(summaries, now).logins, now, { localOnly: false })) {
+          for (const a of p.accounts) if (a.weekly) verdicts[a.weekly.verdict] = (verdicts[a.weekly.verdict] ?? 0) + 1;
+        }
+        return { accounts: summaries.length, withHistory: summaries.filter((s) => s.newestPolledAt !== null).length, stale, verdicts };
+      });
+      options.quotaPoller?.setHistoryLedger(ledger);
+      ledger.start();
+      this.quotaPacingLedger = ledger;
+      this.quotaPacingPoller = options.quotaPoller ?? null;
+    } catch (error) { // @silent-fallback-ok: logged; the ledger stays null so GET /quota-pacing answers 503 and the poller is untouched
+      console.warn('[quota-pacing] init failed (non-fatal):', error instanceof Error ? error.message : error);
+      this.quotaPacingLedger = null;
     }
   }
 

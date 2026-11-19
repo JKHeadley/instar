@@ -7,6 +7,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  * and can be monitored/reaped by the server.
  */
 
+import { alwaysAvailableTokenInUse } from './alwaysAvailableToken.js';
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
@@ -2204,6 +2205,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
+  }
+
+  /**
+   * The pool account a new Claude session is pinned to, or null. While Always available's code is the
+   * agent's Claude sign-in it overrides the pool (create-agent-accounts-and-always-on §B.4): the session
+   * runs on that code, so it is not tagged with a pool account it doesn't use.
+   */
+  private poolAccountForSpawn(): { configHome: string; accountId: string } | null {
+    if (!this.spawnAccountResolver) return null;
+    if (this.config.stateDir && alwaysAvailableTokenInUse(this.config.stateDir, this.config.anthropicApiKey)) return null;
+    return this.spawnAccountResolver();
   }
 
   setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
@@ -4957,7 +4969,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = options.accountPin
       ? options.accountPin
       : headlessFramework === 'claude-code'
-        ? (this.spawnAccountResolver?.() ?? null)
+        ? (this.poolAccountForSpawn() ?? null)
         : headlessFramework === 'codex-cli'
           ? this.codexHeadlessPlacement()
           : null;
@@ -5439,7 +5451,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // always claude-code, so launch under the chosen pool account's config home
     // and tag the session. No-op unless the resolver is wired + returns an account.
     // An explicit account pin (spec skill-driven-signin-repair) always wins over the resolver.
-    const pinnedAccount = options.accountPin ?? this.spawnAccountResolver?.() ?? null;
+    const pinnedAccount = options.accountPin ?? this.poolAccountForSpawn() ?? null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
@@ -8352,7 +8364,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //     account → default-login behavior is exactly unchanged when off.
     const explicitConfigHome = options?.configHome;
     const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
-      ? (this.spawnAccountResolver?.() ?? null)
+      ? (this.poolAccountForSpawn() ?? null)
       : null;
     // Census #6: when the home comes from a pinned pool account, resolve its LIVE slot through the
     // ledger gate (an explicit caller-supplied home — the account-swap / SessionRefresh path — is a

@@ -1,5 +1,6 @@
 // Global vitest setup. Runs once before any test file loads.
 
+import { afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -91,6 +92,22 @@ for (const key of Object.keys(process.env)) {
     delete process.env[key];
   }
 }
+
+// Conversation graph verdict memo (docs/specs/graph-verify-verdict-memo.md §5): in tests every memo hit is
+// re-verified and stored rows' top-level values are frozen, so a missed invalidation or an in-place edit fails
+// loudly. Callers of certifiedUnion often degrade errors to held/partial, so a divergence is also counted on
+// globalThis and asserted zero after every test. Set after the strip loop above, which would delete it.
+process.env.INSTAR_GRAPH_VERDICT_MEMO_CHECK = '1';
+const assertNoGraphVerdictMemoDivergence = (where: string) => {
+  const divergences = Number((globalThis as Record<string, unknown>).__instarGraphVerdictMemoDivergences ?? 0);
+  if (divergences !== 0) {
+    (globalThis as Record<string, unknown>).__instarGraphVerdictMemoDivergences = 0;
+    throw new Error(`graph verdict memo diverged ${divergences} time(s) ${where} (a cached verify/persisted/descriptor result differed from a fresh one, or a memo-frozen row value reached a mutator)`);
+  }
+};
+afterEach(() => assertNoGraphVerdictMemoDivergence('in this test'));
+// Async graph work still running after the last test of a file is checked once more here.
+afterAll(() => assertNoGraphVerdictMemoDivergence('after the last test of this file'));
 
 // Bind every test's ephemeral server to loopback only.
 //

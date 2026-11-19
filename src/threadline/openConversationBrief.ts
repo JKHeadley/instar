@@ -24,6 +24,7 @@ import type { IntelligenceProvider } from '../core/types.js';
 import type { LlmQueue } from '../monitoring/LlmQueue.js';
 import { parsePurposeFromResponse } from '../memory/TopicSummarizer.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { DP_OPEN_CONVERSATION_BRIEF } from '../data/provenanceCoverage.js';
 
 export const OPEN_CONVERSATION_BRIEF_PROMPT_ID = 'open-conversation-brief-v1';
@@ -86,6 +87,8 @@ export interface BriefConversation {
 const NAME_MAX = 40;
 const SUMMARY_MAX = 600;
 const SNIPPET_MAX = 200;
+/** Per-message bound in the brief prompt: 800 of content plus disclosure room. */
+const BRIEF_MESSAGE_CHARS = 800 + BOUNDED_INPUT_MIN_CHARS;
 const MIN_NAME = 4;
 const LEGACY_MARKER = '💬 This Threadline conversation is now tied to this topic — updates will land here.';
 
@@ -129,6 +132,7 @@ function scrubSummary(raw: string): string | null {
   if (!trimmed || hasSecretValue(trimmed)) return null;
   if (trimmed.length <= SUMMARY_MAX) return trimmed;
   // Cap on a word boundary at/under the limit.
+  // bounded-input-reviewed: caps model OUTPUT (the brief summary) on a word boundary before display; not a judgment's input.
   const slice = trimmed.slice(0, SUMMARY_MAX);
   const lastSpace = slice.lastIndexOf(' ');
   return (lastSpace > SUMMARY_MAX - 80 ? slice.slice(0, lastSpace) : slice).trim();
@@ -163,8 +167,9 @@ function templateSummary(
   const count = messages.length || conv?.messageCount || 0;
   const lastInbound = [...messages].reverse().find((m) => m.direction === 'in');
   const rawSnippet = (lastInbound?.text ?? conv?.lastInboundHash ?? '').trim();
+  // bounded-input-reviewed: an operator-facing quoted snippet in the topic brief, which also lands in topic history; the cut is marked with "…" and the full conversation is in Threadline history.
   const snippet = rawSnippet && !hasSecretInRaw(rawSnippet)
-    ? rawSnippet.replace(/\s+/g, ' ').slice(0, SNIPPET_MAX)
+    ? rawSnippet.replace(/\s+/g, ' ').slice(0, SNIPPET_MAX) + (rawSnippet.replace(/\s+/g, ' ').length > SNIPPET_MAX ? '…' : '')
     : '';
 
   if (count <= 1) {
@@ -179,7 +184,9 @@ function templateSummary(
 function buildLlmPrompt(messages: BriefMessageRow[]): string {
   const recent = messages.slice(-10).map((m) => {
     const who = m.direction === 'in' ? (m.remoteAgentName || 'them') : 'me';
-    const text = m.text.length > 800 ? `${m.text.slice(0, 800)}…` : m.text;
+    // The model writes the operator's orientation summary from these. 800
+    // characters of content per message as before, plus disclosure room.
+    const text = boundedHead(m.text, BRIEF_MESSAGE_CHARS);
     return `${who}: ${text}`;
   });
   return [

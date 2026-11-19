@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "overdue-promise-follow-through",
+  "sessionId": "3918dc45-ce62-454d-bc6e-1be7ac321c3d",
+  "timestamp": "2026-11-18T00:27:52.191Z",
+  "artifactPath": "upgrades/side-effects/overdue-promise-follow-through.md",
+  "artifactSha256": "defcde7ff90df4f7a9a0af2e14021bf5f06a8a7cf708abc96f71954840ebdf1e",
+  "specPath": "docs/specs/overdue-promise-follow-through.md",
+  "coveredFiles": [
+    "docs/specs/overdue-promise-follow-through.md",
+    "src/monitoring/CheckInReminderReconciler.ts",
+    "src/monitoring/promiseHandoff.ts",
+    "upgrades/side-effects/overdue-promise-follow-through.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "guard-test fixes on the same converged change",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

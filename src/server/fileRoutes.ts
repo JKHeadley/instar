@@ -26,6 +26,7 @@ const DEFAULT_FILE_VIEWER_CONFIG: FileViewerConfig = {
   allowedPaths: ['./'],
   editablePaths: ['./'],
   maxFileSize: 1_048_576, // 1MB
+  maxDownloadSize: 1_073_741_824, // 1GB — downloads stream from the checked descriptor, so they get their own, larger cap
   maxEditableFileSize: 204_800, // 200KB
   blockedFilenames: [
     '.env', '.env.*', '*.key', '*.pem', '*.p12', 'secrets.*',
@@ -1109,6 +1110,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       editablePaths: config.editablePaths,
       maxFileSize: config.maxFileSize,
       maxEditableFileSize: config.maxEditableFileSize,
+      maxDownloadSize: Math.max(config.maxFileSize, Number.isFinite(config.maxDownloadSize) ? config.maxDownloadSize! : DEFAULT_FILE_VIEWER_CONFIG.maxDownloadSize!),
     });
   });
 
@@ -1225,8 +1227,10 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         return;
       }
 
-      if (checkedStat.size > config.maxFileSize) {
-        res.status(413).json({ error: 'File too large', size: checkedStat.size, maxSize: config.maxFileSize });
+      // Downloads have their own cap (CMT-1819): the 1 MB preview cap made bigger files undownloadable.
+      const downloadMax = Math.max(config.maxFileSize, Number.isFinite(config.maxDownloadSize) ? config.maxDownloadSize! : DEFAULT_FILE_VIEWER_CONFIG.maxDownloadSize!);
+      if (checkedStat.size > downloadMax) {
+        res.status(413).json({ error: 'File too large', size: checkedStat.size, maxSize: downloadMax });
         return;
       }
 
@@ -1360,7 +1364,8 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
     }
 
     const encodedPath = encodeURIComponent(normalized);
-    const relativePath = `/dashboard?tab=files&path=${encodedPath}`;
+    // The new console's Files page (CMT-1819); it also reads the legacy ?tab=files&path= form.
+    const relativePath = `/dashboard/console/#/settings/files?path=${encodedPath}`;
 
     res.json({
       path: normalized,

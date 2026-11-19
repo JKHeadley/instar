@@ -41,6 +41,7 @@ describe('LiveConfig refuses paths through object machinery (SEC-071)', () => {
     expect(lc.get('a.b', 0)).toBe(1);
     expect(lc.get('a.toString', 'absent')).toBe('absent');
     expect(lc.get('__proto__', 'absent')).toBe('absent');
+    expect(() => lc.set('a.c', JSON.parse('{"__proto__":{"x":1}}'))).toThrow(/reserved/);
     lc.set('a.c', 2);
     expect(lc.get('a.c', 0)).toBe(2);
   });

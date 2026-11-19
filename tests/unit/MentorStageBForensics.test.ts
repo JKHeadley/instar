@@ -24,11 +24,12 @@ describe('buildForensicPrompt', () => {
     expect(p).toMatch(/JSON array/);
     expect(p).toContain('some error log');
   });
-  it('bounds the signals length (slices to 12000 + a fixed preamble)', () => {
+  it('bounds the signals length (~12000 of content + a disclosure + a fixed preamble)', () => {
     const p = buildForensicPrompt('x', 'a'.repeat(20000));
-    // Signals are capped at 12000; the preamble is a fixed ~1.5k of instructions.
-    expect(p.length).toBeLessThan(14000);
-    expect(p).not.toContain('a'.repeat(12001)); // the 20k signal was truncated
+    // Signals keep ~12000 characters of content; the cut is disclosed in-band.
+    expect(p.length).toBeLessThan(14500);
+    expect(p).not.toContain('a'.repeat(12100)); // the 20k signal was truncated
+    expect(p).toContain('LATER content was omitted');
   });
 });
 
