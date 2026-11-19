@@ -87,6 +87,14 @@ describe('Needs-you read — production wiring', () => {
     // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
     // "could not check", even when its 503 also says "not initialized".
     expect(first.body.couldNotCheck).not.toContain('plans');
+    // Each thing once (work-board-cards-appear §3, amended 2026-11-18): an item that IS its card opens the card and
+    // keeps its own conversation in alsoOpens, and no card stands behind two items.
+    const cardIds: string[] = [];
+    for (const i of first.body.items as Array<{ action: { kind: string; href?: string }; card?: { id: string }; alsoOpens?: { href: string } }>) {
+      if (i.alsoOpens) { expect(i.action.href).toMatch(/^#\/work\/board\?card=wc_/); expect(i.alsoOpens.href).toMatch(/^#\/work\/chats\?c=/); }
+      if (i.card) cardIds.push(i.card.id);
+    }
+    expect(new Set(cardIds).size).toBe(cardIds.length);
 
     // An owner phone, paired through the existing path, gets the same list through its own device rule.
     server.mobilePairing!.deps.fetchFn = (async (url: string) => {

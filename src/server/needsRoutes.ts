@@ -118,6 +118,12 @@ export interface NeedItem {
    * own words and action; the card is one tap away. Additive and optional: a reader that does not know it shows the row.
    */
   card?: { id: string; href: string; label: string };
+  /**
+   * When the item IS its card (the Chief of Staff's wait card, needs-one-list), `action` opens the card and this is the
+   * source's own page (the project conversation), one tap away. Additive and optional: a reader that does not know it
+   * opens the card, which links on to the project.
+   */
+  alsoOpens?: { href: string; label: string };
 }
 
 export interface NeedsAnswer {
@@ -235,7 +241,16 @@ function toItem(row: Rec, source: string): NeedItem {
     action,
     refs: Array.isArray(row.refs) ? row.refs.filter((x): x is string => typeof x === 'string').slice(0, 8).map((x) => clean(x, 80)) : [],
     ...cardOf(row.card),
+    ...alsoOpensOf(row.alsoOpens),
   };
+}
+
+/** The same href rule as an item's own action (a console hash or a dashboard path), so it can never point outside. */
+function alsoOpensOf(a: unknown): { alsoOpens?: NeedItem['alsoOpens'] } {
+  if (!a || typeof a !== 'object') return {};
+  const r = a as Rec;
+  if (typeof r.href !== 'string' || !/^(#\/|\/dashboard\/)/.test(r.href)) return {};
+  return { alsoOpens: { href: r.href, label: clean(r.label, 80) || 'Open the project conversation' } };
 }
 
 function cardOf(c: unknown): { card?: NeedItem['card'] } {
