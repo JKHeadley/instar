@@ -58,9 +58,18 @@ export interface WorktreeWithDiff {
   worktree: Worktree;
   /** Number of commits ahead of default branch */
   commitsAhead: number;
-  /** Files changed vs default branch */
+  /**
+   * Files changed vs default branch: the first FILES_CHANGED_KEPT names only.
+   * A long-lived branch far behind main can list tens of thousands of files;
+   * keeping them all made last-report.json 314 MB, rewritten every scan.
+   */
   filesChanged: string[];
+  /** Total number of files changed vs default branch (filesChanged may be truncated). */
+  filesChangedCount: number;
 }
+
+/** How many changed-file names a report keeps per worktree. The notice shows 5. */
+export const FILES_CHANGED_KEPT = 50;
 
 export interface WorktreeMonitorConfig {
   /** Project directory (git repo root) */
@@ -100,6 +109,10 @@ export class WorktreeMonitor extends EventEmitter {
   private lastReport: WorktreeReport | null = null;
   private announcedFile: string;
   private announced: Partial<Record<AlertKind, AnnouncedEntry>> = {};
+  /** The scan in progress, shared by every caller until it settles (single-flight). */
+  private scanInFlight: Promise<WorktreeReport> | null = null;
+  /** Session announce decisions run one at a time, so callers sharing a scan cannot all announce. */
+  private announceChain: Promise<void> = Promise.resolve();
 
   constructor(config: WorktreeMonitorConfig) {
     super();
@@ -138,7 +151,11 @@ export class WorktreeMonitor extends EventEmitter {
    * Called from the sessionComplete event handler.
    */
   async onSessionComplete(session: Session): Promise<WorktreeReport> {
-    const report = await this.scanWorktrees();
+    // Callers that overlap share one scan (single-flight); each gets its own copy of the
+    // report so their actions do not mix, and the announce decision below runs one caller
+    // at a time, so a burst of session ends announces an unchanged finding once.
+    const shared = await this.scanWorktrees();
+    const report: WorktreeReport = { ...shared, actions: [...shared.actions] };
 
     // Copy serendipity findings from worktrees before alerting
     for (const wt of report.worktrees) {
@@ -152,17 +169,22 @@ export class WorktreeMonitor extends EventEmitter {
       ...report.withUnmergedWork.map(d => `unmerged:${d.worktree.branch}`),
       ...report.orphanBranches.map(b => `orphan:${b}`),
     ];
-    if (items.length > 0) {
-      if (this.isAnnounceDue('session', items)) {
-        const message = this.formatSessionAlert(session, report);
-        report.actions.push(`Alert generated for session ${session.name}`);
-        if (await this.sendAlert(message)) this.markAnnounced('session', items);
+    const decide = async (): Promise<void> => {
+      if (items.length > 0) {
+        if (this.isAnnounceDue('session', items)) {
+          const message = this.formatSessionAlert(session, report);
+          report.actions.push(`Alert generated for session ${session.name}`);
+          if (await this.sendAlert(message)) this.markAnnounced('session', items);
+        } else {
+          report.actions.push('Alert suppressed: findings unchanged since last announcement');
+        }
       } else {
-        report.actions.push('Alert suppressed: findings unchanged since last announcement');
+        this.markAnnounced('session', []);
       }
-    } else {
-      this.markAnnounced('session', []);
-    }
+    };
+    const turn = this.announceChain.then(decide, decide);
+    this.announceChain = turn.then(() => undefined, () => undefined);
+    await turn;
 
     this.saveState(report);
     this.emit('scan', report);
@@ -279,8 +301,23 @@ export class WorktreeMonitor extends EventEmitter {
 
   /**
    * Core scan: list all worktrees and analyze their state.
+   *
+   * Single-flight: a scan runs two git commands per worktree, so on a home with
+   * hundreds of worktrees one scan can outlast the 5-minute interval, and every
+   * session end starts another. Overlapping scans then pile up (measured: about
+   * three at once per server on a busy Studio). A caller that arrives while a
+   * scan is running gets that scan's report instead of starting a second one.
    */
-  async scanWorktrees(): Promise<WorktreeReport> {
+  scanWorktrees(): Promise<WorktreeReport> {
+    if (this.scanInFlight) return this.scanInFlight;
+    const scan = this.runScan().finally(() => {
+      if (this.scanInFlight === scan) this.scanInFlight = null;
+    });
+    this.scanInFlight = scan;
+    return scan;
+  }
+
+  private async runScan(): Promise<WorktreeReport> {
     const report: WorktreeReport = {
       timestamp: new Date().toISOString(),
       worktrees: [],
@@ -380,9 +417,10 @@ export class WorktreeMonitor extends EventEmitter {
     const diffOutput = await this.gitCommand(
       `diff --name-only ${defaultBranch}...${wt.branch}`
     );
-    const filesChanged = diffOutput.trim().split('\n').filter(f => f.trim());
+    const allFiles = diffOutput.trim().split('\n').filter(f => f.trim());
+    const filesChanged = allFiles.slice(0, FILES_CHANGED_KEPT);
 
-    return { worktree: wt, commitsAhead, filesChanged };
+    return { worktree: wt, commitsAhead, filesChanged, filesChangedCount: allFiles.length };
   }
 
   /**
@@ -446,7 +484,8 @@ export class WorktreeMonitor extends EventEmitter {
       for (const diff of report.withUnmergedWork) {
         lines.push(`  Branch: ${diff.worktree.branch}`);
         lines.push(`  Commits ahead: ${diff.commitsAhead}`);
-        lines.push(`  Files: ${diff.filesChanged.slice(0, 5).join(', ')}${diff.filesChanged.length > 5 ? ` (+${diff.filesChanged.length - 5} more)` : ''}`);
+        const total = diff.filesChangedCount ?? diff.filesChanged.length;
+        lines.push(`  Files: ${diff.filesChanged.slice(0, 5).join(', ')}${total > 5 ? ` (+${total - 5} more)` : ''}`);
         lines.push('');
       }
     }
