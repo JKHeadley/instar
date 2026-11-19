@@ -40,3 +40,15 @@ I tested the idea on history before proposing it. Replaying the exact rules, a l
 ## What ships when
 
 One change, after review and the Chief of Staff's approval. Then a two-week trial with four measures: how fast a failing run says so, whether passing runs slowed, how many failures ended early, and how often a change needed a second run because a second fault was hidden behind the first.
+
+## Changed after the first try (2026-11-19)
+
+The first trial ran for 36 minutes on one machine and switched itself off. The cause was the safety check I had designed, not the idea. After some runs the machine ran the same change a second time, in the old order, to see whether the answer was the same. That second run took the machine out of the line for 18 minutes while 15 changes waited, and it ended the trial because one unreliable test failed in the first run and passed in the second. Two runs of the same change often disagree like that, for reasons that have nothing to do with the order of the files.
+
+So the second runs are gone. What protects the answer now:
+
+- **The rule that matters is built in and tested:** a run is only ever recorded as passed after every test passed. Running some files first can end a run early only as failed.
+- **Each run writes down one line** about what failed and whether it was in the first part. Once a day the machine lists anything that looks lopsided between the two groups, and any time the main branch went red after a change that had passed with first parts. Each such "suspect" must get a written finding within 3 days; one that is late is shown as overdue. One confirmed case of the order changing an answer ends the trial on both machines.
+- **Two automatic limits on cost stay:** passing runs more than a minute slower, or runs hitting their time limit more than twice as often, on two days in a row, switch it off.
+
+What this gives up: proof, run by run, that the answer is the same. If a change ever passed wrongly because of the order, it would be noticed the way any wrongly passed change is noticed today: the main branch goes red after it is merged, and someone traces why.
