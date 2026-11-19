@@ -147,7 +147,8 @@ describe('applyCrossTopicConfirm: the owner\'s yes in A, the authority-granting 
   });
   it('conversation names in the proposal carry no quotes or line breaks', () => {
     expect(safeConversationName('Sc"al\ning', '23')).toBe('Sc al ing');
-    expect(safeConversationName(null, '23')).toBe('topic 23');
+    expect(safeConversationName(null, '23')).toMatch(/^topic 23\b/);
+    expect(safeConversationName(null, '23')).not.toContain('"');
     expect(safeConversationName('x'.repeat(200), '23')).toHaveLength(80);
   });
 });

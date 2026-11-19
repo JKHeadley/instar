@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 /** A cited message is accepted only if it is at most this old (spec: Floors). */
 export const CITATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -158,7 +159,8 @@ export const CROSS_TOPIC_FIELDS: readonly string[] = ['model', 'modelTier', 'thi
 /** A conversation name as shown inside the proposal: no quotes or line breaks, bounded. */
 export function safeConversationName(name: string | null, topicKey: string): string {
   const cleaned = (name ?? '').replace(/["\u201c\u201d\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
-  return cleaned || `topic ${topicKey}`;
+  // No name known: the shared rendering (id plus name, or a plain 'name unresolved'), never a bare id.
+  return cleaned || topicRef(topicKey).replace(/"/g, '');
 }
 
 /**

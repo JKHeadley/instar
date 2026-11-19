@@ -119,3 +119,4 @@ Main's core instruction file is at its size limit: `CLAUDE_MD_CORE_BUDGET_CHARS`
   - **harm:** the share of proposals disarmed by a later message before the owner answered.
 - So the ladder can read them, the armed, applied and disarmed audit rows now carry `crossTopic: true`.
 - The spec's ladder line names the entry id.
+- The topic-reference ratchet: when a conversation's name is unknown, the proposal now uses the shared `topicRef` rendering instead of a bare "topic <id>" (2026-11-19 07:15Z).
