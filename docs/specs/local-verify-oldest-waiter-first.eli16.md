@@ -11,7 +11,7 @@ Every change to Instar is tested on our own computers before it can be merged. T
 ## What already exists
 
 - **A waiting list:** a change that is turned away keeps its place in a list, with the time it was first refused.
-- **A rule meant to stop exactly this:** a change that has waited 90 minutes may use the extra places too. But it only gets one if a place happens to be free at the moment it asks, and labelled changes ask more often, so they always get there first.
+- **A rule meant to stop exactly this:** a change that has waited 90 minutes may use the extra places too. But it only gets one if a place happens to be free at the moment it asks, and in practice the labelled changes got there first every time (why exactly is not proven yet; the change records what is needed to see it).
 - **A control for the person running the line** to put a named change at the front by hand.
 
 ## What this adds
