@@ -1176,6 +1176,27 @@ describe('runVerify — balanced shards from duration history', () => {
     expect(f.shardLists).toHaveLength(0);
     expect(f.logs.some((l) => l.event === 'shard-plan' && l.balanced === false)).toBe(true);
   });
+  it('records unit files in the duration history too (borrowed-unit-slices spec, A), and logs the unit wall factor', async () => {
+    const f = fake();
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const hist = JSON.parse(f.files.get(P.durationsPath) as string) as Record<string, number>;
+    expect(Object.keys(hist)).toEqual(expect.arrayContaining(['tests/unit/a.test.ts', 'tests/integration/b.test.ts', 'tests/e2e/c.test.ts']));
+    const wf = f.logs.find((l) => l.event === 'unit-wall-factor');
+    expect(wf).toMatchObject({ workers: LOCAL_VERIFY_LIMITS.unitWorkersParallel });
+    expect(typeof wf?.factor).toBe('number');
+  });
+  it('unit entries in the history never change a slow lane\'s shard plan', async () => {
+    const withUnit = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const without = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const hist = Object.fromEntries([...INT, ...E2E].map((x, i) => [x, 1000 * (i + 1)]));
+    without.files.set(P.durationsPath, JSON.stringify(hist));
+    withUnit.files.set(P.durationsPath, JSON.stringify({ ...hist, 'tests/unit/a.test.ts': 999_999, 'tests/unit/z.test.ts': 1 }));
+    await runVerify(input(), withUnit.seams);
+    await runVerify(input(), without.seams);
+    const lists = (f: ReturnType<typeof fake>) => f.shardLists.map((s) => `${s.lane}:${s.files.join(',')}`).sort();
+    expect(lists(withUnit)).toEqual(lists(without));
+  });
   it('an unreadable history file is ignored, never a failure', async () => {
     const f = fake();
     f.files.set(P.durationsPath, '{not json');

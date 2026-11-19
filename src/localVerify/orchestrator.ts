@@ -586,12 +586,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const plan = shards > 1 ? planShards(inventory.byLane[lane.name] ?? [], shards, durations) : null;
       if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
+      let unitWorkers: number | null = null;
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
         // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
         const uw = input.laneShards?.unitWorkers;
         const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
         laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        unitWorkers = workers;
         // This run already holds the host suite slot. Its own unit lane is a child of that
         // holder, so the host test-runner bound's nested clamp capped it at 4 workers whatever
         // was asked (2026-11-12: 8 workers ran no faster, 1159 s). Declare the lane as the
@@ -672,7 +674,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const part of parts) {
         if (!part.report || !report) { report = null; continue; }
         for (const [f, c] of part.report.files) {
-          if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
+          // Every lane's files are recorded, unit included (docs/specs/local-verify-borrowed-unit-slices.md, A):
+          // planShards only ever reads a lane's own files, so unit entries never change a slow lane's plan.
+          if (typeof c.ms === 'number') observed[f] = c.ms;
           if (report.files.has(f)) {
             seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
             report = null;
@@ -711,7 +715,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         seams.log({ event: 'lanes-stop', after: lane.name });
         stopLanes.abort();
       }
-      return { lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode };
+      const laneMs = seams.now() - t;
+      if (lane.name === 'unit' && report && unitWorkers !== null) {
+        // Same spec, A: how far the lane's wall time is from its file time spread over the workers
+        // (1.22 on the Studio, 11-18). Later slice and lane projections scale by it.
+        let fileMs = 0;
+        for (const c of report.files.values()) if (typeof c.ms === 'number') fileMs += c.ms;
+        const ideal = fileMs / unitWorkers;
+        if (ideal > 0) seams.log({ event: 'unit-wall-factor', workers: unitWorkers, fileSeconds: Math.round(fileMs / 1000), laneSeconds: Math.round(laneMs / 1000), factor: Math.round((laneMs / ideal) * 100) / 100 });
+      }
+      return { lane: lane.name, report, seconds: Math.round(laneMs / 1000), exitCode };
     }
 
     /** A shard count from the run input, clamped to 1..MAX_LANE_SHARDS; anything else is the default. */
