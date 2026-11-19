@@ -65,3 +65,13 @@ This is observability needed by later sharding and slice planning. There are no 
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect and no self-triggered controller — not applicable.
+
+## Addendum (2026-11-19): maturation ladder entry
+
+`src/data/feature-ladders.json` gains the entry `local-verify-borrowed-unit-slices`, which the spec carried in this PR names. The pre-merge check refused the spec while the entry was missing. Its contents:
+- flag `monitoring.localVerify.helper.enabled`, alias `monitoring.localVerify.borrowed`;
+- `final: default-off-by-preference`: a helper is someone's personal machine and only its owner enables it (Chief of Staff approval of the spec);
+- risk `sensitive`;
+- one `dev-agent-live` rung, with a "ran" metric (`borrowed-shadow` rows) and a "harm" metric (`borrowed-shadow-error` rows, at most 3 in 21 days).
+
+This is data only. Registry tests pass, 82/82.
