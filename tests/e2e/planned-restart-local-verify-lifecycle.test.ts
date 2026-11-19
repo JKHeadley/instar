@@ -1,5 +1,8 @@
 // safe-fs-allow: isolated test state is removed through SafeFsExecutor.
 /** Production Local Verify builder and HTTP server keep a live child across a planned restart request. */
+import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
+import { signerKeyHashOf } from '../../src/core/AppRecordSignatures.js';
+import { requestDigest, signPeerResult } from '../../src/localVerify/peerResultSignature.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +20,16 @@ import type { LocalVerifyRecord } from '../../src/localVerify/record.js';
 import type { PeerResult, PeerRunRequest } from '../../src/localVerify/peer.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { createMockSessionManager } from '../helpers/setup.js';
+
+/** SEC-113 D1: the fake peer's machine key, pinned on the coordinator; its answers are signed like a real peer's. */
+const TEST_PEER_KEYS = generateSigningKeyPair();
+const TEST_PEER_KEY_HASH = signerKeyHashOf(TEST_PEER_KEYS.publicKey);
+function signedDone(req: PeerRunRequest, record: LocalVerifyRecord): PeerResult {
+  const digest = requestDigest(req);
+  const signer = { machineId: () => 'peer1', signerKeyHash: () => TEST_PEER_KEY_HASH,
+    sign: (payload: string) => ({ machineId: 'peer1', signerKeyHash: TEST_PEER_KEY_HASH, sig: edSign(payload, TEST_PEER_KEYS.privateKey) }) };
+  return { state: 'done', record, requestDigest: digest, sig: signPeerResult(signer, { record, requestDigest: digest }) };
+}
 
 describe('planned restart / Local Verify production lifecycle', () => {
   it('keeps the active child and HTTP feature alive, then consumes maintenance when the child ends', async () => {
@@ -140,12 +153,14 @@ describe('planned restart / Local Verify production lifecycle', () => {
     service.setPeerWiring({
       peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }],
       client: {
-        status: async () => ({ inFlight: null, verifierVersion, policyHash, slotBusy: false }),
+        status: async () => ({ inFlight: null, verifierVersion, policyHash, slotBusy: false, signerKeyHash: TEST_PEER_KEY_HASH }),
         run: async (_peer, req) => { sent = req; return { ok: true, attemptId: req.attemptId }; },
         result: async () => result,
         cancel: async () => {},
       },
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_e2e' },
+      // SEC-113 D1: the peer is pinned (this test is about restart holds, not signatures).
+      keyLookupFactory: () => (_m, hash) => (hash === TEST_PEER_KEY_HASH ? { status: 'ok', publicKeyPem: TEST_PEER_KEYS.publicKey } : { status: 'unknown' }),
     });
     const config = {
       projectName: 'planned-restart-peer-e2e', projectDir: home, stateDir, port: 0, authToken: 'test-token',
@@ -181,13 +196,13 @@ describe('planned restart / Local Verify production lifecycle', () => {
 
       const req = sent as unknown as PeerRunRequest;
       const now = new Date().toISOString();
-      result = { state: 'done', record: {
+      result = signedDone(req, {
         repo: 'JKHeadley/instar', pr: 7, headSha: req.headSha, baseSha: req.baseSha, baseRefName: 'main', mergeTree: 'd'.repeat(40),
         lanes: [{ name: 'unit', gating: true, files: 1, tests: 3, passed: 3, failed: 0, skipped: 0, todo: 0, seconds: 1 }],
         nodeVersion: 'v24', machineId: 'peer1', startedAt: now, finishedAt: now, outcome: 'success',
         harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false,
         verifierVersion, policyHash, attempt: { id: req.attemptId, coordinatorMachineId: 'm_e2e', leaseEpoch: 7 },
-      } as LocalVerifyRecord };
+      } as LocalVerifyRecord);
       (service as unknown as { remotePolledAt: Map<string, number> }).remotePolledAt.clear();
       await service.tick();
       expect(service.getRecord(7, head, 'main')).toMatchObject({ outcome: 'success', machineId: 'peer1' });

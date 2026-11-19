@@ -10,6 +10,7 @@
  * running server's install, never from the PR being verified.
  */
 
+import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -509,7 +510,9 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       const b = r.body as PeerStatus & { enabled?: boolean };
       if (b.enabled === false) return null;
       if (typeof b.verifierVersion !== 'string' || typeof b.policyHash !== 'string' || typeof b.slotBusy !== 'boolean') return null;
-      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy };
+      const hint = (b as { signerKeyHash?: unknown }).signerKeyHash;
+      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy,
+        ...(typeof hint === 'string' && /^[0-9a-f]{64}$/.test(hint) ? { signerKeyHash: hint } : {}) };
     },
     async run(peer, req) {
       const r = await call(`${peer.url}/local-verify/peer-run`, { method: 'POST', body: JSON.stringify(req) });
@@ -525,8 +528,13 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       const b = r.body as PeerResult;
       if (b.state === 'unknown' || b.state === 'running') return { state: b.state };
       if (b.state === 'done' && 'record' in b && b.record) {
-        const run = parsePeerMainRun((b as { run?: unknown }).run);
-        return { state: 'done', record: b.record, ...(run ? { run } : {}) };
+        const rawBody = r.body as { record: unknown; run?: unknown; requestDigest?: unknown; sig?: unknown };
+        const run = parsePeerMainRun(rawBody.run);
+        // SEC-113 D1: the raw body as received rides along, so the signature is checked before any reshaping.
+        return {
+          state: 'done', record: b.record, ...(run ? { run } : {}),
+          raw: { record: rawBody.record, run: rawBody.run, requestDigest: rawBody.requestDigest, sig: rawBody.sig },
+        };
       }
       return null;
     },
@@ -547,9 +555,14 @@ export function wireLocalVerifyPeers(
     fetchImpl?: typeof fetch;
     /** Resource-aware placement §4: a peer's fit for a full verify; absent ⇒ no filter. */
     peerFit?: (machineId: string) => import('./LocalVerifyService.js').PeerFit;
+    /** SEC-113 D1: the agent state dir, for this machine's signer and the pinned peer keys. Absent ⇒ unsigned answers and no peer dispatch. */
+    stateDir?: string;
   },
 ): void {
+  const signer = o.stateDir ? loadMachineSigner(o.stateDir) : null;
   svc.setPeerWiring({
+    signer,
+    keyLookupFactory: o.stateDir ? () => identityKeyLookup(o.stateDir!) : null,
     ...(o.peerFit ? { peerFit: o.peerFit } : {}),
     peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
     peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),

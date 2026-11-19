@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T00:45:42.886Z",
+  "slug": "quota-pacing-forecast",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/quotaPacing.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

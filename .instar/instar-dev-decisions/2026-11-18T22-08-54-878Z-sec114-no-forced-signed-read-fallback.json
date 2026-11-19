@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-18T22:08:54.878Z",
+  "slug": "sec114-no-forced-signed-read-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/poolSignedReads.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 106,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

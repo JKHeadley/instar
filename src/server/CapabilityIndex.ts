@@ -89,13 +89,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'workBoard',
     prefixes: ['/work-board'],
-    description: 'The Work Board (docs/specs/work-board-asks.md): a card for each decision, answer or sign-off the agent needs from a person on a piece of work. Each card says what is needed, what done means, who carries it and who acts next, and its chat is a real app conversation. Read it before answering "what is waiting on my person?" or "what cards are open?". The agent proposes cards, asks questions, adds evidence and claims done; only a person approves, answers, confirms done, holds, reopens or archives (a tap needs the dashboard PIN or the owner phone\'s Face ID). Text in a card\'s chat is never an approval.',
+    description: 'The Work Board (docs/specs/work-board-asks.md): a card for each decision, answer or sign-off the agent needs from a person on a piece of work. Each card says what is needed, what done means, who carries it and who acts next, and its chat is a real app conversation. Read it before answering "what is waiting on my person?" or "what cards are open?". The agent proposes cards, asks questions, adds evidence and claims done; only a person approves, answers, confirms done, holds, reopens or archives (a tap needs the dashboard PIN or the owner phone\'s Face ID). Text in a card\'s chat is never an approval. Each board read also carries `myBoard.sections` (docs/specs/work-board-my-board.md): the cards that need the reader, each once under its most pressing reason (Waiting for your approval, Waiting for your reply, Your cards, Cards you were added to, Held for later), untouched first; answer "what needs me?" from it.',
     build: ({ ctx }) => {
       const rt = (ctx as { workBoard?: (() => { svc: { cardIds: () => string[]; policy: () => string; waitingOnOwnerCount: () => number }; controller: { status: () => unknown } } | null) | null }).workBoard?.() ?? null;
       if (!rt) return { enabled: false };
       return {
         enabled: true, cards: rt.svc.cardIds().length, waitingOnOwner: rt.svc.waitingOnOwnerCount(), policy: rt.svc.policy(), pickups: rt.controller.status(),
-        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /mobile/work-board', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
+        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /work-board/lessons', 'GET /mobile/work-board', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
       };
     },
   },
@@ -108,8 +108,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'workProjects',
     prefixes: ['/work'],
-    description: 'Projects on the Work door (docs/specs/work-front-doors.md stage 2a): every project the Chief of Staff tracks, where it stands in plain words (Waiting on you, Moving, Stalled, Drifting, "I stopped retrying: needs a look", Says it\'s done, Done, Not known yet), its done list with each item\'s state, and the work-board cards that belong to it (a card\'s projectKey is the project\'s conversation key); cards in no project are listed apart. Read GET /work/projects before answering "what projects are we working on?" or "what is finished?". `complete: false` with `couldNotCheck` means part of it could not be read: say so. A phone reads GET /mobile/work/projects; only the owner gets project names.',
-    build: () => ({ enabled: true, endpoints: ['GET /work/projects', 'GET /mobile/work/projects (device; owner gets names)'] }),
+    description: 'Projects on the Work door (docs/specs/work-front-doors.md stage 2a): every project the Chief of Staff tracks, where it stands in plain words (Waiting on you, Moving, Stalled, Drifting, "I stopped retrying: needs a look", Says it\'s done, Done, Not known yet), its done list with each item\'s state, and the work-board cards that belong to it (a card\'s projectKey is the project\'s conversation key); cards in no project are listed apart. Read GET /work/projects before answering "what projects are we working on?" or "what is finished?". `complete: false` with `couldNotCheck` means part of it could not be read: say so. A phone reads GET /mobile/work/projects; only the owner gets project names. Each row also carries (docs/specs/work-door-project-rows.md) latestReport, waitingOnYou, checks {last, next, here}, stopped, bindingRef, per-item kind/stateWords/checkedByYou/checkRef, and actions {checkNow, pause, finish}. "Ask for an update": POST /work/projects/check {key} (bearer) or POST /mobile/work/projects/check (owner phone) — runs one check now on the machine that runs checks, else 202 queued for its next round. The owner\'s Face ID taps (owner phone only, challenge actions project-pause / project-item-check / project-finish): POST /mobile/work/projects/pause {key, value, note?}, /done-item {key, itemId, checkRef, value}, /finish {key, bindingRef}; never done for the owner.',
+    build: () => ({ enabled: true, endpoints: ['GET /work/projects', 'GET /mobile/work/projects (device; owner gets names)', 'POST /work/projects/check', 'POST /mobile/work/projects/check (owner phone)', 'POST /mobile/work/projects/pause (owner phone, Face ID)', 'POST /mobile/work/projects/done-item (owner phone, Face ID)', 'POST /mobile/work/projects/finish (owner phone, Face ID)'] }),
   },
   {
     key: 'projectApps',
@@ -355,6 +355,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /queue-pace'],
+    }),
+  },
+  {
+    key: 'quotaPacing',
+    prefixes: ['/quota-pacing'],
+    description: 'Quota pacing (docs/specs/quota-pacing-forecast.md) — a forecast, not an instruction: where each subscription account\'s weekly (and Claude Fable) window lands at its reset (central forecast plus a range from the slowest to the fastest recent pace) and whether each provider\'s group of accounts keeps weekly room for the next 7 days (runs-dry / tight / sustainable / cannot-tell, with account verdicts used-up / will-hit-limit / will-leave-unused / on-track / unknown). GET /quota-pacing merges every machine (?scope=local is this machine only; ?account=ID&history=1 returns this machine\'s rows). Lead with the pool ("9 of 14 accounts have room"), never one account\'s number; never hold, shed or add work because of it. Dev-gated (subscriptionPool.pacing.enabled); 503 quota-pacing-off when off. When asked "will an account\'s quota expire unused?" or "will Claude or Codex run out this week?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /quota-pacing'],
     }),
   },
   {
