@@ -25,6 +25,12 @@
  *     → runs <cmd> with the value piped to its stdin (atomic handoff — the value
  *     never touches a shell variable or the transcript). Exits with <cmd>'s code.
  *
+ * Plain-config fallback:
+ *   A key the vault lacks (or a machine with no vault) is read from a PLAIN
+ *   string at the same dot path in `.instar/config.json`, with a one-line
+ *   stderr note naming the source. A `{ "secret": true }` placeholder there is
+ *   a vault reference and is never returned.
+ *
  * Vault access:
  *   Loads the instar SecretStore implementation from the local install and reads
  *   the vault at `.instar/secrets/config.secrets.enc` relative to cwd (run from
@@ -89,13 +95,39 @@ if (!SecretStore) {
 }
 
 const stateDir = path.resolve('.instar');
-if (!fs.existsSync(path.join(stateDir, 'secrets', 'config.secrets.enc'))) {
-  process.stderr.write('secret-get: no vault on this machine (.instar/secrets/config.secrets.enc absent)\n');
-  process.exit(1);
+
+// A machine whose secrets were never moved into the vault (no `instar pair` /
+// migration yet) still holds them as plain strings in `.instar/config.json`.
+// The server reads them there, so this script does too: a key the vault lacks
+// (or a machine with no vault) falls back to a PLAIN string at the same dot
+// path in config.json. A `{ "secret": true }` placeholder is a vault
+// reference, never a value, and is not returned. Same containment contract:
+// the value goes to stdout only, the note to stderr names the source only.
+function plainConfigValue(key) {
+  try {
+    let node = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
+    for (const part of key.split('.')) {
+      if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+      node = node[part];
+    }
+    return typeof node === 'string' && node.length > 0 ? node : null;
+  } catch {
+    return null;
+  }
 }
 
-let secrets;
-try {
+let configFallback = null;
+if (!fs.existsSync(path.join(stateDir, 'secrets', 'config.secrets.enc'))) {
+  configFallback = namesOnly ? null : plainConfigValue(keyPath);
+  if (configFallback === null) {
+    process.stderr.write('secret-get: no vault on this machine (.instar/secrets/config.secrets.enc absent)\n');
+    process.exit(1);
+  }
+  process.stderr.write(`secret-get: no vault on this machine; read "${keyPath}" from .instar/config.json\n`);
+}
+
+let secrets = {};
+if (configFallback === null) try {
   secrets = new SecretStore({ stateDir }).read();
 } catch {
   process.stderr.write(
@@ -126,9 +158,16 @@ if (namesOnly) {
   process.exit(0);
 }
 
-const hit = entries.find(([name]) => name === keyPath);
+let hit = configFallback === null ? entries.find(([name]) => name === keyPath) : [keyPath, configFallback];
 if (!hit) {
-  process.stderr.write(`secret-get: no key "${keyPath}" in the vault. Known keys:\n`);
+  const plain = plainConfigValue(keyPath);
+  if (plain !== null) {
+    process.stderr.write(`secret-get: "${keyPath}" is not in the vault; read it from .instar/config.json\n`);
+    hit = [keyPath, plain];
+  }
+}
+if (!hit) {
+  process.stderr.write(`secret-get: no key "${keyPath}" in the vault or as plain text in .instar/config.json. Known vault keys:\n`);
   for (const [name] of entries) process.stderr.write(`  ${name}\n`);
   process.exit(1);
 }
