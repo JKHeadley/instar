@@ -1,0 +1,12 @@
+# codex-cli ok gpt-6-astra SERIOUS ISSUES None
+**Verdict: SERIOUS ISSUES**
+
+Review limited to the supplied documents; no implementation or runtime behavior was inspected.
+
+- **DESIGN — “The PC checks the agent, not only the reverse.”** The spec names “Noise XX” but describes a signature-based handshake without specifying a complete protocol: message ordering, key derivation, directional keys, AEAD nonces, transcript encoding and key confirmation are missing. Naming a pattern does not resolve these implementation choices, especially across C# and Node clients. **Resolution:** select a concrete supported protocol and library, or supply a complete wire protocol with independent cryptographic review and cross-language test vectors before implementation.
+
+- **DESIGN — “Connection, liveness and revocation,” socket-drop behavior.** The source says commands become `cancelled-disconnected` “so the session knows they did not finish.” Disconnect and process termination cannot establish that: a command may have completed its changes before its result was lost, or performed substantial changes before cancellation. The separate home-restart rule already acknowledges an `unknown` outcome, but the disconnect rule contradicts that caution. **Resolution:** distinguish execution termination from operation outcome. Report cancellation attempted/confirmed separately from completion uncertainty; explicitly prohibit interpreting cancellation as “no effects” or automatically retrying non-idempotent work.
+
+- **DESIGN — “Agent side,” calls from other machines.** The specified ordering is durable `accepted` → send → mark `sent` → `done`; recovery defines uncertainty only between `sent` and `done`. A crash after sending but before persisting `sent` leaves an `accepted` record even though the PC may have executed the call. Keeping PC call IDs for 24 hours does not define recovery once that window expires. **Resolution:** persist dispatch intent before sending, treat unresolved dispatches as potentially executed, and define recovery for every durable state. Specify deduplication retention and rejection of expired retries so delayed requests cannot silently execute again.
+
+**PRECISION — Supporting comparison, §§2–3.** It claims “no install” and “installs nothing,” while the proposed remover names installation directories, startup registration and an uninstall entry. **Resolution:** describe this accurately as a single-file download with automatic per-user installation and no administrator prompt.
