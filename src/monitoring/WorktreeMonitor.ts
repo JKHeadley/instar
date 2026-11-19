@@ -102,6 +102,9 @@ const DEFAULT_POLL_INTERVAL = 300_000;     // 5 minutes
 const DEFAULT_STALE_THRESHOLD = 86_400_000; // 24 hours
 const DEFAULT_REMINDER_INTERVAL = 86_400_000; // 24 hours
 
+/** A saved report larger than this is not parsed at boot (spec-free safety bound; see loadState). */
+export const MAX_SAVED_REPORT_BYTES = 16 * 1024 * 1024;
+
 export class WorktreeMonitor extends EventEmitter {
   private config: WorktreeMonitorConfig;
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -588,7 +591,17 @@ export class WorktreeMonitor extends EventEmitter {
   private loadState(): void {
     try {
       if (fs.existsSync(this.stateFile)) {
-        this.lastReport = JSON.parse(fs.readFileSync(this.stateFile, 'utf-8'));
+        // A report saved before the 50-name cap could be hundreds of MB (340 MB with 427
+        // entries on the Studio); parsing it at boot took the server from 1.3 to 4 GB and
+        // it crashed out of memory (2026-11-19 08:11Z). A capped report is about 2 MB here.
+        // An oversize file is not parsed: the first scan rebuilds the report and overwrites it.
+        const bytes = fs.statSync(this.stateFile).size;
+        if (bytes > MAX_SAVED_REPORT_BYTES) {
+          console.warn(`[worktree-monitor] saved report is ${Math.round(bytes / 1048576)} MB (over ${MAX_SAVED_REPORT_BYTES / 1048576} MB): not loaded; the next scan replaces it`);
+          this.lastReport = null;
+        } else {
+          this.lastReport = JSON.parse(fs.readFileSync(this.stateFile, 'utf-8'));
+        }
       }
     } catch {
       this.lastReport = null;

@@ -97,6 +97,7 @@ import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { cleanMergeHoldReason } from '../localVerify/operatorQueue.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
@@ -6478,6 +6479,10 @@ export function createRoutes(ctx: RouteContext): Router {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        // Memory held outside the V8 heap (native addons' C++ objects, Buffers),
+        // so resident size can be split without attaching a profiler.
+        external: Math.round(mem.external / 1024 / 1024),
+        arrayBuffers: Math.round(mem.arrayBuffers / 1024 / 1024),
       };
       if (ctx.autoUpdater) {
         const auto = ctx.autoUpdater.getStatus();
@@ -19604,6 +19609,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : undefined,
     // SEC-113 D2.5: the peer quarantine clear is owner-only (the dashboard operator session).
     ...(ctx.verifyDashboardOperatorSession ? { verifyOperatorSession: (token: string | undefined) => ctx.verifyDashboardOperatorSession!(token) } : {}),
+    // Queue controls: a hold with `blockMerge` also applies the merge-side [HOLD] marker, through
+    // the same function POST /green-pr-automerge/hold calls (read at call time: the watcher is late-bound).
+    ...(ctx.greenPrAutoMerger ? { applyMergeHold: (pr: number, reason: string) => ctx.greenPrAutoMerger!.applyHold(pr, reason) } : {}),
   });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
@@ -19797,7 +19805,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     // bounded-input-reviewed: API input clamped for the auto-merge hold note; display/audit text, never a model's input.
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
+    // One cleaning for both callers: this route and a Local Verify queue hold with `blockMerge`.
+    const reason = cleanMergeHoldReason(req.body?.reason);
     const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
     res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
   });

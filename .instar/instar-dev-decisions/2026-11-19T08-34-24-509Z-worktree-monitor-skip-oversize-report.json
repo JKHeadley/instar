@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T08:34:24.509Z",
+  "slug": "worktree-monitor-skip-oversize-report",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/WorktreeMonitor.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "boot-time read guard; no self-triggered action"
+  },
+  "verdict": "pass"
+}
