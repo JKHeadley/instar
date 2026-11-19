@@ -8445,22 +8445,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // today's behaviour (the default home is where it was always looked for).
     const defaultCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
     const codexPlacementHome = explicitConfigHome ?? defaultCodexHome;
+    // The thread id names a file copied between homes, so it is checked here too. This is
+    // a file-copy guard, not a launch flag: the --resume flag keeps its own guard in the builder.
+    const codexThreadToPlace = options?.resumeSessionId;
     if (
-      options?.resumeSessionId &&
+      codexThreadToPlace &&
       framework === CODEX_CLI_FRAMEWORK &&
       (explicitConfigHome || this.codexAccountHomesResolver) &&
-      isSafeSessionRef(options.resumeSessionId)
+      isSafeSessionRef(codexThreadToPlace)
     ) {
       let outcome: CodexRolloutPlacement | 'error';
       try {
         const sources = [defaultCodexHome, ...(this.codexAccountHomesResolver?.() ?? [])];
-        outcome = (await placeCodexResumeRollout(options.resumeSessionId, codexPlacementHome, sources)).outcome;
+        outcome = (await placeCodexResumeRollout(codexThreadToPlace, codexPlacementHome, sources)).outcome;
       } catch (err) {
         // @silent-fallback-ok — reported below; the session launches fresh instead of failing.
         console.warn(`[SessionManager] Codex resume placement failed for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
         outcome = 'error';
       }
-      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${options.resumeSessionId}, home=${codexPlacementHome})`);
+      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${codexThreadToPlace}, home=${codexPlacementHome})`);
       if (explicitConfigHome && (outcome === 'not-found' || outcome === 'error')) {
         resumeReopenFailed = true;
         options = { ...options, resumeSessionId: undefined };

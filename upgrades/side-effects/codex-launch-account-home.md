@@ -87,6 +87,8 @@ The reviewer confirmed that the tag and `CODEX_HOME` now agree on both callers t
 
 The one `catch` in `codexResumeRollout.ts` (a rollout that vanishes between lookup and `stat`) is marked `@silent-fallback-ok`. It reads as "this home has no copy", and the caller reports a conversation found nowhere, so the silent-fallback ratchet stays at its baseline.
 
+The thread id is checked with `isSafeSessionRef` before placement, through a local variable (`codexThreadToPlace`). Two guard tests (`team-guards`, `memory-session-safety`) count `isSafeSessionRef(options.resumeSessionId)` to prove every `--resume` launch flag is guarded. This check guards a file copy, not a launch flag, so it stays outside that count, and both pins keep their meaning unchanged.
+
 Also from that read: `placeCodexResumeRollout` now refuses a thread id that is not a plain file-name token (defence in depth beside the caller's `isSafeSessionRef`), and the lookup cache is invalidated under both the raw and the resolved home path. Noted and not changed: codex older than 0.133 lacks the hook-trust bypass flag (see above), and the Codex log readers still read the default home for swapped sessions. That is observability only, it existed for the claude side before `codexHomeForTmuxSession`, and it is not the reported failure.
 
 ---

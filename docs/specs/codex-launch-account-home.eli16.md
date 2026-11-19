@@ -26,6 +26,7 @@ Codex picks its login from one setting, the `CODEX_HOME` folder. When instar res
 - The history file is copied under a temporary name first and only then moved into place. If a copy stops halfway, the half-copied file never sits where Codex looks for it.
 - A copy left behind can get out of date. Say a session moves from the default login to an account, and later restarts on the default login. The default login still has the older copy, which is missing the newer turns. Before restarting there, the newest copy is now brought back too. If no copy is found anywhere, the session behaves as it did before.
 - A history file that disappears while it is being looked at counts as "not here". It is not treated as an error.
+- The conversation's id is checked before any file is copied, so an id that looks like a path is refused.
 
 ## What to check after this ships
 
