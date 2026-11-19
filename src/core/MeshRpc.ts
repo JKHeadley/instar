@@ -173,6 +173,10 @@ export type MeshCommand =
       expiresAt: string;
     }
   | { type: 'capacity-report' }
+  // identity-security piece 2b §6: keep the owner record in step. The receiver judges every entry itself
+  // with the 2a evaluator, so the command carries no authority of its own.
+  | import('./ownerRecordSync.js').OwnerRecordPushCmd
+  | import('./ownerRecordSync.js').OwnerRecordPullCmd
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
   // org-pack-and-join §Multi-machine: a validated organization pack change for the same agent's other machines.
@@ -642,6 +646,10 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       return { ok: true, reason: 'ok' };
     case 'capacity-report':
     case 'session-status':
+    // owner-record-push / owner-record-pull (identity-security piece 2b §6): registered-peer class. The
+    // handler is the real gate: bounded, rate-limited, and every entry is judged by the 2a evaluator.
+    case 'owner-record-push':
+    case 'owner-record-pull':
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
