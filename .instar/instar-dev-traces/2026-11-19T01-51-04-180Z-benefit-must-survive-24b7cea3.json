@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "benefit-must-survive",
+  "sessionId": "cff5be70-b3a4-4015-afa9-248b5a32dedc",
+  "timestamp": "2026-11-19T01:51:04.180Z",
+  "artifactPath": "upgrades/side-effects/benefit-must-survive.md",
+  "artifactSha256": "4144826a0dbd5aa0a8b4a029afdbaac2ad4523c9f355bd8a999f87f74e99a2ae",
+  "coveredFiles": [
+    "docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md",
+    "docs/specs/benefit-must-survive.eli16.md",
+    "skills/instar-dev/templates/eli16-overview.md",
+    "skills/spec-converge/templates/reviewer-lessons-aware.md",
+    "upgrades/next/benefit-must-survive.md",
+    "upgrades/side-effects/benefit-must-survive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "documentation and review-template text at the operator's direct request; revert fully undoes it",
+  "eli16Path": "docs/specs/benefit-must-survive.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/benefit-must-survive.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

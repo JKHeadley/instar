@@ -397,6 +397,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'moves ~/.instar/host-maintenance/enrolment.json aside and removes /etc/sudoers.d/instar-reboot on this physical machine; outside the agent home, never git-synced',
   } });
+  // Machine care from the owner's phone (Part F, CMT-1203): Skip, Undo, window for THIS machine; restart only sends a card.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/mobile/machine-care/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine (refuses any other machine id); outside the agent home, never git-synced',
+  } });
   // Operator controls (Part F, CMT-1203): Skip once and Change window for THIS machine.
   for (const control of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
     reg.add({ kind: 'route', method: 'POST', pathPrefix: control, domain: 'machine-local', story: {
@@ -626,7 +633,21 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     story: {
       logical: 'ws2x-replicated',
       onSharedGitSyncedPath: false,
-      note: 'per-origin coherence-journal stream (project-app-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+      note: 'per-origin coherence-journal streams (project-app-record kind for the project apps; chief-of-staff-record kind for POST /work/projects/check, docs/specs/work-door-project-rows.md §3.2), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
+
+  // The owner's project actions from the phone (docs/specs/work-door-project-rows.md §3.2–3.5): check requests, pauses,
+  // item checks and Finish are chief-of-staff-record journal records, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (chief-of-staff-record kind), replicated by journal sync and folded from the union on every machine; follows the Chief of Staff gate',
     },
   });
 

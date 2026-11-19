@@ -23,6 +23,7 @@ import path from 'node:path';
 import {
   SessionWatchdog,
   WATCHDOG_STUCK_JUDGE_PROMPT_ID,
+  WATCHDOG_JUDGE_COMMAND_MAX_CHARS,
 } from '../../src/monitoring/SessionWatchdog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DP_WATCHDOG_STUCK_JUDGE } from '../../src/data/provenanceCoverage.js';
@@ -149,6 +150,28 @@ describe('SessionWatchdog — stuck-command fail-closed', () => {
       const wd = makeWatchdog();
       wd.intelligence = { evaluate: async () => 'stuck' };
       expect(await isCommandStuck(wd, 'cat', 4 * MIN)).toBe(true);
+    });
+  });
+
+  describe('a command too long to show the judge whole is REFUSED, not cut (bounded-input review)', () => {
+    it('a short command still reaches the judge WHOLE (no 200-char cut hiding the real work)', async () => {
+      const wd = makeWatchdog();
+      let seen = '';
+      wd.intelligence = { evaluate: async (p: string) => { seen = p; return 'legitimate'; } };
+      const cmd = `cd /Users/someone/projects/${'deep/'.repeat(40)}worktree && npm test -- --run`;
+      expect(cmd.length).toBeGreaterThan(200);
+      expect(await isCommandStuck(wd, cmd, 4 * MIN)).toBe(false);
+      expect(seen).toContain('npm test -- --run');
+    });
+
+    it('a command over the bound skips the judge and falls back to the hard ceiling (never interrupts below it)', async () => {
+      const wd = makeWatchdog();
+      let called = false;
+      wd.intelligence = { evaluate: async () => { called = true; return 'stuck'; } };
+      const huge = `bash -c '${'echo x; '.repeat(400)}'`;
+      expect(huge.length).toBeGreaterThan(WATCHDOG_JUDGE_COMMAND_MAX_CHARS);
+      expect(await isCommandStuck(wd, huge, 4 * MIN)).toBe(false);
+      expect(called).toBe(false);
     });
   });
 

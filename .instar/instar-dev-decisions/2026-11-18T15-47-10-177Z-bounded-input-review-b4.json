@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T15:47:10.177Z",
+  "slug": "bounded-input-review-b4",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/SpawnRequestManager.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/permissions/AmbientContributionGate.ts",
+      "src/permissions/LlmIntentClassifier.ts",
+      "src/scheduler/MentorStageBForensics.ts",
+      "src/threadline/HubIntentClassifier.ts",
+      "src/threadline/WarrantsReplyGate.ts",
+      "src/threadline/openConversationBrief.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

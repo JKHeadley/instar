@@ -112,6 +112,19 @@ describe('independent graph witness', () => {
     expect(verifyEncryptedBundle(envelope,f.membership)).toBe(false);
     expect(verifyEncryptedBundle({...r.encryptedSourceBundle,envelopes:[r.encryptedSourceBundle.envelopes[0]]},f.membership)).toBe(false);
   });
+  it('builds the inventory manifest without signing a state proof per stored operation, with the same entries', () => {
+    const f = fixture(); const request = f.prepareRequest(); f.service.prepare(request);
+    const service = f.service as unknown as { signed: (...args: unknown[]) => unknown; recoveryManifest: (agentId: string) => { entries: unknown[] } };
+    const original = service.signed.bind(service); let signedCount = 0;
+    service.signed = (...args: unknown[]) => { signedCount++; return original(...args); };
+    const manifest = service.recoveryManifest(request.packet.agentId);
+    expect(signedCount).toBe(0);
+    expect(manifest.entries).toHaveLength(1);
+    // operation() still carries its signed state proof, and agrees with the manifest's view of the same row.
+    const operation = f.service.operation(request.packet.agentId, request.packet.idempotencyKey)!;
+    expect(signedCount).toBe(1); expect(operation.stateProof).toBeTruthy();
+    expect((manifest.entries[0] as { operationHash: string }).operationHash).toBe(canonicalHash(operation.packet));
+  });
   it('binds full inventory and tombstones to an unpredictable challenge across restart', () => {
     const f = fixture(); const request = f.prepareRequest(); f.service.prepare(request);
     const challenge = 'a'.repeat(43); const first = f.service.inventory(request.packet.agentId, challenge);

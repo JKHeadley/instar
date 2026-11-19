@@ -195,3 +195,47 @@ describe('FeedbackReadinessArbiter', () => {
     }
   });
 });
+
+describe('FeedbackReadinessArbiter — a codex authority runs on its approved id', () => {
+  const ready = { decisions: [{ clusterId: 'cluster-1', outcome: 'ready', confidence: 0.92, reasonCodes: ['coherent-recurrence'], evidenceIds: ['feedback:1'] }] };
+  // A stand-in for the real tier map: 'capable' now resolves to gpt-6.2-astra.
+  function codexProvider(seen: { model?: unknown; strict?: unknown }): IntelligenceProvider {
+    return {
+      evaluate: async (_prompt, options) => {
+        seen.model = options?.model;
+        seen.strict = options?.strictModelPin;
+        const model = options?.model === 'capable' ? 'gpt-6.2-astra' : String(options?.model);
+        options?.onModel?.({ model, framework: 'codex-cli' });
+        return JSON.stringify(ready);
+      },
+    };
+  }
+
+  it.each(['gpt-6-astra', 'gpt-6.2-astra'])('an authority approved for %s keeps working after the capable tier moved', async (approved) => {
+    const seen: { model?: unknown; strict?: unknown } = {};
+    const [decision] = await new FeedbackReadinessArbiter(codexProvider(seen))
+      .decideBatch({ ...authority, provider: 'codex-cli', modelFamily: approved }, [candidate]);
+    expect(decision.outcome).toBe('ready');
+    expect(seen).toEqual({ model: approved, strict: true });
+  });
+
+  it('still refuses an answer from a different codex model', async () => {
+    const wrong: IntelligenceProvider = { evaluate: async (_p, options) => {
+      options?.onModel?.({ model: 'gpt-6.2-astra', framework: 'codex-cli' });
+      return JSON.stringify(ready);
+    } };
+    await expect(new FeedbackReadinessArbiter(wrong).decideBatch({ ...authority, provider: 'codex-cli', modelFamily: 'gpt-6-astra' }, [candidate]))
+      .rejects.toBeInstanceOf(ReadinessContractViolation);
+  });
+
+  it('a non-codex authority keeps the capable tier request', async () => {
+    let seenModel: unknown;
+    const p: IntelligenceProvider = { evaluate: async (_p, options) => {
+      seenModel = options?.model;
+      options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
+      return JSON.stringify(ready);
+    } };
+    await new FeedbackReadinessArbiter(p).decideBatch(authority, [candidate]);
+    expect(seenModel).toBe('capable');
+  });
+});

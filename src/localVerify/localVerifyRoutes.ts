@@ -33,7 +33,14 @@ export interface LocalVerifyRouteDeps {
   status?: () => StatusReconciler | null;
   /** Lease view; absent on a single-machine agent (always the holder). */
   lease?: { holdsLease(): boolean; holderMachineId(): string | null; leaseEpoch?(): number | null };
+  /**
+   * SEC-113 D2.5: the owner's verified console session (the `X-Instar-Operator-Session` header). The
+   * peer quarantine clear needs it; the Bearer token alone is never enough. Absent ⇒ 503.
+   */
+  verifyOperatorSession?: (token: string | undefined) => boolean;
 }
+
+const MACHINE_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 const BRANCH_RE = /^[A-Za-z0-9._/-]{1,200}$/;
@@ -81,6 +88,20 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
     }
     return svc;
   };
+
+  // SEC-113 D2.5: the owner clears a peer's main quarantine from the console (owner-only).
+  router.post('/local-verify/peers/:machineId/main-quarantine/clear', (req: Request, res: Response) => {
+    if (!deps.verifyOperatorSession) { res.status(503).json({ error: 'operator-session-unavailable' }); return; }
+    const token = req.headers['x-instar-operator-session'];
+    let ok = false;
+    try { ok = typeof token === 'string' && deps.verifyOperatorSession(token); } catch { ok = false; } // @silent-fallback-ok — an unverifiable session is refused (401), never treated as the owner
+    if (!ok) { res.status(401).json({ error: 'operator-session-required' }); return; }
+    const machineId = String(req.params.machineId ?? '');
+    if (!MACHINE_ID_RE.test(machineId)) { res.status(400).json({ error: 'bad-machine-id' }); return; }
+    const svc = gate(res);
+    if (!svc) return;
+    res.json(svc.clearMainQuarantine(machineId, 'owner'));
+  });
 
   router.post('/local-verify', async (req: Request, res: Response) => {
     const svc = gate(res);
