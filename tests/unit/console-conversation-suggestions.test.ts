@@ -119,7 +119,7 @@ describe('Accept all patience',()=>{
  it('waits 2.5 minutes for each change to be confirmed by default',async()=>{
   const m=await boot();expect(m.ACCEPT_CHANGE_CONFIRM_WAIT_MS).toBe(150000);
   const s={id:'sg-0123456789abcdef0124',title:'Slow confirm',reason:'',members:[]};let polls=0,slept=0;
-  const send=async(path:string)=>{if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0002'});polls++;return ok({state:'recorded-local',waitingMachines:[{name:'Mac M5 Pro'}]},202);};
+  const send=async(path:string)=>{expect(path).toMatch(/\/accept$/);polls++;return ok({id:s.id,state:'working',text:'Saved here. Waiting for Mac M5 Pro to confirm.'},202);};
   const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async(ms:number)=>{slept+=ms;}});
   expect(out).toMatchObject({done:false,kind:'waiting'});expect(slept).toBeGreaterThanOrEqual(150000);expect(slept).toBeLessThan(160000);expect(polls).toBeGreaterThan(50);
  });

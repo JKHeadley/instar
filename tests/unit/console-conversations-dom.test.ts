@@ -320,12 +320,7 @@ describe('native console Conversations', () => {
   });
 
   it('three projects in a row without an answer stop Accept all with plain words', async () => {
-    const silentFor = (url: string) => {
-      if (/sg-0123456789abcdef012[234]\/start$/.test(url)) return true;
-      if (!url.includes('/conversation-graph/nodes/')) return false;
-      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
-      return ref.kind === 'conversation' && ref.topicId >= 2 && ref.topicId <= 4;
-    };
+    const silentFor = (url: string) => /sg-0123456789abcdef012[234]\/accept$/.test(url);
     const server = acceptServer([1, 2, 3, 4, 5], (url) => silentFor(url) ? { status: 408, body: {} } : null);
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
     allButton(f.main).click();
