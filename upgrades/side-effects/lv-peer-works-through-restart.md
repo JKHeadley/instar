@@ -24,7 +24,7 @@ Files:
 - `src/localVerify/localVerifyWiring.ts`: live setter; peer client passes `progress` through.
 - `src/localVerify/orchestrator.ts`: exports `PROGRESS_MAX_BYTES`.
 - `src/core/PostUpdateMigrator.ts` and `src/scaffold/templates.ts`: the CLAUDE.md peer line.
-- `src/data/awareness/local-verify-peer-restart.md`.
+- `src/data/awareness/local-verify-main-on-peers.md` (the restart text is a second paragraph of the existing helper-machine entry, retitled "Local Verify with a helper machine").
 - The amendment note in `docs/specs/local-verify-capacity.md`.
 - Tests, unit / integration / e2e.
 
@@ -160,3 +160,7 @@ The other notes are accepted and recorded in the findings file: shutdown counts 
 - a "ran" metric (`peer-attempt-adopted` count) and a "harm" metric (adoption waits that ran out, at most 3 in 14 days), read from `.instar/logs/local-verify.jsonl`.
 
 This is data only; no runtime change. Registry tests pass: `feature-ladders-coverage`, `MaturationLadder`, `MaturationLadderService`, 82/82.
+
+## Addendum (2026-11-18 22:10 PST): awareness text moved into the existing entry
+
+The core instruction file on `main` measures 83,999 characters against its 84,000 limit (`tests/e2e/claude-md-reference-layout-init-lifecycle.test.ts`), and every awareness entry's title is listed in that file. A new entry therefore failed the size test (84,052). The restart text is now a second paragraph of `src/data/awareness/local-verify-main-on-peers.md`, whose title is shortened to "Local Verify with a helper machine", so the core file does not grow (it shrinks by 10 characters). No wording of either paragraph's instructions changed apart from the second paragraph's opening clause. The second-pass reviewer did not re-read this relocation; the size test and the awareness registry test were run on it.
