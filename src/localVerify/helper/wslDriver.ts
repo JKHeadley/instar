@@ -20,7 +20,8 @@ import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import type { SandboxSize } from './helperConfig.js';
 import type { CommandRunner } from './commandRunner.js';
 import { REQUIRED_CHECKS_WSL, type ContainmentCheck, type SandboxStatus } from './sandboxDriver.js';
-import { RunnerDriverBase, SANDBOX_NAME, buildProvisionBundle, readHelperTemplate } from './runnerDriverBase.js';
+import type { SandboxImageIdentity } from './dryRunRecord.js';
+import { PACKAGE_VOLUME_CAP_BYTES, RunnerDriverBase, SANDBOX_NAME, buildProvisionBundle, commonSandboxSettings, controlChannelEnv, readHelperTemplate, sandboxSettingsHash } from './runnerDriverBase.js';
 
 export const OWNER_SIGNAL_TASK = '\\Instar\\OwnerSignal';
 
@@ -49,6 +50,13 @@ export interface WslDriverOpts {
   /** The expected sha256 (default WSL_BASE_IMAGE.sha256). */
   rootfsSha256?: string | null;
   hashFile?: (file: string) => Promise<string>;
+  /**
+   * The package volume: a virtual disk file of exactly PACKAGE_VOLUME.sizeGb beside the distro's
+   * own disk, as wsl.exe sees it (a Windows path). Made once by that machine's agent at setup;
+   * `wsl --unregister instar-helper` does not touch it, so installed packages survive the daily
+   * re-creation. Attached without a mount (`--bare`); the runner mounts it inside the helper distro.
+   */
+  pkgVhd: string;
   /** The owner-signal file in Echo's distro (`~/.instar/state/helper-owner-signal.json`). */
   signalFile: string;
   now?: () => number;
@@ -88,6 +96,11 @@ export function wslConfChecks(text: string | null): ContainmentCheck[] {
   ];
 }
 
+/** The systemd scope's limits for a size (CPU, memory, tasks). */
+export function wslScopeConf(size: SandboxSize): string {
+  return `CPUQuota=${size.cpus * 100}%\nMemoryMax=${size.memoryGb}G\nTasksMax=4096\n`;
+}
+
 export class WslDriver extends RunnerDriverBase {
   readonly kind = 'wsl' as const;
   private readonly wsl: string;
@@ -102,9 +115,16 @@ export class WslDriver extends RunnerDriverBase {
   protected requiredChecks(): readonly string[] { return REQUIRED_CHECKS_WSL; }
   protected extraCheckArgs(): string[] { return ['--wsl']; }
 
+  /**
+   * The allow-listed environment plus what starting a Windows program from Echo's distro needs.
+   * WSLENV is set empty: it is the list of variables wsl.exe carries into a distro, so nothing of
+   * this server's environment reaches the helper distro.
+   */
+  protected commandEnv(): NodeJS.ProcessEnv { return controlChannelEnv(process.env, ['WSL_INTEROP', 'WSL_DISTRO_NAME'], { WSLENV: '' }); }
+
   private run(args: string[], timeoutMs = 10 * 60_000, input?: string) {
     // Only ever this distro's name, or the import/resize/unregister/terminate verbs that name it.
-    return this.runner.run(this.wsl, args, { timeoutMs, ...(input !== undefined ? { input } : {}) });
+    return this.runner.run(this.wsl, args, { timeoutMs, env: this.commandEnv(), ...(input !== undefined ? { input } : {}) });
   }
 
   async create(size: SandboxSize): Promise<void> {
@@ -117,7 +137,7 @@ export class WslDriver extends RunnerDriverBase {
     if (imp.code !== 0) throw new Error(`wsl --import failed (${imp.code})`);
     const rs = await this.run(['--manage', SANDBOX_NAME, '--resize', `${size.diskGb}GB`]);
     if (rs.code !== 0) throw new Error('wsl-resize-unsupported'); // the operator imports a disk created at that size (spec B2.2)
-    const scope = `CPUQuota=${size.cpus * 100}%\nMemoryMax=${size.memoryGb}G\nTasksMax=4096\n`;
+    const scope = wslScopeConf(size);
     const p = await this.run([...this.rootShell().args, 'bash', '-s'], 30 * 60_000, buildProvisionBundle(readHelperTemplate, {
       '/etc/wsl.conf': readHelperTemplate('wsl.conf'),
       '/etc/instar-helper/scope.conf': scope,
@@ -126,8 +146,18 @@ export class WslDriver extends RunnerDriverBase {
     await this.stop(); // wsl.conf applies on the next start
   }
 
+  /** The pinned root filesystem's digest, and wsl.conf, the scope limits, the disk size and the shared settings. */
+  async imageIdentity(size: SandboxSize): Promise<SandboxImageIdentity | null> {
+    const want = this.o.rootfsSha256 !== undefined ? this.o.rootfsSha256 : WSL_BASE_IMAGE.sha256;
+    if (!want) return null;
+    return { imageDigest: `sha256:${want.toLowerCase()}`, settingsHash: sandboxSettingsHash([readHelperTemplate('wsl.conf'), wslScopeConf(size), `diskGb=${size.diskGb}`, ...commonSandboxSettings()]) };
+  }
+
   async start(): Promise<{ startMs: number }> {
     const t = Date.now();
+    // Attach the package volume to the WSL machine, unmounted. Already attached answers an error,
+    // which is not one: the runner refuses to install or place packages when the disk is not there.
+    await this.run(['--mount', '--vhd', this.o.pkgVhd, '--bare'], 2 * 60_000);
     const r = await this.run([...this.rootShell().args, 'true'], 5 * 60_000);
     if (r.code !== 0) throw new Error(`wsl start failed (${r.code})`);
     return { startMs: Date.now() - t };
@@ -140,7 +170,8 @@ export class WslDriver extends RunnerDriverBase {
   async status(): Promise<SandboxStatus> {
     const r = await this.run(['-l', '-v'], 30_000);
     const row = parseWslList(r.stdout).find((x) => x.name === SANDBOX_NAME);
-    return { exists: !!row, running: row?.state === 'Running', diskFileBytes: null, peakMemMb: null };
+    // Neither disk file's size is read from inside Echo's distro: both count their whole cap as remaining growth.
+    return { exists: !!row, running: row?.state === 'Running', diskFileBytes: null, peakMemMb: null, pkgDiskFileBytes: null, pkgDiskCapBytes: PACKAGE_VOLUME_CAP_BYTES };
   }
 
   /** The helper scope's own CPU (cpu.stat usage_usec deltas), so Echo's load still counts as the owner's. */
@@ -170,10 +201,11 @@ export class WslDriver extends RunnerDriverBase {
     await this.run(['--unregister', SANDBOX_NAME], 5 * 60_000);
   }
 
-  /** `wsl --unregister instar-helper` (never Echo's distro), the owner-signal task and its file. */
+  /** `wsl --unregister instar-helper` (never Echo's distro), the package volume detached, the owner-signal task and its file. */
   async uninstall(): Promise<void> {
     await this.destroy();
-    await this.runner.run('schtasks.exe', ['/Delete', '/TN', OWNER_SIGNAL_TASK, '/F'], { timeoutMs: 60_000 });
+    await this.run(['--unmount', this.o.pkgVhd], 2 * 60_000);
+    await this.runner.run('schtasks.exe', ['/Delete', '/TN', OWNER_SIGNAL_TASK, '/F'], { timeoutMs: 60_000, env: this.commandEnv() });
     await SafeFsExecutor.safeRm(this.o.signalFile, { force: true, operation: 'local-verify:helper-uninstall' });
   }
 }

@@ -5,9 +5,11 @@
  * lane, AFTER that lane's record is written. Nothing here returns anything a verdict reads; the
  * output feeds only the `borrowed-shadow` audit row, the helper's learned list and the report.
  *
- *  - Answer validity first: the answer must carry the request's attemptId, runAttemptId, headSha
- *    and exact requestedFiles, signed by the helper; its perFile lists each requested file exactly
- *    once. Otherwise `invalid-answer`, compared not at all, never fed to the learned list.
+ *  - Answer validity first: the answer must carry the request's attemptId, runAttemptId, lane,
+ *    baseSha, headSha and exact requestedFiles, signed by the helper; its perFile lists each
+ *    requested file exactly once. Otherwise `invalid-answer`, compared not at all, never fed to
+ *    the learned list. (PROVISIONAL, stage 1 of the amendment: the answer's `treeHash` is not
+ *    checked here yet; the lane flow of a later stage compares it with this machine's merge tree.)
  *  - A file agrees when its passed, failed, skipped and todo counts are equal and `collected` holds.
  *  - Slice-level problems (a nonzero exit its failed files do not explain, or unhandled errors) are
  *    judged once per slice as a `slice-error`; they do not turn passing files into disagreements.
@@ -38,7 +40,7 @@ export function answerInvalid(s: SentSlice): string | null {
   if (!a) return 'no-answer';
   if (s.sigRefusal) return `sig:${s.sigRefusal}`;
   const r = s.request;
-  if (a.attemptId !== r.attemptId || a.runAttemptId !== r.runAttemptId || a.headSha !== r.headSha) return 'ids';
+  if (a.attemptId !== r.attemptId || a.runAttemptId !== r.runAttemptId || a.lane !== r.lane || a.baseSha !== r.baseSha || a.headSha !== r.headSha) return 'ids';
   if (a.requestedFiles.length !== r.files.length || a.requestedFiles.some((f, i) => f !== r.files[i])) return 'requested-files';
   if (a.state === 'done' && !a.resultOversize) {
     const seen = new Set<string>();
@@ -94,7 +96,6 @@ export function compareShadow(slices: readonly SentSlice[], local: ReadonlyMap<s
     helperMs: 0, localMs: 0, handBackMs: [], ownerCoresMax: null, vitestStartMs: [],
     canary: { compared: 0, falseGreen: 0, falseRed: 0 }, observations: [],
   };
-  const source = opts.source ?? 'paired';
   for (const s of slices) {
     if (s.refusedReason) { out.refused[s.refusedReason] = (out.refused[s.refusedReason] ?? 0) + 1; continue; }
     const bad = answerInvalid(s);
@@ -138,7 +139,9 @@ export function compareShadow(slices: readonly SentSlice[], local: ReadonlyMap<s
       if (same(p, l)) {
         if (slice.collected) {
           out.agree++;
-          if (s.request.retrial) out.observations.push({ file: p.file, kind: 'agree', source });
+          // PROVISIONAL (stage 5 replaces this count comparison with the digest comparison in the
+          // lane flow): only a trial's agreement is reported, as in the first design.
+          if (s.request.retrial) out.observations.push({ file: p.file, kind: 'agree' });
         } else out.uncollected++;
         continue;
       }
@@ -146,7 +149,10 @@ export function compareShadow(slices: readonly SentSlice[], local: ReadonlyMap<s
       out.disagree.push({ file: p.file, direction });
       // Learned list: the file failed, or skipped differently, on the helper while passing locally.
       // Only from a slice that collected every file: an uncollected slice never feeds the list.
-      if (slice.collected && l.failed === 0 && (direction === 'helper-red/local-green' || direction === 'skip-difference')) out.observations.push({ file: p.file, kind: 'differ', source });
+      // PROVISIONAL mapping onto the amended kinds: the helper failed where the run machine passed,
+      // or both passed with different skips (which is a names-and-outcomes difference).
+      if (slice.collected && l.failed === 0 && direction === 'helper-red/local-green') out.observations.push({ file: p.file, kind: 'helper-failed-local-passed' });
+      else if (slice.collected && l.failed === 0 && p.failed === 0 && direction === 'skip-difference') out.observations.push({ file: p.file, kind: 'digest-differs-both-pass' });
     }
   }
   return out;

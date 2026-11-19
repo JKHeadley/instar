@@ -5,7 +5,9 @@
  *
  * Created from src/templates/helper/lima-instar-helper.yaml: `mounts: []` (overriding Lima's
  * default read-only home mount), `portForwards: [{guestPortRange: [1, 65535], ignore: true}]`,
- * `ssh.forwardAgent: false`, a minimal image pinned by digest, and the fixed size.
+ * `ssh.forwardAgent: false`, a minimal image pinned by digest, and the fixed size. One additional
+ * disk, the package volume, is attached unformatted; it is not a host folder and holds only what
+ * the sandbox itself installed from merged code.
  *
  * NEVER executed on a Local Verify machine (see runnerDriverBase.ts).
  */
@@ -17,7 +19,8 @@ import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import type { SandboxSize } from './helperConfig.js';
 import type { CommandRunner } from './commandRunner.js';
 import { REQUIRED_CHECKS_COMMON, type ContainmentCheck, type SandboxStatus } from './sandboxDriver.js';
-import { RunnerDriverBase, SANDBOX_NAME, buildProvisionBundle, readHelperTemplate } from './runnerDriverBase.js';
+import type { SandboxImageIdentity } from './dryRunRecord.js';
+import { PACKAGE_VOLUME, PACKAGE_VOLUME_CAP_BYTES, RunnerDriverBase, SANDBOX_NAME, buildProvisionBundle, commonSandboxSettings, controlChannelEnv, readHelperTemplate, sandboxSettingsHash } from './runnerDriverBase.js';
 
 export { buildProvisionBundle };
 
@@ -50,7 +53,16 @@ export function renderLimaTemplate(size: SandboxSize, template: string = readHel
     .replace(/\{\{IMAGE_DIGEST\}\}/g, image.digest ?? 'UNPINNED')
     .replace(/\{\{CPUS\}\}/g, String(size.cpus))
     .replace(/\{\{MEMORY_GB\}\}/g, String(size.memoryGb))
-    .replace(/\{\{DISK_GB\}\}/g, String(size.diskGb));
+    .replace(/\{\{DISK_GB\}\}/g, String(size.diskGb))
+    .replace(/\{\{PKG_DISK\}\}/g, PACKAGE_VOLUME.name);
+}
+
+/** Whether `limactl disk list --json` output (one JSON object per line) names this disk. */
+export function limaDiskListed(out: string, name: string): boolean {
+  for (const line of out.split('\n')) {
+    try { if ((JSON.parse(line) as { name?: unknown }).name === name) return true; } catch { /* @silent-fallback-ok: a non-JSON line is not a disk */ }
+  }
+  return false;
 }
 
 /** Host-side B2.1 checks over a Lima instance config: no mounts, every guest port ignored, no agent forwarding. */
@@ -95,7 +107,8 @@ export class LimaDriver extends RunnerDriverBase {
   }
 
   private limaHome(): string { return path.join(this.helperHome, 'lima'); }
-  protected commandEnv(): NodeJS.ProcessEnv { return { ...process.env, LIMA_HOME: this.limaHome() }; }
+  /** The allow-listed environment plus LIMA_HOME: limactl and the ssh it starts get no token and no SSH agent socket to forward. */
+  protected commandEnv(): NodeJS.ProcessEnv { return controlChannelEnv(process.env, [], { LIMA_HOME: this.limaHome() }); }
   protected rootShell(): { cmd: string; args: string[] } { return { cmd: this.o.limactl, args: ['shell', '--workdir', '/', SANDBOX_NAME, 'sudo', '-n'] }; }
   protected requiredChecks(): readonly string[] { return REQUIRED_CHECKS_COMMON; }
 
@@ -107,6 +120,7 @@ export class LimaDriver extends RunnerDriverBase {
     if (!fs.existsSync(this.o.limactl)) throw new Error('lima-not-installed');
     if (!LIMA_BASE_IMAGE.digest) throw new Error('image-digest-unpinned');
     fs.mkdirSync(this.limaHome(), { recursive: true, mode: 0o700 });
+    await this.ensurePackageDisk();
     const file = path.join(this.helperHome, 'instar-helper.yaml');
     fs.writeFileSync(file, renderLimaTemplate(size), { mode: 0o600 });
     const c = await this.lima(['create', `--name=${SANDBOX_NAME}`, '--tty=false', file]);
@@ -114,6 +128,24 @@ export class LimaDriver extends RunnerDriverBase {
     await this.start();
     const p = await this.lima(['shell', '--workdir', '/', SANDBOX_NAME, 'sudo', '-n', 'bash', '-s'], 30 * 60_000, buildProvisionBundle());
     if (p.code !== 0) throw new Error(`provision failed (${p.code}): ${p.stderr.slice(0, 300)}`);
+  }
+
+  /**
+   * The package volume: a Lima additional disk, its own file beside the VM's. `limactl delete`
+   * of the VM leaves it, so the installed packages survive the daily re-creation. Created once;
+   * the runner formats it on first use.
+   */
+  private async ensurePackageDisk(): Promise<void> {
+    const l = await this.lima(['disk', 'list', '--json'], 30_000);
+    if (l.code === 0 && limaDiskListed(l.stdout, PACKAGE_VOLUME.name)) return;
+    const c = await this.lima(['disk', 'create', PACKAGE_VOLUME.name, '--size', `${PACKAGE_VOLUME.sizeGb}GiB`, '--format', 'raw'], 5 * 60_000);
+    if (c.code !== 0) throw new Error(`package-volume-create-failed (${c.code}): ${c.stderr.slice(0, 300)}`);
+  }
+
+  /** The pinned image's digest, and the rendered template (size included) with the shared settings. */
+  async imageIdentity(size: SandboxSize): Promise<SandboxImageIdentity | null> {
+    if (!LIMA_BASE_IMAGE.digest) return null;
+    return { imageDigest: LIMA_BASE_IMAGE.digest, settingsHash: sandboxSettingsHash([renderLimaTemplate(size), ...commonSandboxSettings()]) };
   }
 
   async start(): Promise<{ startMs: number }> {
@@ -139,14 +171,17 @@ export class LimaDriver extends RunnerDriverBase {
     }
     let diskFileBytes: number | null = null;
     try { diskFileBytes = fs.statSync(path.join(this.limaHome(), SANDBOX_NAME, 'diffdisk')).blocks * 512; } catch { diskFileBytes = null; } // @silent-fallback-ok: unknown size fails the host-disk check (refuse)
-    const ps = await this.runner.run('ps', ['-A', '-o', 'rss=,comm='], { timeoutMs: 5_000 });
+    // The package volume's own disk file (a sparse raw file beside the VM's), for the host-disk margin.
+    let pkgDiskFileBytes: number | null = null;
+    try { pkgDiskFileBytes = fs.statSync(path.join(this.limaHome(), '_disks', PACKAGE_VOLUME.name, 'datadisk')).blocks * 512; } catch { pkgDiskFileBytes = null; } // @silent-fallback-ok: unknown size counts the volume's whole cap as remaining growth
+    const ps = await this.runner.run('ps', ['-A', '-o', 'rss=,comm='], { timeoutMs: 5_000, env: this.commandEnv() });
     let rssKb = 0;
     for (const line of ps.stdout.split('\n')) {
       const m = /^\s*(\d+)\s+(.*)$/.exec(line);
       if (m && /com\.apple\.Virtualization\.VirtualMachine/.test(m[2])) rssKb += Number(m[1]);
     }
     if (rssKb > 0) this.peakMemMb = Math.max(this.peakMemMb ?? 0, Math.round(rssKb / 1024));
-    return { exists, running, diskFileBytes, peakMemMb: this.peakMemMb };
+    return { exists, running, diskFileBytes, peakMemMb: this.peakMemMb, pkgDiskFileBytes, pkgDiskCapBytes: PACKAGE_VOLUME_CAP_BYTES };
   }
 
   protected async hostConfigChecks(): Promise<ContainmentCheck[]> {
@@ -160,9 +195,10 @@ export class LimaDriver extends RunnerDriverBase {
     await this.lima(['delete', '--force', SANDBOX_NAME], 2 * 60_000);
   }
 
-  /** Removes the VM and its disk, the helper home (Lima's state under it) and the pinned Lima install. */
+  /** Removes the VM and its disk, the package volume, the helper home (Lima's state under it) and the pinned Lima install. */
   async uninstall(): Promise<void> {
     await this.destroy();
+    await this.lima(['disk', 'delete', '--force', PACKAGE_VOLUME.name], 2 * 60_000);
     await SafeFsExecutor.safeRm(this.helperHome, { recursive: true, force: true, operation: 'local-verify:helper-uninstall' });
     const limaInstall = path.dirname(path.dirname(this.o.limactl));
     if (path.basename(limaInstall) === 'lima' && limaInstall.includes(`${path.sep}helper${path.sep}`)) {

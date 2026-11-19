@@ -1,10 +1,13 @@
 /**
  * Helper routes (docs/specs/local-verify-borrowed-unit-slices.md, B "What the helper service builds"):
  *
- *   POST /local-verify/helper-slice          a signed slice (or `prepare: true`, or `retrial: true`)
- *   POST /local-verify/helper-slice/cancel   a signed cancel of one run's work (stops it; deletes its trees)
- *   POST /local-verify/helper-learned        signed learned-list observations (pinned requesters only)
- *   GET  /local-verify/helper-status         state, prepared trees, containment, the learned list
+ *   POST /local-verify/helper-slice          a signed slice (queued and answered at once with its id), or `prepare: true`
+ *   POST /local-verify/helper-slice/cancel   a signed cancel: of named slices, or of one run's work (`verifyOver` releases its tree)
+ *   POST /local-verify/helper-learned        signed comparison results, keyed by tree hash (the pinned requester only)
+ *   GET  /local-verify/helper-status         the SIGNED status: state, prepared trees, containment, the queue, the running
+ *                                            slice's signed progress, finished slices' signed answers
+ *                                            (?run=<runAttemptId>&since=<seq>), the learned list, and per lane the
+ *                                            files this helper has been compared on (?compared=<lane> for the list)
  *   POST /local-verify/helper-pause          { paused } the owner's pause toggle (dashboard / phone)
  *
  * All answer 404 while the helper role is disabled (absent or malformed setting). Requests through
@@ -13,8 +16,18 @@
  * the phone; pausing is always the safe direction.
  */
 import type { Request, Response, Router } from 'express';
-import type { HelperService } from './HelperService.js';
+import type { HelperService, HelperStatusQuery } from './HelperService.js';
 import { routeRefusal } from './admission.js';
+import { HELPER_ID_RE, HELPER_LANES, type HelperLane } from './helperProtocol.js';
+
+/** The status request's query, strictly: a malformed value is ignored, never guessed at. */
+export function parseStatusQuery(q: Record<string, unknown>): HelperStatusQuery {
+  const out: HelperStatusQuery = {};
+  if (typeof q.run === 'string' && HELPER_ID_RE.test(q.run)) out.runAttemptId = q.run;
+  if (typeof q.since === 'string' && /^\d{1,15}$/.test(q.since)) out.sinceSeq = Number(q.since);
+  if (typeof q.compared === 'string' && (HELPER_LANES as readonly string[]).includes(q.compared)) out.comparedLane = q.compared as HelperLane;
+  return out;
+}
 
 export interface HelperRouteDeps {
   helper: () => HelperService | null;
@@ -58,7 +71,7 @@ export function registerHelperRoutes(router: Router, deps: HelperRouteDeps): voi
     const svc = gate(res);
     if (!svc) return;
     if (routeRefusal(facts(req), { allowLoopback: true })) { res.status(403).json({ error: 'tunnel' }); return; }
-    res.json(svc.status());
+    res.json(svc.status(parseStatusQuery(req.query as Record<string, unknown>)));
   });
 
   router.post('/local-verify/helper-pause', async (req: Request, res: Response) => {

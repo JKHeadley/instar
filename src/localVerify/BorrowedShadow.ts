@@ -1,7 +1,8 @@
 /**
  * The run machine's side of borrowed helpers, SHADOW ONLY (docs/specs/local-verify-borrowed-unit-slices.md, F).
  *
- * With `monitoring.localVerify.borrowed.mode: 'shadow'`, each of this machine's own `main` verifies
+ * With `monitoring.localVerify.borrowed.mode` at `'practice'` or `'count'` (the first design's
+ * `'shadow'` reads as `'practice'`), each of this machine's own `main` verifies
  * sends eligible unit files to its helpers while its own unit lane runs every file as always, and
  * compares file by file after the run's record is written. A helper result has exactly one use,
  * comparison: no code path here feeds anything into `evaluateRun` or a record.
@@ -13,16 +14,22 @@
  *    audited `borrowed-shadow-error`, never thrown into the run;
  *  - comparison happens only after the record is written;
  *  - a client that hangs is abandoned at the end of the unit lane (its requests are aborted).
+ *
+ * Asking the helper (docs/specs/local-verify-borrowed-slices-count.md, F): one status request with
+ * a 2-second limit at the start of the verify, made INSIDE this detached task; its whole-status
+ * signature must hold. A helper that stays silent is asked less often (borrowedAsk.ts), which
+ * replaces the first design's back-off of up to 8 hours.
  */
 import crypto from 'node:crypto';
 import type { MachineKeyLookup, MachineSigner } from '../core/AppRecordSignatures.js';
 import type { FileCounts } from './laneReport.js';
 import type { MainRunEnd, MainRunObserver, MainRunStart } from './mainRunObserver.js';
-import { judgeEligibility, scanIneligibleShare, type TreeReader } from './borrowedEligibility.js';
+import { judgeEligibility, scanHitShare, type TreeReader } from './borrowedEligibility.js';
 import { BORROWED_CANARY, BORROWED_CANARY_FILES } from './borrowedCanary.js';
 import { BORROWED_PLAN, nextBudgetMs, planSlices, sendAmountMs, seededThroughput } from './borrowedPlan.js';
 import { compareShadow, type SentSlice } from './borrowedCompare.js';
-import { BorrowedHelpersStore, helperSkipped, measuredPrepP90, measuredThroughput, noteHelperOutcome } from './borrowedState.js';
+import { BorrowedPracticeStore, measuredPrepP90, measuredThroughput } from './borrowedState.js';
+import { HelperAsking } from './borrowedAsking.js';
 import type { HelperClient, HelperStatusView } from './borrowedClient.js';
 import type { BorrowedConfig, HelperTarget } from './helper/helperConfig.js';
 import {
@@ -48,6 +55,10 @@ export interface BorrowedShadowDeps {
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
+  /** The practice record, shared with the server's side of waiting changes' verifies. Absent: this observer opens the file itself. */
+  store?: BorrowedPracticeStore;
+  /** The asking bookkeeping, shared the same way. Absent: built here on `store`. */
+  asking?: HelperAsking;
 }
 
 interface RunCtx {
@@ -67,7 +78,8 @@ const newId = (): string => crypto.randomBytes(16).toString('hex');
 export class BorrowedShadow implements MainRunObserver {
   private readonly now: () => number;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
-  private readonly store: BorrowedHelpersStore;
+  private readonly store: BorrowedPracticeStore;
+  private readonly asking: HelperAsking;
   private readonly runs = new Map<string, RunCtx>();
   private readonly lastSummary = new Map<string, Record<string, unknown>>();
   private readonly lastLearned = new Map<string, { entries: number; incompatible: boolean; files: string[] }>();
@@ -83,7 +95,8 @@ export class BorrowedShadow implements MainRunObserver {
       t.unref?.();
       signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
     }));
-    this.store = new BorrowedHelpersStore(d.stateDir);
+    this.store = d.store ?? new BorrowedPracticeStore(d.stateDir);
+    this.asking = d.asking ?? new HelperAsking({ store: this.store, client: d.client, keyLookup: d.keyLookup, audit: (e) => this.audit(e), now: this.now });
   }
 
   private audit(e: Record<string, unknown>): void {
@@ -99,7 +112,8 @@ export class BorrowedShadow implements MainRunObserver {
   onMainRunStart(e: MainRunStart): void {
     try {
       const cfg = this.d.config();
-      if (cfg.mode !== 'shadow' || cfg.helpers.length === 0) return;
+      // `practice` and `count` both observe main verifies: a main verify never counts a helper's results.
+      if (cfg.mode === 'off' || cfg.helpers.length === 0) return;
       if (!this.d.signer) { this.error('start', null, 'no machine signer'); return; }
       let resolveEnded!: (x: MainRunEnd) => void;
       const ended = new Promise<MainRunEnd>((r) => { resolveEnded = r; });
@@ -136,7 +150,7 @@ export class BorrowedShadow implements MainRunObserver {
       mode: cfg.mode,
       helpers: cfg.helpers.map((h) => ({
         machineId: h.machineId, url: h.url,
-        breaker: state[h.machineId]?.breaker ?? null,
+        asking: state[h.machineId]?.ask ?? null,
         lastShadow: this.lastSummary.get(h.machineId) ?? null,
         learned: this.lastLearned.get(h.machineId) ?? null,
         countedRuns: (state[h.machineId]?.runs ?? []).filter((r) => r.counted).length,
@@ -151,9 +165,9 @@ export class BorrowedShadow implements MainRunObserver {
   }
 
   private async runHelper(ctx: RunCtx, h: HelperTarget): Promise<void> {
-    const state = this.store.get(h.machineId);
-    if (helperSkipped(state.breaker, this.now())) return;
     const signal = ctx.abort.signal;
+    // One status request with a 2-second limit at the start of the verify; a silent helper is asked less often.
+    if (this.asking.decide(h) !== 'ask') return;
     const sent: SentSlice[] = [];
     let transportOk = false;
     let prepMs: number | null = null;
@@ -161,22 +175,24 @@ export class BorrowedShadow implements MainRunObserver {
     let prepNotReady = false;
     let copyMs: number | null = null;
     let status: HelperStatusView | null = null;
-    let verdictsMeta = { scanIneligibleShare: 0, scanHits: 0, scanDeepHits: 0, eligible: 0, neverEligibleShare: 0 };
+    let verdictsMeta = { scanHitShare: 0, scanHits: 0, scanDeepHits: 0, eligible: 0, neverEligibleShare: 0 };
     let sentAnything = false;
 
     try {
+      // No answer (or one whose signature does not hold) means no helper for this verify.
+      status = await this.asking.ask(h, signal);
+      if (!status) throw new HelperUnreachable('status');
+      transportOk = true;
       // Plan: the head's unit files, the helper's learned list, D's rules.
       const files = await this.d.unitFiles(ctx.headSha);
       const durations = Object.fromEntries(files.map((f) => [f.file, f.ms]));
       const totalMs = files.reduce((n, f) => n + f.ms, 0);
       const projected = Math.round((totalMs / Math.max(1, this.d.localWorkers)) * BORROWED_PLAN.defaultWallFactor);
       ctx.unitEndAt = ctx.startedAt + BORROWED_PLAN.setupAllowanceMs + projected;
-      status = await this.d.client.status(h, signal);
-      if (!status) throw new HelperUnreachable('status');
-      transportOk = true;
       this.lastLearned.set(h.machineId, { entries: status.learned.entries.length, incompatible: status.learned.incompatible, files: status.learned.entries.slice(0, 50).map((e) => e.file) });
       const learned = new Set(status.learned.entries.map((e) => e.file));
-      const verdicts = await judgeEligibility(files.map((f) => f.file), this.d.treeReader(ctx.headSha), learned);
+      // PROVISIONAL (stage 1 of the amendment): the main-verify observer still sends the unit lane only.
+      const verdicts = await judgeEligibility(files.map((f) => f.file), 'unit', this.d.treeReader(ctx.headSha), learned);
       let hits = 0;
       let deep = 0;
       for (const v of verdicts) {
@@ -188,10 +204,10 @@ export class BorrowedShadow implements MainRunObserver {
         }
       }
       const eligible = verdicts.filter((v) => v.eligible).map((v) => ({ file: v.file, ms: durations[v.file] ?? 0 }));
-      verdictsMeta = { scanIneligibleShare: scanIneligibleShare(verdicts, durations), scanHits: hits, scanDeepHits: deep, eligible: eligible.length, neverEligibleShare: 0 };
+      verdictsMeta = { scanHitShare: scanHitShare(verdicts, durations), scanHits: hits, scanDeepHits: deep, eligible: eligible.length, neverEligibleShare: 0 };
 
       // Prepare first, then poll every 5 s until the tree is ready; stop waiting at unit-lane end.
-      const prepReq: HelperSliceRequest = { kind: 'slice', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, headSha: ctx.headSha, files: [], deadlineAt: ctx.unitEndAt, budgetMs: 1, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, prepare: true };
+      const prepReq: HelperSliceRequest = { kind: 'slice', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, lane: 'unit', baseSha: ctx.headSha, headSha: ctx.headSha, files: [], deadlineAt: ctx.unitEndAt, budgetMs: 1, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, prepare: true };
       const prepStart = this.now();
       const pr = await this.d.client.slice(h, this.signed(prepReq), 30_000, signal);
       sentAnything = true;
@@ -241,13 +257,16 @@ export class BorrowedShadow implements MainRunObserver {
       }
       const goodAnswer = sent.some((s) => s.answer && !s.sigRefusal);
       const outcome: 'good' | 'bad' = !transportOk || cmp.badSignatures > 0 || (sent.length > 0 && !goodAnswer && !sent.some((s) => s.refusedReason)) ? 'bad' : 'good';
-      const br = noteHelperOutcome(state.breaker, outcome, this.now());
-      if (br.reportNow) this.audit({ event: 'helper-unreachable', helper: h.machineId, since: new Date(state.breaker.unreachableSince ?? this.now()).toISOString() });
-      if (br.recovered) this.audit({ event: 'helper-reachable', helper: h.machineId });
       if (end.recorded && cmp.observations.length > 0 && local && !(dryRun && end.outcome !== 'success')) {
         try {
-          const l: HelperLearnedRequest = { kind: 'learned', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, headSha: ctx.headSha, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, observations: cmp.observations.slice(0, HELPER_LIMITS.maxFilesPerRequest) };
-          await this.d.client.learned(h, this.signed(l));
+          // PROVISIONAL (stage 5: the run machine's own merge-tree hash): the tree the helper says it ran.
+          // One comparison per file per request (the last one found stands).
+          const treeHash = sent.map((s) => s.answer?.treeHash).find((t): t is string => typeof t === 'string');
+          const byFile = new Map(cmp.observations.map((o) => [o.file, o]));
+          if (treeHash) {
+            const l: HelperLearnedRequest = { kind: 'learned', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, treeHash, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, observations: [...byFile.values()].slice(0, HELPER_LIMITS.maxFilesPerRequest) };
+            await this.d.client.learned(h, this.signed(l));
+          }
         } catch (e) { this.error('learned', h.machineId, e); }
       }
       const vs = cmp.vitestStartMs;
@@ -270,10 +289,10 @@ export class BorrowedShadow implements MainRunObserver {
         prepMs, prepWaitMs, prepNotReady, copyMs, handBackMs: cmp.handBackMs, ownerCoresMax: cmp.ownerCoresMax,
         vitestStartMs: vs, sandboxStartMs: status?.sandbox?.startMs ?? null, sandboxPeakMemMb: status?.sandbox?.peakMemMb ?? null,
         ...(dryRun ? { dryRun: true, dryRunCovered: this.dryRunCovered.get(h.machineId)?.size ?? 0 } : {}),
-        neverEligibleShare: verdictsMeta.neverEligibleShare, scanIneligibleShare: verdictsMeta.scanIneligibleShare,
+        neverEligibleShare: verdictsMeta.neverEligibleShare, scanHitShare: verdictsMeta.scanHitShare,
         scanHits: verdictsMeta.scanHits, scanDeepHits: verdictsMeta.scanDeepHits, eligibleFiles: verdictsMeta.eligible,
         learnedEntries: status?.learned.entries.length ?? null, incompatible: status?.learned.incompatible ?? null,
-        helperVersion: status?.helperVersion ?? null, runVersion: this.d.version, breakerOutcome: outcome,
+        helperVersion: status?.helperVersion ?? null, runVersion: this.d.version, helperOutcome: outcome,
       };
       this.lastSummary.set(h.machineId, { at: new Date(this.now()).toISOString(), ...row });
       this.audit(row);
@@ -288,7 +307,8 @@ export class BorrowedShadow implements MainRunObserver {
     const throughput = measuredThroughput(st.runs) ?? seededThroughput(this.d.localWorkers);
     const prepP90 = measuredPrepP90(st.runs) ?? BORROWED_PLAN.seedPrepMs;
     const totalMs = eligible.reduce((n, f) => n + f.ms, 0);
-    const budgetMs = this.budgets.get(h.machineId)?.budgetMs ?? BORROWED_PLAN.initialBudgetMs;
+    // A helper refuses a slice whose stated budget is above its lane's (10 s for unit).
+    const budgetMs = Math.min(this.budgets.get(h.machineId)?.budgetMs ?? BORROWED_PLAN.initialBudgetMs, HELPER_LIMITS.sliceBudgetMs.unit);
     const dryRun = this.d.config().dryRun === true;
     // The dry run sends every eligible file (files not yet covered first) until the unit lane ends.
     const covered = this.dryRunCovered.get(h.machineId) ?? new Set<string>();
@@ -303,16 +323,33 @@ export class BorrowedShadow implements MainRunObserver {
     // The canary slice, at a random position: the helper is not told which slice it is.
     const pos = Math.floor((this.d.random ?? Math.random)() * (queue.length + 1));
     queue.splice(pos, 0, { files: [...BORROWED_CANARY_FILES], canary: true, retrial: false });
+    let resultSeq = 0;
     for (const q of queue) {
       if (signal.aborted || this.now() >= ctx.unitEndAt) break;
       const deadlineAt = Math.min(ctx.unitEndAt, this.now() + budgetMs * BORROWED_PLAN.longFileFactor + 30_000);
       const req: HelperSliceRequest = {
-        kind: 'slice', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, headSha: ctx.headSha,
+        kind: 'slice', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId,
+        // A main verify: the base and the head are the same merged commit. Everything is compared, nothing used.
+        lane: 'unit', baseSha: ctx.headSha, headSha: ctx.headSha, use: q.canary ? 'check' : 'compare',
         files: q.files, deadlineAt, budgetMs, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, ...(q.retrial ? { retrial: true as const } : {}),
       };
-      const r = await this.d.client.slice(h, this.signed(req), Math.max(5_000, deadlineAt - this.now() + 15_000), signal);
+      // A helper queues a slice and answers at once; the slice's last signed answer comes through its status.
+      const r = await this.d.client.slice(h, this.signed(req), 15_000, signal);
       if (!r) { sent.push({ request: req, canary: q.canary, answer: null, sigRefusal: null }); if (signal.aborted) break; continue; }
-      const ans = parseHelperAnswer(r.body);
+      let ans = parseHelperAnswer(r.body);
+      if (ans && ans.state === 'queued') {
+        // PROVISIONAL (stage 5: the lane flow sends its slices at once and reads results as they come):
+        // this observer still sends one slice, waits for its answer, then sends the next.
+        ans = null;
+        const waitUntil = deadlineAt + 15_000;
+        while (!signal.aborted && this.now() < waitUntil) {
+          const st = await this.d.client.status(h, signal, { run: ctx.runAttemptId, since: resultSeq });
+          const hit = st?.results.map((x) => ({ seq: x.seq, a: parseHelperAnswer(x.answer) })).find((x) => x.a?.attemptId === req.attemptId);
+          if (hit?.a) { ans = hit.a; resultSeq = hit.seq; break; }
+          await this.sleep(1_000, signal);
+        }
+        if (!ans) { sent.push({ request: req, canary: q.canary, answer: null, sigRefusal: null }); if (signal.aborted) break; continue; }
+      }
       if (!ans) {
         const reason = (r.body as { reason?: unknown } | null)?.reason;
         sent.push({ request: req, canary: q.canary, answer: null, sigRefusal: null, ...(typeof reason === 'string' ? { refusedReason: reason } : {}) });

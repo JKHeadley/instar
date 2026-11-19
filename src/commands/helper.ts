@@ -7,7 +7,7 @@
  *  - resume: new work is accepted again.
  *  - uninstall: removes the sandbox through the driver seam (the Lima VM, its disk and the pinned
  *    Lima install on macOS; `wsl --unregister instar-helper`, the owner-signal task and file on
- *    Windows), the learned list and the setting. Needs `--yes`; without it, it only lists what
+ *    Windows), the package volume, the learned list, the dry-run record and the setting. Needs `--yes`; without it, it only lists what
  *    would be removed.
  */
 import fs from 'node:fs';
@@ -17,6 +17,7 @@ import { loadConfig } from '../core/Config.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { writeHelperPaused } from '../localVerify/helper/HelperService.js';
 import { HelperLearnedStore } from '../localVerify/helper/learnedList.js';
+import { HelperComparedStore } from '../localVerify/helper/comparedFiles.js';
 import { isWslHost, selectSandboxDriver } from '../localVerify/helper/helperWiring.js';
 import type { HelperSandboxDriver } from '../localVerify/helper/sandboxDriver.js';
 
@@ -72,18 +73,19 @@ export async function helperUninstall(opts: HelperCmdOpts): Promise<void> {
  */
 export async function helperUninstallAt(stateDir: string, driver: HelperSandboxDriver | null, yes: boolean): Promise<string[]> {
   const what = [
-    driver?.kind === 'lima' ? 'the Lima virtual machine instar-helper, its disk under ~/.instar-helper/ and the pinned Lima install'
-      : driver?.kind === 'wsl' ? 'the WSL distro instar-helper (never Echo\'s), the owner-signal scheduled task and its signal file'
+    driver?.kind === 'lima' ? 'the Lima virtual machine instar-helper, its disk and its package disk under ~/.instar-helper/ and the pinned Lima install'
+      : driver?.kind === 'wsl' ? 'the WSL distro instar-helper (never Echo\'s), its package disk detached, the owner-signal scheduled task and its signal file'
         : driver ? `the ${driver.kind} sandbox` : 'no sandbox on this platform',
-    'the learned exclude list',
+    'the learned exclude list, the record of files it was compared on, the dry-run record and the list of installed package sets',
     'the monitoring.localVerify.helper setting',
   ];
   if (!yes) return ['instar helper uninstall would remove:', ...what.map((w) => `  - ${w}`), pc.dim('Run again with --yes to remove them.')];
   writeHelperPaused(stateDir, true, 'uninstall');
   if (driver) await driver.uninstall();
   new HelperLearnedStore(stateDir).clear();
+  new HelperComparedStore(stateDir).clear();
   removeHelperSetting(stateDir);
-  for (const f of ['helper-control.json', 'helper-seen-attempts.json']) {
+  for (const f of ['helper-control.json', 'helper-seen-attempts.json', 'helper-dry-run.json', 'helper-packages.json']) {
     try { SafeFsExecutor.safeRmSync(path.join(stateDir, 'state', 'local-verify', f), { force: true, operation: 'helper-uninstall' }); } catch { /* @silent-fallback-ok: already absent */ }
   }
   return [pc.green('Helper removed:'), ...what.map((w) => `  - ${w}`)];

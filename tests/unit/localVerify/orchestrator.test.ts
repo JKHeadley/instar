@@ -17,8 +17,9 @@ import { describe, it, expect } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   runVerify, verifyPaths, splitScript, parseNameStatus, bareConfigTemplate,
-  type OrchestratorSeams, type VerifyRunInput, type GitResult, type ExecResult,
+  type OrchestratorSeams, type VerifyRunInput, type VerifyRunResult, type GitResult, type ExecResult,
 } from '../../../src/localVerify/orchestrator.js';
+import { parseVitestJson } from '../../../src/localVerify/laneReport.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
 
 /** Lane processes in one verify: unit + the integration shards + the e2e shards. */
@@ -1676,5 +1677,46 @@ describe('runVerify — balanced shards: overlapping paths and a hostile history
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(f.logs.some((l) => l.event === 'durations-ignored')).toBe(true);
     expect(f.shardLists).toHaveLength(0);
+  });
+});
+
+describe('a main verify\'s per-file counts for the baseline results (spec local-verify-borrowed-slices-count.md, F "Baseline results")', () => {
+  const mainInput = (over: Partial<VerifyRunInput> = {}) => input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined, ...over });
+  const strip = (r: VerifyRunResult) => { if (r.kind !== 'record') throw new Error(r.kind); const { fileCounts: _fc, ...rest } = r; void _fc; return rest; };
+
+  it('with the option, every clean file gets its four counts and a names-and-outcomes digest; the record and everything else equal a run without it', async () => {
+    const without = await runVerify(mainInput(), fake().seams);
+    const withCounts = await runVerify(mainInput({ fileCounts: true }), fake().seams);
+    expect(without.kind === 'record' && 'fileCounts' in without).toBe(false);
+    if (withCounts.kind !== 'record') throw new Error(withCounts.kind);
+    expect(Object.keys(withCounts.fileCounts!).sort()).toEqual([...TEST_FILES].sort());
+    for (const row of Object.values(withCounts.fileCounts!)) {
+      expect(row.slice(0, 4).every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)).toBe(true);
+      expect(row[4]).toMatch(/^[0-9a-f]{64}$/);
+    }
+    // Identical apart from the added field (the fake clock gives both runs the same times).
+    expect(strip(withCounts)).toEqual(strip(without));
+    expect(withCounts.record.outcome).toBe('success');
+  });
+
+  it('the digest is the lane report\'s own outcome digest of that file', async () => {
+    const r = await runVerify(mainInput({ fileCounts: true }), fake({ laneStatuses: { unit: ['passed', 'skipped', 'todo'] } }).seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    const row = r.fileCounts!['tests/unit/a.test.ts'];
+    expect(row.slice(0, 4)).toEqual([1, 0, 1, 1]);
+    expect(row[4]).toBe(parseVitestJson(vitestReport('tests/unit/a.test.ts', ['passed', 'skipped', 'todo']), P.runDir, { outcomeDigest: true }).files.get('tests/unit/a.test.ts')!.outcomeDigest);
+  });
+
+  it('a file that failed in its lane has no row, even when it passed alone afterwards and the verify is green', async () => {
+    const r = await runVerify(mainInput({ fileCounts: true }), fake({ laneStatuses: { integration: ['passed', 'failed'] } }).seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.record.outcome).toBe('success');
+    expect(r.record.flakyRetried?.map((x) => x.file)).toEqual(['tests/integration/b.test.ts']);
+    expect(Object.keys(r.fileCounts!).sort()).toEqual(['tests/e2e/c.test.ts', 'tests/unit/a.test.ts']);
+  });
+
+  it('a verify of a waiting change never reports them, whatever its input says', async () => {
+    const r = await runVerify(input({ fileCounts: true }), fake().seams);
+    expect(r.kind === 'record' && 'fileCounts' in r).toBe(false);
   });
 });

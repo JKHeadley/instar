@@ -109,7 +109,7 @@ export async function unitFilesWithDurations(agentHome: string, headSha: string)
   if (r.code !== 0) throw new Error('ls-tree of the verified head failed');
   return parseLsTree(r.out)
     .map((e) => e.path)
-    .filter((f) => isBorrowableTestFile(f) && !isBorrowedCanaryFile(f) && Number.isFinite(durations[f]))
+    .filter((f) => isBorrowableTestFile(f, 'unit') && !isBorrowedCanaryFile(f) && Number.isFinite(durations[f]))
     .map((f) => ({ file: f, ms: durations[f] }));
 }
 

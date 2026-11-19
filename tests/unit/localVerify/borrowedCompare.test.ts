@@ -14,10 +14,10 @@ import type { HelperSliceAnswer, HelperSliceRequest } from '../../../src/localVe
 const A = 'tests/unit/a.test.ts';
 const B = 'tests/unit/b.test.ts';
 const C = 'tests/unit/c.test.ts';
-const req = (files: string[], o: Partial<HelperSliceRequest> = {}): HelperSliceRequest => ({ kind: 'slice', attemptId: '1'.repeat(32), runAttemptId: '2'.repeat(32), requesterMachineId: 'm_s', helperMachineId: 'm_l', headSha: 'a'.repeat(40), files, deadlineAt: 1, budgetMs: 1, expiresAt: 1, ...o });
-const pf = (file: string, passed: number, failed = 0, skipped = 0, todo = 0) => ({ file, tests: passed + failed + skipped + todo, passed, failed, skipped, todo, ms: 100 });
+const req = (files: string[], o: Partial<HelperSliceRequest> = {}): HelperSliceRequest => ({ kind: 'slice', attemptId: '1'.repeat(32), runAttemptId: '2'.repeat(32), requesterMachineId: 'm_s', helperMachineId: 'm_l', lane: 'unit', baseSha: 'a'.repeat(40), headSha: 'a'.repeat(40), files, use: 'compare', deadlineAt: 1, budgetMs: 1, expiresAt: 1, ...o });
+const pf = (file: string, passed: number, failed = 0, skipped = 0, todo = 0) => ({ file, tests: passed + failed + skipped + todo, passed, failed, skipped, todo, ms: 100, digest: 'd'.repeat(64), failedTests: [] as string[] });
 const ans = (r: HelperSliceRequest, perFile: HelperSliceAnswer['perFile'], o: Partial<HelperSliceAnswer> = {}): HelperSliceAnswer => ({
-  state: 'done', attemptId: r.attemptId, runAttemptId: r.runAttemptId, headSha: r.headSha, requestedFiles: [...r.files], perFile,
+  state: 'done', attemptId: r.attemptId, runAttemptId: r.runAttemptId, lane: r.lane, baseSha: r.baseSha, headSha: r.headSha, treeHash: null, requestedFiles: [...r.files], perFile,
   slice: { exitCode: perFile.some((p) => p.failed) ? 1 : 0, unhandledErrors: 0, collected: true, vitestStartMs: 700 }, ownerCoresMax: 2, handBackMs: null, prepMs: 1, progress: 1, helperVersion: 'v', ...o,
 });
 const local = (m: Record<string, [number, number, number?, number?]>): Map<string, FileCounts> => new Map(Object.entries(m).map(([f, [p, fl, s, t]]) => [f, { passed: p, failed: fl, skipped: s ?? 0, todo: t ?? 0, ms: 200 }]));
@@ -29,6 +29,9 @@ describe('answer validity', () => {
     expect(answerInvalid(slice(r, ans(r, [pf(A, 1), pf(B, 1)])))).toBeNull();
     expect(answerInvalid(slice(r, { ...ans(r, [pf(A, 1), pf(B, 1)]), attemptId: '9'.repeat(32) }))).toBe('ids');
     expect(answerInvalid(slice(r, { ...ans(r, [pf(A, 1), pf(B, 1)]), headSha: 'b'.repeat(40) }))).toBe('ids');
+    // Protocol v2: the lane and the base commit are part of what an answer must repeat.
+    expect(answerInvalid(slice(r, { ...ans(r, [pf(A, 1), pf(B, 1)]), baseSha: 'b'.repeat(40) }))).toBe('ids');
+    expect(answerInvalid(slice(r, { ...ans(r, [pf(A, 1), pf(B, 1)]), lane: 'integration' }))).toBe('ids');
     expect(answerInvalid(slice(r, { ...ans(r, [pf(A, 1), pf(B, 1)]), requestedFiles: [A] }))).toBe('requested-files');
     expect(answerInvalid(slice(r, ans(r, [pf(A, 1)])))).toBe('per-file');
     expect(answerInvalid(slice(r, ans(r, [pf(A, 1), pf(A, 1)])))).toBe('per-file');
@@ -50,7 +53,8 @@ describe('per-file comparison', () => {
     const c = compareShadow([slice(r, ans(r, [pf(A, 2), pf(B, 1, 1), pf(C, 1, 0, 1)]))], local({ [A]: [2, 0], [B]: [2, 0], [C]: [2, 0] }), BORROWED_CANARY);
     expect(c.agree).toBe(1);
     expect(c.disagree).toEqual([{ file: B, direction: 'helper-red/local-green' }, { file: C, direction: 'skip-difference' }]);
-    expect(c.observations).toEqual([{ file: B, kind: 'differ', source: 'paired' }, { file: C, kind: 'differ', source: 'paired' }]);
+    // The amended kinds: the helper failed where the run machine passed; both passed with different skips.
+    expect(c.observations).toEqual([{ file: B, kind: 'helper-failed-local-passed' }, { file: C, kind: 'digest-differs-both-pass' }]);
     expect(directionOf({ failed: 0 }, { failed: 2 })).toBe('helper-green/local-red');
   });
 
@@ -89,10 +93,10 @@ describe('per-file comparison', () => {
       slice(busy, ans(busy, [], { state: 'busy' })),
       slice(back, ans(back, [], { state: 'handed-back', handBackMs: 40 })),
       slice(big, ans(big, [], { resultOversize: { bytesSeen: 5_000_000 } })),
-      slice(req([B]), null, { refusedReason: 'not-merged' }),
+      slice(req([B]), null, { refusedReason: 'base-not-merged' }),
     ], local({ [A]: [1, 0] }), BORROWED_CANARY);
-    expect(c.observations).toEqual([{ file: A, kind: 'agree', source: 'paired' }]);
-    expect([c.busy, c.handedBack, c.handBackMs, c.resultOversize, c.refused]).toEqual([1, 1, [40], [{ attemptId: big.attemptId, bytesSeen: 5_000_000 }], { 'not-merged': 1 }]);
+    expect(c.observations).toEqual([{ file: A, kind: 'agree' }]);
+    expect([c.busy, c.handedBack, c.handBackMs, c.resultOversize, c.refused]).toEqual([1, 1, [40], [{ attemptId: big.attemptId, bytesSeen: 5_000_000 }], { 'base-not-merged': 1 }]);
   });
 });
 

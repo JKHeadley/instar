@@ -58,6 +58,11 @@ export interface FileCounts {
   passedTests?: string[];
   /** Solo-run reports only: every test that was not `passed`, with its status (for the failure text). */
   notPassedTests?: Array<{ name: string; status: string }>;
+  /**
+   * Only with `opts.outcomeDigest`: the file's names-and-outcomes digest (see `outcomeDigest`).
+   * Every file of the report gets one, passing or failing.
+   */
+  outcomeDigest?: string;
 }
 
 export interface ParsedLaneReport {
@@ -103,6 +108,48 @@ export function passedByName(failed: readonly string[], passed: readonly string[
   return out;
 }
 
+/** The four outcome classes of one reported test, exactly as the counting rules below sort it. */
+export type TestOutcome = 'passed' | 'failed' | 'skipped' | 'todo';
+
+/**
+ * The outcome class of a vitest assertion status: `passed` → passed; `skipped` / `disabled` →
+ * skipped; `todo` → todo; anything else (`failed`, `pending`, an unknown or missing status) →
+ * failed. The digest uses these classes, never vitest's raw status strings, so a status spelling
+ * that differs between two systems is not a digest difference.
+ */
+export function testOutcome(status: unknown): TestOutcome {
+  if (status === 'passed') return 'passed';
+  if (status === 'skipped' || status === 'disabled') return 'skipped';
+  if (status === 'todo') return 'todo';
+  return 'failed';
+}
+
+/** First line of the hashed text of `outcomeDigest`; a change to the canonical form changes it. */
+export const OUTCOME_DIGEST_DOMAIN = 'instar-lv-outcome-digest-v1';
+
+/**
+ * The names-and-outcomes digest of one test file (spec local-verify-borrowed-slices-count.md,
+ * "What a pass is"): which tests ran, and how each ended.
+ *
+ * CANONICAL FORM. For every reported test of the file, one line
+ * `JSON.stringify([fullName, outcome])`, where `fullName` is `fullTestName` of the entry and
+ * `outcome` is its `TestOutcome` class. The lines are sorted by UTF-16 code unit (the default
+ * `Array.prototype.sort`), duplicates kept, so the digest does not depend on report order or on
+ * how a file's entries were split, and a test registered twice differs from one registered once.
+ * The hashed text is the domain line, then every line, each ended by `\n`, as UTF-8. The digest is
+ * its SHA-256 in lowercase hex.
+ *
+ * Not covered: a file-level failure without a failed test (an import or hook error) adds no line.
+ * It shows in the file's `failed` count, which every reader of the digest also reads.
+ */
+export function outcomeDigest(tests: ReadonlyArray<{ name: string; outcome: TestOutcome }>): string {
+  const lines = tests.map((t) => JSON.stringify([t.name, t.outcome])).sort();
+  const h = crypto.createHash('sha256');
+  h.update(`${OUTCOME_DIGEST_DOMAIN}\n`, 'utf8');
+  for (const l of lines) h.update(`${l}\n`, 'utf8');
+  return h.digest('hex');
+}
+
 function relativize(name: string, rootDir: string): string {
   const n = normalizePath(name);
   const root = normalizePath(rootDir).replace(/\/+$/, '');
@@ -125,8 +172,11 @@ function relativize(name: string, rootDir: string): string {
  * All of a file's names are held only while these are computed; they are summed per path, so
  * two entries for one path in a report count as one file. `opts.solo` (a report of one file run
  * alone) adds the passed names. No count changes.
+ *
+ * `opts.outcomeDigest` adds each file's `outcomeDigest` (borrowed helpers). Without it the output
+ * is exactly what it was before the option existed: no field is added, renamed or reordered.
  */
-export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean } = {}): ParsedLaneReport {
+export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean; outcomeDigest?: boolean } = {}): ParsedLaneReport {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -139,6 +189,8 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
   const files = new Map<string, FileCounts>();
   /** Per path, only while parsing: the running name hash, how often each name occurs, the failed names, a file-level failure. */
   const names = new Map<string, { hash: crypto.Hash; seen: Map<string, number>; failedNames: string[]; failed: FailedTest[]; fileLevel: boolean; passed: string[]; notPassed: Array<{ name: string; status: string }> }>();
+  /** Per path, only with `opts.outcomeDigest`: every test's name and outcome class. */
+  const outcomes = new Map<string, Array<{ name: string; outcome: TestOutcome }>>();
   for (const tr of (doc as { testResults: unknown[] }).testResults) {
     if (!tr || typeof tr !== 'object') throw new LaneReportParseError('testResults entry is not an object');
     const r = tr as { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown; startTime?: unknown; endTime?: unknown };
@@ -155,6 +207,11 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
       const name = fullTestName(a);
       n.hash.update(JSON.stringify(name) + '\n');
       n.seen.set(name, (n.seen.get(name) ?? 0) + 1);
+      if (opts.outcomeDigest) {
+        const list = outcomes.get(path) ?? [];
+        list.push({ name, outcome: testOutcome(s) });
+        outcomes.set(path, list);
+      }
       if (opts.solo) {
         if (s === 'passed') n.passed.push(name);
         else n.notPassed.push({ name, status: typeof s === 'string' ? s.slice(0, 40) : 'unknown' });
@@ -207,6 +264,7 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
       c.passedTests = n.passed;
       c.notPassedTests = n.notPassed;
     }
+    if (opts.outcomeDigest) c.outcomeDigest = outcomeDigest(outcomes.get(path) ?? []);
   }
   return { files };
 }

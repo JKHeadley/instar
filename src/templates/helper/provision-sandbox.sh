@@ -28,7 +28,8 @@ done
 # Minimal packages: nftables, iproute2, util-linux (unshare, setpriv), git-free.
 apt-get update -qq
 # python3 is the vsock-refused probe's tool (a missing tool fails that check).
-apt-get install -y -qq --no-install-recommends nftables iproute2 util-linux ca-certificates curl xz-utils procps python3-minimal
+# e2fsprogs formats the package volume on first use (the runner's pkg_mount).
+apt-get install -y -qq --no-install-recommends nftables iproute2 util-linux ca-certificates curl xz-utils procps python3-minimal e2fsprogs
 apt-get purge -y -qq containerd docker.io >/dev/null 2>&1 || true
 
 # Pinned node.
@@ -52,10 +53,11 @@ ln -sf /opt/node/bin/npm /usr/local/bin/npm
 ln -sf /opt/node/bin/npx /usr/local/bin/npx
 
 # Work areas (root-owned; the runner hands out per-slice overlays).
+# /srv/nm is the mount point of the package volume (its own disk; see the runner's pkg_mount).
 install -d -m 0755 -o root -g root /srv/trees /srv/slice /srv/nm
 install -d -m 0700 -o root -g root /srv/overlay /srv/results /srv/roots
 
-# The helper's own nftables table, loaded at boot, and its hash for the pre-npm-ci re-check.
+# The helper's own nftables table, loaded at boot, and its hash for the re-check before every `npm ci`.
 cat > /etc/systemd/system/instar-helper-nft.service <<'UNIT'
 [Unit]
 Description=instar helper builder egress rules

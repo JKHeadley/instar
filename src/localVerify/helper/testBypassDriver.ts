@@ -7,15 +7,18 @@
  * selectSandboxDriver returns only Lima or WSL, buildHelperRuntime accepts it only under a test
  * runner, and its constructor throws outside one (tests/unit/localVerify/helper/helperWiring.test.ts).
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import type { SandboxSize } from './helperConfig.js';
-import type { ContainmentReport, HelperSandboxDriver, SandboxStatus, TesterRun } from './sandboxDriver.js';
+import type { SandboxImageIdentity } from './dryRunRecord.js';
+import type { HelperLane } from './helperProtocol.js';
+import type { ContainmentReport, HelperSandboxDriver, SandboxStatus, TesterProgress, TesterRun, TesterRunSpec } from './sandboxDriver.js';
 
-export type BypassSliceRunner = (o: { treeDir: string; files: string[]; workers: number; env: NodeJS.ProcessEnv; signal: AbortSignal }) => Promise<{ exitCode: number | null; reportText: string | null; unhandledErrors?: number; vitestStartMs?: number | null }>;
+export type BypassSliceRunner = (o: { treeDir: string; lane: HelperLane; files: string[]; workers: number; env: NodeJS.ProcessEnv; signal: AbortSignal; onProgress?: (p: TesterProgress) => void }) => Promise<{ exitCode: number | null; reportText: string | null; unhandledErrors?: number; vitestStartMs?: number | null }>;
 
 /** Extract a ustar archive (regular files only) under `dir`. */
 export function extractTar(buf: Buffer, dir: string): number {
@@ -46,6 +49,7 @@ export class TestBypassDriver implements HelperSandboxDriver {
   private up = false;
   private exists = false;
   private readonly root: string;
+  private readonly packages = new Map<string, string>();
 
   constructor(private readonly o: { runSlice: BypassSliceRunner; root?: string }) {
     if (!process.env.VITEST) throw new Error('test-bypass is a test-only seam and cannot be constructed outside a test runner');
@@ -60,19 +64,38 @@ export class TestBypassDriver implements HelperSandboxDriver {
   async checks(): Promise<ContainmentReport> {
     return { ok: true, checks: [{ name: 'test-bypass', result: 'pass', detail: 'NO SANDBOX: on-host test-only seam' }], reason: null };
   }
-  async copyIn(treeId: string, tar: Readable): Promise<{ copyMs: number }> {
+  async imageIdentity(_size: SandboxSize): Promise<SandboxImageIdentity | null> {
+    return { imageDigest: 'test-bypass', settingsHash: 'test-bypass' };
+  }
+  async copyIn(treeId: string, tar: Readable, opts: { placed?: boolean } = {}): Promise<{ copyMs: number }> {
     const chunks: Buffer[] = [];
     for await (const c of tar) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c)));
+    if (!opts.placed) await this.removeTree(treeId);
     fs.mkdirSync(this.tree(treeId), { recursive: true });
     extractTar(Buffer.concat(chunks), this.tree(treeId));
     return { copyMs: 0 };
   }
-  async execAsBuilder(): Promise<{ exitCode: number | null }> { return { exitCode: 0 }; }
+  // The host seam installs nothing: a "package set" is only a remembered hash, so the helper's
+  // own bookkeeping (install once from merged code, verify before each use) runs as in production.
+  async verifyPackages(hash: string, manifestDigest: string): Promise<boolean> { return this.packages.get(hash) === manifestDigest; }
+  async packageVolumeReady(): Promise<boolean> { return true; }
+  async discardPackages(hash: string): Promise<void> { this.packages.delete(hash); }
+  async installPackages(hash: string): Promise<{ exitCode: number | null; manifestDigest: string | null }> {
+    const manifestDigest = crypto.createHash('sha256').update(`test-bypass:${hash}`).digest('hex');
+    this.packages.set(hash, manifestDigest);
+    return { exitCode: 0, manifestDigest };
+  }
+  async placePackages(treeId: string, hash: string, manifestDigest: string): Promise<void> {
+    if (this.packages.get(hash) !== manifestDigest) throw new Error('place failed: packages absent');
+    await this.removeTree(treeId);
+    fs.mkdirSync(this.tree(treeId), { recursive: true });
+  }
+  async build(): Promise<{ exitCode: number | null }> { return { exitCode: 0 }; }
   async sealTree(): Promise<void> { /* nothing to seal on the host seam */ }
-  async execAsTester(treeId: string, run: { files: string[]; workers: number; signal: AbortSignal }): Promise<TesterRun> {
+  async execAsTester(treeId: string, run: TesterRunSpec): Promise<TesterRun> {
     const home = path.join(this.root, 'home');
     fs.mkdirSync(home, { recursive: true });
-    const r = await this.o.runSlice({ treeDir: this.tree(treeId), files: run.files, workers: run.workers, env: { ...process.env, HOME: home, TMPDIR: home }, signal: run.signal });
+    const r = await this.o.runSlice({ treeDir: this.tree(treeId), lane: run.lane, files: run.files, workers: run.workers, env: { ...process.env, HOME: home, TMPDIR: home }, signal: run.signal, ...(run.onProgress ? { onProgress: run.onProgress } : {}) });
     return { rootDir: this.tree(treeId), exitCode: r.exitCode, resultText: r.reportText, unhandledErrors: r.unhandledErrors ?? 0, vitestStartMs: r.vitestStartMs ?? null };
   }
   async reap(): Promise<{ survivors: number }> { return { survivors: 0 }; }

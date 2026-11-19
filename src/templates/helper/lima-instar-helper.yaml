@@ -23,6 +23,11 @@ cpus: {{CPUS}}
 memory: "{{MEMORY_GB}}GiB"
 disk: "{{DISK_GB}}GiB"
 mounts: []
+# The package volume: its own disk file beside the VM's, so installed packages survive the daily
+# re-creation of the VM. Not a host folder. Left unformatted for the runner (pkg_mount).
+additionalDisks:
+  - name: "{{PKG_DISK}}"
+    format: false
 containerd:
   system: false
   user: false

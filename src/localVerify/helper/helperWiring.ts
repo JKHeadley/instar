@@ -7,6 +7,7 @@
  * service with its production seams (Lima on macOS, WSL inside Echo's distro on Windows, the
  * host-stats or owner-signal governor reader, GitHub's compare API, this machine's signer).
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,41 @@ import { MacOwnerLoadReader, WindowsOwnerSignalReader, windowsHelperDriveFreeByt
 import { BareCloneTreeSource, GitHubCompareChecker, secretStoreToken } from './hostTree.js';
 import type { HelperSandboxDriver } from './sandboxDriver.js';
 import { TestBypassDriver } from './testBypassDriver.js';
+import { computeHelperRunnerVersion } from './helperRunnerVersion.js';
+import type { HelperTarget } from './helperConfig.js';
+import type { HelperHereRequest } from './helperProtocol.js';
+
+/** The run machine's route for a helper's "I am here" (spec F "Asking the helper"). */
+export const HELPER_HERE_PATH = '/local-verify/helper-here';
+
+/**
+ * Send one signed "I am here" to the run machine, with the pool's Bearer token. Any failure
+ * (unreachable, refused, slow) reads as false; nothing here retries.
+ */
+export function makeHereSender(authToken: () => string | null, agentId: string, fetchImpl: typeof fetch = fetch): (target: HelperTarget, body: HelperHereRequest) => Promise<boolean> {
+  return async (target, body) => {
+    const token = authToken();
+    if (!token) return false;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 5_000);
+    try {
+      const r = await fetchImpl(`${target.url}${HELPER_HERE_PATH}`, { method: 'POST', signal: ac.signal, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'X-Instar-AgentId': agentId, 'Content-Type': 'application/json' } });
+      return r.status >= 200 && r.status < 300;
+    } catch {
+      return false; // @silent-fallback-ok: an unreachable run machine keeps its slower asking; the helper audits the miss
+    } finally {
+      clearTimeout(t);
+    }
+  };
+}
+
+/** sha256 of the helper's GitHub token, when it has one: all the sandbox property test is ever given of it. */
+export function credentialDigestsOf(token: () => string | null): () => string[] {
+  return () => {
+    const v = token();
+    return v ? [crypto.createHash('sha256').update(v).digest('hex')] : [];
+  };
+}
 
 export function isWslHost(readVersion: () => string | null = () => { try { return fs.readFileSync('/proc/version', 'utf-8'); } catch { return null; } }): boolean {
   if (process.platform !== 'linux') return false;
@@ -47,6 +83,7 @@ export function selectSandboxDriver(o: { platform: NodeJS.Platform; wsl: boolean
       installDir: process.env.INSTAR_HELPER_WSL_DIR || 'C:\\instar-helper\\distro',
       rootfsTar: process.env.INSTAR_HELPER_WSL_ROOTFS || 'C:\\instar-helper\\images\\instar-helper-rootfs.tar',
       rootfsTarLocal: process.env.INSTAR_HELPER_WSL_ROOTFS_LOCAL || '/mnt/c/instar-helper/images/instar-helper-rootfs.tar',
+      pkgVhd: process.env.INSTAR_HELPER_WSL_PKG_VHD || 'C:\\instar-helper\\images\\instar-helper-pkg.vhdx',
       signalFile: ownerSignalPath(),
     });
   }
@@ -86,6 +123,11 @@ export interface HelperRuntimeOpts {
    */
   sandbox?: 'test-bypass';
   testBypassDriver?: TestBypassDriver;
+  /**
+   * The "I am here" sender. Absent (as from server.ts, which passes only the live config and the
+   * state folder): built here from the live config's own token and agent name (makeHereSender).
+   */
+  announce?: HelperServiceDeps['announce'];
   /** TEST ONLY: replace individual seams. */
   overrides?: Partial<HelperServiceDeps>;
 }
@@ -107,17 +149,27 @@ export function buildHelperRuntime(o: HelperRuntimeOpts): HelperRuntime {
       if (svc) return svc;
       const wsl = isWslHost();
       const driver = o.sandbox === 'test-bypass' ? o.testBypassDriver! : selectSandboxDriver({ platform: process.platform, wsl, stateDir: o.stateDir });
+      const githubToken = secretStoreToken(o.stateDir);
       svc = new HelperService({
         config: readCfg,
         driver,
         ownerLoad: selectOwnerLoadReader(process.platform, wsl, driver),
-        github: new GitHubCompareChecker({ token: secretStoreToken(o.stateDir) }),
+        github: new GitHubCompareChecker({ token: githubToken }),
         trees: new BareCloneTreeSource(path.join(defaultHelperHome(), 'repo.git')),
         signer: loadMachineSigner(o.stateDir),
         keyLookup: () => identityKeyLookup(o.stateDir),
         stateDir: o.stateDir,
         helperVersion: getInstarVersion(),
+        // A hash of the runner and sandbox-driver source: what learned-list trials and evidence follow.
+        runnerVersion: computeHelperRunnerVersion(),
         hostFreeBytes: selectHostFreeBytes(process.platform, wsl),
+        // Only the DIGEST of the token ever goes near the sandbox (the property test at every start).
+        credentialDigests: credentialDigestsOf(githubToken),
+        // The signed "I am here" goes to the pinned run machine with the pool's own token, read when it is sent.
+        announce: o.announce ?? makeHereSender(
+          () => { const t = o.liveConfig.get<unknown>('authToken', null); return typeof t === 'string' && t.length > 0 ? t : null; },
+          String(o.liveConfig.get<unknown>('projectName', 'agent')),
+        ),
         audit: (e) => appendLocalVerifyAudit(auditPath, e, Date.now()),
         ...(o.overrides ?? {}),
       });

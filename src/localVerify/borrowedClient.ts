@@ -12,16 +12,31 @@ export interface HelperStatusView {
   paused: boolean;
   helperVersion: string;
   trees: Array<{ headSha: string; state: 'preparing' | 'ready' | 'failed'; prepMs: number | null; copyMs?: number | null; reason?: string }>;
-  learned: { entries: Array<{ file: string; retrialDue?: boolean; source?: string }>; eligibleCount: number; incompatible: boolean };
-  sandbox?: { ownerBusy?: boolean; containment?: { ok?: boolean; reason?: string | null } | null; startMs?: number | null; peakMemMb?: number | null };
+  /** `eligibleCount` and `incompatible` are the first design's; a version 2 helper no longer reports them (0 and false). */
+  learned: { entries: Array<{ file: string; retrialDue?: boolean; reason?: string }>; eligibleCount: number; incompatible: boolean };
+  /** Finished slices' signed answers the status answer carried (unparsed: the caller parses and verifies each). */
+  results: Array<{ seq: number; answer: unknown }>;
+  sandbox?: { ownerBusy?: boolean; containment?: { ok?: boolean; reason?: string | null } | null; startMs?: number | null; peakMemMb?: number | null; image?: { imageDigest?: unknown; settingsHash?: unknown } | null };
+  /** The helper's runner version (a hash of its runner and sandbox-driver source), when it names one. */
+  runnerVersion?: string;
+  /**
+   * The answer's body exactly as received, for the whole-status signature check
+   * (`verifyHelperStatus`). Not enumerable, so a view compares and serialises as before.
+   */
+  raw?: Record<string, unknown>;
 }
 
 export interface HelperClient {
   /** POST a signed slice or prepare request: the HTTP status and parsed body, or null on transport failure. */
   slice(h: HelperTarget, body: unknown, timeoutMs: number, signal?: AbortSignal): Promise<{ status: number; body: unknown } | null>;
-  cancel(h: HelperTarget, body: unknown, signal?: AbortSignal): Promise<{ status: number; body: unknown } | null>;
+  cancel(h: HelperTarget, body: unknown, signal?: AbortSignal, timeoutMs?: number): Promise<{ status: number; body: unknown } | null>;
   learned(h: HelperTarget, body: unknown, signal?: AbortSignal): Promise<{ status: number; body: unknown } | null>;
-  status(h: HelperTarget, signal?: AbortSignal): Promise<HelperStatusView | null>;
+  /**
+   * The helper's status. `query` narrows the finished slices it carries: one verify's, after a
+   * sequence number. `timeoutMs` is the request's limit (10 s when absent; the request made at the
+   * start of a verify passes 2 s, spec F "Asking the helper").
+   */
+  status(h: HelperTarget, signal?: AbortSignal, query?: { run?: string; since?: number }, timeoutMs?: number): Promise<HelperStatusView | null>;
 }
 
 export function parseHelperStatus(v: unknown): HelperStatusView | null {
@@ -30,18 +45,32 @@ export function parseHelperStatus(v: unknown): HelperStatusView | null {
   if (b.enabled !== true || typeof b.helperVersion !== 'string' || !Array.isArray(b.trees)) return null;
   const learned = b.learned as Record<string, unknown> | undefined;
   if (!learned || !Array.isArray(learned.entries)) return null;
-  return {
+  const view: HelperStatusView = {
     enabled: true,
     paused: b.paused === true,
     helperVersion: b.helperVersion,
+    ...(typeof b.runnerVersion === 'string' && b.runnerVersion.length <= 200 ? { runnerVersion: b.runnerVersion } : {}),
     trees: (b.trees as unknown[]).filter((t): t is HelperStatusView['trees'][number] => !!t && typeof (t as { headSha?: unknown }).headSha === 'string' && typeof (t as { state?: unknown }).state === 'string').slice(0, 10),
     learned: {
       entries: (learned.entries as unknown[]).filter((e): e is { file: string; retrialDue?: boolean } => !!e && typeof (e as { file?: unknown }).file === 'string').slice(0, 20_000),
       eligibleCount: typeof learned.eligibleCount === 'number' ? learned.eligibleCount : 0,
       incompatible: learned.incompatible === true,
     },
+    results: (Array.isArray(b.results) ? b.results as unknown[] : [])
+      .filter((r): r is { seq: number; answer: unknown } => !!r && typeof (r as { seq?: unknown }).seq === 'number' && Number.isSafeInteger((r as { seq: number }).seq))
+      .slice(0, HELPER_LIMITS.statusResultsMax).map((r) => ({ seq: r.seq, answer: r.answer })),
     ...(b.sandbox && typeof b.sandbox === 'object' ? { sandbox: b.sandbox as HelperStatusView['sandbox'] } : {}),
   };
+  Object.defineProperty(view, 'raw', { value: b, enumerable: false });
+  return view;
+}
+
+/** The sandbox image a status answer names, as one string (`<image digest>:<settings hash>`), or null when it names none. */
+export function statusImageIdentity(st: HelperStatusView): string | null {
+  const i = st.sandbox?.image;
+  if (!i || typeof i.imageDigest !== 'string' || typeof i.settingsHash !== 'string') return null;
+  if (i.imageDigest.length === 0 || i.imageDigest.length > 140 || i.settingsHash.length === 0 || i.settingsHash.length > 140) return null;
+  return `${i.imageDigest}:${i.settingsHash}`;
 }
 
 /** The largest helper answer the run machine reads: the 4 MB result cap plus the answer envelope. */
@@ -91,10 +120,13 @@ export function makeHelperClient(authToken: string, agentId: string, fetchImpl: 
   };
   return {
     slice: (h, body, timeoutMs, signal) => call(`${h.url}/local-verify/helper-slice`, { method: 'POST', body: JSON.stringify(body) }, timeoutMs, signal),
-    cancel: (h, body, signal) => call(`${h.url}/local-verify/helper-slice/cancel`, { method: 'POST', body: JSON.stringify(body) }, 15_000, signal),
+    cancel: (h, body, signal, timeoutMs) => call(`${h.url}/local-verify/helper-slice/cancel`, { method: 'POST', body: JSON.stringify(body) }, timeoutMs ?? 15_000, signal),
     learned: (h, body, signal) => call(`${h.url}/local-verify/helper-learned`, { method: 'POST', body: JSON.stringify(body) }, 15_000, signal),
-    async status(h, signal) {
-      const r = await call(`${h.url}/local-verify/helper-status`, { method: 'GET' }, 10_000, signal);
+    async status(h, signal, query, timeoutMs) {
+      const qs = new URLSearchParams();
+      if (query?.run) qs.set('run', query.run);
+      if (query?.since !== undefined) qs.set('since', String(query.since));
+      const r = await call(`${h.url}/local-verify/helper-status${qs.size > 0 ? `?${qs.toString()}` : ''}`, { method: 'GET' }, timeoutMs ?? 10_000, signal);
       return r && r.status === 200 ? parseHelperStatus(r.body) : null;
     },
   };

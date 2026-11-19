@@ -1,31 +1,32 @@
 /**
- * The run machine's borrowed-helper state (docs/specs/local-verify-borrowed-unit-slices.md, F):
- * `state/local-verify/borrowed-helpers.json` keeps ONLY each helper's breaker state and rolling
- * counters for its last 50 runs. Machine-local, rebuildable, not backed up.
+ * The practice record (docs/specs/local-verify-borrowed-slices-count.md, F "The practice record"):
+ * one file on the pairing run machine, `state/local-verify/borrowed-helpers.json`. Per helper and
+ * lane it holds the four evidence items, the state (`practice`, `counting`, `suspended`,
+ * `lapsed: <reason>`), the image and runner version they belong to, the practice period's start
+ * and the recorded decision to count. It DECIDES WHETHER A HELPER'S PASSES COUNT.
  *
- * Unreachable helpers: a helper that does not answer, or answers with a bad signature, three runs
- * in a row is skipped. The wait doubles from 30 min up to 8 h and resets on the first good answer.
- * The degradation is reported once (`helper-unreachable since <t>`), not on every probe.
+ * Per helper it also holds how often the helper is asked (borrowedAsk.ts), the spot re-run rate,
+ * a recorded dry-run request (the dry-run task of stage 6 consumes it) and the main-verify
+ * observer's rolling counters. Beside the helpers: the helper events of this machine and the ids
+ * a coordinator has already told someone about (borrowedNotices.ts).
+ *
+ * A lost or unreadable file means practice from the start, by intent: the same holds for a file of
+ * the first design (version 1) and for any single lane that does not read strictly.
+ * The rules are in borrowedPractice.ts; this file is the I/O.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { BORROWED_PLAN, p90 } from './borrowedPlan.js';
+import { freshAsk, parseAsk, type AskState } from './borrowedAsk.js';
+import { HELPER_EVENT_LIMITS, parseHelperEvent, type HelperEvent } from './borrowedNotices.js';
+import { PRACTICE_LANES, freshLane, parseLane, type LaneRecord, type PracticeLane, type SpotState } from './borrowedPractice.js';
 
-export const BORROWED_BREAKER = Object.freeze({ badRunsToSkip: 3, firstWaitMs: 30 * 60_000, maxWaitMs: 8 * 60 * 60_000, keepRuns: 50 });
-
-export interface HelperBreaker {
-  consecutiveBad: number;
-  skipUntil: number | null;
-  /** The wait the NEXT opening uses. */
-  nextWaitMs: number;
-  unreachableSince: number | null;
-  reported: boolean;
-}
+export const BORROWED_STATE = Object.freeze({ keepRuns: 50, version: 2 });
 
 export interface HelperRunSummary {
   at: number;
-  /** At least one finished slice: only these runs count toward the 20-run report and the measured figures. */
+  /** At least one finished slice: only these runs count toward the measured figures. */
   counted: boolean;
   slicesSent: number;
   done: number;
@@ -37,34 +38,23 @@ export interface HelperRunSummary {
   vitestStartMs: number | null;
 }
 
-export interface HelperState { breaker: HelperBreaker; runs: HelperRunSummary[] }
-
-export const freshBreaker = (): HelperBreaker => ({ consecutiveBad: 0, skipUntil: null, nextWaitMs: BORROWED_BREAKER.firstWaitMs, unreachableSince: null, reported: false });
-
-/** True while the breaker says skip this helper. */
-export function helperSkipped(b: HelperBreaker, now: number): boolean {
-  return b.skipUntil !== null && now < b.skipUntil;
+/** A recorded request to dry-run a helper. The dry-run task (stage 6 of the rework) consumes it. */
+export interface DryRunIntent {
+  requestedAt: number;
+  lanes: PracticeLane[];
+  by: string | null;
+  state: 'requested' | 'stopped';
 }
 
-/**
- * Record one run's outcome. `bad` = no answer or a bad signature. Returns whether the breaker
- * opened now and whether the degradation should be reported now (once per outage).
- */
-export function noteHelperOutcome(b: HelperBreaker, outcome: 'good' | 'bad', now: number): { opened: boolean; reportNow: boolean; recovered: boolean } {
-  if (outcome === 'good') {
-    const recovered = b.unreachableSince !== null;
-    Object.assign(b, freshBreaker());
-    return { opened: false, reportNow: false, recovered };
-  }
-  b.consecutiveBad++;
-  if (b.unreachableSince === null) b.unreachableSince = now;
-  if (b.consecutiveBad < BORROWED_BREAKER.badRunsToSkip) return { opened: false, reportNow: false, recovered: false };
-  b.skipUntil = now + b.nextWaitMs;
-  b.nextWaitMs = Math.min(BORROWED_BREAKER.maxWaitMs, b.nextWaitMs * 2);
-  const reportNow = !b.reported;
-  b.reported = true;
-  return { opened: true, reportNow, recovered: false };
+export interface HelperState {
+  ask: AskState;
+  spot: SpotState;
+  lanes: Partial<Record<PracticeLane, LaneRecord>>;
+  runs: HelperRunSummary[];
+  dryRunIntent: DryRunIntent | null;
 }
+
+export const freshHelper = (): HelperState => ({ ask: freshAsk(), spot: { raisedVerifiesLeft: 0 }, lanes: {}, runs: [], dryRunIntent: null });
 
 /** Measured throughput (local file-seconds per helper-second) after 5 counted runs, else null. */
 export function measuredThroughput(runs: readonly HelperRunSummary[]): number | null {
@@ -80,38 +70,116 @@ export function measuredPrepP90(runs: readonly HelperRunSummary[]): number | nul
   return c.length >= BORROWED_PLAN.measuredAfterRuns ? p90(c) : null;
 }
 
-export class BorrowedHelpersStore {
-  private readonly file: string;
-  private data: { v: 1; helpers: Record<string, HelperState> };
+const MACHINE_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+function parseIntent(v: unknown): DryRunIntent | null {
+  const x = v as Partial<DryRunIntent> | null;
+  if (!x || typeof x !== 'object') return null;
+  if (typeof x.requestedAt !== 'number' || !Number.isSafeInteger(x.requestedAt) || x.requestedAt < 0) return null;
+  if (!Array.isArray(x.lanes) || x.lanes.length < 1 || x.lanes.length > 3 || !x.lanes.every((l) => (PRACTICE_LANES as readonly unknown[]).includes(l))) return null;
+  if (!(x.by === null || (typeof x.by === 'string' && x.by.length <= 200))) return null;
+  if (x.state !== 'requested' && x.state !== 'stopped') return null;
+  return { requestedAt: x.requestedAt, lanes: [...new Set(x.lanes)], by: x.by, state: x.state };
+}
+
+/** One helper's stored state. A lane that does not read strictly is dropped (practice from the start for it). */
+export function parseHelperState(v: unknown): HelperState {
+  const h = freshHelper();
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return h;
+  const x = v as Record<string, unknown>;
+  h.ask = parseAsk(x.ask);
+  const left = (x.spot as { raisedVerifiesLeft?: unknown } | null)?.raisedVerifiesLeft;
+  if (typeof left === 'number' && Number.isSafeInteger(left) && left >= 0 && left <= 1000) h.spot = { raisedVerifiesLeft: left };
+  if (x.lanes && typeof x.lanes === 'object' && !Array.isArray(x.lanes)) {
+    for (const lane of PRACTICE_LANES) {
+      const parsed = parseLane((x.lanes as Record<string, unknown>)[lane]);
+      if (parsed) h.lanes[lane] = parsed;
+    }
+  }
+  if (Array.isArray(x.runs)) h.runs = (x.runs as HelperRunSummary[]).filter((r) => !!r && typeof r === 'object' && typeof r.at === 'number').slice(-BORROWED_STATE.keepRuns);
+  h.dryRunIntent = parseIntent(x.dryRunIntent);
+  return h;
+}
+
+interface StoreFile { v: 2; helpers: Record<string, HelperState>; events: HelperEvent[]; told: string[] }
+
+export class BorrowedPracticeStore {
+  readonly file: string;
+  private data: StoreFile;
+  /** Why the file was not used at load (`absent`, `unreadable`, `version`), or null when it was read. */
+  readonly loadedFresh: 'absent' | 'unreadable' | 'version' | null;
 
   constructor(stateDir: string) {
     this.file = path.join(stateDir, 'state', 'local-verify', 'borrowed-helpers.json');
-    this.data = { v: 1, helpers: {} };
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file, 'utf-8')) as { v?: unknown; helpers?: unknown };
-      if (raw.v === 1 && raw.helpers && typeof raw.helpers === 'object') {
-        for (const [id, h] of Object.entries(raw.helpers as Record<string, Partial<HelperState>>)) {
-          if (!h || typeof h !== 'object') continue;
-          this.data.helpers[id] = { breaker: { ...freshBreaker(), ...(h.breaker ?? {}) }, runs: Array.isArray(h.runs) ? h.runs.slice(-BORROWED_BREAKER.keepRuns) : [] };
+    this.data = { v: 2, helpers: {}, events: [], told: [] };
+    let why: 'absent' | 'unreadable' | 'version' | null = null;
+    let text: string | null = null;
+    try { text = fs.readFileSync(this.file, 'utf-8'); } catch { why = 'absent'; } // @silent-fallback-ok: no file is practice from the start
+    if (text !== null) {
+      try {
+        const raw = JSON.parse(text) as { v?: unknown; helpers?: unknown; events?: unknown; told?: unknown };
+        if (raw.v !== BORROWED_STATE.version || !raw.helpers || typeof raw.helpers !== 'object' || Array.isArray(raw.helpers)) {
+          why = 'version';
+        } else {
+          for (const [id, h] of Object.entries(raw.helpers as Record<string, unknown>)) {
+            if (MACHINE_ID_RE.test(id)) this.data.helpers[id] = parseHelperState(h);
+          }
+          if (Array.isArray(raw.events)) this.data.events = raw.events.map(parseHelperEvent).filter((e): e is HelperEvent => e !== null).slice(-HELPER_EVENT_LIMITS.kept);
+          if (Array.isArray(raw.told)) this.data.told = raw.told.filter((t): t is string => typeof t === 'string' && /^[0-9a-f]{32}$/.test(t)).slice(-HELPER_EVENT_LIMITS.kept * 2);
         }
-      }
-    } catch { /* @silent-fallback-ok: absent or unreadable state is rebuilt (breakers closed, counters empty) */ }
+      } catch { why = 'unreadable'; } // @silent-fallback-ok: an unreadable file is practice from the start, by intent
+    }
+    this.loadedFresh = why;
   }
 
   get(machineId: string): HelperState {
     let h = this.data.helpers[machineId];
-    if (!h) { h = { breaker: freshBreaker(), runs: [] }; this.data.helpers[machineId] = h; }
+    if (!h) { h = freshHelper(); this.data.helpers[machineId] = h; }
     return h;
+  }
+
+  /** The helper ids the file holds. */
+  helperIds(): string[] { return Object.keys(this.data.helpers); }
+
+  /** A lane's record, created in practice (from `now`) when the helper has none yet. */
+  lane(machineId: string, lane: PracticeLane, now: number): LaneRecord {
+    const h = this.get(machineId);
+    let l = h.lanes[lane];
+    if (!l) { l = freshLane(now); h.lanes[lane] = l; }
+    return l;
+  }
+
+  /** A lane's record when one exists; never creates. */
+  peekLane(machineId: string, lane: PracticeLane): LaneRecord | null {
+    return this.data.helpers[machineId]?.lanes[lane] ?? null;
+  }
+
+  setLane(machineId: string, lane: PracticeLane, record: LaneRecord): void {
+    this.get(machineId).lanes[lane] = record;
   }
 
   addRun(machineId: string, run: HelperRunSummary): void {
     const h = this.get(machineId);
-    h.runs = [...h.runs, run].slice(-BORROWED_BREAKER.keepRuns);
+    h.runs = [...h.runs, run].slice(-BORROWED_STATE.keepRuns);
+  }
+
+  events(): HelperEvent[] { return this.data.events.map((e) => ({ ...e })); }
+
+  addEvent(e: HelperEvent): void {
+    this.data.events = [...this.data.events, e].slice(-HELPER_EVENT_LIMITS.kept);
+  }
+
+  told(): Set<string> { return new Set(this.data.told); }
+
+  markTold(ids: readonly string[]): void {
+    const set = new Set(this.data.told);
+    for (const id of ids) set.add(id);
+    this.data.told = [...set].slice(-HELPER_EVENT_LIMITS.kept * 2);
   }
 
   save(): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    SafeFsExecutor.atomicWriteJsonSync(this.file, this.data, { operation: 'local-verify:borrowed-helpers' });
+    SafeFsExecutor.atomicWriteJsonSync(this.file, this.data, { operation: 'local-verify:borrowed-helpers' }); /* state-registry: local-verify-borrowed-helpers */
   }
 
   snapshot(): Record<string, HelperState> {

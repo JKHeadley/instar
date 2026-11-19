@@ -205,6 +205,13 @@ export interface VerifyRunInput {
   /** True only for an automatic watcher candidate that can be rediscovered after a lease move. */
   preflightRediscoverable?: boolean;
   /**
+   * A `main` verify only: also report each test file's counts and its names-and-outcomes digest
+   * (`fileCounts` in the result), for the baseline results of borrowed helpers (spec
+   * local-verify-borrowed-slices-count.md, F "Baseline results"). Absent: the lane reports are
+   * parsed exactly as before and the result carries no such field.
+   */
+  fileCounts?: true;
+  /**
    * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service),
    * and the per-machine unit-lane worker count `unitWorkers` (1..MAX_UNIT_WORKERS).
    * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards` / `unitWorkersParallel`.
@@ -273,6 +280,12 @@ export type VerifyRunResult = (
      * the record names (the same names, nothing more). The service stores it with the evidence.
      */
     flakyTestLines?: Record<string, Array<{ test: string; line: string; lineCut?: true }>>;
+    /**
+     * `main` verifies asked for it (`input.fileCounts`): file → [passed, failed, skipped, to-do,
+     * names-and-outcomes digest], for every file that ran clean in its lane (a file that failed
+     * there has no row, even when it passed alone afterwards). The server keeps it only from a green verify.
+     */
+    fileCounts?: Record<string, [number, number, number, number, string]>;
   }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] }
@@ -449,6 +462,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const flakyRetried: FlakyRetry[] = [];
   const importRelatedRefusals: ImportRelatedRefusal[] = [];
   const flakyTestLines: Record<string, Array<{ test: string; line: string; lineCut?: true }>> = {};
+  /** Only with `input.fileCounts` on a `main` verify: each clean file's counts and digest (the baseline results). */
+  const wantFileCounts = input.kind === 'main' && input.fileCounts === true;
+  const mainFileCounts: Record<string, [number, number, number, number, string]> = {};
   const firstMessages = new Map<string, string>();
   const rerunMessages = new Map<string, string>();
   let rerunBudget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
@@ -699,7 +715,15 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
         if (text != null) {
-          try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
+          try { report = parseVitestJson(text, p.runDir, wantFileCounts ? { outcomeDigest: true } : {}); } catch { report = null; }
+          if (report && wantFileCounts) {
+            // The digest is taken aside and removed again, so the lane report every later step
+            // reads is exactly the one it would have been without the option.
+            for (const [f, c] of report.files) {
+              if (c.failed === 0 && typeof c.outcomeDigest === 'string') mainFileCounts[f] = [c.passed, c.failed, c.skipped, c.todo, c.outcomeDigest];
+              delete c.outcomeDigest;
+            }
+          }
         }
         const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
         return { report, status: r.status, unhandled, aborted: false };
@@ -867,6 +891,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures, ...(flakyRetried.length ? { flakyRetried } : {}),
     ...(isolationRefusals ? { isolationRefusals } : {}),
     ...(input.kind === 'main' && Object.keys(flakyTestLines).length > 0 ? { flakyTestLines } : {}),
+    ...(wantFileCounts ? { fileCounts: mainFileCounts } : {}),
   };
 
   // ── helpers (closures over the run) ──

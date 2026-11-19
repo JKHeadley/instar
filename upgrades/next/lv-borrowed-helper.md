@@ -29,7 +29,7 @@ New state files: `state/local-verify/borrowed-helpers.json` (run machine: breake
 
 | Capability | How to Use |
 |-----------|-----------|
-| Helper role on a lent machine (dark) | Its own agent sets `monitoring.localVerify.helper` (`enabled`, `pinnedRepoUrl`, `pinnedRequesters`, optional `reserveCores`, `stopOnBattery`, `sandbox`) after the owner's yes |
+| Helper role on a lent machine (dark) | Its own agent sets `monitoring.localVerify.helper` (`enabled`, `pinnedRepoUrl`, `pinnedRequester: { machineId, url }`, optional `reserveCores`, `stopOnBattery`, `sandbox`) after the owner's yes |
 | Helper state | `GET /local-verify/helper-status` (404 while off) |
 | Owner pause / resume / removal | `instar helper pause`, `instar helper resume`, `instar helper uninstall --yes`, or `POST /local-verify/helper-pause {"paused": true}` |
 | Shadow comparison on a run machine (dark) | `monitoring.localVerify.borrowed = { mode: 'shadow', helpers: [...] }`; read `borrowed` in `GET /local-verify` and `borrowed-shadow` rows in `logs/local-verify.jsonl` |

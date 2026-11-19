@@ -26932,9 +26932,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
             // Borrowed helpers, run-machine side (local-verify-borrowed-unit-slices F): a passive shadow on this
             // machine's own main verifies; inert unless monitoring.localVerify.borrowed.mode is 'shadow' (read live).
-            await wiring.wireBorrowedShadow(svc, {
+            // Amended (local-verify-borrowed-slices-count F): the same wiring also builds the run machine's side — the practice
+            // record, the asking rate, the loopback proxy for the verify child, the baseline results and the helper events.
+            await wiring.wireBorrowedRunMachine(svc, {
               liveConfig, stateDir: config.stateDir, agentHome: path.dirname(config.stateDir), machineId: lvMachineId,
               authToken: String(config.authToken ?? ''), agentId: config.projectName, version: getInstarVersion(),
+              // Only the coordinator sends helper notices and keeps baseline results; a single machine is its own coordinator.
+              lease: coordinator.enabled ? { holdsLease: () => coordinator.holdsLease() } : null,
+              hooks: lvHooks,
+              // The decision to count is also a row in the maturation ladder's evidence log.
+              evidence: (row) => { featureEvidence.record('local-verify-borrowed-unit-slices', row); },
             });
             const diagnosisTransport = await import('../localVerify/failedFileDiagnosisClient.js');
             await svc.wireFailedFileDiagnosis(

@@ -2,8 +2,23 @@
  * HTTP surface for local-verify (spec docs/specs/local-verify-merge-authority.md §2).
  *
  *   POST /local-verify          body { "pr": <positive integer> } and nothing else
- *   GET  /local-verify          queue, in-flight run and record count; `borrowed` = the
- *                               borrowed-helper shadow summary (docs/specs/local-verify-borrowed-unit-slices.md, G)
+ *   GET  /local-verify          queue, in-flight run and record count; `borrowed` = the borrowed
+ *                               mode and, per helper and lane, the state, each evidence item's
+ *                               progress, the last verify's share and how much the helper
+ *                               finished (docs/specs/local-verify-borrowed-slices-count.md, G)
+ *   GET  /local-verify/borrowed          the same `borrowed` summary on any run machine (a peer's
+ *                                        practice record lives on the peer; not lease-gated)
+ *   POST /local-verify/borrowed/decision { helper, lane, reason, sevenDayException?, by? }: record the
+ *                                        decision to count; refused (409) when the admission rule does not hold
+ *   POST /local-verify/borrowed/dry-run  { helper, lanes?, action?, by? }: record a dry-run request
+ *                                        (the dry-run task that consumes it is a later stage)
+ *   POST /local-verify/helper-here       the paired helper's signed "I am here"
+ *   POST /local-verify/borrowed-proxy    LOOPBACK ONLY, authenticated by a running verify's attempt
+ *                                        token (header X-Instar-Attempt-Token) in place of the Bearer
+ *                                        credential: the verify child's way to its helper. The commits,
+ *                                        the lanes' states and the helper come from the server's record
+ *                                        of that verify, never from the request
+ *   POST /local-verify/peer-baseline     the coordinator's baseline results, stored by a peer
  *   GET  /local-verify/record   ?pr=&head=&base=  the record for one key, or 404
  *   POST /local-verify/peer-run     a coordinator hands this machine one PR verify (Part D of
  *                                   docs/specs/local-verify-capacity.md); refused on the lease holder
@@ -27,6 +42,16 @@ import { parsePeerRunRequest } from './peer.js';
 import { parseDiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
 import { ATTEMPT_ID_RE } from './record.js';
 import type { StatusReconciler } from './StatusReconciler.js';
+import type { BorrowedRouteFacts } from './mainRunObserver.js';
+
+/** The loopback proxy's path and token header (the auth middleware lets exactly this method and path through to the route's own checks). */
+export const BORROWED_PROXY_PATH = '/local-verify/borrowed-proxy';
+export const BORROWED_PROXY_TOKEN_HEADER = 'x-instar-attempt-token';
+
+/** What the borrowed routes may know about how a request arrived. */
+export function borrowedRouteFacts(req: Request): BorrowedRouteFacts {
+  return { cfConnectingIp: req.headers['cf-connecting-ip'], forwardedFor: req.headers['x-forwarded-for'], remoteAddress: req.socket?.remoteAddress };
+}
 
 export interface LocalVerifyRouteDeps {
   service: () => LocalVerifyService | null;
@@ -120,7 +145,7 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
     const svc = gate(res);
     if (!svc) return;
     // borrowed: the borrowed-helper shadow (mode, helpers, last shadow summaries, learned lists); null when not wired.
-    res.json({ ...svc.snapshot(), diagnosis: svc.diagnosisSummary(), borrowed: svc.mainRunObserverInfo() });
+    res.json({ ...svc.snapshot(), diagnosis: svc.diagnosisSummary(), borrowed: svc.borrowedInfo() });
   });
 
   router.get('/local-verify/status', (_req: Request, res: Response) => {
@@ -223,6 +248,70 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
       return;
     }
     res.json(svc.peerCancel(id));
+  });
+
+  // ---- borrowed helpers, run-machine side (docs/specs/local-verify-borrowed-slices-count.md, F). ----
+  // The practice record lives on the helper's PAIRING run machine, which may be a peer, so these
+  // are served like the peer routes: by any machine whose service is built, lease holder or not.
+  // Each answers 404 while the borrowed setting is absent (the seam itself says so).
+  const notFound = (res: Response) => { res.status(404).json({ error: 'not found' }); };
+
+  router.get('/local-verify/borrowed', (_req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    res.json({ borrowed: svc.borrowedInfo() });
+  });
+
+  router.post('/local-verify/borrowed/decision', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const seam = svc.borrowedRunSeam();
+    if (!seam) { notFound(res); return; }
+    try { const a = seam.decide(req.body); res.status(a.status).json(a.body); }
+    catch (e) { res.status(500).json({ ok: false, code: 'borrowed-error', detail: String(e instanceof Error ? e.message : e).slice(0, 200) }); }
+  });
+
+  router.post('/local-verify/borrowed/dry-run', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const seam = svc.borrowedRunSeam();
+    if (!seam) { notFound(res); return; }
+    try { const a = seam.dryRun(req.body); res.status(a.status).json(a.body); }
+    catch (e) { res.status(500).json({ ok: false, code: 'borrowed-error', detail: String(e instanceof Error ? e.message : e).slice(0, 200) }); }
+  });
+
+  router.post('/local-verify/helper-here', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const seam = svc.borrowedRunSeam();
+    if (!seam) { notFound(res); return; }
+    try { const a = seam.helperHere(req.body, borrowedRouteFacts(req)); res.status(a.status).json(a.body); }
+    catch (e) { res.status(500).json({ ok: false, reason: 'borrowed-error', detail: String(e instanceof Error ? e.message : e).slice(0, 200) }); }
+  });
+
+  // The verify child's way to its helper. NOT behind the Bearer credential (the child holds none):
+  // the route answers only on loopback, refuses anything that came through the tunnel or another
+  // forwarder, and requires the attempt token of a verify that is running right now. Any failure
+  // past those checks reads as "no helper answer": the child then runs the files itself.
+  router.post(BORROWED_PROXY_PATH, async (req: Request, res: Response) => {
+    const svc = deps.service();
+    const seam = svc ? svc.borrowedRunSeam() : null;
+    if (!svc || !seam) { notFound(res); return; }
+    const token = req.headers[BORROWED_PROXY_TOKEN_HEADER];
+    try {
+      const a = await seam.proxy(typeof token === 'string' ? token : undefined, req.body, borrowedRouteFacts(req));
+      res.status(a.status).json(a.body);
+    } catch {
+      res.status(200).json({ ok: false, reason: 'no-helper-answer' }); // @silent-fallback-ok: the proxy can never hold or break a lane; the child runs the files itself
+    }
+  });
+
+  router.post('/local-verify/peer-baseline', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const ctx = leaseCtx();
+    const a = svc.peerBaseline(req.body, { holdsLease: ctx.holdsLease, holderMachineId: ctx.holderMachineId });
+    res.status(a.status).json(a.body);
   });
 
   router.get('/local-verify/peer-diagnosis-status', (_req: Request, res: Response) => {

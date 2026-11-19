@@ -1,5 +1,6 @@
 #!/bin/bash
-# The in-sandbox half of the B2 checks (docs/specs/local-verify-borrowed-unit-slices.md, B2 "Checks").
+# The in-sandbox half of the start-up checks (docs/specs/local-verify-borrowed-unit-slices.md, B2
+# "Checks"; docs/specs/local-verify-borrowed-slices-count.md, B2 amended and "Tests", sandbox property).
 # Installed at /usr/local/sbin/instar-helper-checks (root:root 0755), run as root by the owner
 # service at every sandbox start through `instar-helper-runner checks …`. Prints one line per check:
 #   CHECK <name> <pass|fail> [detail]
@@ -13,14 +14,20 @@ set -uo pipefail
 RUNNER=/usr/local/sbin/instar-helper-runner
 BUILDER_UID=61001
 TESTER_UID=61002
-HOST_LOOP_PORT=0; HOST_ANY_PORT=0; IFACE_ADDR=none; IFACE_PORT=0; MARKER=""; FWD_PORTS=""; WSL=0
+PROBE=/usr/local/lib/instar-helper/property-probe.cjs
+HOST_LOOP_PORT=0; HOST_ANY_PORT=0; IFACE_ADDR=none; IFACE_PORT=0; TAILNET_ADDR=none; TAILNET_PORT=0
+MARKER=""; OWNER_USER=none; DIGESTS=none; FWD_PORTS=""; WSL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --host-loopback-port) HOST_LOOP_PORT="$2"; shift 2 ;;
     --host-any-port) HOST_ANY_PORT="$2"; shift 2 ;;
     --host-iface-addr) IFACE_ADDR="$2"; shift 2 ;;
     --host-iface-port) IFACE_PORT="$2"; shift 2 ;;
+    --host-tailnet-addr) TAILNET_ADDR="$2"; shift 2 ;;
+    --host-tailnet-port) TAILNET_PORT="$2"; shift 2 ;;
     --owner-marker) MARKER="$2"; shift 2 ;;
+    --owner-user) OWNER_USER="$2"; shift 2 ;;
+    --credential-digests) DIGESTS="$2"; shift 2 ;;
     --forward-probe-ports) FWD_PORTS="$2"; shift 2 ;;
     --wsl) WSL=1; shift ;;
     *) shift ;;
@@ -48,7 +55,17 @@ if [ -n "$gateway" ]; then in_testns node -e "$CONNECT" "$gateway" "$HOST_ANY_PO
 if [ "$IFACE_ADDR" != none ]; then in_testns node -e "$CONNECT" "$IFACE_ADDR" "$IFACE_PORT"; r=$?; else r=0; fi
 [ $r -ne 0 ] && [ "$IFACE_ADDR" != none ]; check testns-no-route-lan $?
 [ "$WSL" = 1 ] && { [ $r -ne 0 ] && [ "$IFACE_ADDR" != none ]; check testns-no-route-echo-distro $?; }
-in_testns node -e "$CONNECT" 100.100.100.100 53; r=$?; [ $r -ne 0 ]; check testns-no-route-tailnet $?
+# The paired test's sandbox half (B2, amended): a listener the helper service just opened on the
+# host's TAILNET address must not answer from inside a test namespace. The host reports this check
+# only beside that listener answering from the host side; with no tailnet address it is not reported.
+if [ "$TAILNET_ADDR" != none ]; then in_testns node -e "$CONNECT" "$TAILNET_ADDR" "$TAILNET_PORT"; r=$?; [ $r -ne 0 ]; check testns-no-route-tailnet-listener $?; fi
+# The dummy interface: present with its private address, as tests see it; and nothing is a default route.
+in_testns node -e 'const a=(require("os").networkInterfaces().dummy0||[]).find(x=>x.family==="IPv4");process.exit(a&&a.address==="10.77.0.2"&&a.netmask==="255.255.255.0"&&!a.internal?0:1)'
+check testns-dummy-iface-present $?
+# `ip` prints a line for each default route and nothing when there is none; its own error text
+# (a missing tool, a refused netlink read) is output too, so anything but silence fails the check.
+in_testns bash -c 'IP="$(PATH=/usr/sbin:/usr/bin:/sbin:/bin command -v ip)" && [ -n "$IP" ] && [ -z "$("$IP" -4 route show default 2>&1)" ] && [ -z "$("$IP" -6 route show default 2>&1)" ]'
+check testns-no-default-route $?
 in_testns node -e "$CONNECT" 2606:4700:4700::1111 443; r=$?; [ $r -ne 0 ]; check testns-no-route-ipv6 $?
 in_testns node -e 'const n=require("net");const s=n.createServer(c=>c.end("ok")).listen(0,"127.0.0.1",()=>{n.connect(s.address().port,"127.0.0.1").on("data",()=>process.exit(0)).on("error",()=>process.exit(1))});setTimeout(()=>process.exit(1),3000)'
 check testns-own-loopback-works $?
@@ -62,6 +79,7 @@ in_builder node -e "$CONNECT" 127.0.0.1 "$HOST_LOOP_PORT" && blocked=1
 [ -n "$gateway" ] && in_builder node -e "$CONNECT" "$gateway" "$HOST_ANY_PORT" && blocked=1
 [ "$IFACE_ADDR" != none ] && in_builder node -e "$CONNECT" "$IFACE_ADDR" "$IFACE_PORT" && blocked=1
 in_builder node -e "$CONNECT" 100.100.100.100 53 && blocked=1
+[ "$TAILNET_ADDR" != none ] && in_builder node -e "$CONNECT" "$TAILNET_ADDR" "$TAILNET_PORT" && blocked=1
 in_builder node -e "$CONNECT" 2606:4700:4700::1111 443 && blocked=1
 check builder-blocked-host $blocked
 after="$(drops)"
@@ -102,6 +120,39 @@ if [ -n "$FWD_PORTS" ]; then
 else
   check forward-listener-testns-up 1 "no probe ports"
   check forward-listener-guest-up 1 "no probe ports"
+fi
+
+# The sandbox property test (a condition of the design's approval): as tester and as builder, each
+# in the view its own code runs in, no host path is readable and no host credential is reachable.
+# The probe (root's own file, outside every tree) prints one PROBE line per facet and one for its
+# positive control: it plants a marker file, a credential variable, a secret-store folder and a
+# socket in its own scratch space and must FIND each. A facet passes only when the control passed
+# and the facet found nothing; a probe that could not run reports nothing, which the host reads as
+# unrunnable (refuse).
+probe_as() { # $1 = user label, $2 = ns-exec view, $3 = uid
+  local out
+  out="$("$RUNNER" ns-exec "$2" "$3" -- node "$PROBE" --marker "${MARKER:-none}" --owner-user "$OWNER_USER" --digests "$DIGESTS" 2>/dev/null)"
+  if ! grep -q '^PROBE control ok$' <<<"$out"; then
+    for f in no-host-path-readable no-github-token no-secret-store no-agent-socket; do
+      check "$1-$f" 1 "no positive control: $(grep '^PROBE control' <<<"$out" | head -1 | cut -c1-200)"
+    done
+    return
+  fi
+  local f line
+  for f in no-host-path-readable no-github-token no-secret-store no-agent-socket; do
+    line="$(grep "^PROBE $f " <<<"$out" | head -1)"
+    if [ "$line" = "PROBE $f ok" ]; then check "$1-$f" 0; else check "$1-$f" 1 "$(cut -c1-200 <<<"${line:-not reported}")"; fi
+  done
+}
+probe_as tester testns "$TESTER_UID"
+probe_as builder builderview "$BUILDER_UID"
+# The same credential test on what the host's control channel handed THIS script (root's own
+# environment and command line): nothing credential-like may ride it.
+ctl="$(node "$PROBE" --env-only --digests "$DIGESTS" 2>/dev/null)"
+if grep -q '^PROBE control ok$' <<<"$ctl" && grep -q '^PROBE no-github-token ok$' <<<"$ctl" && grep -q '^PROBE no-agent-socket ok$' <<<"$ctl"; then
+  check control-channel-env-clean 0
+else
+  check control-channel-env-clean 1 "$(grep -v ' ok$' <<<"$ctl" | head -1 | cut -c1-200)"
 fi
 
 # Users and limits.

@@ -119,7 +119,7 @@ describe('borrowed helper lifecycle (production wiring, test-bypass seam)', () =
     const url = await listen(ctx(helperDir, runtime));
     const H = { Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'echo' };
     expect((await request(url).get('/local-verify/helper-status').set(H)).status).toBe(404);
-    helperCfg = { enabled: true, pinnedRepoUrl: 'https://github.com/JKHeadley/instar', pinnedRequesters: [RUN_ID] };
+    helperCfg = { enabled: true, pinnedRepoUrl: 'https://github.com/JKHeadley/instar', pinnedRequester: { machineId: RUN_ID, url: 'http://127.0.0.1:1' } };
     const alive = await request(url).get('/local-verify/helper-status').set(H);
     expect(alive.status).toBe(200);
     expect(alive.body).toMatchObject({ enabled: true, paused: false, sandbox: { kind: 'test-bypass' } });
@@ -136,7 +136,7 @@ describe('borrowed helper lifecycle (production wiring, test-bypass seam)', () =
     const github = new FakeGitHub();
     github.onMain.set(HEAD, true);
     const runtime = buildHelperRuntime({
-      liveConfig: { get: <T>(k: string, fb: T): T => (k === 'monitoring.localVerify.helper' ? { enabled: true, pinnedRepoUrl: 'https://github.com/JKHeadley/instar', pinnedRequesters: [RUN_ID] } as T : fb) },
+      liveConfig: { get: <T>(k: string, fb: T): T => (k === 'monitoring.localVerify.helper' ? { enabled: true, pinnedRepoUrl: 'https://github.com/JKHeadley/instar', pinnedRequester: { machineId: RUN_ID, url: 'http://127.0.0.1:1' } } as T : fb) },
       stateDir: helperDir, sandbox: 'test-bypass', testBypassDriver: bypass(),
       overrides: { github, trees, ownerLoad: new FakeOwner(), hostFreeBytes: async () => 1024 ** 4, allowLoopback: true },
     });
@@ -200,10 +200,10 @@ describe('borrowed helper lifecycle (production wiring, test-bypass seam)', () =
     const row = audit().find((a) => a.event === 'borrowed-shadow')!;
     expect(row).toMatchObject({
       src: 'borrowed', helper: HELPER_ID, recorded: true, compared: true, done: 2, agree: 1, invalidAnswers: 0,
-      canary: { compared: 5, falseGreen: 0, falseRed: 0 }, breakerOutcome: 'good',
+      canary: { compared: 5, falseGreen: 0, falseRed: 0 }, helperOutcome: 'good',
     });
     expect(audit().some((a) => a.event === 'borrowed-shadow-error')).toBe(false);
-    expect(svc.mainRunObserverInfo()).toMatchObject({ mode: 'shadow', helpers: [{ machineId: HELPER_ID }] });
+    expect(svc.mainRunObserverInfo()).toMatchObject({ mode: 'practice', helpers: [{ machineId: HELPER_ID }] });
     svc.shutdown();
     runtime.shutdown();
   }, 60_000);

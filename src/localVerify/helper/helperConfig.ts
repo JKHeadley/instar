@@ -1,16 +1,20 @@
 /**
- * Settings for borrowed machines (docs/specs/local-verify-borrowed-unit-slices.md, B and F).
+ * Settings for borrowed machines (docs/specs/local-verify-borrowed-unit-slices.md, B and F, as
+ * amended by docs/specs/local-verify-borrowed-slices-count.md, F "Setting").
  *
  * Both blocks ship DARK and are never written by config defaults or migration:
  *  - `monitoring.localVerify.helper` (on the helper machine): an absent or malformed block means
  *    the helper role is disabled and its routes answer 404. Only the helper machine's own agent
  *    turns it on, after its owner's yes.
- *  - `monitoring.localVerify.borrowed` (on a run machine): anything but `mode: 'shadow'` is off.
+ *  - `monitoring.localVerify.borrowed` (on a run machine): `mode` is `off`, `practice` or `count`;
+ *    absent or malformed is off. The first design's value `shadow` is read as `practice`.
  *
  * Pure.
  */
 
 export interface SandboxSize { cpus: number; memoryGb: number; diskGb: number }
+
+export interface HelperTarget { machineId: string; url: string }
 
 export interface HelperConfig {
   enabled: true;
@@ -18,7 +22,12 @@ export interface HelperConfig {
   pinnedRepoUrl: string;
   /** owner/repo parsed from pinnedRepoUrl. */
   repo: string;
-  pinnedRequesters: string[];
+  /**
+   * The ONE run machine this helper serves (spec F "Pairing"): only requests signed by it are
+   * accepted, and its address is where the helper's "I am here" request goes. Serving another run
+   * machine is a change to this setting.
+   */
+  pinnedRequester: HelperTarget;
   stopOnBattery: boolean;
   sandbox: SandboxSize;
 }
@@ -44,6 +53,18 @@ export function defaultReserveCores(ncpu: number): number {
   return Math.max(1, Math.round(ncpu / 4));
 }
 
+const TARGET_URL_RE = /^https?:\/\/[^\s/]+(:\d+)?\/?$/;
+
+/** A `{ machineId, url }` pair, exactly those two keys, the URL without a path; null when malformed. */
+export function parseHelperTarget(raw: unknown): HelperTarget | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (Object.keys(o).some((k) => k !== 'machineId' && k !== 'url')) return null;
+  if (typeof o.machineId !== 'string' || !MACHINE_ID_RE.test(o.machineId)) return null;
+  if (typeof o.url !== 'string' || !TARGET_URL_RE.test(o.url)) return null;
+  return { machineId: o.machineId, url: o.url.replace(/\/$/, '') };
+}
+
 const posInt = (v: unknown, max: number): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= max;
 
 /** The helper block, or null (disabled) when absent, not enabled, or malformed in any field. */
@@ -54,8 +75,11 @@ export function parseHelperConfig(raw: unknown, hw: { ncpu: number; totalMemGb: 
   if (typeof r.pinnedRepoUrl !== 'string') return null;
   const m = REPO_URL_RE.exec(r.pinnedRepoUrl.trim());
   if (!m) return null;
-  if (!Array.isArray(r.pinnedRequesters) || r.pinnedRequesters.length === 0 || r.pinnedRequesters.length > 8
-    || !r.pinnedRequesters.every((x) => typeof x === 'string' && MACHINE_ID_RE.test(x))) return null;
+  // One pinned run machine, `{ machineId, url }`. The first design's list (`pinnedRequesters`) is
+  // malformed here, whatever it holds: a helper never serves two run machines.
+  if (r.pinnedRequesters !== undefined) return null;
+  const pinned = parseHelperTarget(r.pinnedRequester);
+  if (!pinned) return null;
   if (r.stopOnBattery !== undefined && typeof r.stopOnBattery !== 'boolean') return null;
   let reserveCores = defaultReserveCores(hw.ncpu);
   if (r.reserveCores !== undefined) {
@@ -78,16 +102,32 @@ export function parseHelperConfig(raw: unknown, hw: { ncpu: number; totalMemGb: 
     reserveCores,
     pinnedRepoUrl: r.pinnedRepoUrl.trim(),
     repo: `${m[1]}/${m[2]}`,
-    pinnedRequesters: [...new Set(r.pinnedRequesters as string[])],
+    pinnedRequester: pinned,
     stopOnBattery: r.stopOnBattery !== false,
     sandbox: size,
   };
 }
 
-export interface HelperTarget { machineId: string; url: string }
+/**
+ * `practice`: helper results are compared and never used. `count`: a helper's passes may be used,
+ * and only where the practice record holds a recorded decision for that helper and lane; the mode
+ * alone admits nothing.
+ */
+export type BorrowedMode = 'off' | 'practice' | 'count';
+
+/**
+ * The stored mode value as a BorrowedMode: `practice` and `count` as they are, the first design's
+ * `shadow` as `practice`, and everything else (absent, `off`, another type, an unknown word, a
+ * different letter case) as `off`.
+ */
+export function readBorrowedMode(raw: unknown): BorrowedMode {
+  if (raw === 'practice' || raw === 'shadow') return 'practice';
+  if (raw === 'count') return 'count';
+  return 'off';
+}
 
 export interface BorrowedConfig {
-  mode: 'off' | 'shadow';
+  mode: BorrowedMode;
   helpers: HelperTarget[];
   /**
    * The full dry run (spec E): send every eligible file, spread over as many runs as it takes, on
@@ -100,12 +140,13 @@ export interface BorrowedConfig {
 /** At most two helpers: the laptop and the Windows PC. */
 export const MAX_BORROWED_HELPERS = 2;
 
-/** The run-machine block. Anything but `mode: 'shadow'` with at least one valid helper is off. */
+/** The run-machine block. Off unless the mode reads as `practice` or `count` AND at least one helper entry is valid. */
 export function parseBorrowedConfig(raw: unknown, selfMachineId: string): BorrowedConfig {
   const off: BorrowedConfig = { mode: 'off', helpers: [] };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return off;
   const r = raw as Record<string, unknown>;
-  if (r.mode !== 'shadow') return off;
+  const mode = readBorrowedMode(r.mode);
+  if (mode === 'off') return off;
   const helpers: HelperTarget[] = [];
   for (const h of Array.isArray(r.helpers) ? r.helpers : []) {
     if (!h || typeof h !== 'object') continue;
@@ -116,7 +157,7 @@ export function parseBorrowedConfig(raw: unknown, selfMachineId: string): Borrow
     helpers.push({ machineId, url: url.replace(/\/$/, '') });
     if (helpers.length >= MAX_BORROWED_HELPERS) break;
   }
-  return helpers.length === 0 ? off : { mode: 'shadow', helpers, ...(r.dryRun === true ? { dryRun: true } : {}) };
+  return helpers.length === 0 ? off : { mode, helpers, ...(r.dryRun === true ? { dryRun: true } : {}) };
 }
 
 /**

@@ -1,16 +1,20 @@
 /**
- * Which unit test files may go to a borrowed helper (docs/specs/local-verify-borrowed-unit-slices.md, D).
+ * Which test files may go to a borrowed helper (docs/specs/local-verify-borrowed-slices-count.md, D,
+ * amending docs/specs/local-verify-borrowed-unit-slices.md, D).
  *
  * A file may go only if it passes all three checks:
- *  1. it is not on the fixed exclude list BORROWED_EXCLUDE;
- *  2. the literal scan finds no hit in the test file or its DIRECT imports. This is a HARD SAFETY
- *     FLOOR for the owner's personal machine, on top of the sandbox walls (Chief of Staff approval
- *     2026-11-18, fold-in 2: Signal vs Authority). Every hit is returned as a counted signal
- *     (`scan-hit { file, matchedFile, line, pattern }`) and listed in the shadow report, so false
- *     blocks are visible and patterns are corrected by a code change. A hit deeper in the import
- *     closure is recorded (`scanDeepHits`) but does not exclude. A false hit costs nothing: every
- *     file runs locally anyway, and the scan never stops a run;
- *  3. it is not on that helper's learned exclude list (judgment within the floor, efficiency only).
+ *  1. it belongs to the lane the request names (the inventory's own rule), or is one of the
+ *     check-slice fixtures;
+ *  2. it is not on the fixed Mac-only list BORROWED_EXCLUDE;
+ *  3. it is not on that helper's learned exclude list.
+ *
+ * THE WORD SCAN RECORDS AND DOES NOT BLOCK. The first design made a scan hit in the test file or
+ * its direct imports a hard floor; the amendment reverses that (Chief of Staff approval
+ * 2026-11-18, by name): the scan's patterns are Mac paths and tools, and inside a Linux sandbox
+ * with no host mount they protect nothing the sandbox does not. The scan still runs where a caller
+ * asks for it, and every hit is returned in the same shape as before
+ * (`{ file, matchedFile, line, pattern }`, direct hits in `hits`, deeper ones in `deepHits`) so
+ * the reports and later audits can read them. A hit has no authority over `eligible`.
  *
  * The scan matches call sites and string literals only, never identifiers or comments.
  *
@@ -18,9 +22,12 @@
  * Pure apart from the injected tree reader.
  */
 import path from 'node:path';
-import { classifyTestPath } from './inventory.js';
+import { classifyTestPath, type LaneName } from './inventory.js';
 
-/** The fixed exclude list (in code): files matching any entry never go to a helper. */
+/**
+ * The fixed Mac-only list (in code): files matching any entry never go to a helper, in any lane.
+ * These tests need tools the Linux sandbox image does not have, so they cannot pass there.
+ */
 export const BORROWED_EXCLUDE: ReadonlyArray<{ id: string; re: RegExp }> = Object.freeze([
   // The Mac desktop helper (and the other desktop bridges): need the owner's real desktop.
   { id: 'desktop-helper', re: /desktop/i },
@@ -41,11 +48,19 @@ export function isBorrowedCanaryFile(file: string): boolean {
   return file.startsWith(BORROWED_CANARY_DIR) && file.endsWith('.test.ts') && !file.slice(BORROWED_CANARY_DIR.length).includes('/');
 }
 
-/** A unit-lane test file (the inventory's own rule), or one of the canary fixtures. */
-export function isBorrowableTestFile(file: string): boolean {
-  if (isBorrowedCanaryFile(file)) return true;
+/** The lane a test file belongs to by the inventory's own rule, or null (not a test, excluded from the inventory, or in no single lane). */
+export function laneOfTestFile(file: string): LaneName | null {
   const c = classifyTestPath(file);
-  return c.kind === 'laned' && c.lane === 'unit';
+  return c.kind === 'laned' ? c.lane : null;
+}
+
+/**
+ * A test file of the requested lane, or one of the check-slice fixtures (they belong to no lane
+ * and may ride a request of any lane).
+ */
+export function isBorrowableTestFile(file: string, lane: LaneName): boolean {
+  if (isBorrowedCanaryFile(file)) return true;
+  return laneOfTestFile(file) === lane;
 }
 
 export function excludedBy(file: string): string | null {
@@ -56,7 +71,7 @@ export function excludedBy(file: string): string | null {
 export type ScanPattern =
   | 'spawn-launchctl' | 'spawn-osascript' | 'spawn-tmux' | 'spawn-open' | 'spawn-security'
   | 'literal-library-path' | 'literal-home-path' | 'homedir-call' | 'env-home-read'
-  /** Fail-closed hits: the file (or a direct import) could not be read or resolved, or is over 1 MB. */
+  /** The file (or a direct import) could not be read or resolved, or is over 1 MB: recorded like any other hit. */
   | 'unreadable' | 'oversize';
 
 export interface ScanHit { file: string; matchedFile: string; line: number; pattern: ScanPattern }
@@ -243,7 +258,7 @@ export function resolutionCandidates(p: string): string[] {
 export interface TreeReader {
   /**
    * The file's text at the tree under judgment, or null when the file is absent. THROWS when the
-   * file cannot be read: the scan then fails closed (the file is ineligible, `unreadable`).
+   * file cannot be read: the scan then records an `unreadable` hit.
    */
   read(file: string): Promise<string | null>;
 }
@@ -257,13 +272,13 @@ export interface ScanCacheEntry { text: string | null; hits: Array<{ line: numbe
 export type ScanCache = Map<string, ScanCacheEntry>;
 
 /**
- * Scan a test file and its direct imports (hits exclude), then the rest of its import closure up
- * to SCAN_LIMITS.deepFilesMax files (deep hits are recorded only). `cache` is shared across files
- * of one tree so a common import is read and scanned once.
+ * Scan a test file and its direct imports (`hits`), then the rest of its import closure up to
+ * SCAN_LIMITS.deepFilesMax files (`deepHits`). Both are recorded signals only. `cache` is shared
+ * across files of one tree so a common import is read and scanned once.
  *
- * The scan is a hard floor, so it FAILS CLOSED: a test file or a direct import that cannot be
- * read, cannot be resolved, or is over 1 MB is itself a hit (`unreadable` / `oversize`, line 0), so
- * the file stays local and the hit is counted like any other.
+ * A test file or a direct import that cannot be read, cannot be resolved, or is over 1 MB is
+ * itself a hit (`unreadable` / `oversize`, line 0), so what the scan could not see is recorded
+ * and never passes as "no hit".
  */
 export async function scanTestFile(file: string, reader: TreeReader, cache: ScanCache = new Map()): Promise<FileScan> {
   const load = async (p: string): Promise<{ resolved: string } & ScanCacheEntry> => {
@@ -316,49 +331,60 @@ export async function scanTestFile(file: string, reader: TreeReader, cache: Scan
   return { hits, deepHits };
 }
 
-export type IneligibleReason = 'not-unit' | 'excluded' | 'scan-hit' | 'learned';
+export type IneligibleReason = 'wrong-lane' | 'excluded' | 'learned';
 
 export interface EligibilityVerdict {
   file: string;
   eligible: boolean;
   reason: IneligibleReason | null;
   excludeId?: string;
+  /** Recorded scan signals in the test file and its direct imports. They never change `eligible`. */
   hits: ScanHit[];
+  /** Recorded scan signals deeper in the import closure. */
   deepHits: ScanHit[];
 }
 
 /**
- * Judge files against D. `learned` is the helper's learned list; `bypassLearned` holds the files a
- * signed retrial request may name (it bypasses only that one exclusion).
+ * Judge files against D for a request of `lane`. `learned` is the helper's learned list;
+ * `bypassLearned` holds the files a signed retrial request may name (it bypasses only that one
+ * exclusion).
+ *
+ * The word scan runs for every file of the lane that is not on the Mac-only list (so a
+ * learned-list file's hits are recorded too) unless `scan: false`; its hits ride the verdict and
+ * decide nothing. A helper passes `scan: false`: the run machine records the hits.
  */
 export async function judgeEligibility(
   files: readonly string[],
+  lane: LaneName,
   reader: TreeReader,
   learned: ReadonlySet<string>,
-  opts: { bypassLearned?: ReadonlySet<string>; cache?: ScanCache } = {},
+  opts: { bypassLearned?: ReadonlySet<string>; cache?: ScanCache; scan?: boolean } = {},
 ): Promise<EligibilityVerdict[]> {
   const cache = opts.cache ?? new Map();
   const out: EligibilityVerdict[] = [];
   for (const file of files) {
-    if (!isBorrowableTestFile(file)) { out.push({ file, eligible: false, reason: 'not-unit', hits: [], deepHits: [] }); continue; }
+    if (!isBorrowableTestFile(file, lane)) { out.push({ file, eligible: false, reason: 'wrong-lane', hits: [], deepHits: [] }); continue; }
     const ex = excludedBy(file);
     if (ex) { out.push({ file, eligible: false, reason: 'excluded', excludeId: ex, hits: [], deepHits: [] }); continue; }
-    const scan = await scanTestFile(file, reader, cache);
-    if (scan.hits.length > 0) { out.push({ file, eligible: false, reason: 'scan-hit', ...scan }); continue; }
+    const scan: FileScan = opts.scan === false ? { hits: [], deepHits: [] } : await scanTestFile(file, reader, cache);
     if (learned.has(file) && !opts.bypassLearned?.has(file)) { out.push({ file, eligible: false, reason: 'learned', ...scan }); continue; }
     out.push({ file, eligible: true, reason: null, ...scan });
   }
   return out;
 }
 
-/** Time-weighted share of unit time the scan makes ineligible (audited every run). */
-export function scanIneligibleShare(verdicts: readonly EligibilityVerdict[], durations: Readonly<Record<string, number>>): number {
+/**
+ * Time-weighted share of the judged files' time that belongs to files with a direct scan hit
+ * (recorded with every run). In the first design this was the share the scan kept off helpers;
+ * now it only says how much of the lane the recorded signal touches.
+ */
+export function scanHitShare(verdicts: readonly EligibilityVerdict[], durations: Readonly<Record<string, number>>): number {
   let total = 0;
-  let scan = 0;
+  let hit = 0;
   for (const v of verdicts) {
     const ms = Number.isFinite(durations[v.file]) ? durations[v.file] : 0;
     total += ms;
-    if (v.reason === 'scan-hit') scan += ms;
+    if (v.hits.length > 0) hit += ms;
   }
-  return total > 0 ? Math.round((scan / total) * 1000) / 1000 : 0;
+  return total > 0 ? Math.round((hit / total) * 1000) / 1000 : 0;
 }

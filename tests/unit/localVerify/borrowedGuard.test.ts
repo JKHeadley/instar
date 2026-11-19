@@ -125,7 +125,7 @@ async function runMainVerify(observer: MainRunObserver | null) {
 function shadow(client: HelperClient, stateDir: string, sink: Array<Record<string, unknown>> = []): BorrowedShadow {
   const studio = machineKeys('m1');
   return new BorrowedShadow({
-    config: () => ({ mode: 'shadow', helpers: [{ machineId: 'm_laptop', url: 'http://100.64.0.9:4042' }] }),
+    config: () => ({ mode: 'practice', helpers: [{ machineId: 'm_laptop', url: 'http://100.64.0.9:4042' }] }),
     client, signer: studio.signer, keyLookup: () => pins(studio), machineId: 'm1', stateDir, version: 'v', localWorkers: 4,
     unitFiles: async () => [{ file: 'tests/unit/a.test.ts', ms: 1000 }],
     treeReader: () => ({ read: async () => "it('x', () => {});" }),

@@ -5,13 +5,15 @@
  * the production runtime wires a real signer, GitHub reader, sandbox driver and governor (not no-ops),
  * only when the role is enabled.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../../src/core/SafeFsExecutor.js';
 import { MachineIdentityManager } from '../../../../src/core/MachineIdentity.js';
-import { buildHelperRuntime, selectHostFreeBytes, selectOwnerLoadReader, selectSandboxDriver } from '../../../../src/localVerify/helper/helperWiring.js';
+import { HELPER_HERE_PATH, buildHelperRuntime, credentialDigestsOf, makeHereSender, selectHostFreeBytes, selectOwnerLoadReader, selectSandboxDriver } from '../../../../src/localVerify/helper/helperWiring.js';
+import { computeHelperRunnerVersion } from '../../../../src/localVerify/helper/helperRunnerVersion.js';
 import { TestBypassDriver } from '../../../../src/localVerify/helper/testBypassDriver.js';
 import { LimaDriver } from '../../../../src/localVerify/helper/limaDriver.js';
 import { WslDriver } from '../../../../src/localVerify/helper/wslDriver.js';
@@ -24,7 +26,7 @@ const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'helperWiring.test.ts' }); });
 const tmp = () => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvwire-'))); dirs.push(d); return d; };
 const live = (v: unknown) => ({ get: <T>(k: string, fb: T): T => (k === 'monitoring.localVerify.helper' ? v as T : fb) });
-const ENABLED = { enabled: true, pinnedRepoUrl: 'https://github.com/JKHeadley/instar', pinnedRequesters: ['m_studio'] };
+const ENABLED = { enabled: true, pinnedRepoUrl: 'https://github.com/JKHeadley/instar', pinnedRequester: { machineId: 'm_studio', url: 'http://100.64.0.9:4042' } };
 
 describe('production can never select the test-bypass seam', () => {
   it('a string sandbox setting (the seam name) is malformed: the role stays disabled', () => {
@@ -49,7 +51,14 @@ describe('production can never select the test-bypass seam', () => {
     expect(server).not.toContain('testBypassDriver');
     expect(server).not.toContain('allowLoopback');
     expect(server).not.toContain('treeSeams');
-    expect(server).toContain('await wiring.wireBorrowedShadow(svc, {');
+    // The run machine's side (the observer of main verifies AND the practice record / loopback proxy) is wired by one call,
+    // with no test seam: production loads this machine's own signer and pinned keys and uses the real fetch.
+    expect(server).toContain('await wiring.wireBorrowedRunMachine(svc, {');
+    const call = server.slice(server.indexOf('await wiring.wireBorrowedRunMachine(svc, {'), server.indexOf('const diagnosisTransport'));
+    expect(call.length).toBeGreaterThan(100);
+    for (const seam of ['signer:', 'keyLookup:', 'fetchImpl', 'randomInt', 'now:']) expect(call).not.toContain(seam);
+    expect(call).toContain("featureEvidence.record('local-verify-borrowed-unit-slices'");
+    expect(call).toContain('hooks: lvHooks');
     expect(server).toMatch(/buildHelperRuntime\(\{ liveConfig, stateDir: config\.stateDir \}\)/);
     const wiring = fs.readFileSync(path.join(ROOT, 'src', 'localVerify', 'helper', 'helperWiring.ts'), 'utf-8');
     expect(wiring).not.toContain('allowLoopback');
@@ -68,7 +77,7 @@ describe('production can never select the test-bypass seam', () => {
 
 describe('production runtime wiring', () => {
   it('is dark: get() is null while the setting is absent, malformed or disabled', () => {
-    for (const v of [null, {}, { ...ENABLED, enabled: false }, { ...ENABLED, pinnedRequesters: 'm' }]) {
+    for (const v of [null, {}, { ...ENABLED, enabled: false }, { ...ENABLED, pinnedRequester: 'm_studio' }, { ...ENABLED, pinnedRequesters: ['m_studio'] }]) {
       expect(buildHelperRuntime({ liveConfig: live(v), stateDir: tmp() }).get()).toBeNull();
     }
   });
@@ -82,6 +91,9 @@ describe('production runtime wiring', () => {
       expect(svc).not.toBeNull();
       const d = (svc as unknown as { d: Record<string, unknown> }).d;
       expect(d.github).toBeInstanceOf(GitHubCompareChecker);
+      // The one reader answers both acceptance questions: merged base, own open head.
+      expect(typeof (d.github as GitHubCompareChecker).isOnMain).toBe('function');
+      expect(typeof (d.github as GitHubCompareChecker).ownOpenHead).toBe('function');
       expect(d.trees).toBeInstanceOf(BareCloneTreeSource);
       expect((d.signer as { machineId(): string } | null)?.machineId()).toMatch(/^m_/);
       expect(typeof (d.keyLookup as () => unknown)()).toBe('function');
@@ -90,10 +102,55 @@ describe('production runtime wiring', () => {
         expect(d.ownerLoad).toBeInstanceOf(MacOwnerLoadReader);
       }
       expect(d.allowLoopback).toBeUndefined();
+      // The runner version is the real hash of the runner and sandbox-driver source, not Instar's release number.
+      expect(d.runnerVersion).toBe(computeHelperRunnerVersion());
+      expect(d.runnerVersion).toMatch(/^hr1:[0-9a-f]{32}$/);
+      expect(d.runnerVersion).not.toBe(d.helperVersion);
+      // The sandbox property test gets the token's digest only, and the "I am here" sender is a real one.
+      expect((d.credentialDigests as () => string[])().every((x) => /^[0-9a-f]{64}$/.test(x))).toBe(true);
+      expect(typeof d.announce).toBe('function');
       expect(rt.get()).toBe(svc); // one service while enabled
     } finally { rt.shutdown(); }
     expect(selectOwnerLoadReader('linux', true, null)).toBeInstanceOf(WindowsOwnerSignalReader);
     expect(selectOwnerLoadReader('darwin', false, null)).toBeInstanceOf(MacOwnerLoadReader);
+  });
+});
+
+describe('the "I am here" sender and the token digest', () => {
+  const target = { machineId: 'm_studio', url: 'http://100.64.0.9:4042' };
+  const here = { kind: 'here', helperMachineId: 'm_laptop', runMachineId: 'm_studio', why: 'start', at: 1, expiresAt: 2, runnerVersion: 'hr1:x' } as const;
+
+  it('posts the signed body to the pinned run machine\'s helper-here route with the pool\'s token; 2xx is accepted, anything else is not', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchOk = (async (url: string, init: RequestInit) => { calls.push({ url, init }); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    expect(await makeHereSender(() => 'pool-token', 'echo', fetchOk)(target, here)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`http://100.64.0.9:4042${HELPER_HERE_PATH}`);
+    expect(HELPER_HERE_PATH).toBe('/local-verify/helper-here');
+    expect(calls[0].init.method).toBe('POST');
+    expect(calls[0].init.headers).toMatchObject({ Authorization: 'Bearer pool-token', 'X-Instar-AgentId': 'echo' });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual(here);
+    for (const status of [404, 401, 500]) {
+      const f = (async () => new Response('{}', { status })) as unknown as typeof fetch;
+      expect(await makeHereSender(() => 'pool-token', 'echo', f)(target, here), String(status)).toBe(false);
+    }
+    const thrower = (async () => { throw new Error('unreachable'); }) as unknown as typeof fetch;
+    expect(await makeHereSender(() => 'pool-token', 'echo', thrower)(target, here)).toBe(false);
+  });
+
+  it('without a token nothing is sent', async () => {
+    let called = 0;
+    const f = (async () => { called++; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    expect(await makeHereSender(() => null, 'echo', f)(target, here)).toBe(false);
+    expect(called).toBe(0);
+  });
+
+  it('the sandbox property test is given the sha256 of the token and nothing of the token', () => {
+    const token = 'ghp_' + 'q7'.repeat(18);
+    const d = credentialDigestsOf(() => token)();
+    expect(d).toEqual([crypto.createHash('sha256').update(token).digest('hex')]);
+    expect(d[0]).not.toContain(token.slice(4, 12));
+    expect(credentialDigestsOf(() => null)()).toEqual([]);
   });
 });
 

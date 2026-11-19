@@ -33,7 +33,8 @@ export function routeRefusal(f: RouteFacts, opts: { allowLoopback?: boolean } = 
 export interface SignedRequestCtx {
   /** This helper's own machine id: a request signed for another helper is refused. */
   selfMachineId: string;
-  pinnedRequesters: readonly string[];
+  /** The one pinned run machine (spec F "Pairing"): a request from any other machine is refused. */
+  pinnedRequester: string;
   keyLookup: MachineKeyLookup;
   now: number;
   seen: { has(attemptId: string): boolean };
@@ -42,7 +43,7 @@ export interface SignedRequestCtx {
 /** Why a signed request is refused before anything else is looked at, or null. */
 export function signedRequestRefusal(req: SignedHelperRequest, ctx: SignedRequestCtx): HelperRefusal | null {
   if (!isSig(req.sig)) return 'unsigned';
-  if (req.sig.machineId !== req.requesterMachineId || !ctx.pinnedRequesters.includes(req.requesterMachineId)) return 'requester-not-pinned';
+  if (req.sig.machineId !== req.requesterMachineId || req.requesterMachineId !== ctx.pinnedRequester) return 'requester-not-pinned';
   const v = verifyMachineSignature(ctx.keyLookup, req.sig, requestPayload(req), ctx.now);
   if (v === 'unknown') return 'signature-unknown-key';
   if (v === 'bad') return 'signature-bad';

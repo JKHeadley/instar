@@ -149,3 +149,111 @@ All were fixed with tests and re-reviewed, along with four lesser notes: the fir
   - **Clean-up.** Kill up to 3 times, then a sandbox restart.
 
   None loops without a brake.
+
+## Addendum (2026-11-18 23:40 PST): rework to the approved amendment, stage 1 of 6
+
+The feature is being reworked to `docs/specs/local-verify-borrowed-slices-count.md` (converged in 6 rounds, approved by the Chief of Staff on 2026-11-18 22:27 PT), which amends the first design. This stage adds the shared pure pieces only, and the feature stays dark (the borrowed setting is absent everywhere):
+
+- protocol v2 for helper requests and answers (lane, base and head commits, merge-tree hash, per-file digest of test names and outcomes, failed test names, signed progress);
+- an opt-in outcome digest in `parseVitestJson` (`laneReport.ts`). Existing callers get identical output, but the file is part of the verifier's version, so that version changes with this stage;
+- the install-inputs hash and its guard test against the real `package.json`;
+- eligibility by lane, with the word scan recording and no longer excluding;
+- the setting values `off`, `practice` and `count` (`shadow` is read as `practice`; `count` behaves as `practice` until stage 5).
+
+Provisional until later stages: the helper still refuses lanes other than unit and any waiting change, answers carry no merge-tree hash, and comparison is still by counts. Unit tests: 494 tests in 15 files passed across four runs; `tsc` clean. The integration and e2e files edited here were not run locally. The independent second pass for the whole rework is made after the last stage, before the pull request leaves draft.
+
+## Addendum (2026-11-19): rework to the approved amendment, stage 2 of 6 (what a helper accepts)
+
+This stage builds section C of `docs/specs/local-verify-borrowed-slices-count.md` on the helper side. The feature stays dark: the helper role is off unless its own setting is present, and no run machine sends a waiting change yet.
+
+What a helper now checks for itself, in order, each with a named refusal:
+
+- the base commit is merged (`base-not-merged`, `merged-unknown`, `merged-rate-limited`);
+- the head commit is the base itself, or the current head of an open pull request from the pinned repository, by repository id (`head-fork`, `head-pr-closed`, `head-moved`, `head-repo-missing`, `head-not-ours`, `head-unknown`, `head-rate-limited`);
+- its own dry-run record for the lane on the current sandbox image, before any head that differs from the base (`dry-run-not-done`, `image-identity-unknown`);
+- the merge of the two commits, built in its own clone with the run machine's command (`merge-conflict`, `tree-has-node-modules`); the tree's hash rides every signed answer;
+- the install inputs of the merge tree against the same inputs at the base commit (`install-inputs-changed`);
+- a check slice holds fixture files only (`check-not-fixture`).
+
+Side effects to know about:
+
+- **The helper's clone changes shape.** It was one commit deep; it is now a partial clone with full commit history and file contents fetched only when needed. A clone left by the first design is deleted and made again on first use.
+- **Packages.** `npm ci` runs only in the tree of a merged commit, after the helper's own merged check for it. The result lives on its own disk beside the sandbox image (a Lima additional disk; on Windows a virtual disk file made at setup), root-owned and read-only, and is bound read-only into a tree for the build and for every slice. A manifest of file hashes is recomputed before each use; a difference discards the set and installs again from merged code. The disk is not deleted by the daily re-creation of the sandbox, only by `instar helper uninstall`.
+- **Setting.** `pinnedRequesters` (a list) is replaced by `pinnedRequester: { machineId, url }`. A helper block that still carries the list is read as disabled. The role was never enabled anywhere, so no migration is needed.
+- **Token.** The helper's GitHub token needs read access to pull requests as well as contents, on the one repository.
+- **New state files on a helper**, both registered: `state/local-verify/helper-dry-run.json` and `state/local-verify/helper-packages.json`.
+- `src/templates/helper/instar-helper-runner.sh` and `provision-sandbox.sh` changed, so their entries in `scripts/blocking-decision-surfaces-baseline.json` were re-declared: the runner still refuses only its own malformed arguments or a broken wall, and every admission decision is authored in TypeScript.
+
+Provisional until later stages: lanes other than unit are still refused (`lane-not-supported`); slices are still answered when they finish, with no queue; a whole-run cancel still deletes the prepared tree; the learned-list request still names a head commit. The package disk and the image identity are proven only by command-line construction in unit tests; the real sandboxes are proven on the throwaway rung, after the owner's yes for each machine.
+
+Unit tests: 573 tests in 19 files passed across four runs (at most 5 files each); `tsc` and `npm run lint` clean. The integration and e2e files edited here were not run locally.
+
+## Addendum (2026-11-19): rework to the approved amendment, stage 3 of 6 (how a helper runs a slice)
+
+This stage builds sections B2, D and E of `docs/specs/local-verify-borrowed-slices-count.md` on the helper side, and the sandbox property test that the design's approval made a condition. The feature stays dark: the helper role is off unless its own setting is present, and the run-machine side (stages 4 and 5) is not started.
+
+What changed on a helper:
+
+- **Lanes.** A helper accepts `integration` and `e2e` as well as `unit`. A slice is one vitest process with that lane's own configuration, as on a run machine; integration and end-to-end files run one at a time, a unit slice uses as many workers as the governor allows. A slice states its budget, at most 60 s for integration and end-to-end and 10 s for unit (`budget-over-limit`). The run environment inside the sandbox no longer sets `CI`, and sets a UTF-8 locale, as the run machines do.
+- **Slices are queued.** A slice request is checked, queued and answered at once with its id (`queued`); at most 200 wait (`queue-full`). They are served one at a time: the check slice first, then slices whose results will be used, then compare-only slices. Results come through the signed status answer (`GET /local-verify/helper-status?run=<id>&since=<seq>`): each finished slice's own signed answer, and for the running slice signed progress (the files finished so far, the unhandled errors so far, a rising sequence number, the request's ids). The status answer is also signed as a whole.
+- **Progress leaves the sandbox through the root-owned runner**, on a pipe it opened: a root-owned reporter outside every tree writes one line per finished file to the slice's standard error. Never a file in the tree. A hand-back repeats the results of the files that finished; a last answer that would contradict earlier progress is withheld (`progress-contradicted`).
+- **Cancels and trees.** A per-slice cancel stops or dequeues only the named slices. A whole-run cancel no longer deletes the prepared tree: it is kept until the run machine says the verify is over (`verifyOver`) or 10 minutes pass with no request for it. A preparation may be asked with no files, when a verify starts, and a cancel stops it.
+- **The learned list** follows the amended rules: a file joins when the helper fails it and the run machine passes it in two comparisons in a row, once on a same-tree digest difference with both sides passing, and once on a confirmed wrong pass; it leaves when a later trial agrees. Trials are due when the file's content or the helper's **runner version** changes (a hash of the helper's runner and sandbox-driver source, `helperRunnerVersion.ts`; Instar's release number is not used), and otherwise every 10th verify. The learned request is keyed by the merge tree's hash. The list file is version 2; a version 1 file is not read (the role was never enabled anywhere).
+- **Compared on.** A new state file on a helper, `state/local-verify/helper-compared.json` (registered): per lane, the files that have had an agreeing comparison on the current sandbox image and runner version. The status answer reports a count and a digest per lane, and one lane's list on request.
+- **Lane proven.** Each lane's dry-run record also stores the helper time of the files that passed and of all files answered, and the share between them.
+- **Start-up checks.** Every test namespace gets its own loopback and one dummy interface, `dummy0` with `10.77.0.2/24`, and no default route. The checks gain: the interface and the absent default route; the paired network test (a listener the helper just opened on its local-network address and one on its tailnet address must each be unreachable from a test namespace while answering from the host side; a host with no tailnet address cannot run the check, so the helper does not run); and the sandbox property test (a probe run as `tester` and as `builder`: no host path readable, no host credential reachable, each facet beside a positive control). The first design's fixed-address tailnet probe is replaced by the listener test.
+- **Control channel.** Every host command a sandbox driver starts (`limactl`, `wsl.exe`) now gets an allow-listed environment, never the server's whole environment; on Windows `WSLENV` is set empty. Only the digest of the helper's GitHub token is ever passed into the sandbox, for the property test.
+- **Package volume.** A missing package volume has its own reason, `package-volume-missing`. The host-disk margin now also counts the package disk's remaining growth (12 GB at most).
+- **"I am here".** A helper sends one signed request to its pinned run machine's `POST /local-verify/helper-here` when its service starts, when its owner resumes it and when the machine wakes. The receiving route is built in stage 4; until then the request is answered 404 and audited as not accepted.
+- `src/templates/helper/instar-helper-runner.sh` and `instar-helper-checks.sh` changed and `instar-helper-progress-reporter.mjs` is new, so their entries in `scripts/blocking-decision-surfaces-baseline.json` were re-declared or added: none makes a blocking decision; every refusal is authored in TypeScript.
+- A fault found by the new start-up check test and fixed: a probe listener's accepted connection had no error handler, so a reset from the prober would have been an uncaught error in the helper's server.
+
+Provisional until later stages: the run machine's main-verify observer still sends one slice at a time and now reads each answer from the status answer; it reports comparisons by counts, mapped onto the amended kinds, with the tree hash the helper named; its last cancel does not yet say the verify is over. The dummy interface, the tailnet listener test, the progress pipe and the property probe are proven by unit tests on the scripts' text, on command-line construction and (for the probe and the reporter) by running the same files against made-up views and against real vitest by hand; the real sandboxes are proven on the throwaway rung, after the owner's yes for each machine.
+
+Unit tests: 679 tests in 25 files passed across five runs (at most 5 files each); `tsc` and `npm run lint` clean. The integration file edited here (`tests/integration/local-verify-helper-routes.test.ts`) was not run locally, and the e2e lifecycle file was not run either.
+
+## Addendum (2026-11-19): rework to the approved amendment, stage 4 of 6 (the run machine, server side)
+
+This stage builds the server side of section F of `docs/specs/local-verify-borrowed-slices-count.md` and the related "Build decisions" on a run machine. The feature stays dark: with `monitoring.localVerify.borrowed` absent every new path is inert, each new route answers 404, no new file is written, and a `main` verify's run input, record and audit rows are what they were (the guard test's identical-record check still passes, and a second test now checks the same with a seam that throws from every method).
+
+**`count` still behaves as `practice` at the end of this stage.** The verify's lane flow that asks the helper through the proxy and uses its passes is stage 5. Nothing calls the proxy yet and nothing feeds the practice record's evidence yet, so no lane can reach `counting` on a real machine. `GET /local-verify` says so (`countBehavesAsPractice`).
+
+What is new on a run machine:
+
+- **The practice record**, `state/local-verify/borrowed-helpers.json`, now version 2 and re-registered: it decides whether a helper's passes count. Per helper and lane: the four evidence items, the state (`practice`, `counting`, `suspended`, `lapsed: <reason>`), the sandbox image and runner version, the practice period's start and the recorded decision. A lost or unreadable file, a version 1 file, or a lane that does not read strictly means practice from the start. The first design's back-off for a silent helper (30 minutes to 8 hours) is gone, with its `helper-unreachable` and `helper-reachable` audit rows.
+- **Asking the helper.** One status request with a 2-second limit at the start of every verify, read only when its whole-status signature holds and it is fresh. After 10 unanswered in a row only every 5th verify asks; after 7 days without an answer none does, until the helper's signed "I am here" arrives. On a `main` verify this happens inside the detached observer, which now asks first, before it reads the head's file list.
+- **Routes** (all behind the ordinary Bearer credential unless said otherwise, all served by any run machine whose service is built, lease holder or not, because a helper's practice record lives on its pairing run machine, which may be the peer):
+  - `POST /local-verify/borrowed/decision` records the decision to count for a helper and lane. It is refused (409, naming the missing items) when the admission rule does not hold. A recorded decision is written to the practice record, the audit log (`borrowed-decision`) and the maturation ladder's evidence log (`logs/feature-evidence.jsonl`, feature `local-verify-borrowed-unit-slices`).
+  - `POST /local-verify/borrowed/dry-run` records a request to dry-run a helper (or to stop). Only the request is recorded; the dry-run task that consumes it is stage 6.
+  - `POST /local-verify/helper-here` takes the helper's signed "I am here", checked against the paired helper's pinned machine key.
+  - `GET /local-verify/borrowed` shows the same summary as the `borrowed` field of `GET /local-verify`, on a machine that does not hold the lease.
+  - `POST /local-verify/peer-baseline` (peer side) stores the coordinator's baseline results.
+  - `POST /local-verify/borrowed-proxy` is the verify child's way to its helper. **It is the one new exemption from the Bearer gate** (`src/server/middleware.ts`, exact method and path): a loopback socket, no `cf-connecting-ip` and no `x-forwarded-for` header, and the attempt token of a verify that is running now (header `X-Instar-Attempt-Token`). The commits, the helper, the run id and the slice ids come from the server's own record of that verify; a body that names any of them is refused whole. File lists are accepted only as at most 400 distinct test-file paths of the stated lane. Each call has a 5-second limit and any failure reads as "no helper answer". A `main` verify's token never opens it. Because the caller holds no Bearer credential, the general body parser reads at most 64 KB of such a request.
+- **Baseline results**, `state/local-verify/main-file-counts.json` (new, registered): for the coordinator's last three green `main` verifies, each file's four counts and its names-and-outcomes digest. Its hash is written to the audit log on every write (`main-file-counts-written`) and checked on every read; a mismatch means no baseline. A `main` verify computes the per-file counts only when a helper is configured on this machine or a peer reported one, so with no helper anywhere the run input and result are unchanged. A peer returns them inside its signed answer, and the coordinator sends the file to a peer that wants it when it changes.
+- **The peer exchange** gained four optional things, all strictly parsed and all absent with no helper: `fileCounts: true` on a `main` peer-run request; `fileCounts` in a peer's `run` detail; `helperEvents`, `wantsBaseline` and `helpers` in the peer status; and the route above. A peer keeps the per-file counts only for its newest finished attempt.
+- **The record field** `borrowed: { helper, assigned, lanes: [{ lane, files, filesDigest }] }` is validated by the record check (never on a `main` record) and passes through a peer's signed record unchanged. A peer record that carries it is imported only when the helper is one that peer reported as its own (`borrowed-helper-unknown` otherwise); this machine's own record only when the helper is configured here. No code writes the field yet.
+- **Notices.** A confirmed wrong pass and a lapse are written to the audit log (`borrowed-helper-event`, `borrowed-notice`) and raised once, by the coordinator, through the existing attention seam as `local-verify:borrowed-helper-event:<id>`. The owner's item, `local-verify:borrowed-helper-owner:<id>`, is raised only for a helper's pass that made `main` red or a third fault lapse within 7 days. A peer never raises one: it lists its events in its peer status and the coordinator remembers the ids it has told.
+
+Side effects to know about:
+
+- **The verifier version changes with this stage.** `record.ts`, `peer.ts`, `orchestrator.ts` and `LocalVerifyService.ts` changed, and `mainFileCounts.ts` joined the verifier's import graph through `peer.ts`. Both run machines must be on the same build before the coordinator hands the peer a verify, as for any verifier change. No borrowed or helper module is in that graph (the guard test still checks).
+- **One attention channel for two audiences.** The line's session and the owner are both reached through the attention seam, told apart by key and priority. Nothing else on a run machine can address a single session today, so until one can, a wrong pass or a lapse is also visible wherever attention items are shown.
+- **A rejected own record.** A record of this machine's own run that names a helper not configured here is rejected (`record-rejected`, `borrowed-helper-unknown`). No code writes the field yet; stage 5 must make sure a setting switched off in the middle of a verify cannot lose that verify's record.
+- A peer's helper events and the baseline wish live in the coordinator's memory and are learned again from the next status poll after a restart; the told ids are kept in the practice record file.
+
+Provisional until later stages: nothing feeds the evidence (the lane flow of stage 5 and the dry run of stage 6 call `recordVerify` and `recordDryRunResult`); the `main` verify observer still compares by counts, sends one slice at a time and does not write to the practice record; the "pass made main red" event has its rule and its notice but nothing emits it; the baseline's use in the pass definition, and its ancestry and same-content selection against a real clone, are stage 5 (the selection functions are here and unit-tested); the dashboard, the awareness entry, the ladder's measures and this upgrade note's main text are stage 6.
+
+Unit tests: 55 files in 11 runs of at most 5 files each, all passed (the largest: 461 tests in 5 files; the 15 files changed after their first run were run again and passed); `tsc` and `npm run lint` clean. New unit files: `borrowedPractice`, `borrowedNotices`, `borrowedRunMachine`, `borrowedServiceSeam`, `borrowedWiring`, `mainFileCounts` and `middleware-borrowed-proxy`; `borrowedState.test.ts` was rewritten for the practice record and the asking rate. The new integration file (`tests/integration/local-verify-borrowed-routes.test.ts`) and the edited e2e lifecycle file were not run locally.
+
+## Addendum (2026-11-19 01:50 PST): self-triggered actions in stages 1 to 4, and why each settles
+
+These stages add or change actions the code takes by itself. Each has a brake:
+
+- **Asking a helper:** one status request per verify with a 2-second limit; after 10 unanswered in a row, every 5th verify; after 7 days without an answer, none until the helper announces itself.
+- **"I am here":** one signed request per wake of the helper (a wake is a gap of more than 3 minutes between 60-second sweeps); a refused or failed send is audited and not retried.
+- **Notices:** one per helper event id, through the create-once attention seam; ordinary lapses are never sent to the owner.
+- **Baseline push to a peer:** only when the baseline changes.
+- **The slice queue and preparation:** bounded queue; refusals found during preparation are remembered per commit pair, so a repeated request is refused at once without preparing again; the loopback proxy has a 5-second limit and never retries.
+- **Sandbox stops and restarts, clean-up kills:** unchanged from the first build (memory-pressure hold-off doubling to 1 hour; at most 3 kills, then a restart).
+
+The models for these in `src/testing/selfActionRegistry.ts` are added with stage 6, when the dry-run task and the lane flow, the last two self-triggered paths, exist; until then the feature is dark and none of them runs.
