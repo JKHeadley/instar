@@ -325,6 +325,23 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
     return { holdsLease, holderMachineId, leaseEpoch };
   };
 
+  router.get('/local-verify/first-part-report', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (svc) res.json(svc.firstPartReport.report(svc.likelyFailingFirst(), req.query.evaluate === '1'));
+  });
+  router.post('/local-verify/first-part-report/new-trial', (_req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    svc.firstPartReport.marker(svc.likelyFailingFirst());
+    res.json(svc.firstPartReport.report(svc.likelyFailingFirst()));
+  });
+  router.post('/local-verify/first-part-finding', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    if (!svc.firstPartReport.finding(req.body)) { res.status(400).json({ error: 'invalid finding or unknown suspect' }); return; }
+    res.json(svc.firstPartReport.report(svc.likelyFailingFirst()));
+  });
+
   router.post('/local-verify/peer-run', async (req: Request, res: Response) => {
     const svc = peerGate(res);
     if (!svc) return;

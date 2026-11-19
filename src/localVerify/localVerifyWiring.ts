@@ -87,6 +87,10 @@ export function localVerifyAttentionItem(key: string, detail: Record<string, unk
   id: string; title: string; summary: string; priority: 'HIGH' | 'MEDIUM'; mode: 'upsert' | 'create';
 } {
   const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
+  if (key.startsWith('local-verify:first-part-cost-limit:')) {
+    return { id, mode: 'upsert', priority: 'HIGH', title: 'Local Verify: first-part trial reached a cost limit',
+      summary: String(detail.note ?? '').slice(0, 900) };
+  }
   if (key.startsWith('local-verify:memory-pressure:')) {
     // One item per machine, reopened by a later episode (upsert); closed when memory recovers.
     return {
@@ -248,6 +252,13 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       ...(reapDeps ? { reapLeftovers: (prefixes: LeftoverPrefix[], o?: ReapOptions) => reapLeftovers(reapDeps, prefixes, o) } : {}),
       tempRoot: () => localVerifyTempRoot(),
       isAncestor: (a, d) => isAncestorInBareClone(opts.agentHome, a, d),
+      firstPartHistory: async (green, red) => {
+        const p = verifyPaths(opts.agentHome, red);
+        const result = await realGit(['log', '--reverse', '--format=%H%x09%s', `${green}..${red}`], {
+          cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:first-part-history', timeoutMs: 30_000,
+        }, p.verifyRoot);
+        return result.status === 0 ? result.stdout.trim().split('\n').filter(Boolean).map((line) => ({ head: line.slice(0, 40), message: line.slice(41) })) : null;
+      },
       // The same computation, over the files as they are NOW: an update that replaced the dist
       // under this still-running server holds the queue for the restart instead of burning it.
       installedVerifierVersion: () => computeVerifierVersion(path.dirname(mainEntry), undefined, { protectedList: PROTECTED_PATH_PREFIXES }),
@@ -631,7 +642,7 @@ export function wireLocalVerifySwitches(
   // Off unless set to `on` or `alternate` on THIS machine: each lane then runs a small first part
   // before the rest (docs/specs/local-verify-likely-failing-first.md). Read at the start of each verify.
   svc.setLikelyFailingFirst?.(() => liveConfig.get<unknown>('monitoring.localVerify.likelyFailingFirst', 'off'));
-  // The verdict check's brake: a difference between a verify and its comparison run writes `off` here.
+  // A cost limit writes off to this machine's live config.
   const set = liveConfig.set?.bind(liveConfig);
   svc.setLikelyFailingFirstOff?.(set ? () => set('monitoring.localVerify.likelyFailingFirst', 'off') : null);
 }
