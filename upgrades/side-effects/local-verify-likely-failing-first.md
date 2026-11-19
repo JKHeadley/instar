@@ -161,6 +161,8 @@ Its notes, also applied in this commit: one list entry per pull request per file
 
 These last edits were tested (the five requested unit files, 1,131 passed, and a further five lane and peer files) but were not re-read by the reviewer. Not checked by the reviewer: the integration and e2e files were read but not run; `tsc` and lint were run by the builder (both clean).
 
+**Second read, of the merge with `main` (commit 3f9c6585b), 2026-11-19 about 04:30 PST: concur.** After the build was committed, `main` gained queue controls (#3495) and was merged in. The same reviewer read that merge: the three conflict resolutions (`feature-ladders.json` keeps both entries; in `LocalVerifyService.ts` the constructor builds both sets of stores, `snapshot()` carries both sections, and in `request()` the group assignment sits after the entry is inserted with `main`'s over-cap block and audit row unchanged; `localVerifyWiring.ts` wires both setters) and the new test file `tests/unit/localVerify/firstPartQueueControls.test.ts`. It confirmed that a group cannot be assigned twice, that the over-cap accounting cannot be skipped, that a comparison run blocks a fronted change from starting, that the operator sweep cannot touch comparison state, and that with both settings off the service differs from `main` only by the first-part changes already reviewed. Its run: five unit files, 276 passed. Not checked in that read: the rest of `main`'s side of the merge, and the integration and e2e files.
+
 ---
 
 ## Evidence pointers
