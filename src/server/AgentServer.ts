@@ -3015,12 +3015,14 @@ export class AgentServer {
           const list = Array.isArray(reg) ? reg : reg.agents ?? [];
           otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
         } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const subscriptionPool = options.subscriptionPool;
         const ledger = new UsageLedger({
           dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
           machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
           agentId: options.config.projectName ?? path.basename(projectDir),
           agentHomes: homes,
           otherAgentHomes: otherHomes,
+          poolHomes: subscriptionPool ? () => subscriptionPool.transcriptHomes() : undefined,
         });
         if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
         ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
@@ -3041,7 +3043,8 @@ export class AgentServer {
           });
         });
         // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
-        ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
+        if (process.env.CODEX_HOME) ledger.addCodexRoot(process.env.CODEX_HOME, 'server-env');
+        ledger.addCodexRoot(path.join(os.homedir(), '.codex'), 'default');
         setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
         this.usageLedger = ledger;
         // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
