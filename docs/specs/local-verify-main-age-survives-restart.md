@@ -114,7 +114,7 @@ A new coordinator has no value of its own, so the age is unknown and one `main` 
 | Unknown persists across boots (erroring verifies, fast restarts) | `unknownSince` is kept. The signal fires 3 hours after the first unknown. |
 | Wall clock jumps (the stored times assume a steady wall clock) | Backward: the value is in the future, so unknown and due. Forward: `main` comes due early. |
 | `unknownSince` unusable | Still due. A fresh bound starts at `now`. If the write keeps failing and restarts come under 3 hours apart, the signal is pushed back each time. The existing `main-health-write-failed` audit line is the trace, and `main` stays due throughout. |
-| Head equals `lastGreenHead` | Nothing unverified. No age, field cleared. |
+| Head equals `lastGreenHead` | Nothing unverified. A pending unknown is dropped; a stored value is kept (the stale case). |
 | Crash between a merge and the write | Value missing at boot. Unknown, so due. |
 | Write fails | Existing handling (mainHealth.ts:461-472). Healthy state: the old file stays, which is the stale case above. Any other state: the file is removed, so the next boot reads unknown, still due. |
 

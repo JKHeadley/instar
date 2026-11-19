@@ -3,7 +3,7 @@
 **Version / slug:** `local-verify-main-age-survives-restart`
 **Date:** `2026-11-18`
 **Author:** `echo`
-**Second-pass reviewer:** pending (run separately by the coordinating session before push)
+**Second-pass reviewer:** independent reviewer agent (a separate general-purpose agent with no part in writing the change), started by the session echo-increasing-throughput on 2026-11-18
 
 ## Summary of the change
 
@@ -11,7 +11,7 @@ Tier 1. Local Verify decides when a healthy `main` goes ahead of waiting pull re
 
 The change stores that time in the existing `state/local-verify/main-health.json` watermark as two optional fields (`oldestUnverifiedAt`, `unknownSince`), written by the existing atomic writer in `MainHealth`. It is read once per process start. When there is no usable stored value, the age is unknown, and unknown counts as due in `decideStart`. The 3-hour `local-verify:main-unverified` signal uses `unknownSince` as a lower bound and says `atLeast: true`.
 
-Files: `src/localVerify/mainHealth.ts`, `src/localVerify/LocalVerifyService.ts`, `src/data/state-coherence-registry.json` (the row's description and retention note), `src/data/feature-ladders.json` (a finished entry, `localVerify.mainAgeDurable`), three test files, this artifact and a release note. Spec: `docs/specs/local-verify-main-age-survives-restart.md` (converged in 3 rounds, approved by the Chief of Staff).
+Files: `src/localVerify/mainHealth.ts`, `src/localVerify/LocalVerifyService.ts`, `src/data/state-coherence-registry.json` (the row's description and retention note), `src/data/feature-ladders.json` (a finished entry, `localVerify.mainAgeDurable`), four test files, this artifact and a release note. Spec: `docs/specs/local-verify-main-age-survives-restart.md` (converged in 3 rounds, approved by the Chief of Staff).
 
 **Proportion:** Tier 1. 4 source files (162 lines added in the two `.ts` files, 2 data rows), 4 test files (about 550 lines added). 3 spec review rounds, which is high for a Tier 1 change: the rounds were spent on the unknown case and on lease re-acquisition, not on the size of the code. Commit attempts are stated in the PR body.
 
@@ -44,7 +44,7 @@ One more ordering effect, stated in the spec: after a green verify of an older h
 
 ## 3. Level-of-abstraction fit
 
-The value is held by `MainHealth`, which already owns the watermark, its atomic writer and its read at boot and lease acquisition. No new file, store, timer or alarm. The service keeps its in-memory mirror (`mainObs.oldestUnverifiedAt`) and updates it only from `MainHealth`, so the two cannot drift. Unknown has one encoding (`unknownSince` present), in memory and on disk, and the two fields are never written together. Deriving the age from git history was rejected in the spec: the head may be absent from the verifier's clone, and which release commits were collapsed is not durable.
+The value is held by `MainHealth`, which already owns the watermark, its atomic writer and its read at boot and lease acquisition. No new file, store, timer or alarm. The service keeps its in-memory mirror (`mainObs.oldestUnverifiedAt`). At boot, on lease acquisition and at each head observation the mirror is read from `MainHealth`. On a green verify it goes the other way: the service computes the new value itself and hands it to `MainHealth.onVerify`, which stores it in the same write as the green head. On a release collapse the service clears both together. Those are the only places either one changes, so the two do not drift. Unknown has one encoding (`unknownSince` present), in memory and on disk, and the two fields are never written together. Deriving the age from git history was rejected in the spec: the head may be absent from the verifier's clone, and which release commits were collapsed is not durable.
 
 ---
 
@@ -123,17 +123,11 @@ The review found no new authority and no new store. The trade is stated: one `ma
 
 ---
 
-## Second-pass review (if required)
-
-**Reviewer:** pending
-**Independent read of the artifact: pending**
-
----
-
 ## Evidence pointers
 
 - `tests/unit/localVerify/mainHealth.test.ts`: the watermark fields, restore, validation, foreign holder, release collapse, `atLeast`, and `decideStart` with an unknown age.
 - `tests/unit/localVerify/LocalVerifyService.test.ts`: nine service cases, including two boots 50 minutes apart with `main` due 90 minutes after the first observation.
+- `tests/unit/localVerify/peerVerifier.test.ts`: two existing fair-share cases, seeded with a known age.
 - `tests/e2e/local-verify-lifecycle.test.ts`: a stored `oldestUnverifiedAt` restored through the production-built service.
 
 ---
@@ -141,3 +135,26 @@ The review found no new authority and no new store. The trade is stated: one `ma
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. No self-triggered action is added: the change alters when an existing, already bounded `main` verify starts, not whether or how often one is enqueued.
+
+---
+
+## Second-pass review
+
+**Reviewer:** independent reviewer agent (a separate general-purpose agent with no part in writing the change), started by the session echo-increasing-throughput on 2026-11-18
+**Verdict:** Concur with the review.
+
+Findings, from a cold read of commit f3f74f059:
+
+- No path makes `main` wait longer than before, except the accepted case: a green verify of an older head while the age is unknown restarts the age at the next observation, so it is young by at most one verify.
+- `load` reads both fields before its own rewrite, and the only writer includes them, so a boot cannot drop them.
+- Unknown has one encoding, on disk and for the scheduler. `bootUnknownReason` is a memory-only pending marker, not a second encoding.
+- There is no loop. A green verify clears the age, a red one follows the every-other-start rule, and an error keeps its three backed-off retries.
+- The 3-hour signal gets `unknownSince` with `atLeast`, never zero.
+- The five adapted tests each seed a known young age and loosen no assertion.
+- The three deviations from the spec's wording are acceptable.
+- The change adds no new blocking authority.
+
+Notes:
+
+- `main-age-unknown` is audited once per process, so a later foreign-holder episode in the same process shows only as the main-health lease line.
+- A resumed pull request run still goes ahead of an unknown-age `main`, as the spec says.
