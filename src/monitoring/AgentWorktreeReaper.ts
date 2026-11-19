@@ -92,6 +92,52 @@ export interface WorktreeEvaluation {
   verdict: Verdict;
   /** The gate that forced KEEP, or 'merged-clean-idle' when reap-eligible. */
   reason: string;
+  /** The checkout's root `node_modules` (report counts only; never a gate). */
+  nodeModules?: NodeModulesKind;
+  /** Dry run, eligible only: what removal would archive and reclaim. null = could not be measured. */
+  projection?: ReclaimProjection | null;
+}
+
+export type NodeModulesKind = 'real' | 'symlink' | 'none' | 'unknown';
+
+/** Spec reaper-generated-files-regenerable §5: the cost and gain of removing one checkout. */
+export interface ReclaimProjection {
+  /** Bytes the archive step would copy (gate records + archived residue). */
+  residueBytes: number;
+  /** Apparent bytes (file sizes, links not followed) removal would reclaim. */
+  apparentBytes: number;
+}
+
+/** The report fields spec reaper-generated-files-regenerable §5 adds. */
+export interface ReclaimReportSummary {
+  /** Total apparent size of the archive (`instar-dev-decisions-archive`); null = unmeasured. */
+  archiveBytes: number | null;
+  /** Dry run only (null when removal is live): projected totals over the eligible checkouts. */
+  projection: { eligible: number; measured: number; residueBytes: number | null; apparentBytes: number | null } | null;
+  /** Checkouts kept as uncommitted-changes that hold a real `node_modules`, and checkouts with a symlinked one. */
+  nodeModules: { keptForRealNodeModules: number; withSymlinkedNodeModules: number };
+}
+
+/** Totals for the report, from the per-checkout evaluations. */
+export function summarizeReclaim(worktrees: WorktreeEvaluation[], archiveBytes: number | null, dryRun: boolean): ReclaimReportSummary {
+  const eligible = worktrees.filter((w) => w.verdict === 'reap-eligible');
+  let residueBytes: number | null = 0;
+  let apparentBytes: number | null = 0;
+  let measured = 0;
+  for (const w of eligible) {
+    if (!w.projection) { residueBytes = null; apparentBytes = null; continue; }
+    measured++;
+    if (residueBytes !== null) residueBytes += w.projection.residueBytes;
+    if (apparentBytes !== null) apparentBytes += w.projection.apparentBytes;
+  }
+  return {
+    archiveBytes,
+    projection: dryRun ? { eligible: eligible.length, measured, residueBytes, apparentBytes } : null,
+    nodeModules: {
+      keptForRealNodeModules: worktrees.filter((w) => w.verdict === 'keep' && w.reason === 'uncommitted-changes' && w.nodeModules === 'real').length,
+      withSymlinkedNodeModules: worktrees.filter((w) => w.nodeModules === 'symlink').length,
+    },
+  };
 }
 
 /**
@@ -141,6 +187,12 @@ export interface AgentWorktreeReaperDeps {
   hasActiveBuildMarker?: (path: string) => boolean;
   /** Remove the worktree (git worktree remove). Only called when killsEnabled. */
   removeWorktree: (path: string) => void;
+  /** Optional, report only: projected archive + reclaim bytes for an eligible checkout (dry run). */
+  projectReclaim?: (path: string) => ReclaimProjection | null;
+  /** Optional, report only: what the checkout's root node_modules is. */
+  nodeModulesKind?: (path: string) => NodeModulesKind;
+  /** Optional, report only: the archive's total size. */
+  archiveBytes?: () => number | null;
   /** Passive trace for an enumeration failure. Retention follows the deployment log. */
   warn?: (line: string) => void;
   /** Restart-surviving failure count/time. Current blind state is never restored. */
@@ -152,7 +204,7 @@ export interface AgentWorktreeReaperDeps {
    * report route answers from the last pass. Never rejects: a failure resolves
    * `{ ok: false, error }` and is recorded as an enumeration failure.
    */
-  evaluateAllOffThread?: () => Promise<WorktreeEnumeration<WorktreeEvaluation>>;
+  evaluateAllOffThread?: () => Promise<WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null }>;
   now?: () => number;
 }
 
@@ -174,6 +226,8 @@ export class AgentWorktreeReaper extends EventEmitter {
   private lastPassAt = 0;
   /** The last pass's evaluations, for the report route. In memory only. */
   private lastEvaluations: { at: number; worktrees: WorktreeEvaluation[] } | null = null;
+  /** The archive's size as of the last pass (report only). */
+  private lastArchiveBytes: number | null = null;
   private reapedLastPass = 0;
   /**
    * Metric (Observability standard): how many background REAP PASSES have failed
@@ -259,6 +313,30 @@ export class AgentWorktreeReaper extends EventEmitter {
     return { path: info.path, branch: info.branch, verdict: 'reap-eligible', reason: 'merged-clean-idle' };
   }
 
+  /**
+   * Report-only annotations (spec reaper-generated-files-regenerable §5): the
+   * node_modules kind for every checkout and, on a pass that removes nothing, the
+   * projected archive and reclaim bytes for each eligible one. Never changes a
+   * verdict; a failed measurement reads as unknown.
+   */
+  annotate(evaln: WorktreeEvaluation, dryRun: boolean = !this.killsEnabled): WorktreeEvaluation {
+    if (this.deps.nodeModulesKind) {
+      try { evaln.nodeModules = this.deps.nodeModulesKind(evaln.path); }
+      catch { evaln.nodeModules = 'unknown'; } // @silent-fallback-ok — report-only field
+    }
+    if (dryRun && evaln.verdict === 'reap-eligible' && this.deps.projectReclaim) {
+      try { evaln.projection = this.deps.projectReclaim(evaln.path); }
+      catch { evaln.projection = null; } // @silent-fallback-ok — report-only field, null = unmeasured
+    }
+    return evaln;
+  }
+
+  /** The archive's size, or null when it cannot be measured. Report only. */
+  measureArchive(): number | null {
+    try { return this.deps.archiveBytes ? this.deps.archiveBytes() : null; }
+    catch { return null; } // @silent-fallback-ok — report-only field, null = unmeasured
+  }
+
   /** One reap pass. Returns the per-worktree evaluations + what was reaped. */
   async reap(): Promise<{ ts: number; evaluations: WorktreeEvaluation[]; reaped: string[]; dryRun: boolean }> {
     if (this.running) return { ts: this.now(), evaluations: [], reaped: [], dryRun: !this.killsEnabled };
@@ -282,6 +360,7 @@ export class AgentWorktreeReaper extends EventEmitter {
           return { ts: failedAt, evaluations: [], reaped: [], dryRun: true };
         }
         evaluations.push(...result.worktrees);
+        this.lastArchiveBytes = result.archiveBytes ?? null;
         const at = this.now();
         this.lastPassAt = at;
         this.lastEnumerationOk = true;
@@ -336,7 +415,7 @@ export class AgentWorktreeReaper extends EventEmitter {
           evaluations.push({ path: info.path, branch: info.branch, verdict: 'keep', reason: 'reclaim-failed' });
           continue;
         }
-        evaluations.push(evaln);
+        evaluations.push(this.annotate(evaln));
         if (evaln.verdict !== 'reap-eligible') continue;
         if (reaped.length >= this.cfg.maxReapsPerPass) continue; // blast-radius cap
         if (!this.killsEnabled) { continue; } // dry-run: classify, do not delete
@@ -368,6 +447,7 @@ export class AgentWorktreeReaper extends EventEmitter {
           this.emit('error', err);
         }
       }
+      this.lastArchiveBytes = this.measureArchive();
       this.lastPassAt = this.now();
       this.lastEnumerationOk = true;
       this.lastEnumerationError = null;
@@ -537,6 +617,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       enumerationError: this.lastEnumerationOk === false ? this.lastEnumerationError : cached ? null : 'no pass has finished yet',
       enumerationFailures: this.enumerationFailures,
       lastEnumerationFailureAt: this.lastEnumerationFailureAt,
+      ...summarizeReclaim(cached?.worktrees ?? [], this.lastArchiveBytes, !this.killsEnabled),
       evaluatedAt: cached?.at ?? null,
       source: 'last-pass',
       passRunning: this.running,
@@ -552,7 +633,7 @@ export class AgentWorktreeReaper extends EventEmitter {
     enumerationError: string | null;
     enumerationFailures: number;
     lastEnumerationFailureAt: number | null;
-  } {
+  } & ReclaimReportSummary {
     let worktrees: WorktreeEvaluation[] = [];
     let enumerationOk = true;
     let enumerationError: string | null = null;
@@ -564,7 +645,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       const enumeration = this.deps.listWorktrees();
       if (enumeration.ok) {
         worktrees = enumeration.worktrees.map((info) => {
-          try { return this.evaluate(info); }
+          try { return this.annotate(this.evaluate(info)); }
           catch { return { path: info.path, branch: info.branch, verdict: 'keep' as Verdict, reason: 'eval-error' }; }
         });
       } else {
@@ -593,6 +674,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       enumerationError,
       enumerationFailures: this.enumerationFailures,
       lastEnumerationFailureAt: this.lastEnumerationFailureAt,
+      ...summarizeReclaim(worktrees, this.measureArchive(), !this.killsEnabled),
     };
   }
 }
