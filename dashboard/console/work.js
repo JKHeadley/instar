@@ -15,11 +15,13 @@ import {
   LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
+  cardBrief, CHECK_LOOK, statusChip, waitingWords, tileAsk, rankActions, chatLines, messagesPathOf,
   OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf, coversWords, chiefOfStaffCard, CHIEF_OF_STAFF_WORDS,
 } from './work-model.js';
 
 const EYEBROW = 'Work · Work board';
 let openedFromLink = null; // a ?card= link opens its card once, not on every refresh
+let readFn = null;          // the page's own authenticated GET, for an opened card's conversation
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -48,6 +50,7 @@ function queryOf() { const h = location.hash || ''; const i = h.indexOf('?'); re
 
 export async function renderWork(main, ctx) {
   const { get } = ctx;
+  readFn = get;
   const refresh = () => renderWork(main, ctx);
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the work board' })));
   const query = queryOf();
@@ -151,35 +154,48 @@ function myBoardSection(s, refresh) {
   return el('section', { class: 'list-section work-lane work-mine', id: `sec-mine-${s.reason}`, 'data-reason': s.reason }, head, body);
 }
 
+// A tile: its status, the title, one line saying what it asks, how long it has waited, and one main button.
+// Everything else (the other buttons, the details) is one tap away in the opened card.
 function cardRowNode(card, refresh, lead, { tagNotStarted = false } = {}) {
   const r = cardRow(card);
+  const brief = cardBrief(card);
   const status = el('p', { class: 'need-sub', role: 'status' });
   const title = el('button', { class: 'link-btn need-title work-open', type: 'button', text: r.main, 'aria-label': `Open the card: ${r.main}` });
   title.addEventListener('click', () => openCard(card, refresh));
   const turn = turnOf(card);
+  const chip = statusChip(card);
+  const ask = tileAsk(card, brief);
+  const since = waitingWords(card, brief.waitingSince, Date.now(), { short: true });
+  const ranked = rankActions(cardActions(card));
   return el('div', { class: `${lead ? 'need-card work-card' : 'need-card muted-card work-card'}${turn ? ` turn-${turn}` : ''}`, 'data-card': card.id, ...(turn ? { 'data-turn': turn } : {}) },
+    el('div', { class: 'wc-chips' },
+      el('span', { class: `wc-chip wc-chip-${chip.kind}`, text: chip.words }),
+      chiefOfStaffCard(card) ? el('span', { class: 'wc-chip wc-chip-source', text: CHIEF_OF_STAFF_WORDS }) : null,
+      tagNotStarted && notStartedTag(card) ? el('span', { class: 'wc-chip wc-chip-still work-not-started', text: notStartedTag(card) }) : null),
     title,
-    r.sub ? el('p', { class: 'need-sub', text: r.sub }) : null,
-    tagNotStarted && notStartedTag(card) ? el('p', { class: 'need-sub work-tag work-not-started', text: notStartedTag(card) }) : null,
-    chiefOfStaffCard(card) ? el('p', { class: 'need-sub work-tag', text: CHIEF_OF_STAFF_WORDS }) : null,
+    ask && ask !== r.main ? el('p', { class: 'wc-tile-ask', text: ask }) : null,
     r.outward ? el('p', { class: 'need-sub', text: card.outwardWords || OUTWARD_WORDS }) : null,
     r.notes.map((t) => el('p', { class: 'need-sub work-note', text: t })),
     phoneOnlyLine(card) ? el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }) : null,
-    actionsNode(card, cardActions(card), status, refresh),
+    el('div', { class: 'wc-tile-foot' },
+      since ? el('span', { class: 'wc-since', text: since }) : el('span', { class: 'wc-since' }),
+      ranked.primary ? actionsNode(card, [ranked.primary], status, refresh, { primaryFilled: true }) : null),
     status);
 }
 
 /** The card's buttons; Answer becomes the options as buttons, or a text box with Send. */
-function actionsNode(card, actions, status, refresh) {
+function actionsNode(card, actions, status, refresh, { primaryFilled = false, quiet = false } = {}) {
   if (!actions.length) return null;
   const kids = [];
   for (const a of actions) {
     if (a.action === 'answer') { kids.push(answerControl(card, status, refresh)); continue; }
-    const b = el('button', { class: `${a.tone === 'primary' ? 'btn-primary' : a.tone === 'danger' ? 'btn-danger' : 'btn-quiet'} btn-inline`, type: 'button', text: a.label });
+    // The one main button of a tile or card is filled; the rest are outlined; Put on hold and Remove are plain text.
+    const look = quiet ? `wc-text-btn${a.tone === 'danger' ? ' wc-text-danger' : ''}` : (primaryFilled || a.tone === 'primary') ? 'btn-primary btn-inline' : a.tone === 'danger' ? 'btn-danger btn-inline' : 'btn-quiet btn-inline';
+    const b = el('button', { class: look, type: 'button', text: a.label });
     b.addEventListener('click', () => (CLOSE_WORDS[a.action] ? closeStep(card, a.action, status, refresh) : confirmTap(card, a.action, {}, status, refresh)));
     kids.push(b);
   }
-  return el('div', { class: 'confirm-row work-actions' }, kids);
+  return el('div', { class: `confirm-row work-actions${quiet ? ' wc-quiet-actions' : ''}` }, kids);
 }
 
 function answerControl(card, status, refresh) {
@@ -271,6 +287,7 @@ function openCard(card, refresh) {
       el('p', { class: 'card-line', text: `Removed by ${byWords(card.removed.by)}, ${when(card.removed.at)}.` }));
     return;
   }
+  const brief = cardBrief(card);
   const warn = [];
   if (card.mayHaveBeenHandedOver) warn.push(note('This may already have been handed over. Read its conversation before asking the agent to carry on.'));
   if (card.mayHaveChangedOn) warn.push(note(`This card may have changed on ${card.mayHaveChangedOn}, and this machine has not caught up yet.`));
@@ -278,6 +295,52 @@ function openCard(card, refresh) {
   if (card.repliedAfterQuestion) warn.push(note('You replied; the agent has not updated the card.'));
   if (card.capacity) warn.push(note(capacityWords(card.capacity)));
 
+  // ── hero: who it is from, how long it has waited, the title and the one-sentence ask, why you ──
+  const chip = statusChip(card);
+  const since = waitingWords(card, brief.waitingSince);
+  const hero = el('header', { class: 'wc-hero' },
+    el('div', { class: 'wc-chips' },
+      chiefOfStaffCard(card) ? el('span', { class: 'wc-chip wc-chip-source', text: CHIEF_OF_STAFF_WORDS }) : null,
+      el('span', { class: `wc-chip wc-chip-${chip.kind}`, text: since || chip.words })),
+    el('h2', { class: 'wc-title', text: String(card.title || 'Card') }),
+    brief.ask && brief.ask !== card.title ? el('p', { class: 'wc-ask', text: brief.ask }) : null,
+    card.whyYou ? el('p', { class: 'wc-why' }, el('span', { class: 'wc-why-label', text: 'Why you · ' }), document.createTextNode(String(card.whyYou))) : null);
+
+  // ── the recommendation, with the main button right under it ──
+  const ranked = rankActions(cardActions(card, { inSheet: true }));
+  const decide = el('section', { class: `wc-decide${card.recommendation ? ' wc-callout' : ''}` },
+    card.recommendation ? el('h3', { class: 'wc-label', text: 'Recommended' }) : null,
+    card.recommendation ? el('p', { class: 'wc-reco', text: String(card.recommendation) }) : null,
+    phoneOnlyLine(card) ? el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }) : null,
+    ranked.primary || ranked.secondary.length ? actionsNode(card, [ranked.primary && { ...ranked.primary, tone: 'primary' }, ...ranked.secondary].filter(Boolean), status, refresh) : null,
+    ranked.quiet.length ? actionsNode(card, ranked.quiet, status, refresh, { quiet: true }) : null,
+    status);
+
+  // A person's close in force: who closed it, when, and the note (work-front-doors §6).
+  const closed = closeoutLine(card);
+  const closedNode = closed ? el('section', { class: 'wc-section' }, el('h3', { class: 'wc-label', text: 'Closed' }), el('p', { class: 'wc-body work-pre', text: closed })) : null;
+
+  // ── the checklist: the project's own items, then the card's done items with their evidence ──
+  const checks = brief.checks.length ? el('section', { class: 'wc-section' },
+    el('h3', { class: 'wc-label', text: 'Checklist' }),
+    el('ul', { class: 'wc-checks' }, brief.checks.map((c) => checkRow(c.text, c.status)))) : null;
+  const items = evidenceByItem(card);
+  const doneWhen = el('section', { class: 'wc-section' },
+    el('h3', { class: 'wc-label', text: 'Done when' }),
+    items.length ? el('ul', { class: 'wc-checks work-items' }, items.map((it) => {
+      const counted = it.evidence.some((e) => e.counts !== false);
+      return checkRow(it.text, card.done || counted ? 'passes' : 'unknown', [
+        el('span', { class: 'wc-check-sub', text: it.mark }),
+        it.evidence.length ? el('ul', { class: 'wc-evidence' }, it.evidence.map((e) => el('li', { text: `${e.text} (${byWords(e.by)}, ${when(e.at)}${e.counts === false ? '; written before the card last changed, so it does not count' : ''})` }))) : null,
+      ]);
+    })) : el('p', { class: 'wc-body', text: 'No done items.' }),
+    card.claim ? el('p', { class: 'wc-body', text: `The agent said this is done ${when(card.claim.at)}${card.claim.needsConfirm ? '; it needs your confirmation' : ''}.` }) : null,
+    card.doneByAgentOwnEvidence ? note('Finished by the agent on its own evidence.') : null);
+
+  // A session's card: its need is one Markdown body, shown in full when it says more than the ask.
+  const needBody = brief.body ? el('section', { class: 'wc-section' }, el('h3', { class: 'wc-label', text: 'What is needed' }), needNode(brief.body)) : null;
+
+  // ── Details, folded: the goal, the Chief of Staff's own words, and the record ──
   const facts = [
     { label: 'Now', text: String(card.needLine || '') },
     { label: 'Carried by', text: principalWords(card.carrier) },
@@ -288,50 +351,75 @@ function openCard(card, refresh) {
     card.due ? { label: 'Due', text: when(card.due) } : null,
     { label: 'Approval', text: card.approved ? `Approved${card.approvedBy && card.approvedBy.by ? ` by ${byWords(card.approvedBy.by)}` : ''}` : card.approvalRequired ? (card.withdrawn ? 'Withdrawn; needs your approval again' : 'Needs your approval') : 'Not needed: you wrote this card' },
   ].filter(Boolean);
-
-  const body = [...warn, el('dl', { class: 'story' }, facts.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]))];
+  const detail = [];
+  if (brief.goal) detail.push(el('div', { class: 'wc-detail-block' }, el('h4', { class: 'wc-label', text: 'Goal' }), el('p', { class: 'wc-body', text: brief.goal })));
+  if (brief.chiefSaid) detail.push(el('div', { class: 'wc-detail-block' }, el('h4', { class: 'wc-label', text: 'The Chief of Staff said' }), el('blockquote', { class: 'wc-quote', text: brief.chiefSaid })));
+  for (const p of brief.intro) detail.push(el('p', { class: 'wc-body', text: p }));
   const source = cardSourceLink(card);
-  if (source) body.push(el('p', { class: 'card-line work-source' },
+  if (source) detail.push(el('p', { class: 'card-line work-source' },
     el('span', { text: 'From: ' }), source.href
       ? el('a', { href: source.href, text: source.label, onclick: () => closeSheet() })
       : el('span', { text: source.label }), source.note ? el('span', { text: ` · ${source.note}` }) : null));
-  if (card.need) body.push(block('What is needed', needNode(card.need)));
-  if (card.recommendation) body.push(block('The agent recommends', el('p', { class: 'card-line work-pre', text: String(card.recommendation) })));
-  if (card.whyYou) body.push(block('Why you', el('p', { class: 'card-line work-pre', text: String(card.whyYou) })));
-  // A person's close in force: who closed it, when, and the note (work-front-doors §6).
-  const closed = closeoutLine(card);
-  if (closed) body.push(block('Closed', el('p', { class: 'card-line work-pre', text: closed })));
-
-  const items = evidenceByItem(card);
-  body.push(block('Done when', items.length ? el('ul', { class: 'work-items' }, items.map((it) => el('li', {},
-    el('span', { class: 'need-title', text: it.text }),
-    el('span', { class: 'need-sub', text: ` · ${it.mark}` }),
-    it.evidence.length ? el('ul', {}, it.evidence.map((e) => el('li', { class: 'need-sub', text: `${e.text} (${byWords(e.by)}, ${when(e.at)}${e.counts === false ? '; written before the card last changed, so it does not count' : ''})` }))) : el('p', { class: 'need-sub', text: 'No evidence yet.' })))) : el('p', { class: 'card-line', text: 'No done items.' })));
-  if (card.claim) body.push(el('p', { class: 'card-line', text: `The agent said this is done ${when(card.claim.at)}${card.claim.needsConfirm ? '; it needs your confirmation' : ''}.` }));
-  if (card.doneByAgentOwnEvidence) body.push(note('Finished by the agent on its own evidence.'));
-
+  detail.push(el('dl', { class: 'story wc-facts' }, facts.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })])));
   const links = linkLines(card);
-  if (links.length) body.push(block('Links', el('ul', {}, links.map((l) => el('li', {},
+  if (links.length) detail.push(block('Links', el('ul', {}, links.map((l) => el('li', {},
     l.file ? el('span', { text: l.label }) : (l.url ? el('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', text: l.label }) : el('span', { text: l.label })),
     l.file ? null : el('span', { class: 'need-sub', text: ` · ${l.host || 'unknown site'}` }),
     el('p', { class: 'need-sub', text: l.note }))))));
-
   const qs = Array.isArray(card.questions) ? card.questions : [];
   if (card.question || qs.length) {
-    body.push(block('Questions', el('ul', {}, qs.map((q) => el('li', {},
+    detail.push(block('Questions', el('ul', {}, qs.map((q) => el('li', {},
       el('span', { text: String(q.text || '') }),
       el('p', { class: 'need-sub', text: q.state === 'replaced' ? `Replaced${q.reason ? `: ${q.reason}` : ''}` : q.state === 'answered' ? `Answered: ${q.answer || ''}` : 'Open' }))))));
   }
-
   const trail = Array.isArray(card.carrierTrail) ? card.carrierTrail : [];
-  if (trail.length) body.push(block('Who carried it', el('ul', {}, trail.map((t) => el('li', { text: `${principalWords(t.carrier)}, set by ${byWords(t.by)}, ${when(t.at)}` })))));
+  if (trail.length) detail.push(block('Who carried it', el('ul', {}, trail.map((t) => el('li', { text: `${principalWords(t.carrier)}, set by ${byWords(t.by)}, ${when(t.at)}` })))));
   const taps = Array.isArray(card.taps) ? card.taps : [];
-  if (taps.length) body.push(block('What people decided', el('ul', {}, taps.map((t) => el('li', { text: `${tapWords(t.action)}: ${byWords(t.by)}, ${when(t.at)}` })))));
+  if (taps.length) detail.push(block('What people decided', el('ul', {}, taps.map((t) => el('li', { text: `${tapWords(t.action)}: ${byWords(t.by)}, ${when(t.at)}` })))));
+  const details = el('details', { class: 'wc-details' }, el('summary', { class: 'wc-details-head' }, el('span', { text: 'Details' }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })), el('div', { class: 'wc-details-body' }, detail));
 
-  if (card.conversationKey) body.push(el('p', { class: 'confirm-row' }, el('a', { class: 'btn-quiet btn-inline', href: hashFor({ kind: 'app', id: card.conversationKey }), text: 'Open its conversation', onclick: () => closeSheet() })));
-  if (phoneOnlyLine(card)) body.push(el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }));
-  body.push(actionsNode(card, cardActions(card, { inSheet: true }), status, refresh), status);
-  sheet({ title: String(card.title || 'Card') }, ...body);
+  const mainCol = el('div', { class: 'wc-main' }, hero, warn, closedNode, decide, checks, needBody, doneWhen, details);
+  const panel = sheet({ title: String(card.title || 'Card') }, el('div', { class: 'wc-detail' }, mainCol, conversationPanel(card)));
+  panel.classList.add('sheet-wide', 'wc-sheet');
+  // The hero carries the title in large type; the sheet's own bar names the place (the dialog keeps the title as its label).
+  const bar = panel.querySelector('.sheet-title');
+  if (bar) { bar.textContent = 'Work board card'; bar.setAttribute('aria-hidden', 'true'); }
+}
+
+/** One checklist row: a status icon (with its words for a screen reader), the text, and anything under it. */
+function checkRow(text, status, extra = []) {
+  const look = CHECK_LOOK[status] || null;
+  return el('li', { class: `wc-check wc-check-${look ? status : 'none'}` },
+    el('span', { class: 'wc-check-icon', 'aria-hidden': 'true', text: look ? look.icon : '–' }),
+    el('span', { class: 'wc-check-text' },
+      el('span', { text }),
+      look ? el('span', { class: 'sr-only', text: ` (${look.words})` }) : null,
+      extra));
+}
+
+/** The card's conversation as a chat: read here with the page's own sign-in; replies go through the full conversation. */
+function conversationPanel(card) {
+  if (!card.conversationKey) return null;
+  const href = hashFor({ kind: 'app', id: card.conversationKey });
+  const list = el('ol', { class: 'wc-chat-list', 'aria-live': 'polite' }, el('li', { class: 'wc-chat-empty', text: 'Loading the conversation…' }));
+  const panel = el('aside', { class: 'wc-chat', 'aria-label': 'Conversation' },
+    el('div', { class: 'wc-chat-head' },
+      el('h3', { class: 'wc-label', text: 'Conversation' }),
+      el('a', { class: 'wc-chat-open', href, text: 'Open full conversation', onclick: () => closeSheet() })),
+    list,
+    el('a', { class: 'btn-quiet btn-inline wc-chat-reply', href, text: 'Reply in the conversation', onclick: () => closeSheet() }));
+  const path = messagesPathOf(card);
+  if (!path || !readFn) { setKids(list, el('li', { class: 'wc-chat-empty', text: 'Open the full conversation to read and reply.' })); return panel; }
+  Promise.resolve(readFn(path)).then((r) => {
+    const lines = r && r.ok ? chatLines(r.data) : null;
+    if (!lines) { setKids(list, el('li', { class: 'wc-chat-empty', text: 'The conversation could not be read here. Open the full conversation to see it.' })); return; }
+    if (!lines.length) { setKids(list, el('li', { class: 'wc-chat-empty', text: 'No messages yet. Ask the agent about this card in its conversation.' })); return; }
+    setKids(list, lines.map((m) => el('li', { class: `wc-msg wc-msg-${m.who}`, 'data-message': m.id },
+      el('div', { class: 'wc-msg-meta' }, el('span', { class: 'wc-msg-name', text: m.name }), m.at ? el('span', { class: 'wc-msg-at', text: whenWords(m.at) }) : null),
+      el('p', { class: 'wc-msg-text', text: m.text }))));
+    list.scrollTop = list.scrollHeight;
+  }).catch(() => setKids(list, el('li', { class: 'wc-chat-empty', text: 'The conversation could not be read here. Open the full conversation to see it.' })));
+  return panel;
 }
 
 // ── the need: light Markdown through the sanitizer ────────────────────────

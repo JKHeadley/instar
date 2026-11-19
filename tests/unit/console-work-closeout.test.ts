@@ -182,12 +182,16 @@ describe('the page', () => {
   it('a server refusal of the close is said in words on the card', async () => {
     postAnswer = { status: 400, data: { error: 'reason-required' } };
     const main = await render(boardOf({ withAgent: [card()] }));
-    button(main, 'Not important').click();
+    // A tile carries one main button (Done); Not important is on the opened card, and its refusal is said there.
+    expect(button(main, 'Not important')).toBeUndefined();
+    button(main, 'Pick a venue').click();
+    const opened = document.querySelector('.sheet');
+    button(opened, 'Not important').click();
     (document.querySelector('.sheet textarea') as any).value = 'x';
     button(document.querySelector('.sheet'), 'Continue').click();
     button(document.querySelector('.sheet'), 'Continue').click();
     await enterPin();
-    expect(main.querySelector('[data-card="wc_0123456789abcdef"]').textContent).toContain('Say why this is not important.');
+    expect(opened.textContent).toContain('Say why this is not important.');
   });
 
   it('a close refused from the opened card comes back to the note step with the note kept and the reason shown', async () => {
