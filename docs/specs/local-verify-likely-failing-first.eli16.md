@@ -23,7 +23,7 @@ Nothing is left out. Every test still runs unless the run has already failed, an
 
 ## The safeguards
 
-**The verdict cannot change.** The same tests, the same second chance and the same stopping rule decide. A test checks that a run gives the same answer with this on as with it off.
+**The rules for the verdict do not change.** The same tests, the same second chance and the same stopping rule decide. One caveat, stated plainly: a badly written test whose result depends on which other tests ran just before it can change its result when the order changes. That is already true today, and during the trial a sample of runs is repeated the old way to check the answers match.
 
 **An unreliable test cannot end a run early.** It gets its second chance first, exactly as today.
 
@@ -33,7 +33,7 @@ Nothing is left out. Every test still runs unless the run has already failed, an
 
 ## What it is worth
 
-I tested the idea on history before proposing it: a list built only from the previous week's failures of other changes would have flagged 42% of the failing runs that followed. On that figure it frees about 205 machine-minutes a day, which is about 4 more merged changes a day. That is a projection from one week; the trial measures the real number.
+I tested the idea on history before proposing it. Replaying the exact rules, a list built only from the previous week's failures of other changes, plus the files the same change failed on last time, would have contained the failing file in about half of the failing runs that followed (53%, as an upper bound). If 40% to 50% of failing runs end in the first couple of minutes, the two machines get back 200 to 245 minutes a day, which is about 4 more merged changes a day. That is a projection from one week; the trial measures the real number by running every other test run the old way for comparison.
 
 ## What ships when
 
