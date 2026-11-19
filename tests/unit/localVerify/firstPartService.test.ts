@@ -2,15 +2,15 @@
 /**
  * First parts in LocalVerifyService (spec docs/specs/local-verify-likely-failing-first.md,
  * sections B, E, F and measure 6): the list is updated by the one completion path, the run input
- * and the hand-off to a peer carry it, a pull request keeps one assignment, and in `alternate`
- * the verdict check follows a finished verify with a comparison run that can never change it.
+ * and the hand-off to a peer carry it, a pull request keeps one assignment, and
+ * every verify produces machine-local evidence without scheduling another run.
  * Real fs in a temp state dir; the child process, gh, the peer client and the clock are fakes.
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { computePolicyHash } from '../../../src/localVerify/policy.js';
@@ -19,7 +19,6 @@ import type { VerifyRunInput, VerifyRunResult } from '../../../src/localVerify/o
 import type { PeerClient, PeerRunRequest } from '../../../src/localVerify/peer.js';
 import { parsePeerRunRequest } from '../../../src/localVerify/peer.js';
 import type { FirstPartSummary } from '../../../src/localVerify/firstPart.js';
-import type { FileOutcome } from '../../../src/localVerify/firstPartTrial.js';
 import { wireLocalVerifySwitches } from '../../../src/localVerify/localVerifyWiring.js';
 import { generateSigningKeyPair } from '../../../src/core/MachineIdentity.js';
 import { signerKeyHashOf, type MachineKeyLookup } from '../../../src/core/AppRecordSignatures.js';
@@ -62,7 +61,7 @@ const summary = (over: Partial<FirstPartSummary> = {}): FirstPartSummary => ({
   lanes: [{ lane: 'unit', files: 2, fromChange: 1, fromPrevious: 0, fromList: 1, partners: 0, ms: 4000, endedHere: false }], ...over,
 });
 
-interface Spawned { pid: number; args: string[]; resultPath: string; inputPath: string; input: VerifyRunInput; /** The comparison marker file as it was when this child was spawned (null = absent). */ markerAtSpawn: Record<string, unknown> | null; resolve: (x: { status: number | null; signal: string | null }) => void }
+interface Spawned { pid: number; args: string[]; resultPath: string; inputPath: string; input: VerifyRunInput; resolve: (x: { status: number | null; signal: string | null }) => void }
 
 function setup(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; draws?: number[] } = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -95,9 +94,7 @@ function setup(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string
       let resolve!: Spawned['resolve'];
       const exited = new Promise<{ status: number | null; signal: string | null }>((r) => { resolve = r; });
       const inputPath = a.args[a.args.indexOf('--input') + 1];
-      let markerAtSpawn: Record<string, unknown> | null = null;
-      try { markerAtSpawn = JSON.parse(fs.readFileSync(path.join(lvDir, 'first-part-compare-inflight.json'), 'utf-8')); } catch { markerAtSpawn = null; }
-      spawned.push({ pid: p, args: [a.command, ...a.args], resultPath: a.args[a.args.indexOf('--result') + 1], inputPath, input: JSON.parse(fs.readFileSync(inputPath, 'utf-8')), markerAtSpawn, resolve });
+      spawned.push({ pid: p, args: [a.command, ...a.args], resultPath: a.args[a.args.indexOf('--result') + 1], inputPath, input: JSON.parse(fs.readFileSync(inputPath, 'utf-8')), resolve });
       return { pid: p, exited };
     },
     isGroupAlive: (g) => alive.has(g),
@@ -458,307 +455,6 @@ describe('the peer side', () => {
 
 // ── Measure 6: the verdict check ───────────────────────────────────────
 
-describe('the verdict check: a comparison run after the verify is final', () => {
-  const outcomes = (o: Record<string, FileOutcome>) => o;
-  function trial(opts: Parameters<typeof setup>[0] = {}) {
-    const h = setup(opts);
-    let setting: unknown = 'alternate';
-    let failFast = true;
-    const offWrites: number[] = [];
-    h.svc.setLikelyFailingFirst(() => setting);
-    h.svc.setFailFastEnabled(() => failFast);
-    h.svc.setLikelyFailingFirstOff(() => { offWrites.push(h.now()); setting = 'off'; });
-    return { ...h, offWrites, setSetting: (v: unknown) => { setting = v; }, setFailFast: (v: boolean) => { failFast = v; } };
-  }
-  /** One verify of `pr` with first parts that passed, then its comparison finishing with `second`. Returns the two spawns. */
-  async function verifyThenCompare(h: ReturnType<typeof trial>, pr: number, first: VerifyRunResult | ((inp: VerifyRunInput) => VerifyRunResult), second: ((inp: VerifyRunInput) => VerifyRunResult | null) | null) {
-    const before = h.spawned.length;
-    const s = await runAndFinish(h, pr, (inp) => (typeof first === 'function' ? first(inp) : first));
-    const cmp = h.spawned[before + 1];
-    if (cmp && second) await h.finish(before + 1, second(cmp.input));
-    return { verify: s, compare: cmp };
-  }
-  const passedWith = (inp: VerifyRunInput, files: Record<string, FileOutcome> = { [F1]: 'passed', [F2]: 'passed' }) =>
-    ok(record({ pr: inp.pr, headSha: inp.headSha }), { firstPart: summary(), fileOutcomes: files });
-
-  it('starts only after the verify is recorded and acted on, in a fresh checkout, with no first part, and its result is never a record', async () => {
-    const h = trial();
-    const { verify, compare } = await verifyThenCompare(h, 1, (inp) => passedWith(inp), null);
-    expect(verify.input.collectFileOutcomes).toBe(true);
-    // The verify is final first: its record was journaled and handed on before the comparison was spawned.
-    expect(h.records).toHaveLength(1);
-    const finalRecord = JSON.stringify(h.records[0]);
-    const order = h.audit().map((x) => x.event);
-    expect(order.indexOf('record')).toBeLessThan(order.indexOf('first-part-compare-started'));
-    expect(order.indexOf('first-part')).toBeLessThan(order.indexOf('first-part-compare-started'));
-    // The comparison run: the same head and base, a fresh checkout of its own, no first part.
-    expect(compare).toBeDefined();
-    expect(compare.input).toMatchObject({ pr: 1, headSha: verify.input.headSha, baseSha: verify.input.baseSha, variant: 'compare', collectFileOutcomes: true, preflightMode: 'off' });
-    expect('likelyFailingFirst' in compare.input).toBe(false);
-    expect(compare.input.isolation).toEqual(verify.input.isolation);
-    // It finishes with a DIFFERENT verdict and a later end time: nothing recorded changes.
-    await h.finish(1, ok(record({ pr: 1, outcome: 'failure', failedFiles: [F1], startedAt: '2026-10-21T12:40:00.000Z', finishedAt: '2026-10-21T13:10:00.000Z' }), { fileOutcomes: outcomes({ [F1]: 'failed', [F2]: 'passed' }) }));
-    expect(h.records).toHaveLength(1);
-    expect(JSON.stringify(h.records[0])).toBe(finalRecord);
-    expect(h.svc.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'success', finishedAt: '2026-10-21T12:20:00.000Z' });
-    expect(h.events('record')).toHaveLength(1);
-    // The comparison's failure never reached the list either.
-    expect(h.svc.likelyFailing.listFor(99)).toEqual([]);
-    const journal = fs.readFileSync(path.join(h.lvDir, 'journal.jsonl'), 'utf-8').split('\n').filter(Boolean);
-    expect(journal).toHaveLength(1);
-  });
-
-  it('the `first-part-compare` row records both verdicts, the files that ran in both, and the failures only one run reached', async () => {
-    const h = trial();
-    // The verify ended in its first part on F1 (F2 and F3 never ran); the comparison saw F1 and F3 fail.
-    await verifyThenCompare(h, 1,
-      (inp) => ok(failed(1, [F1], { headSha: inp.headSha }), { firstPart: summary({ endedInFirstPart: true }), fileOutcomes: outcomes({ [F1]: 'failed' }) }),
-      (inp) => ok(failed(1, [F3, F1], { headSha: inp.headSha }), { fileOutcomes: outcomes({ [F1]: 'failed', [F2]: 'passed', [F3]: 'failed' }) }));
-    const rows = h.events('first-part-compare');
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      pr: 1, kind: 'ended-first', first: 'failure', compare: 'failure', verdictDiffers: false, ranInBoth: 1, bothPassed: 0, bothFailed: [F1],
-      differing: [], onlyFirstReached: [], onlyCompareReached: [F3], difference: false, failFast: true,
-      bothFailedCount: 1, flakyInEitherCount: 0, differingCount: 0, onlyFirstReachedCount: 0, onlyCompareReachedCount: 1,
-    });
-    expect(typeof rows[0].compareMinutes).toBe('number');
-    // One fault in each part is not a difference: the setting stays as it was.
-    expect(h.svc.likelyFailingFirst()).toBe('alternate');
-    expect(h.offWrites).toEqual([]);
-    expect(h.signals).toEqual([]);
-    expect(h.svc.snapshot().likelyFailingFirst.trial.done).toEqual({ 'ended-first': 1, 'failed-later': 0, passed: 0 });
-  });
-
-  it('uses the machine’s own fail-fast setting as it is when the comparison starts', async () => {
-    const h = trial();
-    h.setFailFast(false);
-    const a = await verifyThenCompare(h, 1, (inp) => passedWith(inp), (inp) => ok(record({ pr: 1, headSha: inp.headSha }), { fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'passed' }) }));
-    expect('failFast' in a.verify.input).toBe(false);
-    expect('failFast' in a.compare.input).toBe(false);
-    expect(h.events('first-part-compare')[0]).toMatchObject({ failFast: false });
-    // Turned on between the verify's start and the comparison's start: the comparison has it on.
-    const before = h.spawned.length;
-    await h.svc.request(2, { explicit: true });
-    await h.flush();
-    expect('failFast' in h.spawned[before].input).toBe(false);
-    h.setFailFast(true);
-    await h.finish(before, passedWith(h.spawned[before].input));
-    expect(h.spawned[before + 1].input).toMatchObject({ variant: 'compare', failFast: true });
-  });
-
-  it('a difference on a file not known to be unreliable switches the setting off on this machine and raises ONE notice', async () => {
-    const h = trial();
-    await verifyThenCompare(h, 1,
-      (inp) => ok(failed(1, [F2], { headSha: inp.headSha }), { firstPart: summary(), fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'failed' }) }),
-      (inp) => ok(record({ pr: 1, headSha: inp.headSha }), { fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'passed' }) }));
-    expect(h.events('first-part-compare')[0]).toMatchObject({ kind: 'failed-later', first: 'failure', compare: 'success', verdictDiffers: true, difference: true, differing: [{ file: F2, first: 'failed', compare: 'passed', known: false }] });
-    expect(h.offWrites).toHaveLength(1);
-    expect(h.svc.likelyFailingFirst()).toBe('off');
-    expect(h.events('first-part-switched-off')).toEqual([expect.objectContaining({ pr: 1, configWritten: true, files: [F2] })]);
-    expect(h.signals.map((s) => s.key)).toEqual(['local-verify:first-part-difference']);
-    expect(String(h.signals[0].detail.note)).toContain(F2);
-    // The recorded verdict is still the verify's own.
-    expect(h.svc.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'failure', failedFiles: [F2] });
-    // Even with the config put back to alternate, this machine stays off, and nothing more is compared.
-    h.setSetting('alternate');
-    expect(h.svc.likelyFailingFirst()).toBe('off');
-    const next = await runAndFinish(h, 2, (inp) => ok(record({ pr: 2, headSha: inp.headSha })));
-    expect('likelyFailingFirst' in next.input).toBe(false);
-    expect(h.offWrites).toHaveLength(1);
-    expect(h.signals).toHaveLength(1);
-    // Removing the trial state file is how the trial is started again.
-    SafeFsExecutor.safeRmSync(path.join(h.lvDir, 'first-part-trial.json'), { force: true, operation: 'firstPartService.test.ts' });
-    expect(h.svc.likelyFailingFirst()).toBe('alternate');
-  });
-
-  it('with no config writer the trial state file alone holds it off, and the notice says so', async () => {
-    const h = trial();
-    h.svc.setLikelyFailingFirstOff(null);
-    await verifyThenCompare(h, 1,
-      (inp) => ok(failed(1, [F2], { headSha: inp.headSha }), { firstPart: summary(), fileOutcomes: outcomes({ [F2]: 'failed' }) }),
-      (inp) => ok(record({ pr: 1, headSha: inp.headSha }), { fileOutcomes: outcomes({ [F2]: 'passed' }) }));
-    expect(h.svc.likelyFailingFirst()).toBe('off');
-    expect(h.events('first-part-switched-off')[0]).toMatchObject({ configWritten: false });
-    expect(String(h.signals[0].detail.note)).toContain('first-part-trial.json');
-  });
-
-  it('a difference on a file already known to be unreliable does not switch anything off', async () => {
-    const h = trial();
-    // F2 is known: it failed and passed alone in an earlier verify on this machine.
-    await runAndFinish(h, 7, (inp) => ok(record({ pr: 7, headSha: inp.headSha, flakyRetried: [{ file: F2, lane: 'unit', firstMessage: 'boom' }] }), { firstPart: summary({ group: 'with', active: false, lanes: [] }) }));
-    expect(Object.keys(h.svc.flakyFiles())).toContain(F2);
-    await verifyThenCompare(h, 1,
-      (inp) => ok(failed(1, [F2], { headSha: inp.headSha }), { firstPart: summary(), fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'failed' }) }),
-      (inp) => ok(record({ pr: 1, headSha: inp.headSha }), { fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'passed' }) }));
-    expect(h.events('first-part-compare')[0]).toMatchObject({ difference: false, verdictDiffers: true, differing: [{ file: F2, first: 'failed', compare: 'passed', known: true }] });
-    expect(h.svc.likelyFailingFirst()).toBe('alternate');
-    expect(h.signals.filter((s) => s.key === 'local-verify:first-part-difference')).toEqual([]);
-  });
-
-  it('runs for the first 5 verifies of each kind and then no more', async () => {
-    const h = trial();
-    let compares = 0;
-    for (let n = 0; n < 7; n++) {
-      h.views[100 + n] = view({ headRefOid: sha(String(n)) });
-      const { compare } = await verifyThenCompare(h, 100 + n, (inp) => passedWith(inp), (inp) => ok(record({ pr: inp.pr, headSha: inp.headSha }), { fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'passed' }) }));
-      if (compare) compares++;
-    }
-    expect(compares).toBe(5);
-    expect(h.events('first-part-compare')).toHaveLength(5);
-    expect(h.svc.snapshot().likelyFailingFirst.trial.done).toEqual({ 'ended-first': 0, 'failed-later': 0, passed: 5 });
-    // Another kind still has its own five.
-    h.views[200] = view({ headRefOid: sha('f') });
-    const other = await verifyThenCompare(h, 200,
-      (inp) => ok(failed(200, [F1], { headSha: inp.headSha }), { firstPart: summary({ endedInFirstPart: true }), fileOutcomes: outcomes({ [F1]: 'failed' }) }),
-      (inp) => ok(failed(200, [F1], { headSha: inp.headSha }), { fileOutcomes: outcomes({ [F1]: 'failed', [F2]: 'passed' }) }));
-    expect(other.compare).toBeDefined();
-    expect(h.svc.snapshot().likelyFailingFirst.trial.done['ended-first']).toBe(1);
-  });
-
-  it('a comparison that ends as an error, or with no result, concludes nothing and is not counted as compared', async () => {
-    const h = trial();
-    await verifyThenCompare(h, 1, (inp) => passedWith(inp), (inp) => ok(record({ pr: 1, headSha: inp.headSha, outcome: 'error', errorStep: 'deadline:unit', lanes: [] })));
-    await verifyThenCompare(h, 2, (inp) => passedWith(inp), () => null);
-    const rows = h.events('first-part-compare');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ inconclusive: true, reason: 'error:deadline:unit', first: 'success', compare: 'error' });
-    expect(rows[1]).toMatchObject({ inconclusive: true, reason: 'no-record' });
-    const trialState = h.svc.snapshot().likelyFailingFirst.trial;
-    expect(trialState.done.passed).toBe(0);
-    expect(trialState.started.passed).toBe(2);
-    expect(h.svc.likelyFailingFirst()).toBe('alternate');
-    expect(h.records).toHaveLength(2);
-  });
-
-  it('never follows a verify without first parts, an error, or a verify under `on`', async () => {
-    const h = trial();
-    await runAndFinish(h, 1, (inp) => ok(record({ pr: 1, headSha: inp.headSha }), { firstPart: summary({ group: 'without', active: false, lanes: [] }), fileOutcomes: outcomes({ [F1]: 'passed' }) }));
-    await runAndFinish(h, 2, (inp) => ok(record({ pr: 2, headSha: inp.headSha, outcome: 'error', errorStep: 'conflict', lanes: [], mergeTree: '' }), { firstPart: summary({ lanes: [] }) }));
-    h.setSetting('on');
-    await runAndFinish(h, 3, (inp) => ok(record({ pr: 3, headSha: inp.headSha }), { firstPart: summary({ setting: 'on' }), fileOutcomes: outcomes({ [F1]: 'passed' }) }));
-    expect(h.events('first-part-compare-started')).toEqual([]);
-    expect(h.spawned.every((s) => s.input.variant !== 'compare')).toBe(true);
-  });
-
-  it('holds this machine like a verify while it runs: the next queued verify starts when the comparison ends', async () => {
-    const h = trial();
-    const first = await verifyThenCompare(h, 1, (inp) => passedWith(inp), null);
-    expect(first.compare.input.variant).toBe('compare');
-    await h.svc.request(2, { explicit: true });
-    await h.flush();
-    expect(h.spawned).toHaveLength(2); // PR 2 waits
-    expect(h.svc.snapshot().likelyFailingFirst.trial.comparing).toEqual({ pr: 1, headSha: sha('a'), kind: 'passed' });
-    await h.finish(1, ok(record({ pr: 1 }), { fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'passed' }) }));
-    expect(h.spawned).toHaveLength(3);
-    expect(h.spawned[2].input).toMatchObject({ pr: 2 });
-    expect(h.spawned[2].input.variant).toBeUndefined();
-    expect(h.svc.snapshot().likelyFailingFirst.trial.comparing).toBeNull();
-  });
-
-  it('a running comparison counts as busy: not idle for the leftover sweep, slot busy for the coordinator, diagnosis capacity busy', async () => {
-    const h = trial();
-    // Idle first: the sweep may take this agent's run folders at any age, the slot is free, a diagnosis may start.
-    await h.svc.sweepLeftovers('tick');
-    const ownAges = (k: number) => h.sweeps[k].filter((x) => x.prefix.includes('/.worktrees/')).map((x) => x.minAgeS);
-    expect(ownAges(0).length).toBeGreaterThan(0);
-    expect(ownAges(0).every((a) => a === 0)).toBe(true);
-    expect(h.svc.peerStatus().slotBusy).toBe(false);
-    expect(h.svc.isDiagnosisCapacityBusy()).toBe(false);
-    const { compare } = await verifyThenCompare(h, 1, (inp) => passedWith(inp), null);
-    expect(compare.input.variant).toBe('compare');
-    expect(h.svc.snapshot().inFlight).toBeNull(); // only the comparison is running
-    // The comparison's tests live in this agent's run folders: they are not leftovers while it runs.
-    await h.svc.sweepLeftovers('tick');
-    expect(ownAges(1).every((a) => a > 0)).toBe(true);
-    expect(h.svc.peerStatus().slotBusy).toBe(true);
-    expect(h.svc.isDiagnosisCapacityBusy()).toBe(true);
-    // When it ends, all three read free again.
-    await h.finish(1, ok(record({ pr: 1 }), { fileOutcomes: outcomes({ [F1]: 'passed', [F2]: 'passed' }) }));
-    await h.svc.sweepLeftovers('tick');
-    expect(ownAges(2).every((a) => a === 0)).toBe(true);
-    expect(h.svc.peerStatus().slotBusy).toBe(false);
-    expect(h.svc.isDiagnosisCapacityBusy()).toBe(false);
-  });
-
-  it('the marker is on disk BEFORE the child is spawned, and names the group right after', async () => {
-    const h = trial();
-    const { verify, compare } = await verifyThenCompare(h, 1, (inp) => passedWith(inp), null);
-    expect(verify.markerAtSpawn).toBeNull(); // an ordinary verify has no comparison marker
-    const token = compare.args[compare.args.indexOf('--attempt-token') + 1];
-    expect(compare.markerAtSpawn).toMatchObject({ v: 1, attemptToken: token, pid: null, pgid: null, pr: 1 });
-    expect(JSON.parse(fs.readFileSync(path.join(h.lvDir, 'first-part-compare-inflight.json'), 'utf-8'))).toMatchObject({ attemptToken: token, pid: compare.pid, pgid: compare.pid });
-    // A marker left without a group (a crash between the two writes) is simply cleared at boot.
-    h.svc.shutdown();
-    fs.writeFileSync(path.join(h.lvDir, 'first-part-compare-inflight.json'), JSON.stringify({ v: 1, attemptToken: token, pid: null, pgid: null, pr: 1 }));
-    const boot = trial({ stateDir: h.stateDir });
-    await boot.svc.reapOrphan();
-    expect(fs.existsSync(path.join(h.lvDir, 'first-part-compare-inflight.json'))).toBe(false);
-    expect(boot.kills).toEqual([]);
-  });
-
-  it('a marker that cannot be written means no comparison child at all', async () => {
-    const h = trial();
-    // A folder where the marker file should be: the write (a rename onto it) fails.
-    fs.mkdirSync(path.join(h.lvDir, 'first-part-compare-inflight.json'));
-    fs.writeFileSync(path.join(h.lvDir, 'first-part-compare-inflight.json', 'x'), '');
-    const before = h.spawned.length;
-    await runAndFinish(h, 1, (inp) => passedWith(inp));
-    expect(h.spawned.length).toBe(before + 1); // the verify only
-    expect(h.events('first-part-compare-dropped')).toEqual([expect.objectContaining({ pr: 1, reason: 'marker-unwritable' })]);
-    expect(h.svc.peerStatus().slotBusy).toBe(false);
-  });
-
-  it('a stop ends a running comparison without counting it; a server that died under one ends its group at the next boot', async () => {
-    const h = trial();
-    const { compare } = await verifyThenCompare(h, 1, (inp) => passedWith(inp), null);
-    const marker = path.join(h.lvDir, 'first-part-compare-inflight.json');
-    expect(JSON.parse(fs.readFileSync(marker, 'utf-8'))).toMatchObject({ pid: compare.pid, pgid: compare.pid, pr: 1 });
-    h.svc.shutdown();
-    expect(h.kills).toContainEqual({ pgid: compare.pid, signal: 'SIGKILL' });
-    expect(h.svc.snapshot().likelyFailingFirst.trial.done.passed).toBe(0);
-    // A crash instead of a clean stop: the marker names the group, and boot ends it.
-    const token = compare.args[compare.args.indexOf('--attempt-token') + 1];
-    fs.writeFileSync(marker, JSON.stringify({ v: 1, attemptToken: token, pid: 9001, pgid: 9001, pr: 1, headSha: sha('a'), startedAt: 1 }));
-    const boot = trial({ stateDir: h.stateDir });
-    boot.alive.add(9001);
-    boot.procArgs.set(9001, `node runVerifyMain.js --attempt-token ${token}`);
-    await boot.svc.reapOrphan();
-    expect(boot.kills).toContainEqual({ pgid: 9001, signal: 'SIGKILL' });
-    expect(fs.existsSync(marker)).toBe(false);
-    expect(boot.events('first-part-compare-orphan-reaped').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('on a peer: the comparison follows the finished attempt, whose record is already kept for the coordinator', async () => {
-    const h = trial({ peerOnly: true, machineId: 'peer1' });
-    h.svc.setPeerWiring({ peerRoleEnabled: () => true });
-    const ATT = 'b'.repeat(32);
-    const answer = await h.svc.peerRun({
-      attemptId: ATT, pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', verifierVersion: '1.0.0', policyHash: POLICY,
-      coordinatorMachineId: 'coord', leaseEpoch: 7, firstPartGroup: 'with', likelyFailing: { list: [F1], previous: [] },
-    }, { holdsLease: false, holderMachineId: 'coord' });
-    expect(answer).toEqual({ ok: true, attemptId: ATT });
-    const att = { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 };
-    await h.finish(0, ok(record({ machineId: 'peer1', attempt: att }), { firstPart: summary(), fileOutcomes: outcomes({ [F1]: 'passed' }) }));
-    const order = h.audit().map((x) => x.event);
-    expect(order.indexOf('peer-attempt-done')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('peer-attempt-done')).toBeLessThan(order.indexOf('first-part-compare-started'));
-    expect(h.spawned).toHaveLength(2);
-    expect(h.spawned[1].input).toMatchObject({ variant: 'compare', pr: 1 });
-    expect('attempt' in h.spawned[1].input).toBe(false);
-    expect('likelyFailingFirst' in h.spawned[1].input).toBe(false);
-    // While it runs the peer answers busy to a new hand-off.
-    const busy = await h.svc.peerRun({
-      attemptId: 'c'.repeat(32), pr: 2, headSha: sha('c'), baseSha: sha('b'), baseRefName: 'main', verifierVersion: '1.0.0', policyHash: POLICY,
-      coordinatorMachineId: 'coord', leaseEpoch: 7,
-    }, { holdsLease: false, holderMachineId: 'coord' });
-    expect(busy).toEqual({ ok: false, reason: 'peer-busy' });
-    await h.finish(1, ok(record({ machineId: 'peer1' }), { fileOutcomes: outcomes({ [F1]: 'passed' }) }));
-    expect(h.events('first-part-compare')).toEqual([expect.objectContaining({ pr: 1, kind: 'passed', difference: false })]);
-  });
-});
-
-// ── F: GET /local-verify ───────────────────────────────────────────────
-
 describe('what the snapshot shows', () => {
   it('the setting, the list’s size, age and top files, and the trial’s counts', async () => {
     const h = setup();
@@ -773,6 +469,135 @@ describe('what the snapshot shows', () => {
       { file: F2, prs: 2, last: '2026-10-21T12:25:00.000Z' },
       { file: F1, prs: 1, last: '2026-10-21T12:20:00.000Z' },
     ]);
-    expect(s.trial).toEqual({ done: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, started: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, switchedOff: null, comparing: null });
+    expect(s.open).toBe(0);
+    expect(s.overdue).toBe(0);
+    expect(s).not.toHaveProperty('trial');
   });
+});
+
+
+describe('the amended check removes comparison execution and preserves signed evidence', () => {
+  it('ignores old trial marks and never reads comparison state at boot', async () => {
+    const h = setup();
+    fs.writeFileSync(path.join(h.lvDir, 'first-part-trial.json'), JSON.stringify({ switchedOff: { at: 'old' } }));
+    fs.writeFileSync(path.join(h.lvDir, 'first-part-compare-inflight.json'), '{ old state');
+    h.svc.setLikelyFailingFirst(() => 'alternate');
+    const read = vi.spyOn(fs, 'readFileSync');
+    try {
+      await h.svc.boot();
+      expect(h.svc.likelyFailingFirst()).toBe('alternate');
+      expect(read.mock.calls.some(([p]) => /first-part-(trial|compare-inflight)\.json$/.test(String(p)))).toBe(false);
+    } finally { read.mockRestore(); h.svc.shutdown(); }
+  });
+  it.each(['success', 'failure', 'error'] as const)('queues no comparison after %s', async (outcome) => {
+    const h = setup(); h.svc.setLikelyFailingFirst(() => 'alternate');
+    await runAndFinish(h, 1, () => ok(record({ outcome, ...(outcome === 'error' ? { errorStep: 'conflict' } : {}) }), { firstPart: summary() }));
+    expect(h.spawned.every((s) => !('variant' in s.input) && !('collectFileOutcomes' in s.input))).toBe(true);
+    expect(h.audit().some((r) => String(r.event).startsWith('first-part-compare'))).toBe(false);
+    expect(h.svc.firstPartReport.rows().filter((r) => r.type === 'observation')).toHaveLength(1);
+    h.svc.shutdown();
+  });
+  it('a derived record carries its original verify evidence and creates no second observation', async () => {
+    const h = setup({ views: { 1: view(), 2: view() } });
+    const firstPart = { setting: 'alternate', group: 'with', ran: true } as const;
+    await runAndFinish(h, 1, () => ok(record({ firstPart })));
+    const answer = await h.svc.request(2, { explicit: true });
+    expect(answer.ok).toBe(true);
+    expect(h.svc.getRecord(2, sha('a'), 'main')?.firstPart).toEqual(firstPart);
+    expect(h.spawned).toHaveLength(1);
+    expect(h.svc.firstPartReport.rows().filter((r) => r.type === 'observation')).toHaveLength(1);
+    h.svc.shutdown();
+  });
+});
+
+it('writes an episode only on confirmed main red, reads history once, and ends it on green', async () => {
+  const h = setup(); h.seams.isAncestor = async () => true;
+  let reads = 0;
+  h.seams.firstPartHistory = async () => { reads++; return [{ head: sha('c'), message: 'change (#1)' }, { head: sha('d'), message: 'release' }]; };
+  await runAndFinish(h, 1, () => ok(record({ firstPart: { setting: 'alternate', group: 'with', ran: true } })));
+  const main = async (outcome: LocalVerifyRecord['outcome'], head: string) => {
+    const r = record({ kind: 'main', pr: 0, headSha: head, baseSha: head, outcome });
+    (h.svc as any).completeMain(r, { kind: 'main', pr: 0, headSha: head, baseSha: head, baseRefName: 'main', attempts: 1, errorRetries: 0 });
+    await h.flush();
+  };
+  await main('success', sha('b'));
+  await main('failure', sha('c'));
+  expect(h.svc.firstPartReport.report('off').episodes).toHaveLength(0);
+  await main('failure', sha('c'));
+  expect(h.svc.firstPartReport.report('off').episodes).toHaveLength(1);
+  expect(h.svc.firstPartReport.report('off').open).toBe(1);
+  await main('failure', sha('c'));
+  expect(reads).toBe(1);
+  expect(h.svc.firstPartReport.report('off').episodes[0]).toMatchObject({ lastGreenHead: sha('b'), redHead: sha('c') });
+  await main('success', sha('d'));
+  expect(h.svc.firstPartReport.report('off').episodes[0].endedAt).toBeDefined();
+  h.svc.shutdown();
+});
+
+
+it('detects a nonthrowing config writer that leaves alternate unchanged and retries next day', () => {
+  const h = setup(); const key = 'monitoring.localVerify.likelyFailingFirst';
+  const config = { [key]: 'alternate' }; const writer = vi.fn();
+  wireLocalVerifySwitches(h.svc, { get: (_key: string, fallback: unknown) => config[_key] ?? fallback, set: writer } as any);
+  h.svc.likelyFailingFirst();
+  const seed = (id: string, group: 'with' | 'without') => h.svc.firstPartReport.observe({
+    type: 'observation', id, at: h.now(), startedAt: h.now(), pr: 1, head: sha('a'), base: sha('b'),
+    setting: 'alternate', group, ran: group === 'with', outcome: 'success', minutes: group === 'with' ? 12 : 10,
+    incomplete: false, completedLanes: [], firstPartFiles: {}, failures: [], failuresTotal: 0,
+  });
+  for (let i = 0; i < 8; i++) { seed(`with${i}`, 'with'); seed(`without${i}`, 'without'); }
+  const complete = () => (h.svc as any).noteFirstPart({ token: String(h.now()) }, ok(record({
+    startedAt: new Date(h.now()).toISOString(), finishedAt: new Date(h.now() + 12 * 60000).toISOString(),
+    firstPart: { setting: 'alternate', group: 'with', ran: true },
+  })));
+  complete(); h.advance(86400001); complete();
+  expect(writer).toHaveBeenCalledTimes(1);
+  expect(config[key]).toBe('alternate');
+  expect(h.svc.firstPartReport.report('alternate').lastEvaluation?.configWritten).toBe(false);
+  expect(h.svc.firstPartReport.report('alternate').trial.ended).toBe(false);
+  expect(h.signals.at(-1)?.detail.note).toContain('could not be written');
+  h.svc.likelyFailingFirst(); h.advance(86400001); complete();
+  expect(writer).toHaveBeenCalledTimes(2);
+  expect(h.svc.firstPartReport.report('alternate').markers.map((m) => m.reason)).toEqual(['setting']);
+  h.svc.shutdown();
+});
+
+it('status counts do not read the observation log', () => {
+  const h = setup(); h.svc.likelyFailingFirst();
+  const read = vi.spyOn(fs, 'readFileSync');
+  try {
+    h.svc.snapshot(); h.svc.snapshot();
+    expect(read.mock.calls.some(([p]) => p === h.svc.firstPartReport.log)).toBe(false);
+  } finally { read.mockRestore(); h.svc.shutdown(); }
+});
+
+it('suspects and confirmed red main do not call the off writer or wait for history', async () => {
+  const h = setup(); const off = vi.fn(); h.svc.setLikelyFailingFirstOff(off);
+  h.svc.setLikelyFailingFirst(() => 'alternate'); h.svc.likelyFailingFirst();
+  h.svc.firstPartReport.episode({ redHead: 'previous', lastGreenHead: null, at: h.now(), historyUnknown: false,
+    commits: [{ head: 'p', pr: 1, firstParts: 'yes' }] });
+  for (let pr = 1; pr <= 4; pr++) h.svc.firstPartReport.observe({
+    type: 'observation', id: `suspect-${pr}`, at: h.now(), startedAt: h.now(), pr, head: sha('a'), base: sha('b'),
+    setting: 'alternate', group: 'with', ran: true, outcome: 'failure', minutes: 10, incomplete: false,
+    completedLanes: ['unit'], firstPartFiles: {}, failuresTotal: 1,
+    failures: [{ file: F1, lane: 'unit', firstPart: true, own: false, result: 'failed' }],
+  });
+  h.svc.firstPartReport.evaluate(); expect(h.svc.firstPartReport.counts().open).toBe(2); h.svc.firstPartReport.green();
+  let resolve!: (v: Array<{ head: string; message: string }>) => void;
+  h.seams.firstPartHistory = vi.fn(() => new Promise((r) => { resolve = r; }));
+  h.seams.isAncestor = async () => true;
+  const main = async (outcome: LocalVerifyRecord['outcome'], head: string) => {
+    (h.svc as any).completeMain(record({ kind: 'main', pr: 0, headSha: head, baseSha: head, outcome }),
+      { kind: 'main', pr: 0, headSha: head, baseSha: head, baseRefName: 'main', attempts: 1, errorRetries: 0 });
+    await h.flush();
+  };
+  await main('success', sha('b')); await main('failure', sha('c')); await main('failure', sha('c'));
+  expect(h.svc.firstPartReport.hasOpenEpisode()).toBe(true);
+  expect(h.seams.firstPartHistory).toHaveBeenCalledTimes(1);
+  // Health completion must settle while history is still pending.
+  expect(await Promise.race([Promise.all((h.svc as any).pendingMainWork).then(() => 'done'), h.flush().then(() => 'blocked')])).toBe('done');
+  await main('failure', sha('c')); expect(h.seams.firstPartHistory).toHaveBeenCalledTimes(1);
+  await main('success', sha('d')); resolve([{ head: sha('c'), message: 'fix (#1)' }]); await h.flush();
+  expect(h.svc.firstPartReport.hasOpenEpisode()).toBe(false);
+  expect(off).not.toHaveBeenCalled(); h.svc.shutdown();
 });
