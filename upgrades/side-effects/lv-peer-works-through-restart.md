@@ -164,3 +164,22 @@ This is data only; no runtime change. Registry tests pass: `feature-ladders-cove
 ## Addendum (2026-11-18 22:10 PST): awareness text moved into the existing entry
 
 The core instruction file on `main` measures 83,999 characters against its 84,000 limit (`tests/e2e/claude-md-reference-layout-init-lifecycle.test.ts`), and every awareness entry's title is listed in that file. A new entry therefore failed the size test (84,052). The restart text is now a second paragraph of `src/data/awareness/local-verify-main-on-peers.md`, whose title is shortened to "Local Verify with a helper machine", so the core file does not grow (it shrinks by 10 characters). No wording of either paragraph's instructions changed apart from the second paragraph's opening clause. The second-pass reviewer did not re-read this relocation; the size test and the awareness registry test were run on it.
+
+## Addendum (2026-11-19 04:45 PST): independent read of the five later commits
+
+After the build's second pass, five commits were added: the ladder registration (640023e57), a merge of `main` (90cf0b9ba: the re-run rule and main-age changes), the awareness text moved into the existing helper-machine entry (d73774a75), and a second merge of `main` (503ffdff3: queue controls). An independent reviewer subagent (general-purpose, fresh context, read-only) read all of them on 2026-11-19 at about 04:40 PST and returned **concur**; nothing blocks merge.
+
+What it confirmed, with its own run (five unit files, 396 passed):
+
+- Every conflict resolution keeps both sides. With the feature off, the hand-off to the peer is identical to `main`. With it on, during a pause, a `main` entry is never handed out, a held change is never handed out, and a fronted change is first among pull requests. The pause is read again before the choice is made again, with nothing awaited between that reading, the re-pick and the stamp; the re-pick is bounded at three per pass and nothing is reserved before it.
+- In `peer.ts`, the marker keeps `main`'s offered list and this change's two fields, and the import check applies both rules.
+- The awareness text moved without change of meaning and matches the code; the deleted file is referenced nowhere.
+- The ladder entry is well formed.
+
+Its notes, none blocking and none changed here:
+
+- The ladder's coded measures are weaker than the spec's graduation criteria (which are judged by hand at the review; nothing advances automatically).
+- There are five new tests for the two features together, and none for a pause that begins or ends during the base read with queue controls on; that case was checked by reading.
+- A hold does not carry this change's "refunded once" flag, so a refunded change that is held and released could get one more refund: at most one extra peer attempt per hold and release, with no effect on results. Recorded as a three-line fix for a later change to the operator store.
+
+Not checked by the reviewer: `tsc` (run by the merger, clean), the integration and e2e files, and `main`'s own changes outside the conflict sites.
