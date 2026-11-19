@@ -106,3 +106,7 @@ A pre-existing ordering gap (synthetic message ids) was filed separately as fb-7
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a`
 - **reason:** no loop and no retry. One proposal per request (the propose lane's existing churn limit applies), one write per owner yes, one bounded (16 MB) log read per creation link.
+
+## Instruction-file size (2026-11-19 05:40Z)
+
+Main's core instruction file is at its size limit: `CLAUDE_MD_CORE_BUDGET_CHARS`, 84,000. PR 3412 failed on it, and every new awareness title costs characters in the capability list. This PR therefore shortens two of my older entry titles, "Dashboard session token" and "Dashboard session revocation" (the SEC-046 entries). The list cuts titles at 60 characters, so this saves about 57 characters. It also gives its own entry the short title "Cross-chat confirm". The net change is about 37 characters fewer than main. Entry bodies are unchanged.
