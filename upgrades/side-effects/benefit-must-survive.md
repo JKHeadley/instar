@@ -71,3 +71,9 @@ Justin, 18:05 PST in topic 145097: *"This is critical and should be fundamental/
 - **Documents Stand on Their Own** (Interaction).
 
 The registry's own rules make a pending article advisory and never build-failing until ratified. Ratification is Justin's: his yes on the exact text, plus his code-owner approval on this PR. The hierarchy block was regenerated. Clean: tree-parentage, single-governing-obligation, insertion-placement, code-backreference, standards hierarchy `--check`. The PR body carries the required `Constitution counterpart:` line. An instar-2 counterpart follows only if he ratifies.
+
+## Addendum (2026-11-18 19:20 PST): ratified, and a registry fix
+
+Justin, 19:04 PST in topic 145097: *"Yes, to all"*, answering the request that set out both articles' exact wording. Both articles are now marked ratified and each carries a `Ratified by` line.
+
+The first version of this change failed CI: the registry checker only accepts section labels on a fixed list, and it rejected `Balanced by the floors` and `Enforcement state — PARTIAL`. The words of those sections are unchanged; they now sit inside the `Rule` and `In practice` fields, which the checker knows. No source file changes. Side effects: none beyond the registry text; the generated registry asset now counts 102 articles.

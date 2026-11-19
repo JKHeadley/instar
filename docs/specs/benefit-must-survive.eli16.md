@@ -27,4 +27,4 @@ The constitution's hard floors stay exactly as they are: protecting security, da
 
 ## What the reader needs to decide
 
-Justin decides whether the two proposed constitution articles become binding, on their exact wording. The principles and the reviewer question carry out his direct request (topic 145097, 18 November 2026, 17:44 PST) and need no decision.
+Justin decides whether the two proposed constitution articles become binding, on their exact wording. He said yes on 18 November 2026 at 19:04 PST ("Yes, to all"), so both are now ratified. The principles and the reviewer question carry out his direct request (topic 145097, 18 November 2026, 17:44 PST) and need no decision.
