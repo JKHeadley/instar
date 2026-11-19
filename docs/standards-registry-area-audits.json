@@ -2,20 +2,20 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-18T21:25:00.000Z",
-      "auditRef": "docs/audits/bounded-input-countdown-met-building-family-2026-11-18.json",
-      "auditSha256": "3cf4df36d0d9d1dcc32b59ffb6f0777a9af5189ba31fbe26dc92bced24d702e4",
-      "areaSha256": "ca80e5f13645eacf1b28c03c50e3b3ac63d7e6deb7827f42c13cf5c8774ec321",
+      "lastAuditedAt": "2026-11-19T03:22:00.000Z",
+      "auditRef": "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
+      "auditSha256": "6cf106db2d14c069d9f7931f98c1105ac33a23dfc0a3dc07ea6b4eb1a01b5e0c",
+      "areaSha256": "52533019f8162a188875bc18bccfbb5252bc573b224711ecb067048609409506",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-19T02:29:00.000Z",
-      "auditRef": "docs/audits/waiting-ask-links-interaction-family-2026-11-18.json",
-      "auditSha256": "e62aa6e0686e1e33aa2c1050b4bbbaad09c90b4a898460cac9fca4e5cd933b06",
-      "areaSha256": "ea321799078369bcddbf248150f3428867af1384c84914882ac6bd06ddd4021c",
+      "lastAuditedAt": "2026-11-19T09:47:49.000Z",
+      "auditRef": "docs/audits/waiting-ask-links-interaction-family-merge-2026-11-19.json",
+      "auditSha256": "5fbe42c7eff6018805ea9f689cdb953cbe4e120aa8eda95a376b1749d968e4c3",
+      "areaSha256": "610341e18c0a9f214ecf70f8ee172ed51abbf68b9cd82592c9e3f287806ed2ed",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13

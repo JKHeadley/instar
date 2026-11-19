@@ -121,6 +121,8 @@ Its findings and what was done:
 
 What the reviewer did not check: it did not run the model, the other test files or the route-level test, and did not read the site docs or the convergence report.
 
+**Third merge of main (2026-11-19 09:45 UTC): the Interaction family re-reviewed.** Main's pull request 3473 added the article *Documents Stand on Their Own* to the same family as this change's clause, so the family's recorded review no longer matched the merged text. A separate read-only verifier session read the merged family with both earlier reviews and answered: accepted, no design finding (no contradiction, no shadowing, the merge changed no wording of either addition). Recorded in `docs/specs/reports/waiting-ask-links-interaction-family-merge-2026-11-19.md` and `docs/audits/waiting-ask-links-interaction-family-merge-2026-11-19.json`, and the family's audit entry in `docs/standards-registry-area-audits.json` is re-recorded at the merged hash. No source code changed in this merge beyond what main brought.
+
 ## Evidence pointers
 
 **Tests (all run on this branch, 2026-11-18):** `tests/unit/message-links.test.ts` (19), `tests/unit/messaging-tone-gate-b26.test.ts` (14), `tests/unit/telegram-find-logged-messages.test.ts` (6, including a 90 MB / 95,000-line log), `tests/integration/telegram-reply-b26-waiting-ask.test.ts` (13, through the real reply route), the script cases in `tests/unit/telegram-reply-suppressed-duplicate.test.ts` and `tests/unit/slack-reply-delivery-id-script.test.ts`, plus the neighbouring suites listed under "Regression runs" below.
