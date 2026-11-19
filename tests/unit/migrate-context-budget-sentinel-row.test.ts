@@ -101,7 +101,18 @@ describe('Context Budget sentinel Registry-First row', () => {
 
     const md = generateClaudeMd('test', 'Echo', 4242, false);
     expect(md).toContain('http://localhost:4242/context-budget/sentinel');
-    expect(md.match(/\/context-budget\/sentinel/g)?.length).toBe(1);
+    // The full row (the migrator's text) is carried once, in the "Lookup details" reference
+    // section; the always-loaded Registry First table carries a short row that points at it
+    // (CLAUDE.md core size limit: tests/unit/claude-md-core-headroom.test.ts).
+    expect(md.match(/http:\/\/localhost:4242\/context-budget\/sentinel/g)?.length).toBe(1);
+    expect(md.match(/`GET \/context-budget\/sentinel`/g)?.length).toBe(1);
+    expect(md.match(/\/context-budget\/sentinel/g)?.length).toBe(2);
+    const registry = md.slice(md.indexOf('### Registry First, Explore Second'), md.indexOf('### Lookup details ('));
+    const details = md.slice(md.indexOf('### Lookup details ('), md.indexOf('### Context Budget layers per conversation'));
+    expect(registry).toContain('| Does compaction recovery work on this machine? / is a context fold stuck? | `GET /context-budget/sentinel`');
+    expect(registry).not.toContain('`eligibleWithoutFold`');
+    expect(details).toContain('`eligibleWithoutFold`');
+    expect(details).toContain('`counted` = recovery unverifiable');
     expect(md).toContain('`eligibleWithoutFold`');
   });
 });

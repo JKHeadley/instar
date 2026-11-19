@@ -140,8 +140,14 @@ describe('native console Conversations', () => {
       await vi.advanceTimersByTimeAsync(11000);
       expect(all.disabled).toBe(true);
       expect(progressLine(f.main)).toMatch(/^Accepting 1 of 3: Project 1\. Creating the group… Saved here\. Waiting for Laptop to confirm\. \(\d+ s\)$/);
+      // Each change waits 150 s for the other machines (ACCEPT_CHANGE_CONFIRM_WAIT_MS), so at 151 s the first
+      // project counts as still waiting and the second is running; Accept all has not stopped.
       await vi.advanceTimersByTimeAsync(140000);
-      expect(progressLine(f.main)).toBe('Stopped at 2 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
+      expect(all.disabled).toBe(true);
+      expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
+      // It stops only after three projects in a row are still waiting (ACCEPT_ALL_STOP_AFTER_WAITING).
+      await vi.advanceTimersByTimeAsync(320000);
+      expect(progressLine(f.main)).toBe('Stopped at 3 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
       expect(all.disabled).toBe(false);
       expect(all.textContent).toBe('Continue accepting projects');
       expect(server.accepted).toEqual([]);
@@ -311,9 +317,27 @@ describe('native console Conversations', () => {
     allButton(f.main).click();
     for (let i = 0; i < 60; i++) await flush();
     expect(server.accepted).toEqual([1]);
-    expect(progressLine(f.main)).toBe('Stopped at 3 of 3: your agent is not answering right now. 1 of 3 accepted. Tap Continue to try again; nothing is lost.');
+    // Two projects in a row without an answer no longer stop the run early (the stop needs three:
+    // ACCEPT_ALL_STOP_AFTER_WAITING); the run ends and says how many did not finish.
+    expect(progressLine(f.main)).toBe('1 of 3 projects accepted. 2 did not finish; their cards say why. Tap Continue to try again.');
     expect(f.main.textContent).not.toContain('no longer available');
     expect(f.main.textContent).toContain('The agent did not answer. Tap Continue to try again; nothing is lost.');
+    expect(allButton(f.main).disabled).toBe(false);
+  });
+
+  it('three projects in a row without an answer stop Accept all with plain words', async () => {
+    const silentFor = (url: string) => {
+      if (/sg-0123456789abcdef012[234]\/start$/.test(url)) return true;
+      if (!url.includes('/conversation-graph/nodes/')) return false;
+      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
+      return ref.kind === 'conversation' && ref.topicId >= 2 && ref.topicId <= 4;
+    };
+    const server = acceptServer([1, 2, 3, 4, 5], (url) => silentFor(url) ? { status: 408, body: {} } : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    allButton(f.main).click();
+    for (let i = 0; i < 80; i++) await flush();
+    expect(server.accepted).toEqual([1]); // project 5 is not tried after three in a row did not answer
+    expect(progressLine(f.main)).toBe('Stopped at 4 of 5: your agent is not answering right now. 1 of 5 accepted. Tap Continue to try again; nothing is lost.');
     expect(allButton(f.main).disabled).toBe(false);
   });
 
